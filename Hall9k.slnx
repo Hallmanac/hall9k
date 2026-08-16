@@ -1,0 +1,13 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/Hall9k.AppHost/Hall9k.AppHost.csproj" />
+    <Project Path="src/Hall9k.Cli/Hall9k.Cli.csproj" />
+    <Project Path="src/Hall9k.Connectors/Hall9k.Connectors.csproj" />
+    <Project Path="src/Hall9k.Daemon/Hall9k.Daemon.csproj" />
+    <Project Path="src/Hall9k.Domain/Hall9k.Domain.csproj" />
+    <Project Path="src/Hall9k.ServiceDefaults/Hall9k.ServiceDefaults.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/Hall9k.Tests/Hall9k.Tests.csproj" />
+  </Folder>
+</Solution>

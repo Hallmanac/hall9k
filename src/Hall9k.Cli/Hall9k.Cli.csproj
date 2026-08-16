@@ -1,0 +1,20 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <AssemblyName>h9k</AssemblyName>
+    <RootNamespace>Hall9k.Cli</RootNamespace>
+    <PackAsTool>true</PackAsTool>
+    <ToolCommandName>h9k</ToolCommandName>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Spectre.Console.Cli" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Hall9k.Domain\Hall9k.Domain.csproj" />
+    <ProjectReference Include="..\Hall9k.Connectors\Hall9k.Connectors.csproj" />
+  </ItemGroup>
+
+</Project>

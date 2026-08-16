@@ -1,0 +1,39 @@
+<Project>
+  <ItemGroup>
+    <!-- Domain / persistence -->
+    <PackageVersion Include="Marten" Version="8.17.0" />
+    <PackageVersion Include="WolverineFx" Version="5.9.2" />
+    <PackageVersion Include="WolverineFx.Marten" Version="5.9.2" />
+    <PackageVersion Include="UUIDNext" Version="4.2.3" />
+
+    <!-- CLI -->
+    <PackageVersion Include="Spectre.Console.Cli" Version="0.55.0" />
+
+    <!-- Daemon -->
+    <PackageVersion Include="Microsoft.Extensions.Hosting" Version="10.0.11" />
+
+    <!-- Aspire -->
+    <PackageVersion Include="Aspire.Hosting.AppHost" Version="13.3.0" />
+    <PackageVersion Include="Aspire.Hosting.PostgreSQL" Version="13.3.0" />
+    <!-- Transitive of Aspire.Hosting.AppHost; 2.5.192 carries known CVEs — pinned to patched 2.5.x -->
+    <PackageVersion Include="MessagePack" Version="2.5.302" />
+
+    <!-- ServiceDefaults -->
+    <PackageVersion Include="Microsoft.Extensions.Http.Resilience" Version="9.4.0" />
+    <PackageVersion Include="Microsoft.Extensions.ServiceDiscovery" Version="9.3.1" />
+    <PackageVersion Include="OpenTelemetry.Exporter.OpenTelemetryProtocol" Version="1.17.0" />
+    <PackageVersion Include="OpenTelemetry.Extensions.Hosting" Version="1.17.0" />
+    <PackageVersion Include="OpenTelemetry.Instrumentation.AspNetCore" Version="1.17.0" />
+    <PackageVersion Include="OpenTelemetry.Instrumentation.Http" Version="1.17.0" />
+    <PackageVersion Include="OpenTelemetry.Instrumentation.Runtime" Version="1.17.0" />
+
+    <!-- Tests -->
+    <PackageVersion Include="Microsoft.NET.Test.Sdk" Version="17.14.1" />
+    <PackageVersion Include="xunit" Version="2.9.3" />
+    <PackageVersion Include="xunit.runner.visualstudio" Version="3.1.4" />
+    <PackageVersion Include="FluentAssertions" Version="8.8.0" />
+    <PackageVersion Include="Testcontainers.PostgreSql" Version="4.10.0" />
+    <PackageVersion Include="Alba" Version="8.4.0" />
+    <PackageVersion Include="coverlet.collector" Version="6.0.4" />
+  </ItemGroup>
+</Project>

@@ -1,0 +1,18 @@
+# Postgres for installed mode (h9kd under launchd). The Aspire AppHost manages its own
+# Postgres container for the dev loop — this file is for the daemon running as a service.
+services:
+  postgres:
+    image: postgres:18
+    container_name: hall9k-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: hall9k
+      POSTGRES_USER: hall9k
+      POSTGRES_PASSWORD: hall9k
+    ports:
+      - "5432:5432"
+    volumes:
+      - hall9k-pgdata:/var/lib/postgresql
+
+volumes:
+  hall9k-pgdata:

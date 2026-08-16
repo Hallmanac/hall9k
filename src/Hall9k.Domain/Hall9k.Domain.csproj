@@ -1,0 +1,5 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- Marten/Wolverine/UUIDNext arrive in S1-02 with the persistence backbone. -->
+
+</Project>
