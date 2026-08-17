@@ -8,6 +8,7 @@ CommandApp app = new();
 app.Configure(config =>
 {
     config.SetApplicationName("h9k");
+    config.SetApplicationVersion(CliVersion.Current);
     config.PropagateExceptions();
 
     config.AddBranch("project", project =>
