@@ -57,6 +57,59 @@ public sealed class AttentionSurfaceTests
     }
 
     [Fact]
+    public void Done_run_states_refine_the_closeout_display()
+    {
+        Guid runId = DomainId.New();
+        TaskListItem task = new()
+        {
+            Id = DomainId.New(), ProjectId = DomainId.New(), Objective = "x",
+            State = TaskState.Done, CurrentRunId = runId,
+            PullRequestUrl = "https://github.com/x/y/pull/7", AddedAt = Now,
+        };
+
+        Compose(task, new RunListItem { Id = runId, State = RunState.AwaitingReview })
+            .Bucket.Should().Be("AwaitingReview");
+        Compose(task, new RunListItem { Id = runId, State = RunState.ChecksFailing })
+            .Bucket.Should().Be("ChecksFailing");
+        Compose(task, new RunListItem { Id = runId, State = RunState.ReviewPending })
+            .Bucket.Should().Be("ReviewPending");
+        Compose(task, new RunListItem { Id = runId, State = RunState.CloseoutParked })
+            .Bucket.Should().Be("NeedsHuman", "a parked closeout belongs on the attention surface");
+        Compose(task, new RunListItem { Id = runId, State = RunState.Completed })
+            .Bucket.Should().Be("Done", "the observed merge ends the closeout — AwaitingReview disappears");
+    }
+
+    [Fact]
+    public void Reopened_task_with_a_pull_request_reads_as_closing_out_through_the_follow_up_run()
+    {
+        Guid runId = DomainId.New();
+        TaskListItem queued = new()
+        {
+            Id = DomainId.New(), ProjectId = DomainId.New(), Objective = "x",
+            State = TaskState.Queued, PullRequestUrl = "https://github.com/x/y/pull/7", AddedAt = Now,
+        };
+        TaskListItem claimed = new()
+        {
+            Id = DomainId.New(), ProjectId = DomainId.New(), Objective = "x",
+            State = TaskState.Claimed, CurrentRunId = runId,
+            PullRequestUrl = "https://github.com/x/y/pull/7", AddedAt = Now,
+        };
+
+        Compose(queued, run: null).Bucket.Should().Be("ClosingOut", "a reopened task's PR is being driven to completion");
+        StatusCommand.StatusRow running = Compose(claimed, new RunListItem { Id = runId, State = RunState.Running });
+        running.Bucket.Should().Be("ClosingOut");
+        running.Priority.Should().Be(2, "an in-flight follow-up ranks with active work");
+    }
+
+    private static StatusCommand.StatusRow Compose(TaskListItem task, RunListItem? run) =>
+        StatusCommand.Compose(
+            task,
+            run is null ? new Dictionary<Guid, RunListItem>() : new Dictionary<Guid, RunListItem> { [run.Id] = run },
+            new Dictionary<Guid, RunActivity>(),
+            new Dictionary<Guid, string>(),
+            Now);
+
+    [Fact]
     public void Needs_human_outranks_everything_in_priority()
     {
         TaskListItem needsHuman = new()

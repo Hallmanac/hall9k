@@ -44,7 +44,7 @@ public sealed class StatusCommand : Hall9kAsyncCommand<StatusCommand.Settings>
         int needsHuman = rows.Count(r => r.Bucket == "NeedsHuman");
         int stalled = rows.Count(r => r.Stalled);
         int awaitingReview = rows.Count(r => r.Bucket == "AwaitingReview");
-        int active = rows.Count(r => r.Bucket is "Running" or "Verifying" or "Dispatched" or "Queued");
+        int active = rows.Count(r => r.Bucket is "Running" or "Verifying" or "Dispatched" or "Queued" or "ClosingOut");
 
         AnsiConsole.MarkupLine(
             $"[bold]h9k status[/] · " +
@@ -70,7 +70,11 @@ public sealed class StatusCommand : Hall9kAsyncCommand<StatusCommand.Settings>
 
     /// <summary>
     /// Display state composition per TASK-MODEL.md §2: the task's work state, refined by
-    /// the current run's execution state while claimed, with Done+PR shown as AwaitingReview.
+    /// the current run's execution state while claimed. A done task with a PR is in the
+    /// closeout phase (log #18/#22): the current run's closeout state refines the
+    /// display — AwaitingReview while quiet, ChecksFailing/ReviewPending when observed,
+    /// NeedsHuman when parked, Done once the merge landed. A queued/claimed task that
+    /// still carries a PR URL is a follow-up run in flight: ClosingOut.
     /// </summary>
     internal static StatusRow Compose(
         TaskListItem task,
@@ -80,15 +84,27 @@ public sealed class StatusCommand : Hall9kAsyncCommand<StatusCommand.Settings>
         DateTimeOffset now)
     {
         RunListItem? run = task.CurrentRunId is { } runId ? runs.GetValueOrDefault(runId) : null;
+        bool inCloseout = task.PullRequestUrl.IsNotBlank();
 
         string bucket = task.State.Value switch
         {
+            "Queued" when inCloseout => "ClosingOut",
+            "Claimed" when inCloseout => "ClosingOut",
             "Claimed" when run is not null => run.State.Value,
-            "Done" when task.PullRequestUrl.IsNotBlank() => "AwaitingReview",
+            "Done" when inCloseout => run?.State.Value switch
+            {
+                "ChecksFailing" => "ChecksFailing",
+                "ReviewPending" => "ReviewPending",
+                "CloseoutParked" => "NeedsHuman",
+                // Completed = merged; Failed = PR closed without merge. Closeout is over either way.
+                "Completed" or "Failed" => "Done",
+                _ => "AwaitingReview",
+            },
             _ => task.State.Value,
         };
 
-        bool bucketIsLive = bucket is "Running" or "Verifying" or "Dispatched";
+        bool bucketIsLive = bucket is "Running" or "Verifying" or "Dispatched"
+            || (bucket == "ClosingOut" && run is not null && run.State.IsLive);
         bool stalled = false;
         string activityText = string.Empty;
         if (bucketIsLive && run is not null && activity.TryGetValue(run.Id, out RunActivity? runActivity))
@@ -102,7 +118,9 @@ public sealed class StatusCommand : Hall9kAsyncCommand<StatusCommand.Settings>
         {
             "NeedsHuman" => "[red bold]NeedsHuman[/]",
             "AwaitingReview" => "[magenta]AwaitingReview[/]",
-            "Running" or "Verifying" or "Dispatched" => stalled
+            "ChecksFailing" => "[red]ChecksFailing[/]",
+            "ReviewPending" => "[magenta]ReviewPending[/]",
+            "Running" or "Verifying" or "Dispatched" or "ClosingOut" => stalled
                 ? $"[red]{bucket} ⚠ STALLED[/]"
                 : $"[yellow]{bucket}[/]",
             "Queued" => "[blue]Queued[/]",
@@ -116,8 +134,8 @@ public sealed class StatusCommand : Hall9kAsyncCommand<StatusCommand.Settings>
         {
             "NeedsHuman" => 0,
             _ when stalled => 1,
-            "Running" or "Verifying" or "Dispatched" => 2,
-            "AwaitingReview" => 3,
+            "Running" or "Verifying" or "Dispatched" or "ClosingOut" => 2,
+            "AwaitingReview" or "ChecksFailing" or "ReviewPending" => 3,
             "Queued" => 4,
             "Failed" => 5,
             "Done" => 6,
