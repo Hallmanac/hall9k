@@ -15,6 +15,7 @@ using Hall9k.Domain.Infrastructure.Persistence;
 using JasperFx;
 using Marten;
 using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Options;
 using Xunit;
 
 namespace Hall9k.Tests.Integration;
@@ -195,7 +196,9 @@ public sealed class RunSupervisorTests(PostgresFixture postgres) : IClassFixture
     }
 
     private static RunSupervisor NewSupervisor(DocumentStore store, NodeContext node) =>
-        new(store, node, new UnixProcessManager(), NullLogger<RunSupervisor>.Instance);
+        new(store, node, new UnixProcessManager(),
+            new VerificationRunner(store, Options.Create(new DaemonOptions()), NullLogger<VerificationRunner>.Instance),
+            NullLogger<RunSupervisor>.Instance);
 
     public void Dispose()
     {

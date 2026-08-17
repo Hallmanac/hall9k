@@ -22,6 +22,7 @@ builder.Services.AddSingleton<IProcessManager, UnixProcessManager>();
 builder.Services.AddSingleton<IWorktreeManager, GitWorktreeManager>();
 builder.Services.AddSingleton<DispatchEngine>();
 builder.Services.AddSingleton<IExecutor, ClaudeExecutor>();
+builder.Services.AddSingleton<VerificationRunner>();
 builder.Services.AddSingleton<RunSupervisor>();
 builder.Services.AddSingleton<RunLauncher>();
 

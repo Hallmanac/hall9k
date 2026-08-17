@@ -22,6 +22,7 @@ public sealed class RunSupervisor(
     IDocumentStore store,
     NodeContext node,
     IProcessManager processManager,
+    VerificationRunner verification,
     ILogger<RunSupervisor> logger)
 {
     private static readonly TimeSpan TailInterval = TimeSpan.FromSeconds(1);
@@ -48,11 +49,19 @@ public sealed class RunSupervisor(
         Guid nodeId = node.NodeId;
         IReadOnlyList<RunDetails> candidates = await query.Query<RunDetails>()
             .Where(r => r.NodeId == nodeId)
-            .Where(r => r.MatchesSql("d.data ->> 'state' in (?, ?)", RunState.Dispatched.Value, RunState.Running.Value))
+            .Where(r => r.MatchesSql("d.data ->> 'state' in (?, ?, ?)", RunState.Dispatched.Value, RunState.Running.Value, RunState.Verifying.Value))
             .ToListAsync(cancellationToken);
 
         foreach (RunDetails run in candidates)
         {
+            if (run.State == RunState.Verifying)
+            {
+                // Daemon died mid-verification: the agent's work is done, just re-verify.
+                logger.LogInformation("Adopting run {RunId} stranded in Verifying — re-running gates", run.Id);
+                await verification.VerifyAsync(run.Id, run.TaskId, cancellationToken);
+                continue;
+            }
+
             if (run.ProcessId is null || run.ProcessStartedAt is null)
             {
                 await FailRunAsync(run.Id, run.TaskId, "Dispatched but never started before the daemon stopped.", cancellationToken);
@@ -197,8 +206,13 @@ public sealed class RunSupervisor(
 
         await session.SaveChangesAsync(cancellationToken);
         logger.LogInformation(
-            "Run {RunId} agent session completed ({Input}in/{Output}out tokens, error: {IsError}) — verification is S1-08",
+            "Run {RunId} agent session completed ({Input}in/{Output}out tokens, error: {IsError})",
             runId, result.InputTokens, result.OutputTokens, result.IsError);
+
+        if (!result.IsError)
+        {
+            await verification.VerifyAsync(runId, taskId, cancellationToken);
+        }
     }
 
     private async Task FailRunAsync(Guid runId, Guid taskId, string reason, CancellationToken cancellationToken)

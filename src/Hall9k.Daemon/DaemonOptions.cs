@@ -13,4 +13,7 @@ public sealed class DaemonOptions
     public TimeSpan HeartbeatInterval { get; set; } = TimeSpan.FromSeconds(15);
 
     public TimeSpan LeaseTimeout { get; set; } = TimeSpan.FromSeconds(60);
+
+    /// <summary>Per-gate ceiling; an overrunning gate fails, never hangs the pipeline.</summary>
+    public TimeSpan VerifyGateTimeout { get; set; } = TimeSpan.FromMinutes(15);
 }
