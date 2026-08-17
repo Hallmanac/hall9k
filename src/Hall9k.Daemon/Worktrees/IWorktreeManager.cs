@@ -7,6 +7,13 @@ public sealed record WorktreeRequest(
     Guid RunId,
     string Objective);
 
+/// <summary>Follow-up runs resume the task's existing pull-request branch — no new branch is cut.</summary>
+public sealed record FollowUpWorktreeRequest(
+    string RepositoryPath,
+    string Branch,
+    Guid TaskId,
+    Guid RunId);
+
 public sealed record Worktree(string Path, string Branch, string StartPoint);
 
 public sealed class WorktreeException(string message) : Exception(message);
@@ -18,6 +25,13 @@ public sealed class WorktreeException(string message) : Exception(message);
 public interface IWorktreeManager
 {
     Task<Worktree> CreateAsync(WorktreeRequest request, CancellationToken cancellationToken);
+
+    /// <summary>
+    /// Checks out an EXISTING branch into a fresh worktree (follow-up runs on a task's PR
+    /// branch). Prefers the local branch, fast-forwarding to origin when it moved ahead;
+    /// recreates from origin when only the remote still has it.
+    /// </summary>
+    Task<Worktree> CheckoutExistingAsync(FollowUpWorktreeRequest request, CancellationToken cancellationToken);
 
     /// <summary>Removes a worktree (force — done worktrees may hold build debris). The branch survives.</summary>
     Task RemoveAsync(string repositoryPath, string worktreePath, CancellationToken cancellationToken);

@@ -39,6 +39,61 @@ public sealed class GitWorktreeManager(ILogger<GitWorktreeManager> logger) : IWo
         }
     }
 
+    public async Task<Worktree> CheckoutExistingAsync(FollowUpWorktreeRequest request, CancellationToken cancellationToken)
+    {
+        string repositoryPath = Path.GetFullPath(request.RepositoryPath);
+        SemaphoreSlim mutex = LockFor(repositoryPath);
+        await mutex.WaitAsync(cancellationToken);
+        try
+        {
+            await BestEffortFetchAsync(repositoryPath, cancellationToken);
+
+            string branch = request.Branch;
+            string worktreePath = WorktreePathFor(repositoryPath, request.TaskId, request.RunId);
+            bool localExists = await RefExistsAsync(repositoryPath, $"refs/heads/{branch}", cancellationToken);
+            bool remoteExists = await RefExistsAsync(repositoryPath, $"refs/remotes/origin/{branch}", cancellationToken);
+
+            if (localExists)
+            {
+                await RunGitAsync(repositoryPath, $"worktree add \"{worktreePath}\" {branch}", cancellationToken);
+                if (remoteExists)
+                {
+                    // Review feedback may have landed as commits on the PR itself (web-applied
+                    // suggestions); pick them up when it's a clean fast-forward. A divergence
+                    // is a human problem — the run proceeds from the local tip.
+                    (int ffExit, _, string ffError) = await TryRunGitAsync(
+                        worktreePath, $"merge --ff-only origin/{branch}", cancellationToken);
+                    if (ffExit != 0)
+                    {
+                        logger.LogWarning(
+                            "Branch {Branch} could not fast-forward to origin ({Error}); continuing from the local tip",
+                            branch, ffError.Trim());
+                    }
+                }
+            }
+            else if (remoteExists)
+            {
+                await RunGitAsync(
+                    repositoryPath,
+                    $"worktree add --no-track -b {branch} \"{worktreePath}\" origin/{branch}",
+                    cancellationToken);
+            }
+            else
+            {
+                throw new WorktreeException(
+                    $"Branch {branch} exists neither locally nor on origin in {repositoryPath} — cannot resume it.");
+            }
+
+            logger.LogInformation(
+                "Worktree {Path} checked out on existing branch {Branch}", worktreePath, branch);
+            return new Worktree(worktreePath, branch, localExists ? branch : $"origin/{branch}");
+        }
+        finally
+        {
+            mutex.Release();
+        }
+    }
+
     public async Task RemoveAsync(string repositoryPath, string worktreePath, CancellationToken cancellationToken)
     {
         repositoryPath = Path.GetFullPath(repositoryPath);
@@ -112,16 +167,26 @@ public sealed class GitWorktreeManager(ILogger<GitWorktreeManager> logger) : IWo
 
         // Branch per task — but a retried task's failed worktree is retained (cleanup
         // policy, log #4) and still holds the branch, so retries get a run-suffixed name.
-        (int exitCode, _, _) = await TryRunGitAsync(
-            repositoryPath, $"rev-parse --verify --quiet \"refs/heads/{branch}\"", cancellationToken);
-        return exitCode == 0 ? $"{branch}-r{Short(request.RunId)[..4]}" : branch;
+        return await RefExistsAsync(repositoryPath, $"refs/heads/{branch}", cancellationToken)
+            ? $"{branch}-r{Short(request.RunId)[..4]}"
+            : branch;
     }
 
-    private static string WorktreePathFor(string repositoryPath, WorktreeRequest request)
+    private static async Task<bool> RefExistsAsync(string repositoryPath, string reference, CancellationToken cancellationToken)
+    {
+        (int exitCode, _, _) = await TryRunGitAsync(
+            repositoryPath, $"rev-parse --verify --quiet \"{reference}^{{commit}}\"", cancellationToken);
+        return exitCode == 0;
+    }
+
+    private static string WorktreePathFor(string repositoryPath, WorktreeRequest request) =>
+        WorktreePathFor(repositoryPath, request.TaskId, request.RunId);
+
+    private static string WorktreePathFor(string repositoryPath, Guid taskId, Guid runId)
     {
         string parent = Path.GetDirectoryName(repositoryPath.TrimEnd(Path.DirectorySeparatorChar))
             ?? throw new WorktreeException($"Repository path {repositoryPath} has no parent directory.");
-        return Path.Combine(parent, $"wt-{Short(request.TaskId)}-{Short(request.RunId)}");
+        return Path.Combine(parent, $"wt-{Short(taskId)}-{Short(runId)}");
     }
 
     // UUIDv7 front-loads the timestamp — same-instant ids share their FIRST chars, so a

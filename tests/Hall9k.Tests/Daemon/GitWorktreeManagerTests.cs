@@ -82,6 +82,78 @@ public sealed class GitWorktreeManagerTests : IDisposable
     }
 
     [Fact]
+    public async Task Checkout_existing_resumes_the_local_branch_and_fast_forwards_to_origin()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(1));
+        Guid taskId = DomainId.New();
+
+        // First run: branch created, work committed and pushed, worktree removed (the
+        // PullRequestOpener lifecycle).
+        Worktree first = await _manager.CreateAsync(
+            new WorktreeRequest(_repositoryPath, "main", taskId, DomainId.New(), "Follow up on me"), cts.Token);
+        File.WriteAllText(Path.Combine(first.Path, "WORK.md"), "first run\n");
+        Git(first.Path, "add -A");
+        Git(first.Path, "-c user.name=Test -c user.email=t@t commit -qm work");
+        Git(first.Path, $"push -q origin {first.Branch}");
+        await _manager.RemoveAsync(_repositoryPath, first.Path, cts.Token);
+
+        // Review feedback lands as a commit on the PR branch remotely (web-applied suggestion).
+        string reviewer = Path.Combine(_root, "reviewer");
+        Git(_root, $"clone \"{Path.Combine(_root, "origin.git")}\" \"{reviewer}\"");
+        Git(reviewer, $"checkout -q {first.Branch}");
+        File.WriteAllText(Path.Combine(reviewer, "SUGGESTION.md"), "applied suggestion\n");
+        Git(reviewer, "add -A");
+        Git(reviewer, "-c user.name=Rev -c user.email=r@r commit -qm suggestion");
+        Git(reviewer, $"push -q origin {first.Branch}");
+
+        Worktree followUp = await _manager.CheckoutExistingAsync(
+            new FollowUpWorktreeRequest(_repositoryPath, first.Branch, taskId, DomainId.New()), cts.Token);
+
+        followUp.Branch.Should().Be(first.Branch, "a follow-up resumes the PR branch, never cuts a new one");
+        followUp.Path.Should().NotBe(first.Path, "each run gets its own worktree");
+        (_, string current) = TryGit(followUp.Path, "branch --show-current");
+        current.Trim().Should().Be(first.Branch);
+        File.Exists(Path.Combine(followUp.Path, "WORK.md")).Should().BeTrue("the first run's commits are present");
+        File.Exists(Path.Combine(followUp.Path, "SUGGESTION.md")).Should().BeTrue(
+            "commits landed on the PR remotely fast-forward into the follow-up worktree");
+    }
+
+    [Fact]
+    public async Task Checkout_existing_recreates_from_origin_when_only_the_remote_has_the_branch()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(1));
+        Guid taskId = DomainId.New();
+
+        Worktree first = await _manager.CreateAsync(
+            new WorktreeRequest(_repositoryPath, "main", taskId, DomainId.New(), "Remote only branch"), cts.Token);
+        File.WriteAllText(Path.Combine(first.Path, "WORK.md"), "first run\n");
+        Git(first.Path, "add -A");
+        Git(first.Path, "-c user.name=Test -c user.email=t@t commit -qm work");
+        Git(first.Path, $"push -q origin {first.Branch}");
+        await _manager.RemoveAsync(_repositoryPath, first.Path, cts.Token);
+        Git(_repositoryPath, $"branch -D {first.Branch}");
+
+        Worktree followUp = await _manager.CheckoutExistingAsync(
+            new FollowUpWorktreeRequest(_repositoryPath, first.Branch, taskId, DomainId.New()), cts.Token);
+
+        followUp.StartPoint.Should().Be($"origin/{first.Branch}");
+        (_, string current) = TryGit(followUp.Path, "branch --show-current");
+        current.Trim().Should().Be(first.Branch);
+        File.Exists(Path.Combine(followUp.Path, "WORK.md")).Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task Checkout_existing_of_an_unknown_branch_throws()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(1));
+
+        Func<Task> act = () => _manager.CheckoutExistingAsync(
+            new FollowUpWorktreeRequest(_repositoryPath, "task/never-existed", DomainId.New(), DomainId.New()), cts.Token);
+
+        await act.Should().ThrowAsync<WorktreeException>().WithMessage("*neither locally nor on origin*");
+    }
+
+    [Fact]
     public async Task Remove_and_prune_leave_the_repository_clean()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(1));
