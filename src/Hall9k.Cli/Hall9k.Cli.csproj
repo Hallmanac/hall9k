@@ -6,6 +6,7 @@
     <RootNamespace>Hall9k.Cli</RootNamespace>
     <PackAsTool>true</PackAsTool>
     <ToolCommandName>h9k</ToolCommandName>
+    <Version>0.1.0</Version>
   </PropertyGroup>
 
   <ItemGroup>
