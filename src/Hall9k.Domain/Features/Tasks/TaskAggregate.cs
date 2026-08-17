@@ -19,6 +19,14 @@ public sealed class TaskAggregate
     public string? PullRequestUrl { get; private set; }
     /// <summary>Set while a follow-up run is pending: the next claim resumes this branch instead of cutting a new one.</summary>
     public string? FollowUpBranch { get; private set; }
+    /// <summary>Why the pending follow-up run exists; the launcher picks the agent prompt from it.</summary>
+    public FollowUpKind FollowUpKind { get; private set; } = FollowUpKind.Unknown;
+    /// <summary>
+    /// Automatic (monitor-driven) reopens since the last human-initiated one — the
+    /// bounded-retry counter for PR closeout. A manual reopen resets it: the human asking
+    /// for another attempt restores the automatic budget (Decisions Log #22).
+    /// </summary>
+    public int CloseoutAttempts { get; private set; }
     public DateTimeOffset AddedAt { get; private set; }
     public Guid AddedByOwnerId { get; private set; }
 
@@ -77,12 +85,15 @@ public sealed class TaskAggregate
     {
         PullRequestUrl = @event.PullRequestUrl;
         FollowUpBranch = null;
+        FollowUpKind = FollowUpKind.Unknown;
         State = TaskState.Done;
     }
 
     public void Apply(TaskReopened @event)
     {
         FollowUpBranch = @event.Branch;
+        FollowUpKind = @event.Kind ?? FollowUpKind.Unknown;
+        CloseoutAttempts = @event.Automatic ? CloseoutAttempts + 1 : 0;
         ClaimedByNodeId = null;
         CurrentRunId = null;
         PendingQuestionId = null;

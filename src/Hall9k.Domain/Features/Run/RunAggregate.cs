@@ -24,8 +24,14 @@ public sealed class RunAggregate
     public DateTimeOffset DispatchedAt { get; private set; }
     public bool IsFollowUp { get; private set; }
 
+    public DateTimeOffset? PullRequestMergedAt { get; private set; }
+    public int UnresolvedReviewThreads { get; private set; }
+
     private readonly List<string> _failedGates = [];
     public IReadOnlyList<string> FailedGates => _failedGates;
+
+    private readonly List<string> _failingChecks = [];
+    public IReadOnlyList<string> FailingChecks => _failingChecks;
 
     public void Apply(RunDispatched @event)
     {
@@ -92,6 +98,25 @@ public sealed class RunAggregate
         PullRequestNumber = @event.PullRequestNumber;
         State = RunState.AwaitingReview;
     }
+
+    public void Apply(PullRequestChecksFailed @event)
+    {
+        _failingChecks.Clear();
+        _failingChecks.AddRange(@event.FailedChecks);
+        State = RunState.ChecksFailing;
+    }
+
+    public void Apply(ReviewFeedbackReceived @event)
+    {
+        UnresolvedReviewThreads = @event.UnresolvedThreadCount;
+        State = RunState.ReviewPending;
+    }
+
+    public void Apply(CloseoutParked @event) => State = RunState.CloseoutParked;
+
+    public void Apply(PullRequestMerged @event) => PullRequestMergedAt = @event.MergedAt;
+
+    public void Apply(PullRequestClosed @event) => State = RunState.Failed;
 
     public void Apply(RunCompleted @event) => State = RunState.Completed;
 

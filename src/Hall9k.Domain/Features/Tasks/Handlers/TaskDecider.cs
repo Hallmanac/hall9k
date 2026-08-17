@@ -121,7 +121,14 @@ public static class TaskDecider
     /// exit from a terminal state, and only from Done — Failed/Abandoned stay dead ends.
     /// </summary>
     public static TaskReopened Reopen(
-        TaskAggregate task, Guid previousRunId, string branch, string? reason, DateTimeOffset reopenedAt, Guid reopenedByOwnerId)
+        TaskAggregate task,
+        Guid previousRunId,
+        string branch,
+        string? reason,
+        FollowUpKind kind,
+        bool automatic,
+        DateTimeOffset reopenedAt,
+        Guid reopenedByOwnerId)
     {
         if (task.State != TaskState.Done)
         {
@@ -140,7 +147,7 @@ public static class TaskDecider
             throw new DomainValidationException("A follow-up run needs the existing pull-request branch.");
         }
 
-        return new TaskReopened(task.Id, previousRunId, branch, reason, reopenedAt, reopenedByOwnerId);
+        return new TaskReopened(task.Id, previousRunId, branch, reason, reopenedAt, reopenedByOwnerId, kind, automatic);
     }
 
     public static TaskFailed Fail(TaskAggregate task, Guid runId, string reason, DateTimeOffset failedAt)

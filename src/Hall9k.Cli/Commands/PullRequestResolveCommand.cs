@@ -5,7 +5,9 @@ using Hall9k.Domain.Features.Tasks;
 using Hall9k.Domain.Features.Tasks.Handlers;
 using Hall9k.Domain.Infrastructure.Bootstrap;
 using Hall9k.Domain.Shared.Exceptions;
+using JasperFx.Events;
 using Marten;
+using Marten.Events;
 using Spectre.Console;
 using Spectre.Console.Cli;
 
@@ -25,8 +27,12 @@ public sealed class PullRequestResolveCommand : Hall9kAsyncCommand<PullRequestRe
         public string Task { get; init; } = string.Empty;
 
         [CommandOption("--reason <REASON>")]
-        [Description("Why the follow-up is needed (defaults to unresolved review comments)")]
+        [Description("Why the follow-up is needed (defaults to a message matching the prompt: review comments, or failing checks with --checks)")]
         public string? Reason { get; init; }
+
+        [CommandOption("--checks")]
+        [Description("Dispatch the fix-the-CI prompt (the PR's checks are failing) instead of the resolve-review-comments prompt")]
+        public bool Checks { get; init; }
     }
 
     protected override async Task<int> ExecuteAsync(Settings settings, CancellationToken cancellationToken)
@@ -35,7 +41,14 @@ public sealed class PullRequestResolveCommand : Hall9kAsyncCommand<PullRequestRe
         await using IDocumentSession session = store.LightweightSession();
 
         Guid taskId = await TaskIdResolver.ResolveAsync(session, settings.Task, cancellationToken);
-        TaskAggregate task = await session.Events.AggregateStreamAsync<TaskAggregate>(taskId, token: cancellationToken)
+
+        // Fence before aggregating: the closeout monitor also writes TaskReopened, so
+        // the append below carries expectedVersion and loses loudly instead of stacking
+        // a second reopen (and a second budget reset) on a concurrently reopened task.
+        StreamState? fence = await session.Events.FetchStreamStateAsync(taskId, cancellationToken)
+            ?? throw new DomainNotFoundException($"No task {taskId}.");
+        TaskAggregate task = await session.Events.AggregateStreamAsync<TaskAggregate>(
+                taskId, version: fence.Version, token: cancellationToken)
             ?? throw new DomainNotFoundException($"No task {taskId}.");
 
         Guid previousRunId = task.CurrentRunId
@@ -44,11 +57,28 @@ public sealed class PullRequestResolveCommand : Hall9kAsyncCommand<PullRequestRe
             ?? throw new DomainNotFoundException($"Task {taskId}'s run {previousRunId} has no run record.");
 
         BootstrapContext context = await NodeBootstrap.EnsureAsync(session, cancellationToken);
-        session.Events.Append(taskId, TaskDecider.Reopen(
+
+        // A human-initiated reopen (Automatic: false) also resets the closeout monitor's
+        // automatic follow-up budget — the human asking is a fresh grant (log #22).
+        session.Events.Append(taskId, expectedVersion: fence.Version + 1, TaskDecider.Reopen(
             task, previousRunId, previousRun.Branch,
-            settings.Reason ?? "Unresolved review comments on the pull request.",
+            settings.Reason ?? (settings.Checks
+                ? "CI checks failing on the pull request."
+                : "Unresolved review comments on the pull request."),
+            settings.Checks ? FollowUpKind.FailingChecks : FollowUpKind.ReviewFeedback,
+            automatic: false,
             DateTimeOffset.UtcNow, context.OwnerId));
-        await session.SaveChangesAsync(cancellationToken);
+        try
+        {
+            await session.SaveChangesAsync(cancellationToken);
+        }
+        catch (EventStreamUnexpectedMaxEventIdException)
+        {
+            throw new DomainConflictException(
+                $"Task {taskId} changed while reopening — the closeout monitor likely just dispatched " +
+                "a follow-up itself. Check h9k status; re-run this command only if the follow-up you " +
+                "wanted is not already in flight.");
+        }
         await Doorbell.RingAsync($"pr-resolve:{taskId}", cancellationToken);
 
         AnsiConsole.MarkupLineInterpolated(

@@ -20,11 +20,16 @@ public sealed class RunDetails
     public DateTimeOffset? ProcessStartedAt { get; set; }
     public string? PullRequestUrl { get; set; }
     public int? PullRequestNumber { get; set; }
+    public DateTimeOffset? PullRequestMergedAt { get; set; }
+    public List<string> FailingChecks { get; set; } = [];
+    public int UnresolvedReviewThreads { get; set; }
     public long InputTokens { get; set; }
     public long OutputTokens { get; set; }
     public decimal? CostUsd { get; set; }
     public List<string> FailedGates { get; set; } = [];
     public string? FailureReason { get; set; }
+    /// <summary>Why closeout was handed to the human — parked is a waiting state, not a failure.</summary>
+    public string? ParkedReason { get; set; }
     public DateTimeOffset DispatchedAt { get; set; }
     public bool IsFollowUp { get; set; }
     public DateTimeOffset? FinishedAt { get; set; }
@@ -89,6 +94,34 @@ public sealed class RunDetailsProjection : SingleStreamProjection<RunDetails, Gu
         view.PullRequestUrl = @event.Data.PullRequestUrl;
         view.PullRequestNumber = @event.Data.PullRequestNumber;
         view.State = RunState.AwaitingReview;
+    }
+
+    public void Apply(IEvent<PullRequestChecksFailed> @event, RunDetails view)
+    {
+        view.FailingChecks = [.. @event.Data.FailedChecks];
+        view.State = RunState.ChecksFailing;
+    }
+
+    public void Apply(IEvent<ReviewFeedbackReceived> @event, RunDetails view)
+    {
+        view.UnresolvedReviewThreads = @event.Data.UnresolvedThreadCount;
+        view.State = RunState.ReviewPending;
+    }
+
+    public void Apply(IEvent<CloseoutParked> @event, RunDetails view)
+    {
+        view.ParkedReason = @event.Data.Reason;
+        view.State = RunState.CloseoutParked;
+    }
+
+    public void Apply(IEvent<PullRequestMerged> @event, RunDetails view) =>
+        view.PullRequestMergedAt = @event.Data.MergedAt;
+
+    public void Apply(IEvent<PullRequestClosed> @event, RunDetails view)
+    {
+        view.FailureReason = "Pull request closed without merge.";
+        view.State = RunState.Failed;
+        view.FinishedAt = @event.Data.ObservedAt;
     }
 
     public void Apply(IEvent<RunCompleted> @event, RunDetails view)
