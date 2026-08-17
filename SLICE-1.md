@@ -174,7 +174,11 @@ proceed in parallel with S1-08/S1-09/S1-10 once S1-05 lands, if more than one pa
 
 ---
 
-### ✂ THE FLIP (dogfood from here)
+### ✂ THE FLIP (dogfood from here) — **PASSED 2026-08-16**
+
+**Gate met**: task `bb544945` ("Add version output to the h9k CLI") ran the full pipeline —
+claim → worktree → agent → build+test gates → push → PR #1 — Copilot's review comments were
+resolved by agent+skill, and the owner merged. From here, tasks go through `h9k task add`.
 
 **Gate: the S1-10 demo.** Add a real task against the hall9k repo itself ("add `h9k --version`
 output formatting", or similar), watch it claim → worktree → agent → verify → PR, merge the PR.
