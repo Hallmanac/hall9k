@@ -199,10 +199,24 @@ in priority order:
   with the fix-the-CI prompt.
 - **Unresolved Copilot review threads** → `ReviewFeedbackReceived`, then an automatic
   `TaskReopened` (Kind = ReviewFeedback) with the resolve-copilot-reviews prompt.
+- **Errored Copilot review** → `ReviewErrored`, then `ReviewRerequested` once the review
+  has been re-requested through the provider's API (never the website, which may be down
+  when this matters; that was the origin incident's exact circumstance, PR #6 during the
+  2026-08-17 GitHub partial outage). An errored review produces zero threads, so thread
+  count alone would read as a clean pass; the observation holds the run at `ReviewPending`
+  instead. The matching rule is deliberately conservative: a review authored by Copilot,
+  taken from GraphQL `latestReviews` (per-reviewer latest, so a successful re-review
+  supersedes the errored one structurally), whose body contains "unable to review"
+  (Copilot's own failure notice, never arbitrary review text). Each errored review is
+  re-requested exactly once (the recorded review URL is the dedup key across sweeps). A
+  re-review that leaves threads flows through the bullet above; a clean one leaves the
+  run waiting for the merge.
 
 **Bounded retries.** `TaskAggregate.CloseoutAttempts` counts automatic reopens since the
-last human-initiated one. At the budget (DaemonOptions.MaxAutomaticCloseoutRuns, default
-2) the monitor appends `CloseoutParked` on the run instead of reopening: the task **stays
+last human-initiated one. Review re-requests spend the same budget: the watched run's
+`ReviewRerequestCount` adds to the task's count when either path checks it. At the budget
+(DaemonOptions.MaxAutomaticCloseoutRuns, default 2) the monitor appends `CloseoutParked`
+on the run instead of reopening: the task **stays
 Done** (deliberately, since parking must not break `h9k pr resolve`, whose guard requires
 Done, and merge detection continues for parked runs), the run parks with the reason, and
 `h9k status` surfaces it as NeedsHuman. A manual `h9k pr resolve` resets the budget; the
@@ -300,6 +314,16 @@ public sealed record ReviewFeedbackReceived(  // unresolved Copilot review threa
     Guid Id,
     int UnresolvedThreadCount,
     DateTimeOffset ObservedAt);
+public sealed record ReviewErrored(      // Copilot's latest review is an error placeholder ("unable
+    Guid Id,                             // to review"); zero threads must not read as clean.
+    string Reviewer,                     // -> ReviewPending; a re-request or a park is appended in
+    string ReviewUrl,                    // the same transaction
+    DateTimeOffset ObservedAt);
+public sealed record ReviewRerequested(  // the errored review re-requested via the API; draws on
+    Guid Id,                             // the same automatic budget as follow-up dispatches
+    string Reviewer,
+    string ErroredReviewUrl,
+    DateTimeOffset RequestedAt);
 public sealed record CloseoutParked(     // automatic budget spent; the human owns the PR now, the monitor
     Guid Id,                             // keeps watching for merge/close only. -> CloseoutParked
     string Reason,
