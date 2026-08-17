@@ -43,15 +43,22 @@ public sealed class PullRequestOpener(
         {
             await RunInWorktreeAsync(run.WorktreePath, "git", ["push", "origin", run.Branch], cancellationToken);
 
-            (string? pullRequestUrl, int pullRequestNumber) = await IsGitHubOriginAsync(run.WorktreePath, cancellationToken)
-                ? await CreatePullRequestAsync(run, task, project.BaseBranch, cancellationToken)
-                : (null, 0);
+            // A task that already carries a PR URL is a follow-up run (TaskReopened, log #20):
+            // the push just updated the existing PR — never open a second one.
+            bool followUp = task.PullRequestUrl is not null;
+            (string? pullRequestUrl, int pullRequestNumber) = task.PullRequestUrl is { } existingUrl
+                ? (existingUrl, ParsePullRequestNumber(existingUrl))
+                : await IsGitHubOriginAsync(run.WorktreePath, cancellationToken)
+                    ? await CreatePullRequestAsync(run, task, project.BaseBranch, cancellationToken)
+                    : (null, 0);
 
             DateTimeOffset now = DateTimeOffset.UtcNow;
             await using IDocumentSession session = store.LightweightSession();
             if (pullRequestUrl is not null)
             {
-                session.Events.Append(runId, new PullRequestOpened(runId, pullRequestUrl, pullRequestNumber, now));
+                session.Events.Append(runId, followUp
+                    ? new PullRequestUpdated(runId, pullRequestUrl, pullRequestNumber, now)
+                    : new PullRequestOpened(runId, pullRequestUrl, pullRequestNumber, now));
             }
 
             TaskAggregate? aggregate = await session.Events.AggregateStreamAsync<TaskAggregate>(taskId, token: cancellationToken);
@@ -64,9 +71,12 @@ public sealed class PullRequestOpener(
             await session.SaveChangesAsync(cancellationToken);
 
             logger.LogInformation(
-                pullRequestUrl is not null
-                    ? "Run {RunId}: PR opened at {Url} — task complete, awaiting review"
-                    : "Run {RunId}: branch pushed (origin is not GitHub; no PR) — task complete",
+                (followUp, pullRequestUrl) switch
+                {
+                    (true, _) => "Run {RunId}: follow-up pushed to existing PR {Url} — task complete, awaiting review",
+                    (false, not null) => "Run {RunId}: PR opened at {Url} — task complete, awaiting review",
+                    _ => "Run {RunId}: branch pushed (origin is not GitHub; no PR) — task complete",
+                },
                 runId, pullRequestUrl);
 
             await RemoveWorktreeBestEffortAsync(project.RepositoryPath, run.WorktreePath, cancellationToken);
@@ -92,9 +102,11 @@ public sealed class PullRequestOpener(
             .LastOrDefault(line => line.StartsWith("https://", StringComparison.Ordinal))
             ?? throw new InvalidOperationException($"gh pr create returned no URL. Output: {output}");
 
-        int number = int.TryParse(url[(url.LastIndexOf('/') + 1)..], out int parsed) ? parsed : 0;
-        return (url, number);
+        return (url, ParsePullRequestNumber(url));
     }
+
+    private static int ParsePullRequestNumber(string url) =>
+        int.TryParse(url[(url.LastIndexOf('/') + 1)..], out int parsed) ? parsed : 0;
 
     private string BuildBody(RunDetails run, TaskDetails task)
     {

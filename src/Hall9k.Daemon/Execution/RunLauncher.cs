@@ -36,9 +36,20 @@ public sealed class RunLauncher(
 
         try
         {
-            Worktree worktree = await worktrees.CreateAsync(
-                new WorktreeRequest(project.RepositoryPath, project.BaseBranch, taskId, runId, task.Objective),
-                cancellationToken);
+            // A reopened task carries the branch of its existing PR: the follow-up run
+            // resumes that branch instead of cutting a fresh one off the base (log #20).
+            (string Branch, string PullRequestUrl)? followUp =
+                task.FollowUpBranch.IsNotBlank() && task.PullRequestUrl.IsNotBlank()
+                    ? (task.FollowUpBranch, task.PullRequestUrl)
+                    : null;
+
+            Worktree worktree = followUp is { } resume
+                ? await worktrees.CheckoutExistingAsync(
+                    new FollowUpWorktreeRequest(project.RepositoryPath, resume.Branch, taskId, runId),
+                    cancellationToken)
+                : await worktrees.CreateAsync(
+                    new WorktreeRequest(project.RepositoryPath, project.BaseBranch, taskId, runId, task.Objective),
+                    cancellationToken);
 
             Guid sessionId = DomainId.New();
             ExecutorMode mode = ExecutorMode.Subscription;
@@ -48,15 +59,17 @@ public sealed class RunLauncher(
                 worktree.Path, worktree.Branch, mode, DateTimeOffset.UtcNow));
             await session.SaveChangesAsync(cancellationToken);
 
-            string prompt = AgentPromptBuilder.Build(task, project, worktree.Branch, worktree.Path);
+            string prompt = followUp is { } review
+                ? AgentPromptBuilder.BuildFollowUp(task, project, worktree.Branch, review.PullRequestUrl)
+                : AgentPromptBuilder.Build(task, project, worktree.Branch, worktree.Path);
             SpawnedAgent agent = await executor.SpawnAsync(
                 new AgentSpawnRequest(runId, sessionId, worktree.Path, prompt, mode, project.SkipPermissions),
                 cancellationToken);
 
-            await using IDocumentSession followUp = store.LightweightSession();
-            followUp.Events.Append(runId, new RunProcessStarted(runId, agent.ProcessId, agent.StartedAt));
-            followUp.Store(new RunActivity { Id = runId, LastActivityAt = DateTimeOffset.UtcNow, StreamBytesRead = 0 });
-            await followUp.SaveChangesAsync(cancellationToken);
+            await using IDocumentSession startSession = store.LightweightSession();
+            startSession.Events.Append(runId, new RunProcessStarted(runId, agent.ProcessId, agent.StartedAt));
+            startSession.Store(new RunActivity { Id = runId, LastActivityAt = DateTimeOffset.UtcNow, StreamBytesRead = 0 });
+            await startSession.SaveChangesAsync(cancellationToken);
 
             supervisor.StartMonitoring(runId, taskId, agent.ProcessId, agent.StartedAt, cancellationToken);
         }

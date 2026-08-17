@@ -75,6 +75,56 @@ public static class AgentPromptBuilder
         return prompt.ToString();
     }
 
+    /// <summary>
+    /// The follow-up variant (PR closeout, Decisions Log #20): the agent resumes the task's
+    /// existing PR branch to resolve review feedback via the repo-resident
+    /// resolve-copilot-reviews skill. The platform re-verifies and pushes; the PR updates
+    /// in place.
+    /// </summary>
+    public static string BuildFollowUp(TaskDetails task, ProjectDetails project, string branch, string pullRequestUrl)
+    {
+        StringBuilder prompt = new();
+        prompt.AppendLine("# Follow-up task: resolve review feedback on an existing pull request");
+        prompt.AppendLine();
+        prompt.AppendLine($"Pull request: {pullRequestUrl}");
+        prompt.AppendLine();
+        prompt.AppendLine("The original task below already shipped in the pull request above, which now has");
+        prompt.AppendLine("unresolved review comments. Your job is to resolve that review feedback — not to");
+        prompt.AppendLine("redo the original work.");
+        prompt.AppendLine();
+
+        prompt.AppendLine("## Original objective (context, already implemented)");
+        prompt.AppendLine();
+        prompt.AppendLine(task.Objective);
+        prompt.AppendLine();
+
+        if (project.ContextLinks.Count > 0)
+        {
+            prompt.AppendLine("## Project links (fetch yourself as needed)");
+            prompt.AppendLine();
+            foreach (var link in project.ContextLinks)
+            {
+                prompt.AppendLine($"- {link.Name}: {link.Url}");
+            }
+
+            prompt.AppendLine();
+        }
+
+        prompt.AppendLine("## Working rules");
+        prompt.AppendLine();
+        prompt.AppendLine("- You are in an isolated git worktree checked out on the EXISTING pull-request");
+        prompt.AppendLine($"  branch `{branch}`. Work only here.");
+        prompt.AppendLine("- Use the resolve-copilot-reviews skill to triage the review comments on");
+        prompt.AppendLine($"  {pullRequestUrl}: apply valid fixes, reply to each thread, resolve them.");
+        prompt.AppendLine("- Commit your fixes on this branch with clear messages. Do NOT push, do NOT open");
+        prompt.AppendLine("  a new pull request — the platform re-verifies and pushes after you finish; the");
+        prompt.AppendLine("  existing PR updates in place.");
+        prompt.AppendLine("- End with a short summary: which comments you addressed, which you dismissed and");
+        prompt.AppendLine("  why, and any open questions.");
+
+        return prompt.ToString();
+    }
+
     private static IReadOnlyList<RepoSkill> DiscoverRepoSkills(string worktreePath)
     {
         string skillsDirectory = Path.Combine(worktreePath, ".claude", "skills");

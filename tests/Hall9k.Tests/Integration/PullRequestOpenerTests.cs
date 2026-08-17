@@ -106,6 +106,101 @@ public sealed class PullRequestOpenerTests(PostgresFixture postgres) : IClassFix
         Directory.Exists(worktree.Path).Should().BeFalse("done worktrees are removed (branch is safe on origin)");
     }
 
+    [Fact]
+    public async Task Follow_up_flow_pushes_the_existing_branch_and_updates_the_pull_request_in_place()
+    {
+        const string pullRequestUrl = "https://github.com/x/y/pull/7";
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        using DocumentStore store = DocumentStore.For(opts =>
+        {
+            opts.Connection(postgres.ConnectionString);
+            opts.ConfigureHall9k(AutoCreate.All);
+        });
+
+        Directory.CreateDirectory(_root);
+        string originPath = Path.Combine(_root, "origin.git");
+        string repoPath = Path.Combine(_root, "repo");
+        Git(_root, $"init --bare -b main \"{originPath}\"");
+        Git(_root, $"clone \"{originPath}\" \"{repoPath}\"");
+        File.WriteAllText(Path.Combine(repoPath, "README.md"), "# follow-up test\n");
+        Git(repoPath, "add -A");
+        Git(repoPath, "-c user.name=Test -c user.email=t@t commit -qm init");
+        Git(repoPath, "push -q origin main");
+
+        // First run's lifecycle: branch created, work pushed, worktree removed.
+        GitWorktreeManager worktrees = new(NullLogger<GitWorktreeManager>.Instance);
+        Guid taskId = DomainId.New();
+        Guid firstRunId = DomainId.New();
+        Worktree first = await worktrees.CreateAsync(
+            new WorktreeRequest(repoPath, "main", taskId, firstRunId, "Follow up end to end"), cts.Token);
+        File.WriteAllText(Path.Combine(first.Path, "WORK.md"), "first run\n");
+        Git(first.Path, "add -A");
+        Git(first.Path, "-c user.name=Test -c user.email=t@t commit -qm \"Add WORK.md\"");
+        Git(first.Path, $"push -q origin {first.Branch}");
+        await worktrees.RemoveAsync(repoPath, first.Path, cts.Token);
+
+        // Follow-up run: reopened task claimed at generation 2, agent committed a fix on
+        // the checked-out existing branch, gates passed.
+        Guid followUpRunId = DomainId.New();
+        Worktree followUp = await worktrees.CheckoutExistingAsync(
+            new FollowUpWorktreeRequest(repoPath, first.Branch, taskId, followUpRunId), cts.Token);
+        File.WriteAllText(Path.Combine(followUp.Path, "FIX.md"), "review feedback resolved\n");
+        Git(followUp.Path, "add -A");
+        Git(followUp.Path, "-c user.name=Test -c user.email=t@t commit -qm \"Resolve review feedback\"");
+
+        Guid ownerId = DomainId.New();
+        Guid projectId = DomainId.New();
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            TaskAggregate task = new();
+            var added = TaskDecider.Add(taskId, projectId, "Follow up end to end", ["review comments resolved"],
+                TaskType.Chore, null, null, null, Now, ownerId);
+            task.Apply(added);
+            var firstClaim = TaskDecider.Claim(task, DomainId.New(), ownerId, firstRunId, Now);
+            task.Apply(firstClaim);
+            var completed = TaskDecider.Complete(task, firstRunId, pullRequestUrl, Now);
+            task.Apply(completed);
+            var reopened = TaskDecider.Reopen(task, firstRunId, first.Branch, "Unresolved review comments", Now, ownerId);
+            task.Apply(reopened);
+            var followUpClaim = TaskDecider.Claim(task, DomainId.New(), ownerId, followUpRunId, Now);
+            task.Apply(followUpClaim);
+            session.Events.StartStream<TaskAggregate>(taskId, added, firstClaim, completed, reopened, followUpClaim);
+            session.Store(new TaskLease { Id = taskId, NodeId = followUpClaim.NodeId, LeaseGeneration = 2, HeartbeatAt = Now });
+
+            session.Events.StartStream<RunAggregate>(followUpRunId,
+                new RunDispatched(followUpRunId, taskId, followUpClaim.NodeId, ownerId, 2, DomainId.New(),
+                    followUp.Path, followUp.Branch, ExecutorMode.Subscription, Now),
+                new AgentSessionCompleted(followUpRunId, Now),
+                new VerificationPassed(followUpRunId, Now));
+
+            var registered = Hall9k.Domain.Features.Project.Handlers.ProjectDecider.Register(
+                projectId, ownerId, DomainId.New(), $"pr-{taskId:N}", repoPath, null, "main", Now);
+            session.Events.StartStream<Hall9k.Domain.Features.Project.ProjectAggregate>(registered.Id, registered);
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        PullRequestOpener opener = new(store, worktrees, NullLogger<PullRequestOpener>.Instance);
+        await opener.OpenAsync(followUpRunId, taskId, cts.Token);
+
+        // The fix landed on the SAME branch on origin; no second PR, same URL on the task.
+        (int exitCode, string output) = TryGit(originPath, $"show {first.Branch}:FIX.md");
+        exitCode.Should().Be(0, $"the follow-up commit must be pushed to the existing branch (output: {output})");
+
+        await using IQuerySession query = store.QuerySession();
+        TaskListItem taskView = (await query.LoadAsync<TaskListItem>(taskId, cts.Token))!;
+        taskView.State.Value.Should().Be("Done");
+        taskView.PullRequestUrl.Should().Be(pullRequestUrl, "the follow-up completes with the ORIGINAL PR URL");
+
+        Hall9k.Domain.Features.Run.Projections.RunDetails runView =
+            (await query.LoadAsync<Hall9k.Domain.Features.Run.Projections.RunDetails>(followUpRunId, cts.Token))!;
+        runView.State.Value.Should().Be("AwaitingReview", "PullRequestUpdated parks the follow-up run awaiting review");
+        runView.PullRequestUrl.Should().Be(pullRequestUrl);
+        runView.PullRequestNumber.Should().Be(7);
+
+        (await query.LoadAsync<TaskLease>(taskId, cts.Token)).Should().BeNull();
+        Directory.Exists(followUp.Path).Should().BeFalse("follow-up worktrees are removed like first-run ones");
+    }
+
     private static void Git(string workingDirectory, string arguments)
     {
         (int exitCode, string output) = TryGit(workingDirectory, arguments);
