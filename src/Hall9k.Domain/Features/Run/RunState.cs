@@ -13,7 +13,11 @@ public sealed record RunState
     public static readonly RunState AwaitingReview = new("AwaitingReview");
     /// <summary>Closeout: the PR's CI checks completed and failed; a fix follow-up (or a park) is on the way.</summary>
     public static readonly RunState ChecksFailing = new("ChecksFailing");
-    /// <summary>Closeout: unresolved Copilot review threads observed; a resolve follow-up (or a park) is on the way.</summary>
+    /// <summary>
+    /// Closeout: review attention observed — unresolved Copilot review threads (a resolve
+    /// follow-up or a park is on the way) or an errored Copilot review (the run holds here
+    /// while the monitor's re-requested review is answered).
+    /// </summary>
     public static readonly RunState ReviewPending = new("ReviewPending");
     /// <summary>Closeout: automatic retries exhausted; the human owns the PR, the monitor still watches for the merge.</summary>
     public static readonly RunState CloseoutParked = new("CloseoutParked");

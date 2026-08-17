@@ -51,6 +51,8 @@ public sealed class RunListItemProjection : SingleStreamProjection<RunListItem, 
 
     public void Apply(IEvent<ReviewFeedbackReceived> @event, RunListItem view) => view.State = RunState.ReviewPending;
 
+    public void Apply(IEvent<ReviewErrored> @event, RunListItem view) => view.State = RunState.ReviewPending;
+
     public void Apply(IEvent<CloseoutParked> @event, RunListItem view) => view.State = RunState.CloseoutParked;
 
     public void Apply(IEvent<PullRequestClosed> @event, RunListItem view)

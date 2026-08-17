@@ -36,6 +36,16 @@ public sealed class RunCloseoutProjectionTests
         view.State.Should().Be(RunState.ReviewPending);
         view.UnresolvedReviewThreads.Should().Be(3);
 
+        projection.Apply(new FakeEvent<ReviewErrored>(new ReviewErrored(
+            id, "copilot-pull-request-reviewer", $"{PullRequestUrl}#pullrequestreview-1", Now.AddMinutes(20))), view);
+        view.State.Should().Be(RunState.ReviewPending, "an errored review is pending review, never review-clean");
+        view.ErroredReviewUrl.Should().Be($"{PullRequestUrl}#pullrequestreview-1");
+
+        projection.Apply(new FakeEvent<ReviewRerequested>(new ReviewRerequested(
+            id, "copilot-pull-request-reviewer", $"{PullRequestUrl}#pullrequestreview-1", Now.AddMinutes(20))), view);
+        view.State.Should().Be(RunState.ReviewPending);
+        view.ReviewRerequestCount.Should().Be(1);
+
         DateTimeOffset mergedAt = Now.AddHours(1);
         projection.Apply(new FakeEvent<PullRequestMerged>(
             new PullRequestMerged(id, mergedAt, Now.AddHours(1).AddMinutes(3))), view);
@@ -92,6 +102,10 @@ public sealed class RunCloseoutProjectionTests
         projection.Apply(new FakeEvent<PullRequestChecksFailed>(new PullRequestChecksFailed(id, ["build"], Now)), view);
         view.State.Should().Be(RunState.ChecksFailing);
 
+        projection.Apply(new FakeEvent<ReviewErrored>(new ReviewErrored(
+            id, "copilot-pull-request-reviewer", $"{PullRequestUrl}#pullrequestreview-1", Now)), view);
+        view.State.Should().Be(RunState.ReviewPending);
+
         projection.Apply(new FakeEvent<CloseoutParked>(new CloseoutParked(id, "budget spent", Now)), view);
         view.State.Should().Be(RunState.CloseoutParked);
 
@@ -116,6 +130,13 @@ public sealed class RunCloseoutProjectionTests
 
         run.Apply(new ReviewFeedbackReceived(id, 2, Now));
         run.State.Should().Be(RunState.ReviewPending);
+
+        run.Apply(new ReviewErrored(id, "copilot-pull-request-reviewer", $"{PullRequestUrl}#pullrequestreview-1", Now));
+        run.State.Should().Be(RunState.ReviewPending);
+        run.ErroredReviewUrl.Should().Be($"{PullRequestUrl}#pullrequestreview-1");
+
+        run.Apply(new ReviewRerequested(id, "copilot-pull-request-reviewer", $"{PullRequestUrl}#pullrequestreview-1", Now));
+        run.ReviewRerequestCount.Should().Be(1);
 
         run.Apply(new CloseoutParked(id, "budget spent", Now));
         run.State.Should().Be(RunState.CloseoutParked);
