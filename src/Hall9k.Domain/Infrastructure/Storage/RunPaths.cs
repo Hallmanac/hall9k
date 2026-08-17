@@ -1,4 +1,4 @@
-namespace Hall9k.Daemon.Execution;
+namespace Hall9k.Domain.Infrastructure.Storage;
 
 /// <summary>Filesystem layout for a run's artifacts: ~/.hall9k/runs/&lt;run-id&gt;/ (log #2).</summary>
 public static class RunPaths

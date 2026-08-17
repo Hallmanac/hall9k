@@ -19,6 +19,11 @@ app.Configure(config =>
             .WithDescription("Change project settings: verify gates, skip-permissions, links, parallelism");
     });
 
+    config.AddCommand<StatusCommand>("status")
+        .WithDescription("The one-pane view: what needs you, what's running, what's done");
+    config.AddCommand<LogsCommand>("logs")
+        .WithDescription("A run's transcript, rendered (or --raw for stream-json)");
+
     config.AddBranch("task", task =>
     {
         task.SetDescription("Manage tasks");

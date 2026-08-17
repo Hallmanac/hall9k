@@ -1,3 +1,4 @@
+using Hall9k.Domain.Infrastructure.Storage;
 using FluentAssertions;
 using Hall9k.Daemon;
 using Hall9k.Daemon.Execution;
