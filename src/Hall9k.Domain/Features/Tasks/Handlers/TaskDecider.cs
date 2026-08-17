@@ -115,6 +115,34 @@ public static class TaskDecider
         return new TaskCompleted(task.Id, runId, pullRequestUrl, completedAt);
     }
 
+    /// <summary>
+    /// Done is terminal for the work, not for the pull request: reopening queues a
+    /// follow-up run on the existing PR branch (Decisions Log #20). Deliberately the only
+    /// exit from a terminal state, and only from Done — Failed/Abandoned stay dead ends.
+    /// </summary>
+    public static TaskReopened Reopen(
+        TaskAggregate task, Guid previousRunId, string branch, string? reason, DateTimeOffset reopenedAt, Guid reopenedByOwnerId)
+    {
+        if (task.State != TaskState.Done)
+        {
+            throw new DomainConflictException(
+                $"Task {task.Id} is {task.State.Value} — only a done task reopens for a follow-up run.");
+        }
+
+        if (task.PullRequestUrl.IsBlank())
+        {
+            throw new DomainConflictException(
+                $"Task {task.Id} has no pull request — there is no review feedback to resolve.");
+        }
+
+        if (branch.IsBlank())
+        {
+            throw new DomainValidationException("A follow-up run needs the existing pull-request branch.");
+        }
+
+        return new TaskReopened(task.Id, previousRunId, branch, reason, reopenedAt, reopenedByOwnerId);
+    }
+
     public static TaskFailed Fail(TaskAggregate task, Guid runId, string reason, DateTimeOffset failedAt)
     {
         if (task.State.IsTerminal)
