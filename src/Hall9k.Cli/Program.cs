@@ -20,6 +20,13 @@ app.Configure(config =>
             .WithDescription("Change project settings: verify gates, skip-permissions, links, parallelism");
     });
 
+    config.AddBranch("pr", pullRequest =>
+    {
+        pullRequest.SetDescription("Work with a task's pull request");
+        pullRequest.AddCommand<PullRequestResolveCommand>("resolve")
+            .WithDescription("Dispatch a follow-up run onto a done task's existing PR branch to resolve review feedback");
+    });
+
     config.AddCommand<StatusCommand>("status")
         .WithDescription("The one-pane view: what needs you, what's running, what's done");
     config.AddCommand<LogsCommand>("logs")
