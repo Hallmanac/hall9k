@@ -48,7 +48,7 @@ public sealed class RunLauncher(
                 worktree.Path, worktree.Branch, mode, DateTimeOffset.UtcNow));
             await session.SaveChangesAsync(cancellationToken);
 
-            string prompt = AgentPromptBuilder.Build(task, project, worktree.Branch);
+            string prompt = AgentPromptBuilder.Build(task, project, worktree.Branch, worktree.Path);
             SpawnedAgent agent = await executor.SpawnAsync(
                 new AgentSpawnRequest(runId, sessionId, worktree.Path, prompt, mode, project.SkipPermissions),
                 cancellationToken);

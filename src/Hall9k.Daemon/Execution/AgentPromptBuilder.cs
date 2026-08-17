@@ -6,12 +6,13 @@ namespace Hall9k.Daemon.Execution;
 
 /// <summary>
 /// Assembles the agent's prompt from the readiness contract (PLAN.md §4): objective,
-/// acceptance criteria, agent context, and the project's context links. Pointers, not
-/// pasted content — the agent pulls context itself.
+/// acceptance criteria, agent context, the project's context links, and — when the
+/// worktree ships repo skills — a one-line pointer per skill. Pointers, not pasted
+/// content — the agent pulls context itself and skills load on invocation.
 /// </summary>
 public static class AgentPromptBuilder
 {
-    public static string Build(TaskDetails task, ProjectDetails project, string branch)
+    public static string Build(TaskDetails task, ProjectDetails project, string branch, string worktreePath)
     {
         StringBuilder prompt = new();
         prompt.AppendLine("# Task");
@@ -54,10 +55,71 @@ public static class AgentPromptBuilder
         prompt.AppendLine("- Implement the objective so every acceptance criterion is satisfied.");
         prompt.AppendLine("- Commit your work with clear messages. Do NOT push, do NOT open a pull request —");
         prompt.AppendLine("  the platform verifies and opens the PR after you finish.");
+
+        IReadOnlyList<RepoSkill> skills = DiscoverRepoSkills(worktreePath);
+        if (skills.Count > 0)
+        {
+            prompt.AppendLine("- This repo ships Claude skills; invoke the matching one instead of improvising its workflow:");
+            foreach (RepoSkill skill in skills)
+            {
+                prompt.AppendLine(skill.Description is null
+                    ? $"  - `{skill.Name}`"
+                    : $"  - `{skill.Name}` — {skill.Description}");
+            }
+        }
+
         prompt.AppendLine("- If something is genuinely ambiguous, make the most reasonable choice and record");
         prompt.AppendLine("  the assumption in your final summary (the ask-a-human loop is not available yet).");
         prompt.AppendLine("- End with a short summary: what you did, decisions made, assumptions, open questions.");
 
         return prompt.ToString();
     }
+
+    private static IReadOnlyList<RepoSkill> DiscoverRepoSkills(string worktreePath)
+    {
+        string skillsDirectory = Path.Combine(worktreePath, ".claude", "skills");
+        if (!Directory.Exists(skillsDirectory))
+        {
+            return [];
+        }
+
+        List<RepoSkill> skills = [];
+        foreach (string skillDirectory in Directory.EnumerateDirectories(skillsDirectory).Order(StringComparer.Ordinal))
+        {
+            string manifestPath = Path.Combine(skillDirectory, "SKILL.md");
+            if (File.Exists(manifestPath))
+            {
+                skills.Add(new RepoSkill(Path.GetFileName(skillDirectory), ReadFrontmatterDescription(manifestPath)));
+            }
+        }
+
+        return skills;
+    }
+
+    private static string? ReadFrontmatterDescription(string manifestPath)
+    {
+        string[] lines = File.ReadAllLines(manifestPath);
+        if (lines.Length == 0 || lines[0].Trim() != "---")
+        {
+            return null;
+        }
+
+        foreach (string line in lines.Skip(1))
+        {
+            if (line.Trim() == "---")
+            {
+                break;
+            }
+
+            if (line.StartsWith("description:", StringComparison.OrdinalIgnoreCase))
+            {
+                string description = line["description:".Length..].Trim();
+                return description.IsNotBlank() ? description : null;
+            }
+        }
+
+        return null;
+    }
+
+    private sealed record RepoSkill(string Name, string? Description);
 }
