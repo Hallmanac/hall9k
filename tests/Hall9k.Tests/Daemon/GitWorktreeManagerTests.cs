@@ -129,13 +129,19 @@ public sealed class GitWorktreeManagerTests : IDisposable
 
     public void Dispose()
     {
+        // git marks object/pack files read-only; Windows refuses to recursively delete
+        // them until the attribute is cleared. Cleanup stays best-effort either way.
         try
         {
+            foreach (string file in Directory.EnumerateFiles(_root, "*", SearchOption.AllDirectories))
+            {
+                File.SetAttributes(file, FileAttributes.Normal);
+            }
+
             Directory.Delete(_root, recursive: true);
         }
-        catch (IOException)
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
         {
-            // Temp cleanup is best-effort.
         }
     }
 }
