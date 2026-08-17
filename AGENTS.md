@@ -61,6 +61,18 @@ CI runs build + test on ubuntu and windows for every push/PR to main.
   `FakeEvent<T>` stub) and integration (Testcontainers Postgres).
 - xUnit + FluentAssertions.
 
+## CLI command standards
+
+The `--help` tree is how agents (and humans) discover what h9k can do — treat it as a
+first-class interface, always, for every command:
+
+- Every command gets `.WithDescription(...)` and every option gets a `[Description]` that
+  speaks the domain language (point at the readiness contract, PLAN.md sections, etc. —
+  the help should *teach*, not just label).
+- Every command gets at least one `.WithExample(...)` showing a realistic invocation.
+- Failures print *why* on stderr with the relevant rule quoted (see the DomainException →
+  exit-code mapping in Program.cs) — an agent must be able to self-correct from the message.
+
 ## Git rules
 
 - **Commits are authored as the repo owner. No `Co-Authored-By` trailers, no bot attribution,

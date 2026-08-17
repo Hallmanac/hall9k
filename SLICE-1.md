@@ -225,6 +225,9 @@ dispatched by the daemon. Manual coding after the flip is the exception and need
      surface with examples, the ask/answer relay flow, and the rule that all new work is added via
      `h9k task add` (the flip is policy now).
   3. Verified by use: a fresh interactive session can, from the doc alone, add a task and report status.
+  4. Every existing CLI command gains `.WithExample(...)` usage examples in its help output,
+     per the CLI command standards section of AGENTS.md (the standard itself is already law;
+     this task backfills the examples).
 - **Constraints:** keep it lean — commands and role, not philosophy; PLAN.md remains the vision doc.
 
 ## S1-14 · Windows support (dispatched via Hall9k — first post-flip feature)
