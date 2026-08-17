@@ -83,6 +83,9 @@ public sealed class TaskAggregate
     public void Apply(TaskReopened @event)
     {
         FollowUpBranch = @event.Branch;
+        ClaimedByNodeId = null;
+        CurrentRunId = null;
+        PendingQuestionId = null;
         State = TaskState.Queued;
     }
 

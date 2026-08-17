@@ -22,6 +22,7 @@ public sealed class RunAggregate
     public long OutputTokens { get; private set; }
     public decimal? CostUsd { get; private set; }
     public DateTimeOffset DispatchedAt { get; private set; }
+    public bool IsFollowUp { get; private set; }
 
     private readonly List<string> _failedGates = [];
     public IReadOnlyList<string> FailedGates => _failedGates;
@@ -38,6 +39,7 @@ public sealed class RunAggregate
         Branch = @event.Branch;
         ExecutorMode = @event.ExecutorMode;
         DispatchedAt = @event.DispatchedAt;
+        IsFollowUp = @event.IsFollowUp;
         State = RunState.Dispatched;
     }
 

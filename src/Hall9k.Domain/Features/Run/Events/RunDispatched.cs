@@ -16,4 +16,5 @@ public sealed record RunDispatched(
     string WorktreePath,
     string Branch,
     ExecutorMode ExecutorMode,
-    DateTimeOffset DispatchedAt);
+    DateTimeOffset DispatchedAt,
+    bool IsFollowUp = false);
