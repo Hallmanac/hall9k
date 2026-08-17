@@ -161,7 +161,9 @@ public sealed class PullRequestOpenerTests(PostgresFixture postgres) : IClassFix
             task.Apply(firstClaim);
             var completed = TaskDecider.Complete(task, firstRunId, pullRequestUrl, Now);
             task.Apply(completed);
-            var reopened = TaskDecider.Reopen(task, firstRunId, first.Branch, "Unresolved review comments", Now, ownerId);
+            var reopened = TaskDecider.Reopen(
+                task, firstRunId, first.Branch, "Unresolved review comments",
+                FollowUpKind.ReviewFeedback, automatic: false, Now, ownerId);
             task.Apply(reopened);
             var followUpClaim = TaskDecider.Claim(task, DomainId.New(), ownerId, followUpRunId, Now);
             task.Apply(followUpClaim);

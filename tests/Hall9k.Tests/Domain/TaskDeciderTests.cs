@@ -120,7 +120,8 @@ public sealed class TaskDeciderTests
         Guid previousRunId = task.CurrentRunId!.Value;
 
         TaskReopened reopened = TaskDecider.Reopen(
-            task, previousRunId, "task/abc-branch", "Unresolved review comments", Now, DomainId.New());
+            task, previousRunId, "task/abc-branch", "Unresolved review comments",
+            FollowUpKind.ReviewFeedback, automatic: false, Now, DomainId.New());
         task.Apply(reopened);
 
         task.State.Should().Be(TaskState.Queued);
@@ -139,11 +140,45 @@ public sealed class TaskDeciderTests
     }
 
     [Fact]
+    public void Automatic_reopens_count_toward_the_closeout_budget_and_a_manual_reopen_resets_it()
+    {
+        TaskAggregate task = DoneTask("https://github.com/x/y/pull/7");
+
+        task.Apply(TaskDecider.Reopen(
+            task, task.CurrentRunId!.Value, "task/abc", "CI checks failing.",
+            FollowUpKind.FailingChecks, automatic: true, Now, DomainId.New()));
+        task.CloseoutAttempts.Should().Be(1);
+        task.FollowUpKind.Should().Be(FollowUpKind.FailingChecks, "the launcher picks the fix-the-CI prompt from it");
+
+        CompleteFollowUp(task);
+        task.FollowUpKind.Should().Be(FollowUpKind.Unknown, "completion consumes the follow-up marker");
+
+        task.Apply(TaskDecider.Reopen(
+            task, task.CurrentRunId!.Value, "task/abc", "Unresolved Copilot threads.",
+            FollowUpKind.ReviewFeedback, automatic: true, Now, DomainId.New()));
+        task.CloseoutAttempts.Should().Be(2, "the budget spans the whole closeout, not a single reopen");
+
+        CompleteFollowUp(task);
+        task.Apply(TaskDecider.Reopen(
+            task, task.CurrentRunId!.Value, "task/abc", "Human asked for another attempt.",
+            FollowUpKind.ReviewFeedback, automatic: false, Now, DomainId.New()));
+        task.CloseoutAttempts.Should().Be(0, "a human-initiated reopen restores the automatic budget");
+    }
+
+    private static void CompleteFollowUp(TaskAggregate task)
+    {
+        task.Apply(TaskDecider.Claim(task, DomainId.New(), DomainId.New(), DomainId.New(), Now));
+        task.Apply(TaskDecider.Complete(task, task.CurrentRunId!.Value, task.PullRequestUrl, Now));
+    }
+
+    [Fact]
     public void Reopen_of_a_non_done_task_conflicts()
     {
         TaskAggregate task = ClaimedTask();
 
-        Action act = () => TaskDecider.Reopen(task, task.CurrentRunId!.Value, "task/abc", null, Now, DomainId.New());
+        Action act = () => TaskDecider.Reopen(
+            task, task.CurrentRunId!.Value, "task/abc", null,
+            FollowUpKind.ReviewFeedback, automatic: false, Now, DomainId.New());
 
         act.Should().Throw<DomainConflictException>().WithMessage("*only a done task*");
     }
@@ -153,7 +188,9 @@ public sealed class TaskDeciderTests
     {
         TaskAggregate task = DoneTask(pullRequestUrl: null);
 
-        Action act = () => TaskDecider.Reopen(task, task.CurrentRunId!.Value, "task/abc", null, Now, DomainId.New());
+        Action act = () => TaskDecider.Reopen(
+            task, task.CurrentRunId!.Value, "task/abc", null,
+            FollowUpKind.ReviewFeedback, automatic: false, Now, DomainId.New());
 
         act.Should().Throw<DomainConflictException>().WithMessage("*no pull request*");
     }
@@ -163,7 +200,9 @@ public sealed class TaskDeciderTests
     {
         TaskAggregate task = DoneTask("https://github.com/x/y/pull/7");
 
-        Action act = () => TaskDecider.Reopen(task, task.CurrentRunId!.Value, branch: " ", null, Now, DomainId.New());
+        Action act = () => TaskDecider.Reopen(
+            task, task.CurrentRunId!.Value, branch: " ", null,
+            FollowUpKind.ReviewFeedback, automatic: false, Now, DomainId.New());
 
         act.Should().Throw<DomainValidationException>().WithMessage("*branch*");
     }

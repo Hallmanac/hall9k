@@ -24,7 +24,11 @@ app.Configure(config =>
     {
         pullRequest.SetDescription("Work with a task's pull request");
         pullRequest.AddCommand<PullRequestResolveCommand>("resolve")
-            .WithDescription("Dispatch a follow-up run onto a done task's existing PR branch to resolve review feedback");
+            .WithDescription(
+                "Dispatch a follow-up run onto a done task's existing PR branch to resolve review feedback "
+                + "(or fix failing CI with --checks). Also resets the closeout monitor's automatic retry budget.")
+            .WithExample("pr", "resolve", "28b19893")
+            .WithExample("pr", "resolve", "28b19893", "--checks");
     });
 
     config.AddCommand<StatusCommand>("status")

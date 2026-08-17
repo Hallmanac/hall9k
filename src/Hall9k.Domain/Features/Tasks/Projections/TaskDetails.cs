@@ -32,6 +32,8 @@ public sealed class TaskDetails
     public List<TaskQuestion> Conversation { get; set; } = [];
     public string? PullRequestUrl { get; set; }
     public string? FollowUpBranch { get; set; }
+    public FollowUpKind FollowUpKind { get; set; } = FollowUpKind.Unknown;
+    public string? FollowUpReason { get; set; }
     public string? FailureReason { get; set; }
     public DateTimeOffset AddedAt { get; set; }
     public Guid AddedByOwnerId { get; set; }
@@ -99,6 +101,8 @@ public sealed class TaskDetailsProjection : SingleStreamProjection<TaskDetails, 
     {
         view.PullRequestUrl = @event.Data.PullRequestUrl;
         view.FollowUpBranch = null;
+        view.FollowUpKind = FollowUpKind.Unknown;
+        view.FollowUpReason = null;
         view.State = TaskState.Done;
         view.FinishedAt = @event.Data.CompletedAt;
     }
@@ -106,6 +110,8 @@ public sealed class TaskDetailsProjection : SingleStreamProjection<TaskDetails, 
     public void Apply(IEvent<TaskReopened> @event, TaskDetails view)
     {
         view.FollowUpBranch = @event.Data.Branch;
+        view.FollowUpKind = @event.Data.Kind ?? FollowUpKind.Unknown;
+        view.FollowUpReason = @event.Data.Reason;
         view.ClaimedByNodeId = null;
         view.CurrentRunId = null;
         view.State = TaskState.Queued;
