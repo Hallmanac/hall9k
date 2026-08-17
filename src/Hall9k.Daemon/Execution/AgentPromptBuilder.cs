@@ -98,14 +98,17 @@ public static class AgentPromptBuilder
 
     private static string? ReadFrontmatterDescription(string manifestPath)
     {
-        string[] lines = File.ReadAllLines(manifestPath);
-        if (lines.Length == 0 || lines[0].Trim() != "---")
+        // Stream and stop at the frontmatter fence — the skill body below it can be large
+        // and is never needed here.
+        using IEnumerator<string> lines = File.ReadLines(manifestPath).GetEnumerator();
+        if (!lines.MoveNext() || lines.Current.Trim() != "---")
         {
             return null;
         }
 
-        foreach (string line in lines.Skip(1))
+        while (lines.MoveNext())
         {
+            string line = lines.Current;
             if (line.Trim() == "---")
             {
                 break;
