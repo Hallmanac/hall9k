@@ -30,4 +30,11 @@ public sealed class DaemonOptions
     /// h9k pr resolve resets the budget.
     /// </summary>
     public int MaxAutomaticCloseoutRuns { get; set; } = 2;
+
+    /// <summary>
+    /// Automatic fix runs the pre-PR review loop may dispatch per run before it parks
+    /// the run for the human (the closeout retry-budget pattern, log #24). Each cycle is
+    /// review → fix → gates → review; the budget counts the fix legs.
+    /// </summary>
+    public int MaxAutomaticReviewFixRuns { get; set; } = 2;
 }

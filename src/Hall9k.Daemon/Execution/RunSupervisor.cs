@@ -2,6 +2,7 @@ using Hall9k.Domain.Infrastructure.Storage;
 using System.Collections.Concurrent;
 using System.Text;
 using Hall9k.Daemon.ProcessManagement;
+using Hall9k.Daemon.Review;
 using Hall9k.Domain.Features.Run;
 using Hall9k.Domain.Features.Run.Documents;
 using Hall9k.Domain.Features.Run.Events;
@@ -24,6 +25,7 @@ public sealed class RunSupervisor(
     NodeContext node,
     IProcessManager processManager,
     VerificationRunner verification,
+    ReviewEngine review,
     PullRequestOpener pullRequests,
     ILogger<RunSupervisor> logger)
 {
@@ -51,20 +53,32 @@ public sealed class RunSupervisor(
         Guid nodeId = node.NodeId;
         IReadOnlyList<RunDetails> candidates = await query.Query<RunDetails>()
             .Where(r => r.NodeId == nodeId)
-            .Where(r => r.MatchesSql("d.data ->> 'state' in (?, ?, ?)", RunState.Dispatched.Value, RunState.Running.Value, RunState.Verifying.Value))
+            .Where(r => r.MatchesSql(
+                "d.data ->> 'state' in (?, ?, ?, ?, ?)",
+                RunState.Dispatched.Value, RunState.Running.Value, RunState.Verifying.Value,
+                RunState.UnderReview.Value, RunState.ReviewParked.Value))
             .ToListAsync(cancellationToken);
 
         foreach (RunDetails run in candidates)
         {
-            if (run.State == RunState.Verifying)
+            if (run.State == RunState.Verifying || run.State == RunState.UnderReview)
             {
-                // Daemon died mid-verification: the agent's work is done, just re-verify.
-                logger.LogInformation("Adopting run {RunId} stranded in Verifying — re-running gates", run.Id);
-                if (await verification.VerifyAsync(run.Id, run.TaskId, cancellationToken))
-                {
-                    await pullRequests.OpenAsync(run.Id, run.TaskId, cancellationToken);
-                }
+                // Daemon died between the agent's result and the PR: the work is done,
+                // re-enter the pipeline where the run stream left off (gates from
+                // Verifying; the review loop resumes its own phase from UnderReview).
+                // Backgrounded — gates and review sessions run for minutes and startup
+                // must not wait on them.
+                logger.LogInformation(
+                    "Adopting run {RunId} stranded in {State} — resuming the pre-PR pipeline", run.Id, run.State.Value);
+                ResumePipeline(run, cancellationToken);
+                continue;
+            }
 
+            if (run.State == RunState.ReviewParked)
+            {
+                // Parked means waiting on a human, not abandoned: refresh the lease so
+                // the expiry sweep never requeues the task out from under its worktree.
+                await RefreshParkedLeaseAsync(run, cancellationToken);
                 continue;
             }
 
@@ -102,7 +116,7 @@ public sealed class RunSupervisor(
             while (!cancellationToken.IsCancellationRequested)
             {
                 (long newCursor, bool sawResult, AgentResult? result) =
-                    await ReadNewLinesAsync(streamFile, cursor, partialLine, cancellationToken);
+                    await StreamTailReader.ReadNewLinesAsync(streamFile, cursor, partialLine, cancellationToken);
 
                 if (newCursor > cursor)
                 {
@@ -148,54 +162,6 @@ public sealed class RunSupervisor(
         }
     }
 
-    private static async Task<(long Cursor, bool SawResult, AgentResult? Result)> ReadNewLinesAsync(
-        string streamFile, long cursor, StringBuilder partialLine, CancellationToken cancellationToken)
-    {
-        if (!File.Exists(streamFile))
-        {
-            return (cursor, false, null);
-        }
-
-        await using FileStream stream = new(
-            streamFile, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
-        if (stream.Length <= cursor)
-        {
-            return (cursor, false, null);
-        }
-
-        stream.Seek(cursor, SeekOrigin.Begin);
-        using StreamReader reader = new(stream, Encoding.UTF8, detectEncodingFromByteOrderMarks: false, leaveOpen: true);
-
-        char[] buffer = new char[8192];
-        while (true)
-        {
-            int read = await reader.ReadAsync(buffer, cancellationToken);
-            if (read == 0)
-            {
-                break;
-            }
-
-            for (int i = 0; i < read; i++)
-            {
-                if (buffer[i] == '\n')
-                {
-                    string line = partialLine.ToString();
-                    partialLine.Clear();
-                    if (StreamJsonParser.TryParseResult(line, out AgentResult result))
-                    {
-                        return (stream.Position, true, result);
-                    }
-                }
-                else
-                {
-                    partialLine.Append(buffer[i]);
-                }
-            }
-        }
-
-        return (stream.Position, false, null);
-    }
-
     private async Task CompleteRunAsync(Guid runId, Guid taskId, AgentResult result, CancellationToken cancellationToken)
     {
         DateTimeOffset now = DateTimeOffset.UtcNow;
@@ -215,10 +181,75 @@ public sealed class RunSupervisor(
             "Run {RunId} agent session completed ({Input}in/{Output}out tokens, error: {IsError})",
             runId, result.InputTokens, result.OutputTokens, result.IsError);
 
-        if (!result.IsError && await verification.VerifyAsync(runId, taskId, cancellationToken))
+        // The pre-PR pipeline (log #24): gates, then the independent review loop, and
+        // only a merge-ready verdict lets the pull request open.
+        if (!result.IsError
+            && await verification.VerifyAsync(runId, taskId, cancellationToken)
+            && await review.ReviewAsync(runId, taskId, cancellationToken))
         {
             await pullRequests.OpenAsync(runId, taskId, cancellationToken);
         }
+    }
+
+    /// <summary>
+    /// Adoption re-entry for the post-agent pipeline, tracked in the monitor set so
+    /// ActiveCount stays honest while gates and review sessions run.
+    /// </summary>
+    private void ResumePipeline(RunDetails run, CancellationToken cancellationToken)
+    {
+        _monitors.TryAdd(run.Id, Task.Run(async () =>
+        {
+            try
+            {
+                bool mergeReady = run.State == RunState.Verifying
+                    ? await verification.VerifyAsync(run.Id, run.TaskId, cancellationToken)
+                        && await review.ReviewAsync(run.Id, run.TaskId, cancellationToken)
+                    : await review.ReviewAsync(run.Id, run.TaskId, cancellationToken);
+                if (mergeReady)
+                {
+                    await pullRequests.OpenAsync(run.Id, run.TaskId, cancellationToken);
+                }
+            }
+            catch (OperationCanceledException)
+            {
+                // Daemon shutdown: the run stream holds the phase; the next adoption resumes it.
+            }
+            catch (Exception exception)
+            {
+                logger.LogError(exception, "Resumed pipeline for run {RunId} crashed", run.Id);
+            }
+            finally
+            {
+                _monitors.TryRemove(run.Id, out _);
+            }
+        }, cancellationToken));
+    }
+
+    /// <summary>
+    /// A review-parked run holds its task Claimed on purpose — the worktree is the
+    /// human's workspace. Refreshing the heartbeat at adoption (before the sweep) keeps
+    /// the lease from expiring over a daemon outage; the heartbeat service carries it
+    /// from here.
+    /// </summary>
+    private async Task RefreshParkedLeaseAsync(RunDetails run, CancellationToken cancellationToken)
+    {
+        await using IDocumentSession session = store.LightweightSession();
+        TaskAggregate? task = await session.Events.AggregateStreamAsync<TaskAggregate>(run.TaskId, token: cancellationToken);
+        if (task is null || task.State != TaskState.Claimed || task.CurrentRunId != run.Id)
+        {
+            return;
+        }
+
+        session.Store(new TaskLease
+        {
+            Id = run.TaskId,
+            NodeId = run.NodeId,
+            LeaseGeneration = run.LeaseGeneration,
+            HeartbeatAt = DateTimeOffset.UtcNow,
+        });
+        await session.SaveChangesAsync(cancellationToken);
+        logger.LogInformation(
+            "Run {RunId} is review-parked — lease refreshed so the task stays with its worktree", run.Id);
     }
 
     private async Task FailRunAsync(Guid runId, Guid taskId, string reason, CancellationToken cancellationToken)
