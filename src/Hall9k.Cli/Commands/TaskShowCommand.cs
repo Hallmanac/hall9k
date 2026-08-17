@@ -87,7 +87,7 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
             foreach (RunListItem run in runs)
             {
                 runsTable.AddRow(
-                    $"[dim]{run.Id.ToString()[..8]}[/]",
+                    $"[dim]{TaskListCommand.ShortId(run.Id)}[/]",
                     run.LeaseGeneration.ToString(),
                     run.State.Value.EscapeMarkup(),
                     run.DispatchedAt.ToLocalTime().ToString("g").EscapeMarkup(),
@@ -109,7 +109,8 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
 
         IReadOnlyList<TaskListItem> all = await session.Query<TaskListItem>().ToListAsync(cancellationToken);
         Guid[] matches = [.. all
-            .Where(t => t.Id.ToString().StartsWith(idOrPrefix, StringComparison.OrdinalIgnoreCase))
+            .Where(t => t.Id.ToString("N").StartsWith(Normalize(idOrPrefix), StringComparison.OrdinalIgnoreCase)
+                     || t.Id.ToString("N").EndsWith(Normalize(idOrPrefix), StringComparison.OrdinalIgnoreCase))
             .Select(t => t.Id)];
 
         return matches switch
@@ -119,4 +120,6 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
             _ => throw new DomainConflictException($"'{idOrPrefix}' is ambiguous ({matches.Length} matches) — use more characters."),
         };
     }
+
+    private static string Normalize(string idFragment) => idFragment.Replace("-", "");
 }

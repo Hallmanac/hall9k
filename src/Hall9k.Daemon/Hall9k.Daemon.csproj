@@ -12,6 +12,10 @@
   </ItemGroup>
 
   <ItemGroup>
+    <Using Include="Hall9k.Domain.Infrastructure.Extensions" />
+  </ItemGroup>
+
+  <ItemGroup>
     <ProjectReference Include="..\Hall9k.Domain\Hall9k.Domain.csproj" />
     <ProjectReference Include="..\Hall9k.Connectors\Hall9k.Connectors.csproj" />
     <ProjectReference Include="..\Hall9k.ServiceDefaults\Hall9k.ServiceDefaults.csproj" />

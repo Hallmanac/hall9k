@@ -35,7 +35,7 @@ public sealed class TaskListCommand : Hall9kAsyncCommand<TaskListCommand.Setting
         foreach (TaskListItem task in tasks)
         {
             table.AddRow(
-                $"[dim]{task.Id.ToString()[..8]}[/]",
+                $"[dim]{ShortId(task.Id)}[/]",
                 StateMarkup(task.State),
                 task.Type.Value.EscapeMarkup(),
                 (projectNames.GetValueOrDefault(task.ProjectId) ?? "?").EscapeMarkup(),
@@ -56,6 +56,10 @@ public sealed class TaskListCommand : Hall9kAsyncCommand<TaskListCommand.Setting
         "Abandoned" => "[dim]Abandoned[/]",
         _ => state.Value.EscapeMarkup(),
     };
+
+    // UUIDv7 front-loads the timestamp, so same-batch ids share their first chars;
+    // the random tail is what tells them apart.
+    internal static string ShortId(Guid id) => id.ToString("N")[^8..];
 
     internal static string Truncate(string value, int max) =>
         value.Length <= max ? value : value[..(max - 1)] + "…";

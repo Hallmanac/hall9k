@@ -1,3 +1,5 @@
+using Hall9k.Daemon.Worktrees;
+using Hall9k.Domain.Features.Project.Projections;
 using Marten;
 using Microsoft.Extensions.Options;
 using Npgsql;
@@ -14,6 +16,7 @@ public sealed class DispatchLoop(
     DaemonConnection connection,
     NodeContext node,
     DispatchEngine engine,
+    IWorktreeManager worktrees,
     IOptions<DaemonOptions> options,
     ILogger<DispatchLoop> logger) : BackgroundService
 {
@@ -30,6 +33,7 @@ public sealed class DispatchLoop(
         // genuinely abandoned, and only then take new work.
         await engine.AdoptOrphansAsync(stoppingToken);
         await engine.SweepExpiredLeasesAsync(stoppingToken);
+        await PruneRegisteredRepositoriesAsync(stoppingToken);
 
         Task listener = ListenForDoorbellAsync(stoppingToken);
 
@@ -133,6 +137,23 @@ public sealed class DispatchLoop(
                 {
                     return;
                 }
+            }
+        }
+    }
+
+    private async Task PruneRegisteredRepositoriesAsync(CancellationToken cancellationToken)
+    {
+        await using Marten.IQuerySession query = store.QuerySession();
+        IReadOnlyList<ProjectDetails> projects = await query.Query<ProjectDetails>().ToListAsync(cancellationToken);
+        foreach (ProjectDetails project in projects)
+        {
+            try
+            {
+                await worktrees.PruneAsync(project.RepositoryPath, cancellationToken);
+            }
+            catch (Exception exception) when (exception is not OperationCanceledException)
+            {
+                logger.LogWarning(exception, "Worktree prune failed for {Repository}", project.RepositoryPath);
             }
         }
     }

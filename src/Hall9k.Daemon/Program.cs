@@ -1,6 +1,7 @@
 using Hall9k.Daemon;
 using Hall9k.Daemon.Dispatch;
 using Hall9k.Daemon.ProcessManagement;
+using Hall9k.Daemon.Worktrees;
 using Hall9k.Domain;
 using Hall9k.Domain.Infrastructure.Persistence;
 using JasperFx;
@@ -17,6 +18,7 @@ builder.Services.AddOptions<DaemonOptions>().Bind(builder.Configuration.GetSecti
 builder.Services.AddSingleton(new DaemonConnection(connectionString));
 builder.Services.AddSingleton<NodeContext>();
 builder.Services.AddSingleton<IProcessManager, UnixProcessManager>();
+builder.Services.AddSingleton<IWorktreeManager, GitWorktreeManager>();
 builder.Services.AddSingleton<DispatchEngine>();
 
 builder.Services.AddMartenEventStore(connectionString, AutoCreate.CreateOnly)
