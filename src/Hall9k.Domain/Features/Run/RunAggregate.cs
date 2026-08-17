@@ -27,6 +27,12 @@ public sealed class RunAggregate
     public DateTimeOffset? PullRequestMergedAt { get; private set; }
     public int UnresolvedReviewThreads { get; private set; }
 
+    /// <summary>The last errored review observed — the monitor's dedup key: one re-request per errored review.</summary>
+    public string? ErroredReviewUrl { get; private set; }
+
+    /// <summary>Review re-requests issued for this run; adds to the task's CloseoutAttempts against the shared budget.</summary>
+    public int ReviewRerequestCount { get; private set; }
+
     private readonly List<string> _failedGates = [];
     public IReadOnlyList<string> FailedGates => _failedGates;
 
@@ -111,6 +117,14 @@ public sealed class RunAggregate
         UnresolvedReviewThreads = @event.UnresolvedThreadCount;
         State = RunState.ReviewPending;
     }
+
+    public void Apply(ReviewErrored @event)
+    {
+        ErroredReviewUrl = @event.ReviewUrl;
+        State = RunState.ReviewPending;
+    }
+
+    public void Apply(ReviewRerequested @event) => ReviewRerequestCount++;
 
     public void Apply(CloseoutParked @event) => State = RunState.CloseoutParked;
 

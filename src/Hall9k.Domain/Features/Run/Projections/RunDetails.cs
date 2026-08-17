@@ -23,6 +23,10 @@ public sealed class RunDetails
     public DateTimeOffset? PullRequestMergedAt { get; set; }
     public List<string> FailingChecks { get; set; } = [];
     public int UnresolvedReviewThreads { get; set; }
+    /// <summary>The last errored review observed — the monitor's dedup key: one re-request per errored review.</summary>
+    public string? ErroredReviewUrl { get; set; }
+    /// <summary>Review re-requests issued for this run; adds to the task's CloseoutAttempts against the shared budget.</summary>
+    public int ReviewRerequestCount { get; set; }
     public long InputTokens { get; set; }
     public long OutputTokens { get; set; }
     public decimal? CostUsd { get; set; }
@@ -107,6 +111,14 @@ public sealed class RunDetailsProjection : SingleStreamProjection<RunDetails, Gu
         view.UnresolvedReviewThreads = @event.Data.UnresolvedThreadCount;
         view.State = RunState.ReviewPending;
     }
+
+    public void Apply(IEvent<ReviewErrored> @event, RunDetails view)
+    {
+        view.ErroredReviewUrl = @event.Data.ReviewUrl;
+        view.State = RunState.ReviewPending;
+    }
+
+    public void Apply(IEvent<ReviewRerequested> @event, RunDetails view) => view.ReviewRerequestCount++;
 
     public void Apply(IEvent<CloseoutParked> @event, RunDetails view)
     {
