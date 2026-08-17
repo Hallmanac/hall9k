@@ -18,8 +18,10 @@ namespace Hall9k.Daemon.Closeout;
 /// tests against a bare store and a fake inspector. Each node watches the
 /// awaiting-review runs it executed (RunDetails.NodeId — the task itself is Done and
 /// lease-free, so run provenance is the only honest owner). Per PR it observes merge,
-/// close, failing checks, and unresolved Copilot review threads, dispatching follow-up
-/// runs through the standard reopen pipeline until the bounded automatic budget is
+/// close, failing checks, unresolved Copilot review threads, and errored Copilot
+/// reviews (an error placeholder produces zero threads — never mistaken for a clean
+/// pass), dispatching follow-up runs through the standard reopen pipeline and
+/// re-requesting errored reviews through the API until the bounded automatic budget is
 /// spent — then it parks the run for the human and keeps watching for the merge only.
 /// </summary>
 public sealed class CloseoutEngine(
@@ -39,10 +41,13 @@ public sealed class CloseoutEngine(
         await using (IQuerySession query = store.QuerySession())
         {
             Guid nodeId = node.NodeId;
+            // ReviewPending is watched too: a run holds there while an errored review's
+            // re-request waits for the reviewer to answer.
             watched = await query.Query<RunDetails>()
                 .Where(r => r.NodeId == nodeId)
                 .Where(r => r.MatchesSql(
-                    "d.data ->> 'state' in (?, ?)", RunState.AwaitingReview.Value, RunState.CloseoutParked.Value))
+                    "d.data ->> 'state' in (?, ?, ?)",
+                    RunState.AwaitingReview.Value, RunState.ReviewPending.Value, RunState.CloseoutParked.Value))
                 .ToListAsync(cancellationToken);
         }
 
@@ -182,8 +187,82 @@ public sealed class CloseoutEngine(
             return true;
         }
 
+        if (snapshot.ErroredCopilotReview is { } erroredReview)
+        {
+            await RerequestReviewOrParkAsync(
+                session, task, run, project.RepositoryPath, task.PullRequestUrl,
+                run.PullRequestNumber.Value, erroredReview, now, cancellationToken);
+            return true;
+        }
+
         return true;
     }
+
+    /// <summary>
+    /// An errored review (zero threads, no verdict) must not read as review-clean: the
+    /// run holds at ReviewPending while the monitor re-requests the review through the
+    /// API — never the website, which may be down when this matters (origin incident:
+    /// PR #6, 2026-08-17, GitHub partial outage). Each errored review is re-requested
+    /// exactly once (the recorded review URL is the dedup key across sweeps), each
+    /// re-request draws on the shared automatic budget, and a reviewer that keeps
+    /// erroring parks the run with the errored review named for the human. A successful
+    /// re-review stops matching as errored and flows through the normal thread path.
+    /// </summary>
+    private async Task RerequestReviewOrParkAsync(
+        IDocumentSession session,
+        TaskAggregate task,
+        RunDetails run,
+        string repositoryPath,
+        string pullRequestUrl,
+        int pullRequestNumber,
+        ErroredReview erroredReview,
+        DateTimeOffset now,
+        CancellationToken cancellationToken)
+    {
+        // This errored review was already re-requested; the reviewer just hasn't
+        // answered yet. Re-requesting again every sweep would burn the budget on one
+        // observation.
+        if (erroredReview.Url == run.ErroredReviewUrl)
+        {
+            return;
+        }
+
+        session.Events.Append(run.Id, new ReviewErrored(run.Id, erroredReview.Reviewer, erroredReview.Url, now));
+
+        if (AutomaticActionsSpent(task, run) >= _options.MaxAutomaticCloseoutRuns)
+        {
+            string parkReason =
+                $"Copilot review keeps erroring: {erroredReview.Reviewer}'s latest review ({erroredReview.Url}) " +
+                "says it was unable to review the pull request. " +
+                $"Automatic closeout budget spent ({AutomaticActionsSpent(task, run)} action(s)). " +
+                "Re-request the review by hand, merge without it, or grant another attempt with h9k pr resolve.";
+            session.Events.Append(run.Id, new CloseoutParked(run.Id, parkReason, now));
+            await session.SaveChangesAsync(cancellationToken);
+            logger.LogWarning("Run {RunId}: closeout parked for the human — {Reason}", run.Id, parkReason);
+            return;
+        }
+
+        // The API call precedes the append: no ReviewRerequested lands without the
+        // request actually made. A failure here rolls the observation back with it and
+        // the next sweep retries the whole step.
+        await inspector.RerequestReviewAsync(
+            repositoryPath, pullRequestUrl, pullRequestNumber, erroredReview.Reviewer, cancellationToken);
+        session.Events.Append(run.Id, new ReviewRerequested(run.Id, erroredReview.Reviewer, erroredReview.Url, now));
+        await session.SaveChangesAsync(cancellationToken);
+
+        logger.LogInformation(
+            "Run {RunId}: Copilot review errored ({Url}); re-requested review from {Reviewer} (action {Action}/{Max})",
+            run.Id, erroredReview.Url, erroredReview.Reviewer,
+            AutomaticActionsSpent(task, run) + 1, _options.MaxAutomaticCloseoutRuns);
+    }
+
+    /// <summary>
+    /// One budget for every automatic closeout action: reopen dispatches count on the
+    /// task (CloseoutAttempts), review re-requests on the watched run. h9k pr resolve
+    /// resets both — the manual reopen zeroes the counter and supersedes the run.
+    /// </summary>
+    private static int AutomaticActionsSpent(TaskAggregate task, RunDetails run) =>
+        task.CloseoutAttempts + run.ReviewRerequestCount;
 
     /// <summary>
     /// The merge is the end of the story: RunCompleted finally lands (the event
@@ -246,10 +325,10 @@ public sealed class CloseoutEngine(
         DateTimeOffset now,
         CancellationToken cancellationToken)
     {
-        if (task.CloseoutAttempts >= _options.MaxAutomaticCloseoutRuns)
+        if (AutomaticActionsSpent(task, run) >= _options.MaxAutomaticCloseoutRuns)
         {
             string parkReason =
-                $"{reason} Automatic follow-up budget spent ({task.CloseoutAttempts} run(s)). " +
+                $"{reason} Automatic closeout budget spent ({AutomaticActionsSpent(task, run)} action(s)). " +
                 "Fix or merge the pull request by hand, close it, or grant another attempt with h9k pr resolve.";
             session.Events.Append(run.Id, new CloseoutParked(run.Id, parkReason, now));
             await session.SaveChangesAsync(cancellationToken);

@@ -22,8 +22,9 @@ namespace Hall9k.Tests.Integration;
 /// <summary>
 /// The closeout monitor's decision table against a real store and a real repo, with the
 /// gh seam faked: merge completes the run and cleans the workspace, failing checks and
-/// review feedback dispatch follow-ups through the reopen pipeline, a spent budget
-/// parks, and a closed PR fails the run but keeps the branch.
+/// review feedback dispatch follow-ups through the reopen pipeline, an errored Copilot
+/// review holds at ReviewPending and re-requests through the API, a spent budget parks,
+/// and a closed PR fails the run but keeps the branch.
 /// </summary>
 [Trait("Category", "RequiresDocker")]
 public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixture<PostgresFixture>, IDisposable
@@ -39,6 +40,9 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
         public PullRequestSnapshot Snapshot { get; set; } = Quiet();
 
         public int Inspections { get; private set; }
+
+        /// <summary>Reviewer logins passed to RerequestReviewAsync, in call order.</summary>
+        public List<string> ReviewRerequests { get; } = [];
 
         /// <summary>Runs inside the inspection — the seam for writes landing mid-gh-call.</summary>
         public Func<Task>? OnInspect { get; set; }
@@ -56,9 +60,18 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
             return Snapshot;
         }
 
+        public Task RerequestReviewAsync(
+            string repositoryPath, string pullRequestUrl, int pullRequestNumber, string reviewer,
+            CancellationToken cancellationToken)
+        {
+            ReviewRerequests.Add(reviewer);
+            return Task.CompletedTask;
+        }
+
         public static PullRequestSnapshot Quiet() => new(
             IsMerged: false, IsClosed: false, MergedAt: null, ClosedAt: null,
-            FailingChecks: [], HasPendingChecks: false, UnresolvedCopilotThreadCount: 0);
+            FailingChecks: [], HasPendingChecks: false, UnresolvedCopilotThreadCount: 0,
+            ErroredCopilotReview: null);
     }
 
     [Fact]
@@ -154,6 +167,145 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
 
         await using IQuerySession query = store.QuerySession();
         (await query.LoadAsync<RunDetails>(runId, cts.Token))!.State.Should().Be(RunState.Superseded);
+        TaskDetails task = (await query.LoadAsync<TaskDetails>(taskId, cts.Token))!;
+        task.State.Should().Be(TaskState.Queued);
+        task.FollowUpKind.Should().Be(FollowUpKind.ReviewFeedback);
+    }
+
+    [Fact]
+    public async Task An_errored_copilot_review_holds_the_run_at_review_pending_and_rerequests_once()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        (DocumentStore store, NodeContext node, GitWorktreeManager worktrees, _, string repoPath) =
+            await SetUpAsync(cts.Token);
+        using IDisposable storeLifetime = store;
+
+        (Guid taskId, Guid runId, _) = await SeedAwaitingReviewAsync(store, node, worktrees, repoPath, cts.Token);
+
+        ErroredReview errored = new("copilot-pull-request-reviewer", $"{PullRequestUrl}#pullrequestreview-1");
+        FakeInspector inspector = new()
+        {
+            Snapshot = FakeInspector.Quiet() with { ErroredCopilotReview = errored },
+        };
+        CloseoutEngine engine = NewEngine(store, node, inspector, worktrees);
+        await engine.PollOnceAsync(cts.Token);
+
+        await using (IQuerySession query = store.QuerySession())
+        {
+            RunDetails run = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
+            run.State.Should().Be(RunState.ReviewPending,
+                "an errored review produced zero threads — that must never read as review-clean");
+            run.ErroredReviewUrl.Should().Be(errored.Url);
+            run.ReviewRerequestCount.Should().Be(1);
+
+            (await query.LoadAsync<TaskListItem>(taskId, cts.Token))!.State.Should().Be(
+                TaskState.Done, "a re-request needs no agent, so no reopen is dispatched");
+            inspector.ReviewRerequests.Should().Equal("copilot-pull-request-reviewer");
+        }
+
+        // The same errored review on the next sweep is never re-requested again — the
+        // reviewer just hasn't answered yet.
+        await engine.PollOnceAsync(cts.Token);
+        await using (IQuerySession query = store.QuerySession())
+        {
+            inspector.ReviewRerequests.Should().HaveCount(1, "one re-request per errored review, not per sweep");
+            (await query.LoadAsync<RunDetails>(runId, cts.Token))!.State.Should().Be(RunState.ReviewPending);
+        }
+    }
+
+    [Fact]
+    public async Task A_repeatedly_erroring_review_parks_the_run_naming_the_errored_review()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        (DocumentStore store, NodeContext node, GitWorktreeManager worktrees, _, string repoPath) =
+            await SetUpAsync(cts.Token);
+        using IDisposable storeLifetime = store;
+
+        (Guid taskId, Guid runId, _) = await SeedAwaitingReviewAsync(store, node, worktrees, repoPath, cts.Token);
+
+        // Each re-request is answered by another errored review (a fresh review URL each
+        // time). Budget of 2: two re-requests, then the third errored review parks.
+        FakeInspector inspector = new();
+        CloseoutEngine engine = NewEngine(store, node, inspector, worktrees);
+        for (int attempt = 1; attempt <= 3; attempt++)
+        {
+            inspector.Snapshot = FakeInspector.Quiet() with
+            {
+                ErroredCopilotReview = new ErroredReview(
+                    "copilot-pull-request-reviewer", $"{PullRequestUrl}#pullrequestreview-{attempt}"),
+            };
+            await engine.PollOnceAsync(cts.Token);
+        }
+
+        await using IQuerySession query = store.QuerySession();
+        RunDetails run = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
+        run.State.Should().Be(RunState.CloseoutParked);
+        run.ParkedReason.Should().Contain("copilot-pull-request-reviewer")
+            .And.Contain("#pullrequestreview-3", "the park reason names the errored review the human should look at")
+            .And.Contain("budget spent").And.Contain("h9k pr resolve");
+        run.ReviewRerequestCount.Should().Be(2, "the budget bounds re-requests exactly like other closeout actions");
+        inspector.ReviewRerequests.Should().HaveCount(2);
+
+        (await query.LoadAsync<TaskListItem>(taskId, cts.Token))!.State.Should().Be(
+            TaskState.Done, "parking lives on the run; h9k pr resolve remains the human's retry lever");
+    }
+
+    [Fact]
+    public async Task A_spent_reopen_budget_parks_an_errored_review_without_rerequesting()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        (DocumentStore store, NodeContext node, GitWorktreeManager worktrees, _, string repoPath) =
+            await SetUpAsync(cts.Token);
+        using IDisposable storeLifetime = store;
+
+        (_, Guid runId, _) = await SeedAwaitingReviewAsync(
+            store, node, worktrees, repoPath, cts.Token, priorAutomaticReopens: 2);
+
+        FakeInspector inspector = new()
+        {
+            Snapshot = FakeInspector.Quiet() with
+            {
+                ErroredCopilotReview = new ErroredReview(
+                    "copilot-pull-request-reviewer", $"{PullRequestUrl}#pullrequestreview-9"),
+            },
+        };
+        await NewEngine(store, node, inspector, worktrees).PollOnceAsync(cts.Token);
+
+        await using IQuerySession query = store.QuerySession();
+        (await query.LoadAsync<RunDetails>(runId, cts.Token))!.State.Should().Be(
+            RunState.CloseoutParked, "re-requests draw on the same automatic budget the reopens already spent");
+        inspector.ReviewRerequests.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task An_errored_review_answered_by_a_successful_rereview_flows_through_thread_resolution()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        (DocumentStore store, NodeContext node, GitWorktreeManager worktrees, _, string repoPath) =
+            await SetUpAsync(cts.Token);
+        using IDisposable storeLifetime = store;
+
+        (Guid taskId, Guid runId, _) = await SeedAwaitingReviewAsync(store, node, worktrees, repoPath, cts.Token);
+
+        FakeInspector inspector = new()
+        {
+            Snapshot = FakeInspector.Quiet() with
+            {
+                ErroredCopilotReview = new ErroredReview(
+                    "copilot-pull-request-reviewer", $"{PullRequestUrl}#pullrequestreview-1"),
+            },
+        };
+        CloseoutEngine engine = NewEngine(store, node, inspector, worktrees);
+        await engine.PollOnceAsync(cts.Token);
+
+        // The re-requested review succeeds and leaves real feedback: latestReviews no
+        // longer matches as errored, unresolved threads appear.
+        inspector.Snapshot = FakeInspector.Quiet() with { UnresolvedCopilotThreadCount = 2 };
+        await engine.PollOnceAsync(cts.Token);
+
+        await using IQuerySession query = store.QuerySession();
+        (await query.LoadAsync<RunDetails>(runId, cts.Token))!.State.Should().Be(
+            RunState.Superseded, "the ReviewPending run is still watched, so the re-review dispatches normally");
         TaskDetails task = (await query.LoadAsync<TaskDetails>(taskId, cts.Token))!;
         task.State.Should().Be(TaskState.Queued);
         task.FollowUpKind.Should().Be(FollowUpKind.ReviewFeedback);
