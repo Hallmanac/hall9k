@@ -58,7 +58,12 @@ public sealed class TaskListItemProjection : SingleStreamProjection<TaskListItem
         view.State = TaskState.Done;
     }
 
-    public void Apply(IEvent<TaskReopened> @event, TaskListItem view) => view.State = TaskState.Queued;
+    public void Apply(IEvent<TaskReopened> @event, TaskListItem view)
+    {
+        view.ClaimedByNodeId = null;
+        view.CurrentRunId = null;
+        view.State = TaskState.Queued;
+    }
 
     public void Apply(IEvent<TaskFailed> @event, TaskListItem view) => view.State = TaskState.Failed;
 

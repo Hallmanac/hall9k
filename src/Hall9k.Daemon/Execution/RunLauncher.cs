@@ -56,7 +56,8 @@ public sealed class RunLauncher(
 
             session.Events.StartStream<RunAggregate>(runId, new RunDispatched(
                 runId, taskId, nodeId, ownerId, leaseGeneration, sessionId,
-                worktree.Path, worktree.Branch, mode, DateTimeOffset.UtcNow));
+                worktree.Path, worktree.Branch, mode, DateTimeOffset.UtcNow,
+                IsFollowUp: followUp is not null));
             await session.SaveChangesAsync(cancellationToken);
 
             string prompt = followUp is { } review

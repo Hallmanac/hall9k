@@ -26,6 +26,7 @@ public sealed class RunDetails
     public List<string> FailedGates { get; set; } = [];
     public string? FailureReason { get; set; }
     public DateTimeOffset DispatchedAt { get; set; }
+    public bool IsFollowUp { get; set; }
     public DateTimeOffset? FinishedAt { get; set; }
 }
 
@@ -44,6 +45,7 @@ public sealed class RunDetailsProjection : SingleStreamProjection<RunDetails, Gu
         ExecutorMode = @event.Data.ExecutorMode,
         State = RunState.Dispatched,
         DispatchedAt = @event.Data.DispatchedAt,
+        IsFollowUp = @event.Data.IsFollowUp,
     };
 
     public void Apply(IEvent<RunProcessStarted> @event, RunDetails view)

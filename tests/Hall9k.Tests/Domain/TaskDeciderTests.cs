@@ -126,6 +126,8 @@ public sealed class TaskDeciderTests
         task.State.Should().Be(TaskState.Queued);
         task.FollowUpBranch.Should().Be("task/abc-branch");
         task.PullRequestUrl.Should().Be("https://github.com/x/y/pull/7", "the follow-up updates the existing PR");
+        task.ClaimedByNodeId.Should().BeNull("a reopened task is queued, and queued work is unclaimed");
+        task.CurrentRunId.Should().BeNull();
 
         TaskClaimed claimed = TaskDecider.Claim(task, DomainId.New(), DomainId.New(), DomainId.New(), Now);
         claimed.LeaseGeneration.Should().Be(2, "a follow-up claim moves the fencing token like any other");

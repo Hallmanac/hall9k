@@ -106,6 +106,8 @@ public sealed class TaskDetailsProjection : SingleStreamProjection<TaskDetails, 
     public void Apply(IEvent<TaskReopened> @event, TaskDetails view)
     {
         view.FollowUpBranch = @event.Data.Branch;
+        view.ClaimedByNodeId = null;
+        view.CurrentRunId = null;
         view.State = TaskState.Queued;
         view.FinishedAt = null;
     }
