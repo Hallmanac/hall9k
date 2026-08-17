@@ -96,5 +96,13 @@ never by agents.
 
 - Slice 1 before anything shiny; check SLICE-1.md before inventing work.
 - Decisions get appended to PLAN.md §16 (v0 Decisions Log) as they're made.
+- **Standing rules carry their origin incident.** When a failure produces a new rule (in
+  this file, the decisions log, or a skill), record the concrete incident that created it
+  alongside the rule — so future readers know why it exists and when it might not apply.
+  A rulebook is an accumulation of documented scars, not decrees.
+- **Never guess at unobserved facts.** Audit fields, history, and identifiers record what
+  was actually observed; the unobserved is represented as explicitly unknown (sentinels,
+  nulls, honest labels like "purged per policy") — never plausibly filled in. An audit
+  trail that guesses at provenance is worse than one that admits the gap.
 - Every dependency or pattern choice gets a one-line "why" and a one-line "does this block
   the later vision?"
