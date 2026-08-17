@@ -5,7 +5,8 @@ vertical slices, inline `SingleStreamProjection` only, UUIDNext v7 IDs, Marten 8
 WolverineFx 5.x, value objects over primitives and enums (§8).
 
 Folder layout mirrors NTS: `Hall9k.Domain/Features/{Feature}/` with the aggregate at the slice
-root. **Subfolders (`Commands/`, `Events/`, `Handlers/`, `Queries/`, `Projections/`, `Documents/`)
+root. The Task slice's folder/namespace is `Tasks` (plural) — a namespace segment named
+`Task` shadows `System.Threading.Tasks.Task` inside it. **Subfolders (`Commands/`, `Events/`, `Handlers/`, `Queries/`, `Projections/`, `Documents/`)
 are used only where a slice is big enough to want them** — Task, Run, Project. Tiny slices
 (Owner, Node, Connection) stay flat: aggregate, event(s), and projection as sibling files, no
 subfolders until growth demands them. (Subfolders are interior organization of a slice, not part
@@ -37,6 +38,7 @@ The §3.3 lifecycle mixes two concerns. Here they separate cleanly:
 - **Task state** (work lifecycle): `Queued → Claimed → NeedsHuman ⇄ Claimed → Done | Failed | Abandoned`
   (+ `NeedsRefinement` reserved, not built in v0)
 - **Run state** (execution lifecycle): `Dispatched → Running → Verifying → AwaitingReview → Completed | Failed | Killed | Superseded`
+  (`AgentSessionCompleted` enters Verifying — the agent process finishing is not the run finishing)
 
 `h9k status` composes the display state: a claimed task shows its current run's state.
 
@@ -185,14 +187,18 @@ public sealed record VerificationPassed(Guid Id, DateTimeOffset PassedAt);
 public sealed record VerificationFailed(Guid Id, IReadOnlyList<string> FailedGates, DateTimeOffset FailedAt);
 public sealed record PullRequestOpened(Guid Id, string PullRequestUrl, int PullRequestNumber, DateTimeOffset OpenedAt);
 
-public sealed record TokensRecorded(     // from the stream-json result event, per run (§6.4)
+public sealed record AgentSessionCompleted( // the agent's claude process emitted its final result event and
+    Guid Id,                             // exited; verification gates run next. RunState -> Verifying.
+    DateTimeOffset CompletedAt);
+
+public sealed record TokensRecorded(     // from the stream-json result payload, per run (§6.4)
     Guid Id,
     long InputTokens,
     long OutputTokens,
     decimal? CostUsd,
     DateTimeOffset RecordedAt);
 
-public sealed record RunCompleted(Guid Id, DateTimeOffset CompletedAt);
+public sealed record RunCompleted(Guid Id, DateTimeOffset CompletedAt);   // terminal: verified + PR opened
 public sealed record RunFailed(Guid Id, string Reason, DateTimeOffset FailedAt);
 public sealed record RunKilled(Guid Id, KillReason Reason, Guid? KilledByOwnerId, DateTimeOffset KilledAt);
 public sealed record RunSuperseded(Guid Id, int SupersededByGeneration, DateTimeOffset SupersededAt);

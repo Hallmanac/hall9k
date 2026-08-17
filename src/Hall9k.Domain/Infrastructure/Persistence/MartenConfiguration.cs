@@ -2,6 +2,8 @@ using Hall9k.Domain.Features.Connection;
 using Hall9k.Domain.Features.Node;
 using Hall9k.Domain.Features.Owner;
 using Hall9k.Domain.Features.Project.Projections;
+using Hall9k.Domain.Features.Run.Projections;
+using Hall9k.Domain.Features.Tasks.Projections;
 using JasperFx;
 using JasperFx.Events.Projections;
 using Marten;
@@ -40,5 +42,9 @@ public static class MartenConfiguration
         opts.Projections.Add<NodeDetailsProjection>(ProjectionLifecycle.Inline);
         opts.Projections.Add<ConnectionDetailsProjection>(ProjectionLifecycle.Inline);
         opts.Projections.Add<ProjectDetailsProjection>(ProjectionLifecycle.Inline);
+        opts.Projections.Add<TaskDetailsProjection>(ProjectionLifecycle.Inline);
+        opts.Projections.Add<TaskListItemProjection>(ProjectionLifecycle.Inline);
+        opts.Projections.Add<RunDetailsProjection>(ProjectionLifecycle.Inline);
+        opts.Projections.Add<RunListItemProjection>(ProjectionLifecycle.Inline);
     }
 }

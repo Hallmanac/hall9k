@@ -125,11 +125,11 @@ proceed in parallel with S1-08/S1-09/S1-10 once S1-05 lands, if more than one pa
   2. Stdout redirected to `~/.hall9k/runs/<run-id>/stream.jsonl`; the daemon tails the file, not a pipe.
   3. `RunProcessStarted` records PID + process start time; tailing updates `RunActivity`
      (last-activity + cursor).
-  4. The final `result` event — not the exit code — produces `RunCompleted` + `TokensRecorded`
+  4. The final `result` event — not the exit code — produces `AgentSessionCompleted` + `TokensRecorded`
      (tokens parsed from the result payload).
   5. Restart-proof: kill the daemon mid-run; the agent finishes; the restarted daemon adopts via
      PID + start time, resumes tailing from its cursor, and completes the run correctly.
-  6. First end-to-end smoke: a trivial task ("append a line to SCRATCH.md") runs to `RunCompleted`
+  6. First end-to-end smoke: a trivial task ("append a line to SCRATCH.md") runs to `AgentSessionCompleted`
      against a throwaway repo.
 - **Constraints:** macOS implementation of `IProcessManager` only (log #3); no verification/PR yet.
 
@@ -141,7 +141,7 @@ proceed in parallel with S1-08/S1-09/S1-10 once S1-05 lands, if more than one pa
 - **Context:** decision log #15 (VerifyCommand); PLAN.md §6.5 (deterministic gates only — the
   reviewer agent is Slice 3).
 - **Acceptance criteria:**
-  1. After `RunCompleted`, the daemon executes the project's `VerifyCommand`s sequentially in the
+  1. After `AgentSessionCompleted`, the daemon executes the project's `VerifyCommand`s sequentially in the
      worktree; all pass → `VerificationPassed`; any fail → `VerificationFailed` (failed gate names)
      + `TaskFailed`.
   2. Command output captured to `~/.hall9k/runs/<run-id>/verify-<name>.log`.
@@ -155,7 +155,7 @@ proceed in parallel with S1-08/S1-09/S1-10 once S1-05 lands, if more than one pa
 - **Context:** decision log #1 (no co-authored-by); PLAN.md §6.6; `gh` CLI.
 - **Acceptance criteria:**
   1. On `VerificationPassed`: branch pushed, `gh pr create` with title from the objective and body
-     from the run summary + acceptance criteria; `PullRequestOpened` then `TaskCompleted` appended.
+     from the run summary + acceptance criteria; `PullRequestOpened`, then `RunCompleted` + `TaskCompleted` appended.
   2. PR body contains no bot attribution; commits carry no Co-Authored-By trailers.
   3. `RunState` reaches `AwaitingReview`; worktree cleanup per policy fires only after the task closes.
 - **Constraints:** target repo's default branch as PR base (project `BaseBranch`); no auto-merge.
