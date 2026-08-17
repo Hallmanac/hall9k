@@ -19,6 +19,7 @@ using Xunit;
 namespace Hall9k.Tests.Integration;
 
 [Collection("Hall9kHome")]
+[Trait("Category", "RequiresDocker")]
 public sealed class PullRequestOpenerTests(PostgresFixture postgres) : IClassFixture<PostgresFixture>, IDisposable
 {
     private static readonly DateTimeOffset Now = new(2026, 8, 16, 12, 0, 0, TimeSpan.Zero);

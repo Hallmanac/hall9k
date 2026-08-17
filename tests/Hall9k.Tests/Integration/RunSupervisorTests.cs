@@ -24,6 +24,7 @@ namespace Hall9k.Tests.Integration;
 // Both classes redirect the process-wide HALL9K_HOME; sharing a collection serializes
 // them so one test's home is never yanked out from under the other's tail loop.
 [Collection("Hall9kHome")]
+[Trait("Category", "RequiresDocker")]
 public sealed class RunSupervisorTests(PostgresFixture postgres) : IClassFixture<PostgresFixture>, IDisposable
 {
     private static readonly DateTimeOffset Now = new(2026, 8, 16, 12, 0, 0, TimeSpan.Zero);

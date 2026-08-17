@@ -14,6 +14,7 @@ using Xunit;
 
 namespace Hall9k.Tests.Integration;
 
+[Trait("Category", "RequiresDocker")]
 public sealed class ProjectRegistrationTests(PostgresFixture postgres) : IClassFixture<PostgresFixture>
 {
     private static readonly DateTimeOffset Now = new(2026, 8, 16, 12, 0, 0, TimeSpan.Zero);
