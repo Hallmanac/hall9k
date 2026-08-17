@@ -38,11 +38,12 @@ The §3.3 lifecycle mixes two concerns. Here they separate cleanly:
 - **Task state** (work lifecycle): `Queued → Claimed → NeedsHuman ⇄ Claimed → Done | Failed | Abandoned`
   (+ `NeedsRefinement` reserved, not built in v0; `Done → Queued` via `TaskReopened` is the one
   deliberate exit from a terminal state — PR follow-up runs, log #20 and §2.1 below)
-- **Run state** (execution lifecycle): `Dispatched → Running → Verifying → AwaitingReview → Completed | Failed | Killed | Superseded`
+- **Run state** (execution lifecycle): `Dispatched → Running → Verifying → UnderReview → AwaitingReview → Completed | Failed | Killed | Superseded`
   (`AgentSessionCompleted` enters Verifying — the agent process finishing is not the run finishing.
-  During PR closeout, AwaitingReview refines further: `ChecksFailing`, `ReviewPending`, and
-  `CloseoutParked` record what the closeout monitor observed (see §2.2). `Completed` arrives
-  only when the monitor observes the merge.)
+  `UnderReview` is the pre-PR review loop, with `ReviewParked` when it hands the diff to a
+  human (§3.1). During PR closeout, AwaitingReview refines further: `ChecksFailing`,
+  `ReviewPending`, and `CloseoutParked` record what the closeout monitor observed (see §2.2).
+  `Completed` arrives only when the monitor observes the merge.)
 
 `h9k status` composes the display state: a claimed task shows its current run's state.
 
@@ -304,6 +305,37 @@ public sealed record TokensRecorded(     // from the stream-json result payload,
     decimal? CostUsd,
     DateTimeOffset RecordedAt);
 
+// Pre-PR review loop (log #24) — appended by the daemon's ReviewEngine between the gates
+// and PullRequestOpener. Full findings text is a disk artifact (log #6), never payload.
+public sealed record ReviewDispatched(   // independent reviewer spawned over the diff, fresh session.
+    Guid Id,                             // -> UnderReview. Pid + start = adoption identity (log #2).
+    Guid SessionId,
+    int Cycle,                           // review rounds, from 1
+    int ProcessId,
+    DateTimeOffset ProcessStartedAt,
+    DateTimeOffset DispatchedAt);
+public sealed record ReviewCompleted(    // the verdict milestone; findings artifact:
+    Guid Id,                             // review-<cycle>-findings.md in the run directory
+    int Cycle,
+    ReviewVerdict Verdict,               // MergeReady | NeedsFixes | Unknown (no parseable verdict -> park)
+    DateTimeOffset CompletedAt);
+public sealed record ReviewFixDispatched( // fix session in the same worktree, findings as prompt;
+    Guid Id,                             // counted against MaxAutomaticReviewFixRuns
+    Guid SessionId,
+    int Cycle,
+    int ProcessId,
+    DateTimeOffset ProcessStartedAt,
+    DateTimeOffset DispatchedAt);
+public sealed record ReviewFixCompleted( // Fixed/Unknown -> gates re-run, fresh review; Disputed -> park
+    Guid Id,
+    int Cycle,
+    ReviewFixOutcome Outcome,
+    DateTimeOffset CompletedAt);
+public sealed record ReviewParked(       // budget spent, dispute, or no verdict: the human owns the
+    Guid Id,                             // diff. Task stays Claimed, lease retained. -> ReviewParked
+    string Reason,
+    DateTimeOffset ParkedAt);
+
 // Closeout observations (§2.2) — appended by the closeout monitor, never by agents.
 // Provider timestamps are nullable: unreported is recorded as unknown, never guessed.
 public sealed record PullRequestChecksFailed( // CI completed and failed; recorded only once nothing is
@@ -353,14 +385,42 @@ public sealed record ExecutorMode       // Subscription, ApiKey, Unknown
 }
 
 public sealed record KillReason         // BudgetExceeded, HumanRequested, Superseded, Unknown
-public sealed record RunState           // Dispatched, Running, Verifying, AwaitingReview,
-                                        //   ChecksFailing, ReviewPending, CloseoutParked (§2.2),
+public sealed record RunState           // Dispatched, Running, Verifying, UnderReview, ReviewParked (§3.1),
+                                        //   AwaitingReview, ChecksFailing, ReviewPending, CloseoutParked (§2.2),
                                         //   Completed, Failed, Killed, Superseded, Unknown
+public sealed record ReviewVerdict      // MergeReady, NeedsFixes, Unknown (§3.1)
+public sealed record ReviewFixOutcome   // Fixed, Disputed, Unknown (§3.1)
 ```
 
 The `RunAggregate` mirrors the Task shape: sealed class, private setters, one `Apply` per event,
 `RunState` derived. The transcript is **not** here — it's the run's `stream.jsonl` on disk
 (log #2/#6); the stream records milestones only.
+
+### 3.1 The pre-PR review loop (log #24)
+
+`VerificationPassed` no longer leads straight to the PR: the daemon's `ReviewEngine`
+dispatches an **independent review agent** — a separate headless session with fresh
+context, never the session that wrote the code — over the run's diff against the base
+branch. Verified findings only (read the surrounding code, confirm the defect, discard
+the unconfirmed), each with file:line, a defect statement, and a concrete failure
+scenario, closed by a parsed `VERDICT:` line.
+
+- **merge-ready** → `PullRequestOpener` proceeds; the closeout phase (§2.2) begins as before.
+- **needs-fixes** → a fix session runs in the same worktree with the findings as its
+  prompt; the gates re-run; a *fresh* reviewer looks again (review → fix → gates → review).
+  Bounded by `DaemonOptions.MaxAutomaticReviewFixRuns` (default 2, the §2.2 budget
+  pattern); exhaustion parks the run (`ReviewParked` → NeedsHuman in `h9k status`) with
+  the findings artifact attached.
+- **dispute** — the fix run judging a finding not-a-defect or human-territory — parks
+  immediately with both positions on disk (findings + fix-position artifacts) rather
+  than looping on judgment.
+
+A parked run keeps its task Claimed and its lease alive (adoption refreshes the
+heartbeat at startup): the worktree is the human's workspace. Review and fix sessions
+record `TokensRecorded` on the run like any other session, and their transcripts live
+beside the main session's in the run directory (`review-<cycle>-<session>.stream.jsonl`).
+The engine is a state machine over the run stream (`ReviewPhase`, derived in the
+aggregate), so a restarted daemon resumes the loop exactly where the events left off.
 
 ## 4. Reference aggregates (minimal v0 streams)
 
