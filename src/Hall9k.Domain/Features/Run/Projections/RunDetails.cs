@@ -31,6 +31,9 @@ public sealed class RunDetails
     public long OutputTokens { get; set; }
     public decimal? CostUsd { get; set; }
     public List<string> FailedGates { get; set; } = [];
+    /// <summary>Pre-PR review loop (log #24): which round of review the run is on, from 1.</summary>
+    public int ReviewCycle { get; set; }
+    public ReviewVerdict LastReviewVerdict { get; set; } = ReviewVerdict.Unknown;
     public string? FailureReason { get; set; }
     /// <summary>Why closeout was handed to the human — parked is a waiting state, not a failure.</summary>
     public string? ParkedReason { get; set; }
@@ -85,6 +88,21 @@ public sealed class RunDetailsProjection : SingleStreamProjection<RunDetails, Gu
     public void Apply(IEvent<VerificationFailed> @event, RunDetails view) => view.FailedGates = [.. @event.Data.FailedGates];
 
     public void Apply(IEvent<VerificationPassed> @event, RunDetails view) => view.FailedGates = [];
+
+    public void Apply(IEvent<ReviewDispatched> @event, RunDetails view)
+    {
+        view.ReviewCycle = @event.Data.Cycle;
+        view.State = RunState.UnderReview;
+    }
+
+    public void Apply(IEvent<ReviewCompleted> @event, RunDetails view) =>
+        view.LastReviewVerdict = @event.Data.Verdict;
+
+    public void Apply(IEvent<ReviewParked> @event, RunDetails view)
+    {
+        view.ParkedReason = @event.Data.Reason;
+        view.State = RunState.ReviewParked;
+    }
 
     public void Apply(IEvent<PullRequestOpened> @event, RunDetails view)
     {

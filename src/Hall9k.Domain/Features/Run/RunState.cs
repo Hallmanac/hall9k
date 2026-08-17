@@ -10,6 +10,10 @@ public sealed record RunState
     public static readonly RunState Dispatched = new("Dispatched");
     public static readonly RunState Running = new("Running");
     public static readonly RunState Verifying = new("Verifying");
+    /// <summary>Pre-PR review loop (log #24): an independent review or fix session owns the run between the gates and the PR.</summary>
+    public static readonly RunState UnderReview = new("UnderReview");
+    /// <summary>Pre-PR review loop: automatic fixes exhausted or a finding disputed; the human owns the next move. Surfaces as NeedsHuman.</summary>
+    public static readonly RunState ReviewParked = new("ReviewParked");
     public static readonly RunState AwaitingReview = new("AwaitingReview");
     /// <summary>Closeout: the PR's CI checks completed and failed; a fix follow-up (or a park) is on the way.</summary>
     public static readonly RunState ChecksFailing = new("ChecksFailing");
@@ -34,7 +38,7 @@ public sealed record RunState
 
     public bool IsTerminal => this == Completed || this == Failed || this == Killed || this == Superseded;
 
-    public bool IsLive => this == Dispatched || this == Running || this == Verifying;
+    public bool IsLive => this == Dispatched || this == Running || this == Verifying || this == UnderReview;
 
     public static implicit operator string(RunState? value) => value?.Value ?? string.Empty;
 

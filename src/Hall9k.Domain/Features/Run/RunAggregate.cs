@@ -33,6 +33,18 @@ public sealed class RunAggregate
     /// <summary>Review re-requests issued for this run; adds to the task's CloseoutAttempts against the shared budget.</summary>
     public int ReviewRerequestCount { get; private set; }
 
+    /// <summary>The pre-PR review loop (log #24): which round of review the run is on, from 1.</summary>
+    public int ReviewCycle { get; private set; }
+    /// <summary>Automatic fix sessions dispatched so far — checked against DaemonOptions.MaxAutomaticReviewFixRuns.</summary>
+    public int ReviewFixRuns { get; private set; }
+    public ReviewVerdict LastReviewVerdict { get; private set; } = ReviewVerdict.Unknown;
+    public ReviewPhase ReviewPhase { get; private set; } = ReviewPhase.None;
+    /// <summary>The in-flight review or fix session, cleared when its result is recorded. Identity for adoption.</summary>
+    public Guid? ActiveReviewSessionId { get; private set; }
+    public int? ActiveReviewProcessId { get; private set; }
+    public DateTimeOffset? ActiveReviewProcessStartedAt { get; private set; }
+    public bool ActiveReviewSessionIsFix { get; private set; }
+
     private readonly List<string> _failedGates = [];
     public IReadOnlyList<string> FailedGates => _failedGates;
 
@@ -89,6 +101,54 @@ public sealed class RunAggregate
     public void Apply(VerificationPassed @event)
     {
         _failedGates.Clear();
+    }
+
+    public void Apply(ReviewDispatched @event)
+    {
+        ReviewCycle = @event.Cycle;
+        ActiveReviewSessionId = @event.SessionId;
+        ActiveReviewProcessId = @event.ProcessId;
+        ActiveReviewProcessStartedAt = @event.ProcessStartedAt;
+        ActiveReviewSessionIsFix = false;
+        ReviewPhase = ReviewPhase.AwaitingVerdict;
+        State = RunState.UnderReview;
+    }
+
+    public void Apply(ReviewCompleted @event)
+    {
+        LastReviewVerdict = @event.Verdict;
+        ClearActiveReviewSession();
+        ReviewPhase = @event.Verdict == ReviewVerdict.MergeReady ? ReviewPhase.MergeReady : ReviewPhase.FixNeeded;
+    }
+
+    public void Apply(ReviewFixDispatched @event)
+    {
+        ReviewFixRuns++;
+        ActiveReviewSessionId = @event.SessionId;
+        ActiveReviewProcessId = @event.ProcessId;
+        ActiveReviewProcessStartedAt = @event.ProcessStartedAt;
+        ActiveReviewSessionIsFix = true;
+        ReviewPhase = ReviewPhase.AwaitingFix;
+    }
+
+    public void Apply(ReviewFixCompleted @event)
+    {
+        ClearActiveReviewSession();
+        ReviewPhase = @event.Outcome == ReviewFixOutcome.Disputed ? ReviewPhase.Disputed : ReviewPhase.Reverify;
+    }
+
+    public void Apply(ReviewParked @event)
+    {
+        ReviewPhase = ReviewPhase.Parked;
+        State = RunState.ReviewParked;
+    }
+
+    private void ClearActiveReviewSession()
+    {
+        ActiveReviewSessionId = null;
+        ActiveReviewProcessId = null;
+        ActiveReviewProcessStartedAt = null;
+        ActiveReviewSessionIsFix = false;
     }
 
     public void Apply(PullRequestOpened @event)
