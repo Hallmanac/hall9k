@@ -68,6 +68,18 @@ CI runs build + test on ubuntu and windows for every push/PR to main.
 - Branch naming for task work: `task/<id>-<slug>`, created off `origin/main` with `--no-track`.
 - `main` is only ever checked out in the `dev/` worktree; agent worktrees are siblings of `dev/`.
 
+## Repo skills
+
+Repo-resident Claude skills live in `.claude/skills/` and are available in every worktree:
+
+- **commit-plan** — organize the working tree into cohesive, buildable commits ordered for PR review
+- **resolve-copilot-reviews** — triage Copilot review comments on an existing PR: fix, reply, resolve
+- **pr-summary** — generate a PR title/description from the branch's commits (text only — the
+  daemon opens PRs; agents never do)
+
+There is deliberately no create-pr skill: PRs are opened by the daemon (`PullRequestOpener`),
+never by agents.
+
 ## Working agreements
 
 - Slice 1 before anything shiny; check SLICE-1.md before inventing work.
