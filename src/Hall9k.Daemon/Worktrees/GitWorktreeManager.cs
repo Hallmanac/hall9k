@@ -49,6 +49,24 @@ public sealed class GitWorktreeManager(ILogger<GitWorktreeManager> logger) : IWo
             await BestEffortFetchAsync(repositoryPath, cancellationToken);
 
             string branch = request.Branch;
+
+            // Worktrees are retained through closeout (Decisions Log #21), so the branch
+            // is usually still checked out in the previous run's worktree — reuse it (it
+            // IS the follow-up workspace; git also refuses to check the branch out twice).
+            if (await FindWorktreeHoldingBranchAsync(repositoryPath, branch, cancellationToken) is { } retained)
+            {
+                if (Directory.Exists(retained))
+                {
+                    await FastForwardToOriginBestEffortAsync(repositoryPath, retained, branch, cancellationToken);
+                    logger.LogInformation(
+                        "Reusing retained worktree {Path} for follow-up on branch {Branch}", retained, branch);
+                    return new Worktree(retained, branch, branch);
+                }
+
+                // Registered but purged from disk — collect the stale record and recreate.
+                await RunGitAsync(repositoryPath, "worktree prune", cancellationToken);
+            }
+
             string worktreePath = WorktreePathFor(repositoryPath, request.TaskId, request.RunId);
             bool localExists = await RefExistsAsync(repositoryPath, $"refs/heads/{branch}", cancellationToken);
             bool remoteExists = await RefExistsAsync(repositoryPath, $"refs/remotes/origin/{branch}", cancellationToken);
@@ -56,20 +74,7 @@ public sealed class GitWorktreeManager(ILogger<GitWorktreeManager> logger) : IWo
             if (localExists)
             {
                 await RunGitAsync(repositoryPath, $"worktree add \"{worktreePath}\" {branch}", cancellationToken);
-                if (remoteExists)
-                {
-                    // Review feedback may have landed as commits on the PR itself (web-applied
-                    // suggestions); pick them up when it's a clean fast-forward. A divergence
-                    // is a human problem — the run proceeds from the local tip.
-                    (int ffExit, _, string ffError) = await TryRunGitAsync(
-                        worktreePath, $"merge --ff-only origin/{branch}", cancellationToken);
-                    if (ffExit != 0)
-                    {
-                        logger.LogWarning(
-                            "Branch {Branch} could not fast-forward to origin ({Error}); continuing from the local tip",
-                            branch, ffError.Trim());
-                    }
-                }
+                await FastForwardToOriginBestEffortAsync(repositoryPath, worktreePath, branch, cancellationToken);
             }
             else if (remoteExists)
             {
@@ -122,6 +127,107 @@ public sealed class GitWorktreeManager(ILogger<GitWorktreeManager> logger) : IWo
         finally
         {
             mutex.Release();
+        }
+    }
+
+    public async Task DeleteBranchEverywhereAsync(string repositoryPath, string branch, CancellationToken cancellationToken)
+    {
+        repositoryPath = Path.GetFullPath(repositoryPath);
+        SemaphoreSlim mutex = LockFor(repositoryPath);
+        await mutex.WaitAsync(cancellationToken);
+        try
+        {
+            // -D, not -d: PRs land via rebase merge, so the branch tip is never an ancestor
+            // of the base branch. The caller's merged-PR observation is the justification.
+            (int localExit, _, string localError) = await TryRunGitAsync(
+                repositoryPath, $"branch -D \"{branch}\"", cancellationToken);
+            if (localExit != 0)
+            {
+                logger.LogDebug("Local branch {Branch} not deleted ({Error})", branch, localError.Trim());
+            }
+
+            (int originExit, _, _) = await TryRunGitAsync(repositoryPath, "remote get-url origin", cancellationToken);
+            if (originExit == 0)
+            {
+                // The merge often deletes the remote branch already; a failure here is expected.
+                (int remoteExit, _, string remoteError) = await TryRunGitAsync(
+                    repositoryPath, $"push origin --delete \"{branch}\"", cancellationToken);
+                if (remoteExit != 0)
+                {
+                    logger.LogDebug("Remote branch {Branch} not deleted ({Error})", branch, remoteError.Trim());
+                }
+
+                (int pruneExit, _, string pruneError) = await TryRunGitAsync(
+                    repositoryPath, "fetch --prune origin", cancellationToken);
+                if (pruneExit != 0)
+                {
+                    logger.LogWarning("git fetch --prune failed for {Repository} ({Error})", repositoryPath, pruneError.Trim());
+                }
+            }
+
+            // Best effort by design: local/remote deletion failures are logged above and
+            // are often expected (the merge may have deleted the remote branch already).
+            logger.LogInformation(
+                "Branch {Branch} cleanup pass finished for {Repository} (local {LocalOutcome}, remote push {RemoteOutcome})",
+                branch, repositoryPath,
+                localExit == 0 ? "deleted" : "not deleted",
+                originExit == 0 ? "attempted" : "skipped");
+        }
+        finally
+        {
+            mutex.Release();
+        }
+    }
+
+    /// <summary>Scans git worktree list for the worktree (other than the repo itself) holding the branch.</summary>
+    private static async Task<string?> FindWorktreeHoldingBranchAsync(
+        string repositoryPath, string branch, CancellationToken cancellationToken)
+    {
+        (int exitCode, string output, _) = await TryRunGitAsync(
+            repositoryPath, "worktree list --porcelain", cancellationToken);
+        if (exitCode != 0)
+        {
+            return null;
+        }
+
+        string? currentPath = null;
+        foreach (string line in output.Split('\n', StringSplitOptions.TrimEntries))
+        {
+            if (line.StartsWith("worktree ", StringComparison.Ordinal))
+            {
+                currentPath = line["worktree ".Length..];
+            }
+            else if (line == $"branch refs/heads/{branch}"
+                && currentPath is not null
+                && Path.GetFullPath(currentPath) != repositoryPath)
+            {
+                return currentPath;
+            }
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// Review feedback may have landed as commits on the PR itself (web-applied
+    /// suggestions); pick them up when it's a clean fast-forward. A divergence is a
+    /// human problem — the run proceeds from the local tip.
+    /// </summary>
+    private async Task FastForwardToOriginBestEffortAsync(
+        string repositoryPath, string worktreePath, string branch, CancellationToken cancellationToken)
+    {
+        if (!await RefExistsAsync(repositoryPath, $"refs/remotes/origin/{branch}", cancellationToken))
+        {
+            return;
+        }
+
+        (int ffExit, _, string ffError) = await TryRunGitAsync(
+            worktreePath, $"merge --ff-only origin/{branch}", cancellationToken);
+        if (ffExit != 0)
+        {
+            logger.LogWarning(
+                "Branch {Branch} could not fast-forward to origin ({Error}); continuing from the local tip",
+                branch, ffError.Trim());
         }
     }
 

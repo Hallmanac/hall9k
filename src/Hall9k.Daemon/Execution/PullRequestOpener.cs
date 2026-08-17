@@ -1,7 +1,6 @@
 using Hall9k.Domain.Infrastructure.Storage;
 using System.Diagnostics;
 using System.Text;
-using Hall9k.Daemon.Worktrees;
 using Hall9k.Domain.Features.Run.Events;
 using Hall9k.Domain.Features.Run.Projections;
 using Hall9k.Domain.Features.Tasks;
@@ -13,15 +12,17 @@ using Marten;
 namespace Hall9k.Daemon.Execution;
 
 /// <summary>
-/// The last link of the Slice-1 pipeline: push the task branch, open the PR as the owner
-/// (PLAN.md §6.6 — no bot attribution anywhere), complete the task, release the lease,
-/// remove the worktree (the branch is safe on the remote). The run stays AwaitingReview —
-/// merge detection is post-v0, and RunCompleted waits for it. Non-GitHub origins still get
-/// the branch pushed and the task completed, just without a PR.
+/// Opens the closeout phase (Decisions Log #18): push the task branch, open the PR as
+/// the owner (PLAN.md §6.6 — no bot attribution anywhere), complete the task, release
+/// the lease. The run stays AwaitingReview for the closeout monitor, which appends
+/// RunCompleted when it observes the merge. The worktree is deliberately retained — it
+/// IS the follow-up workspace for review resolution and CI fixes (log #21; origin
+/// incident: worktrees deleted at PR-open had to be recreated by hand for PRs 4 and 5).
+/// Removal happens at closeout completion, in the CloseoutEngine. Non-GitHub origins
+/// still get the branch pushed and the task completed, just without a PR.
 /// </summary>
 public sealed class PullRequestOpener(
     IDocumentStore store,
-    IWorktreeManager worktrees,
     ILogger<PullRequestOpener> logger)
 {
     public async Task OpenAsync(Guid runId, Guid taskId, CancellationToken cancellationToken)
@@ -79,8 +80,6 @@ public sealed class PullRequestOpener(
                     _ => "Run {RunId}: branch pushed (origin is not GitHub; no PR) — task complete",
                 },
                 runId, pullRequestUrl);
-
-            await RemoveWorktreeBestEffortAsync(project.RepositoryPath, run.WorktreePath, cancellationToken);
         }
         catch (Exception exception) when (exception is not OperationCanceledException)
         {
@@ -199,19 +198,6 @@ public sealed class PullRequestOpener(
             ? (await standardOutput).Trim() + (await standardError).Trim()
             : throw new InvalidOperationException(
                 $"{fileName} {string.Join(' ', arguments)} exited {process.ExitCode}: {(await standardError).Trim()}");
-    }
-
-    private async Task RemoveWorktreeBestEffortAsync(
-        string repositoryPath, string worktreePath, CancellationToken cancellationToken)
-    {
-        try
-        {
-            await worktrees.RemoveAsync(repositoryPath, worktreePath, cancellationToken);
-        }
-        catch (Exception exception) when (exception is not OperationCanceledException)
-        {
-            logger.LogWarning(exception, "Worktree removal failed for {Path} (branch is pushed; safe to prune later)", worktreePath);
-        }
     }
 
     private async Task RecordFailureAsync(Guid runId, Guid taskId, string reason, CancellationToken cancellationToken)

@@ -119,6 +119,69 @@ public sealed class GitWorktreeManagerTests : IDisposable
     }
 
     [Fact]
+    public async Task Checkout_existing_reuses_the_retained_worktree_still_holding_the_branch()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(1));
+        Guid taskId = DomainId.New();
+
+        // First run's worktree is retained through closeout (log #21) — the branch is
+        // still checked out there, so a fresh worktree add would be refused by git anyway.
+        Worktree first = await _manager.CreateAsync(
+            new WorktreeRequest(_repositoryPath, "main", taskId, DomainId.New(), "Reuse my worktree"), cts.Token);
+        File.WriteAllText(Path.Combine(first.Path, "WORK.md"), "first run\n");
+        Git(first.Path, "add -A");
+        Git(first.Path, "-c user.name=Test -c user.email=t@t commit -qm work");
+        Git(first.Path, $"push -q origin {first.Branch}");
+
+        // Review feedback lands as a commit on the PR branch remotely (web-applied suggestion).
+        string reviewer = Path.Combine(_root, "reviewer-reuse");
+        Git(_root, $"clone \"{Path.Combine(_root, "origin.git")}\" \"{reviewer}\"");
+        Git(reviewer, $"checkout -q {first.Branch}");
+        File.WriteAllText(Path.Combine(reviewer, "SUGGESTION.md"), "applied suggestion\n");
+        Git(reviewer, "add -A");
+        Git(reviewer, "-c user.name=Rev -c user.email=r@r commit -qm suggestion");
+        Git(reviewer, $"push -q origin {first.Branch}");
+
+        Worktree followUp = await _manager.CheckoutExistingAsync(
+            new FollowUpWorktreeRequest(_repositoryPath, first.Branch, taskId, DomainId.New()), cts.Token);
+
+        // Path equality is by name: on macOS git resolves /var through the /private symlink.
+        Path.GetFileName(followUp.Path).Should().Be(
+            Path.GetFileName(first.Path), "the retained worktree IS the follow-up workspace");
+        followUp.Branch.Should().Be(first.Branch);
+        (_, string list) = TryGit(_repositoryPath, "worktree list");
+        list.Trim().Split('\n').Should().HaveCount(2, "no second worktree is created for the follow-up");
+        File.Exists(Path.Combine(followUp.Path, "SUGGESTION.md")).Should().BeTrue(
+            "the reused worktree fast-forwards to commits landed on the PR remotely");
+    }
+
+    [Fact]
+    public async Task Delete_branch_everywhere_removes_local_remote_and_tracking_refs()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(1));
+        Guid taskId = DomainId.New();
+
+        Worktree worktree = await _manager.CreateAsync(
+            new WorktreeRequest(_repositoryPath, "main", taskId, DomainId.New(), "Delete me everywhere"), cts.Token);
+        File.WriteAllText(Path.Combine(worktree.Path, "WORK.md"), "merged work\n");
+        Git(worktree.Path, "add -A");
+        Git(worktree.Path, "-c user.name=Test -c user.email=t@t commit -qm work");
+        Git(worktree.Path, $"push -q origin {worktree.Branch}");
+        Git(_repositoryPath, "fetch -q origin");
+
+        // Closeout order: worktree first (a checked-out branch cannot be deleted), then branches.
+        await _manager.RemoveAsync(_repositoryPath, worktree.Path, cts.Token);
+        await _manager.DeleteBranchEverywhereAsync(_repositoryPath, worktree.Branch, cts.Token);
+
+        TryGit(_repositoryPath, $"rev-parse --verify refs/heads/{worktree.Branch}")
+            .ExitCode.Should().NotBe(0, "the local branch is deleted");
+        TryGit(_repositoryPath, $"rev-parse --verify refs/remotes/origin/{worktree.Branch}")
+            .ExitCode.Should().NotBe(0, "the remote-tracking ref is pruned");
+        TryGit(Path.Combine(_root, "origin.git"), $"rev-parse --verify refs/heads/{worktree.Branch}")
+            .ExitCode.Should().NotBe(0, "the remote branch is deleted");
+    }
+
+    [Fact]
     public async Task Checkout_existing_recreates_from_origin_when_only_the_remote_has_the_branch()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(1));
