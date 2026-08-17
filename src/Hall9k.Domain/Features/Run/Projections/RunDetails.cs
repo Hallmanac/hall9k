@@ -82,6 +82,13 @@ public sealed class RunDetailsProjection : SingleStreamProjection<RunDetails, Gu
         view.State = RunState.AwaitingReview;
     }
 
+    public void Apply(IEvent<PullRequestUpdated> @event, RunDetails view)
+    {
+        view.PullRequestUrl = @event.Data.PullRequestUrl;
+        view.PullRequestNumber = @event.Data.PullRequestNumber;
+        view.State = RunState.AwaitingReview;
+    }
+
     public void Apply(IEvent<RunCompleted> @event, RunDetails view)
     {
         view.State = RunState.Completed;

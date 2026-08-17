@@ -43,6 +43,27 @@ public sealed class RunAggregateTests
     }
 
     [Fact]
+    public void Follow_up_run_reaches_awaiting_review_through_pull_request_updated()
+    {
+        RunAggregate run = new();
+        Guid id = DomainId.New();
+
+        run.Apply(new RunDispatched(
+            id, DomainId.New(), DomainId.New(), DomainId.New(), LeaseGeneration: 2,
+            SessionId: DomainId.New(), WorktreePath: "/wt/x", Branch: "task/x",
+            ExecutorMode.Subscription, Now));
+        run.Apply(new RunProcessStarted(id, ProcessId: 4483, Now));
+        run.Apply(new AgentSessionCompleted(id, Now));
+        run.Apply(new VerificationPassed(id, Now));
+
+        run.Apply(new PullRequestUpdated(id, "https://github.com/x/y/pull/7", 7, Now));
+
+        run.State.Should().Be(RunState.AwaitingReview, "a follow-up updates the existing PR instead of opening one");
+        run.PullRequestUrl.Should().Be("https://github.com/x/y/pull/7");
+        run.PullRequestNumber.Should().Be(7);
+    }
+
+    [Fact]
     public void Superseded_run_is_terminal_with_the_superseding_generation_recorded()
     {
         RunAggregate run = new();
