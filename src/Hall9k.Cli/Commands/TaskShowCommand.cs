@@ -23,7 +23,7 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
         using var store = CliStore.Open();
         await using IQuerySession session = store.QuerySession();
 
-        Guid taskId = await ResolveIdAsync(session, settings.Id, cancellationToken);
+        Guid taskId = await TaskIdResolver.ResolveAsync(session, settings.Id, cancellationToken);
         TaskDetails details = await session.LoadAsync<TaskDetails>(taskId, cancellationToken)
             ?? throw new DomainNotFoundException($"No task {taskId}.");
 
@@ -100,26 +100,4 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
         return ExitCodes.Ok;
     }
 
-    private static async Task<Guid> ResolveIdAsync(IQuerySession session, string idOrPrefix, CancellationToken cancellationToken)
-    {
-        if (Guid.TryParse(idOrPrefix, out Guid id))
-        {
-            return id;
-        }
-
-        IReadOnlyList<TaskListItem> all = await session.Query<TaskListItem>().ToListAsync(cancellationToken);
-        Guid[] matches = [.. all
-            .Where(t => t.Id.ToString("N").StartsWith(Normalize(idOrPrefix), StringComparison.OrdinalIgnoreCase)
-                     || t.Id.ToString("N").EndsWith(Normalize(idOrPrefix), StringComparison.OrdinalIgnoreCase))
-            .Select(t => t.Id)];
-
-        return matches switch
-        {
-            [Guid single] => single,
-            [] => throw new DomainNotFoundException($"No task matches '{idOrPrefix}'."),
-            _ => throw new DomainConflictException($"'{idOrPrefix}' is ambiguous ({matches.Length} matches) — use more characters."),
-        };
-    }
-
-    private static string Normalize(string idFragment) => idFragment.Replace("-", "");
 }

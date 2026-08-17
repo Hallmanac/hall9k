@@ -1,3 +1,4 @@
+using Hall9k.Daemon.Execution;
 using Hall9k.Daemon.Worktrees;
 using Hall9k.Domain.Features.Project.Projections;
 using Marten;
@@ -16,6 +17,8 @@ public sealed class DispatchLoop(
     DaemonConnection connection,
     NodeContext node,
     DispatchEngine engine,
+    RunSupervisor supervisor,
+    RunLauncher launcher,
     IWorktreeManager worktrees,
     IOptions<DaemonOptions> options,
     ILogger<DispatchLoop> logger) : BackgroundService
@@ -31,7 +34,7 @@ public sealed class DispatchLoop(
 
         // Startup order matters: reattach before declaring anything dead, requeue the
         // genuinely abandoned, and only then take new work.
-        await engine.AdoptOrphansAsync(stoppingToken);
+        await supervisor.AdoptOrphansAsync(stoppingToken);
         await engine.SweepExpiredLeasesAsync(stoppingToken);
         await PruneRegisteredRepositoriesAsync(stoppingToken);
 
@@ -42,10 +45,11 @@ public sealed class DispatchLoop(
             try
             {
                 await engine.SweepExpiredLeasesAsync(stoppingToken);
-                int claimed = await engine.ClaimEligibleAsync(stoppingToken);
-                if (claimed > 0)
+                IReadOnlyList<ClaimedWork> claimed = await engine.ClaimEligibleAsync(stoppingToken);
+                foreach (ClaimedWork work in claimed)
                 {
-                    logger.LogInformation("Claimed {Count} task(s)", claimed);
+                    await launcher.LaunchAsync(
+                        work.TaskId, work.RunId, node.NodeId, node.OwnerId, work.LeaseGeneration, stoppingToken);
                 }
             }
             catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)

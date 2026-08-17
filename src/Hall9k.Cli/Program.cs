@@ -15,6 +15,8 @@ app.Configure(config =>
         project.SetDescription("Manage projects");
         project.AddCommand<ProjectAddCommand>("add")
             .WithDescription("Register a project (repo path, base branch, connection binding)");
+        project.AddCommand<ProjectSetCommand>("set")
+            .WithDescription("Change project settings: verify gates, skip-permissions, links, parallelism");
     });
 
     config.AddBranch("task", task =>
@@ -26,6 +28,8 @@ app.Configure(config =>
             .WithDescription("List tasks across projects");
         task.AddCommand<TaskShowCommand>("show")
             .WithDescription("Task detail: contract, conversation, runs");
+        task.AddCommand<TaskAbandonCommand>("abandon")
+            .WithDescription("Abandon a task (terminal; releases any lease)");
     });
 });
 

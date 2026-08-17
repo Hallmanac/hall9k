@@ -1,5 +1,6 @@
 using Hall9k.Daemon;
 using Hall9k.Daemon.Dispatch;
+using Hall9k.Daemon.Execution;
 using Hall9k.Daemon.ProcessManagement;
 using Hall9k.Daemon.Worktrees;
 using Hall9k.Domain;
@@ -20,6 +21,9 @@ builder.Services.AddSingleton<NodeContext>();
 builder.Services.AddSingleton<IProcessManager, UnixProcessManager>();
 builder.Services.AddSingleton<IWorktreeManager, GitWorktreeManager>();
 builder.Services.AddSingleton<DispatchEngine>();
+builder.Services.AddSingleton<IExecutor, ClaudeExecutor>();
+builder.Services.AddSingleton<RunSupervisor>();
+builder.Services.AddSingleton<RunLauncher>();
 
 builder.Services.AddMartenEventStore(connectionString, AutoCreate.CreateOnly)
     .IntegrateWithWolverine();

@@ -1,7 +1,6 @@
 using FluentAssertions;
 using Hall9k.Daemon;
 using Hall9k.Daemon.Dispatch;
-using Hall9k.Daemon.ProcessManagement;
 using Hall9k.Domain.Features.Tasks;
 using Hall9k.Domain.Features.Tasks.Documents;
 using Hall9k.Domain.Features.Tasks.Handlers;
@@ -35,8 +34,7 @@ public sealed class DispatchEngineTests(PostgresFixture postgres) : IClassFixtur
 
         DaemonOptions options = new() { MaxConcurrentRuns = 3, LeaseTimeout = TimeSpan.FromSeconds(60) };
         DispatchEngine engine = new(
-            store, node, new UnixProcessManager(), Options.Create(options),
-            NullLogger<DispatchEngine>.Instance);
+            store, node, Options.Create(options), NullLogger<DispatchEngine>.Instance);
 
         // Five queued tasks, cap of three.
         await using (IDocumentSession seed = store.LightweightSession())
@@ -52,8 +50,8 @@ public sealed class DispatchEngineTests(PostgresFixture postgres) : IClassFixtur
             await seed.SaveChangesAsync(cts.Token);
         }
 
-        (await engine.ClaimEligibleAsync(cts.Token)).Should().Be(3, "the cap limits claims");
-        (await engine.ClaimEligibleAsync(cts.Token)).Should().Be(0, "capacity is exhausted until something finishes");
+        (await engine.ClaimEligibleAsync(cts.Token)).Should().HaveCount(3, "the cap limits claims");
+        (await engine.ClaimEligibleAsync(cts.Token)).Should().BeEmpty("capacity is exhausted until something finishes");
 
         await using (IQuerySession query = store.QuerySession())
         {
@@ -82,7 +80,7 @@ public sealed class DispatchEngineTests(PostgresFixture postgres) : IClassFixtur
 
         // Freed capacity: the next cycle claims again, and the requeued task's next claim
         // carries generation 2 — the fencing token moved on (log #7).
-        (await engine.ClaimEligibleAsync(cts.Token)).Should().Be(1);
+        (await engine.ClaimEligibleAsync(cts.Token)).Should().HaveCount(1);
 
         await using (IQuerySession query = store.QuerySession())
         {
