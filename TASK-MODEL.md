@@ -39,7 +39,10 @@ The §3.3 lifecycle mixes two concerns. Here they separate cleanly:
   (+ `NeedsRefinement` reserved, not built in v0; `Done → Queued` via `TaskReopened` is the one
   deliberate exit from a terminal state — PR follow-up runs, log #20 and §2.1 below)
 - **Run state** (execution lifecycle): `Dispatched → Running → Verifying → AwaitingReview → Completed | Failed | Killed | Superseded`
-  (`AgentSessionCompleted` enters Verifying — the agent process finishing is not the run finishing)
+  (`AgentSessionCompleted` enters Verifying — the agent process finishing is not the run finishing.
+  During PR closeout, AwaitingReview refines further: `ChecksFailing`, `ReviewPending`, and
+  `CloseoutParked` record what the closeout monitor observed (see §2.2). `Completed` arrives
+  only when the monitor observes the merge.)
 
 `h9k status` composes the display state: a claimed task shows its current run's state.
 
@@ -98,7 +101,13 @@ public sealed record TaskReopened(       // Done -> Queued for a follow-up run o
                                          // the PR URL already does (TaskCompleted) and isn't repeated
     string? Reason,
     DateTimeOffset ReopenedAt,
-    Guid ReopenedByOwnerId);
+    Guid ReopenedByOwnerId,
+    FollowUpKind? Kind = null,           // ReviewFeedback | FailingChecks; the launcher picks the
+                                         // follow-up prompt from it. Null (pre-vocabulary events) = Unknown,
+                                         // treated as ReviewFeedback (the historic meaning)
+    bool Automatic = false);             // true when the closeout monitor reopened, false for a human
+                                         // (h9k pr resolve). Automatic reopens count against the bounded
+                                         // closeout budget; a manual reopen resets it (log #22, §2.2)
 
 // Reserved, not built in v0:
 // public sealed record TaskSentToRefinement(...);
@@ -123,6 +132,9 @@ public sealed class TaskAggregate
     public string? PullRequestUrl { get; private set; }  // from TaskCompleted; survives a reopen
     public string? FollowUpBranch { get; private set; }  // set by TaskReopened, cleared by TaskCompleted:
                                                          // while set, the next claim resumes this branch
+    public FollowUpKind FollowUpKind { get; private set; } // why the pending follow-up exists (prompt selection)
+    public int CloseoutAttempts { get; private set; }    // automatic reopens since the last human touch:
+                                                         // the bounded closeout-retry counter (§2.2)
 
     private readonly List<string> _acceptanceCriteria = [];
     public IReadOnlyList<string> AcceptanceCriteria => _acceptanceCriteria;
@@ -166,6 +178,42 @@ on the stream — the feature is PR closeout, not general task resurrection. `Ta
 consumes `FollowUpBranch`, so a completed follow-up leaves the task exactly as a first
 completion does — reopenable again if more feedback arrives.
 
+### 2.2 The closeout phase (automatic monitor, log #18/#22)
+
+`PullRequestOpened` starts a phase, not an epilogue: the daemon's closeout monitor
+(`PullRequestMonitor`/`CloseoutEngine`) polls each awaiting-review PR through gh on a
+gentle interval. Each node watches the runs **it** executed (`RunDetails.NodeId`); the
+task itself is Done and lease-free, so run provenance is the only honest owner. Per poll,
+in priority order:
+
+- **Merged** → `PullRequestMerged` + `RunCompleted` on the run (the reserved terminal
+  event finds its meaning). The retained worktree (log #21) is removed and the task branch
+  deleted everywhere it lingers: locally (`git branch -D`; rebase merges mean the tip is
+  never an ancestor, the observed merge is the justification), on the remote (if the merge
+  didn't already), and in remote-tracking refs (`git fetch --prune`).
+- **Closed without merge** → `PullRequestClosed`; the run fails honestly, the worktree is
+  removed, the branch is kept (it still holds unmerged work).
+- **Checks completed and failing** (never acted on while any check is pending) →
+  `PullRequestChecksFailed`, then an automatic `TaskReopened` (Kind = FailingChecks) in
+  the same transaction. The follow-up flows through the unchanged claim/launch pipeline
+  with the fix-the-CI prompt.
+- **Unresolved Copilot review threads** → `ReviewFeedbackReceived`, then an automatic
+  `TaskReopened` (Kind = ReviewFeedback) with the resolve-copilot-reviews prompt.
+
+**Bounded retries.** `TaskAggregate.CloseoutAttempts` counts automatic reopens since the
+last human-initiated one. At the budget (DaemonOptions.MaxAutomaticCloseoutRuns, default
+2) the monitor appends `CloseoutParked` on the run instead of reopening: the task **stays
+Done** (deliberately, since parking must not break `h9k pr resolve`, whose guard requires
+Done, and merge detection continues for parked runs), the run parks with the reason, and
+`h9k status` surfaces it as NeedsHuman. A manual `h9k pr resolve` resets the budget; the
+human asking for another attempt is a fresh grant.
+
+**Display composition** (`h9k status`): Done+PR refines by the current run's state.
+AwaitingReview while quiet, ChecksFailing/ReviewPending when observed, NeedsHuman when
+parked, Done once merged (or closed). A Queued/Claimed task still carrying a PR URL is a
+follow-up in flight: ClosingOut. A watched run that is no longer the task's current run
+is retired with `RunSuperseded` (a newer follow-up owns the PR).
+
 ### Claim atomicity
 
 The daemon claims by appending `TaskClaimed` with Marten's **optimistic concurrency on the
@@ -191,6 +239,7 @@ public sealed record TaskType           // Feature, Bugfix, Refactor, Chore, Res
 public sealed record TaskState          // Queued, Claimed, NeedsHuman, Done, Failed, Abandoned, Unknown
                                         //   (+ NeedsRefinement reserved, not built in v0)
 public sealed record RequeueReason      // LeaseExpired, RunFailedRetryable, HumanRequested, Unknown
+public sealed record FollowUpKind       // ReviewFeedback, FailingChecks, Unknown (§2.2 — prompt selection)
 ```
 
 ## 3. Run slice
@@ -241,7 +290,30 @@ public sealed record TokensRecorded(     // from the stream-json result payload,
     decimal? CostUsd,
     DateTimeOffset RecordedAt);
 
-public sealed record RunCompleted(Guid Id, DateTimeOffset CompletedAt);   // terminal: verified + PR opened
+// Closeout observations (§2.2) — appended by the closeout monitor, never by agents.
+// Provider timestamps are nullable: unreported is recorded as unknown, never guessed.
+public sealed record PullRequestChecksFailed( // CI completed and failed; recorded only once nothing is
+    Guid Id,                             // pending, so FailedChecks is the full picture. -> ChecksFailing
+    IReadOnlyList<string> FailedChecks,
+    DateTimeOffset ObservedAt);
+public sealed record ReviewFeedbackReceived(  // unresolved Copilot review threads. -> ReviewPending
+    Guid Id,
+    int UnresolvedThreadCount,
+    DateTimeOffset ObservedAt);
+public sealed record CloseoutParked(     // automatic budget spent; the human owns the PR now, the monitor
+    Guid Id,                             // keeps watching for merge/close only. -> CloseoutParked
+    string Reason,
+    DateTimeOffset ParkedAt);
+public sealed record PullRequestMerged(  // the merge observed; RunCompleted follows in the same transaction
+    Guid Id,
+    DateTimeOffset? MergedAt,            // GitHub's timestamp via gh; null when unreported
+    DateTimeOffset ObservedAt);
+public sealed record PullRequestClosed(  // closed without merge: run -> Failed, branch kept
+    Guid Id,
+    DateTimeOffset? ClosedAt,
+    DateTimeOffset ObservedAt);
+
+public sealed record RunCompleted(Guid Id, DateTimeOffset CompletedAt);   // terminal: the PR merged (§2.2)
 public sealed record RunFailed(Guid Id, string Reason, DateTimeOffset FailedAt);
 public sealed record RunKilled(Guid Id, KillReason Reason, Guid? KilledByOwnerId, DateTimeOffset KilledAt);
 public sealed record RunSuperseded(Guid Id, int SupersededByGeneration, DateTimeOffset SupersededAt);
@@ -258,6 +330,7 @@ public sealed record ExecutorMode       // Subscription, ApiKey, Unknown
 
 public sealed record KillReason         // BudgetExceeded, HumanRequested, Superseded, Unknown
 public sealed record RunState           // Dispatched, Running, Verifying, AwaitingReview,
+                                        //   ChecksFailing, ReviewPending, CloseoutParked (§2.2),
                                         //   Completed, Failed, Killed, Superseded, Unknown
 ```
 
