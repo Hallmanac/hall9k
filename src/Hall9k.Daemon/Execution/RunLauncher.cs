@@ -60,8 +60,12 @@ public sealed class RunLauncher(
                 IsFollowUp: followUp is not null));
             await session.SaveChangesAsync(cancellationToken);
 
+            // The reopen's kind picks the follow-up prompt; Unknown (reopens recorded
+            // before the vocabulary existed) keeps the historic review-feedback meaning.
             string prompt = followUp is { } review
-                ? AgentPromptBuilder.BuildFollowUp(task, project, worktree.Branch, review.PullRequestUrl)
+                ? task.FollowUpKind == Domain.Features.Tasks.FollowUpKind.FailingChecks
+                    ? AgentPromptBuilder.BuildFixChecks(task, project, worktree.Branch, review.PullRequestUrl)
+                    : AgentPromptBuilder.BuildFollowUp(task, project, worktree.Branch, review.PullRequestUrl)
                 : AgentPromptBuilder.Build(task, project, worktree.Branch, worktree.Path);
             SpawnedAgent agent = await executor.SpawnAsync(
                 new AgentSpawnRequest(runId, sessionId, worktree.Path, prompt, mode, project.SkipPermissions),
