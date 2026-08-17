@@ -93,6 +93,12 @@ public static class AgentPromptBuilder
         prompt.AppendLine("redo the original work.");
         prompt.AppendLine();
 
+        if (task.FollowUpReason.IsNotBlank())
+        {
+            prompt.AppendLine($"Why this follow-up was dispatched: {task.FollowUpReason}");
+            prompt.AppendLine();
+        }
+
         prompt.AppendLine("## Original objective (context, already implemented)");
         prompt.AppendLine();
         prompt.AppendLine(task.Objective);
@@ -121,6 +127,62 @@ public static class AgentPromptBuilder
         prompt.AppendLine("  existing PR updates in place.");
         prompt.AppendLine("- End with a short summary: which comments you addressed, which you dismissed and");
         prompt.AppendLine("  why, and any open questions.");
+
+        return prompt.ToString();
+    }
+
+    /// <summary>
+    /// The fix-the-CI variant (closeout monitor, Decisions Log #22): the agent resumes
+    /// the task's existing PR branch to make the pull request's failing checks pass.
+    /// The platform re-verifies and pushes; the PR updates in place.
+    /// </summary>
+    public static string BuildFixChecks(TaskDetails task, ProjectDetails project, string branch, string pullRequestUrl)
+    {
+        StringBuilder prompt = new();
+        prompt.AppendLine("# Follow-up task: fix the failing CI checks on an existing pull request");
+        prompt.AppendLine();
+        prompt.AppendLine($"Pull request: {pullRequestUrl}");
+        prompt.AppendLine();
+        prompt.AppendLine("The original task below already shipped in the pull request above, but its CI");
+        prompt.AppendLine("checks are failing. Your job is to make the checks pass — not to redo the");
+        prompt.AppendLine("original work.");
+        prompt.AppendLine();
+
+        if (task.FollowUpReason.IsNotBlank())
+        {
+            prompt.AppendLine($"Why this follow-up was dispatched: {task.FollowUpReason}");
+            prompt.AppendLine();
+        }
+
+        prompt.AppendLine("## Original objective (context, already implemented)");
+        prompt.AppendLine();
+        prompt.AppendLine(task.Objective);
+        prompt.AppendLine();
+
+        if (project.ContextLinks.Count > 0)
+        {
+            prompt.AppendLine("## Project links (fetch yourself as needed)");
+            prompt.AppendLine();
+            foreach (var link in project.ContextLinks)
+            {
+                prompt.AppendLine($"- {link.Name}: {link.Url}");
+            }
+
+            prompt.AppendLine();
+        }
+
+        prompt.AppendLine("## Working rules");
+        prompt.AppendLine();
+        prompt.AppendLine("- You are in an isolated git worktree checked out on the EXISTING pull-request");
+        prompt.AppendLine($"  branch `{branch}`. Work only here.");
+        prompt.AppendLine($"- Inspect the failures yourself: `gh pr checks {pullRequestUrl}` lists the checks,");
+        prompt.AppendLine("  and `gh run view <run-id> --log-failed` shows a failing workflow's log.");
+        prompt.AppendLine("- Fix the causes and re-run the failing commands locally until they pass.");
+        prompt.AppendLine("- Commit your fixes on this branch with clear messages. Do NOT push, do NOT open");
+        prompt.AppendLine("  a new pull request — the platform re-verifies and pushes after you finish; the");
+        prompt.AppendLine("  existing PR updates in place and CI re-runs.");
+        prompt.AppendLine("- End with a short summary: what was failing, what you changed, and any open");
+        prompt.AppendLine("  questions.");
 
         return prompt.ToString();
     }

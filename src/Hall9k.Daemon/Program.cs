@@ -1,4 +1,5 @@
 using Hall9k.Daemon;
+using Hall9k.Daemon.Closeout;
 using Hall9k.Daemon.Dispatch;
 using Hall9k.Daemon.Execution;
 using Hall9k.Daemon.ProcessManagement;
@@ -26,6 +27,8 @@ builder.Services.AddSingleton<VerificationRunner>();
 builder.Services.AddSingleton<PullRequestOpener>();
 builder.Services.AddSingleton<RunSupervisor>();
 builder.Services.AddSingleton<RunLauncher>();
+builder.Services.AddSingleton<IPullRequestInspector, GitHubPullRequestInspector>();
+builder.Services.AddSingleton<CloseoutEngine>();
 
 builder.Services.AddMartenEventStore(connectionString, AutoCreate.CreateOnly)
     .IntegrateWithWolverine();
@@ -39,6 +42,7 @@ builder.UseWolverine(opts =>
 
 builder.Services.AddHostedService<DispatchLoop>();
 builder.Services.AddHostedService<LeaseHeartbeatService>();
+builder.Services.AddHostedService<PullRequestMonitor>();
 
 IHost host = builder.Build();
 host.Run();

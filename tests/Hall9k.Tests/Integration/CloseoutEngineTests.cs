@@ -1,0 +1,482 @@
+using System.Diagnostics;
+using FluentAssertions;
+using Hall9k.Daemon;
+using Hall9k.Daemon.Closeout;
+using Hall9k.Daemon.Worktrees;
+using Hall9k.Domain.Features.Run;
+using Hall9k.Domain.Features.Run.Events;
+using Hall9k.Domain.Features.Run.Projections;
+using Hall9k.Domain.Features.Tasks;
+using Hall9k.Domain.Features.Tasks.Handlers;
+using Hall9k.Domain.Features.Tasks.Projections;
+using Hall9k.Domain.Infrastructure.Ids;
+using Hall9k.Domain.Infrastructure.Persistence;
+using JasperFx;
+using Marten;
+using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Options;
+using Xunit;
+
+namespace Hall9k.Tests.Integration;
+
+/// <summary>
+/// The closeout monitor's decision table against a real store and a real repo, with the
+/// gh seam faked: merge completes the run and cleans the workspace, failing checks and
+/// review feedback dispatch follow-ups through the reopen pipeline, a spent budget
+/// parks, and a closed PR fails the run but keeps the branch.
+/// </summary>
+[Trait("Category", "RequiresDocker")]
+public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixture<PostgresFixture>, IDisposable
+{
+    private static readonly DateTimeOffset Now = new(2026, 8, 17, 12, 0, 0, TimeSpan.Zero);
+
+    private const string PullRequestUrl = "https://github.com/x/y/pull/7";
+
+    private readonly string _root = Path.Combine(Path.GetTempPath(), $"hall9k-closeout-{Guid.NewGuid():N}");
+
+    private sealed class FakeInspector : IPullRequestInspector
+    {
+        public PullRequestSnapshot Snapshot { get; set; } = Quiet();
+
+        public int Inspections { get; private set; }
+
+        /// <summary>Runs inside the inspection — the seam for writes landing mid-gh-call.</summary>
+        public Func<Task>? OnInspect { get; set; }
+
+        public async Task<PullRequestSnapshot> InspectAsync(
+            string repositoryPath, string pullRequestUrl, int pullRequestNumber, CancellationToken cancellationToken)
+        {
+            Inspections++;
+            if (OnInspect is { } hook)
+            {
+                OnInspect = null;
+                await hook();
+            }
+
+            return Snapshot;
+        }
+
+        public static PullRequestSnapshot Quiet() => new(
+            IsMerged: false, IsClosed: false, MergedAt: null, ClosedAt: null,
+            FailingChecks: [], HasPendingChecks: false, UnresolvedCopilotThreadCount: 0);
+    }
+
+    [Fact]
+    public async Task Merge_completes_the_run_removes_the_worktree_and_deletes_the_branch_everywhere()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        (DocumentStore store, NodeContext node, GitWorktreeManager worktrees, string originPath, string repoPath) =
+            await SetUpAsync(cts.Token);
+        using IDisposable storeLifetime = store;
+
+        (Guid taskId, Guid runId, Worktree worktree) =
+            await SeedAwaitingReviewAsync(store, node, worktrees, repoPath, cts.Token);
+
+        FakeInspector inspector = new()
+        {
+            Snapshot = FakeInspector.Quiet() with { IsMerged = true, MergedAt = Now.AddHours(2) },
+        };
+        CloseoutEngine engine = NewEngine(store, node, inspector, worktrees);
+        await engine.PollOnceAsync(cts.Token);
+
+        await using IQuerySession query = store.QuerySession();
+        RunDetails run = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
+        run.State.Should().Be(RunState.Completed, "the observed merge finally gives RunCompleted its meaning");
+        run.PullRequestMergedAt.Should().Be(Now.AddHours(2));
+
+        TaskListItem task = (await query.LoadAsync<TaskListItem>(taskId, cts.Token))!;
+        task.State.Should().Be(TaskState.Done);
+
+        Directory.Exists(worktree.Path).Should().BeFalse("closeout completion removes the retained worktree");
+        TryGit(repoPath, $"rev-parse --verify refs/heads/{worktree.Branch}")
+            .ExitCode.Should().NotBe(0, "the local branch is deleted (git branch -D, rebase-merge safe)");
+        TryGit(originPath, $"rev-parse --verify refs/heads/{worktree.Branch}")
+            .ExitCode.Should().NotBe(0, "the remote branch is deleted");
+        TryGit(repoPath, $"rev-parse --verify refs/remotes/origin/{worktree.Branch}")
+            .ExitCode.Should().NotBe(0, "stale remote-tracking refs are pruned");
+
+        // A completed run leaves the watch set: the next sweep inspects nothing.
+        int before = inspector.Inspections;
+        await engine.PollOnceAsync(cts.Token);
+        inspector.Inspections.Should().Be(before, "a merged PR is never polled again");
+    }
+
+    [Fact]
+    public async Task Failing_checks_dispatch_an_automatic_fix_follow_up_through_the_reopen_pipeline()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        (DocumentStore store, NodeContext node, GitWorktreeManager worktrees, _, string repoPath) =
+            await SetUpAsync(cts.Token);
+        using IDisposable storeLifetime = store;
+
+        (Guid taskId, Guid runId, Worktree worktree) =
+            await SeedAwaitingReviewAsync(store, node, worktrees, repoPath, cts.Token);
+
+        FakeInspector inspector = new()
+        {
+            Snapshot = FakeInspector.Quiet() with { FailingChecks = ["build (windows-latest)"] },
+        };
+        await NewEngine(store, node, inspector, worktrees).PollOnceAsync(cts.Token);
+
+        await using IQuerySession query = store.QuerySession();
+        RunDetails run = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
+        run.State.Should().Be(RunState.Superseded,
+            "the reopen hands the PR to a successor, so the observed run retires in the same transaction");
+        run.FailingChecks.Should().Equal("build (windows-latest)");
+
+        TaskDetails task = (await query.LoadAsync<TaskDetails>(taskId, cts.Token))!;
+        task.State.Should().Be(TaskState.Queued, "the follow-up flows through the standard dispatch pipeline");
+        task.FollowUpBranch.Should().Be(worktree.Branch);
+        task.FollowUpKind.Should().Be(FollowUpKind.FailingChecks, "the launcher picks the fix-the-CI prompt from it");
+        task.FollowUpReason.Should().Contain("build (windows-latest)");
+
+        TaskAggregate aggregate = (await query.Events.AggregateStreamAsync<TaskAggregate>(taskId, token: cts.Token))!;
+        aggregate.CloseoutAttempts.Should().Be(1, "automatic reopens spend the bounded budget");
+
+        Directory.Exists(worktree.Path).Should().BeTrue("the worktree is the follow-up workspace — never removed here");
+    }
+
+    [Fact]
+    public async Task Unresolved_copilot_threads_dispatch_a_review_follow_up()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        (DocumentStore store, NodeContext node, GitWorktreeManager worktrees, _, string repoPath) =
+            await SetUpAsync(cts.Token);
+        using IDisposable storeLifetime = store;
+
+        (Guid taskId, Guid runId, _) = await SeedAwaitingReviewAsync(store, node, worktrees, repoPath, cts.Token);
+
+        FakeInspector inspector = new()
+        {
+            Snapshot = FakeInspector.Quiet() with { UnresolvedCopilotThreadCount = 2 },
+        };
+        await NewEngine(store, node, inspector, worktrees).PollOnceAsync(cts.Token);
+
+        await using IQuerySession query = store.QuerySession();
+        (await query.LoadAsync<RunDetails>(runId, cts.Token))!.State.Should().Be(RunState.Superseded);
+        TaskDetails task = (await query.LoadAsync<TaskDetails>(taskId, cts.Token))!;
+        task.State.Should().Be(TaskState.Queued);
+        task.FollowUpKind.Should().Be(FollowUpKind.ReviewFeedback);
+    }
+
+    [Fact]
+    public async Task A_spent_automatic_budget_parks_the_closeout_instead_of_looping()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        (DocumentStore store, NodeContext node, GitWorktreeManager worktrees, _, string repoPath) =
+            await SetUpAsync(cts.Token);
+        using IDisposable storeLifetime = store;
+
+        (Guid taskId, Guid runId, _) = await SeedAwaitingReviewAsync(
+            store, node, worktrees, repoPath, cts.Token, priorAutomaticReopens: 2);
+
+        FakeInspector inspector = new()
+        {
+            Snapshot = FakeInspector.Quiet() with { FailingChecks = ["build"] },
+        };
+        CloseoutEngine engine = NewEngine(store, node, inspector, worktrees);
+        await engine.PollOnceAsync(cts.Token);
+
+        await using (IQuerySession query = store.QuerySession())
+        {
+            RunDetails run = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
+            run.State.Should().Be(RunState.CloseoutParked);
+            run.ParkedReason.Should().Contain("budget spent").And.Contain("h9k pr resolve");
+
+            (await query.LoadAsync<TaskListItem>(taskId, cts.Token))!.State.Should().Be(
+                TaskState.Done, "parking lives on the run; the task stays Done so h9k pr resolve still works");
+        }
+
+        // A parked run still gets merge detection — and only merge detection.
+        await engine.PollOnceAsync(cts.Token);
+        await using (IQuerySession query = store.QuerySession())
+        {
+            (await query.LoadAsync<TaskListItem>(taskId, cts.Token))!.State.Should().Be(
+                TaskState.Done, "no further automatic dispatch once parked");
+        }
+
+        inspector.Snapshot = FakeInspector.Quiet() with { IsMerged = true, MergedAt = Now.AddDays(1) };
+        await engine.PollOnceAsync(cts.Token);
+        await using (IQuerySession afterMerge = store.QuerySession())
+        {
+            (await afterMerge.LoadAsync<RunDetails>(runId, cts.Token))!.State.Should().Be(
+                RunState.Completed, "a human merging a parked PR still completes the closeout");
+        }
+    }
+
+    [Fact]
+    public async Task A_closed_pull_request_fails_the_run_removes_the_worktree_and_keeps_the_branch()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        (DocumentStore store, NodeContext node, GitWorktreeManager worktrees, string originPath, string repoPath) =
+            await SetUpAsync(cts.Token);
+        using IDisposable storeLifetime = store;
+
+        (_, Guid runId, Worktree worktree) = await SeedAwaitingReviewAsync(store, node, worktrees, repoPath, cts.Token);
+
+        FakeInspector inspector = new()
+        {
+            Snapshot = FakeInspector.Quiet() with { IsClosed = true, ClosedAt = Now.AddHours(3) },
+        };
+        await NewEngine(store, node, inspector, worktrees).PollOnceAsync(cts.Token);
+
+        await using IQuerySession query = store.QuerySession();
+        RunDetails run = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
+        run.State.Should().Be(RunState.Failed);
+        run.FailureReason.Should().Contain("closed without merge");
+
+        Directory.Exists(worktree.Path).Should().BeFalse("a completed (closed) PR releases its worktree");
+        TryGit(originPath, $"rev-parse --verify refs/heads/{worktree.Branch}")
+            .ExitCode.Should().Be(0, "an unmerged branch still holds work and is never deleted");
+    }
+
+    [Fact]
+    public async Task Pending_checks_defer_every_dispatch_decision()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        (DocumentStore store, NodeContext node, GitWorktreeManager worktrees, _, string repoPath) =
+            await SetUpAsync(cts.Token);
+        using IDisposable storeLifetime = store;
+
+        (Guid taskId, Guid runId, _) = await SeedAwaitingReviewAsync(store, node, worktrees, repoPath, cts.Token);
+
+        FakeInspector inspector = new()
+        {
+            Snapshot = FakeInspector.Quiet() with
+            {
+                FailingChecks = ["build"], HasPendingChecks = true, UnresolvedCopilotThreadCount = 1,
+            },
+        };
+        await NewEngine(store, node, inspector, worktrees).PollOnceAsync(cts.Token);
+
+        await using IQuerySession query = store.QuerySession();
+        (await query.LoadAsync<RunDetails>(runId, cts.Token))!.State.Should().Be(
+            RunState.AwaitingReview, "an incomplete CI picture defers action to the next sweep");
+        (await query.LoadAsync<TaskListItem>(taskId, cts.Token))!.State.Should().Be(TaskState.Done);
+    }
+
+    [Fact]
+    public async Task A_reopen_landing_mid_inspection_defers_the_sweep_instead_of_double_dispatching()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        (DocumentStore store, NodeContext node, GitWorktreeManager worktrees, _, string repoPath) =
+            await SetUpAsync(cts.Token);
+        using IDisposable storeLifetime = store;
+
+        (Guid taskId, Guid runId, Worktree worktree) =
+            await SeedAwaitingReviewAsync(store, node, worktrees, repoPath, cts.Token);
+
+        // h9k pr resolve fires while the monitor's gh call is in flight — the exact
+        // window the fence protects. Without it the monitor commits a second reopen.
+        FakeInspector inspector = new()
+        {
+            Snapshot = FakeInspector.Quiet() with { FailingChecks = ["build"] },
+            OnInspect = () => ReopenManuallyAsync(store, node, taskId, worktree.Branch, cts.Token),
+        };
+        await NewEngine(store, node, inspector, worktrees).PollOnceAsync(cts.Token);
+
+        await using IQuerySession query = store.QuerySession();
+        (await query.LoadAsync<RunDetails>(runId, cts.Token))!.State.Should().Be(
+            RunState.AwaitingReview, "the deferred sweep leaves the run untouched — no observation, no retirement");
+        TaskAggregate task = (await query.Events.AggregateStreamAsync<TaskAggregate>(taskId, token: cts.Token))!;
+        task.CloseoutAttempts.Should().Be(0, "only the human's reopen landed; the automatic one never committed");
+        (await query.Events.FetchStreamAsync(taskId, token: cts.Token))
+            .Count(e => e.Data is Hall9k.Domain.Features.Tasks.Events.TaskReopened)
+            .Should().Be(1, "exactly one follow-up dispatches, not one per writer");
+    }
+
+    [Fact]
+    public async Task A_merge_observed_while_a_reopen_landed_never_cleans_up_under_the_follow_up()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        (DocumentStore store, NodeContext node, GitWorktreeManager worktrees, _, string repoPath) =
+            await SetUpAsync(cts.Token);
+        using IDisposable storeLifetime = store;
+
+        (Guid taskId, Guid runId, Worktree worktree) =
+            await SeedAwaitingReviewAsync(store, node, worktrees, repoPath, cts.Token);
+
+        // The merged path removes the worktree and deletes the branch — filesystem acts
+        // no expectedVersion can roll back. A reopen mid-call means a follow-up agent
+        // may already be working in that reused worktree; the sweep must defer.
+        FakeInspector inspector = new()
+        {
+            Snapshot = FakeInspector.Quiet() with { IsMerged = true, MergedAt = Now.AddHours(2) },
+            OnInspect = () => ReopenManuallyAsync(store, node, taskId, worktree.Branch, cts.Token),
+        };
+        await NewEngine(store, node, inspector, worktrees).PollOnceAsync(cts.Token);
+
+        await using IQuerySession query = store.QuerySession();
+        (await query.LoadAsync<RunDetails>(runId, cts.Token))!.State.Should().Be(
+            RunState.AwaitingReview, "completion defers to the next sweep, which re-reads the reopened task");
+        Directory.Exists(worktree.Path).Should().BeTrue("the follow-up workspace survives");
+        TryGit(repoPath, $"rev-parse --verify refs/heads/{worktree.Branch}")
+            .ExitCode.Should().Be(0, "the branch the follow-up resumes is untouched");
+    }
+
+    private static async Task ReopenManuallyAsync(
+        DocumentStore store, NodeContext node, Guid taskId, string branch, CancellationToken cancellationToken)
+    {
+        await using IDocumentSession concurrent = store.LightweightSession();
+        TaskAggregate task =
+            (await concurrent.Events.AggregateStreamAsync<TaskAggregate>(taskId, token: cancellationToken))!;
+        concurrent.Events.Append(taskId, TaskDecider.Reopen(
+            task, task.CurrentRunId!.Value, branch,
+            "Human asked first.", FollowUpKind.ReviewFeedback, automatic: false, Now, node.OwnerId));
+        await concurrent.SaveChangesAsync(cancellationToken);
+    }
+
+    private async Task<(DocumentStore Store, NodeContext Node, GitWorktreeManager Worktrees, string OriginPath, string RepoPath)>
+        SetUpAsync(CancellationToken cancellationToken)
+    {
+        DocumentStore store = DocumentStore.For(opts =>
+        {
+            opts.Connection(postgres.ConnectionString);
+            opts.ConfigureHall9k(AutoCreate.All);
+        });
+        NodeContext node = new();
+        await node.InitializeAsync(store, cancellationToken);
+
+        Directory.CreateDirectory(_root);
+        string originPath = Path.Combine(_root, $"origin-{Guid.NewGuid():N}.git");
+        string repoPath = Path.Combine(_root, $"repo-{Guid.NewGuid():N}");
+        Git(_root, $"init --bare -b main \"{originPath}\"");
+        Git(_root, $"clone \"{originPath}\" \"{repoPath}\"");
+        File.WriteAllText(Path.Combine(repoPath, "README.md"), "# closeout test\n");
+        Git(repoPath, "add -A");
+        Git(repoPath, "-c user.name=Test -c user.email=t@t commit -qm init");
+        Git(repoPath, "push -q origin main");
+
+        return (store, node, new GitWorktreeManager(NullLogger<GitWorktreeManager>.Instance), originPath, repoPath);
+    }
+
+    /// <summary>
+    /// A task at the top of the closeout phase: done with a PR, its run AwaitingReview,
+    /// the branch pushed, the worktree retained. priorAutomaticReopens seeds already-spent
+    /// budget (each one is a full automatic reopen → claim → complete cycle on the stream).
+    /// </summary>
+    private static async Task<(Guid TaskId, Guid RunId, Worktree Worktree)> SeedAwaitingReviewAsync(
+        DocumentStore store,
+        NodeContext node,
+        GitWorktreeManager worktrees,
+        string repoPath,
+        CancellationToken cancellationToken,
+        int priorAutomaticReopens = 0)
+    {
+        Guid taskId = DomainId.New();
+        Guid runId = DomainId.New();
+        Guid ownerId = node.OwnerId;
+        Guid projectId = DomainId.New();
+
+        Worktree worktree = await worktrees.CreateAsync(
+            new WorktreeRequest(repoPath, "main", taskId, DomainId.New(), "Close me out"), cancellationToken);
+        File.WriteAllText(Path.Combine(worktree.Path, "WORK.md"), "agent output\n");
+        Git(worktree.Path, "add -A");
+        Git(worktree.Path, "-c user.name=Test -c user.email=t@t commit -qm work");
+        Git(worktree.Path, $"push -q origin {worktree.Branch}");
+
+        await using IDocumentSession session = store.LightweightSession();
+
+        TaskAggregate task = new();
+        List<object> taskEvents = [];
+
+        Hall9k.Domain.Features.Tasks.Events.TaskAdded added = TaskDecider.Add(
+            taskId, projectId, "Close me out", ["merged"], TaskType.Chore, null, null, null, Now, ownerId);
+        task.Apply(added);
+        taskEvents.Add(added);
+        Hall9k.Domain.Features.Tasks.Events.TaskClaimed claimed =
+            TaskDecider.Claim(task, node.NodeId, ownerId, DomainId.New(), Now);
+        task.Apply(claimed);
+        taskEvents.Add(claimed);
+        Hall9k.Domain.Features.Tasks.Events.TaskCompleted completed =
+            TaskDecider.Complete(task, task.CurrentRunId!.Value, PullRequestUrl, Now);
+        task.Apply(completed);
+        taskEvents.Add(completed);
+
+        for (int i = 0; i < priorAutomaticReopens; i++)
+        {
+            Hall9k.Domain.Features.Tasks.Events.TaskReopened reopened = TaskDecider.Reopen(
+                task, task.CurrentRunId!.Value, worktree.Branch,
+                "CI checks failing.", FollowUpKind.FailingChecks, automatic: true, Now, ownerId);
+            task.Apply(reopened);
+            taskEvents.Add(reopened);
+            Hall9k.Domain.Features.Tasks.Events.TaskClaimed reclaimed =
+                TaskDecider.Claim(task, node.NodeId, ownerId, DomainId.New(), Now);
+            task.Apply(reclaimed);
+            taskEvents.Add(reclaimed);
+            Hall9k.Domain.Features.Tasks.Events.TaskCompleted recompleted =
+                TaskDecider.Complete(task, task.CurrentRunId!.Value, PullRequestUrl, Now);
+            task.Apply(recompleted);
+            taskEvents.Add(recompleted);
+        }
+
+        // The run under watch is the task's current run — rewrite the last claim's run id.
+        Guid lastClaimRunId = task.CurrentRunId!.Value;
+        session.Events.StartStream<TaskAggregate>(taskId, [.. taskEvents]);
+
+        session.Events.StartStream<RunAggregate>(lastClaimRunId,
+            new RunDispatched(lastClaimRunId, taskId, node.NodeId, ownerId, task.LeaseGeneration, DomainId.New(),
+                worktree.Path, worktree.Branch, ExecutorMode.Subscription, Now),
+            new AgentSessionCompleted(lastClaimRunId, Now),
+            new VerificationPassed(lastClaimRunId, Now),
+            new PullRequestOpened(lastClaimRunId, PullRequestUrl, 7, Now));
+
+        var registered = Hall9k.Domain.Features.Project.Handlers.ProjectDecider.Register(
+            projectId, ownerId, DomainId.New(), $"closeout-{taskId:N}", repoPath, null, "main", Now);
+        session.Events.StartStream<Hall9k.Domain.Features.Project.ProjectAggregate>(registered.Id, registered);
+
+        await session.SaveChangesAsync(cancellationToken);
+        return (taskId, lastClaimRunId, worktree);
+    }
+
+    private static CloseoutEngine NewEngine(
+        DocumentStore store, NodeContext node, IPullRequestInspector inspector, GitWorktreeManager worktrees) =>
+        new(store, node, inspector, worktrees,
+            Options.Create(new DaemonOptions { MaxAutomaticCloseoutRuns = 2 }),
+            NullLogger<CloseoutEngine>.Instance);
+
+    private static void Git(string workingDirectory, string arguments)
+    {
+        (int exitCode, string output) = TryGit(workingDirectory, arguments);
+        if (exitCode != 0)
+        {
+            throw new InvalidOperationException($"git {arguments} failed: {output}");
+        }
+    }
+
+    private static (int ExitCode, string Output) TryGit(string workingDirectory, string arguments)
+    {
+        using Process process = new();
+        process.StartInfo = new ProcessStartInfo
+        {
+            FileName = "git",
+            Arguments = $"-C \"{workingDirectory}\" {arguments}",
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false,
+        };
+        process.Start();
+        string output = process.StandardOutput.ReadToEnd() + process.StandardError.ReadToEnd();
+        process.WaitForExit();
+        return (process.ExitCode, output);
+    }
+
+    public void Dispose()
+    {
+        try
+        {
+            if (Directory.Exists(_root))
+            {
+                foreach (string file in Directory.EnumerateFiles(_root, "*", SearchOption.AllDirectories))
+                {
+                    File.SetAttributes(file, FileAttributes.Normal);
+                }
+
+                Directory.Delete(_root, recursive: true);
+            }
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+        }
+    }
+}

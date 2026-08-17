@@ -68,6 +68,37 @@ public sealed class AgentPromptBuilderTests : IDisposable
         prompt.Should().NotContain("`bare-skill` —");
     }
 
+    [Fact]
+    public void Fix_checks_prompt_targets_the_failing_ci_not_the_review_skill()
+    {
+        TaskDetails task = SomeTask();
+        task.FollowUpReason = "CI checks failing on the pull request: build (windows-latest).";
+
+        string prompt = AgentPromptBuilder.BuildFixChecks(
+            task, SomeProject(), "task/1-slug", "https://github.com/x/y/pull/7");
+
+        prompt.Should().Contain("fix the failing CI checks");
+        prompt.Should().Contain("https://github.com/x/y/pull/7");
+        prompt.Should().Contain("branch `task/1-slug`");
+        prompt.Should().Contain("gh pr checks");
+        prompt.Should().Contain("CI checks failing on the pull request: build (windows-latest).");
+        prompt.Should().Contain("Do NOT push");
+        prompt.Should().NotContain("resolve-copilot-reviews", "review resolution is the other follow-up kind");
+    }
+
+    [Fact]
+    public void Follow_up_prompt_carries_the_dispatch_reason_when_one_was_recorded()
+    {
+        TaskDetails task = SomeTask();
+        task.FollowUpReason = "2 unresolved Copilot review thread(s) on the pull request.";
+
+        string prompt = AgentPromptBuilder.BuildFollowUp(
+            task, SomeProject(), "task/1-slug", "https://github.com/x/y/pull/7");
+
+        prompt.Should().Contain("2 unresolved Copilot review thread(s) on the pull request.");
+        prompt.Should().Contain("resolve-copilot-reviews");
+    }
+
     private void WriteSkill(string name, string description)
     {
         string skillDirectory = Path.Combine(_worktreePath, ".claude", "skills", name);
