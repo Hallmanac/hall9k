@@ -4,6 +4,7 @@ using FluentAssertions;
 using Hall9k.Daemon;
 using Hall9k.Daemon.Execution;
 using Hall9k.Daemon.ProcessManagement;
+using Hall9k.Daemon.Review;
 using Hall9k.Domain.Features.Run;
 using Hall9k.Domain.Features.Run.Events;
 using Hall9k.Domain.Features.Run.Projections;
@@ -88,7 +89,10 @@ public sealed class RunSupervisorTests(PostgresFixture postgres) : IClassFixture
         // The "restarted daemon": adoption finds the live process and resumes tailing.
         RunSupervisor restarted = NewSupervisor(store, node);
         await restarted.AdoptOrphansAsync(cts.Token);
-        restarted.ActiveCount.Should().Be(1, "the live orphan must be adopted, not killed (log #7)");
+        // GreaterThanOrEqualTo: this node is shared across the class's tests (node identity
+        // is per machine name), so adoption may also resume another test's Verifying stray
+        // as a background pipeline; the tail assertions below pin down THIS run's adoption.
+        restarted.ActiveCount.Should().BeGreaterThanOrEqualTo(1, "the live orphan must be adopted, not killed (log #7)");
 
         RunDetails details = await WaitForStateAsync(store, runId, "Verifying", cts.Token);
         details.InputTokens.Should().Be(1200);
@@ -200,11 +204,18 @@ public sealed class RunSupervisorTests(PostgresFixture postgres) : IClassFixture
         throw new TimeoutException($"Run {runId} never reached state {state}.");
     }
 
-    private static RunSupervisor NewSupervisor(DocumentStore store, NodeContext node) =>
-        new(store, node, new UnixProcessManager(),
-            new VerificationRunner(store, Options.Create(new DaemonOptions()), NullLogger<VerificationRunner>.Instance),
+    private static RunSupervisor NewSupervisor(DocumentStore store, NodeContext node)
+    {
+        UnixProcessManager processManager = new();
+        VerificationRunner verification = new(
+            store, Options.Create(new DaemonOptions()), NullLogger<VerificationRunner>.Instance);
+        ReviewEngine review = new(
+            store, new ClaudeExecutor(NullLogger<ClaudeExecutor>.Instance), processManager, verification,
+            Options.Create(new DaemonOptions()), NullLogger<ReviewEngine>.Instance);
+        return new RunSupervisor(store, node, processManager, verification, review,
             new PullRequestOpener(store, NullLogger<PullRequestOpener>.Instance),
             NullLogger<RunSupervisor>.Instance);
+    }
 
     public void Dispose()
     {
