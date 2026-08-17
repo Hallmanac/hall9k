@@ -88,6 +88,11 @@ first-class interface, always, for every command:
   (`git diff <old-tip> HEAD` is empty) so green test runs carry over. Origin incident
   (2026-08-17): PR #6's independent-review round first landed as a separate "harden closeout"
   commit and had to be rebuilt into the owning commits by hand.
+- **Follow-up runs: after rewriting history, run the `git push --force-with-lease` yourself
+  before finishing.** The daemon's PR push is not yet force-aware (backlog 08 fixes this);
+  a rebased branch left unpushed fails the run at the push step. Origin incident
+  (2026-08-17): the first two automatic follow-up runs rebased correctly, left the push to
+  the daemon, and both failed with their completed work stranded in the worktrees.
 
 ## Repo skills
 
