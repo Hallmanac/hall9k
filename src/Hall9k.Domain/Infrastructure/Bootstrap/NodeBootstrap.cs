@@ -6,7 +6,7 @@ using Hall9k.Domain.Infrastructure.Ids;
 using Hall9k.Domain.Shared.ValueObjects;
 using Marten;
 
-namespace Hall9k.Cli.Infrastructure;
+namespace Hall9k.Domain.Infrastructure.Bootstrap;
 
 public sealed record BootstrapContext(Guid OwnerId, Guid NodeId, Guid ConnectionId);
 
@@ -15,7 +15,7 @@ public sealed record BootstrapContext(Guid OwnerId, Guid NodeId, Guid Connection
 /// an owner record exists even when there's exactly one). Idempotent — subsequent calls
 /// find the existing records. h9kd install performs the same bootstrap (S1-12).
 /// </summary>
-public static class Bootstrap
+public static class NodeBootstrap
 {
     public static async Task<BootstrapContext> EnsureAsync(IDocumentSession session, CancellationToken cancellationToken)
     {

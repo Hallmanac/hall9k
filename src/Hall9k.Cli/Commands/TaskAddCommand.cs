@@ -1,5 +1,6 @@
 using System.ComponentModel;
 using Hall9k.Cli.Infrastructure;
+using Hall9k.Domain.Infrastructure.Bootstrap;
 using Hall9k.Domain.Features.Project.Projections;
 using Hall9k.Domain.Features.Tasks;
 using Hall9k.Domain.Features.Tasks.Events;
@@ -74,7 +75,7 @@ public sealed class TaskAddCommand : Hall9kAsyncCommand<TaskAddCommand.Settings>
         await using IDocumentSession session = store.LightweightSession();
 
         ProjectDetails projectDetails = await ResolveProjectAsync(session, project, cancellationToken);
-        BootstrapContext context = await Bootstrap.EnsureAsync(session, cancellationToken);
+        BootstrapContext context = await NodeBootstrap.EnsureAsync(session, cancellationToken);
 
         Guid taskId = DomainId.New();
         TaskAdded added = TaskDecider.Add(

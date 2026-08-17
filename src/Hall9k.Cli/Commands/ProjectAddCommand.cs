@@ -1,5 +1,6 @@
 using System.ComponentModel;
 using Hall9k.Cli.Infrastructure;
+using Hall9k.Domain.Infrastructure.Bootstrap;
 using Hall9k.Domain.Features.Project;
 using Hall9k.Domain.Features.Project.Events;
 using Hall9k.Domain.Features.Project.Handlers;
@@ -47,7 +48,7 @@ public sealed class ProjectAddCommand : Hall9kAsyncCommand<ProjectAddCommand.Set
             throw new DomainConflictException($"A project named '{name}' already exists.");
         }
 
-        BootstrapContext context = await Bootstrap.EnsureAsync(session, cancellationToken);
+        BootstrapContext context = await NodeBootstrap.EnsureAsync(session, cancellationToken);
 
         Guid projectId = DomainId.New();
         ProjectRegistered registered = ProjectDecider.Register(
