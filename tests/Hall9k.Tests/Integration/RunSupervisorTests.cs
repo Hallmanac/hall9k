@@ -203,9 +203,7 @@ public sealed class RunSupervisorTests(PostgresFixture postgres) : IClassFixture
     private static RunSupervisor NewSupervisor(DocumentStore store, NodeContext node) =>
         new(store, node, new UnixProcessManager(),
             new VerificationRunner(store, Options.Create(new DaemonOptions()), NullLogger<VerificationRunner>.Instance),
-            new PullRequestOpener(store,
-                new Hall9k.Daemon.Worktrees.GitWorktreeManager(NullLogger<Hall9k.Daemon.Worktrees.GitWorktreeManager>.Instance),
-                NullLogger<PullRequestOpener>.Instance),
+            new PullRequestOpener(store, NullLogger<PullRequestOpener>.Instance),
             NullLogger<RunSupervisor>.Instance);
 
     public void Dispose()

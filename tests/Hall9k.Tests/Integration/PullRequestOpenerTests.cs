@@ -91,7 +91,7 @@ public sealed class PullRequestOpenerTests(PostgresFixture postgres) : IClassFix
             await session.SaveChangesAsync(cts.Token);
         }
 
-        PullRequestOpener opener = new(store, worktrees, NullLogger<PullRequestOpener>.Instance);
+        PullRequestOpener opener = new(store, NullLogger<PullRequestOpener>.Instance);
         await opener.OpenAsync(runId, taskId, cts.Token);
 
         // Branch is on origin, task is Done without a PR, lease gone, worktree removed.
@@ -103,7 +103,8 @@ public sealed class PullRequestOpenerTests(PostgresFixture postgres) : IClassFix
         task2.State.Value.Should().Be("Done");
         task2.PullRequestUrl.Should().BeNull("a non-GitHub origin gets no PR");
         (await query.LoadAsync<TaskLease>(taskId, cts.Token)).Should().BeNull();
-        Directory.Exists(worktree.Path).Should().BeFalse("done worktrees are removed (branch is safe on origin)");
+        Directory.Exists(worktree.Path).Should().BeTrue(
+            "the worktree is retained through closeout — it IS the follow-up workspace (log #21)");
     }
 
     [Fact]
@@ -179,7 +180,7 @@ public sealed class PullRequestOpenerTests(PostgresFixture postgres) : IClassFix
             await session.SaveChangesAsync(cts.Token);
         }
 
-        PullRequestOpener opener = new(store, worktrees, NullLogger<PullRequestOpener>.Instance);
+        PullRequestOpener opener = new(store, NullLogger<PullRequestOpener>.Instance);
         await opener.OpenAsync(followUpRunId, taskId, cts.Token);
 
         // The fix landed on the SAME branch on origin; no second PR, same URL on the task.
@@ -198,7 +199,8 @@ public sealed class PullRequestOpenerTests(PostgresFixture postgres) : IClassFix
         runView.PullRequestNumber.Should().Be(7);
 
         (await query.LoadAsync<TaskLease>(taskId, cts.Token)).Should().BeNull();
-        Directory.Exists(followUp.Path).Should().BeFalse("follow-up worktrees are removed like first-run ones");
+        Directory.Exists(followUp.Path).Should().BeTrue(
+            "follow-up worktrees are retained like first-run ones until closeout completes (log #21)");
     }
 
     private static void Git(string workingDirectory, string arguments)
