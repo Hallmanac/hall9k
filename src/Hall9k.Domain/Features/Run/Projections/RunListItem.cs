@@ -41,6 +41,12 @@ public sealed class RunListItemProjection : SingleStreamProjection<RunListItem, 
         view.State = RunState.AwaitingReview;
     }
 
+    public void Apply(IEvent<PullRequestUpdated> @event, RunListItem view)
+    {
+        view.PullRequestUrl = @event.Data.PullRequestUrl;
+        view.State = RunState.AwaitingReview;
+    }
+
     public void Apply(IEvent<RunCompleted> @event, RunListItem view)
     {
         view.State = RunState.Completed;

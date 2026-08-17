@@ -84,6 +84,13 @@ public sealed class RunAggregate
         State = RunState.AwaitingReview;
     }
 
+    public void Apply(PullRequestUpdated @event)
+    {
+        PullRequestUrl = @event.PullRequestUrl;
+        PullRequestNumber = @event.PullRequestNumber;
+        State = RunState.AwaitingReview;
+    }
+
     public void Apply(RunCompleted @event) => State = RunState.Completed;
 
     public void Apply(RunFailed @event) => State = RunState.Failed;
