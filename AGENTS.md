@@ -79,6 +79,15 @@ first-class interface, always, for every command:
   no generated-with footers** (PLAN.md §6.6). This is a hard rule for agents.
 - Branch naming for task work: `task/<id>-<slug>`, created off `origin/main` with `--no-track`.
 - `main` is only ever checked out in the `dev/` worktree; agent worktrees are siblings of `dev/`.
+- **PR branches are authored history, not a diary.** Commits read as a natural progression of
+  the whole change: no work-in-progress commits, no "address review feedback" commits. A fix
+  that belongs to an existing commit folds into it: `git commit --fixup=<owning-commit>` (map
+  each fix to the commit that owns the files it changes), then
+  `GIT_SEQUENCE_EDITOR=: git rebase -i --autosquash origin/main` and
+  `git push --force-with-lease`. Verify the rebased tree matches the tested tree
+  (`git diff <old-tip> HEAD` is empty) so green test runs carry over. Origin incident
+  (2026-08-17): PR #6's independent-review round first landed as a separate "harden closeout"
+  commit and had to be rebuilt into the owning commits by hand.
 
 ## Repo skills
 
