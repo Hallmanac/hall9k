@@ -110,6 +110,58 @@ public sealed class AttentionSurfaceTests
             Now);
 
     [Fact]
+    public void Under_review_reads_as_live_work_between_verifying_and_awaiting_review()
+    {
+        Guid runId = DomainId.New();
+        TaskListItem task = new()
+        {
+            Id = DomainId.New(), ProjectId = DomainId.New(), Objective = "x",
+            State = TaskState.Claimed, CurrentRunId = runId, AddedAt = Now,
+        };
+        RunListItem run = new() { Id = runId, State = RunState.UnderReview };
+        Dictionary<Guid, RunListItem> runs = new() { [runId] = run };
+
+        StatusCommand.StatusRow active = StatusCommand.Compose(
+            task, runs,
+            new Dictionary<Guid, RunActivity> { [runId] = new() { Id = runId, LastActivityAt = Now.AddMinutes(-1) } },
+            new Dictionary<Guid, string>(),
+            Now);
+        active.Bucket.Should().Be("UnderReview");
+        active.Priority.Should().Be(2, "a run under review is active work, not waiting");
+        active.Stalled.Should().BeFalse();
+
+        StatusCommand.StatusRow silent = StatusCommand.Compose(
+            task, runs,
+            new Dictionary<Guid, RunActivity> { [runId] = new() { Id = runId, LastActivityAt = Now.AddHours(-2) } },
+            new Dictionary<Guid, string>(),
+            Now);
+        silent.Stalled.Should().BeTrue("a silent review session stalls like any other live session");
+    }
+
+    [Fact]
+    public void Review_parked_run_surfaces_as_needs_human_even_mid_closeout()
+    {
+        Guid runId = DomainId.New();
+        TaskListItem claimed = new()
+        {
+            Id = DomainId.New(), ProjectId = DomainId.New(), Objective = "x",
+            State = TaskState.Claimed, CurrentRunId = runId, AddedAt = Now,
+        };
+        TaskListItem followUp = new()
+        {
+            Id = DomainId.New(), ProjectId = DomainId.New(), Objective = "x",
+            State = TaskState.Claimed, CurrentRunId = runId,
+            PullRequestUrl = "https://github.com/x/y/pull/7", AddedAt = Now,
+        };
+        RunListItem parked = new() { Id = runId, State = RunState.ReviewParked };
+
+        Compose(claimed, parked).Bucket.Should().Be("NeedsHuman", "a review park hands the diff to the human");
+        Compose(claimed, parked).Priority.Should().Be(0);
+        Compose(followUp, parked).Bucket.Should().Be(
+            "NeedsHuman", "the park outranks the ClosingOut composition — the follow-up cannot push");
+    }
+
+    [Fact]
     public void Needs_human_outranks_everything_in_priority()
     {
         TaskListItem needsHuman = new()
