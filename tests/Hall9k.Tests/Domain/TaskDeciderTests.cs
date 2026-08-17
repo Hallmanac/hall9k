@@ -113,6 +113,66 @@ public sealed class TaskDeciderTests
         act.Should().Throw<DomainConflictException>();
     }
 
+    [Fact]
+    public void Reopen_of_done_task_queues_a_follow_up_on_the_pull_request_branch()
+    {
+        TaskAggregate task = DoneTask("https://github.com/x/y/pull/7");
+        Guid previousRunId = task.CurrentRunId!.Value;
+
+        TaskReopened reopened = TaskDecider.Reopen(
+            task, previousRunId, "task/abc-branch", "Unresolved review comments", Now, DomainId.New());
+        task.Apply(reopened);
+
+        task.State.Should().Be(TaskState.Queued);
+        task.FollowUpBranch.Should().Be("task/abc-branch");
+        task.PullRequestUrl.Should().Be("https://github.com/x/y/pull/7", "the follow-up updates the existing PR");
+
+        TaskClaimed claimed = TaskDecider.Claim(task, DomainId.New(), DomainId.New(), DomainId.New(), Now);
+        claimed.LeaseGeneration.Should().Be(2, "a follow-up claim moves the fencing token like any other");
+
+        task.Apply(claimed);
+        task.Apply(TaskDecider.Complete(task, task.CurrentRunId!.Value, task.PullRequestUrl, Now));
+        task.State.Should().Be(TaskState.Done);
+        task.FollowUpBranch.Should().BeNull("completion consumes the follow-up marker");
+    }
+
+    [Fact]
+    public void Reopen_of_a_non_done_task_conflicts()
+    {
+        TaskAggregate task = ClaimedTask();
+
+        Action act = () => TaskDecider.Reopen(task, task.CurrentRunId!.Value, "task/abc", null, Now, DomainId.New());
+
+        act.Should().Throw<DomainConflictException>().WithMessage("*only a done task*");
+    }
+
+    [Fact]
+    public void Reopen_without_a_pull_request_conflicts()
+    {
+        TaskAggregate task = DoneTask(pullRequestUrl: null);
+
+        Action act = () => TaskDecider.Reopen(task, task.CurrentRunId!.Value, "task/abc", null, Now, DomainId.New());
+
+        act.Should().Throw<DomainConflictException>().WithMessage("*no pull request*");
+    }
+
+    [Fact]
+    public void Reopen_without_a_branch_fails_validation()
+    {
+        TaskAggregate task = DoneTask("https://github.com/x/y/pull/7");
+
+        Action act = () => TaskDecider.Reopen(task, task.CurrentRunId!.Value, branch: " ", null, Now, DomainId.New());
+
+        act.Should().Throw<DomainValidationException>().WithMessage("*branch*");
+    }
+
+    private static TaskAggregate DoneTask(string? pullRequestUrl)
+    {
+        TaskAggregate task = ClaimedTask();
+        task.Apply(TaskDecider.Complete(task, task.CurrentRunId!.Value, pullRequestUrl, Now));
+        return task;
+    }
+
     private static TaskAggregate QueuedTask()
     {
         TaskAggregate task = new();

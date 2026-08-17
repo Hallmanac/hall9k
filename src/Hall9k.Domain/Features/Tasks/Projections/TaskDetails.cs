@@ -31,6 +31,7 @@ public sealed class TaskDetails
     public List<Guid> RunIds { get; set; } = [];
     public List<TaskQuestion> Conversation { get; set; } = [];
     public string? PullRequestUrl { get; set; }
+    public string? FollowUpBranch { get; set; }
     public string? FailureReason { get; set; }
     public DateTimeOffset AddedAt { get; set; }
     public Guid AddedByOwnerId { get; set; }
@@ -97,8 +98,16 @@ public sealed class TaskDetailsProjection : SingleStreamProjection<TaskDetails, 
     public void Apply(IEvent<TaskCompleted> @event, TaskDetails view)
     {
         view.PullRequestUrl = @event.Data.PullRequestUrl;
+        view.FollowUpBranch = null;
         view.State = TaskState.Done;
         view.FinishedAt = @event.Data.CompletedAt;
+    }
+
+    public void Apply(IEvent<TaskReopened> @event, TaskDetails view)
+    {
+        view.FollowUpBranch = @event.Data.Branch;
+        view.State = TaskState.Queued;
+        view.FinishedAt = null;
     }
 
     public void Apply(IEvent<TaskFailed> @event, TaskDetails view)

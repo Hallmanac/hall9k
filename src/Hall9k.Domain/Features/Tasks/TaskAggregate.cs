@@ -17,6 +17,8 @@ public sealed class TaskAggregate
     public Guid? CurrentRunId { get; private set; }
     public Guid? PendingQuestionId { get; private set; }
     public string? PullRequestUrl { get; private set; }
+    /// <summary>Set while a follow-up run is pending: the next claim resumes this branch instead of cutting a new one.</summary>
+    public string? FollowUpBranch { get; private set; }
     public DateTimeOffset AddedAt { get; private set; }
     public Guid AddedByOwnerId { get; private set; }
 
@@ -74,7 +76,14 @@ public sealed class TaskAggregate
     public void Apply(TaskCompleted @event)
     {
         PullRequestUrl = @event.PullRequestUrl;
+        FollowUpBranch = null;
         State = TaskState.Done;
+    }
+
+    public void Apply(TaskReopened @event)
+    {
+        FollowUpBranch = @event.Branch;
+        State = TaskState.Queued;
     }
 
     public void Apply(TaskFailed @event) => State = TaskState.Failed;
