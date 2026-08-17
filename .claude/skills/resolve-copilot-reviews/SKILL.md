@@ -13,10 +13,14 @@ This skill works on an **existing** PR only. Never open a PR from an agent sessi
 
 1. **Identify the PR**: If no PR number is provided in the arguments, detect the current branch and find its open PR with `gh pr list --head $(git branch --show-current)`. If a PR number was given, use that. If no PR exists, stop and report — do not create one.
 
-2. **Fetch Copilot review comments**: Extract the repo slug with `gh repo view --json nameWithOwner -q .nameWithOwner`, then run in parallel:
-   - `gh api repos/{owner}/{repo}/pulls/{number}/reviews` for the review summary
-   - `gh api repos/{owner}/{repo}/pulls/{number}/comments` for the individual line comments
-   - `gh pr diff {number}` for the diff context
+2. **Fetch Copilot review comments**: Extract the repo slug once and use it directly in every API path:
+   ```bash
+   SLUG=$(gh repo view --json nameWithOwner -q .nameWithOwner)   # e.g. Hallmanac/hall9k
+   gh api "repos/$SLUG/pulls/$PR_NUMBER/reviews"                 # review summary
+   gh api "repos/$SLUG/pulls/$PR_NUMBER/comments"                # individual line comments
+   gh pr diff "$PR_NUMBER"                                       # diff context
+   ```
+   (Quote the variables; the first two commands can run in parallel.)
 
 3. **Filter to Copilot comments only**: Only process comments from `copilot-pull-request-reviewer[bot]` or user login `Copilot`. Never touch threads from human reviewers.
 
