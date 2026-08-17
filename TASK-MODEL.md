@@ -36,7 +36,8 @@ per house style).
 The §3.3 lifecycle mixes two concerns. Here they separate cleanly:
 
 - **Task state** (work lifecycle): `Queued → Claimed → NeedsHuman ⇄ Claimed → Done | Failed | Abandoned`
-  (+ `NeedsRefinement` reserved, not built in v0)
+  (+ `NeedsRefinement` reserved, not built in v0; `Done → Queued` via `TaskReopened` is the one
+  deliberate exit from a terminal state — PR follow-up runs, log #20 and §2.1 below)
 - **Run state** (execution lifecycle): `Dispatched → Running → Verifying → AwaitingReview → Completed | Failed | Killed | Superseded`
   (`AgentSessionCompleted` enters Verifying — the agent process finishing is not the run finishing)
 
@@ -90,6 +91,15 @@ public sealed record TaskCompleted(Guid Id, Guid RunId, string? PullRequestUrl, 
 public sealed record TaskFailed(Guid Id, Guid RunId, string Reason, DateTimeOffset FailedAt);
 public sealed record TaskAbandoned(Guid Id, string? Reason, DateTimeOffset AbandonedAt, Guid AbandonedByOwnerId);
 
+public sealed record TaskReopened(       // Done -> Queued for a follow-up run on the existing PR
+    Guid Id,                             // branch (PR closeout, log #18/#20). See §2.1.
+    Guid PreviousRunId,                  // the run whose branch is resumed
+    string Branch,                       // from that run's record — lives nowhere else on this stream;
+                                         // the PR URL already does (TaskCompleted) and isn't repeated
+    string? Reason,
+    DateTimeOffset ReopenedAt,
+    Guid ReopenedByOwnerId);
+
 // Reserved, not built in v0:
 // public sealed record TaskSentToRefinement(...);
 ```
@@ -110,6 +120,9 @@ public sealed class TaskAggregate
     public Guid? ClaimedByNodeId { get; private set; }
     public Guid? CurrentRunId { get; private set; }      // from the latest TaskClaimed
     public Guid? PendingQuestionId { get; private set; }
+    public string? PullRequestUrl { get; private set; }  // from TaskCompleted; survives a reopen
+    public string? FollowUpBranch { get; private set; }  // set by TaskReopened, cleared by TaskCompleted:
+                                                         // while set, the next claim resumes this branch
 
     private readonly List<string> _acceptanceCriteria = [];
     public IReadOnlyList<string> AcceptanceCriteria => _acceptanceCriteria;
@@ -122,11 +135,36 @@ public sealed class TaskAggregate
     public void Apply(TaskRequeued @event) { /* ClaimedByNodeId = null; State = Queued */ }
     public void Apply(QuestionAsked @event) { /* PendingQuestionId; State = NeedsHuman */ }
     public void Apply(AnswerProvided @event) { /* PendingQuestionId = null; State = Claimed */ }
-    public void Apply(TaskCompleted @event) { /* State = Done */ }
+    public void Apply(TaskCompleted @event) { /* PullRequestUrl; FollowUpBranch = null; State = Done */ }
+    public void Apply(TaskReopened @event) { /* FollowUpBranch = @event.Branch; State = Queued */ }
     public void Apply(TaskFailed @event) { /* State = Failed */ }
     public void Apply(TaskAbandoned @event) { /* State = Abandoned */ }
 }
 ```
+
+### 2.1 Follow-up runs (PR closeout) — why `TaskReopened`, not a follow-up claim
+
+A merged-in-review-but-not-yet-mergeable PR needs more work on its **existing branch**
+(Decisions Log #18). Three shapes were considered:
+
+- **A new task** — rejected: the follow-up belongs to the original task's audit trail; a
+  second task would duplicate the contract and orphan the PR linkage.
+- **A "follow-up claim" straight from Done → Claimed** — rejected: claiming is the daemon's
+  job (capacity cap, claim race, fencing token). A CLI-initiated direct claim would need a
+  parallel dispatch path beside the loop, exactly what the pipeline-reuse rule forbids.
+- **`TaskReopened`: Done → Queued** — chosen. The reopened task re-enters the standard
+  sweep → claim → launch pipeline untouched; the only branching point is in the launcher,
+  which sees `FollowUpBranch` set and checks out the existing PR branch (worktree
+  `CheckoutExistingAsync`) instead of cutting a new one, and hands the agent the follow-up
+  prompt (resolve-copilot-reviews skill + PR URL). Verification gates and the push run
+  through the same `RunSupervisor`/`VerificationRunner`/`PullRequestOpener`; the opener
+  sees the task already carries a PR URL, pushes in place, and records `PullRequestUpdated`
+  on the run instead of opening a second PR.
+
+Guardrails: only `Done` reopens (Failed/Abandoned stay dead ends), and only with a PR URL
+on the stream — the feature is PR closeout, not general task resurrection. `TaskCompleted`
+consumes `FollowUpBranch`, so a completed follow-up leaves the task exactly as a first
+completion does — reopenable again if more feedback arrives.
 
 ### Claim atomicity
 
@@ -186,6 +224,11 @@ public sealed record RunResumed(         // after AnswerProvided: new process, s
 public sealed record VerificationPassed(Guid Id, DateTimeOffset PassedAt);
 public sealed record VerificationFailed(Guid Id, IReadOnlyList<string> FailedGates, DateTimeOffset FailedAt);
 public sealed record PullRequestOpened(Guid Id, string PullRequestUrl, int PullRequestNumber, DateTimeOffset OpenedAt);
+public sealed record PullRequestUpdated( // follow-up run pushed to the task's EXISTING PR (§2.1) —
+    Guid Id,                             // the PR updates in place, no second PR. RunState -> AwaitingReview.
+    string PullRequestUrl,
+    int PullRequestNumber,
+    DateTimeOffset UpdatedAt);
 
 public sealed record AgentSessionCompleted( // the agent's claude process emitted its final result event and
     Guid Id,                             // exited; verification gates run next. RunState -> Verifying.
