@@ -10,6 +10,11 @@
 
   <ItemGroup>
     <PackageReference Include="Spectre.Console.Cli" />
+    <PackageReference Include="NJsonSchema" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Using Include="Hall9k.Domain.Infrastructure.Extensions" />
   </ItemGroup>
 
   <ItemGroup>

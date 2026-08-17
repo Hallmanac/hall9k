@@ -7,7 +7,7 @@ services:
     restart: unless-stopped
     environment:
       POSTGRES_DB: hall9k
-      POSTGRES_USER: hall9k
+      POSTGRES_USER: postgres
       POSTGRES_PASSWORD: hall9k
     ports:
       - "5432:5432"

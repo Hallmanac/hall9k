@@ -15,6 +15,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\Hall9k.Domain\Hall9k.Domain.csproj" />
+    <ProjectReference Include="..\..\src\Hall9k.Cli\Hall9k.Cli.csproj" />
   </ItemGroup>
 
 </Project>
