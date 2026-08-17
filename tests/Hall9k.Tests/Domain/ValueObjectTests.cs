@@ -1,6 +1,7 @@
 using System.Text.Json;
 using FluentAssertions;
 using Hall9k.Domain.Features.Connection;
+using Hall9k.Domain.Features.Run;
 using Hall9k.Domain.Shared.ValueObjects;
 using Xunit;
 
@@ -41,6 +42,24 @@ public sealed class ValueObjectTests
 
         CredentialReference parsed = CredentialReference.Parse("keychain:hall9k-jira");
         parsed.Should().Be(CredentialReference.Keychain("hall9k-jira"));
+    }
+
+    [Fact]
+    public void ReviewVerdict_serializes_as_bare_string_and_blank_normalizes_to_unknown()
+    {
+        JsonSerializer.Serialize(ReviewVerdict.MergeReady).Should().Be("\"MergeReady\"");
+        JsonSerializer.Deserialize<ReviewVerdict>("\"NeedsFixes\"").Should().Be(ReviewVerdict.NeedsFixes);
+
+        ReviewVerdict blank = (string?)null;
+        (blank == ReviewVerdict.Unknown).Should().BeTrue();
+    }
+
+    [Fact]
+    public void ReviewFixOutcome_round_trips_and_keeps_unrecognized_values()
+    {
+        JsonSerializer.Deserialize<ReviewFixOutcome>("\"Disputed\"").Should().Be(ReviewFixOutcome.Disputed);
+        JsonSerializer.Deserialize<ReviewFixOutcome>("\"Deferred\"")!.Value
+            .Should().Be("Deferred", "the set is defined once, not enforced");
     }
 
     [Fact]
