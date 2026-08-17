@@ -187,6 +187,111 @@ public static class AgentPromptBuilder
         return prompt.ToString();
     }
 
+    /// <summary>
+    /// The independent pre-PR reviewer (Decisions Log #23): a fresh session that has not
+    /// seen the implementation reasoning reviews the branch's diff against the base
+    /// before any pull request exists. Verified findings only, and a machine-readable
+    /// verdict on the last line — the daemon parses it.
+    /// </summary>
+    public static string BuildReview(TaskDetails task, ProjectDetails project, string branch, int cycle)
+    {
+        StringBuilder prompt = new();
+        prompt.AppendLine("# Independent review: verify this diff before its pull request opens");
+        prompt.AppendLine();
+        prompt.AppendLine("You are an independent reviewer with fresh context. A different agent implemented");
+        prompt.AppendLine("the task below; you have not seen its reasoning, and that is the point — judge only");
+        prompt.AppendLine("the code. No pull request exists yet; your verdict decides whether one opens.");
+        prompt.AppendLine();
+        prompt.AppendLine("## What the diff is supposed to do");
+        prompt.AppendLine();
+        prompt.AppendLine(task.Objective);
+        prompt.AppendLine();
+        prompt.AppendLine("Acceptance criteria:");
+        foreach (string criterion in task.AcceptanceCriteria)
+        {
+            prompt.AppendLine($"- {criterion}");
+        }
+
+        prompt.AppendLine();
+        prompt.AppendLine("## How to review");
+        prompt.AppendLine();
+        prompt.AppendLine($"- You are in the implementation's git worktree on branch `{branch}`.");
+        prompt.AppendLine($"  The diff under review: `git diff {project.BaseBranch}...HEAD` (commits:");
+        prompt.AppendLine($"  `git log {project.BaseBranch}..HEAD`). Use `origin/{project.BaseBranch}` if the local");
+        prompt.AppendLine("  base ref is absent.");
+        prompt.AppendLine("- Report verified findings only. For every suspected defect, read the surrounding");
+        prompt.AppendLine("  code until you can confirm it is real; discard anything you cannot confirm.");
+        prompt.AppendLine("- Each finding must carry: the file and line (`path/to/file.cs:123`), a one-sentence");
+        prompt.AppendLine("  statement of the defect, and a concrete failure scenario (the input or state that");
+        prompt.AppendLine("  makes it misbehave, and what goes wrong).");
+        prompt.AppendLine("- Do NOT modify files, commit, push, or open pull requests. You are read-only.");
+        prompt.AppendLine();
+        prompt.AppendLine("## Verdict (required)");
+        prompt.AppendLine();
+        prompt.AppendLine("End your final message with your findings followed by exactly one verdict line,");
+        prompt.AppendLine("nothing after it:");
+        prompt.AppendLine();
+        prompt.AppendLine("    VERDICT: merge-ready");
+        prompt.AppendLine();
+        prompt.AppendLine("when you confirmed no defects, or");
+        prompt.AppendLine();
+        prompt.AppendLine("    VERDICT: needs-fixes");
+        prompt.AppendLine();
+        prompt.AppendLine("when at least one verified finding stands. The platform parses this line; a missing");
+        prompt.AppendLine($"verdict hands the run to a human. This is review cycle {cycle} for this run.");
+
+        return prompt.ToString();
+    }
+
+    /// <summary>
+    /// The fix leg of the review loop (Decisions Log #23): a fresh session resolves the
+    /// reviewer's verified findings in the same worktree. Disputes park for a human
+    /// instead of looping — the daemon parses the resolution line.
+    /// </summary>
+    public static string BuildReviewFix(TaskDetails task, string branch, string findings, int cycle)
+    {
+        StringBuilder prompt = new();
+        prompt.AppendLine("# Fix the verified findings from an independent pre-PR review");
+        prompt.AppendLine();
+        prompt.AppendLine("An independent reviewer confirmed the defects below in this branch's diff before");
+        prompt.AppendLine("its pull request opens. Your job is to resolve those findings — not to redo the");
+        prompt.AppendLine("original work, and not to argue with findings you can verify are real.");
+        prompt.AppendLine();
+        prompt.AppendLine("## Original objective (context, already implemented)");
+        prompt.AppendLine();
+        prompt.AppendLine(task.Objective);
+        prompt.AppendLine();
+        prompt.AppendLine($"## Review findings (cycle {cycle})");
+        prompt.AppendLine();
+        prompt.AppendLine(findings);
+        prompt.AppendLine();
+        prompt.AppendLine("## Working rules");
+        prompt.AppendLine();
+        prompt.AppendLine($"- You are in the implementation's git worktree on branch `{branch}`. Work only here.");
+        prompt.AppendLine("- Verify each finding yourself, fix the real ones, and commit on this branch with");
+        prompt.AppendLine("  clear messages. Do NOT push, do NOT open a pull request — the platform re-runs");
+        prompt.AppendLine("  the verification gates and a fresh review after you finish.");
+        prompt.AppendLine("- If you judge a finding to be not a defect, or human territory (a design");
+        prompt.AppendLine("  disagreement, a scope change), do not paper over it and do not loop: state your");
+        prompt.AppendLine("  position on that finding explicitly in your summary. The platform hands disputes");
+        prompt.AppendLine("  to a human with both positions on record.");
+        prompt.AppendLine();
+        prompt.AppendLine("## Resolution (required)");
+        prompt.AppendLine();
+        prompt.AppendLine("End your final message with a summary of what you changed, then exactly one");
+        prompt.AppendLine("resolution line, nothing after it:");
+        prompt.AppendLine();
+        prompt.AppendLine("    RESOLUTION: fixed");
+        prompt.AppendLine();
+        prompt.AppendLine("when every finding is resolved, or");
+        prompt.AppendLine();
+        prompt.AppendLine("    RESOLUTION: disputed");
+        prompt.AppendLine();
+        prompt.AppendLine("when any finding is, in your judgment, not a defect or a human decision.");
+
+        return prompt.ToString();
+    }
+
     private static IReadOnlyList<RepoSkill> DiscoverRepoSkills(string worktreePath)
     {
         string skillsDirectory = Path.Combine(worktreePath, ".claude", "skills");

@@ -16,7 +16,15 @@ public sealed class ClaudeExecutor(ILogger<ClaudeExecutor> logger) : IExecutor
     public async Task<SpawnedAgent> SpawnAsync(AgentSpawnRequest request, CancellationToken cancellationToken)
     {
         Directory.CreateDirectory(RunPaths.RunDirectory(request.RunId));
-        await File.WriteAllTextAsync(RunPaths.PromptFile(request.RunId), request.Prompt, cancellationToken);
+        (string promptFile, string streamFile, string standardErrorFile) = request.SessionArtifactName is { } session
+            ? (RunPaths.SessionPromptFile(request.RunId, session),
+                RunPaths.SessionStreamFile(request.RunId, session),
+                RunPaths.SessionStandardErrorFile(request.RunId, session))
+            : (RunPaths.PromptFile(request.RunId),
+                RunPaths.StreamFile(request.RunId),
+                RunPaths.StandardErrorFile(request.RunId));
+
+        await File.WriteAllTextAsync(promptFile, request.Prompt, cancellationToken);
         await File.WriteAllTextAsync(
             RunPaths.SettingsFile(request.RunId),
             """{"includeCoAuthoredBy": false}""",
@@ -24,9 +32,9 @@ public sealed class ClaudeExecutor(ILogger<ClaudeExecutor> logger) : IExecutor
 
         string command =
             $"exec {ClaudeBinary()} {string.Join(' ', Arguments(request))} " +
-            $"< \"{RunPaths.PromptFile(request.RunId)}\" " +
-            $"> \"{RunPaths.StreamFile(request.RunId)}\" " +
-            $"2> \"{RunPaths.StandardErrorFile(request.RunId)}\"";
+            $"< \"{promptFile}\" " +
+            $"> \"{streamFile}\" " +
+            $"2> \"{standardErrorFile}\"";
 
         Process process = new();
         process.StartInfo = new ProcessStartInfo

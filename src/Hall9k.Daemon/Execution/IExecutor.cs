@@ -2,13 +2,19 @@ using Hall9k.Domain.Features.Run;
 
 namespace Hall9k.Daemon.Execution;
 
+/// <summary>
+/// SessionArtifactName is null for the run's main agent session (files named per log #2:
+/// stream.jsonl, prompt.md, stderr.log). Review and fix sessions (log #24) pass a
+/// per-session name so their files live beside the main session's without colliding.
+/// </summary>
 public sealed record AgentSpawnRequest(
     Guid RunId,
     Guid SessionId,
     string WorktreePath,
     string Prompt,
     ExecutorMode Mode,
-    bool SkipPermissions);
+    bool SkipPermissions,
+    string? SessionArtifactName = null);
 
 public sealed record SpawnedAgent(int ProcessId, DateTimeOffset StartedAt);
 
