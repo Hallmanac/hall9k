@@ -21,7 +21,7 @@ public sealed class VerificationRunner(
     IOptions<DaemonOptions> options,
     ILogger<VerificationRunner> logger)
 {
-    public async Task VerifyAsync(Guid runId, Guid taskId, CancellationToken cancellationToken)
+    public async Task<bool> VerifyAsync(Guid runId, Guid taskId, CancellationToken cancellationToken)
     {
         await using IQuerySession query = store.QuerySession();
         RunDetails? run = await query.LoadAsync<RunDetails>(runId, cancellationToken);
@@ -33,7 +33,7 @@ public sealed class VerificationRunner(
         if (run is null || task is null)
         {
             logger.LogError("Cannot verify run {RunId}: run or task missing", runId);
-            return;
+            return false;
         }
 
         IReadOnlyList<VerifyCommand> gates = project?.VerifyCommands ?? [];
@@ -41,7 +41,7 @@ public sealed class VerificationRunner(
         {
             await RecordPassAsync(runId, "No verification gates configured for this project.", cancellationToken);
             logger.LogInformation("Run {RunId} verification passed: no gates configured", runId);
-            return;
+            return true;
         }
 
         foreach (VerifyCommand gate in gates)
@@ -51,14 +51,15 @@ public sealed class VerificationRunner(
             {
                 await RecordFailureAsync(runId, taskId, gate.Name, summary, cancellationToken);
                 logger.LogWarning("Run {RunId} verification failed at gate '{Gate}': {Summary}", runId, gate.Name, summary);
-                return;
+                return false;
             }
 
             logger.LogInformation("Run {RunId} gate '{Gate}' passed", runId, gate.Name);
         }
 
         await RecordPassAsync(runId, note: null, cancellationToken);
-        logger.LogInformation("Run {RunId} verification passed ({Count} gate(s)) — PR opening is S1-09", runId, gates.Count);
+        logger.LogInformation("Run {RunId} verification passed ({Count} gate(s))", runId, gates.Count);
+        return true;
     }
 
     private async Task<(bool Passed, string Summary)> RunGateAsync(

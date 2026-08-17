@@ -23,6 +23,7 @@ public sealed class RunSupervisor(
     NodeContext node,
     IProcessManager processManager,
     VerificationRunner verification,
+    PullRequestOpener pullRequests,
     ILogger<RunSupervisor> logger)
 {
     private static readonly TimeSpan TailInterval = TimeSpan.FromSeconds(1);
@@ -58,7 +59,11 @@ public sealed class RunSupervisor(
             {
                 // Daemon died mid-verification: the agent's work is done, just re-verify.
                 logger.LogInformation("Adopting run {RunId} stranded in Verifying — re-running gates", run.Id);
-                await verification.VerifyAsync(run.Id, run.TaskId, cancellationToken);
+                if (await verification.VerifyAsync(run.Id, run.TaskId, cancellationToken))
+                {
+                    await pullRequests.OpenAsync(run.Id, run.TaskId, cancellationToken);
+                }
+
                 continue;
             }
 
@@ -209,9 +214,9 @@ public sealed class RunSupervisor(
             "Run {RunId} agent session completed ({Input}in/{Output}out tokens, error: {IsError})",
             runId, result.InputTokens, result.OutputTokens, result.IsError);
 
-        if (!result.IsError)
+        if (!result.IsError && await verification.VerifyAsync(runId, taskId, cancellationToken))
         {
-            await verification.VerifyAsync(runId, taskId, cancellationToken);
+            await pullRequests.OpenAsync(runId, taskId, cancellationToken);
         }
     }
 

@@ -2,7 +2,7 @@ using System.Text.Json;
 
 namespace Hall9k.Daemon.Execution;
 
-public sealed record AgentResult(bool IsError, long InputTokens, long OutputTokens, decimal? CostUsd);
+public sealed record AgentResult(bool IsError, long InputTokens, long OutputTokens, decimal? CostUsd, string? Summary = null);
 
 /// <summary>
 /// Minimal, tolerant reader of claude's stream-json lines. The only line the daemon must
@@ -43,7 +43,12 @@ public static class StreamJsonParser
                 ? cost.GetDecimal()
                 : null;
 
-            result = new AgentResult(isError, inputTokens, outputTokens, costUsd);
+            string? summary = root.TryGetProperty("result", out JsonElement text)
+                && text.ValueKind == JsonValueKind.String
+                ? text.GetString()
+                : null;
+
+            result = new AgentResult(isError, inputTokens, outputTokens, costUsd, summary);
             return true;
         }
         catch (JsonException)
