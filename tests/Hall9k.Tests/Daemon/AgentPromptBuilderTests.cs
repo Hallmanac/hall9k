@@ -99,6 +99,44 @@ public sealed class AgentPromptBuilderTests : IDisposable
         prompt.Should().Contain("resolve-copilot-reviews");
     }
 
+    [Fact]
+    public void Review_prompt_demands_verified_findings_with_locations_scenarios_and_a_verdict()
+    {
+        ProjectDetails project = SomeProject();
+        project.BaseBranch = "main";
+
+        string prompt = AgentPromptBuilder.BuildReview(SomeTask(), project, "task/1-slug", cycle: 2);
+
+        prompt.Should().Contain("independent reviewer with fresh context");
+        prompt.Should().Contain("git diff main...HEAD");
+        prompt.Should().Contain("verified findings only", Exactly.Once());
+        prompt.Should().Contain("read the surrounding");
+        prompt.Should().Contain("discard anything you cannot confirm");
+        prompt.Should().Contain("file and line");
+        prompt.Should().Contain("concrete failure scenario");
+        prompt.Should().Contain("VERDICT: merge-ready");
+        prompt.Should().Contain("VERDICT: needs-fixes");
+        prompt.Should().Contain("Do NOT modify files");
+        prompt.Should().Contain("review cycle 2");
+        prompt.Should().Contain("Add rate limiting to auth endpoints", "the reviewer needs the intent to judge the diff");
+    }
+
+    [Fact]
+    public void Review_fix_prompt_carries_the_findings_and_the_dispute_escape_hatch()
+    {
+        string findings = "1. `Auth.cs:42` — limiter never resets. Scenario: second request always 429s.";
+
+        string prompt = AgentPromptBuilder.BuildReviewFix(SomeTask(), "task/1-slug", findings, cycle: 1);
+
+        prompt.Should().Contain(findings);
+        prompt.Should().Contain("branch `task/1-slug`");
+        prompt.Should().Contain("Do NOT push");
+        prompt.Should().Contain("RESOLUTION: fixed");
+        prompt.Should().Contain("RESOLUTION: disputed");
+        prompt.Should().Contain("not a defect");
+        prompt.Should().Contain("human");
+    }
+
     private void WriteSkill(string name, string description)
     {
         string skillDirectory = Path.Combine(_worktreePath, ".claude", "skills", name);
