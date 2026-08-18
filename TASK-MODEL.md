@@ -36,8 +36,10 @@ per house style).
 The §3.3 lifecycle mixes two concerns. Here they separate cleanly:
 
 - **Task state** (work lifecycle): `Queued → Claimed → NeedsHuman ⇄ Claimed → Done | Failed | Abandoned`
-  (+ `NeedsRefinement` reserved, not built in v0; `Done → Queued` via `TaskReopened` is the one
-  deliberate exit from a terminal state — PR follow-up runs, log #20 and §2.1 below)
+  (+ `NeedsRefinement` reserved, not built in v0; two deliberate exits from terminal states:
+  `Done → Queued` via `TaskReopened` (PR follow-up runs, log #20 and §2.1 below) and
+  `Failed → Queued` via `TaskRetried`, the human-only retry of a failed task, log #25.
+  Abandoned stays a dead end)
 - **Run state** (execution lifecycle): `Dispatched → Running → Verifying → UnderReview → AwaitingReview → Completed | Failed | Killed | Superseded`
   (`AgentSessionCompleted` enters Verifying — the agent process finishing is not the run finishing.
   `UnderReview` is the pre-PR review loop, with `ReviewParked` when it hands the diff to a
@@ -110,6 +112,18 @@ public sealed record TaskReopened(       // Done -> Queued for a follow-up run o
                                          // (h9k pr resolve). Automatic reopens count against the bounded
                                          // closeout budget; a manual reopen resets it (log #22, §2.2)
 
+public sealed record TaskRetried(        // Failed -> Queued by explicit human decision (log #25):
+    Guid Id,                             // infra failure around finished work must not strand it.
+    Guid? PreviousRunId,                 // the failed run, when one was recorded
+    string? Branch,                      // that run's branch as observed at retry time (null when no
+                                         // run record exists); resumed by the next claim when it
+                                         // survives, clean start from the base branch when gone
+    string Reason,                       // required; shown by h9k task show. The failure itself
+                                         // stays on the stream (retry appends, never erases)
+    DateTimeOffset RetriedAt,
+    Guid RetriedByOwnerId);              // human-only: no monitor appends this (log #11), so there
+                                         // is no Automatic flag and no budget interaction
+
 // Reserved, not built in v0:
 // public sealed record TaskSentToRefinement(...);
 ```
@@ -133,6 +147,8 @@ public sealed class TaskAggregate
     public string? PullRequestUrl { get; private set; }  // from TaskCompleted; survives a reopen
     public string? FollowUpBranch { get; private set; }  // set by TaskReopened, cleared by TaskCompleted:
                                                          // while set, the next claim resumes this branch
+    public string? RetryBranch { get; private set; }     // set by TaskRetried, cleared by TaskCompleted:
+                                                         // the failed run's branch, resumed if it survives
     public FollowUpKind FollowUpKind { get; private set; } // why the pending follow-up exists (prompt selection)
     public int CloseoutAttempts { get; private set; }    // automatic reopens since the last human touch:
                                                          // the bounded closeout-retry counter (§2.2)
@@ -151,6 +167,7 @@ public sealed class TaskAggregate
     public void Apply(TaskCompleted @event) { /* PullRequestUrl; FollowUpBranch = null; State = Done */ }
     public void Apply(TaskReopened @event) { /* FollowUpBranch = @event.Branch; State = Queued */ }
     public void Apply(TaskFailed @event) { /* State = Failed */ }
+    public void Apply(TaskRetried @event) { /* RetryBranch = @event.Branch; State = Queued */ }
     public void Apply(TaskAbandoned @event) { /* State = Abandoned */ }
 }
 ```
@@ -174,7 +191,8 @@ A merged-in-review-but-not-yet-mergeable PR needs more work on its **existing br
   sees the task already carries a PR URL, pushes in place, and records `PullRequestUpdated`
   on the run instead of opening a second PR.
 
-Guardrails: only `Done` reopens (Failed/Abandoned stay dead ends), and only with a PR URL
+Guardrails: only `Done` reopens (Abandoned stays a dead end; Failed has its own human-only
+exit, `TaskRetried`, log #25), and only with a PR URL
 on the stream — the feature is PR closeout, not general task resurrection. `TaskCompleted`
 consumes `FollowUpBranch`, so a completed follow-up leaves the task exactly as a first
 completion does — reopenable again if more feedback arrives.
