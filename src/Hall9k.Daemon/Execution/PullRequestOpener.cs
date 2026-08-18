@@ -46,9 +46,13 @@ public sealed class PullRequestOpener(
 
             // Follow-up-ness is recorded on the run at dispatch (RunDispatched.IsFollowUp) —
             // an observed fact, never re-inferred from the task's PR URL, which a stranded
-            // first run adopted after another run completed the task would get wrong.
+            // first run adopted after another run completed the task would get wrong. Only
+            // a follow-up — a run that actually resumed the recorded PR's branch — adopts
+            // that URL. A retry that started clean (log #25) is on a branch the old PR
+            // never saw; recording the old PR as its own would be a guessed audit fact, so
+            // it opens its own PR for the branch it actually pushed.
             bool followUp = run.IsFollowUp;
-            (string? pullRequestUrl, int pullRequestNumber) = task.PullRequestUrl is { } existingUrl
+            (string? pullRequestUrl, int pullRequestNumber) = followUp && task.PullRequestUrl is { } existingUrl
                 ? (existingUrl, ParsePullRequestNumber(existingUrl))
                 : await IsGitHubOriginAsync(run.WorktreePath, cancellationToken)
                     ? await CreatePullRequestAsync(run, task, project.BaseBranch, cancellationToken)

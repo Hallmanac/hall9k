@@ -172,7 +172,7 @@ public sealed class PullRequestOpenerTests(PostgresFixture postgres) : IClassFix
 
             session.Events.StartStream<RunAggregate>(followUpRunId,
                 new RunDispatched(followUpRunId, taskId, followUpClaim.NodeId, ownerId, 2, DomainId.New(),
-                    followUp.Path, followUp.Branch, ExecutorMode.Subscription, Now),
+                    followUp.Path, followUp.Branch, ExecutorMode.Subscription, Now, IsFollowUp: true),
                 new AgentSessionCompleted(followUpRunId, Now),
                 new VerificationPassed(followUpRunId, Now));
 
@@ -203,6 +203,106 @@ public sealed class PullRequestOpenerTests(PostgresFixture postgres) : IClassFix
         (await query.LoadAsync<TaskLease>(taskId, cts.Token)).Should().BeNull();
         Directory.Exists(followUp.Path).Should().BeTrue(
             "follow-up worktrees are retained like first-run ones until closeout completes (log #21)");
+    }
+
+    [Fact]
+    public async Task Clean_start_retry_does_not_adopt_the_stale_pull_request_url()
+    {
+        // The reviewer-confirmed strand: a task Failed with PullRequestUrl still set, its
+        // branch gone, retried through the launcher's clean-start fallback (log #25). The
+        // run never resumed the old PR's branch (IsFollowUp: false), so completion must
+        // not record the old PR as this run's own — a guessed audit fact that would leave
+        // the retried work monitored by nothing.
+        const string stalePullRequestUrl = "https://github.com/x/y/pull/9";
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        using DocumentStore store = DocumentStore.For(opts =>
+        {
+            opts.Connection(postgres.ConnectionString);
+            opts.ConfigureHall9k(AutoCreate.All);
+        });
+
+        Directory.CreateDirectory(_root);
+        string originPath = Path.Combine(_root, "origin.git");
+        string repoPath = Path.Combine(_root, "repo");
+        Git(_root, $"init --bare -b main \"{originPath}\"");
+        Git(_root, $"clone \"{originPath}\" \"{repoPath}\"");
+        File.WriteAllText(Path.Combine(repoPath, "README.md"), "# retry test\n");
+        Git(repoPath, "add -A");
+        Git(repoPath, "-c user.name=Test -c user.email=t@t commit -qm init");
+        Git(repoPath, "push -q origin main");
+
+        // The retry run started clean off the base branch: the failed run's branch is gone.
+        GitWorktreeManager worktrees = new(NullLogger<GitWorktreeManager>.Instance);
+        Guid taskId = DomainId.New();
+        Guid retryRunId = DomainId.New();
+        Worktree worktree = await worktrees.CreateAsync(
+            new WorktreeRequest(repoPath, "main", taskId, retryRunId, "Retry after a stranding failure"), cts.Token);
+        File.WriteAllText(Path.Combine(worktree.Path, "WORK.md"), "retried work\n");
+        Git(worktree.Path, "add -A");
+        Git(worktree.Path, "-c user.name=Test -c user.email=t@t commit -qm \"Add WORK.md\"");
+
+        Guid ownerId = DomainId.New();
+        Guid projectId = DomainId.New();
+        Guid firstRunId = DomainId.New();
+        Guid followUpRunId = DomainId.New();
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            // Full history of the strand: completed with a PR, reopened for failing
+            // checks, follow-up failed at the push step, human retried.
+            TaskAggregate task = new();
+            var added = TaskDecider.Add(taskId, projectId, "Retry after a stranding failure", ["work lands on origin"],
+                TaskType.Chore, null, null, null, Now, ownerId);
+            task.Apply(added);
+            var firstClaim = TaskDecider.Claim(task, DomainId.New(), ownerId, firstRunId, Now);
+            task.Apply(firstClaim);
+            var completed = TaskDecider.Complete(task, firstRunId, stalePullRequestUrl, Now);
+            task.Apply(completed);
+            var reopened = TaskDecider.Reopen(
+                task, firstRunId, "task/gone-branch", "Failing checks",
+                FollowUpKind.FailingChecks, automatic: true, Now, ownerId);
+            task.Apply(reopened);
+            var followUpClaim = TaskDecider.Claim(task, DomainId.New(), ownerId, followUpRunId, Now);
+            task.Apply(followUpClaim);
+            var failed = TaskDecider.Fail(task, followUpRunId, "Push failed", Now);
+            task.Apply(failed);
+            var retried = TaskDecider.Retry(task, "Branch deleted; rerun from scratch", "task/gone-branch", Now, ownerId);
+            task.Apply(retried);
+            var retryClaim = TaskDecider.Claim(task, DomainId.New(), ownerId, retryRunId, Now);
+            task.Apply(retryClaim);
+            session.Events.StartStream<TaskAggregate>(taskId,
+                added, firstClaim, completed, reopened, followUpClaim, failed, retried, retryClaim);
+            session.Store(new TaskLease { Id = taskId, NodeId = retryClaim.NodeId, LeaseGeneration = 3, HeartbeatAt = Now });
+
+            session.Events.StartStream<RunAggregate>(retryRunId,
+                new RunDispatched(retryRunId, taskId, retryClaim.NodeId, ownerId, 3, DomainId.New(),
+                    worktree.Path, worktree.Branch, ExecutorMode.Subscription, Now, IsFollowUp: false),
+                new AgentSessionCompleted(retryRunId, Now),
+                new VerificationPassed(retryRunId, Now));
+
+            var registered = Hall9k.Domain.Features.Project.Handlers.ProjectDecider.Register(
+                projectId, ownerId, DomainId.New(), $"pr-{taskId:N}", repoPath, null, "main", Now);
+            session.Events.StartStream<Hall9k.Domain.Features.Project.ProjectAggregate>(registered.Id, registered);
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        PullRequestOpener opener = new(store, NullLogger<PullRequestOpener>.Instance);
+        await opener.OpenAsync(retryRunId, taskId, cts.Token);
+
+        // The retried work is pushed; the run does NOT wear the old PR (on a real GitHub
+        // origin it would open its own — this local origin gets none either way).
+        (int exitCode, string output) = TryGit(originPath, $"rev-parse --verify refs/heads/{worktree.Branch}");
+        exitCode.Should().Be(0, $"the retried branch must be pushed to origin (output: {output})");
+
+        await using IQuerySession query = store.QuerySession();
+        Hall9k.Domain.Features.Run.Projections.RunDetails runView =
+            (await query.LoadAsync<Hall9k.Domain.Features.Run.Projections.RunDetails>(retryRunId, cts.Token))!;
+        runView.PullRequestUrl.Should().BeNull(
+            "a clean-start retry never resumed the old PR's branch, so its run must not record that PR as its own");
+
+        TaskListItem taskView = (await query.LoadAsync<TaskListItem>(taskId, cts.Token))!;
+        taskView.State.Value.Should().Be("Done");
+        taskView.PullRequestUrl.Should().BeNull("the stale PR is not this completion's PR");
+        (await query.LoadAsync<TaskLease>(taskId, cts.Token)).Should().BeNull();
     }
 
     private static void Git(string workingDirectory, string arguments)

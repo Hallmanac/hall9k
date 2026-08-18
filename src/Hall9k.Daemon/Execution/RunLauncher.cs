@@ -36,20 +36,44 @@ public sealed class RunLauncher(
 
         try
         {
-            // A reopened task carries the branch of its existing PR: the follow-up run
-            // resumes that branch instead of cutting a fresh one off the base (log #20).
-            (string Branch, string PullRequestUrl)? followUp =
-                task.FollowUpBranch.IsNotBlank() && task.PullRequestUrl.IsNotBlank()
-                    ? (task.FollowUpBranch, task.PullRequestUrl)
-                    : null;
+            // A reopened task carries the branch of its existing PR (log #20); a retried
+            // task carries its failed run's branch (log #25). Either way the run resumes
+            // that branch instead of cutting a fresh one off the base — when it survives.
+            bool retry = task.FollowUpKind == Domain.Features.Tasks.FollowUpKind.Retry;
+            string? resumeBranch = task.FollowUpBranch.IsNotBlank() ? task.FollowUpBranch : null;
 
-            Worktree worktree = followUp is { } resume
-                ? await worktrees.CheckoutExistingAsync(
-                    new FollowUpWorktreeRequest(project.RepositoryPath, resume.Branch, taskId, runId),
-                    cancellationToken)
-                : await worktrees.CreateAsync(
+            Worktree worktree;
+            bool resumedExisting = false;
+            if (resumeBranch is not null)
+            {
+                try
+                {
+                    worktree = await worktrees.CheckoutExistingAsync(
+                        new FollowUpWorktreeRequest(project.RepositoryPath, resumeBranch, taskId, runId),
+                        cancellationToken);
+                    resumedExisting = true;
+                }
+                catch (WorktreeException exception) when (retry)
+                {
+                    // The retry recorded the branch as observed at failure time, not as
+                    // guaranteed to survive: gone artifacts mean a clean start (log #25).
+                    // A reopened task gets no such fallback — its branch IS the PR.
+                    // The fresh branch dispatches as a non-follow-up, so completion opens
+                    // its own PR instead of adopting a stale PullRequestUrl on the task.
+                    logger.LogWarning(
+                        "Retry of task {TaskId}: branch {Branch} did not survive ({Reason}); starting clean from {BaseBranch}",
+                        taskId, resumeBranch, exception.Message, project.BaseBranch);
+                    worktree = await worktrees.CreateAsync(
+                        new WorktreeRequest(project.RepositoryPath, project.BaseBranch, taskId, runId, task.Objective),
+                        cancellationToken);
+                }
+            }
+            else
+            {
+                worktree = await worktrees.CreateAsync(
                     new WorktreeRequest(project.RepositoryPath, project.BaseBranch, taskId, runId, task.Objective),
                     cancellationToken);
+            }
 
             Guid sessionId = DomainId.New();
             ExecutorMode mode = ExecutorMode.Subscription;
@@ -57,15 +81,17 @@ public sealed class RunLauncher(
             session.Events.StartStream<RunAggregate>(runId, new RunDispatched(
                 runId, taskId, nodeId, ownerId, leaseGeneration, sessionId,
                 worktree.Path, worktree.Branch, mode, DateTimeOffset.UtcNow,
-                IsFollowUp: followUp is not null));
+                IsFollowUp: resumedExisting && task.PullRequestUrl.IsNotBlank()));
             await session.SaveChangesAsync(cancellationToken);
 
             // The reopen's kind picks the follow-up prompt; Unknown (reopens recorded
             // before the vocabulary existed) keeps the historic review-feedback meaning.
-            string prompt = followUp is { } review
+            // A retry gets the standard task prompt whatever survives: the agent works
+            // the objective, picking up any committed work already on the branch.
+            string prompt = resumedExisting && !retry && task.PullRequestUrl.IsNotBlank()
                 ? task.FollowUpKind == Domain.Features.Tasks.FollowUpKind.FailingChecks
-                    ? AgentPromptBuilder.BuildFixChecks(task, project, worktree.Branch, review.PullRequestUrl)
-                    : AgentPromptBuilder.BuildFollowUp(task, project, worktree.Branch, review.PullRequestUrl)
+                    ? AgentPromptBuilder.BuildFixChecks(task, project, worktree.Branch, task.PullRequestUrl)
+                    : AgentPromptBuilder.BuildFollowUp(task, project, worktree.Branch, task.PullRequestUrl)
                 : AgentPromptBuilder.Build(task, project, worktree.Branch, worktree.Path);
             SpawnedAgent agent = await executor.SpawnAsync(
                 new AgentSpawnRequest(runId, sessionId, worktree.Path, prompt, mode, project.SkipPermissions),
