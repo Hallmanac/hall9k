@@ -1,5 +1,6 @@
 using FluentAssertions;
 using Hall9k.Daemon.Execution;
+using Hall9k.Domain.Features.Project;
 using Hall9k.Domain.Features.Project.Projections;
 using Hall9k.Domain.Features.Tasks.Projections;
 using Xunit;
@@ -75,7 +76,7 @@ public sealed class AgentPromptBuilderTests : IDisposable
         task.FollowUpReason = "CI checks failing on the pull request: build (windows-latest).";
 
         string prompt = AgentPromptBuilder.BuildFixChecks(
-            task, SomeProject(), "task/1-slug", "https://github.com/x/y/pull/7");
+            task, SomeProject(), "task/1-slug", "https://github.com/x/y/pull/7", CommitStyle.Append);
 
         prompt.Should().Contain("fix the failing CI checks");
         prompt.Should().Contain("https://github.com/x/y/pull/7");
@@ -93,10 +94,56 @@ public sealed class AgentPromptBuilderTests : IDisposable
         task.FollowUpReason = "2 unresolved Copilot review thread(s) on the pull request.";
 
         string prompt = AgentPromptBuilder.BuildFollowUp(
-            task, SomeProject(), "task/1-slug", "https://github.com/x/y/pull/7");
+            task, SomeProject(), "task/1-slug", "https://github.com/x/y/pull/7", CommitStyle.Append);
 
         prompt.Should().Contain("2 unresolved Copilot review thread(s) on the pull request.");
         prompt.Should().Contain("resolve-copilot-reviews");
+    }
+
+    [Fact]
+    public void Narrative_follow_up_demands_fixups_by_file_ownership_and_the_tree_identity_check()
+    {
+        string prompt = AgentPromptBuilder.BuildFollowUp(
+            SomeTask(), SomeProject(), "task/1-slug", "https://github.com/x/y/pull/7", CommitStyle.Narrative);
+
+        prompt.Should().Contain("git commit --fixup=<owning-commit>");
+        prompt.Should().Contain("most recent branch commit that touches the same file",
+            "the fixup mapping rule is mechanical and lives in the prompt");
+        prompt.Should().Contain("one fixup per owning commit", "a fix spanning owners splits");
+        prompt.Should().Contain("never \"review fixes\"");
+        prompt.Should().Contain("GIT_SEQUENCE_EDITOR=: git rebase -i --autosquash origin/main");
+        prompt.Should().Contain("git diff <old-tip> HEAD",
+            "tree identity must be verified so gate results carry over to the force-push");
+        prompt.Should().Contain("must print nothing");
+        prompt.Should().Contain("--force-with-lease", "the agent must know the platform pushes the rewrite");
+        prompt.Should().Contain("Do NOT push", "the platform owns the push, narrative or not");
+        prompt.Should().Contain("absorb-review-fixes");
+    }
+
+    [Fact]
+    public void Narrative_fix_checks_prompt_carries_the_same_commit_mechanics()
+    {
+        string prompt = AgentPromptBuilder.BuildFixChecks(
+            SomeTask(), SomeProject(), "task/1-slug", "https://github.com/x/y/pull/7", CommitStyle.Narrative);
+
+        prompt.Should().Contain("git commit --fixup=<owning-commit>");
+        prompt.Should().Contain("GIT_SEQUENCE_EDITOR=: git rebase -i --autosquash origin/main");
+        prompt.Should().Contain("git diff <old-tip> HEAD");
+        prompt.Should().Contain("Do NOT push");
+    }
+
+    [Fact]
+    public void Append_follow_up_keeps_the_stack_on_top_instructions_without_rebase_mechanics()
+    {
+        string prompt = AgentPromptBuilder.BuildFollowUp(
+            SomeTask(), SomeProject(), "task/1-slug", "https://github.com/x/y/pull/7", CommitStyle.Append);
+
+        prompt.Should().Contain("append commit style");
+        prompt.Should().Contain("on top of the existing");
+        prompt.Should().Contain("Do NOT push");
+        prompt.Should().NotContain("--fixup", "append mode never rewrites history");
+        prompt.Should().NotContain("--autosquash");
+        prompt.Should().NotContain("--force-with-lease");
     }
 
     [Fact]
@@ -155,5 +202,6 @@ public sealed class AgentPromptBuilderTests : IDisposable
     private static ProjectDetails SomeProject() => new()
     {
         Name = "hall9k",
+        BaseBranch = "main",
     };
 }
