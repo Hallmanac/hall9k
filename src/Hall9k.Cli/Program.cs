@@ -47,6 +47,13 @@ app.Configure(config =>
             .WithDescription("Task detail: contract, conversation, runs");
         task.AddCommand<TaskAbandonCommand>("abandon")
             .WithDescription("Abandon a task (terminal; releases any lease)");
+        task.AddCommand<TaskRetryCommand>("retry")
+            .WithDescription(
+                "Requeue a failed task for another run (human-only; Failed tasks only — Abandoned stays terminal). "
+                + "The failure stays on the stream; the new run resumes the failed run's branch when it survives, "
+                + "or starts clean from the base branch when the artifacts are gone.")
+            .WithExample("task", "retry", "28b19893")
+            .WithExample("task", "retry", "28b19893", "--reason", "Daemon push bug fixed; the completed work is intact in the worktree");
     });
 });
 
