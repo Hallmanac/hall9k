@@ -302,7 +302,7 @@ public static class AgentPromptBuilder
         prompt.AppendLine("  makes it misbehave, and what goes wrong).");
         prompt.AppendLine("- Do NOT modify files, commit, push, or open pull requests. You are read-only.");
         prompt.AppendLine();
-        prompt.AppendLine("## Verdict (required)");
+        prompt.AppendLine("## Verdict (required — never end without it)");
         prompt.AppendLine();
         prompt.AppendLine("End your final message with your findings followed by exactly one verdict line,");
         prompt.AppendLine("nothing after it:");
@@ -313,8 +313,38 @@ public static class AgentPromptBuilder
         prompt.AppendLine();
         prompt.AppendLine("    VERDICT: needs-fixes");
         prompt.AppendLine();
-        prompt.AppendLine("when at least one verified finding stands. The platform parses this line; a missing");
-        prompt.AppendLine($"verdict hands the run to a human. This is review cycle {cycle} for this run.");
+        prompt.AppendLine("when at least one verified finding stands. You may not end this session without a");
+        prompt.AppendLine("VERDICT line. If checks or commands you started are still running, WAIT for them");
+        prompt.AppendLine("to finish, then conclude — a promise to deliver the verdict later is not a");
+        prompt.AppendLine("verdict, and nobody returns to keep it. The platform parses this line; a missing");
+        prompt.AppendLine($"verdict stalls the run and hands it to a human. This is review cycle {cycle} for");
+        prompt.AppendLine("this run.");
+
+        return prompt.ToString();
+    }
+
+    /// <summary>
+    /// The one same-session retry for a reviewer that ended without a VERDICT line: the
+    /// session resumes (it already read the diff) and is told to conclude now. One
+    /// re-prompt only — a second verdict-less ending parks the run (log #11 spirit).
+    /// Origin incident (2026-08-18): the first live review ended with a promise to
+    /// deliver the verdict "when it completes" and parked a correct implementation.
+    /// </summary>
+    public static string BuildReviewVerdictReprompt(int cycle)
+    {
+        StringBuilder prompt = new();
+        prompt.AppendLine("Your review session ended without the required VERDICT line, so the platform");
+        prompt.AppendLine("could not read your judgment. Conclude now:");
+        prompt.AppendLine();
+        prompt.AppendLine("- If any checks or commands are still unfinished, wait for them and fold the");
+        prompt.AppendLine("  results into your judgment.");
+        prompt.AppendLine("- Restate your verified findings (file:line, defect, failure scenario), or state");
+        prompt.AppendLine("  that none stand.");
+        prompt.AppendLine("- End your final message with exactly one verdict line, nothing after it:");
+        prompt.AppendLine("  `VERDICT: merge-ready` or `VERDICT: needs-fixes`.");
+        prompt.AppendLine();
+        prompt.AppendLine("This is the only re-prompt you will receive; ending without a verdict again hands");
+        prompt.AppendLine($"the run to a human. This is still review cycle {cycle} for this run.");
 
         return prompt.ToString();
     }

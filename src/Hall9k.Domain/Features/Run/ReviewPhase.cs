@@ -12,8 +12,10 @@ public enum ReviewPhase
     None,
     /// <summary>A review session is (or was) in flight; its verdict has not been recorded.</summary>
     AwaitingVerdict,
-    /// <summary>The last review completed without a MergeReady verdict; a fix run (or a park) is next.</summary>
+    /// <summary>The last review verdict was NeedsFixes; a fix run (or a park) is next.</summary>
     FixNeeded,
+    /// <summary>The last review ended without a parseable verdict; one same-session re-prompt (or a park) is next.</summary>
+    VerdictMissing,
     /// <summary>A fix session is (or was) in flight; its outcome has not been recorded.</summary>
     AwaitingFix,
     /// <summary>The last fix session finished; verification gates re-run, then a fresh review.</summary>

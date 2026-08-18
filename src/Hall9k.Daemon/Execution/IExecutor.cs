@@ -6,6 +6,9 @@ namespace Hall9k.Daemon.Execution;
 /// SessionArtifactName is null for the run's main agent session (files named per log #2:
 /// stream.jsonl, prompt.md, stderr.log). Review and fix sessions (log #24) pass a
 /// per-session name so their files live beside the main session's without colliding.
+/// ResumeSessionId, when set, re-enters that existing session (claude -p --resume, the
+/// log #5 pattern) instead of starting a fresh one — SessionId then only names this
+/// leg's artifacts.
 /// </summary>
 public sealed record AgentSpawnRequest(
     Guid RunId,
@@ -14,7 +17,8 @@ public sealed record AgentSpawnRequest(
     string Prompt,
     ExecutorMode Mode,
     bool SkipPermissions,
-    string? SessionArtifactName = null);
+    string? SessionArtifactName = null,
+    Guid? ResumeSessionId = null);
 
 public sealed record SpawnedAgent(int ProcessId, DateTimeOffset StartedAt);
 

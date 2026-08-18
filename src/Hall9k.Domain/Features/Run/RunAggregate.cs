@@ -44,6 +44,12 @@ public sealed class RunAggregate
     public int? ActiveReviewProcessId { get; private set; }
     public DateTimeOffset? ActiveReviewProcessStartedAt { get; private set; }
     public bool ActiveReviewSessionIsFix { get; private set; }
+    /// <summary>The last completed review session — the resume target for the one verdict re-prompt.</summary>
+    public Guid? LastReviewSessionId { get; private set; }
+    /// <summary>The highest cycle whose verdict re-prompt was already spent (0 = never). One re-prompt per cycle, then park.</summary>
+    public int VerdictRepromptedCycle { get; private set; }
+    /// <summary>Human findings from a needs-fixes park resolution, consumed by the next fix dispatch.</summary>
+    public string? PendingHumanFindings { get; private set; }
 
     private readonly List<string> _failedGates = [];
     public IReadOnlyList<string> FailedGates => _failedGates;
@@ -117,13 +123,32 @@ public sealed class RunAggregate
     public void Apply(ReviewCompleted @event)
     {
         LastReviewVerdict = @event.Verdict;
+        LastReviewSessionId = ActiveReviewSessionId ?? LastReviewSessionId;
         ClearActiveReviewSession();
-        ReviewPhase = @event.Verdict == ReviewVerdict.MergeReady ? ReviewPhase.MergeReady : ReviewPhase.FixNeeded;
+        ReviewPhase = @event.Verdict == ReviewVerdict.MergeReady
+            ? ReviewPhase.MergeReady
+            : @event.Verdict == ReviewVerdict.NeedsFixes
+                ? ReviewPhase.FixNeeded
+                : ReviewPhase.VerdictMissing;
+    }
+
+    public void Apply(ReviewVerdictReprompted @event)
+    {
+        ActiveReviewSessionId = @event.SessionId;
+        ActiveReviewProcessId = @event.ProcessId;
+        ActiveReviewProcessStartedAt = @event.ProcessStartedAt;
+        ActiveReviewSessionIsFix = false;
+        // The resumed transcript continues the ORIGINAL session; SessionId above is only
+        // this leg's artifact identity.
+        LastReviewSessionId = @event.ResumedSessionId;
+        VerdictRepromptedCycle = @event.Cycle;
+        ReviewPhase = ReviewPhase.AwaitingVerdict;
     }
 
     public void Apply(ReviewFixDispatched @event)
     {
         ReviewFixRuns++;
+        PendingHumanFindings = null;
         ActiveReviewSessionId = @event.SessionId;
         ActiveReviewProcessId = @event.ProcessId;
         ActiveReviewProcessStartedAt = @event.ProcessStartedAt;
@@ -141,6 +166,26 @@ public sealed class RunAggregate
     {
         ReviewPhase = ReviewPhase.Parked;
         State = RunState.ReviewParked;
+    }
+
+    public void Apply(ReviewParkResolved @event)
+    {
+        if (@event.Verdict == ReviewVerdict.MergeReady)
+        {
+            LastReviewVerdict = ReviewVerdict.MergeReady;
+            ReviewPhase = ReviewPhase.MergeReady;
+        }
+        else
+        {
+            LastReviewVerdict = ReviewVerdict.NeedsFixes;
+            ReviewPhase = ReviewPhase.FixNeeded;
+            PendingHumanFindings = @event.Reason;
+            // Like a manual pr resolve, the human asking is a fresh grant (log #22):
+            // the spent automatic fix budget must not instantly re-park the run.
+            ReviewFixRuns = 0;
+        }
+
+        State = RunState.UnderReview;
     }
 
     private void ClearActiveReviewSession()

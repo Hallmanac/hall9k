@@ -169,6 +169,30 @@ public sealed class AgentPromptBuilderTests : IDisposable
     }
 
     [Fact]
+    public void Review_prompt_forbids_ending_without_a_verdict_even_mid_check()
+    {
+        string prompt = AgentPromptBuilder.BuildReview(SomeTask(), SomeProject(), "task/1-slug", cycle: 1);
+
+        prompt.Should().Contain("never end without it");
+        prompt.Should().Contain("You may not end this session without a");
+        prompt.Should().Contain("WAIT for them", "running checks are waited out, not promised about");
+        prompt.Should().Contain("a promise to deliver the verdict later is not a");
+    }
+
+    [Fact]
+    public void Verdict_reprompt_tells_the_resumed_session_to_conclude_and_that_this_is_the_only_retry()
+    {
+        string prompt = AgentPromptBuilder.BuildReviewVerdictReprompt(cycle: 3);
+
+        prompt.Should().Contain("without the required VERDICT line");
+        prompt.Should().Contain("wait for them", "unfinished checks get waited on, then judged");
+        prompt.Should().Contain("VERDICT: merge-ready");
+        prompt.Should().Contain("VERDICT: needs-fixes");
+        prompt.Should().Contain("only re-prompt", "one retry, then the human — never a loop");
+        prompt.Should().Contain("review cycle 3");
+    }
+
+    [Fact]
     public void Retry_prompt_warns_that_the_previous_attempts_work_may_already_be_present()
     {
         string prompt = AgentPromptBuilder.Build(

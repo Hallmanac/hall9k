@@ -104,6 +104,13 @@ public sealed class RunDetailsProjection : SingleStreamProjection<RunDetails, Gu
         view.State = RunState.ReviewParked;
     }
 
+    public void Apply(IEvent<ReviewParkResolved> @event, RunDetails view)
+    {
+        view.LastReviewVerdict = @event.Data.Verdict;
+        view.ParkedReason = null;
+        view.State = RunState.UnderReview;
+    }
+
     public void Apply(IEvent<PullRequestOpened> @event, RunDetails view)
     {
         view.PullRequestUrl = @event.Data.PullRequestUrl;

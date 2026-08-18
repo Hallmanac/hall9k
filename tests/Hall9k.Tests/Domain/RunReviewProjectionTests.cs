@@ -67,6 +67,26 @@ public sealed class RunReviewProjectionTests
     }
 
     [Fact]
+    public void Run_details_leaves_the_park_when_a_human_resolves_it()
+    {
+        RunDetailsProjection projection = new();
+        Guid id = DomainId.New();
+        RunDetails view = VerifiedRun(projection, id);
+
+        projection.Apply(new FakeEvent<ReviewDispatched>(
+            new ReviewDispatched(id, DomainId.New(), 1, 5001, Now, Now)), view);
+        projection.Apply(new FakeEvent<ReviewParked>(
+            new ReviewParked(id, "No parseable verdict, even after a re-prompt.", Now)), view);
+
+        projection.Apply(new FakeEvent<ReviewParkResolved>(
+            new ReviewParkResolved(id, ReviewVerdict.MergeReady, null, Now, DomainId.New())), view);
+
+        view.State.Should().Be(RunState.UnderReview, "a resolved park no longer needs the human");
+        view.ParkedReason.Should().BeNull("the reason is answered; h9k status must stop showing it");
+        view.LastReviewVerdict.Should().Be(ReviewVerdict.MergeReady, "the human's verdict is the run's verdict now");
+    }
+
+    [Fact]
     public void Run_list_item_walks_under_review_and_review_parked()
     {
         RunListItemProjection projection = new();
@@ -82,6 +102,10 @@ public sealed class RunReviewProjectionTests
         projection.Apply(new FakeEvent<ReviewParked>(
             new ReviewParked(id, "disputed", Now)), view);
         view.State.Should().Be(RunState.ReviewParked);
+
+        projection.Apply(new FakeEvent<ReviewParkResolved>(
+            new ReviewParkResolved(id, ReviewVerdict.NeedsFixes, "fix it", Now, DomainId.New())), view);
+        view.State.Should().Be(RunState.UnderReview);
     }
 
     private static RunDetails VerifiedRun(RunDetailsProjection projection, Guid id)
