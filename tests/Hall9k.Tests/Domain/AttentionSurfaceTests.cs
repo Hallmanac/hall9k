@@ -57,6 +57,28 @@ public sealed class AttentionSurfaceTests
     }
 
     [Fact]
+    public void Retried_task_leaves_the_failed_bucket_and_queues_like_any_other_work()
+    {
+        TaskListItem task = new()
+        {
+            Id = DomainId.New(), ProjectId = DomainId.New(), Objective = "x",
+            State = TaskState.Failed, AddedAt = Now,
+        };
+
+        StatusCommand.Compose(
+                task, new Dictionary<Guid, RunListItem>(), new Dictionary<Guid, RunActivity>(),
+                new Dictionary<Guid, string>(), Now)
+            .Bucket.Should().Be("Failed");
+
+        // h9k task retry moves the read model back to Queued (Decisions Log #25).
+        task.State = TaskState.Queued;
+        StatusCommand.Compose(
+                task, new Dictionary<Guid, RunListItem>(), new Dictionary<Guid, RunActivity>(),
+                new Dictionary<Guid, string>(), Now)
+            .Bucket.Should().Be("Queued");
+    }
+
+    [Fact]
     public void Done_run_states_refine_the_closeout_display()
     {
         Guid runId = DomainId.New();

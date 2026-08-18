@@ -48,6 +48,11 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
             header.AddRow("Failure", $"[red]{details.FailureReason.EscapeMarkup()}[/]");
         }
 
+        if (details.RetryReason.IsNotBlank())
+        {
+            header.AddRow("Retried", $"[yellow]{details.RetryReason.EscapeMarkup()}[/]");
+        }
+
         AnsiConsole.Write(header);
 
         AnsiConsole.MarkupLine("\n[bold]Acceptance criteria[/]");

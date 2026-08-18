@@ -45,6 +45,12 @@ app.Configure(config =>
             .WithDescription("List tasks across projects");
         task.AddCommand<TaskShowCommand>("show")
             .WithDescription("Task detail: contract, conversation, runs");
+        task.AddCommand<TaskRetryCommand>("retry")
+            .WithDescription(
+                "Queue a failed task for another run (human judgment only — the daemon never retries a "
+                + "failure itself, PLAN.md log #11/#25). A surviving branch/worktree is resumed; gone "
+                + "artifacts mean a clean start from the base branch. The failure stays on the stream.")
+            .WithExample("task", "retry", "28b19893", "--reason", "\"push bug fixed; the finished work survives in the worktree\"");
         task.AddCommand<TaskAbandonCommand>("abandon")
             .WithDescription("Abandon a task (terminal; releases any lease)");
     });
