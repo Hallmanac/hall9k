@@ -46,10 +46,10 @@ public sealed class RunLauncher(
                     ? (task.FollowUpBranch, task.PullRequestUrl)
                     : null;
 
-            Worktree worktree = followUp is { } resume
-                ? await worktrees.CheckoutExistingAsync(
+            (Worktree worktree, bool resumesPreviousWork) = followUp is { } resume
+                ? (await worktrees.CheckoutExistingAsync(
                     new FollowUpWorktreeRequest(project.RepositoryPath, resume.Branch, taskId, runId),
-                    cancellationToken)
+                    cancellationToken), true)
                 : await CheckoutFreshOrRetryAsync(task, project, taskId, runId, cancellationToken);
 
             Guid sessionId = DomainId.New();
@@ -69,7 +69,7 @@ public sealed class RunLauncher(
                 ? task.FollowUpKind == Domain.Features.Tasks.FollowUpKind.FailingChecks
                     ? AgentPromptBuilder.BuildFixChecks(task, project, worktree.Branch, review.PullRequestUrl, commitStyle)
                     : AgentPromptBuilder.BuildFollowUp(task, project, worktree.Branch, review.PullRequestUrl, commitStyle)
-                : AgentPromptBuilder.Build(task, project, worktree.Branch, worktree.Path);
+                : AgentPromptBuilder.Build(task, project, worktree.Branch, worktree.Path, resumesPreviousWork);
             SpawnedAgent agent = await executor.SpawnAsync(
                 new AgentSpawnRequest(runId, sessionId, worktree.Path, prompt, mode, project.SkipPermissions),
                 cancellationToken);
@@ -92,18 +92,20 @@ public sealed class RunLauncher(
     /// A retried task resumes its failed run's branch through the same checkout path
     /// follow-up runs use — the retained worktree, or a fresh worktree on the surviving
     /// branch. When the branch is gone everywhere, the retry starts clean from the base
-    /// branch instead of failing the run (Decisions Log #25).
+    /// branch instead of failing the run (Decisions Log #25). The flag reports which
+    /// path won, so the prompt tells a resuming agent to review the previous attempt's
+    /// work — possibly uncommitted in the retained worktree — before starting over.
     /// </summary>
-    private async Task<Worktree> CheckoutFreshOrRetryAsync(
+    private async Task<(Worktree Worktree, bool ResumesPreviousWork)> CheckoutFreshOrRetryAsync(
         TaskDetails task, ProjectDetails project, Guid taskId, Guid runId, CancellationToken cancellationToken)
     {
         if (task.RetryBranch.IsNotBlank())
         {
             try
             {
-                return await worktrees.CheckoutExistingAsync(
+                return (await worktrees.CheckoutExistingAsync(
                     new FollowUpWorktreeRequest(project.RepositoryPath, task.RetryBranch, taskId, runId),
-                    cancellationToken);
+                    cancellationToken), true);
             }
             catch (WorktreeException exception)
             {
@@ -113,9 +115,9 @@ public sealed class RunLauncher(
             }
         }
 
-        return await worktrees.CreateAsync(
+        return (await worktrees.CreateAsync(
             new WorktreeRequest(project.RepositoryPath, project.BaseBranch, taskId, runId, task.Objective),
-            cancellationToken);
+            cancellationToken), false);
     }
 
     private async Task RecordLaunchFailureAsync(Guid taskId, Guid runId, string reason, CancellationToken cancellationToken)
