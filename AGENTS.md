@@ -88,16 +88,21 @@ first-class interface, always, for every command:
   (`git diff <old-tip> HEAD` is empty) so green test runs carry over. Origin incident
   (2026-08-17): PR #6's independent-review round first landed as a separate "harden closeout"
   commit and had to be rebuilt into the owning commits by hand.
-- **Follow-up runs: after rewriting history, run the `git push --force-with-lease` yourself
-  before finishing.** The daemon's PR push is not yet force-aware (backlog 08 fixes this);
-  a rebased branch left unpushed fails the run at the push step. Origin incident
-  (2026-08-17): the first two automatic follow-up runs rebased correctly, left the push to
-  the daemon, and both failed with their completed work stranded in the worktrees.
+- **Follow-up runs never push; the daemon pushes follow-up branches with
+  `git push --force-with-lease`.** Rewriting history per the rule above is safe: verify
+  tree identity, finish, and let the platform push. Origin incident (2026-08-17): the
+  first two automatic follow-up runs rebased correctly, the daemon's then-plain push
+  rejected both rebased branches ("failed to push some refs"), and both runs failed with
+  completed, gated work stranded in the worktrees; this file briefly told agents to run
+  the force push themselves as the workaround, until the daemon became force-aware
+  (decision #26).
 
 ## Repo skills
 
 Repo-resident Claude skills live in `.claude/skills/` and are available in every worktree:
 
+- **absorb-review-fixes** — fold review-feedback fixes into their owning commits (fixup +
+  autosquash + tree-identity check) so the PR branch stays authored history
 - **commit-plan** — organize the working tree into cohesive, buildable commits ordered for PR review
 - **resolve-copilot-reviews** — triage Copilot review comments on an existing PR: fix, reply, resolve
 - **pr-summary** — generate a PR title/description from the branch's commits (text only — the
