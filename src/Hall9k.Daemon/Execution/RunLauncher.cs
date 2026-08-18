@@ -47,9 +47,7 @@ public sealed class RunLauncher(
                 ? await worktrees.CheckoutExistingAsync(
                     new FollowUpWorktreeRequest(project.RepositoryPath, resume.Branch, taskId, runId),
                     cancellationToken)
-                : await worktrees.CreateAsync(
-                    new WorktreeRequest(project.RepositoryPath, project.BaseBranch, taskId, runId, task.Objective),
-                    cancellationToken);
+                : await CheckoutFreshOrRetryAsync(task, project, taskId, runId, cancellationToken);
 
             Guid sessionId = DomainId.New();
             ExecutorMode mode = ExecutorMode.Subscription;
@@ -83,6 +81,36 @@ public sealed class RunLauncher(
             logger.LogError(exception, "Launch failed for run {RunId}", runId);
             await RecordLaunchFailureAsync(taskId, runId, exception.Message, cancellationToken);
         }
+    }
+
+    /// <summary>
+    /// A retried task resumes its failed run's branch through the same checkout path
+    /// follow-up runs use — the retained worktree, or a fresh worktree on the surviving
+    /// branch. When the branch is gone everywhere, the retry starts clean from the base
+    /// branch instead of failing the run (Decisions Log #25).
+    /// </summary>
+    private async Task<Worktree> CheckoutFreshOrRetryAsync(
+        TaskDetails task, ProjectDetails project, Guid taskId, Guid runId, CancellationToken cancellationToken)
+    {
+        if (task.RetryBranch.IsNotBlank())
+        {
+            try
+            {
+                return await worktrees.CheckoutExistingAsync(
+                    new FollowUpWorktreeRequest(project.RepositoryPath, task.RetryBranch, taskId, runId),
+                    cancellationToken);
+            }
+            catch (WorktreeException exception)
+            {
+                logger.LogInformation(
+                    "Retry of task {TaskId} cannot resume branch {Branch} ({Reason}); starting clean from {BaseBranch}",
+                    taskId, task.RetryBranch, exception.Message, project.BaseBranch);
+            }
+        }
+
+        return await worktrees.CreateAsync(
+            new WorktreeRequest(project.RepositoryPath, project.BaseBranch, taskId, runId, task.Objective),
+            cancellationToken);
     }
 
     private async Task RecordLaunchFailureAsync(Guid taskId, Guid runId, string reason, CancellationToken cancellationToken)
