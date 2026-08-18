@@ -38,6 +38,10 @@ public sealed class TaskDetails
     /// <summary>The failed run's branch while a human-requested retry is pending: the launcher resumes it when it survives (Decisions Log #25).</summary>
     public string? RetryBranch { get; set; }
     public string? RetryReason { get; set; }
+    /// <summary>The human's attestation that the objective was met despite the run failure (Decisions Log #27); shown by h9k task show.</summary>
+    public string? ResolvedReason { get; set; }
+    /// <summary>The human's walk-away note; kept apart from FailureReason so the run's observed failure stays visible beside it.</summary>
+    public string? AbandonedReason { get; set; }
     public DateTimeOffset AddedAt { get; set; }
     public Guid AddedByOwnerId { get; set; }
     public DateTimeOffset? FinishedAt { get; set; }
@@ -140,9 +144,31 @@ public sealed class TaskDetailsProjection : SingleStreamProjection<TaskDetails, 
         view.FinishedAt = null;
     }
 
+    // FailureReason survives here too: resolve records how the story actually ended
+    // (Done, with the failure still visible) — it never rewrites or hides the failure.
+    public void Apply(IEvent<TaskResolved> @event, TaskDetails view)
+    {
+        view.ResolvedReason = @event.Data.Reason;
+        view.PullRequestUrl = @event.Data.PullRequestUrl ?? view.PullRequestUrl;
+        view.FollowUpBranch = null;
+        view.FollowUpKind = FollowUpKind.Unknown;
+        view.FollowUpReason = null;
+        view.RetryBranch = null;
+        view.State = TaskState.Done;
+        view.FinishedAt = @event.Data.ResolvedAt;
+    }
+
+    // FailureReason survives here as well: abandoning a Failed task records the walk-away
+    // note beside the observed run failure — it never overwrites why the run failed. The
+    // pending-work markers are consumed like Complete/Resolve consume them: an ended task
+    // has no follow-up or retry pending.
     public void Apply(IEvent<TaskAbandoned> @event, TaskDetails view)
     {
-        view.FailureReason = @event.Data.Reason;
+        view.AbandonedReason = @event.Data.Reason;
+        view.FollowUpBranch = null;
+        view.FollowUpKind = FollowUpKind.Unknown;
+        view.FollowUpReason = null;
+        view.RetryBranch = null;
         view.State = TaskState.Abandoned;
         view.FinishedAt = @event.Data.AbandonedAt;
     }

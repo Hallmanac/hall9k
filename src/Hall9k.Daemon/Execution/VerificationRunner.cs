@@ -121,7 +121,7 @@ public sealed class VerificationRunner(
         session.Events.Append(runId, new Domain.Features.Run.Events.RunFailed(runId, reason, now));
 
         TaskAggregate? task = await session.Events.AggregateStreamAsync<TaskAggregate>(taskId, token: cancellationToken);
-        if (task is not null && !task.State.IsTerminal)
+        if (task is not null && TaskDecider.CanFail(task))
         {
             session.Events.Append(taskId, TaskDecider.Fail(task, runId, $"Verification failed: {reason}", now));
         }

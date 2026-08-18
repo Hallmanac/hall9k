@@ -4,7 +4,10 @@ using System.Text.Json.Serialization;
 namespace Hall9k.Domain.Features.Tasks;
 
 /// <summary>The work lifecycle. Execution detail lives on RunState (TASK-MODEL.md §2).
-/// NeedsRefinement is reserved for the funnel era and deliberately absent in v0.</summary>
+/// NeedsRefinement is reserved for the funnel era and deliberately absent in v0.
+/// Failed is a needs-human waypoint, not a terminal state (Decisions Log #27): an unsolved
+/// problem is not an ending. Its exits are retry (re-run), resolve (the objective was met
+/// despite the run failure), and abandon (walk away).</summary>
 [JsonConverter(typeof(TaskStateJsonConverter))]
 public sealed record TaskState
 {
@@ -21,7 +24,10 @@ public sealed record TaskState
 
     private TaskState(string value) => Value = value;
 
-    public bool IsTerminal => this == Done || this == Failed || this == Abandoned;
+    /// <summary>Terminal states say how the story ended: Done (the objective was met) or
+    /// Abandoned (a human walked away). Failed is deliberately not here — it waits for a
+    /// human decision (Decisions Log #27).</summary>
+    public bool IsTerminal => this == Done || this == Abandoned;
 
     public static implicit operator string(TaskState? value) => value?.Value ?? string.Empty;
 
