@@ -2,8 +2,9 @@ namespace Hall9k.Domain.Features.Tasks.Events;
 
 /// <summary>
 /// A failed task returns to the queue by explicit human decision (Decisions Log #25):
-/// infrastructure failure around finished work must not strand that work in a terminal
-/// state. The retry appends — it never rewrites: the stream reads added → … → failed →
+/// infrastructure failure around finished work must not strand that work. The retry is
+/// one of Failed's three exits, beside TaskResolved (objective already met, log #27) and
+/// TaskAbandoned (walk away). It appends — it never rewrites: the stream reads added → … → failed →
 /// retried → claimed, and the failure stays visible. Branch is the failed run's branch
 /// as observed at retry time (null when the failure predates any run record); the
 /// launcher resumes it when it still exists and starts clean from the base branch when

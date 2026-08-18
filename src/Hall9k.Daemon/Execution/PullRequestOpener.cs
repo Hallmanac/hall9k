@@ -217,7 +217,7 @@ public sealed class PullRequestOpener(
         session.Events.Append(runId, new RunFailed(runId, $"PR opening failed: {reason}", DateTimeOffset.UtcNow));
 
         TaskAggregate? task = await session.Events.AggregateStreamAsync<TaskAggregate>(taskId, token: cancellationToken);
-        if (task is not null && !task.State.IsTerminal)
+        if (task is not null && TaskDecider.CanFail(task))
         {
             session.Events.Append(taskId, TaskDecider.Fail(task, runId, $"PR opening failed: {reason}", DateTimeOffset.UtcNow));
         }

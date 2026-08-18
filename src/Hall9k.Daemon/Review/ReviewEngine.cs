@@ -318,7 +318,7 @@ public sealed class ReviewEngine(
         session.Events.Append(runId, new RunFailed(runId, reason, now));
 
         TaskAggregate? task = await session.Events.AggregateStreamAsync<TaskAggregate>(taskId, token: cancellationToken);
-        if (task is not null && !task.State.IsTerminal)
+        if (task is not null && TaskDecider.CanFail(task))
         {
             session.Events.Append(taskId, TaskDecider.Fail(task, runId, reason, now));
         }

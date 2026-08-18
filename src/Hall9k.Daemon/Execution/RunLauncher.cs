@@ -130,7 +130,7 @@ public sealed class RunLauncher(
 
             Domain.Features.Tasks.TaskAggregate? task =
                 await session.Events.AggregateStreamAsync<Domain.Features.Tasks.TaskAggregate>(taskId, token: cancellationToken);
-            if (task is not null && !task.State.IsTerminal)
+            if (task is not null && Domain.Features.Tasks.Handlers.TaskDecider.CanFail(task))
             {
                 session.Events.Append(taskId, Domain.Features.Tasks.Handlers.TaskDecider.Fail(
                     task, runId, $"Launch failed: {reason}", DateTimeOffset.UtcNow));

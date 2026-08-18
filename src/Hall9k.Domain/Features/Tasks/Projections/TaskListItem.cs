@@ -74,5 +74,11 @@ public sealed class TaskListItemProjection : SingleStreamProjection<TaskListItem
         view.State = TaskState.Queued;
     }
 
+    public void Apply(IEvent<TaskResolved> @event, TaskListItem view)
+    {
+        view.PullRequestUrl = @event.Data.PullRequestUrl ?? view.PullRequestUrl;
+        view.State = TaskState.Done;
+    }
+
     public void Apply(IEvent<TaskAbandoned> @event, TaskListItem view) => view.State = TaskState.Abandoned;
 }

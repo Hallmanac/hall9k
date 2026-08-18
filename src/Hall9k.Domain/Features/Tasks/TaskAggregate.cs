@@ -109,6 +109,17 @@ public sealed class TaskAggregate
 
     public void Apply(TaskFailed @event) => State = TaskState.Failed;
 
+    // The failure stays on the stream; resolve only moves the state and records where the
+    // work landed. A resolved task is Done like any other — reopenable when it has a PR.
+    public void Apply(TaskResolved @event)
+    {
+        PullRequestUrl = @event.PullRequestUrl ?? PullRequestUrl;
+        FollowUpBranch = null;
+        FollowUpKind = FollowUpKind.Unknown;
+        RetryBranch = null;
+        State = TaskState.Done;
+    }
+
     public void Apply(TaskRetried @event)
     {
         RetryBranch = @event.Branch;
@@ -118,5 +129,16 @@ public sealed class TaskAggregate
         State = TaskState.Queued;
     }
 
-    public void Apply(TaskAbandoned @event) => State = TaskState.Abandoned;
+    // Abandoning consumes the pending-work markers like Complete and Resolve do — a dead
+    // task must not advertise a resumable branch — and clears the pending question so a
+    // late answer cannot flip an Abandoned task back to Claimed (Answer guards on
+    // PendingQuestionId, not on state).
+    public void Apply(TaskAbandoned @event)
+    {
+        PendingQuestionId = null;
+        FollowUpBranch = null;
+        FollowUpKind = FollowUpKind.Unknown;
+        RetryBranch = null;
+        State = TaskState.Abandoned;
+    }
 }
