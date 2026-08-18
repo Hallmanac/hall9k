@@ -23,9 +23,11 @@ namespace Hall9k.Daemon.Review;
 /// saw the implementation reasoning — reads the run's diff; a needs-fixes verdict
 /// dispatches a fix session in the same worktree, gates re-run, and a fresh reviewer
 /// looks again. Bounded by DaemonOptions.MaxAutomaticReviewFixRuns (the closeout
-/// retry-budget pattern); the budget spent, a disputed finding, or a missing verdict
-/// parks the run for the human. The loop is a state machine over the run stream, so a
-/// restarted daemon resumes it exactly where the events left off.
+/// retry-budget pattern); the budget spent or a disputed finding parks the run for the
+/// human, and a missing verdict gets ONE same-session re-prompt before parking. A park
+/// is resolved with h9k review resolve (ReviewParkResolved re-enters the loop here).
+/// The loop is a state machine over the run stream, so a restarted daemon resumes it
+/// exactly where the events left off.
 /// </summary>
 public sealed class ReviewEngine(
     IDocumentStore store,
@@ -122,24 +124,37 @@ public sealed class ReviewEngine(
                         context.RunId, run.ReviewCycle);
                     return true;
 
-                case ReviewPhase.FixNeeded when run.LastReviewVerdict != ReviewVerdict.NeedsFixes:
-                    // The reviewer followed no verdict format; guessing what it meant would
+                case ReviewPhase.VerdictMissing when run.VerdictRepromptedCycle >= run.ReviewCycle:
+                    // The one re-prompt is spent; guessing what the reviewer meant would
                     // be worse than asking (never guess at unobserved facts).
                     await ParkAsync(context.RunId,
-                        $"The review session (cycle {run.ReviewCycle}) returned no parseable verdict. " +
+                        $"The review session (cycle {run.ReviewCycle}) returned no parseable verdict, " +
+                        "even after a re-prompt. " +
                         $"Its output: {RunPaths.ReviewFindingsFile(context.RunId, run.ReviewCycle)}. " +
-                        "Judge the diff yourself, then fix in the worktree or abandon the task.", cancellationToken);
+                        "Judge the diff yourself, then resolve with h9k review resolve or abandon the task.",
+                        cancellationToken);
                     return false;
+
+                case ReviewPhase.VerdictMissing:
+                    // One same-session re-prompt: the reviewer already read the diff;
+                    // it only needs to conclude (wait for its checks, then the verdict).
+                    if (!await RepromptForVerdictAsync(context, run, cancellationToken))
+                    {
+                        return false;
+                    }
+
+                    break;
 
                 case ReviewPhase.FixNeeded when run.ReviewFixRuns >= _options.MaxAutomaticReviewFixRuns:
                     await ParkAsync(context.RunId,
                         $"Review still finds defects after {run.ReviewFixRuns} automatic fix run(s) — the budget is spent. " +
                         $"Unresolved findings: {RunPaths.ReviewFindingsFile(context.RunId, run.ReviewCycle)}. " +
-                        "Resolve them in the worktree or abandon the task.", cancellationToken);
+                        "Fix in the worktree and resolve with h9k review resolve --merge-ready, grant a fix " +
+                        "session with --needs-fixes, or abandon the task.", cancellationToken);
                     return false;
 
                 case ReviewPhase.FixNeeded:
-                    await DispatchFixSessionAsync(context, run.ReviewCycle, cancellationToken);
+                    await DispatchFixSessionAsync(context, run.ReviewCycle, run.PendingHumanFindings, cancellationToken);
                     break;
 
                 case ReviewPhase.Disputed:
@@ -147,7 +162,7 @@ public sealed class ReviewEngine(
                         $"The fix run disputed a review finding as not-a-defect or human-territory (cycle {run.ReviewCycle}). " +
                         $"Review position: {RunPaths.ReviewFindingsFile(context.RunId, run.ReviewCycle)}; " +
                         $"fix position: {RunPaths.ReviewFixPositionFile(context.RunId, run.ReviewCycle)}. " +
-                        "Decide between them and act by hand.", cancellationToken);
+                        "Decide between them, then resolve with h9k review resolve.", cancellationToken);
                     return false;
 
                 case ReviewPhase.Reverify:
@@ -184,10 +199,52 @@ public sealed class ReviewEngine(
             context.RunId, cycle, sessionId, agent.ProcessId);
     }
 
-    private async Task DispatchFixSessionAsync(ReviewContext context, int cycle, CancellationToken cancellationToken)
+    /// <summary>
+    /// Resumes the verdict-less review session (claude -p --resume) and tells it to
+    /// conclude — the one re-prompt before a park. The spawn carries a fresh artifact
+    /// identity so the resumed leg's stream file never collides with the original's
+    /// (which already ended in a result event the waiter must not re-read).
+    /// </summary>
+    private async Task<bool> RepromptForVerdictAsync(
+        ReviewContext context, RunAggregate run, CancellationToken cancellationToken)
     {
-        string findings = await File.ReadAllTextAsync(
-            RunPaths.ReviewFindingsFile(context.RunId, cycle), cancellationToken);
+        if (run.LastReviewSessionId is not { } resumeSessionId)
+        {
+            await FailAsync(context.RunId, context.TaskId,
+                $"Run stream records a verdict-less review (cycle {run.ReviewCycle}) without its session identity.",
+                cancellationToken);
+            return false;
+        }
+
+        Guid artifactId = DomainId.New();
+        string prompt = AgentPromptBuilder.BuildReviewVerdictReprompt(run.ReviewCycle);
+        SpawnedAgent agent = await executor.SpawnAsync(new AgentSpawnRequest(
+            context.RunId, artifactId, context.Run.WorktreePath, prompt, context.Run.ExecutorMode,
+            context.Project.SkipPermissions, SessionArtifactName(run.ReviewCycle, artifactId, isFix: false),
+            ResumeSessionId: resumeSessionId), cancellationToken);
+
+        await using IDocumentSession session = store.LightweightSession();
+        session.Events.Append(context.RunId, new ReviewVerdictReprompted(
+            context.RunId, artifactId, resumeSessionId, run.ReviewCycle,
+            agent.ProcessId, agent.StartedAt, DateTimeOffset.UtcNow));
+        await session.SaveChangesAsync(cancellationToken);
+        logger.LogWarning(
+            "Run {RunId}: review cycle {Cycle} ended without a verdict — session {SessionId} resumed for its one re-prompt (pid {ProcessId})",
+            context.RunId, run.ReviewCycle, resumeSessionId, agent.ProcessId);
+        return true;
+    }
+
+    /// <summary>
+    /// Dispatches a fix session over the reviewer's findings for the cycle — or, after a
+    /// needs-fixes h9k review resolve, over the human's stated findings (the event
+    /// carries them; the findings file still holds the reviewer's own last words).
+    /// </summary>
+    private async Task DispatchFixSessionAsync(
+        ReviewContext context, int cycle, string? humanFindings, CancellationToken cancellationToken)
+    {
+        string findings = humanFindings.IsNotBlank()
+            ? $"Human review verdict (h9k review resolve): needs fixes.\n\n{humanFindings}"
+            : await File.ReadAllTextAsync(RunPaths.ReviewFindingsFile(context.RunId, cycle), cancellationToken);
         Guid sessionId = DomainId.New();
         string prompt = AgentPromptBuilder.BuildReviewFix(context.Task, context.Run.Branch, findings, cycle);
         ExecutorMode mode = context.Run.ExecutorMode;

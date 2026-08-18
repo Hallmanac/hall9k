@@ -190,20 +190,94 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
     }
 
     [Fact]
-    public async Task A_reviewer_returning_no_parseable_verdict_parks_instead_of_guessing()
+    public async Task A_verdict_less_reviewer_is_reprompted_once_in_the_same_session_and_may_still_conclude()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
         using DocumentStore store = NewStore();
         (Guid taskId, Guid runId, _) = await SeedVerifiedRunAsync(store, cts.Token);
 
-        ScriptedExecutor executor = new("Looks good to me, probably.");
+        // The origin incident's shape: a promise of a future verdict instead of one.
+        ScriptedExecutor executor = new(
+            "Checks are still running; I'll deliver findings and the verdict when it completes.",
+            "The checks finished clean.\n\nVERDICT: merge-ready");
+        bool mergeReady = await NewEngine(store, executor).ReviewAsync(runId, taskId, cts.Token);
+
+        mergeReady.Should().BeTrue("the resumed session concluded properly");
+        executor.Spawns.Should().HaveCount(2, "one review, one re-prompt — never more");
+        executor.Spawns[1].ResumeSessionId.Should().Be(
+            executor.Spawns[0].SessionId, "the re-prompt resumes the session that already read the diff");
+        executor.Spawns[1].SessionId.Should().NotBe(
+            executor.Spawns[0].SessionId, "the resumed leg's artifacts must not collide with the original's");
+        executor.Spawns[1].Prompt.Should().Contain("without the required VERDICT line");
+    }
+
+    [Fact]
+    public async Task A_reviewer_still_verdict_less_after_its_one_reprompt_parks_instead_of_guessing()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        using DocumentStore store = NewStore();
+        (Guid taskId, Guid runId, _) = await SeedVerifiedRunAsync(store, cts.Token);
+
+        ScriptedExecutor executor = new(
+            "Looks good to me, probably.",
+            "Still thinking about it.");
         bool mergeReady = await NewEngine(store, executor).ReviewAsync(runId, taskId, cts.Token);
 
         mergeReady.Should().BeFalse("an unstated verdict is never treated as merge-ready");
+        executor.Spawns.Should().HaveCount(2, "exactly one re-prompt, then the park — never a loop");
         await using IQuerySession query = store.QuerySession();
         RunDetails run = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
         run.State.Should().Be(RunState.ReviewParked);
-        run.ParkedReason.Should().Contain("no parseable verdict");
+        run.ParkedReason.Should().Contain("no parseable verdict").And.Contain("re-prompt");
+    }
+
+    [Fact]
+    public async Task A_park_resolved_merge_ready_proceeds_straight_to_the_pull_request()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        using DocumentStore store = NewStore();
+        (Guid taskId, Guid runId, _) = await SeedVerifiedRunAsync(store, cts.Token);
+        await SeedParkedReviewAsync(store, runId, cts.Token);
+
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            session.Events.Append(runId, new ReviewParkResolved(
+                runId, ReviewVerdict.MergeReady, null, Now, DomainId.New()));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        ScriptedExecutor executor = new();
+        bool mergeReady = await NewEngine(store, executor).ReviewAsync(runId, taskId, cts.Token);
+
+        mergeReady.Should().BeTrue("the human's verdict stands in for the reviewer's");
+        executor.Spawns.Should().BeEmpty("no further session second-guesses the human");
+    }
+
+    [Fact]
+    public async Task A_park_resolved_needs_fixes_dispatches_a_fix_session_over_the_human_findings()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        using DocumentStore store = NewStore();
+        (Guid taskId, Guid runId, _) = await SeedVerifiedRunAsync(store, cts.Token);
+        await SeedParkedReviewAsync(store, runId, cts.Token);
+
+        const string humanFindings = "The limiter reset finding is real; fix it as the reviewer described.";
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            session.Events.Append(runId, new ReviewParkResolved(
+                runId, ReviewVerdict.NeedsFixes, humanFindings, Now, DomainId.New()));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        ScriptedExecutor executor = new(
+            "Fixed as instructed.\n\nRESOLUTION: fixed",
+            "Re-read the diff; the fix holds.\n\nVERDICT: merge-ready");
+        bool mergeReady = await NewEngine(store, executor).ReviewAsync(runId, taskId, cts.Token);
+
+        mergeReady.Should().BeTrue();
+        executor.Spawns.Should().HaveCount(2, "fix over the human findings, then a fresh review");
+        executor.Spawns[0].Prompt.Should().Contain(humanFindings, "the human's reason is the fix session's findings")
+            .And.Contain("Human review verdict");
     }
 
     [Fact]
@@ -277,6 +351,20 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
         await session.SaveChangesAsync(cancellationToken);
 
         return (taskId, runId, mainSessionId);
+    }
+
+    /// <summary>
+    /// Extends a seeded run to a review-parked stream: one review cycle that ended
+    /// verdict-less and parked — exactly what h9k review resolve acts on.
+    /// </summary>
+    private static async Task SeedParkedReviewAsync(DocumentStore store, Guid runId, CancellationToken cancellationToken)
+    {
+        await using IDocumentSession session = store.LightweightSession();
+        session.Events.Append(runId,
+            new ReviewDispatched(runId, DomainId.New(), 1, 5001, Now, Now),
+            new ReviewCompleted(runId, 1, ReviewVerdict.Unknown, Now),
+            new ReviewParked(runId, "No parseable verdict, even after a re-prompt.", Now));
+        await session.SaveChangesAsync(cancellationToken);
     }
 
     public void Dispose()

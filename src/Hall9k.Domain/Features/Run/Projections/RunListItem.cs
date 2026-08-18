@@ -39,6 +39,8 @@ public sealed class RunListItemProjection : SingleStreamProjection<RunListItem, 
 
     public void Apply(IEvent<ReviewParked> @event, RunListItem view) => view.State = RunState.ReviewParked;
 
+    public void Apply(IEvent<ReviewParkResolved> @event, RunListItem view) => view.State = RunState.UnderReview;
+
     public void Apply(IEvent<PullRequestOpened> @event, RunListItem view)
     {
         view.PullRequestUrl = @event.Data.PullRequestUrl;

@@ -71,7 +71,12 @@ public sealed class ClaudeExecutor(ILogger<ClaudeExecutor> logger) : IExecutor
         yield return "-p";
         yield return "--output-format stream-json";
         yield return "--verbose";
-        yield return $"--session-id {request.SessionId}";
+
+        // A resume re-enters the recorded session (log #5); --session-id is for fresh
+        // sessions only and would conflict with it.
+        yield return request.ResumeSessionId is { } resumeSessionId
+            ? $"--resume {resumeSessionId}"
+            : $"--session-id {request.SessionId}";
         yield return $"--settings \"{RunPaths.SettingsFile(request.RunId)}\"";
 
         if (request.Mode.UsesBareFlag)

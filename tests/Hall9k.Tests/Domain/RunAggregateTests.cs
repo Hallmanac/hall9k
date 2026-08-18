@@ -137,6 +137,88 @@ public sealed class RunAggregateTests
     }
 
     [Fact]
+    public void Verdict_less_review_walks_one_reprompt_then_the_park()
+    {
+        RunAggregate run = new();
+        Guid id = DomainId.New();
+        run.Apply(new RunDispatched(
+            id, DomainId.New(), DomainId.New(), DomainId.New(), 1, DomainId.New(),
+            "/wt/x", "task/x", ExecutorMode.Subscription, Now));
+
+        Guid reviewSession = DomainId.New();
+        run.Apply(new ReviewDispatched(id, reviewSession, Cycle: 1, ProcessId: 5001, Now, Now));
+        run.Apply(new ReviewCompleted(id, 1, ReviewVerdict.Unknown, Now));
+        run.ReviewPhase.Should().Be(ReviewPhase.VerdictMissing, "no parseable verdict means a re-prompt, not a guess");
+        run.LastReviewSessionId.Should().Be(reviewSession, "the re-prompt resumes the session that already read the diff");
+        run.VerdictRepromptedCycle.Should().Be(0, "the one re-prompt is still available");
+
+        Guid artifactId = DomainId.New();
+        run.Apply(new ReviewVerdictReprompted(id, artifactId, reviewSession, Cycle: 1, ProcessId: 5002, Now, Now));
+        run.ReviewPhase.Should().Be(ReviewPhase.AwaitingVerdict);
+        run.ActiveReviewSessionId.Should().Be(artifactId, "the resumed leg gets its own artifact identity");
+        run.ActiveReviewSessionIsFix.Should().BeFalse();
+        run.VerdictRepromptedCycle.Should().Be(1, "the cycle's one re-prompt is now spent");
+        run.LastReviewSessionId.Should().Be(reviewSession, "the transcript still belongs to the original session");
+
+        run.Apply(new ReviewCompleted(id, 1, ReviewVerdict.Unknown, Now));
+        run.ReviewPhase.Should().Be(ReviewPhase.VerdictMissing, "still verdict-less — and the re-prompt is spent");
+
+        run.Apply(new ReviewParked(id, "No parseable verdict, even after a re-prompt.", Now));
+        run.State.Should().Be(RunState.ReviewParked);
+        run.ReviewPhase.Should().Be(ReviewPhase.Parked);
+    }
+
+    [Fact]
+    public void Review_park_resolved_merge_ready_puts_the_run_back_on_the_road_to_its_pull_request()
+    {
+        RunAggregate run = new();
+        Guid id = DomainId.New();
+        run.Apply(new RunDispatched(
+            id, DomainId.New(), DomainId.New(), DomainId.New(), 1, DomainId.New(),
+            "/wt/x", "task/x", ExecutorMode.Subscription, Now));
+        run.Apply(new ReviewDispatched(id, DomainId.New(), 1, 5001, Now, Now));
+        run.Apply(new ReviewCompleted(id, 1, ReviewVerdict.Unknown, Now));
+        run.Apply(new ReviewParked(id, "No parseable verdict.", Now));
+
+        run.Apply(new ReviewParkResolved(id, ReviewVerdict.MergeReady, null, Now, DomainId.New()));
+
+        run.State.Should().Be(RunState.UnderReview, "the daemon's resume sweep drives it from here");
+        run.ReviewPhase.Should().Be(ReviewPhase.MergeReady);
+        run.LastReviewVerdict.Should().Be(ReviewVerdict.MergeReady);
+    }
+
+    [Fact]
+    public void Review_park_resolved_needs_fixes_restores_the_budget_and_carries_the_human_findings()
+    {
+        RunAggregate run = new();
+        Guid id = DomainId.New();
+        run.Apply(new RunDispatched(
+            id, DomainId.New(), DomainId.New(), DomainId.New(), 1, DomainId.New(),
+            "/wt/x", "task/x", ExecutorMode.Subscription, Now));
+        run.Apply(new ReviewDispatched(id, DomainId.New(), 1, 5001, Now, Now));
+        run.Apply(new ReviewCompleted(id, 1, ReviewVerdict.NeedsFixes, Now));
+        run.Apply(new ReviewFixDispatched(id, DomainId.New(), 1, 5002, Now, Now));
+        run.Apply(new ReviewFixCompleted(id, 1, ReviewFixOutcome.Fixed, Now));
+        run.Apply(new VerificationPassed(id, Now));
+        run.Apply(new ReviewDispatched(id, DomainId.New(), 2, 5003, Now, Now));
+        run.Apply(new ReviewCompleted(id, 2, ReviewVerdict.NeedsFixes, Now));
+        run.Apply(new ReviewParked(id, "Budget spent.", Now));
+        run.ReviewFixRuns.Should().Be(1);
+
+        run.Apply(new ReviewParkResolved(
+            id, ReviewVerdict.NeedsFixes, "The limiter finding is real; fix it.", Now, DomainId.New()));
+
+        run.State.Should().Be(RunState.UnderReview);
+        run.ReviewPhase.Should().Be(ReviewPhase.FixNeeded);
+        run.ReviewFixRuns.Should().Be(0, "the human asking is a fresh grant (log #22)");
+        run.PendingHumanFindings.Should().Be("The limiter finding is real; fix it.");
+
+        run.Apply(new ReviewFixDispatched(id, DomainId.New(), 2, 5004, Now, Now));
+        run.PendingHumanFindings.Should().BeNull("the dispatch consumed the human findings");
+        run.ReviewFixRuns.Should().Be(1);
+    }
+
+    [Fact]
     public void Superseded_run_is_terminal_with_the_superseding_generation_recorded()
     {
         RunAggregate run = new();

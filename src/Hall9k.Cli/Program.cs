@@ -32,6 +32,18 @@ app.Configure(config =>
             .WithExample("pr", "resolve", "28b19893", "--checks");
     });
 
+    config.AddBranch("review", review =>
+    {
+        review.SetDescription("Work with the pre-PR review loop (PLAN.md log #24)");
+        review.AddCommand<ReviewResolveCommand>("resolve")
+            .WithDescription(
+                "Record your verdict on a review-parked run: --merge-ready proceeds to the pull request, "
+                + "--needs-fixes <reason> dispatches a fix session (and, like pr resolve, restores the "
+                + "automatic fix budget). The park reason and findings files name what needs judging.")
+            .WithExample("review", "resolve", "28b19893", "--merge-ready")
+            .WithExample("review", "resolve", "28b19893", "--needs-fixes", "The limiter reset finding is real; fix it as the reviewer described");
+    });
+
     config.AddCommand<StatusCommand>("status")
         .WithDescription("The one-pane view: what needs you, what's running, what's done");
     config.AddCommand<LogsCommand>("logs")

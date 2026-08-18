@@ -104,6 +104,29 @@ public sealed class RunSupervisor(
         }
     }
 
+    /// <summary>
+    /// The running-daemon counterpart of adoption for h9k review resolve: a resolved
+    /// park moves the run back to UnderReview while no monitor owns it, and this sweep
+    /// (each dispatch cycle; the resolve rings the doorbell) re-enters the pipeline.
+    /// Runs already being driven are in the monitor set and are never double-entered.
+    /// </summary>
+    public async Task ResumeResolvedReviewsAsync(CancellationToken cancellationToken)
+    {
+        await using IQuerySession query = store.QuerySession();
+        Guid nodeId = node.NodeId;
+        IReadOnlyList<RunDetails> underReview = await query.Query<RunDetails>()
+            .Where(r => r.NodeId == nodeId)
+            .Where(r => r.MatchesSql("d.data ->> 'state' = ?", RunState.UnderReview.Value))
+            .ToListAsync(cancellationToken);
+
+        foreach (RunDetails run in underReview.Where(r => !_monitors.ContainsKey(r.Id)))
+        {
+            logger.LogInformation(
+                "Run {RunId} is under review with no monitor (review park resolved) — resuming the pipeline", run.Id);
+            ResumePipeline(run, cancellationToken);
+        }
+    }
+
     private async Task MonitorAsync(Guid runId, Guid taskId, int processId, DateTimeOffset processStartedAt, CancellationToken cancellationToken)
     {
         try

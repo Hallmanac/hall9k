@@ -44,6 +44,9 @@ public sealed class DispatchLoop(
         {
             try
             {
+                // Adopt-before-sweep in miniature: a review park resolved by the human
+                // (h9k review resolve) re-enters the pipeline before anything else acts.
+                await supervisor.ResumeResolvedReviewsAsync(stoppingToken);
                 await engine.SweepExpiredLeasesAsync(stoppingToken);
                 IReadOnlyList<ClaimedWork> claimed = await engine.ClaimEligibleAsync(stoppingToken);
                 foreach (ClaimedWork work in claimed)
