@@ -1,4 +1,5 @@
 using Hall9k.Daemon.Worktrees;
+using Hall9k.Domain.Features.Project;
 using Hall9k.Domain.Features.Project.Projections;
 using Hall9k.Domain.Features.Run;
 using Hall9k.Domain.Features.Run.Documents;
@@ -6,6 +7,7 @@ using Hall9k.Domain.Features.Run.Events;
 using Hall9k.Domain.Features.Tasks.Projections;
 using Hall9k.Domain.Infrastructure.Ids;
 using Marten;
+using Microsoft.Extensions.Options;
 
 namespace Hall9k.Daemon.Execution;
 
@@ -18,6 +20,7 @@ public sealed class RunLauncher(
     IWorktreeManager worktrees,
     IExecutor executor,
     RunSupervisor supervisor,
+    IOptions<DaemonOptions> options,
     ILogger<RunLauncher> logger)
 {
     public async Task LaunchAsync(Guid taskId, Guid runId, Guid nodeId, Guid ownerId, int leaseGeneration, CancellationToken cancellationToken)
@@ -60,10 +63,12 @@ public sealed class RunLauncher(
 
             // The reopen's kind picks the follow-up prompt; Unknown (reopens recorded
             // before the vocabulary existed) keeps the historic review-feedback meaning.
+            // The commit style resolves project-over-platform (Decisions Log #26).
+            CommitStyle commitStyle = CommitStyle.Resolve(project.CommitStyle, options.Value.DefaultCommitStyle);
             string prompt = followUp is { } review
                 ? task.FollowUpKind == Domain.Features.Tasks.FollowUpKind.FailingChecks
-                    ? AgentPromptBuilder.BuildFixChecks(task, project, worktree.Branch, review.PullRequestUrl)
-                    : AgentPromptBuilder.BuildFollowUp(task, project, worktree.Branch, review.PullRequestUrl)
+                    ? AgentPromptBuilder.BuildFixChecks(task, project, worktree.Branch, review.PullRequestUrl, commitStyle)
+                    : AgentPromptBuilder.BuildFollowUp(task, project, worktree.Branch, review.PullRequestUrl, commitStyle)
                 : AgentPromptBuilder.Build(task, project, worktree.Branch, worktree.Path);
             SpawnedAgent agent = await executor.SpawnAsync(
                 new AgentSpawnRequest(runId, sessionId, worktree.Path, prompt, mode, project.SkipPermissions),

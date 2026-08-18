@@ -1,4 +1,5 @@
 using System.Text;
+using Hall9k.Domain.Features.Project;
 using Hall9k.Domain.Features.Project.Projections;
 using Hall9k.Domain.Features.Tasks.Projections;
 
@@ -78,10 +79,12 @@ public static class AgentPromptBuilder
     /// <summary>
     /// The follow-up variant (PR closeout, Decisions Log #20): the agent resumes the task's
     /// existing PR branch to resolve review feedback via the repo-resident
-    /// resolve-copilot-reviews skill. The platform re-verifies and pushes; the PR updates
-    /// in place.
+    /// resolve-copilot-reviews skill. How the fixes land is the commit style's call
+    /// (Decisions Log #26): narrative folds them into the owning commits, append stacks
+    /// them on top. The platform re-verifies and pushes; the PR updates in place.
     /// </summary>
-    public static string BuildFollowUp(TaskDetails task, ProjectDetails project, string branch, string pullRequestUrl)
+    public static string BuildFollowUp(
+        TaskDetails task, ProjectDetails project, string branch, string pullRequestUrl, CommitStyle commitStyle)
     {
         StringBuilder prompt = new();
         prompt.AppendLine("# Follow-up task: resolve review feedback on an existing pull request");
@@ -122,9 +125,7 @@ public static class AgentPromptBuilder
         prompt.AppendLine($"  branch `{branch}`. Work only here.");
         prompt.AppendLine("- Use the resolve-copilot-reviews skill to triage the review comments on");
         prompt.AppendLine($"  {pullRequestUrl}: apply valid fixes, reply to each thread, resolve them.");
-        prompt.AppendLine("- Commit your fixes on this branch with clear messages. Do NOT push, do NOT open");
-        prompt.AppendLine("  a new pull request — the platform re-verifies and pushes after you finish; the");
-        prompt.AppendLine("  existing PR updates in place.");
+        AppendCommitStyleRules(prompt, commitStyle, project.BaseBranch);
         prompt.AppendLine("- End with a short summary: which comments you addressed, which you dismissed and");
         prompt.AppendLine("  why, and any open questions.");
 
@@ -134,9 +135,11 @@ public static class AgentPromptBuilder
     /// <summary>
     /// The fix-the-CI variant (closeout monitor, Decisions Log #22): the agent resumes
     /// the task's existing PR branch to make the pull request's failing checks pass.
+    /// Fixes land per the commit style, like any follow-up (Decisions Log #26).
     /// The platform re-verifies and pushes; the PR updates in place.
     /// </summary>
-    public static string BuildFixChecks(TaskDetails task, ProjectDetails project, string branch, string pullRequestUrl)
+    public static string BuildFixChecks(
+        TaskDetails task, ProjectDetails project, string branch, string pullRequestUrl, CommitStyle commitStyle)
     {
         StringBuilder prompt = new();
         prompt.AppendLine("# Follow-up task: fix the failing CI checks on an existing pull request");
@@ -178,13 +181,52 @@ public static class AgentPromptBuilder
         prompt.AppendLine($"- Inspect the failures yourself: `gh pr checks {pullRequestUrl}` lists the checks,");
         prompt.AppendLine("  and `gh run view <run-id> --log-failed` shows a failing workflow's log.");
         prompt.AppendLine("- Fix the causes and re-run the failing commands locally until they pass.");
-        prompt.AppendLine("- Commit your fixes on this branch with clear messages. Do NOT push, do NOT open");
-        prompt.AppendLine("  a new pull request — the platform re-verifies and pushes after you finish; the");
-        prompt.AppendLine("  existing PR updates in place and CI re-runs.");
+        AppendCommitStyleRules(prompt, commitStyle, project.BaseBranch);
         prompt.AppendLine("- End with a short summary: what was failing, what you changed, and any open");
         prompt.AppendLine("  questions.");
 
         return prompt.ToString();
+    }
+
+    /// <summary>
+    /// How a follow-up's fixes land on the PR branch (Decisions Log #26). Narrative
+    /// enforces the AGENTS.md authored-history rule: fixups mapped by file ownership,
+    /// autosquash onto the base, and a tree-identity check so the verification-gate
+    /// results honestly describe the rebased tree the platform will force-push. Append
+    /// keeps the historic stack-on-top behavior. Both end the same way: the agent never
+    /// pushes; the platform does, with --force-with-lease for follow-up runs.
+    /// </summary>
+    private static void AppendCommitStyleRules(StringBuilder prompt, CommitStyle commitStyle, string baseBranch)
+    {
+        if (commitStyle == CommitStyle.Append)
+        {
+            prompt.AppendLine("- Commit your fixes on this branch with clear messages, on top of the existing");
+            prompt.AppendLine("  history (this project uses the append commit style). Do NOT push, do NOT open");
+            prompt.AppendLine("  a new pull request — the platform re-verifies and pushes after you finish; the");
+            prompt.AppendLine("  existing PR updates in place.");
+            return;
+        }
+
+        prompt.AppendLine("- Land your fixes as authored history (this project uses the narrative commit");
+        prompt.AppendLine("  style): the PR branch must read as a natural progression of the whole change,");
+        prompt.AppendLine("  so fold each fix into the commit that owns it instead of appending");
+        prompt.AppendLine("  review-feedback commits. If the repo ships an absorb-review-fixes skill, invoke");
+        prompt.AppendLine("  it — it walks these exact mechanics. Either way:");
+        prompt.AppendLine("  - Map each fix to the most recent branch commit that touches the same file and");
+        prompt.AppendLine("    land it with `git commit --fixup=<owning-commit>`. A fix spanning files owned");
+        prompt.AppendLine("    by different commits splits into one fixup per owning commit. Genuinely new");
+        prompt.AppendLine("    scope (a new file no commit owns) may be a new, properly-titled commit —");
+        prompt.AppendLine("    never \"review fixes\" or \"address feedback\".");
+        prompt.AppendLine("  - With every fix committed, record the pre-rebase tip (`git rev-parse HEAD`),");
+        prompt.AppendLine("    then fold the fixups into their owning commits:");
+        prompt.AppendLine($"    `GIT_SEQUENCE_EDITOR=: git rebase -i --autosquash origin/{baseBranch}`.");
+        prompt.AppendLine("  - REQUIRED before you finish: verify tree identity — `git diff <old-tip> HEAD`");
+        prompt.AppendLine("    must print nothing. A non-empty diff means the rebase changed the content and");
+        prompt.AppendLine("    the verification results no longer describe this tree; reconcile until the");
+        prompt.AppendLine("    diff is empty. Only a tree identical to the tested one may be force-pushed.");
+        prompt.AppendLine("  - Do NOT push (the platform pushes the rewritten branch with");
+        prompt.AppendLine("    `git push --force-with-lease` after re-verifying), and do NOT open a new pull");
+        prompt.AppendLine("    request — the existing PR updates in place.");
     }
 
     /// <summary>
