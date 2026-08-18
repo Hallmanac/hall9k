@@ -1,3 +1,5 @@
+using Hall9k.Domain.Features.Run;
+using Hall9k.Domain.Features.Run.Projections;
 using Hall9k.Domain.Features.Tasks;
 using Hall9k.Domain.Features.Tasks.Documents;
 using Hall9k.Domain.Features.Tasks.Events;
@@ -28,7 +30,17 @@ public sealed class DispatchEngine(
 {
     private readonly DaemonOptions _options = options.Value;
 
-    /// <summary>Requeue claimed tasks whose lease heartbeat has gone silent past the timeout.</summary>
+    /// <summary>
+    /// Requeue claimed tasks whose lease heartbeat has gone silent past the timeout —
+    /// except tasks whose current run is parked. Parked means waiting on a human, not
+    /// abandoned: the sweep refreshes the lease instead, so heartbeat decay (a stopped
+    /// daemon, a laptop asleep past the timeout, a sweep racing the first heartbeat
+    /// tick) can never requeue the task out from under the human's worktree. Origin
+    /// incident (2026-08-18): a review-parked task WAS requeued by lease expiry —
+    /// decision #24's "the park keeps the lease alive" held only while the heartbeat
+    /// service ran — and the platform rebuilt the same feature from scratch across
+    /// generations 2-4 before gen 5 completed.
+    /// </summary>
     public async Task<int> SweepExpiredLeasesAsync(CancellationToken cancellationToken)
     {
         DateTimeOffset cutoff = DateTimeOffset.UtcNow - _options.LeaseTimeout;
@@ -49,6 +61,16 @@ public sealed class DispatchEngine(
                 continue;
             }
 
+            if (await CurrentRunIsParkedAsync(session, task, cancellationToken))
+            {
+                lease.HeartbeatAt = DateTimeOffset.UtcNow;
+                session.Store(lease);
+                logger.LogInformation(
+                    "Lease on task {TaskId} expired but its run is parked for a human — lease refreshed, not requeued",
+                    lease.Id);
+                continue;
+            }
+
             session.Events.Append(lease.Id, TaskDecider.Requeue(task, RequeueReason.LeaseExpired, DateTimeOffset.UtcNow));
             session.Delete<TaskLease>(lease.Id);
             requeued++;
@@ -59,6 +81,21 @@ public sealed class DispatchEngine(
 
         await session.SaveChangesAsync(cancellationToken);
         return requeued;
+    }
+
+    private static async Task<bool> CurrentRunIsParkedAsync(
+        IDocumentSession session, TaskAggregate task, CancellationToken cancellationToken)
+    {
+        if (task.CurrentRunId is not { } runId)
+        {
+            return false;
+        }
+
+        RunDetails? run = await session.LoadAsync<RunDetails>(runId, cancellationToken);
+        // CloseoutParked normally holds a Done, lease-free task, but it is included so
+        // the guarantee is a property of "parked", not of one park flavor.
+        return run is not null
+            && (run.State == RunState.ReviewParked || run.State == RunState.CloseoutParked);
     }
 
     /// <summary>
