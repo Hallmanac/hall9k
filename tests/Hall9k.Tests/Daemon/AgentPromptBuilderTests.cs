@@ -169,6 +169,42 @@ public sealed class AgentPromptBuilderTests : IDisposable
     }
 
     [Fact]
+    public void Retry_prompt_warns_that_the_previous_attempts_work_may_already_be_present()
+    {
+        string prompt = AgentPromptBuilder.Build(
+            SomeTask(), SomeProject(), "task/1-slug", _worktreePath, resumesPreviousWork: true);
+
+        prompt.Should().Contain("A previous attempt worked here first");
+        prompt.Should().Contain("uncommitted");
+        prompt.Should().Contain("git status");
+        prompt.Should().Contain("Do not start over when usable work");
+    }
+
+    [Fact]
+    public void Fresh_run_prompt_carries_no_previous_attempt_warning()
+    {
+        string prompt = AgentPromptBuilder.Build(SomeTask(), SomeProject(), "task/1-slug", _worktreePath);
+
+        prompt.Should().NotContain("previous attempt", "a fresh worktree has no history to review");
+    }
+
+    [Fact]
+    public void Follow_up_prompts_warn_about_stranded_work_in_the_retained_worktree()
+    {
+        string followUp = AgentPromptBuilder.BuildFollowUp(
+            SomeTask(), SomeProject(), "task/1-slug", "https://github.com/x/y/pull/7", CommitStyle.Append);
+        string fixChecks = AgentPromptBuilder.BuildFixChecks(
+            SomeTask(), SomeProject(), "task/1-slug", "https://github.com/x/y/pull/7", CommitStyle.Append);
+
+        foreach (string prompt in new[] { followUp, fixChecks })
+        {
+            prompt.Should().Contain("retained from a previous run");
+            prompt.Should().Contain("UNCOMMITTED", "the retained-worktree resume carries stranded work by design");
+            prompt.Should().Contain("build on");
+        }
+    }
+
+    [Fact]
     public void Review_fix_prompt_carries_the_findings_and_the_dispute_escape_hatch()
     {
         string findings = "1. `Auth.cs:42` — limiter never resets. Scenario: second request always 429s.";

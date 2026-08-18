@@ -13,13 +13,31 @@ namespace Hall9k.Daemon.Execution;
 /// </summary>
 public static class AgentPromptBuilder
 {
-    public static string Build(TaskDetails task, ProjectDetails project, string branch, string worktreePath)
+    public static string Build(
+        TaskDetails task, ProjectDetails project, string branch, string worktreePath, bool resumesPreviousWork = false)
     {
         StringBuilder prompt = new();
         prompt.AppendLine("# Task");
         prompt.AppendLine();
         prompt.AppendLine(task.Objective);
         prompt.AppendLine();
+
+        if (resumesPreviousWork)
+        {
+            // A retry resumes the failed run's branch, and the retained worktree carries
+            // whatever that attempt left — including uncommitted work (origin incident,
+            // 2026-08-18: gen 2-4 of a review-parked task each rebuilt the same feature
+            // from scratch instead of finding the finished work already in the worktree).
+            prompt.AppendLine("## A previous attempt worked here first");
+            prompt.AppendLine();
+            prompt.AppendLine("This run retries a failed attempt and resumes its branch in its retained");
+            prompt.AppendLine("worktree. The previous attempt's work may already be present — committed on the");
+            prompt.AppendLine("branch, uncommitted in the working tree, or both. Before writing anything, review");
+            prompt.AppendLine("what is there (`git status`, `git log`, `git diff`), judge it against the");
+            prompt.AppendLine("acceptance criteria, and continue from it. Do not start over when usable work");
+            prompt.AppendLine("exists; redoing finished work is the failure mode this note exists to prevent.");
+            prompt.AppendLine();
+        }
 
         prompt.AppendLine("## Acceptance criteria");
         prompt.AppendLine();
@@ -123,6 +141,7 @@ public static class AgentPromptBuilder
         prompt.AppendLine();
         prompt.AppendLine("- You are in an isolated git worktree checked out on the EXISTING pull-request");
         prompt.AppendLine($"  branch `{branch}`. Work only here.");
+        AppendRetainedWorktreeNote(prompt);
         prompt.AppendLine("- Use the resolve-copilot-reviews skill to triage the review comments on");
         prompt.AppendLine($"  {pullRequestUrl}: apply valid fixes, reply to each thread, resolve them.");
         AppendCommitStyleRules(prompt, commitStyle, project.BaseBranch);
@@ -178,6 +197,7 @@ public static class AgentPromptBuilder
         prompt.AppendLine();
         prompt.AppendLine("- You are in an isolated git worktree checked out on the EXISTING pull-request");
         prompt.AppendLine($"  branch `{branch}`. Work only here.");
+        AppendRetainedWorktreeNote(prompt);
         prompt.AppendLine($"- Inspect the failures yourself: `gh pr checks {pullRequestUrl}` lists the checks,");
         prompt.AppendLine("  and `gh run view <run-id> --log-failed` shows a failing workflow's log.");
         prompt.AppendLine("- Fix the causes and re-run the failing commands locally until they pass.");
@@ -186,6 +206,20 @@ public static class AgentPromptBuilder
         prompt.AppendLine("  questions.");
 
         return prompt.ToString();
+    }
+
+    /// <summary>
+    /// Follow-up runs reuse the previous run's retained worktree (Decisions Log #21),
+    /// which by design may carry uncommitted stranded work — a prior session's finished
+    /// but never-committed changes (the retained-worktree resume exists exactly so that
+    /// work survives). The agent must look before it leaps.
+    /// </summary>
+    private static void AppendRetainedWorktreeNote(StringBuilder prompt)
+    {
+        prompt.AppendLine("- This worktree is retained from a previous run and may already hold work from an");
+        prompt.AppendLine("  earlier attempt — including UNCOMMITTED changes left in the working tree by");
+        prompt.AppendLine("  design. Review `git status` and `git log` before changing anything, and build on");
+        prompt.AppendLine("  what is there instead of redoing it.");
     }
 
     /// <summary>
