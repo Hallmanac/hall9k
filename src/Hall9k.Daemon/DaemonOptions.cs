@@ -1,3 +1,5 @@
+using Hall9k.Domain.Features.Project;
+
 namespace Hall9k.Daemon;
 
 public sealed class DaemonOptions
@@ -37,4 +39,12 @@ public sealed class DaemonOptions
     /// review → fix → gates → review; the budget counts the fix legs.
     /// </summary>
     public int MaxAutomaticReviewFixRuns { get; set; } = 2;
+
+    /// <summary>
+    /// Platform-default commit style for follow-up runs (Narrative or Append), applied
+    /// when a project sets none of its own (Decisions Log #26). Narrative folds fixes
+    /// into their owning commits per the AGENTS.md authored-history rule. This is the
+    /// node-level default until user-level defaults arrive (IDEA-platform-defaults).
+    /// </summary>
+    public string DefaultCommitStyle { get; set; } = CommitStyle.Narrative;
 }

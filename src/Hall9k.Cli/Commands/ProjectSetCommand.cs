@@ -35,6 +35,15 @@ public sealed class ProjectSetCommand : Hall9kAsyncCommand<ProjectSetCommand.Set
         [CommandOption("--link <NAME=URL>")]
         [Description("Context link injected into agent prompts; repeat for more. Replaces the whole list.")]
         public string[] Links { get; init; } = [];
+
+        [CommandOption("--commit-style <STYLE>")]
+        [Description(
+            "How follow-up runs land review fixes on the PR branch (Decisions Log #26): "
+            + "'narrative' folds each fix into its owning commit (fixup + autosquash + force-with-lease "
+            + "push, the AGENTS.md authored-history rule), 'append' stacks fix commits on top, "
+            + "'default' clears the project override so the platform default applies "
+            + "(DaemonOptions.DefaultCommitStyle; narrative unless configured otherwise)")]
+        public string? CommitStyle { get; init; }
     }
 
     protected override async Task<int> ExecuteAsync(Settings settings, CancellationToken cancellationToken)
@@ -57,7 +66,10 @@ public sealed class ProjectSetCommand : Hall9kAsyncCommand<ProjectSetCommand.Set
                 ? Optional<IReadOnlyList<ContextLink>>.Of([.. settings.Links.Select(ParseLink)])
                 : Optional<IReadOnlyList<ContextLink>>.None,
             DateTimeOffset.UtcNow,
-            context.OwnerId);
+            context.OwnerId,
+            commitStyle: settings.CommitStyle is { } commitStyle
+                ? Optional<CommitStyle>.Of(ParseCommitStyle(commitStyle))
+                : Optional<CommitStyle>.None);
 
         session.Events.Append(details.Id, changed);
         await session.SaveChangesAsync(cancellationToken);
@@ -74,6 +86,18 @@ public sealed class ProjectSetCommand : Hall9kAsyncCommand<ProjectSetCommand.Set
             ? throw new DomainValidationException($"--verify expects name=command, got '{value}'.")
             : new VerifyCommand(value[..separator].Trim(), value[(separator + 1)..].Trim());
     }
+
+    private static CommitStyle ParseCommitStyle(string value) => value.Trim().ToLowerInvariant() switch
+    {
+        "narrative" => CommitStyle.Narrative,
+        "append" => CommitStyle.Append,
+        "default" => CommitStyle.Unknown,
+        _ => throw new DomainValidationException(
+            $"--commit-style expects narrative, append, or default; got '{value}'. Narrative folds "
+            + "follow-up fixes into their owning commits (fixup + autosquash, the AGENTS.md "
+            + "authored-history rule); append stacks fix commits on top of the existing history; "
+            + "default clears the project override so the platform default applies."),
+    };
 
     private static ContextLink ParseLink(string value)
     {

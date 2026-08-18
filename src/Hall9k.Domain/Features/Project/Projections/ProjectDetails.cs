@@ -15,6 +15,7 @@ public sealed class ProjectDetails
     public string BaseBranch { get; set; } = string.Empty;
     public bool SkipPermissions { get; set; }
     public int MaxParallelAgents { get; set; } = 3;
+    public CommitStyle CommitStyle { get; set; } = CommitStyle.Unknown;
     public List<VerifyCommand> VerifyCommands { get; set; } = [];
     public List<ContextLink> ContextLinks { get; set; } = [];
     public DateTimeOffset RegisteredAt { get; set; }
@@ -55,6 +56,11 @@ public sealed class ProjectDetailsProjection : SingleStreamProjection<ProjectDet
         if (@event.Data.ContextLinks.HasValue)
         {
             view.ContextLinks = [.. @event.Data.ContextLinks.Value ?? []];
+        }
+
+        if (@event.Data.CommitStyle.HasValue)
+        {
+            view.CommitStyle = @event.Data.CommitStyle.Value ?? CommitStyle.Unknown;
         }
 
         view.SettingsChangedAt = @event.Data.ChangedAt;
