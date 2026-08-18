@@ -35,11 +35,16 @@ per house style).
 
 The §3.3 lifecycle mixes two concerns. Here they separate cleanly:
 
-- **Task state** (work lifecycle): `Queued → Claimed → NeedsHuman ⇄ Claimed → Done | Failed | Abandoned`
-  (+ `NeedsRefinement` reserved, not built in v0; two deliberate exits from terminal states:
-  `Done → Queued` via `TaskReopened` (PR follow-up runs, log #20 and §2.1 below) and
-  `Failed → Queued` via `TaskRetried`, the human-only retry of a failed task, log #25.
-  Abandoned stays a dead end)
+- **Task state** (work lifecycle): `Queued → Claimed → NeedsHuman ⇄ Claimed → Done | Abandoned`,
+  with the failure path `Claimed → Failed → Queued | Done | Abandoned`
+  (+ `NeedsRefinement` reserved, not built in v0). Only `Done` and `Abandoned` are terminal:
+  terminal states say how the story ended, and "ended in failure" is only true when a human
+  walks away, which is what `Abandoned` means. `Failed` is a needs-human waypoint (log #27)
+  with three human-only exits: `Failed → Queued` via `TaskRetried` (re-run, log #25),
+  `Failed → Done` via `TaskResolved` (the objective was met despite the run failure, log #27),
+  and `Failed → Abandoned` via `TaskAbandoned` (walk away). `Done` keeps one deliberate exit,
+  `Done → Queued` via `TaskReopened` (PR follow-up runs, log #20 and §2.1 below); Abandoned
+  stays a dead end.
 - **Run state** (execution lifecycle): `Dispatched → Running → Verifying → UnderReview → AwaitingReview → Completed | Failed | Killed | Superseded`
   (`AgentSessionCompleted` enters Verifying — the agent process finishing is not the run finishing.
   `UnderReview` is the pre-PR review loop, with `ReviewParked` when it hands the diff to a
@@ -124,6 +129,16 @@ public sealed record TaskRetried(        // Failed -> Queued by explicit human d
     Guid RetriedByOwnerId);              // human-only: no monitor appends this (log #11), so there
                                          // is no Automatic flag and no budget interaction
 
+public sealed record TaskResolved(      // Failed -> Done by human attestation (log #27): the run
+    Guid Id,                             // failed but the objective was met anyway. The failure
+    string Reason,                       // stays on the stream (resolve appends, never rewrites);
+                                         // Reason is required: an attestation without a why is a
+                                         // guess (the AGENTS.md never-guess rule)
+    string? PullRequestUrl,              // where the work landed, when known; a resolved task
+                                         // shows Done with its PR
+    DateTimeOffset ResolvedAt,
+    Guid ResolvedByOwnerId);             // human-only, like TaskRetried (log #11)
+
 // Reserved, not built in v0:
 // public sealed record TaskSentToRefinement(...);
 ```
@@ -168,7 +183,8 @@ public sealed class TaskAggregate
     public void Apply(TaskReopened @event) { /* FollowUpBranch = @event.Branch; State = Queued */ }
     public void Apply(TaskFailed @event) { /* State = Failed */ }
     public void Apply(TaskRetried @event) { /* RetryBranch = @event.Branch; State = Queued */ }
-    public void Apply(TaskAbandoned @event) { /* State = Abandoned */ }
+    public void Apply(TaskResolved @event) { /* PullRequestUrl when provided; State = Done */ }
+    public void Apply(TaskAbandoned @event) { /* FollowUpBranch/RetryBranch/PendingQuestionId = null; State = Abandoned */ }
 }
 ```
 
@@ -192,7 +208,7 @@ A merged-in-review-but-not-yet-mergeable PR needs more work on its **existing br
   on the run instead of opening a second PR.
 
 Guardrails: only `Done` reopens (Abandoned stays a dead end; Failed has its own human-only
-exit, `TaskRetried`, log #25), and only with a PR URL
+exits: `TaskRetried`, `TaskResolved`, and `TaskAbandoned`, logs #25/#27), and only with a PR URL
 on the stream — the feature is PR closeout, not general task resurrection. `TaskCompleted`
 consumes `FollowUpBranch`, so a completed follow-up leaves the task exactly as a first
 completion does — reopenable again if more feedback arrives.
