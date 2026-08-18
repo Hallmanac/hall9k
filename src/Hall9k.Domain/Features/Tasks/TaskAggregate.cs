@@ -22,6 +22,12 @@ public sealed class TaskAggregate
     /// <summary>Why the pending follow-up run exists; the launcher picks the agent prompt from it.</summary>
     public FollowUpKind FollowUpKind { get; private set; } = FollowUpKind.Unknown;
     /// <summary>
+    /// Set while a human-requested retry of a failed task is pending (Decisions Log #25):
+    /// the failed run's branch, resumed by the next claim when it still exists — the
+    /// launcher starts clean from the base branch when it is gone (or when this is null).
+    /// </summary>
+    public string? RetryBranch { get; private set; }
+    /// <summary>
     /// Automatic (monitor-driven) reopens since the last human-initiated one — the
     /// bounded-retry counter for PR closeout. A manual reopen resets it: the human asking
     /// for another attempt restores the automatic budget (Decisions Log #22).
@@ -86,6 +92,7 @@ public sealed class TaskAggregate
         PullRequestUrl = @event.PullRequestUrl;
         FollowUpBranch = null;
         FollowUpKind = FollowUpKind.Unknown;
+        RetryBranch = null;
         State = TaskState.Done;
     }
 
@@ -101,6 +108,15 @@ public sealed class TaskAggregate
     }
 
     public void Apply(TaskFailed @event) => State = TaskState.Failed;
+
+    public void Apply(TaskRetried @event)
+    {
+        RetryBranch = @event.Branch;
+        ClaimedByNodeId = null;
+        CurrentRunId = null;
+        PendingQuestionId = null;
+        State = TaskState.Queued;
+    }
 
     public void Apply(TaskAbandoned @event) => State = TaskState.Abandoned;
 }

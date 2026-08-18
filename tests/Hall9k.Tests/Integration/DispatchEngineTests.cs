@@ -95,4 +95,70 @@ public sealed class DispatchEngineTests(PostgresFixture postgres) : IClassFixtur
             }
         }
     }
+
+    [Fact]
+    public async Task Retried_failed_task_is_claimed_again_with_the_next_lease_generation()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        using DocumentStore store = DocumentStore.For(opts =>
+        {
+            opts.Connection(postgres.ConnectionString);
+            opts.ConfigureHall9k(AutoCreate.All);
+        });
+
+        NodeContext node = new();
+        await node.InitializeAsync(store, cts.Token);
+
+        // A generous cap: this class shares one database, so other tests' queued work and
+        // leases may be present — the assertions below target this task alone.
+        DaemonOptions options = new() { MaxConcurrentRuns = 50, LeaseTimeout = TimeSpan.FromSeconds(60) };
+        DispatchEngine engine = new(
+            store, node, Options.Create(options), NullLogger<DispatchEngine>.Instance);
+
+        Guid taskId = DomainId.New();
+        await using (IDocumentSession seed = store.LightweightSession())
+        {
+            seed.Events.StartStream<TaskAggregate>(taskId, TaskDecider.Add(
+                taskId, DomainId.New(), "Retry walk", ["done"], TaskType.Chore,
+                null, null, null, Now, node.OwnerId));
+            await seed.SaveChangesAsync(cts.Token);
+        }
+
+        IReadOnlyList<ClaimedWork> first = await engine.ClaimEligibleAsync(cts.Token);
+        ClaimedWork firstClaim = first.Should().ContainSingle(w => w.TaskId == taskId).Subject;
+        firstClaim.LeaseGeneration.Should().Be(1);
+
+        // The run dies at the push step: task Failed, lease released — the origin incident.
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            TaskAggregate task = (await session.Events.AggregateStreamAsync<TaskAggregate>(taskId, token: cts.Token))!;
+            session.Events.Append(taskId, TaskDecider.Fail(
+                task, firstClaim.RunId, "Push rejected: branch was rebased.", DateTimeOffset.UtcNow));
+            session.Delete<TaskLease>(taskId);
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        // The human retries; the stream keeps the failure and the queue picks the task up.
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            TaskAggregate task = (await session.Events.AggregateStreamAsync<TaskAggregate>(taskId, token: cts.Token))!;
+            session.Events.Append(taskId, TaskDecider.Retry(
+                task, firstClaim.RunId, "task/abc12345-retry-walk",
+                "Push bug fixed; the work is intact.", DateTimeOffset.UtcNow, node.OwnerId));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        IReadOnlyList<ClaimedWork> second = await engine.ClaimEligibleAsync(cts.Token);
+        ClaimedWork secondClaim = second.Should().ContainSingle(w => w.TaskId == taskId).Subject;
+        secondClaim.LeaseGeneration.Should().Be(2, "the fencing token moves on retry claims like any other (log #7)");
+
+        await using (IQuerySession query = store.QuerySession())
+        {
+            TaskDetails details = (await query.LoadAsync<TaskDetails>(taskId, cts.Token))!;
+            details.State.Value.Should().Be("Claimed");
+            details.FailureReason.Should().Be("Push rejected: branch was rebased.", "retry does not erase why it failed");
+            details.RetryReason.Should().Be("Push bug fixed; the work is intact.");
+            details.RetryBranch.Should().Be("task/abc12345-retry-walk", "the launcher resumes it when it survives");
+        }
+    }
 }

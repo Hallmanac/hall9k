@@ -67,5 +67,12 @@ public sealed class TaskListItemProjection : SingleStreamProjection<TaskListItem
 
     public void Apply(IEvent<TaskFailed> @event, TaskListItem view) => view.State = TaskState.Failed;
 
+    public void Apply(IEvent<TaskRetried> @event, TaskListItem view)
+    {
+        view.ClaimedByNodeId = null;
+        view.CurrentRunId = null;
+        view.State = TaskState.Queued;
+    }
+
     public void Apply(IEvent<TaskAbandoned> @event, TaskListItem view) => view.State = TaskState.Abandoned;
 }
