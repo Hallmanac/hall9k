@@ -1,6 +1,7 @@
 using System.ComponentModel;
 using Hall9k.Cli.Infrastructure;
 using Hall9k.Domain.Features.Run.Projections;
+using Hall9k.Domain.Features.Tasks;
 using Hall9k.Domain.Features.Tasks.Projections;
 using Hall9k.Domain.Shared.Exceptions;
 using Marten;
@@ -53,6 +54,16 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
             header.AddRow("Retried", $"[yellow]{details.RetryReason.EscapeMarkup()}[/]");
         }
 
+        if (details.ResolvedReason.IsNotBlank())
+        {
+            header.AddRow("Resolved", $"[green]{details.ResolvedReason.EscapeMarkup()}[/]");
+        }
+
+        if (details.AbandonedReason.IsNotBlank())
+        {
+            header.AddRow("Abandoned", $"[dim]{details.AbandonedReason.EscapeMarkup()}[/]");
+        }
+
         AnsiConsole.Write(header);
 
         AnsiConsole.MarkupLine("\n[bold]Acceptance criteria[/]");
@@ -100,6 +111,15 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
             }
 
             AnsiConsole.Write(runsTable);
+        }
+
+        if (details.State == TaskState.Failed)
+        {
+            string shortId = TaskListCommand.ShortId(details.Id);
+            AnsiConsole.MarkupLine("\n[bold]Failed is a waypoint, not an ending — three exits:[/]");
+            AnsiConsole.MarkupLine($"  [yellow]retry[/]    h9k task retry {shortId} --reason <why>              — run it again");
+            AnsiConsole.MarkupLine($"  [green]resolve[/]  h9k task resolve {shortId} --reason <why> [[--pr <url>]] — the objective was met despite the failure");
+            AnsiConsole.MarkupLine($"  [dim]abandon[/]  h9k task abandon {shortId} [[--reason <why>]]          — walk away");
         }
 
         return ExitCodes.Ok;

@@ -52,9 +52,18 @@ app.Configure(config =>
             .WithDescription(
                 "Requeue a failed task for another run (human-only; Failed tasks only — Abandoned stays terminal). "
                 + "The failure stays on the stream; the new run resumes the failed run's branch when it survives, "
-                + "or starts clean from the base branch when the artifacts are gone.")
+                + "or starts clean from the base branch when the artifacts are gone. "
+                + "Failed's other exits: h9k task resolve (objective already met), h9k task abandon (walk away).")
             .WithExample("task", "retry", "28b19893")
             .WithExample("task", "retry", "28b19893", "--reason", "Daemon push bug fixed; the completed work is intact in the worktree");
+        task.AddCommand<TaskResolveCommand>("resolve")
+            .WithDescription(
+                "Resolve a failed task to Done: your attestation that the objective was met even though the run "
+                + "failed (human-only; Failed tasks only). --reason is required — an attestation without a why is "
+                + "a guess. The failure stays on the stream; --pr records where the work landed. "
+                + "Failed's other exits: h9k task retry (run again), h9k task abandon (walk away).")
+            .WithExample("task", "resolve", "28b19893", "--reason", "Work merged as PR #7; only the daemon's push step failed")
+            .WithExample("task", "resolve", "28b19893", "--reason", "Objective met by hand in the worktree", "--pr", "https://github.com/x/y/pull/7");
     });
 });
 
