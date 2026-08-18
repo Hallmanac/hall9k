@@ -64,6 +64,50 @@ public sealed class ProjectDeciderTests
     }
 
     [Fact]
+    public void ChangeSettings_rejects_a_commit_style_outside_the_vocabulary()
+    {
+        ProjectAggregate project = RegisteredProject();
+
+        Action act = () => ProjectDecider.ChangeSettings(
+            project,
+            verifyCommands: Optional<IReadOnlyList<VerifyCommand>>.None,
+            skipPermissions: Optional<bool>.None,
+            maxParallelAgents: Optional<int>.None,
+            contextLinks: Optional<IReadOnlyList<ContextLink>>.None,
+            changedAt: Now, changedByOwnerId: DomainId.New(),
+            commitStyle: Optional<CommitStyle>.Of("Squash"));
+
+        act.Should().Throw<DomainValidationException>().WithMessage("*Narrative*Append*");
+    }
+
+    [Fact]
+    public void ChangeSettings_accepts_unknown_commit_style_as_clearing_the_override()
+    {
+        ProjectAggregate project = RegisteredProject();
+        project.Apply(new ProjectSettingsChanged(
+            project.Id,
+            VerifyCommands: Optional<IReadOnlyList<VerifyCommand>>.None,
+            SkipPermissions: Optional<bool>.None,
+            MaxParallelAgents: Optional<int>.None,
+            ContextLinks: Optional<IReadOnlyList<ContextLink>>.None,
+            ChangedAt: Now, ChangedByOwnerId: DomainId.New(),
+            CommitStyle: CommitStyle.Append));
+        project.CommitStyle.Should().Be(CommitStyle.Append);
+
+        ProjectSettingsChanged cleared = ProjectDecider.ChangeSettings(
+            project,
+            verifyCommands: Optional<IReadOnlyList<VerifyCommand>>.None,
+            skipPermissions: Optional<bool>.None,
+            maxParallelAgents: Optional<int>.None,
+            contextLinks: Optional<IReadOnlyList<ContextLink>>.None,
+            changedAt: Now, changedByOwnerId: DomainId.New(),
+            commitStyle: Optional<CommitStyle>.Of(CommitStyle.Unknown));
+        project.Apply(cleared);
+
+        project.CommitStyle.Should().Be(CommitStyle.Unknown, "the platform default applies again");
+    }
+
+    [Fact]
     public void Aggregate_applies_settings_only_where_optionals_are_present()
     {
         ProjectAggregate project = RegisteredProject();

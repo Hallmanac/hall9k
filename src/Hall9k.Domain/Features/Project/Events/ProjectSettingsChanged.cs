@@ -9,4 +9,5 @@ public sealed record ProjectSettingsChanged(
     Optional<int> MaxParallelAgents,
     Optional<IReadOnlyList<ContextLink>> ContextLinks,
     DateTimeOffset ChangedAt,
-    Guid ChangedByOwnerId);
+    Guid ChangedByOwnerId,
+    Optional<CommitStyle> CommitStyle = default);

@@ -13,6 +13,7 @@ public sealed class ProjectAggregate
     public string BaseBranch { get; private set; } = string.Empty;
     public bool SkipPermissions { get; private set; }
     public int MaxParallelAgents { get; private set; } = 3;
+    public CommitStyle CommitStyle { get; private set; } = CommitStyle.Unknown;
     public DateTimeOffset RegisteredAt { get; private set; }
 
     private readonly List<VerifyCommand> _verifyCommands = [];
@@ -55,6 +56,11 @@ public sealed class ProjectAggregate
         {
             _contextLinks.Clear();
             _contextLinks.AddRange(@event.ContextLinks.Value ?? []);
+        }
+
+        if (@event.CommitStyle.HasValue)
+        {
+            CommitStyle = @event.CommitStyle.Value ?? CommitStyle.Unknown;
         }
     }
 }

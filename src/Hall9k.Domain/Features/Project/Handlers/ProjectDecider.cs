@@ -49,11 +49,25 @@ public static class ProjectDecider
         Optional<int> maxParallelAgents,
         Optional<IReadOnlyList<ContextLink>> contextLinks,
         DateTimeOffset changedAt,
-        Guid changedByOwnerId)
+        Guid changedByOwnerId,
+        Optional<CommitStyle> commitStyle = default)
     {
         if (maxParallelAgents.HasValue && maxParallelAgents.Value < 1)
         {
             throw new DomainValidationException("MaxParallelAgents must be at least 1.");
+        }
+
+        // Unknown is a legal explicit value: it clears the project override so the
+        // platform default applies again.
+        if (commitStyle.HasValue
+            && commitStyle.Value is { } style
+            && style != CommitStyle.Unknown
+            && style != CommitStyle.Narrative
+            && style != CommitStyle.Append)
+        {
+            throw new DomainValidationException(
+                $"CommitStyle must be {CommitStyle.Narrative} or {CommitStyle.Append} "
+                + "(how follow-up runs land fixes on the PR branch, Decisions Log #26).");
         }
 
         return new ProjectSettingsChanged(
@@ -63,6 +77,7 @@ public static class ProjectDecider
             maxParallelAgents,
             contextLinks,
             changedAt,
-            changedByOwnerId);
+            changedByOwnerId,
+            commitStyle);
     }
 }

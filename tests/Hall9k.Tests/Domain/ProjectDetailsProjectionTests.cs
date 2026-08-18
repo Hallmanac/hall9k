@@ -29,7 +29,8 @@ public sealed class ProjectDetailsProjectionTests
             SkipPermissions: true,
             MaxParallelAgents: 2,
             ContextLinks: new List<ContextLink> { new("jira", new Uri("https://example.atlassian.net")) },
-            ChangedAt: Now.AddMinutes(5), ChangedByOwnerId: DomainId.New())), view);
+            ChangedAt: Now.AddMinutes(5), ChangedByOwnerId: DomainId.New(),
+            CommitStyle: CommitStyle.Append)), view);
 
         view.Name.Should().Be("hall9k");
         view.BaseBranch.Should().Be("main");
@@ -37,6 +38,37 @@ public sealed class ProjectDetailsProjectionTests
         view.SkipPermissions.Should().BeTrue();
         view.MaxParallelAgents.Should().Be(2);
         view.ContextLinks.Should().ContainSingle(l => l.Name == "jira");
+        view.CommitStyle.Should().Be(CommitStyle.Append);
         view.SettingsChangedAt.Should().Be(Now.AddMinutes(5));
+    }
+
+    [Fact]
+    public void Commit_style_defaults_to_unknown_and_survives_updates_that_leave_it_absent()
+    {
+        ProjectDetailsProjection projection = new();
+        Guid id = DomainId.New();
+
+        ProjectDetails view = projection.Create(new FakeEvent<ProjectRegistered>(new ProjectRegistered(
+            id, DomainId.New(), DomainId.New(), "hall9k", "/repos/hall9k.git", null, "main", Now)));
+        view.CommitStyle.Should().Be(CommitStyle.Unknown, "an unset project uses the platform default");
+
+        projection.Apply(new FakeEvent<ProjectSettingsChanged>(new ProjectSettingsChanged(
+            id,
+            VerifyCommands: Optional<IReadOnlyList<VerifyCommand>>.None,
+            SkipPermissions: Optional<bool>.None,
+            MaxParallelAgents: Optional<int>.None,
+            ContextLinks: Optional<IReadOnlyList<ContextLink>>.None,
+            ChangedAt: Now.AddMinutes(1), ChangedByOwnerId: DomainId.New(),
+            CommitStyle: CommitStyle.Narrative)), view);
+        view.CommitStyle.Should().Be(CommitStyle.Narrative);
+
+        projection.Apply(new FakeEvent<ProjectSettingsChanged>(new ProjectSettingsChanged(
+            id,
+            VerifyCommands: Optional<IReadOnlyList<VerifyCommand>>.None,
+            SkipPermissions: true,
+            MaxParallelAgents: Optional<int>.None,
+            ContextLinks: Optional<IReadOnlyList<ContextLink>>.None,
+            ChangedAt: Now.AddMinutes(2), ChangedByOwnerId: DomainId.New())), view);
+        view.CommitStyle.Should().Be(CommitStyle.Narrative, "an absent optional leaves the setting unchanged");
     }
 }

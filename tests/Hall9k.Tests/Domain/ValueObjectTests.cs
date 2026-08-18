@@ -1,6 +1,7 @@
 using System.Text.Json;
 using FluentAssertions;
 using Hall9k.Domain.Features.Connection;
+using Hall9k.Domain.Features.Project;
 using Hall9k.Domain.Features.Run;
 using Hall9k.Domain.Shared.ValueObjects;
 using Xunit;
@@ -60,6 +61,30 @@ public sealed class ValueObjectTests
         JsonSerializer.Deserialize<ReviewFixOutcome>("\"Disputed\"").Should().Be(ReviewFixOutcome.Disputed);
         JsonSerializer.Deserialize<ReviewFixOutcome>("\"Deferred\"")!.Value
             .Should().Be("Deferred", "the set is defined once, not enforced");
+    }
+
+    [Fact]
+    public void CommitStyle_serializes_as_bare_string_and_maps_input_case_insensitively()
+    {
+        JsonSerializer.Serialize(CommitStyle.Narrative).Should().Be("\"Narrative\"");
+        JsonSerializer.Deserialize<CommitStyle>("\"Append\"").Should().Be(CommitStyle.Append);
+
+        CommitStyle.FromInput("NARRATIVE").Should().Be(CommitStyle.Narrative);
+        CommitStyle.FromInput(" append ").Should().Be(CommitStyle.Append);
+        CommitStyle.FromInput("squash").Should().Be(CommitStyle.Unknown, "unrecognized input is never guessed at");
+        CommitStyle.FromInput(null).Should().Be(CommitStyle.Unknown);
+    }
+
+    [Fact]
+    public void CommitStyle_resolves_project_over_platform_default_and_lands_on_narrative()
+    {
+        CommitStyle.Resolve(CommitStyle.Append, "Narrative").Should().Be(
+            CommitStyle.Append, "the project override wins over the platform default");
+        CommitStyle.Resolve(CommitStyle.Unknown, "Append").Should().Be(
+            CommitStyle.Append, "an unset project falls through to the platform default");
+        CommitStyle.Resolve(CommitStyle.Unknown, "garbage").Should().Be(
+            CommitStyle.Narrative, "an unrecognized platform default lands on the documented default");
+        CommitStyle.Resolve(null, null).Should().Be(CommitStyle.Narrative);
     }
 
     [Fact]

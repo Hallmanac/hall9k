@@ -17,7 +17,8 @@ app.Configure(config =>
         project.AddCommand<ProjectAddCommand>("add")
             .WithDescription("Register a project (repo path, base branch, connection binding)");
         project.AddCommand<ProjectSetCommand>("set")
-            .WithDescription("Change project settings: verify gates, skip-permissions, links, parallelism");
+            .WithDescription("Change project settings: verify gates, skip-permissions, links, parallelism, commit style")
+            .WithExample("project", "set", "hall9k", "--commit-style", "narrative");
     });
 
     config.AddBranch("pr", pullRequest =>
