@@ -1,6 +1,8 @@
 using FluentAssertions;
 using Hall9k.Daemon;
 using Hall9k.Daemon.Dispatch;
+using Hall9k.Domain.Features.Run;
+using Hall9k.Domain.Features.Run.Events;
 using Hall9k.Domain.Features.Tasks;
 using Hall9k.Domain.Features.Tasks.Documents;
 using Hall9k.Domain.Features.Tasks.Handlers;
@@ -93,6 +95,82 @@ public sealed class DispatchEngineTests(PostgresFixture postgres) : IClassFixtur
             {
                 reclaimed.LeaseGeneration.Should().Be(2);
             }
+        }
+    }
+
+    [Fact]
+    public async Task An_expired_lease_on_a_review_parked_run_is_refreshed_and_never_requeued()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        using DocumentStore store = DocumentStore.For(opts =>
+        {
+            opts.Connection(postgres.ConnectionString);
+            opts.ConfigureHall9k(AutoCreate.All);
+        });
+
+        NodeContext node = new();
+        await node.InitializeAsync(store, cts.Token);
+
+        DaemonOptions options = new() { MaxConcurrentRuns = 50, LeaseTimeout = TimeSpan.FromSeconds(60) };
+        DispatchEngine engine = new(
+            store, node, Options.Create(options), NullLogger<DispatchEngine>.Instance);
+
+        // Seeded directly (not through ClaimEligibleAsync) and under its own node id:
+        // this class shares one database, and the sibling capacity assertions must not
+        // see this test's lease. The sweep itself is node-blind, so it still applies.
+        Guid taskId = DomainId.New();
+        Guid runId = DomainId.New();
+        Guid parkedNodeId = DomainId.New();
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            TaskAggregate task = new();
+            var added = TaskDecider.Add(taskId, DomainId.New(), "Park walk", ["done"], TaskType.Chore,
+                null, null, null, Now, node.OwnerId);
+            task.Apply(added);
+            session.Events.StartStream<TaskAggregate>(taskId, added,
+                TaskDecider.Claim(task, parkedNodeId, node.OwnerId, runId, Now));
+
+            // The run reaches a review park, then the lease heartbeat decays past the
+            // timeout — the daemon slept, or the sweep won the wake-up race (the origin
+            // incident: this exact combination requeued a parked task and the platform
+            // rebuilt the same feature across generations 2-4).
+            session.Events.StartStream<RunAggregate>(runId,
+                new RunDispatched(runId, taskId, parkedNodeId, node.OwnerId, 1,
+                    DomainId.New(), "/wt/park", "task/park-walk", ExecutorMode.Subscription, Now),
+                new ReviewDispatched(runId, DomainId.New(), 1, 5001, Now, Now),
+                new ReviewParked(runId, "No parseable verdict, even after a re-prompt.", Now));
+
+            session.Store(new TaskLease
+            {
+                Id = taskId,
+                NodeId = parkedNodeId,
+                LeaseGeneration = 1,
+                HeartbeatAt = DateTimeOffset.UtcNow.AddMinutes(-10),
+            });
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        // Not asserting the returned count: this class shares one database, and a slow
+        // run could age another test's lease past the timeout. The parked task's own
+        // fate is the guarantee under test.
+        await engine.SweepExpiredLeasesAsync(cts.Token);
+
+        await using (IQuerySession query = store.QuerySession())
+        {
+            TaskListItem task = (await query.LoadAsync<TaskListItem>(taskId, cts.Token))!;
+            task.State.Value.Should().Be("Claimed", "parked means waiting on a human, not abandoned");
+
+            TaskLease lease = (await query.LoadAsync<TaskLease>(taskId, cts.Token))!;
+            lease.HeartbeatAt.Should().BeAfter(DateTimeOffset.UtcNow.AddMinutes(-1),
+                "the sweep refreshes a parked lease so it cannot expire again next tick");
+        }
+
+        // Leave no residue: the sibling capacity test counts every lease in this
+        // class's shared database.
+        await using (IDocumentSession cleanup = store.LightweightSession())
+        {
+            cleanup.Delete<TaskLease>(taskId);
+            await cleanup.SaveChangesAsync(cts.Token);
         }
     }
 
