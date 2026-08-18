@@ -100,6 +100,19 @@ public sealed class TaskAggregate
         State = TaskState.Queued;
     }
 
+    public void Apply(TaskRetried @event)
+    {
+        FollowUpBranch = @event.Branch;
+        FollowUpKind = FollowUpKind.Retry;
+        // Human-initiated, so it restores the automatic closeout budget like a manual
+        // reopen does (Decisions Log #22/#25).
+        CloseoutAttempts = 0;
+        ClaimedByNodeId = null;
+        CurrentRunId = null;
+        PendingQuestionId = null;
+        State = TaskState.Queued;
+    }
+
     public void Apply(TaskFailed @event) => State = TaskState.Failed;
 
     public void Apply(TaskAbandoned @event) => State = TaskState.Abandoned;

@@ -4,16 +4,19 @@ using System.Text.Json.Serialization;
 namespace Hall9k.Domain.Features.Tasks;
 
 /// <summary>
-/// Why a done task was reopened for a follow-up run (PR closeout, Decisions Log #18/#22).
-/// The launcher selects the agent prompt from it: ReviewFeedback gets the
-/// resolve-copilot-reviews prompt, FailingChecks gets the fix-the-CI prompt. Unknown
-/// (including reopens recorded before this vocabulary existed) is treated as ReviewFeedback.
+/// Why a task is queued with a branch to resume (PR closeout, Decisions Log #18/#22;
+/// retry, log #25). The launcher selects the agent prompt from it: ReviewFeedback gets
+/// the resolve-copilot-reviews prompt, FailingChecks gets the fix-the-CI prompt, and
+/// Retry (a human-retried failure, log #25) gets the standard task prompt — the agent
+/// picks up whatever committed work survives on the resumed branch. Unknown (including
+/// reopens recorded before this vocabulary existed) is treated as ReviewFeedback.
 /// </summary>
 [JsonConverter(typeof(FollowUpKindJsonConverter))]
 public sealed record FollowUpKind
 {
     public static readonly FollowUpKind ReviewFeedback = new("ReviewFeedback");
     public static readonly FollowUpKind FailingChecks = new("FailingChecks");
+    public static readonly FollowUpKind Retry = new("Retry");
     /// <summary>Not recognized or not yet set. Serializes as an empty string.</summary>
     public static readonly FollowUpKind Unknown = new("");
 

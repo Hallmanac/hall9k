@@ -34,7 +34,10 @@ public sealed class TaskDetails
     public string? FollowUpBranch { get; set; }
     public FollowUpKind FollowUpKind { get; set; } = FollowUpKind.Unknown;
     public string? FollowUpReason { get; set; }
+    /// <summary>The most recent failure's reason. Deliberately survives a retry — the retry never erases why it failed.</summary>
     public string? FailureReason { get; set; }
+    /// <summary>Why the human retried the most recent failure (TaskRetried, Decisions Log #25).</summary>
+    public string? RetryReason { get; set; }
     public DateTimeOffset AddedAt { get; set; }
     public Guid AddedByOwnerId { get; set; }
     public DateTimeOffset? FinishedAt { get; set; }
@@ -112,6 +115,18 @@ public sealed class TaskDetailsProjection : SingleStreamProjection<TaskDetails, 
         view.FollowUpBranch = @event.Data.Branch;
         view.FollowUpKind = @event.Data.Kind ?? FollowUpKind.Unknown;
         view.FollowUpReason = @event.Data.Reason;
+        view.ClaimedByNodeId = null;
+        view.CurrentRunId = null;
+        view.State = TaskState.Queued;
+        view.FinishedAt = null;
+    }
+
+    public void Apply(IEvent<TaskRetried> @event, TaskDetails view)
+    {
+        view.RetryReason = @event.Data.Reason;
+        view.FollowUpBranch = @event.Data.Branch;
+        view.FollowUpKind = FollowUpKind.Retry;
+        view.FollowUpReason = null;
         view.ClaimedByNodeId = null;
         view.CurrentRunId = null;
         view.State = TaskState.Queued;

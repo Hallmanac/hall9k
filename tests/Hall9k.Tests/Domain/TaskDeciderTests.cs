@@ -207,6 +207,91 @@ public sealed class TaskDeciderTests
         act.Should().Throw<DomainValidationException>().WithMessage("*branch*");
     }
 
+    [Fact]
+    public void Retry_of_failed_task_returns_to_queued_and_the_next_claim_bumps_generation()
+    {
+        TaskAggregate task = FailedTask();
+
+        TaskRetried retried = TaskDecider.Retry(
+            task, "daemon push bug fixed; the work survives in the worktree",
+            "task/abc-branch", Now, DomainId.New());
+        task.Apply(retried);
+
+        task.State.Should().Be(TaskState.Queued);
+        task.FollowUpBranch.Should().Be("task/abc-branch", "the launcher resumes surviving artifacts");
+        task.FollowUpKind.Should().Be(FollowUpKind.Retry, "the launcher picks the standard prompt from it");
+        task.ClaimedByNodeId.Should().BeNull("a retried task is queued, and queued work is unclaimed");
+        task.CurrentRunId.Should().BeNull();
+
+        TaskClaimed claimed = TaskDecider.Claim(task, DomainId.New(), DomainId.New(), DomainId.New(), Now);
+        claimed.LeaseGeneration.Should().Be(2, "a retry claim moves the fencing token like any other");
+    }
+
+    [Fact]
+    public void Retry_with_no_recorded_branch_starts_clean()
+    {
+        TaskAggregate task = FailedTask();
+
+        task.Apply(TaskDecider.Retry(task, "transient failure before any worktree", branch: " ", Now, DomainId.New()));
+
+        task.State.Should().Be(TaskState.Queued);
+        task.FollowUpBranch.Should().BeNull("a blank branch means there is nothing to resume");
+    }
+
+    [Fact]
+    public void Retry_resets_the_automatic_closeout_budget_like_a_manual_reopen()
+    {
+        TaskAggregate task = DoneTask("https://github.com/x/y/pull/7");
+        task.Apply(TaskDecider.Reopen(
+            task, task.CurrentRunId!.Value, "task/abc", "CI checks failing.",
+            FollowUpKind.FailingChecks, automatic: true, Now, DomainId.New()));
+        task.Apply(TaskDecider.Claim(task, DomainId.New(), DomainId.New(), DomainId.New(), Now));
+        task.Apply(TaskDecider.Fail(task, task.CurrentRunId!.Value, "push rejected", Now));
+        task.CloseoutAttempts.Should().Be(1);
+
+        task.Apply(TaskDecider.Retry(task, "push bug fixed", "task/abc", Now, DomainId.New()));
+
+        task.CloseoutAttempts.Should().Be(0, "a human-initiated retry restores the automatic budget");
+    }
+
+    [Fact]
+    public void Retry_of_a_non_failed_task_conflicts()
+    {
+        TaskAggregate task = DoneTask("https://github.com/x/y/pull/7");
+
+        Action act = () => TaskDecider.Retry(task, "another go", null, Now, DomainId.New());
+
+        act.Should().Throw<DomainConflictException>().WithMessage("*only a failed task retries*");
+    }
+
+    [Fact]
+    public void Retry_of_an_abandoned_task_conflicts()
+    {
+        TaskAggregate task = ClaimedTask();
+        task.Apply(TaskDecider.Abandon(task, "not worth it", Now, DomainId.New()));
+
+        Action act = () => TaskDecider.Retry(task, "changed my mind", null, Now, DomainId.New());
+
+        act.Should().Throw<DomainConflictException>("Abandoned stays a dead end");
+    }
+
+    [Fact]
+    public void Retry_without_a_reason_fails_validation()
+    {
+        TaskAggregate task = FailedTask();
+
+        Action act = () => TaskDecider.Retry(task, reason: " ", null, Now, DomainId.New());
+
+        act.Should().Throw<DomainValidationException>().WithMessage("*--reason*");
+    }
+
+    private static TaskAggregate FailedTask()
+    {
+        TaskAggregate task = ClaimedTask();
+        task.Apply(TaskDecider.Fail(task, task.CurrentRunId!.Value, "Push failed: rejected", Now));
+        return task;
+    }
+
     private static TaskAggregate DoneTask(string? pullRequestUrl)
     {
         TaskAggregate task = ClaimedTask();

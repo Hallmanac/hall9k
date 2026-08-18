@@ -117,8 +117,8 @@ public static class TaskDecider
 
     /// <summary>
     /// Done is terminal for the work, not for the pull request: reopening queues a
-    /// follow-up run on the existing PR branch (Decisions Log #20). Deliberately the only
-    /// exit from a terminal state, and only from Done — Failed/Abandoned stay dead ends.
+    /// follow-up run on the existing PR branch (Decisions Log #20). Only from Done —
+    /// Failed has its own human-only exit (Retry, log #25) and Abandoned stays a dead end.
     /// </summary>
     public static TaskReopened Reopen(
         TaskAggregate task,
@@ -148,6 +148,34 @@ public static class TaskDecider
         }
 
         return new TaskReopened(task.Id, previousRunId, branch, reason, reopenedAt, reopenedByOwnerId, kind, automatic);
+    }
+
+    /// <summary>
+    /// The one exit from Failed (Decisions Log #25), and always a human decision — the
+    /// daemon never retries a failure on its own judgment (a failure that repeats without
+    /// human eyes is the never-loop-on-judgment rule, log #11). Distinct from Reopen:
+    /// Reopen is Done-only and drives PR follow-ups; Retry is Failed-only and re-runs the
+    /// task itself. The retry appends — the failure stays on the stream untouched.
+    /// Human-initiated like a manual reopen, it does not spend the closeout budget; it
+    /// resets it (log #22).
+    /// </summary>
+    public static TaskRetried Retry(TaskAggregate task, string reason, string? branch, DateTimeOffset retriedAt, Guid retriedByOwnerId)
+    {
+        if (task.State != TaskState.Failed)
+        {
+            throw new DomainConflictException(
+                $"Task {task.Id} is {task.State.Value} — only a failed task retries. " +
+                "A done task reopens for PR follow-ups (h9k pr resolve); an abandoned task stays a dead end.");
+        }
+
+        if (reason.IsBlank())
+        {
+            throw new DomainValidationException(
+                "A retry records why the human expects another attempt to go differently — pass --reason. " +
+                "The failure history stays on the stream either way.");
+        }
+
+        return new TaskRetried(task.Id, reason, branch.IsBlank() ? null : branch, retriedAt, retriedByOwnerId);
     }
 
     public static TaskFailed Fail(TaskAggregate task, Guid runId, string reason, DateTimeOffset failedAt)
