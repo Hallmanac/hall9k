@@ -35,6 +35,9 @@ public sealed class TaskDetails
     public FollowUpKind FollowUpKind { get; set; } = FollowUpKind.Unknown;
     public string? FollowUpReason { get; set; }
     public string? FailureReason { get; set; }
+    /// <summary>The failed run's branch while a human-requested retry is pending: the launcher resumes it when it survives (Decisions Log #25).</summary>
+    public string? RetryBranch { get; set; }
+    public string? RetryReason { get; set; }
     public DateTimeOffset AddedAt { get; set; }
     public Guid AddedByOwnerId { get; set; }
     public DateTimeOffset? FinishedAt { get; set; }
@@ -103,6 +106,7 @@ public sealed class TaskDetailsProjection : SingleStreamProjection<TaskDetails, 
         view.FollowUpBranch = null;
         view.FollowUpKind = FollowUpKind.Unknown;
         view.FollowUpReason = null;
+        view.RetryBranch = null;
         view.State = TaskState.Done;
         view.FinishedAt = @event.Data.CompletedAt;
     }
@@ -123,6 +127,17 @@ public sealed class TaskDetailsProjection : SingleStreamProjection<TaskDetails, 
         view.FailureReason = @event.Data.Reason;
         view.State = TaskState.Failed;
         view.FinishedAt = @event.Data.FailedAt;
+    }
+
+    // FailureReason survives on purpose: the retry appends, it never erases why the task failed.
+    public void Apply(IEvent<TaskRetried> @event, TaskDetails view)
+    {
+        view.RetryBranch = @event.Data.Branch;
+        view.RetryReason = @event.Data.Reason;
+        view.ClaimedByNodeId = null;
+        view.CurrentRunId = null;
+        view.State = TaskState.Queued;
+        view.FinishedAt = null;
     }
 
     public void Apply(IEvent<TaskAbandoned> @event, TaskDetails view)
