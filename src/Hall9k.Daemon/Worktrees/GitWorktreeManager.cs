@@ -57,7 +57,7 @@ public sealed class GitWorktreeManager(ILogger<GitWorktreeManager> logger) : IWo
             {
                 if (Directory.Exists(retained))
                 {
-                    await FastForwardToOriginBestEffortAsync(repositoryPath, retained, branch, cancellationToken);
+                    await SyncToOriginBestEffortAsync(repositoryPath, retained, branch, cancellationToken);
                     logger.LogInformation(
                         "Reusing retained worktree {Path} for follow-up on branch {Branch}", retained, branch);
                     return new Worktree(retained, branch, branch);
@@ -74,7 +74,7 @@ public sealed class GitWorktreeManager(ILogger<GitWorktreeManager> logger) : IWo
             if (localExists)
             {
                 await RunGitAsync(repositoryPath, $"worktree add \"{worktreePath}\" {branch}", cancellationToken);
-                await FastForwardToOriginBestEffortAsync(repositoryPath, worktreePath, branch, cancellationToken);
+                await SyncToOriginBestEffortAsync(repositoryPath, worktreePath, branch, cancellationToken);
             }
             else if (remoteExists)
             {
@@ -209,11 +209,18 @@ public sealed class GitWorktreeManager(ILogger<GitWorktreeManager> logger) : IWo
     }
 
     /// <summary>
+    /// Brings a resumed branch up to date with origin before the follow-up run starts.
     /// Review feedback may have landed as commits on the PR itself (web-applied
-    /// suggestions); pick them up when it's a clean fast-forward. A divergence is a
-    /// human problem — the run proceeds from the local tip.
+    /// suggestions); a clean fast-forward picks them up, and a local tip strictly ahead
+    /// of origin is kept as-is (unpushed work — a follow-up whose push never landed —
+    /// that a reset would destroy), and a worktree holding uncommitted work is never
+    /// touched at all (a retried run may be rescuing a stranded attempt). Diverged
+    /// clean tips mean the branch was REWRITTEN on
+    /// origin (narrative follow-ups force-push rebased history, Decisions Log #26): the
+    /// remote tip is the pull request's truth, so the worktree resets to it instead of
+    /// resuming a stale pre-rebase ref. The old tip stays reachable via the reflog.
     /// </summary>
-    private async Task FastForwardToOriginBestEffortAsync(
+    private async Task SyncToOriginBestEffortAsync(
         string repositoryPath, string worktreePath, string branch, CancellationToken cancellationToken)
     {
         if (!await RefExistsAsync(repositoryPath, $"refs/remotes/origin/{branch}", cancellationToken))
@@ -221,13 +228,52 @@ public sealed class GitWorktreeManager(ILogger<GitWorktreeManager> logger) : IWo
             return;
         }
 
-        (int ffExit, _, string ffError) = await TryRunGitAsync(
-            worktreePath, $"merge --ff-only origin/{branch}", cancellationToken);
-        if (ffExit != 0)
+        // Ancestry decides, not merge exit codes: --ff-only also fails on a dirty
+        // worktree it would overwrite, which is not divergence (review finding, PR #10).
+        (int aheadExit, _, _) = await TryRunGitAsync(
+            worktreePath, $"merge-base --is-ancestor origin/{branch} HEAD", cancellationToken);
+        if (aheadExit == 0)
+        {
+            // Equal or strictly ahead: unpushed work a sync must not touch.
+            return;
+        }
+
+        // Behind or diverged from here on. Uncommitted work vetoes every destructive
+        // path — a retried run may be resuming a worktree holding a stranded attempt,
+        // and rescuing that work is the point of resuming.
+        (int statusExit, string status, _) = await TryRunGitAsync(worktreePath, "status --porcelain", cancellationToken);
+        if (statusExit != 0 || status.Trim().Length > 0)
         {
             logger.LogWarning(
-                "Branch {Branch} could not fast-forward to origin ({Error}); continuing from the local tip",
-                branch, ffError.Trim());
+                "Branch {Branch} is behind or diverged from origin, but the worktree holds uncommitted work — keeping it untouched",
+                branch);
+            return;
+        }
+
+        (int behindExit, _, _) = await TryRunGitAsync(
+            worktreePath, $"merge-base --is-ancestor HEAD origin/{branch}", cancellationToken);
+        if (behindExit == 0)
+        {
+            // Strictly behind with a clean tree: a fast-forward picks up commits that
+            // landed on the PR itself (web-applied suggestions).
+            await TryRunGitAsync(worktreePath, $"merge --ff-only origin/{branch}", cancellationToken);
+            return;
+        }
+
+        (_, string staleTip, _) = await TryRunGitAsync(worktreePath, "rev-parse HEAD", cancellationToken);
+        (int resetExit, _, string resetError) = await TryRunGitAsync(
+            worktreePath, $"reset --hard origin/{branch}", cancellationToken);
+        if (resetExit == 0)
+        {
+            logger.LogInformation(
+                "Branch {Branch} was rewritten on origin; worktree reset from stale tip {StaleTip} to the remote tip",
+                branch, staleTip.Trim());
+        }
+        else
+        {
+            logger.LogWarning(
+                "Branch {Branch} diverged from origin and could not reset ({Error}); continuing from the local tip",
+                branch, resetError.Trim());
         }
     }
 

@@ -156,6 +156,102 @@ public sealed class GitWorktreeManagerTests : IDisposable
     }
 
     [Fact]
+    public async Task Checkout_existing_resets_a_retained_worktree_to_a_rewritten_remote_tip()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(1));
+        Guid taskId = DomainId.New();
+
+        Worktree first = await _manager.CreateAsync(
+            new WorktreeRequest(_repositoryPath, "main", taskId, DomainId.New(), "Rewrite me remotely"), cts.Token);
+        File.WriteAllText(Path.Combine(first.Path, "WORK.md"), "first run\n");
+        Git(first.Path, "add -A");
+        Git(first.Path, "-c user.name=Test -c user.email=t@t commit -qm work");
+        Git(first.Path, $"push -q origin {first.Branch}");
+
+        // Another node's narrative follow-up rebased the branch and force-pushed the
+        // rewritten history (Decisions Log #26) — the retained worktree's tip is stale.
+        string rewriter = Path.Combine(_root, "rewriter");
+        Git(_root, $"clone \"{Path.Combine(_root, "origin.git")}\" \"{rewriter}\"");
+        Git(rewriter, $"checkout -q {first.Branch}");
+        File.WriteAllText(Path.Combine(rewriter, "WORK.md"), "first run, review fix folded in\n");
+        Git(rewriter, "add -A");
+        Git(rewriter, "-c user.name=Rev -c user.email=r@r commit -q --amend -m \"work, absorbed\"");
+        Git(rewriter, $"push -q --force origin {first.Branch}");
+
+        Worktree followUp = await _manager.CheckoutExistingAsync(
+            new FollowUpWorktreeRequest(_repositoryPath, first.Branch, taskId, DomainId.New()), cts.Token);
+
+        Path.GetFileName(followUp.Path).Should().Be(Path.GetFileName(first.Path), "the retained worktree is reused");
+        (_, string localTip) = TryGit(followUp.Path, "rev-parse HEAD");
+        (_, string remoteTip) = TryGit(followUp.Path, $"rev-parse origin/{first.Branch}");
+        localTip.Trim().Should().Be(remoteTip.Trim(),
+            "a diverged branch was rewritten on origin, and the remote tip is the pull request's truth");
+        File.ReadAllText(Path.Combine(followUp.Path, "WORK.md")).Should().Contain("folded in");
+    }
+
+    [Fact]
+    public async Task Checkout_existing_never_touches_a_worktree_holding_uncommitted_work()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(1));
+        Guid taskId = DomainId.New();
+
+        Worktree first = await _manager.CreateAsync(
+            new WorktreeRequest(_repositoryPath, "main", taskId, DomainId.New(), "Rescue my stranded work"), cts.Token);
+        File.WriteAllText(Path.Combine(first.Path, "WORK.md"), "first run\n");
+        Git(first.Path, "add -A");
+        Git(first.Path, "-c user.name=Test -c user.email=t@t commit -qm work");
+        Git(first.Path, $"push -q origin {first.Branch}");
+
+        // The branch was rewritten on origin, AND the retained worktree holds a stranded
+        // attempt's uncommitted work (the retry-rescue case). A reset here would destroy
+        // exactly what the resume came back for — uncommitted work vetoes every
+        // destructive path (PR #10 review finding).
+        string rewriter = Path.Combine(_root, $"rewriter-{Guid.NewGuid():N}");
+        Git(_root, $"clone \"{Path.Combine(_root, "origin.git")}\" \"{rewriter}\"");
+        Git(rewriter, $"checkout -q {first.Branch}");
+        File.WriteAllText(Path.Combine(rewriter, "WORK.md"), "rewritten remotely\n");
+        Git(rewriter, "add -A");
+        Git(rewriter, "-c user.name=Rev -c user.email=r@r commit -q --amend -m \"work, absorbed\"");
+        Git(rewriter, $"push -q --force origin {first.Branch}");
+
+        File.WriteAllText(Path.Combine(first.Path, "STRANDED.md"), "uncommitted rescue target\n");
+
+        Worktree followUp = await _manager.CheckoutExistingAsync(
+            new FollowUpWorktreeRequest(_repositoryPath, first.Branch, taskId, DomainId.New()), cts.Token);
+
+        File.Exists(Path.Combine(followUp.Path, "STRANDED.md")).Should().BeTrue(
+            "uncommitted work is never discarded silently, whatever origin did");
+        File.ReadAllText(Path.Combine(followUp.Path, "WORK.md")).Should().Be("first run\n",
+            "a dirty worktree is kept untouched — no reset, no fast-forward");
+    }
+
+    [Fact]
+    public async Task Checkout_existing_keeps_local_commits_that_never_reached_origin()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(1));
+        Guid taskId = DomainId.New();
+
+        Worktree first = await _manager.CreateAsync(
+            new WorktreeRequest(_repositoryPath, "main", taskId, DomainId.New(), "Strand my work"), cts.Token);
+        File.WriteAllText(Path.Combine(first.Path, "WORK.md"), "first run\n");
+        Git(first.Path, "add -A");
+        Git(first.Path, "-c user.name=Test -c user.email=t@t commit -qm work");
+        Git(first.Path, $"push -q origin {first.Branch}");
+
+        // A follow-up committed a fix but its push never landed (the 2026-08-17 stranded-
+        // work incident): the local tip is strictly ahead of origin, not diverged.
+        File.WriteAllText(Path.Combine(first.Path, "FIX.md"), "unpushed fix\n");
+        Git(first.Path, "add -A");
+        Git(first.Path, "-c user.name=Test -c user.email=t@t commit -qm fix");
+
+        Worktree followUp = await _manager.CheckoutExistingAsync(
+            new FollowUpWorktreeRequest(_repositoryPath, first.Branch, taskId, DomainId.New()), cts.Token);
+
+        File.Exists(Path.Combine(followUp.Path, "FIX.md")).Should().BeTrue(
+            "a local tip strictly ahead of origin holds unpushed work; resetting would destroy it");
+    }
+
+    [Fact]
     public async Task Delete_branch_everywhere_removes_local_remote_and_tracking_refs()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(1));

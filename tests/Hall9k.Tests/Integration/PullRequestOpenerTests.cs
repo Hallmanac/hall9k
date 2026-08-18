@@ -205,6 +205,102 @@ public sealed class PullRequestOpenerTests(PostgresFixture postgres) : IClassFix
             "follow-up worktrees are retained like first-run ones until closeout completes (log #21)");
     }
 
+    [Fact]
+    public async Task Follow_up_with_rewritten_history_force_pushes_the_rebased_branch()
+    {
+        const string pullRequestUrl = "https://github.com/x/y/pull/9";
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        using DocumentStore store = DocumentStore.For(opts =>
+        {
+            opts.Connection(postgres.ConnectionString);
+            opts.ConfigureHall9k(AutoCreate.All);
+        });
+
+        Directory.CreateDirectory(_root);
+        string originPath = Path.Combine(_root, "origin.git");
+        string repoPath = Path.Combine(_root, "repo");
+        Git(_root, $"init --bare -b main \"{originPath}\"");
+        Git(_root, $"clone \"{originPath}\" \"{repoPath}\"");
+        File.WriteAllText(Path.Combine(repoPath, "README.md"), "# force-push test\n");
+        Git(repoPath, "add -A");
+        Git(repoPath, "-c user.name=Test -c user.email=t@t commit -qm init");
+        Git(repoPath, "push -q origin main");
+
+        GitWorktreeManager worktrees = new(NullLogger<GitWorktreeManager>.Instance);
+        Guid taskId = DomainId.New();
+        Guid firstRunId = DomainId.New();
+        Worktree worktree = await worktrees.CreateAsync(
+            new WorktreeRequest(repoPath, "main", taskId, firstRunId, "Force push follow up"), cts.Token);
+        File.WriteAllText(Path.Combine(worktree.Path, "WORK.md"), "first run\n");
+        Git(worktree.Path, "add -A");
+        Git(worktree.Path, "-c user.name=Test -c user.email=t@t commit -qm \"Add WORK.md\"");
+        Git(worktree.Path, $"push -q origin {worktree.Branch}");
+
+        // The follow-up agent folded its fix into the owning commit (narrative style):
+        // the amended tip DIVERGES from origin — a plain push is rejected here, which is
+        // the 2026-08-17 stranded-work incident this path fixes.
+        File.WriteAllText(Path.Combine(worktree.Path, "WORK.md"), "first run, review fix folded in\n");
+        Git(worktree.Path, "add -A");
+        Git(worktree.Path, "-c user.name=Test -c user.email=t@t commit -q --amend -m \"Add WORK.md, absorbed\"");
+
+        Guid followUpRunId = DomainId.New();
+        Guid ownerId = DomainId.New();
+        Guid projectId = DomainId.New();
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            TaskAggregate task = new();
+            var added = TaskDecider.Add(taskId, projectId, "Force push follow up", ["fix folded into owning commit"],
+                TaskType.Chore, null, null, null, Now, ownerId);
+            task.Apply(added);
+            var firstClaim = TaskDecider.Claim(task, DomainId.New(), ownerId, firstRunId, Now);
+            task.Apply(firstClaim);
+            var completed = TaskDecider.Complete(task, firstRunId, pullRequestUrl, Now);
+            task.Apply(completed);
+            var reopened = TaskDecider.Reopen(
+                task, firstRunId, worktree.Branch, "Unresolved review comments",
+                FollowUpKind.ReviewFeedback, automatic: false, Now, ownerId);
+            task.Apply(reopened);
+            var followUpClaim = TaskDecider.Claim(task, DomainId.New(), ownerId, followUpRunId, Now);
+            task.Apply(followUpClaim);
+            session.Events.StartStream<TaskAggregate>(taskId, added, firstClaim, completed, reopened, followUpClaim);
+            session.Store(new TaskLease { Id = taskId, NodeId = followUpClaim.NodeId, LeaseGeneration = 2, HeartbeatAt = Now });
+
+            session.Events.StartStream<RunAggregate>(followUpRunId,
+                new RunDispatched(followUpRunId, taskId, followUpClaim.NodeId, ownerId, 2, DomainId.New(),
+                    worktree.Path, worktree.Branch, ExecutorMode.Subscription, Now, IsFollowUp: true),
+                new AgentSessionCompleted(followUpRunId, Now),
+                new VerificationPassed(followUpRunId, Now));
+
+            var registered = Hall9k.Domain.Features.Project.Handlers.ProjectDecider.Register(
+                projectId, ownerId, DomainId.New(), $"pr-{taskId:N}", repoPath, null, "main", Now);
+            session.Events.StartStream<Hall9k.Domain.Features.Project.ProjectAggregate>(registered.Id, registered);
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        PullRequestOpener opener = new(store, NullLogger<PullRequestOpener>.Instance);
+        await opener.OpenAsync(followUpRunId, taskId, cts.Token);
+
+        // The rewritten tip landed on origin (force-with-lease), and the run flowed
+        // through the normal follow-up pipeline instead of failing at the push.
+        (int exitCode, string remoteMessage) = TryGit(originPath, $"log -1 --format=%s {worktree.Branch}");
+        exitCode.Should().Be(0);
+        remoteMessage.Trim().Should().Be("Add WORK.md, absorbed", "origin must hold the rebased history");
+        (_, string localTip) = TryGit(worktree.Path, "rev-parse HEAD");
+        (_, string remoteTip) = TryGit(originPath, $"rev-parse {worktree.Branch}");
+        remoteTip.Trim().Should().Be(localTip.Trim());
+
+        await using IQuerySession query = store.QuerySession();
+        TaskListItem taskView = (await query.LoadAsync<TaskListItem>(taskId, cts.Token))!;
+        taskView.State.Value.Should().Be("Done", "the force-pushed follow-up completes like any other");
+        taskView.PullRequestUrl.Should().Be(pullRequestUrl);
+
+        Hall9k.Domain.Features.Run.Projections.RunDetails runView =
+            (await query.LoadAsync<Hall9k.Domain.Features.Run.Projections.RunDetails>(followUpRunId, cts.Token))!;
+        runView.State.Value.Should().Be("AwaitingReview",
+            "PullRequestUpdated appends and the closeout monitor's next sweep watches the new tip");
+        runView.PullRequestNumber.Should().Be(9);
+    }
+
     private static void Git(string workingDirectory, string arguments)
     {
         (int exitCode, string output) = TryGit(workingDirectory, arguments);
