@@ -15,7 +15,10 @@ namespace Hall9k.Daemon.Execution;
 
 /// <summary>
 /// Deterministic gates only (PLAN.md §6.5): the project's verify commands run sequentially
-/// in the run's worktree; first failure stops the line. The reviewer agent is Slice 3.
+/// in the run's worktree; first failure stops the line. Before any gate, a no-commit
+/// check fails runs whose branch carries nothing — gates on an unmodified tree pass
+/// vacuously and prove nothing (Research tasks exempt; their deliverable is the
+/// transcript). The reviewer agent is Slice 3.
 /// </summary>
 public sealed class VerificationRunner(
     IDocumentStore store,
@@ -35,6 +38,36 @@ public sealed class VerificationRunner(
         {
             logger.LogError("Cannot verify run {RunId}: run or task missing", runId);
             return false;
+        }
+
+        // Fail fast on an agent that committed nothing, before any gate runs (origin
+        // incident: task 08's agent completed all its work uncommitted; gates passed
+        // vacuously on the unmodified tree and the failure surfaced two stages late as
+        // "No commits between main and branch" at PR creation). Research tasks are
+        // exempt — their deliverable is the transcript, not commits (the one TaskType
+        // whose legitimate output is empty); every other type ships its work as commits.
+        if (project is not null && task.Type != TaskType.Research)
+        {
+            int? commits = await CountBranchCommitsAsync(run.WorktreePath, project.BaseBranch, cancellationToken);
+            if (commits == 0)
+            {
+                string reason =
+                    $"Agent produced no commits: branch '{run.Branch}' holds nothing beyond " +
+                    $"'{project.BaseBranch}'. The session ended without committing its work, so the " +
+                    "gates were not run against the unmodified tree.";
+                await FailBeforeGatesAsync(runId, taskId, reason, cancellationToken);
+                logger.LogWarning("Run {RunId} failed before the gates: {Reason}", runId, reason);
+                return false;
+            }
+
+            if (commits is null)
+            {
+                // Git is unobservable here (not a repo, unknown base ref); never guess —
+                // proceed and let the gates surface whatever is actually broken.
+                logger.LogWarning(
+                    "Run {RunId}: could not count commits on branch {Branch} against {BaseBranch}; skipping the no-commit check",
+                    runId, run.Branch, project.BaseBranch);
+            }
         }
 
         IReadOnlyList<VerifyCommand> gates = project?.VerifyCommands ?? [];
@@ -103,6 +136,75 @@ public sealed class VerificationRunner(
         return process.ExitCode == 0
             ? (true, "ok")
             : (false, $"Gate '{gate.Name}' exited {process.ExitCode}. Output: {TailOf(logFile)}");
+    }
+
+    /// <summary>
+    /// Commits the branch carries beyond the base (remote-tracking ref preferred, local
+    /// base as the no-origin fallback — the log #4 convention). Null when git cannot
+    /// answer: an unobservable count is never treated as zero.
+    /// </summary>
+    private static async Task<int?> CountBranchCommitsAsync(
+        string worktreePath, string baseBranch, CancellationToken cancellationToken)
+    {
+        foreach (string baseRef in new[] { $"origin/{baseBranch}", baseBranch })
+        {
+            (int exitCode, string output) = await RunGitAsync(
+                worktreePath, ["rev-list", "--count", $"{baseRef}..HEAD"], cancellationToken);
+            if (exitCode == 0 && int.TryParse(output.Trim(), out int count))
+            {
+                return count;
+            }
+        }
+
+        return null;
+    }
+
+    private static async Task<(int ExitCode, string StandardOutput)> RunGitAsync(
+        string workingDirectory, IReadOnlyList<string> arguments, CancellationToken cancellationToken)
+    {
+        using Process process = new();
+        process.StartInfo = new ProcessStartInfo
+        {
+            FileName = "git",
+            WorkingDirectory = workingDirectory,
+            UseShellExecute = false,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+        };
+        foreach (string argument in arguments)
+        {
+            process.StartInfo.ArgumentList.Add(argument);
+        }
+
+        try
+        {
+            process.Start();
+        }
+        catch (Exception exception) when (exception is System.ComponentModel.Win32Exception or InvalidOperationException)
+        {
+            return (-1, string.Empty);
+        }
+
+        string output = await process.StandardOutput.ReadToEndAsync(cancellationToken);
+        await process.StandardError.ReadToEndAsync(cancellationToken);
+        await process.WaitForExitAsync(cancellationToken);
+        return (process.ExitCode, output);
+    }
+
+    private async Task FailBeforeGatesAsync(Guid runId, Guid taskId, string reason, CancellationToken cancellationToken)
+    {
+        DateTimeOffset now = DateTimeOffset.UtcNow;
+        await using IDocumentSession session = store.LightweightSession();
+        session.Events.Append(runId, new Domain.Features.Run.Events.RunFailed(runId, reason, now));
+
+        TaskAggregate? task = await session.Events.AggregateStreamAsync<TaskAggregate>(taskId, token: cancellationToken);
+        if (task is not null && !task.State.IsTerminal)
+        {
+            session.Events.Append(taskId, TaskDecider.Fail(task, runId, reason, now));
+        }
+
+        session.Delete<TaskLease>(taskId);
+        await session.SaveChangesAsync(cancellationToken);
     }
 
     private async Task RecordPassAsync(Guid runId, string? note, CancellationToken cancellationToken)

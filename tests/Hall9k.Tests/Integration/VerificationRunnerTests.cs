@@ -119,6 +119,86 @@ public sealed class VerificationRunnerTests(PostgresFixture postgres) : IClassFi
         run.FailureReason.Should().Contain("timeout");
     }
 
+    [Fact]
+    public async Task Zero_commits_on_the_branch_fails_fast_before_any_gate_runs()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        using DocumentStore store = NewStore();
+        await InitGitWorktreeAsync(withTaskCommit: false, cts.Token);
+        (Guid taskId, Guid runId) = await SeedAsync(store,
+            [new VerifyCommand("never", "echo should-not-run")], cts.Token);
+
+        bool passed = await NewRunner(store).VerifyAsync(runId, taskId, cts.Token);
+
+        passed.Should().BeFalse("gates on an unmodified tree pass vacuously and prove nothing");
+        await using IQuerySession query = store.QuerySession();
+        RunDetails run = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
+        run.State.Value.Should().Be("Failed");
+        run.FailureReason.Should().Contain("produced no commits");
+        run.FailedGates.Should().BeEmpty("no gate failed — no gate ever ran");
+
+        (await query.LoadAsync<TaskListItem>(taskId, cts.Token))!.State.Value.Should().Be("Failed");
+        (await query.LoadAsync<TaskLease>(taskId, cts.Token)).Should().BeNull("the failure releases the lease");
+        File.Exists(Path.Combine(RunPaths.RunDirectory(runId), "verify-never.log"))
+            .Should().BeFalse("the failure lands before the gates, not after");
+    }
+
+    [Fact]
+    public async Task A_branch_with_commits_clears_the_no_commit_check_and_runs_its_gates()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        using DocumentStore store = NewStore();
+        await InitGitWorktreeAsync(withTaskCommit: true, cts.Token);
+        (Guid taskId, Guid runId) = await SeedAsync(store, [new VerifyCommand("truth", "true")], cts.Token);
+
+        bool passed = await NewRunner(store).VerifyAsync(runId, taskId, cts.Token);
+
+        passed.Should().BeTrue();
+        await using IQuerySession query = store.QuerySession();
+        (await query.LoadAsync<RunDetails>(runId, cts.Token))!.State.Value.Should().Be("Verifying");
+    }
+
+    [Fact]
+    public async Task A_research_task_may_legitimately_end_with_zero_commits()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        using DocumentStore store = NewStore();
+        await InitGitWorktreeAsync(withTaskCommit: false, cts.Token);
+        (Guid taskId, Guid runId) = await SeedAsync(store,
+            [new VerifyCommand("truth", "true")], cts.Token, TaskType.Research);
+
+        bool passed = await NewRunner(store).VerifyAsync(runId, taskId, cts.Token);
+
+        passed.Should().BeTrue("a research task's deliverable is its transcript, not commits");
+    }
+
+    /// <summary>
+    /// Turns the seeded worktree into a real repo: base branch `main`, task branch
+    /// checked out — with or without a commit of its own past the base.
+    /// </summary>
+    private async Task InitGitWorktreeAsync(bool withTaskCommit, CancellationToken cancellationToken)
+    {
+        Directory.CreateDirectory(_worktree);
+        string script =
+            "git init -q -b main && " +
+            "git -c user.email=t@t -c user.name=t commit --allow-empty -m init -q && " +
+            "git checkout -q -b task/verify" +
+            (withTaskCommit ? " && git -c user.email=t@t -c user.name=t commit --allow-empty -m work -q" : "");
+
+        using System.Diagnostics.Process process = new();
+        process.StartInfo = new System.Diagnostics.ProcessStartInfo
+        {
+            FileName = "/bin/sh",
+            WorkingDirectory = _worktree,
+            UseShellExecute = false,
+        };
+        process.StartInfo.ArgumentList.Add("-c");
+        process.StartInfo.ArgumentList.Add(script);
+        process.Start();
+        await process.WaitForExitAsync(cancellationToken);
+        process.ExitCode.Should().Be(0, "the test repo must seed cleanly");
+    }
+
     private DocumentStore NewStore() => DocumentStore.For(opts =>
     {
         opts.Connection(postgres.ConnectionString);
@@ -129,7 +209,8 @@ public sealed class VerificationRunnerTests(PostgresFixture postgres) : IClassFi
         new(store, Options.Create(new DaemonOptions()), NullLogger<VerificationRunner>.Instance);
 
     private async Task<(Guid TaskId, Guid RunId)> SeedAsync(
-        DocumentStore store, IReadOnlyList<VerifyCommand> gates, CancellationToken cancellationToken)
+        DocumentStore store, IReadOnlyList<VerifyCommand> gates, CancellationToken cancellationToken,
+        TaskType? taskType = null)
     {
         Directory.CreateDirectory(_worktree);
         Guid ownerId = DomainId.New();
@@ -153,7 +234,7 @@ public sealed class VerificationRunnerTests(PostgresFixture postgres) : IClassFi
             Now, ownerId));
 
         TaskAggregate task = new();
-        var added = TaskDecider.Add(taskId, projectId, "Verify me", ["gates run"], TaskType.Chore,
+        var added = TaskDecider.Add(taskId, projectId, "Verify me", ["gates run"], taskType ?? TaskType.Chore,
             null, null, null, Now, ownerId);
         task.Apply(added);
         var claimed = TaskDecider.Claim(task, DomainId.New(), ownerId, runId, Now);
