@@ -162,6 +162,22 @@ public sealed class AttentionSurfaceTests
     }
 
     [Fact]
+    public void Failed_task_ranks_just_under_needs_human_because_it_waits_for_a_decision()
+    {
+        TaskListItem failed = new()
+        {
+            Id = DomainId.New(), ProjectId = DomainId.New(), Objective = "x",
+            State = TaskState.Failed, AddedAt = Now,
+        };
+
+        StatusCommand.StatusRow row = Compose(failed, run: null);
+
+        row.Bucket.Should().Be("Failed");
+        row.Priority.Should().Be(1,
+            "Failed is a needs-human waypoint (log #27): retry, resolve, or abandon is a human's call");
+    }
+
+    [Fact]
     public void Needs_human_outranks_everything_in_priority()
     {
         TaskListItem needsHuman = new()

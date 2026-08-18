@@ -41,7 +41,9 @@ public sealed class StatusCommand : Hall9kAsyncCommand<StatusCommand.Settings>
             .OrderBy(row => row.Priority)
             .ThenByDescending(row => row.AddedAt)];
 
-        int needsHuman = rows.Count(r => r.Bucket == "NeedsHuman");
+        // Failed is a needs-human waypoint (Decisions Log #27): it waits for retry,
+        // resolve, or abandon, so it counts toward the attention surface.
+        int needsHuman = rows.Count(r => r.Bucket is "NeedsHuman" or "Failed");
         int stalled = rows.Count(r => r.Stalled);
         int awaitingReview = rows.Count(r => r.Bucket == "AwaitingReview");
         int active = rows.Count(r => r.Bucket is "Running" or "Verifying" or "UnderReview" or "Dispatched" or "Queued" or "ClosingOut");
@@ -136,11 +138,13 @@ public sealed class StatusCommand : Hall9kAsyncCommand<StatusCommand.Settings>
         int priority = bucket switch
         {
             "NeedsHuman" => 0,
+            // A failed task waits for a human decision (retry, resolve, abandon — log #27):
+            // it ranks with stalled work, right under the explicit NeedsHuman parks.
+            "Failed" => 1,
             _ when stalled => 1,
             "Running" or "Verifying" or "UnderReview" or "Dispatched" or "ClosingOut" => 2,
             "AwaitingReview" or "ChecksFailing" or "ReviewPending" => 3,
             "Queued" => 4,
-            "Failed" => 5,
             "Done" => 6,
             _ => 7,
         };
