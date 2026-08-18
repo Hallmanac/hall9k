@@ -351,8 +351,16 @@ public sealed record ReviewDispatched(   // independent reviewer spawned over th
 public sealed record ReviewCompleted(    // the verdict milestone; findings artifact:
     Guid Id,                             // review-<cycle>-findings.md in the run directory
     int Cycle,
-    ReviewVerdict Verdict,               // MergeReady | NeedsFixes | Unknown (no parseable verdict -> park)
-    DateTimeOffset CompletedAt);
+    ReviewVerdict Verdict,               // MergeReady | NeedsFixes | Unknown (no parseable verdict ->
+    DateTimeOffset CompletedAt);         //   one same-session re-prompt, then park; log #28)
+public sealed record ReviewVerdictReprompted( // verdict-less reviewer resumed ONCE in the same session
+    Guid Id,                             // (claude -p --resume, log #5) and told to conclude (log #28)
+    Guid SessionId,                      // this leg's artifact identity — never the resumed transcript's
+    Guid ResumedSessionId,
+    int Cycle,
+    int ProcessId,
+    DateTimeOffset ProcessStartedAt,
+    DateTimeOffset RepromptedAt);
 public sealed record ReviewFixDispatched( // fix session in the same worktree, findings as prompt;
     Guid Id,                             // counted against MaxAutomaticReviewFixRuns
     Guid SessionId,
@@ -366,9 +374,15 @@ public sealed record ReviewFixCompleted( // Fixed/Unknown -> gates re-run, fresh
     ReviewFixOutcome Outcome,
     DateTimeOffset CompletedAt);
 public sealed record ReviewParked(       // budget spent, dispute, or no verdict: the human owns the
-    Guid Id,                             // diff. Task stays Claimed, lease retained. -> ReviewParked
-    string Reason,
-    DateTimeOffset ParkedAt);
+    Guid Id,                             // diff. Task stays Claimed, lease retained (the expiry sweep
+    string Reason,                       // refreshes a parked lease, never requeues it — log #28).
+    DateTimeOffset ParkedAt);            // -> ReviewParked
+public sealed record ReviewParkResolved( // the human's verdict via h9k review resolve (log #28):
+    Guid Id,                             // MergeReady -> the PR opens; NeedsFixes -> fix session with
+    ReviewVerdict Verdict,               // Reason as its findings, fix budget restored (the manual
+    string? Reason,                      // grant, log #22). -> UnderReview; the daemon resumes it.
+    DateTimeOffset ResolvedAt,
+    Guid ResolvedByOwnerId);
 
 // Closeout observations (§2.2) — appended by the closeout monitor, never by agents.
 // Provider timestamps are nullable: unreported is recorded as unknown, never guessed.
