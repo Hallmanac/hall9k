@@ -1,3 +1,4 @@
+using System.ComponentModel;
 using System.Diagnostics;
 
 namespace Hall9k.Daemon.ProcessManagement;
@@ -35,12 +36,11 @@ public sealed class UnixProcessManager : IProcessManager
 
             return process;
         }
-        catch (ArgumentException)
+        catch (Exception exception) when (exception is ArgumentException or InvalidOperationException or Win32Exception)
         {
-            return null;
-        }
-        catch (InvalidOperationException)
-        {
+            // Win32Exception: StartTime is unreadable because the pid now belongs to
+            // another user's (often privileged) process — nothing the daemon spawned,
+            // so the recorded process is gone.
             return null;
         }
     }
