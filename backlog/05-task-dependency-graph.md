@@ -57,6 +57,10 @@ Design constraints:
 - Both projections (TaskListItem, TaskDetails) surface the new states and assignee;
   the daemon's queue query must remain a cheap indexed-friendly filter
   (State == Queued plus assigned owner).
+- Fast-follow, deliberately out of scope here: task attachments (IDEA-task-attachments)
+  - per-addition context files with provenance via ContextAttached events. Draft-mode
+  revision handles the task's own text; attachments handle everything gathered around
+  it. Do not fold it in; keep this task at the lifecycle.
 - Multi-node: unblocking is driven by the closeout monitor's RunCompleted append, so
   whichever node completes the dependency triggers re-evaluation. Keep the
   re-evaluation query cheap (tasks in Blocked whose BlockedBy contains the id).
