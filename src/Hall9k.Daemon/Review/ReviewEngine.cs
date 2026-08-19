@@ -269,12 +269,12 @@ public sealed class ReviewEngine(
         ReviewVerdict verdict = ReviewResultParser.ParseVerdict(findings);
         DateTimeOffset now = DateTimeOffset.UtcNow;
         await using IDocumentSession session = store.LightweightSession();
-        session.Events.Append(runId, new TokensRecorded(runId, result.InputTokens, result.OutputTokens, result.CostUsd, now));
+        session.Events.Append(runId, result.ToTokensRecorded(runId, now));
         session.Events.Append(runId, new ReviewCompleted(runId, cycle, verdict, now));
         await session.SaveChangesAsync(cancellationToken);
         logger.LogInformation(
             "Run {RunId}: review cycle {Cycle} completed — verdict {Verdict} ({Input}in/{Output}out tokens)",
-            runId, cycle, verdict == ReviewVerdict.Unknown ? "(none)" : verdict.Value, result.InputTokens, result.OutputTokens);
+            runId, cycle, verdict == ReviewVerdict.Unknown ? "(none)" : verdict.Value, result.TotalInputTokens, result.OutputTokens);
     }
 
     private async Task RecordFixResultAsync(Guid runId, int cycle, AgentResult result, CancellationToken cancellationToken)
@@ -285,12 +285,12 @@ public sealed class ReviewEngine(
         ReviewFixOutcome outcome = ReviewResultParser.ParseFixOutcome(summary);
         DateTimeOffset now = DateTimeOffset.UtcNow;
         await using IDocumentSession session = store.LightweightSession();
-        session.Events.Append(runId, new TokensRecorded(runId, result.InputTokens, result.OutputTokens, result.CostUsd, now));
+        session.Events.Append(runId, result.ToTokensRecorded(runId, now));
         session.Events.Append(runId, new ReviewFixCompleted(runId, cycle, outcome, now));
         await session.SaveChangesAsync(cancellationToken);
         logger.LogInformation(
             "Run {RunId}: fix run for cycle {Cycle} completed — outcome {Outcome} ({Input}in/{Output}out tokens)",
-            runId, cycle, outcome == ReviewFixOutcome.Unknown ? "(undeclared)" : outcome.Value, result.InputTokens, result.OutputTokens);
+            runId, cycle, outcome == ReviewFixOutcome.Unknown ? "(undeclared)" : outcome.Value, result.TotalInputTokens, result.OutputTokens);
     }
 
     /// <summary>

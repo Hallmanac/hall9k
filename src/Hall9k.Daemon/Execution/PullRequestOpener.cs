@@ -135,9 +135,10 @@ public sealed class PullRequestOpener(
             body.AppendLine(summary);
         }
 
+        long totalTokens = run.InputTokens + run.CacheReadInputTokens + run.CacheCreationInputTokens + run.OutputTokens;
         body.AppendLine();
         body.AppendLine($"---");
-        body.AppendLine($"Hall9k run `{run.Id}` · {run.InputTokens + run.OutputTokens} tokens");
+        body.AppendLine($"Hall9k run `{run.Id}` · {totalTokens} tokens");
         return body.ToString();
     }
 

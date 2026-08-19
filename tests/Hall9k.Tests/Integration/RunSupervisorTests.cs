@@ -30,8 +30,9 @@ public sealed class RunSupervisorTests(PostgresFixture postgres) : IClassFixture
 {
     private static readonly DateTimeOffset Now = new(2026, 8, 16, 12, 0, 0, TimeSpan.Zero);
 
+    // Shaped like a real cached session: nearly all input arrives as cache reads (log #30).
     private const string ResultLine =
-        """{"type":"result","subtype":"success","is_error":false,"usage":{"input_tokens":1200,"output_tokens":300},"total_cost_usd":0.0123}""";
+        """{"type":"result","subtype":"success","is_error":false,"usage":{"input_tokens":1200,"cache_read_input_tokens":840000,"cache_creation_input_tokens":21000,"output_tokens":300},"total_cost_usd":0.0123}""";
 
     private readonly string _home = SetTempHome();
 
@@ -58,8 +59,10 @@ public sealed class RunSupervisorTests(PostgresFixture postgres) : IClassFixture
         RunDetails details = await WaitForStateAsync(store, runId, "Verifying", cts.Token);
 
         details.InputTokens.Should().Be(1200);
+        details.CacheReadInputTokens.Should().Be(840_000, "cache reads are the bulk of a cached session's input");
+        details.CacheCreationInputTokens.Should().Be(21_000);
         details.OutputTokens.Should().Be(300);
-        details.CostUsd.Should().Be(0.0123m);
+        details.CostUsd.Should().Be(0.0123m, "the cost is what the result reported");
 
         await using IQuerySession query = store.QuerySession();
         var activity = await query.LoadAsync<Hall9k.Domain.Features.Run.Documents.RunActivity>(runId, cts.Token);
@@ -96,6 +99,7 @@ public sealed class RunSupervisorTests(PostgresFixture postgres) : IClassFixture
 
         RunDetails details = await WaitForStateAsync(store, runId, "Verifying", cts.Token);
         details.InputTokens.Should().Be(1200);
+        details.CacheReadInputTokens.Should().Be(840_000);
     }
 
     [Fact]
