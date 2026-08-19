@@ -191,7 +191,7 @@ public sealed class RunSupervisor(
         await using IDocumentSession session = store.LightweightSession();
 
         session.Events.Append(runId, new AgentSessionCompleted(runId, now));
-        session.Events.Append(runId, new TokensRecorded(runId, result.InputTokens, result.OutputTokens, result.CostUsd, now));
+        session.Events.Append(runId, result.ToTokensRecorded(runId, now));
 
         if (result.IsError)
         {
@@ -201,8 +201,14 @@ public sealed class RunSupervisor(
 
         await session.SaveChangesAsync(cancellationToken);
         logger.LogInformation(
-            "Run {RunId} agent session completed ({Input}in/{Output}out tokens, error: {IsError})",
-            runId, result.InputTokens, result.OutputTokens, result.IsError);
+            "Run {RunId} agent session completed ({Input} input tokens = {Fresh} fresh + {CacheRead} cache-read + {CacheWrite} cache-write, {Output} output, error: {IsError})",
+            runId,
+            result.TotalInputTokens,
+            result.InputTokens,
+            result.CacheReadInputTokens,
+            result.CacheCreationInputTokens,
+            result.OutputTokens,
+            result.IsError);
 
         // The pre-PR pipeline (log #24): gates, then the independent review loop, and
         // only a merge-ready verdict lets the pull request open.
