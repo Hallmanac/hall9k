@@ -60,7 +60,7 @@ public sealed class PullRequestOpener(
                 : ["push", "origin", run.Branch];
             await RunInWorktreeAsync(run.WorktreePath, "git", pushArguments, cancellationToken);
             (string? pullRequestUrl, int pullRequestNumber) = task.PullRequestUrl is { } existingUrl
-                ? (existingUrl, ParsePullRequestNumber(existingUrl))
+                ? (existingUrl, PullRequestUrls.ParseNumber(existingUrl))
                 : await IsGitHubOriginAsync(run.WorktreePath, cancellationToken)
                     ? await CreatePullRequestAsync(run, task, project.BaseBranch, cancellationToken)
                     : (null, 0);
@@ -113,11 +113,8 @@ public sealed class PullRequestOpener(
             .LastOrDefault(line => line.StartsWith("https://", StringComparison.Ordinal))
             ?? throw new InvalidOperationException($"gh pr create returned no URL. Output: {output}");
 
-        return (url, ParsePullRequestNumber(url));
+        return (url, PullRequestUrls.ParseNumber(url));
     }
-
-    private static int ParsePullRequestNumber(string url) =>
-        int.TryParse(url[(url.LastIndexOf('/') + 1)..], out int parsed) ? parsed : 0;
 
     private string BuildBody(RunDetails run, TaskDetails task)
     {
