@@ -1,0 +1,184 @@
+using FluentAssertions;
+using Hall9k.Daemon;
+using Hall9k.Daemon.Closeout;
+using Hall9k.Daemon.Execution;
+using Hall9k.Daemon.Review;
+using Hall9k.Daemon.Worktrees;
+using Hall9k.Domain.Features.Run;
+using Hall9k.Domain.Features.Run.Events;
+using Hall9k.Domain.Features.Tasks;
+using Hall9k.Domain.Features.Tasks.Documents;
+using Hall9k.Domain.Features.Tasks.Handlers;
+using Hall9k.Domain.Features.Tasks.Projections;
+using Hall9k.Domain.Infrastructure.Ids;
+using Hall9k.Domain.Infrastructure.Persistence;
+using Hall9k.Tests.Fakes;
+using JasperFx;
+using Marten;
+using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Options;
+using Xunit;
+
+namespace Hall9k.Tests.Integration;
+
+/// <summary>
+/// The dispatch path's last look before spawning: a requeued or reopened task whose pull
+/// request already merged closes out instead of redispatching (origin incident,
+/// 2026-08-18: after PR #11 merged, a lease-expiry requeue spawned generation 6 to
+/// rebuild the feature that was already on main).
+/// </summary>
+[Trait("Category", "RequiresDocker")]
+public sealed class RunLauncherTests(PostgresFixture postgres) : IClassFixture<PostgresFixture>
+{
+    private static readonly DateTimeOffset Now = new(2026, 8, 18, 12, 0, 0, TimeSpan.Zero);
+
+    private const string PullRequestUrl = "https://github.com/x/y/pull/11";
+
+    private sealed class MergedInspector : IPullRequestInspector
+    {
+        public int Inspections { get; private set; }
+
+        public Task<PullRequestSnapshot> InspectAsync(
+            string repositoryPath, string pullRequestUrl, int pullRequestNumber, CancellationToken cancellationToken)
+        {
+            Inspections++;
+            return Task.FromResult(new PullRequestSnapshot(
+                IsMerged: true, IsClosed: false, MergedAt: Now.AddMinutes(-30), ClosedAt: null,
+                FailingChecks: [], HasPendingChecks: false, UnresolvedCopilotThreadCount: 0,
+                ErroredCopilotReview: null));
+        }
+
+        public Task RerequestReviewAsync(
+            string repositoryPath, string pullRequestUrl, int pullRequestNumber, string reviewer,
+            CancellationToken cancellationToken) => Task.CompletedTask;
+    }
+
+    /// <summary>Refuses to prepare a workspace: closing out must never reach the checkout step.</summary>
+    private sealed class RefusingWorktreeManager : IWorktreeManager
+    {
+        public List<string> DeletedBranches { get; } = [];
+
+        public Task<Worktree> CreateAsync(WorktreeRequest request, CancellationToken cancellationToken) =>
+            throw new InvalidOperationException("A merged pull request must not get a fresh worktree.");
+
+        public Task<Worktree> CheckoutExistingAsync(FollowUpWorktreeRequest request, CancellationToken cancellationToken) =>
+            throw new InvalidOperationException("A merged pull request must not get a follow-up worktree.");
+
+        public Task RemoveAsync(string repositoryPath, string worktreePath, CancellationToken cancellationToken) =>
+            Task.CompletedTask;
+
+        public Task DeleteBranchEverywhereAsync(string repositoryPath, string branch, CancellationToken cancellationToken)
+        {
+            DeletedBranches.Add(branch);
+            return Task.CompletedTask;
+        }
+
+        public Task PruneAsync(string repositoryPath, CancellationToken cancellationToken) => Task.CompletedTask;
+    }
+
+    private sealed class RefusingExecutor : IExecutor
+    {
+        public Task<SpawnedAgent> SpawnAsync(AgentSpawnRequest request, CancellationToken cancellationToken) =>
+            throw new InvalidOperationException("A merged pull request must not spawn an agent.");
+    }
+
+    [Fact]
+    public async Task A_requeued_task_whose_pull_request_already_merged_closes_out_instead_of_redispatching()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        using DocumentStore store = DocumentStore.For(opts =>
+        {
+            opts.Connection(postgres.ConnectionString);
+            opts.ConfigureHall9k(AutoCreate.All);
+        });
+        NodeContext node = new();
+        await node.InitializeAsync(store, cts.Token);
+
+        // The incident shape: the task completed with a PR, a follow-up was queued, its
+        // generation died mid-flight, the lease expired, and the requeue reclaimed the
+        // task — while the PR quietly merged.
+        Guid taskId = DomainId.New();
+        Guid deadRunId = DomainId.New();
+        Guid nextRunId = DomainId.New();
+        Guid projectId = DomainId.New();
+        const string branch = "task/merged-already";
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            var registered = Hall9k.Domain.Features.Project.Handlers.ProjectDecider.Register(
+                projectId, node.OwnerId, DomainId.New(), $"launcher-{taskId:N}", "/tmp/launcher-repo", null, "main", Now);
+            session.Events.StartStream<Hall9k.Domain.Features.Project.ProjectAggregate>(registered.Id, registered);
+
+            TaskAggregate aggregate = new();
+            Hall9k.Domain.Features.Tasks.Events.TaskAdded added = TaskDecider.Add(
+                taskId, projectId, "Already on main", ["merged"], TaskType.Chore,
+                null, null, null, Now.AddHours(-2), node.OwnerId);
+            aggregate.Apply(added);
+            Hall9k.Domain.Features.Tasks.Events.TaskClaimed firstClaim =
+                TaskDecider.Claim(aggregate, node.NodeId, node.OwnerId, DomainId.New(), Now.AddHours(-2));
+            aggregate.Apply(firstClaim);
+            Hall9k.Domain.Features.Tasks.Events.TaskCompleted completed =
+                TaskDecider.Complete(aggregate, aggregate.CurrentRunId!.Value, PullRequestUrl, Now.AddHours(-1));
+            aggregate.Apply(completed);
+            Hall9k.Domain.Features.Tasks.Events.TaskReopened reopened = TaskDecider.Reopen(
+                aggregate, aggregate.CurrentRunId!.Value, branch,
+                "Copilot threads.", FollowUpKind.ReviewFeedback, automatic: true, Now.AddMinutes(-90), node.OwnerId);
+            aggregate.Apply(reopened);
+            Hall9k.Domain.Features.Tasks.Events.TaskClaimed deadClaim =
+                TaskDecider.Claim(aggregate, node.NodeId, node.OwnerId, deadRunId, Now.AddMinutes(-80));
+            aggregate.Apply(deadClaim);
+            Hall9k.Domain.Features.Tasks.Events.TaskRequeued requeued =
+                TaskDecider.Requeue(aggregate, RequeueReason.LeaseExpired, Now.AddMinutes(-10));
+            aggregate.Apply(requeued);
+            Hall9k.Domain.Features.Tasks.Events.TaskClaimed nextClaim =
+                TaskDecider.Claim(aggregate, node.NodeId, node.OwnerId, nextRunId, Now);
+            aggregate.Apply(nextClaim);
+            session.Events.StartStream<TaskAggregate>(
+                taskId, added, firstClaim, completed, reopened, deadClaim, requeued, nextClaim);
+            session.Store(new TaskLease
+            {
+                Id = taskId, NodeId = node.NodeId, LeaseGeneration = aggregate.LeaseGeneration, HeartbeatAt = Now,
+            });
+
+            // The dead generation's run stream: its retained worktree path is long gone.
+            session.Events.StartStream<RunAggregate>(deadRunId,
+                new RunDispatched(deadRunId, taskId, node.NodeId, node.OwnerId, 2, DomainId.New(),
+                    $"/tmp/hall9k-gone-{deadRunId:N}", branch, ExecutorMode.Subscription, Now.AddMinutes(-80),
+                    IsFollowUp: true));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        MergedInspector inspector = new();
+        RefusingWorktreeManager worktrees = new();
+        RunLauncher launcher = new(store, worktrees, new RefusingExecutor(),
+            NewSupervisor(store, node), inspector, Options.Create(new DaemonOptions()),
+            NullLogger<RunLauncher>.Instance);
+
+        await launcher.LaunchAsync(taskId, nextRunId, node.NodeId, node.OwnerId, 3, cts.Token);
+
+        inspector.Inspections.Should().Be(1, "the provider is consulted before any workspace or agent work");
+
+        await using IQuerySession query = store.QuerySession();
+        TaskDetails task = (await query.LoadAsync<TaskDetails>(taskId, cts.Token))!;
+        task.State.Value.Should().Be("Done", "merged work closes out — it is never rebuilt");
+        task.PullRequestUrl.Should().Be(PullRequestUrl);
+
+        (await query.LoadAsync<TaskLease>(taskId, cts.Token)).Should().BeNull("closing out releases the lease");
+        (await query.Events.FetchStreamStateAsync(nextRunId, cts.Token)).Should().BeNull(
+            "no run is ever dispatched for the merged pull request");
+        worktrees.DeletedBranches.Should().ContainSingle(deleted => deleted == branch,
+            "the merged branch is cleaned up like any closeout");
+    }
+
+    private static RunSupervisor NewSupervisor(DocumentStore store, NodeContext node)
+    {
+        FakeProcessManager processes = new();
+        VerificationRunner verification = new(
+            store, Options.Create(new DaemonOptions()), NullLogger<VerificationRunner>.Instance);
+        ReviewEngine review = new(
+            store, new ClaudeExecutor(NullLogger<ClaudeExecutor>.Instance), processes, verification,
+            Options.Create(new DaemonOptions()), NullLogger<ReviewEngine>.Instance);
+        return new RunSupervisor(store, node, processes, verification, review,
+            new PullRequestOpener(store, NullLogger<PullRequestOpener>.Instance),
+            NullLogger<RunSupervisor>.Instance);
+    }
+}
