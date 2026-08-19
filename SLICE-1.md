@@ -201,17 +201,38 @@ dispatched by the daemon. Manual coding after the flip is the exception and need
   3. Duplicate adoption of the same issue is rejected with a pointer to the existing task.
 - **Constraints:** no write-back to the issue in v0 beyond linking; no Jira.
 
-## S1-12 · `h9kd install` — launchd + installed mode (dispatched via Hall9k)
+## S1-12 · CLI-owned daemon lifecycle + refreshing install (dispatched via Hall9k) — **COMPLETE 2026-08-19**
 
-- **Objective:** The daemon survives reboots as a per-user launchd agent using compose-managed Postgres.
+Redesigned 2026-08-19 after colleague feedback on the first demo: a local-first tool must not
+install a permanently resident background process as a side effect. The original "launchd +
+installed mode" objective became the opt-in extra; decision log #31 records the full design.
+
+- **Objective:** The daemon is started and stopped on demand from the CLI, with start-at-login a
+  strictly opt-in extra, and install (re)publishes the binaries idempotently.
 - **Type:** feature
-- **Context:** decision log #3, #10; PLAN.md §6.1, §13 distribution tier 1.
+- **Context:** decision log #3, #10, **#31**; PLAN.md §6.1, §13 distribution tier 1.
 - **Acceptance criteria:**
-  1. `h9kd install` writes and loads a LaunchAgent plist (per-user); `h9kd uninstall` removes it;
-     `h9kd run` stays the foreground/dev mode.
-  2. Installed daemon uses docker-compose Postgres; boot race handled by existing retry/backoff.
-  3. Owner + Node registered on first install (§6.2); reinstall is idempotent.
-- **Constraints:** macOS only; installer behind the cross-platform seam for the Windows task to fill.
+  1. `h9k install` publishes h9k + h9kd release binaries to `~/.hall9k/bin`, puts h9k on the PATH
+     (the hand-made symlink became the managed path, and a real file named h9k is never clobbered,
+     at the `~/.local/bin` fallback as much as on the PATH), and registers NO background service of
+     any kind; re-running republishes and offers a running daemon the restart.
+  2. `h9k daemon start` launches h9kd detached (survives shell exit), logging to
+     `~/.hall9k/h9kd.log`; refuses politely when one is already running (single-instance guard);
+     surfaces the daemon's startup catch-up report (runs adopted, leases swept, merges observed).
+     The log stays inside an 8 MB budget while the daemon runs, not only at the next start (log #31).
+  3. `h9k daemon stop` is graceful (event appends finish; detached agents keep running for
+     adoption, under autostart as much as on demand: the LaunchAgent abandons its process group,
+     which the agents share, so bootout tears down h9kd alone); `h9k daemon status` reports
+     running/not, pid, uptime, and the log tail.
+  4. `h9k daemon autostart enable|disable` registers/unregisters a launchd LaunchAgent; stop goes
+     through launchctl while the agent owns the job, so stop always means stopped. An autostarted
+     daemon dispatches exactly like an on-demand one: the registration records the enabling shell's
+     `PATH` and `HALL9K_*` overrides, since launchd's own `PATH` finds neither `claude` nor `gh`.
+  5. `h9k status` states plainly when the daemon is not running, so a quiet queue is never a mystery.
+- **Constraints:** macOS only (Windows lifecycle + autostart deferred to S1-14 behind the
+  `IDaemonAutostart` seam, with a clear not-yet message).
+- **Commands:** `h9k install [--restart|--no-restart]` · `h9k daemon start|stop|status` ·
+  `h9k daemon autostart enable|disable` — see `h9k daemon --help`.
 
 ## S1-13 · Orchestrator CLAUDE.md + repo CLAUDE.md (dispatched via Hall9k)
 
