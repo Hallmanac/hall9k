@@ -1,4 +1,5 @@
 using Hall9k.Domain.Infrastructure.Storage;
+using System.ComponentModel;
 using System.Diagnostics;
 using FluentAssertions;
 using Hall9k.Daemon;
@@ -91,7 +92,9 @@ public sealed class RunSupervisorTests(PostgresFixture postgres) : IClassFixture
 
         // The "restarted daemon": adoption finds the live process and resumes tailing.
         RunSupervisor restarted = NewSupervisor(store, node);
-        await restarted.AdoptOrphansAsync(cts.Token);
+        OrphanAdoption adoption = await restarted.AdoptOrphansAsync(cts.Token);
+        adoption.RunsAdopted.Should().BeGreaterThanOrEqualTo(1,
+            "the catch-up report (Decisions Log #31) counts this adoption");
         // GreaterThanOrEqualTo: this node is shared across the class's tests (node identity
         // is per machine name), so adoption may also resume another test's Verifying stray
         // as a background pipeline; the tail assertions below pin down THIS run's adoption.
@@ -176,10 +179,12 @@ public sealed class RunSupervisorTests(PostgresFixture postgres) : IClassFixture
             using Process process = Process.GetProcessById(processId);
             startedAt = new DateTimeOffset(process.StartTime.ToUniversalTime(), TimeSpan.Zero);
         }
-        catch (ArgumentException)
+        catch (Exception exception) when (exception is ArgumentException or InvalidOperationException or Win32Exception)
         {
             // Very fast scripts can exit before we look them up; a nominal start time still
-            // exercises the result-on-disk paths.
+            // exercises the result-on-disk paths. Win32Exception is the zombie window the
+            // production probes already guard (UnixProcessManager, DaemonProcess): the pid
+            // still resolves after the child exits, but StartTime is no longer readable.
             startedAt = DateTimeOffset.UtcNow;
         }
 
