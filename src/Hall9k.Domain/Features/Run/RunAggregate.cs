@@ -19,7 +19,14 @@ public sealed class RunAggregate
     public string? PullRequestUrl { get; private set; }
     public int? PullRequestNumber { get; private set; }
     public long InputTokens { get; private set; }
+    /// <summary>Input served from the prompt cache — priced apart from fresh input, so counted apart.</summary>
+    public long CacheReadInputTokens { get; private set; }
+    /// <summary>Input written into the prompt cache — priced apart from fresh input, so counted apart.</summary>
+    public long CacheCreationInputTokens { get; private set; }
+    /// <summary>Every input token the run was billed for, however the cache handled it.</summary>
+    public long TotalInputTokens => InputTokens + CacheReadInputTokens + CacheCreationInputTokens;
     public long OutputTokens { get; private set; }
+    /// <summary>As reported by the agent result, never recomputed from the token counts.</summary>
     public decimal? CostUsd { get; private set; }
     public DateTimeOffset DispatchedAt { get; private set; }
     public bool IsFollowUp { get; private set; }
@@ -91,6 +98,8 @@ public sealed class RunAggregate
     public void Apply(TokensRecorded @event)
     {
         InputTokens += @event.InputTokens;
+        CacheReadInputTokens += @event.CacheReadInputTokens;
+        CacheCreationInputTokens += @event.CacheCreationInputTokens;
         OutputTokens += @event.OutputTokens;
         if (@event.CostUsd is not null)
         {

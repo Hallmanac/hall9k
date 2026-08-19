@@ -332,12 +332,17 @@ public sealed record AgentSessionCompleted( // the agent's claude process emitte
     Guid Id,                             // exited; verification gates run next. RunState -> Verifying.
     DateTimeOffset CompletedAt);
 
+// The input side stays three separate counts because each prices differently, and a cached
+// session reports nearly all of its input as cache reads (log #30). The two cache fields are
+// appended with defaults so streams written before they existed replay as zero, never as a guess.
 public sealed record TokensRecorded(     // from the stream-json result payload, per run (§6.4)
     Guid Id,
-    long InputTokens,
-    long OutputTokens,
-    decimal? CostUsd,
-    DateTimeOffset RecordedAt);
+    long InputTokens,                    // fresh, uncached prompt input
+    long OutputTokens,                   // tokens the model generated
+    decimal? CostUsd,                    // as the result reported it; the daemon never prices tokens itself
+    DateTimeOffset RecordedAt,           // when the result payload was read
+    long CacheReadInputTokens = 0,       // cache hits: where a resumed session's input actually lives
+    long CacheCreationInputTokens = 0);  // cache writes, priced differently again
 
 // Pre-PR review loop (log #24) — appended by the daemon's ReviewEngine between the gates
 // and PullRequestOpener. Full findings text is a disk artifact (log #6), never payload.

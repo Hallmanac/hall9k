@@ -28,7 +28,12 @@ public sealed class RunDetails
     /// <summary>Review re-requests issued for this run; adds to the task's CloseoutAttempts against the shared budget.</summary>
     public int ReviewRerequestCount { get; set; }
     public long InputTokens { get; set; }
+    /// <summary>Input served from the prompt cache — priced apart from fresh input, so counted apart.</summary>
+    public long CacheReadInputTokens { get; set; }
+    /// <summary>Input written into the prompt cache — priced apart from fresh input, so counted apart.</summary>
+    public long CacheCreationInputTokens { get; set; }
     public long OutputTokens { get; set; }
+    /// <summary>As reported by the agent result, never recomputed from the token counts.</summary>
     public decimal? CostUsd { get; set; }
     public List<string> FailedGates { get; set; } = [];
     /// <summary>Pre-PR review loop (log #24): which round of review the run is on, from 1.</summary>
@@ -78,6 +83,8 @@ public sealed class RunDetailsProjection : SingleStreamProjection<RunDetails, Gu
     public void Apply(IEvent<TokensRecorded> @event, RunDetails view)
     {
         view.InputTokens += @event.Data.InputTokens;
+        view.CacheReadInputTokens += @event.Data.CacheReadInputTokens;
+        view.CacheCreationInputTokens += @event.Data.CacheCreationInputTokens;
         view.OutputTokens += @event.Data.OutputTokens;
         if (@event.Data.CostUsd is not null)
         {
