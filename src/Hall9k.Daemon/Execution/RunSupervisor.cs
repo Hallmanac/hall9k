@@ -16,6 +16,13 @@ using Marten.Linq.MatchesSql;
 namespace Hall9k.Daemon.Execution;
 
 /// <summary>
+/// What startup adoption found: runs picked back up (reattached, pipeline-resumed, or
+/// park-refreshed) versus runs whose agent died without a result while the daemon was
+/// down. Feeds the catch-up report (Decisions Log #31).
+/// </summary>
+public sealed record OrphanAdoption(int RunsAdopted, int RunsFailed);
+
+/// <summary>
 /// Owns every live run: tails its stream file (cursor persisted in RunActivity, so a
 /// restarted daemon resumes where it left off), detects the terminal result event, and
 /// adopts orphans at startup — reattach before declaring anything dead (log #7).
@@ -46,8 +53,9 @@ public sealed class RunSupervisor(
     /// <summary>
     /// Startup adoption: every non-terminal run recorded for this node either gets its
     /// monitor back (process alive, or result already on disk) or is failed honestly.
+    /// Returns the tally for the startup catch-up report.
     /// </summary>
-    public async Task AdoptOrphansAsync(CancellationToken cancellationToken)
+    public async Task<OrphanAdoption> AdoptOrphansAsync(CancellationToken cancellationToken)
     {
         await using IQuerySession query = store.QuerySession();
         Guid nodeId = node.NodeId;
@@ -59,6 +67,8 @@ public sealed class RunSupervisor(
                 RunState.UnderReview.Value, RunState.ReviewParked.Value))
             .ToListAsync(cancellationToken);
 
+        int adopted = 0;
+        int failed = 0;
         foreach (RunDetails run in candidates)
         {
             if (run.State == RunState.Verifying || run.State == RunState.UnderReview)
@@ -71,6 +81,7 @@ public sealed class RunSupervisor(
                 logger.LogInformation(
                     "Adopting run {RunId} stranded in {State} — resuming the pre-PR pipeline", run.Id, run.State.Value);
                 ResumePipeline(run, cancellationToken);
+                adopted++;
                 continue;
             }
 
@@ -79,12 +90,14 @@ public sealed class RunSupervisor(
                 // Parked means waiting on a human, not abandoned: refresh the lease so
                 // the expiry sweep never requeues the task out from under its worktree.
                 await RefreshParkedLeaseAsync(run, cancellationToken);
+                adopted++;
                 continue;
             }
 
             if (run.ProcessId is null || run.ProcessStartedAt is null)
             {
                 await FailRunAsync(run.Id, run.TaskId, "Dispatched but never started before the daemon stopped.", cancellationToken);
+                failed++;
                 continue;
             }
 
@@ -96,12 +109,16 @@ public sealed class RunSupervisor(
                     "Adopting run {RunId} (pid {ProcessId}, alive: {Alive}, result on disk: {Result})",
                     run.Id, run.ProcessId, alive, resultOnDisk);
                 StartMonitoring(run.Id, run.TaskId, run.ProcessId.Value, run.ProcessStartedAt.Value, cancellationToken);
+                adopted++;
             }
             else
             {
                 await FailRunAsync(run.Id, run.TaskId, "Agent process died without a result while the daemon was down.", cancellationToken);
+                failed++;
             }
         }
+
+        return new OrphanAdoption(adopted, failed);
     }
 
     /// <summary>

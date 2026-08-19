@@ -14,6 +14,13 @@ using Microsoft.Extensions.Options;
 namespace Hall9k.Daemon.Closeout;
 
 /// <summary>
+/// One sweep's tally: runs whose pull request was actually inspected, and how many of
+/// those inspections observed the merge. Feeds the monitor's cadence logging and the
+/// startup catch-up report (Decisions Log #31).
+/// </summary>
+public sealed record CloseoutSweepResult(int RunsInspected, int MergesObserved);
+
+/// <summary>
 /// The closeout core (Decisions Log #18/#22), extracted from the monitor loop so it
 /// tests against a bare store and a fake inspector. Each node watches the
 /// awaiting-review runs it executed (RunDetails.NodeId — the task itself is Done and
@@ -34,8 +41,16 @@ public sealed class CloseoutEngine(
 {
     private readonly DaemonOptions _options = options.Value;
 
-    /// <summary>One sweep over this node's watched pull requests. Returns how many runs were inspected.</summary>
-    public async Task<int> PollOnceAsync(CancellationToken cancellationToken)
+    /// <summary>How one run's inspection ended — unpersisted in-process outcome, so an enum is fine (TASK-MODEL.md §8).</summary>
+    private enum InspectionOutcome
+    {
+        Skipped,
+        Inspected,
+        MergeObserved,
+    }
+
+    /// <summary>One sweep over this node's watched pull requests.</summary>
+    public async Task<CloseoutSweepResult> PollOnceAsync(CancellationToken cancellationToken)
     {
         IReadOnlyList<RunDetails> watched;
         await using (IQuerySession query = store.QuerySession())
@@ -52,13 +67,20 @@ public sealed class CloseoutEngine(
         }
 
         int inspected = 0;
+        int merges = 0;
         foreach (RunDetails run in watched)
         {
             try
             {
-                if (await InspectAndActAsync(run, cancellationToken))
+                switch (await InspectAndActAsync(run, cancellationToken))
                 {
-                    inspected++;
+                    case InspectionOutcome.MergeObserved:
+                        inspected++;
+                        merges++;
+                        break;
+                    case InspectionOutcome.Inspected:
+                        inspected++;
+                        break;
                 }
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -72,10 +94,10 @@ public sealed class CloseoutEngine(
             }
         }
 
-        return inspected;
+        return new CloseoutSweepResult(inspected, merges);
     }
 
-    private async Task<bool> InspectAndActAsync(RunDetails run, CancellationToken cancellationToken)
+    private async Task<InspectionOutcome> InspectAndActAsync(RunDetails run, CancellationToken cancellationToken)
     {
         await using IDocumentSession session = store.LightweightSession();
 
@@ -86,14 +108,14 @@ public sealed class CloseoutEngine(
         StreamState? fence = await session.Events.FetchStreamStateAsync(run.TaskId, cancellationToken);
         if (fence is null)
         {
-            return false;
+            return InspectionOutcome.Skipped;
         }
 
         TaskAggregate? task = await session.Events.AggregateStreamAsync<TaskAggregate>(
             run.TaskId, version: fence.Version, token: cancellationToken);
         if (task is null)
         {
-            return false;
+            return InspectionOutcome.Skipped;
         }
 
         // A newer run owns this task's PR now (a follow-up pushed after this one) — this
@@ -106,19 +128,19 @@ public sealed class CloseoutEngine(
                 await session.SaveChangesAsync(cancellationToken);
             }
 
-            return false;
+            return InspectionOutcome.Skipped;
         }
 
         // Only a Done task is in closeout; a reopened one has a follow-up in flight.
         if (task.State != TaskState.Done || task.PullRequestUrl.IsBlank() || run.PullRequestNumber is not > 0)
         {
-            return false;
+            return InspectionOutcome.Skipped;
         }
 
         ProjectDetails? project = await session.LoadAsync<ProjectDetails>(task.ProjectId, cancellationToken);
         if (project is null)
         {
-            return false;
+            return InspectionOutcome.Skipped;
         }
 
         PullRequestSnapshot snapshot = await inspector.InspectAsync(
@@ -134,7 +156,7 @@ public sealed class CloseoutEngine(
             logger.LogDebug(
                 "Task {TaskId} advanced while inspecting {Url}; deferring to the next sweep",
                 run.TaskId, run.PullRequestUrl);
-            return false;
+            return InspectionOutcome.Skipped;
         }
 
         DateTimeOffset now = DateTimeOffset.UtcNow;
@@ -142,27 +164,27 @@ public sealed class CloseoutEngine(
         if (snapshot.IsMerged)
         {
             await CompleteCloseoutAsync(session, run, project, snapshot, now, cancellationToken);
-            return true;
+            return InspectionOutcome.MergeObserved;
         }
 
         if (snapshot.IsClosed)
         {
             await RecordClosedAsync(session, run, project, snapshot, now, cancellationToken);
-            return true;
+            return InspectionOutcome.Inspected;
         }
 
         // A parked run gets merge/close detection only; dispatch decisions were handed
         // to the human when the automatic budget ran out.
         if (run.State == RunState.CloseoutParked)
         {
-            return true;
+            return InspectionOutcome.Inspected;
         }
 
         if (snapshot.HasPendingChecks)
         {
             // The CI picture is incomplete; acting now would hand a follow-up run a
             // partial failure list. The next sweep sees the full result.
-            return true;
+            return InspectionOutcome.Inspected;
         }
 
         if (snapshot.FailingChecks.Count > 0)
@@ -173,7 +195,7 @@ public sealed class CloseoutEngine(
                 FollowUpKind.FailingChecks,
                 $"CI checks failing on the pull request: {string.Join(", ", snapshot.FailingChecks)}.",
                 now, cancellationToken);
-            return true;
+            return InspectionOutcome.Inspected;
         }
 
         if (snapshot.UnresolvedCopilotThreadCount > 0)
@@ -184,7 +206,7 @@ public sealed class CloseoutEngine(
                 FollowUpKind.ReviewFeedback,
                 $"{snapshot.UnresolvedCopilotThreadCount} unresolved Copilot review thread(s) on the pull request.",
                 now, cancellationToken);
-            return true;
+            return InspectionOutcome.Inspected;
         }
 
         if (snapshot.ErroredCopilotReview is { } erroredReview)
@@ -192,10 +214,10 @@ public sealed class CloseoutEngine(
             await RerequestReviewOrParkAsync(
                 session, task, run, project.RepositoryPath, task.PullRequestUrl,
                 run.PullRequestNumber.Value, erroredReview, now, cancellationToken);
-            return true;
+            return InspectionOutcome.Inspected;
         }
 
-        return true;
+        return InspectionOutcome.Inspected;
     }
 
     /// <summary>

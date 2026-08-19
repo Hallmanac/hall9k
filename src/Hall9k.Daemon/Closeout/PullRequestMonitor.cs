@@ -21,10 +21,12 @@ public sealed class PullRequestMonitor(
         {
             try
             {
-                int inspected = await engine.PollOnceAsync(stoppingToken);
-                if (inspected > 0)
+                CloseoutSweepResult sweep = await engine.PollOnceAsync(stoppingToken);
+                if (sweep.RunsInspected > 0)
                 {
-                    logger.LogDebug("Closeout sweep inspected {Count} pull request(s)", inspected);
+                    logger.LogDebug(
+                        "Closeout sweep inspected {Count} pull request(s), observed {Merges} merge(s)",
+                        sweep.RunsInspected, sweep.MergesObserved);
                 }
             }
             catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)

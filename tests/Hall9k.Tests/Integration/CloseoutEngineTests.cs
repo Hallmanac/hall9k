@@ -90,7 +90,9 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
             Snapshot = FakeInspector.Quiet() with { IsMerged = true, MergedAt = Now.AddHours(2) },
         };
         CloseoutEngine engine = NewEngine(store, node, inspector, worktrees);
-        await engine.PollOnceAsync(cts.Token);
+        CloseoutSweepResult sweep = await engine.PollOnceAsync(cts.Token);
+        sweep.Should().Be(new CloseoutSweepResult(RunsInspected: 1, MergesObserved: 1),
+            "the sweep tally feeds the startup catch-up report (Decisions Log #31)");
 
         await using IQuerySession query = store.QuerySession();
         RunDetails run = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
