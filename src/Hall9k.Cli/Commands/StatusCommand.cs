@@ -1,3 +1,4 @@
+using Hall9k.Cli.DaemonControl;
 using Hall9k.Cli.Infrastructure;
 using Hall9k.Domain.Features.Project.Projections;
 using Hall9k.Domain.Features.Run;
@@ -19,6 +20,14 @@ public sealed class StatusCommand : Hall9kAsyncCommand<StatusCommand.Settings>
 
     protected override async Task<int> ExecuteAsync(Settings settings, CancellationToken cancellationToken)
     {
+        // A quiet queue must never be a mystery (Decisions Log #31): say up front when
+        // nothing is dispatching and what to do about it.
+        if (DaemonProcess.Probe() is null)
+        {
+            AnsiConsole.MarkupLine(
+                "[red]daemon not running[/] — tasks queue but do not dispatch; start it with [bold]h9k daemon start[/]");
+        }
+
         using var store = CliStore.Open();
         await using IQuerySession session = store.QuerySession();
 

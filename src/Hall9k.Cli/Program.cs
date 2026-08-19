@@ -49,6 +49,41 @@ app.Configure(config =>
     config.AddCommand<LogsCommand>("logs")
         .WithDescription("A run's transcript, rendered (or --raw for stream-json)");
 
+    config.AddBranch("daemon", daemon =>
+    {
+        daemon.SetDescription(
+            "The daemon's CLI-owned lifecycle (Decisions Log #30): start and stop on demand; a stopped daemon "
+            + "costs latency, never correctness — startup adopts, sweeps, and closes out whatever happened while down");
+        daemon.AddCommand<DaemonStartCommand>("start")
+            .WithDescription(
+                "Launch h9kd detached from this terminal (it survives shell exit), logging to ~/.hall9k/h9kd.log. "
+                + "Refuses politely if one is already running, then reports what startup caught up on "
+                + "(runs adopted, leases swept, merges observed).")
+            .WithExample("daemon", "start");
+        daemon.AddCommand<DaemonStopCommand>("stop")
+            .WithDescription(
+                "Stop h9kd gracefully: in-flight event appends finish, detached agents keep running and are "
+                + "adopted on the next start. Goes through launchctl when autostart owns the job, so stopped means stopped.")
+            .WithExample("daemon", "stop");
+        daemon.AddCommand<DaemonStatusCommand>("status")
+            .WithDescription("Running or not, pid, uptime, autostart posture, and the last few log lines")
+            .WithExample("daemon", "status");
+        daemon.AddBranch("autostart", autostart =>
+        {
+            autostart.SetDescription(
+                "Start-at-login, strictly opt-in — never implied by install or start (macOS launchd LaunchAgent; "
+                + "Windows arrives with S1-14)");
+            autostart.AddCommand<DaemonAutostartEnableCommand>("enable")
+                .WithDescription(
+                    "Register the launchd LaunchAgent: h9kd starts at login and restarts after a crash — "
+                    + "never after a clean stop, and h9k daemon stop always still means stopped")
+                .WithExample("daemon", "autostart", "enable");
+            autostart.AddCommand<DaemonAutostartDisableCommand>("disable")
+                .WithDescription("Fully unregister start-at-login (stops a launchd-owned daemon and says so)")
+                .WithExample("daemon", "autostart", "disable");
+        });
+    });
+
     config.AddBranch("task", task =>
     {
         task.SetDescription("Manage tasks");
