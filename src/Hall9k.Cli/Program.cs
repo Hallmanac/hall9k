@@ -49,10 +49,18 @@ app.Configure(config =>
     config.AddCommand<LogsCommand>("logs")
         .WithDescription("A run's transcript, rendered (or --raw for stream-json)");
 
+    config.AddCommand<InstallCommand>("install")
+        .WithDescription(
+            "Publish h9k + h9kd release binaries to ~/.hall9k/bin and link h9k onto the PATH. Registers no "
+            + "background service and no login item — the daemon is started on demand (h9k daemon start). "
+            + "Re-run after a merge to refresh the binaries; a running daemon is offered a restart (Decisions Log #31).")
+        .WithExample("install")
+        .WithExample("install", "--restart");
+
     config.AddBranch("daemon", daemon =>
     {
         daemon.SetDescription(
-            "The daemon's CLI-owned lifecycle (Decisions Log #30): start and stop on demand; a stopped daemon "
+            "The daemon's CLI-owned lifecycle (Decisions Log #31): start and stop on demand; a stopped daemon "
             + "costs latency, never correctness — startup adopts, sweeps, and closes out whatever happened while down");
         daemon.AddCommand<DaemonStartCommand>("start")
             .WithDescription(
