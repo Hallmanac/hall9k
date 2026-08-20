@@ -191,8 +191,8 @@ public sealed class LeaseLivenessTests(PostgresFixture postgres) : IClassFixture
         return node;
     }
 
-    private static DispatchEngine NewEngine(DocumentStore store, NodeContext node, FakeProcessManager processes) =>
-        new(store, node, processes,
+    private DispatchEngine NewEngine(DocumentStore store, NodeContext node, FakeProcessManager processes) =>
+        new(store, node, new DaemonConnection(postgres.ConnectionString), processes,
             Options.Create(new DaemonOptions { MaxConcurrentRuns = 50, LeaseTimeout = TimeSpan.FromSeconds(60) }),
             NullLogger<DispatchEngine>.Instance);
 

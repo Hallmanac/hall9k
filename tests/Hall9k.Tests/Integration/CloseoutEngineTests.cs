@@ -118,6 +118,67 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
         inspector.Inspections.Should().Be(before, "a merged PR is never polled again");
     }
 
+    /// <summary>
+    /// True closeout is the only completion signal a dependency chain accepts (Decisions Log
+    /// #34), so the node that observes the merge is the node that unblocks the dependents.
+    /// </summary>
+    [Fact]
+    public async Task An_observed_merge_unblocks_the_tasks_that_were_waiting_on_it()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        (DocumentStore store, NodeContext node, GitWorktreeManager worktrees, _, string repoPath) =
+            await SetUpAsync(cts.Token);
+        using IDisposable storeLifetime = store;
+
+        (Guid taskId, _, _) = await SeedAwaitingReviewAsync(store, node, worktrees, repoPath, cts.Token);
+        Guid dependentId = await SeedBlockedDependentAsync(store, node.OwnerId, taskId, cts.Token);
+
+        await using (IQuerySession before = store.QuerySession())
+        {
+            TaskListItem blocked = (await before.LoadAsync<TaskListItem>(dependentId, cts.Token))!;
+            blocked.State.Should().Be(TaskState.Blocked, "a Done-but-unmerged dependency still blocks");
+        }
+
+        FakeInspector inspector = new()
+        {
+            Snapshot = FakeInspector.Quiet() with { IsMerged = true, MergedAt = Now.AddHours(2) },
+        };
+        await NewEngine(store, node, inspector, worktrees).PollOnceAsync(cts.Token);
+
+        await using IQuerySession query = store.QuerySession();
+        TaskListItem dependent = (await query.LoadAsync<TaskListItem>(dependentId, cts.Token))!;
+        dependent.State.Should().Be(TaskState.Queued, "its last blocker reached true closeout");
+        dependent.UnmetDependencies.Should().BeEmpty();
+        dependent.AssignedOwnerId.Should().Be(node.OwnerId, "unblocking never changes whose work it is");
+    }
+
+    /// <summary>A published, assigned task waiting on <paramref name="dependencyId"/> and nothing else.</summary>
+    private static async Task<Guid> SeedBlockedDependentAsync(
+        DocumentStore store, Guid ownerId, Guid dependencyId, CancellationToken cancellationToken)
+    {
+        Guid dependentId = DomainId.New();
+        await using IDocumentSession session = store.LightweightSession();
+
+        TaskAggregate dependent = new();
+        Hall9k.Domain.Features.Tasks.Events.TaskAdded added = TaskDecider.Add(
+            dependentId, DomainId.New(), "Wait for the merge", ["it runs after"], TaskType.Chore,
+            null, null, null, Now, ownerId, blockedBy: [dependencyId]);
+        dependent.Apply(added);
+
+        TaskDependency blocker = new(
+            dependencyId, "Close me out", TaskState.Done, IsClosedOut: false, CurrentRunState: null, []);
+        Hall9k.Domain.Features.Tasks.Events.TaskPublished published =
+            TaskDecider.Publish(dependent, new TaskDependencyGraph([blocker]), Now, ownerId);
+        dependent.Apply(published);
+
+        Hall9k.Domain.Features.Tasks.Events.TaskAssigned assigned =
+            TaskDecider.Assign(dependent, ownerId, [blocker], Now, ownerId);
+
+        session.Events.StartStream<TaskAggregate>(dependentId, added, published, assigned);
+        await session.SaveChangesAsync(cancellationToken);
+        return dependentId;
+    }
+
     [Fact]
     public async Task Failing_checks_dispatch_an_automatic_fix_follow_up_through_the_reopen_pipeline()
     {
@@ -583,9 +644,9 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
         return (taskId, lastClaimRunId, worktree);
     }
 
-    private static CloseoutEngine NewEngine(
+    private CloseoutEngine NewEngine(
         DocumentStore store, NodeContext node, IPullRequestInspector inspector, GitWorktreeManager worktrees) =>
-        new(store, node, inspector, worktrees,
+        new(store, node, new DaemonConnection(postgres.ConnectionString), inspector, worktrees,
             Options.Create(new DaemonOptions { MaxAutomaticCloseoutRuns = 2 }),
             NullLogger<CloseoutEngine>.Instance);
 
