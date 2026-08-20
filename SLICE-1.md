@@ -5,6 +5,11 @@ worktree → agent → verify → PR → `h9k status`. Every task below is writt
 readiness-contract format (objective, context pointers, acceptance criteria, constraints,
 type) — dogfooding the contract before Hall9k can enforce it.
 
+> Superseded in one place, after the flip: `h9k task add` now creates a **Draft**, and the
+> path to the queue is `publish` (the readiness gate) then `assign` (the dispatch trigger).
+> Decisions Log #34 and TASK-MODEL.md §2.3 are the current picture; the tasks below record
+> what was built at the time and are left as written.
+
 **The flip point is after S1-10.** Once the pipeline runs end-to-end, S1-11 onward — and all
 of Slice 2 — are dispatched *through* Hall9k. The breakdown is ordered to reach that point on
 the shortest path; niceties come after the flip so the system builds them itself.
