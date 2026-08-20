@@ -88,6 +88,79 @@ public sealed class ValueObjectTests
     }
 
     [Fact]
+    public void AgentModel_serializes_as_bare_string_and_keeps_exact_model_ids()
+    {
+        JsonSerializer.Serialize(AgentModel.Opus).Should().Be("\"opus\"");
+        JsonSerializer.Deserialize<AgentModel>("\"sonnet\"").Should().Be(AgentModel.Sonnet);
+        JsonSerializer.Deserialize<AgentModel>("\"claude-opus-5[1m]\"")!.Value
+            .Should().Be("claude-opus-5[1m]", "an exact model id rides through as itself");
+        JsonSerializer.Deserialize<AgentModel>("\"default\"").Should().Be(
+            AgentModel.Unknown, "a stored payload is an input too: the word never rehydrates as a model name");
+        JsonSerializer.Deserialize<AgentModel>("\" Opus \"").Should().Be(
+            AgentModel.Opus, "an alias arrives canonicalized however it was written to storage");
+
+        AgentModel blank = (string?)null;
+        (blank == AgentModel.Unknown).Should().BeTrue();
+    }
+
+    [Fact]
+    public void AgentModel_canonicalizes_tier_aliases_and_leaves_exact_ids_alone()
+    {
+        AgentModel.FromInput(" OPUS ").Should().Be(AgentModel.Opus);
+        AgentModel.FromInput("Fable").Should().Be(AgentModel.Fable);
+        AgentModel.FromInput("Haiku").Should().Be(AgentModel.Haiku);
+        AgentModel.FromInput(" claude-Opus-5 ").Value.Should().Be(
+            "claude-Opus-5", "an exact id's casing is the provider's business, not ours");
+        AgentModel.FromInput("   ").Should().Be(AgentModel.Unknown, "blank states no preference, never a guessed model");
+    }
+
+    /// <summary>
+    /// 'default' is the one word that must not ride through as an exact id: Claude Code reads
+    /// '--model default' as "whatever this machine is configured for", so passing it on would
+    /// spawn the session on the human's personal setting and then record a model no session
+    /// ran on (Decisions Log #33).
+    /// </summary>
+    [Fact]
+    public void AgentModel_reads_default_as_no_opinion_rather_than_as_a_model_name()
+    {
+        AgentModel.FromInput("default").Should().Be(AgentModel.Unknown);
+        AgentModel.FromInput(" DEFAULT ").Should().Be(AgentModel.Unknown);
+        AgentModel.Resolve(AgentModel.FromInput("default"), AgentModel.Unknown, AgentModel.Fable, "claude-opus-5")
+            .Should().Be(AgentModel.Fable, "a cleared task override defers instead of spawning on the human's setting");
+        AgentModel.Resolve(null, null, null, "default")
+            .Value.Should().Be(AgentModel.PlatformFallback, "even a node configured with the word lands somewhere explicit");
+    }
+
+    [Fact]
+    public void AgentModel_rejects_values_that_could_not_be_handed_to_a_shell()
+    {
+        AgentModel.FromInput("claude-opus-5").IsWellFormed.Should().BeTrue();
+        AgentModel.FromInput("claude-opus-5[1m]").IsWellFormed.Should().BeTrue();
+        AgentModel.FromInput("anthropic.claude-opus-5").IsWellFormed.Should().BeTrue();
+        AgentModel.Unknown.IsWellFormed.Should().BeFalse("an absent model is never spawnable");
+
+        AgentModel.FromInput("opus; rm -rf /").IsWellFormed.Should().BeFalse();
+        AgentModel.FromInput("$(whoami)").IsWellFormed.Should().BeFalse();
+        AgentModel.FromInput("opus\"").IsWellFormed.Should().BeFalse();
+    }
+
+    [Fact]
+    public void AgentModel_resolution_prefers_the_most_specific_level_and_always_ends_explicit()
+    {
+        AgentModel.Resolve(AgentModel.Haiku, AgentModel.Sonnet, AgentModel.Fable, "claude-opus-5")
+            .Should().Be(AgentModel.Haiku, "a task override beats every other level");
+        AgentModel.Resolve(AgentModel.Unknown, AgentModel.Sonnet, AgentModel.Fable, "claude-opus-5")
+            .Should().Be(AgentModel.Sonnet, "the role default beats the project default");
+        AgentModel.Resolve(AgentModel.Unknown, AgentModel.Unknown, AgentModel.Fable, "claude-opus-5")
+            .Should().Be(AgentModel.Fable, "the project default beats the platform default");
+        AgentModel.Resolve(AgentModel.Unknown, AgentModel.Unknown, AgentModel.Unknown, "claude-opus-5")
+            .Value.Should().Be("claude-opus-5", "the chain bottoms out at the configured platform default");
+        AgentModel.Resolve(null, null, null, null)
+            .Value.Should().Be(AgentModel.PlatformFallback,
+                "even a blanked-out platform default lands somewhere explicit, never on inheritance");
+    }
+
+    [Fact]
     public void Optional_distinguishes_absent_from_explicitly_null()
     {
         Optional<string> absent = Optional<string>.None;
