@@ -7,6 +7,7 @@ using Hall9k.Domain.Features.Tasks.Events;
 using Hall9k.Domain.Features.Tasks.Handlers;
 using Hall9k.Domain.Infrastructure.Ids;
 using Hall9k.Domain.Shared.Exceptions;
+using Hall9k.Domain.Shared.ValueObjects;
 using Marten;
 using Spectre.Console;
 using Spectre.Console.Cli;
@@ -41,8 +42,19 @@ public sealed class TaskAddCommand : Hall9kAsyncCommand<TaskAddCommand.Settings>
         public string? AgentContext { get; init; }
 
         [CommandOption("--file <PATH>")]
-        [Description("Task file: frontmatter (project/type/objective/criteria) + markdown body as agent context")]
+        [Description("Task file: frontmatter (project/type/objective/criteria/model) + markdown body as agent context")]
         public string? File { get; init; }
+
+        [CommandOption("--model <MODEL>")]
+        [Description(
+            "Model this task's sessions run on, overriding every other level of the chain "
+            + "(Decisions Log #33): a tier alias (fable, opus, sonnet, haiku) or an exact model id "
+            + "(claude-opus-5, claude-sonnet-5, or a context variant like claude-opus-5[[1m]]); anything "
+            + "'claude -p --model' accepts, except the word 'default'. "
+            + "Omit it — or pass 'default', which states no override rather than naming a model — and "
+            + "the node's per-role default, then the project default, then the platform default decide. "
+            + "Reach for it when THIS task is unusual, not to express a standing preference")]
+        public string? Model { get; init; }
     }
 
     protected override async Task<int> ExecuteAsync(Settings settings, CancellationToken cancellationToken)
@@ -51,6 +63,7 @@ public sealed class TaskAddCommand : Hall9kAsyncCommand<TaskAddCommand.Settings>
         string? objective = settings.Objective;
         string? type = settings.Type;
         string? agentContext = settings.AgentContext;
+        string? model = settings.Model;
         IReadOnlyList<string> criteria = settings.Criteria;
 
         if (settings.File.IsNotBlank())
@@ -66,6 +79,7 @@ public sealed class TaskAddCommand : Hall9kAsyncCommand<TaskAddCommand.Settings>
             objective ??= file.Objective;
             type ??= file.Type;
             agentContext ??= file.AgentContext;
+            model ??= file.Model;
             criteria = criteria.Count > 0 ? criteria : file.Criteria;
         }
 
@@ -91,15 +105,19 @@ public sealed class TaskAddCommand : Hall9kAsyncCommand<TaskAddCommand.Settings>
             constraints: null,
             externalReference: null,
             DateTimeOffset.UtcNow,
-            context.OwnerId);
+            context.OwnerId,
+            AgentModel.FromInput(model));
         session.Events.StartStream<TaskAggregate>(taskId, added);
 
         await session.SaveChangesAsync(cancellationToken);
         await Doorbell.RingAsync($"task-added:{taskId}", cancellationToken);
 
+        string modelNote = added.Model is { } chosen && chosen != AgentModel.Unknown
+            ? $" [dim]on {chosen.Value.EscapeMarkup()}[/]"
+            : string.Empty;
         AnsiConsole.MarkupLine(
             $"[green]Task queued[/] in '{projectDetails.Name.EscapeMarkup()}': " +
-            $"{added.Objective.EscapeMarkup()} [dim]({taskId})[/]");
+            $"{added.Objective.EscapeMarkup()}{modelNote} [dim]({taskId})[/]");
         return ExitCodes.Ok;
     }
 

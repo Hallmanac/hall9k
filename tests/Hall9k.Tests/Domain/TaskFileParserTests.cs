@@ -37,7 +37,8 @@ public sealed class TaskFileParserTests
     {
         Action act = () => TaskFileParser.Parse("just some text");
 
-        act.Should().Throw<DomainValidationException>();
+        act.Should().Throw<DomainValidationException>()
+            .Which.Message.Should().Contain("model", "the rejection names every key the parser reads, so an author can self-correct");
     }
 
     [Fact]
@@ -46,5 +47,39 @@ public sealed class TaskFileParserTests
         TaskFileContent content = TaskFileParser.Parse("---\nobjective: x\ncriteria:\n- y\n---");
 
         content.AgentContext.Should().BeNull();
+    }
+
+    /// <summary>
+    /// The task file is how the platform queues its own work, so the model override has to
+    /// be statable there too (Decisions Log #33); absent means the chain decides.
+    /// </summary>
+    [Fact]
+    public void Reads_an_optional_model_from_the_frontmatter()
+    {
+        const string withModel = """
+            ---
+            project: hall9k
+            type: feature
+            model: claude-opus-5
+            objective: Pin the model
+            criteria:
+            - the run records what it ran on
+            ---
+
+            Body.
+            """;
+
+        TaskFileParser.Parse(withModel).Model.Should().Be("claude-opus-5");
+
+        const string withoutModel = """
+            ---
+            project: hall9k
+            objective: Let the chain decide
+            criteria:
+            - the run records what it ran on
+            ---
+            """;
+
+        TaskFileParser.Parse(withoutModel).Model.Should().BeNull("an unstated model is not a guessed one");
     }
 }

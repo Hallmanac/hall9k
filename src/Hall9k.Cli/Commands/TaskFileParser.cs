@@ -7,12 +7,13 @@ public sealed record TaskFileContent(
     string? Type,
     string? Objective,
     IReadOnlyList<string> Criteria,
-    string? AgentContext);
+    string? AgentContext,
+    string? Model);
 
 /// <summary>
 /// Parses the h9k task file format: a minimal frontmatter block (project, type, objective,
-/// criteria as "- " items) followed by a markdown body that becomes the agent context.
-/// Deliberately not YAML — four known keys don't warrant a dependency.
+/// criteria as "- " items, optional model) followed by a markdown body that becomes the
+/// agent context. Deliberately not YAML, since five known keys don't warrant a dependency.
 /// </summary>
 public static class TaskFileParser
 {
@@ -22,12 +23,14 @@ public static class TaskFileParser
         if (lines.Length == 0 || lines[0].Trim() != "---")
         {
             throw new DomainValidationException(
-                "Task files start with a '---' frontmatter block (project, type, objective, criteria).");
+                "Task files start with a '---' frontmatter block (project, type, objective, criteria, "
+                + "and an optional model).");
         }
 
         string? project = null;
         string? type = null;
         string? objective = null;
+        string? model = null;
         List<string> criteria = [];
         bool inCriteria = false;
         int bodyStart = lines.Length;
@@ -67,6 +70,9 @@ public static class TaskFileParser
                 case "objective":
                     objective = value;
                     break;
+                case "model":
+                    model = value;
+                    break;
                 case "criteria":
                     inCriteria = true;
                     break;
@@ -74,6 +80,6 @@ public static class TaskFileParser
         }
 
         string body = string.Join('\n', lines.Skip(bodyStart)).Trim();
-        return new TaskFileContent(project, type, objective, criteria, body.IsBlank() ? null : body);
+        return new TaskFileContent(project, type, objective, criteria, body.IsBlank() ? null : body, model);
     }
 }
