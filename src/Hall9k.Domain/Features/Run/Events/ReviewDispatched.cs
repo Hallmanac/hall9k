@@ -1,10 +1,13 @@
+using Hall9k.Domain.Shared.ValueObjects;
+
 namespace Hall9k.Domain.Features.Run.Events;
 
 /// <summary>
 /// An independent review agent was spawned over the run's diff before its pull request
 /// opens (Decisions Log #23): a separate headless session with fresh context — never the
 /// session that wrote the code. Cycle counts review rounds from 1. ProcessId + start time
-/// are the session's identity for adoption (the PID-reuse guard, log #2). RunState →
+/// are the session's identity for adoption (the PID-reuse guard, log #2). Model is the resolved
+/// model the reviewer was spawned on, recorded as an observed fact (log #33). RunState →
 /// UnderReview.
 /// </summary>
 public sealed record ReviewDispatched(
@@ -13,4 +16,5 @@ public sealed record ReviewDispatched(
     int Cycle,
     int ProcessId,
     DateTimeOffset ProcessStartedAt,
-    DateTimeOffset DispatchedAt);
+    DateTimeOffset DispatchedAt,
+    AgentModel? Model = null);
