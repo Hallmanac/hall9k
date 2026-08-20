@@ -12,6 +12,7 @@ using Hall9k.Domain.Features.Tasks.Handlers;
 using Hall9k.Domain.Features.Tasks.Projections;
 using Hall9k.Domain.Infrastructure.Ids;
 using Hall9k.Domain.Infrastructure.Storage;
+using Hall9k.Domain.Shared.ValueObjects;
 using Marten;
 using Microsoft.Extensions.Options;
 
@@ -186,17 +187,20 @@ public sealed class ReviewEngine(
         Guid sessionId = DomainId.New();
         string prompt = AgentPromptBuilder.BuildReview(context.Task, context.Project, context.Run.Branch, cycle);
         ExecutorMode mode = context.Run.ExecutorMode;
+        // The reviewer resolves the chain in its own right: a review session reads far more
+        // than it writes and may warrant a different tier than the build session did (log #33).
+        AgentModel model = _options.ResolveModel(AgentRole.Review, context.Task.Model, context.Project.Model);
         SpawnedAgent agent = await executor.SpawnAsync(new AgentSpawnRequest(
-            context.RunId, sessionId, context.Run.WorktreePath, prompt, mode,
+            context.RunId, sessionId, context.Run.WorktreePath, prompt, mode, model,
             context.Project.SkipPermissions, SessionArtifactName(cycle, sessionId, isFix: false)), cancellationToken);
 
         await using IDocumentSession session = store.LightweightSession();
         session.Events.Append(context.RunId, new ReviewDispatched(
-            context.RunId, sessionId, cycle, agent.ProcessId, agent.StartedAt, DateTimeOffset.UtcNow));
+            context.RunId, sessionId, cycle, agent.ProcessId, agent.StartedAt, DateTimeOffset.UtcNow, model));
         await session.SaveChangesAsync(cancellationToken);
         logger.LogInformation(
-            "Run {RunId}: review agent dispatched with fresh context (cycle {Cycle}, session {SessionId}, pid {ProcessId})",
-            context.RunId, cycle, sessionId, agent.ProcessId);
+            "Run {RunId}: review agent dispatched with fresh context (cycle {Cycle}, session {SessionId}, pid {ProcessId}, model {Model})",
+            context.RunId, cycle, sessionId, agent.ProcessId, model.Value);
     }
 
     /// <summary>
@@ -218,15 +222,19 @@ public sealed class ReviewEngine(
 
         Guid artifactId = DomainId.New();
         string prompt = AgentPromptBuilder.BuildReviewVerdictReprompt(run.ReviewCycle);
+        // The resumed session keeps the model it was dispatched on: the chain is NOT
+        // re-resolved here, or the milestone would record a model the session never ran on
+        // (log #33). An older stream that recorded no model stays honestly Unknown.
+        AgentModel model = run.LastReviewSessionModel;
         SpawnedAgent agent = await executor.SpawnAsync(new AgentSpawnRequest(
-            context.RunId, artifactId, context.Run.WorktreePath, prompt, context.Run.ExecutorMode,
+            context.RunId, artifactId, context.Run.WorktreePath, prompt, context.Run.ExecutorMode, model,
             context.Project.SkipPermissions, SessionArtifactName(run.ReviewCycle, artifactId, isFix: false),
             ResumeSessionId: resumeSessionId), cancellationToken);
 
         await using IDocumentSession session = store.LightweightSession();
         session.Events.Append(context.RunId, new ReviewVerdictReprompted(
             context.RunId, artifactId, resumeSessionId, run.ReviewCycle,
-            agent.ProcessId, agent.StartedAt, DateTimeOffset.UtcNow));
+            agent.ProcessId, agent.StartedAt, DateTimeOffset.UtcNow, model));
         await session.SaveChangesAsync(cancellationToken);
         logger.LogWarning(
             "Run {RunId}: review cycle {Cycle} ended without a verdict — session {SessionId} resumed for its one re-prompt (pid {ProcessId})",
@@ -248,17 +256,20 @@ public sealed class ReviewEngine(
         Guid sessionId = DomainId.New();
         string prompt = AgentPromptBuilder.BuildReviewFix(context.Task, context.Run.Branch, findings, cycle);
         ExecutorMode mode = context.Run.ExecutorMode;
+        // Fix is its own role: applying findings someone else reasoned out is a different
+        // shape of work from producing them, so it resolves separately (log #33).
+        AgentModel model = _options.ResolveModel(AgentRole.Fix, context.Task.Model, context.Project.Model);
         SpawnedAgent agent = await executor.SpawnAsync(new AgentSpawnRequest(
-            context.RunId, sessionId, context.Run.WorktreePath, prompt, mode,
+            context.RunId, sessionId, context.Run.WorktreePath, prompt, mode, model,
             context.Project.SkipPermissions, SessionArtifactName(cycle, sessionId, isFix: true)), cancellationToken);
 
         await using IDocumentSession session = store.LightweightSession();
         session.Events.Append(context.RunId, new ReviewFixDispatched(
-            context.RunId, sessionId, cycle, agent.ProcessId, agent.StartedAt, DateTimeOffset.UtcNow));
+            context.RunId, sessionId, cycle, agent.ProcessId, agent.StartedAt, DateTimeOffset.UtcNow, model));
         await session.SaveChangesAsync(cancellationToken);
         logger.LogInformation(
-            "Run {RunId}: fix run dispatched over the cycle-{Cycle} findings (session {SessionId}, pid {ProcessId})",
-            context.RunId, cycle, sessionId, agent.ProcessId);
+            "Run {RunId}: fix run dispatched over the cycle-{Cycle} findings (session {SessionId}, pid {ProcessId}, model {Model})",
+            context.RunId, cycle, sessionId, agent.ProcessId, model.Value);
     }
 
     private async Task RecordReviewResultAsync(Guid runId, int cycle, AgentResult result, CancellationToken cancellationToken)

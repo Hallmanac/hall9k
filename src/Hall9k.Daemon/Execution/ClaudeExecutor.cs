@@ -1,6 +1,7 @@
 using Hall9k.Domain.Infrastructure.Storage;
 using System.Diagnostics;
 using Hall9k.Domain.Features.Run;
+using Hall9k.Domain.Shared.ValueObjects;
 
 namespace Hall9k.Daemon.Execution;
 
@@ -10,11 +11,26 @@ namespace Hall9k.Daemon.Execution;
 /// --bare only in api-key mode. Stdout redirects to the run's stream file via the shell,
 /// so the CHILD owns the file handle and a daemon restart never breaks capture (log #2).
 /// Prompt and settings travel as files — no shell-escaping of user content.
+/// The model is always passed explicitly on a fresh session (log #33): the one thing the
+/// platform deliberately does NOT inherit from the owner's config, because a personal
+/// default changed on a Tuesday is not a platform decision.
 /// </summary>
 public sealed class ClaudeExecutor(ILogger<ClaudeExecutor> logger) : IExecutor
 {
     public async Task<SpawnedAgent> SpawnAsync(AgentSpawnRequest request, CancellationToken cancellationToken)
     {
+        // The chain always ends at an explicit platform default, so an unusable model here
+        // means a caller skipped it. Refuse rather than spawn and inherit silently; that
+        // silence is the origin incident (log #33). The value also lands in a /bin/sh
+        // command, so a malformed one is never quoted-and-hoped-for.
+        if (!request.Model.IsWellFormed && request.ResumeSessionId is null)
+        {
+            throw new InvalidOperationException(
+                $"Run {request.RunId} reached the executor without a usable model "
+                + $"('{request.Model.Value}'). Every spawn states its model explicitly "
+                + "(Decisions Log #33); the platform never inherits the owner's personal default.");
+        }
+
         Directory.CreateDirectory(RunPaths.RunDirectory(request.RunId));
         (string promptFile, string streamFile, string standardErrorFile) = request.SessionArtifactName is { } session
             ? (RunPaths.SessionPromptFile(request.RunId, session),
@@ -57,8 +73,8 @@ public sealed class ClaudeExecutor(ILogger<ClaudeExecutor> logger) : IExecutor
 
             DateTimeOffset startedAt = new(process.StartTime.ToUniversalTime(), TimeSpan.Zero);
             logger.LogInformation(
-                "Agent spawned for run {RunId}: pid {ProcessId}, session {SessionId}, mode {Mode}",
-                request.RunId, process.Id, request.SessionId, request.Mode.Value);
+                "Agent spawned for run {RunId}: pid {ProcessId}, session {SessionId}, mode {Mode}, model {Model}",
+                request.RunId, process.Id, request.SessionId, request.Mode.Value, request.Model.Value);
             return new SpawnedAgent(process.Id, startedAt);
         }
     }
@@ -66,7 +82,11 @@ public sealed class ClaudeExecutor(ILogger<ClaudeExecutor> logger) : IExecutor
     private static string ClaudeBinary() =>
         Environment.GetEnvironmentVariable("HALL9K_CLAUDE_PATH") ?? "claude";
 
-    private static IEnumerable<string> Arguments(AgentSpawnRequest request)
+    /// <summary>
+    /// Internal for the argument-policy tests: the flag set IS the policy (logs #1, #5, #33),
+    /// and it is worth asserting without spawning a process.
+    /// </summary>
+    internal static IEnumerable<string> Arguments(AgentSpawnRequest request)
     {
         yield return "-p";
         yield return "--output-format stream-json";
@@ -74,9 +94,18 @@ public sealed class ClaudeExecutor(ILogger<ClaudeExecutor> logger) : IExecutor
 
         // A resume re-enters the recorded session (log #5); --session-id is for fresh
         // sessions only and would conflict with it.
-        yield return request.ResumeSessionId is { } resumeSessionId
-            ? $"--resume {resumeSessionId}"
-            : $"--session-id {request.SessionId}";
+        if (request.ResumeSessionId is { } resumeSessionId)
+        {
+            // A resumed session keeps the model it started with; the request carries that
+            // model so the milestone can record it, not so it can be re-applied (log #33).
+            yield return $"--resume {resumeSessionId}";
+        }
+        else
+        {
+            yield return $"--session-id {request.SessionId}";
+            yield return $"--model \"{request.Model.Value}\"";
+        }
+
         yield return $"--settings \"{RunPaths.SettingsFile(request.RunId)}\"";
 
         if (request.Mode.UsesBareFlag)
