@@ -1,4 +1,5 @@
 using Hall9k.Domain.Features.Run.Events;
+using Hall9k.Domain.Shared.ValueObjects;
 using JasperFx.Events;
 using Marten.Events.Aggregation;
 
@@ -12,6 +13,8 @@ public sealed class RunListItem
     public Guid NodeId { get; set; }
     public int LeaseGeneration { get; set; }
     public RunState State { get; set; } = RunState.Unknown;
+    /// <summary>The model the build session was spawned on, shown by h9k task show (Decisions Log #33).</summary>
+    public AgentModel Model { get; set; } = AgentModel.Unknown;
     public string? PullRequestUrl { get; set; }
     public DateTimeOffset DispatchedAt { get; set; }
     public DateTimeOffset? FinishedAt { get; set; }
@@ -25,6 +28,7 @@ public sealed class RunListItemProjection : SingleStreamProjection<RunListItem, 
         TaskId = @event.Data.TaskId,
         NodeId = @event.Data.NodeId,
         LeaseGeneration = @event.Data.LeaseGeneration,
+        Model = @event.Data.Model ?? AgentModel.Unknown,
         State = RunState.Dispatched,
         DispatchedAt = @event.Data.DispatchedAt,
     };

@@ -1,3 +1,5 @@
+using Hall9k.Domain.Shared.ValueObjects;
+
 namespace Hall9k.Domain.Features.Run.Events;
 
 /// <summary>
@@ -10,7 +12,9 @@ namespace Hall9k.Domain.Features.Run.Events;
 /// with the original leg's files); ResumedSessionId is the review session it re-enters.
 /// Origin incident (2026-08-18): the first live review ended with "I'll deliver findings
 /// and the verdict when it completes" — a promise, not a verdict — and parked a
-/// finished, correct implementation.
+/// finished, correct implementation. Model is the model the RESUMED session already runs
+/// on, carried forward and recorded rather than re-resolved: a resumed session keeps the
+/// model it started with, so re-resolving would record a model it never used (log #33).
 /// </summary>
 public sealed record ReviewVerdictReprompted(
     Guid Id,
@@ -19,4 +23,5 @@ public sealed record ReviewVerdictReprompted(
     int Cycle,
     int ProcessId,
     DateTimeOffset ProcessStartedAt,
-    DateTimeOffset RepromptedAt);
+    DateTimeOffset RepromptedAt,
+    AgentModel? Model = null);

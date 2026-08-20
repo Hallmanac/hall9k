@@ -1,4 +1,5 @@
 using Hall9k.Domain.Features.Run.Events;
+using Hall9k.Domain.Shared.ValueObjects;
 
 namespace Hall9k.Domain.Features.Run;
 
@@ -13,6 +14,8 @@ public sealed class RunAggregate
     public string WorktreePath { get; private set; } = string.Empty;
     public string Branch { get; private set; } = string.Empty;
     public ExecutorMode ExecutorMode { get; private set; } = ExecutorMode.Unknown;
+    /// <summary>The model the build session was spawned on, as resolved at dispatch (log #33). Unknown on streams written before the chain existed.</summary>
+    public AgentModel Model { get; private set; } = AgentModel.Unknown;
     public RunState State { get; private set; } = RunState.Unknown;
     public int? ProcessId { get; private set; }
     public DateTimeOffset? ProcessStartedAt { get; private set; }
@@ -51,8 +54,12 @@ public sealed class RunAggregate
     public int? ActiveReviewProcessId { get; private set; }
     public DateTimeOffset? ActiveReviewProcessStartedAt { get; private set; }
     public bool ActiveReviewSessionIsFix { get; private set; }
+    /// <summary>The model the in-flight review or fix session was spawned on.</summary>
+    public AgentModel ActiveReviewSessionModel { get; private set; } = AgentModel.Unknown;
     /// <summary>The last completed review session — the resume target for the one verdict re-prompt.</summary>
     public Guid? LastReviewSessionId { get; private set; }
+    /// <summary>The model that session runs on; a resume keeps it, so the re-prompt records it rather than re-resolving (log #33).</summary>
+    public AgentModel LastReviewSessionModel { get; private set; } = AgentModel.Unknown;
     /// <summary>The highest cycle whose verdict re-prompt was already spent (0 = never). One re-prompt per cycle, then park.</summary>
     public int VerdictRepromptedCycle { get; private set; }
     /// <summary>Human findings from a needs-fixes park resolution, consumed by the next fix dispatch.</summary>
@@ -75,6 +82,7 @@ public sealed class RunAggregate
         WorktreePath = @event.WorktreePath;
         Branch = @event.Branch;
         ExecutorMode = @event.ExecutorMode;
+        Model = @event.Model ?? AgentModel.Unknown;
         DispatchedAt = @event.DispatchedAt;
         IsFollowUp = @event.IsFollowUp;
         State = RunState.Dispatched;
@@ -125,6 +133,7 @@ public sealed class RunAggregate
         ActiveReviewProcessId = @event.ProcessId;
         ActiveReviewProcessStartedAt = @event.ProcessStartedAt;
         ActiveReviewSessionIsFix = false;
+        ActiveReviewSessionModel = @event.Model ?? AgentModel.Unknown;
         ReviewPhase = ReviewPhase.AwaitingVerdict;
         State = RunState.UnderReview;
     }
@@ -132,7 +141,12 @@ public sealed class RunAggregate
     public void Apply(ReviewCompleted @event)
     {
         LastReviewVerdict = @event.Verdict;
-        LastReviewSessionId = ActiveReviewSessionId ?? LastReviewSessionId;
+        if (ActiveReviewSessionId is not null)
+        {
+            LastReviewSessionId = ActiveReviewSessionId;
+            LastReviewSessionModel = ActiveReviewSessionModel;
+        }
+
         ClearActiveReviewSession();
         ReviewPhase = @event.Verdict == ReviewVerdict.MergeReady
             ? ReviewPhase.MergeReady
@@ -147,6 +161,7 @@ public sealed class RunAggregate
         ActiveReviewProcessId = @event.ProcessId;
         ActiveReviewProcessStartedAt = @event.ProcessStartedAt;
         ActiveReviewSessionIsFix = false;
+        ActiveReviewSessionModel = @event.Model ?? AgentModel.Unknown;
         // The resumed transcript continues the ORIGINAL session; SessionId above is only
         // this leg's artifact identity.
         LastReviewSessionId = @event.ResumedSessionId;
@@ -162,6 +177,7 @@ public sealed class RunAggregate
         ActiveReviewProcessId = @event.ProcessId;
         ActiveReviewProcessStartedAt = @event.ProcessStartedAt;
         ActiveReviewSessionIsFix = true;
+        ActiveReviewSessionModel = @event.Model ?? AgentModel.Unknown;
         ReviewPhase = ReviewPhase.AwaitingFix;
     }
 
@@ -203,6 +219,7 @@ public sealed class RunAggregate
         ActiveReviewProcessId = null;
         ActiveReviewProcessStartedAt = null;
         ActiveReviewSessionIsFix = false;
+        ActiveReviewSessionModel = AgentModel.Unknown;
     }
 
     public void Apply(PullRequestOpened @event)

@@ -1,4 +1,5 @@
 using Hall9k.Domain.Features.Run.Events;
+using Hall9k.Domain.Shared.ValueObjects;
 using JasperFx.Events;
 using Marten.Events.Aggregation;
 
@@ -15,6 +16,10 @@ public sealed class RunDetails
     public string WorktreePath { get; set; } = string.Empty;
     public string Branch { get; set; } = string.Empty;
     public string ExecutorMode { get; set; } = string.Empty;
+    /// <summary>The model the build session was spawned on (Decisions Log #33); Unknown for runs dispatched before the chain existed.</summary>
+    public AgentModel Model { get; set; } = AgentModel.Unknown;
+    /// <summary>The model of the latest review or fix session, so a tiered configuration stays visible per leg.</summary>
+    public AgentModel ReviewModel { get; set; } = AgentModel.Unknown;
     public RunState State { get; set; } = RunState.Unknown;
     public int? ProcessId { get; set; }
     public DateTimeOffset? ProcessStartedAt { get; set; }
@@ -60,6 +65,7 @@ public sealed class RunDetailsProjection : SingleStreamProjection<RunDetails, Gu
         WorktreePath = @event.Data.WorktreePath,
         Branch = @event.Data.Branch,
         ExecutorMode = @event.Data.ExecutorMode,
+        Model = @event.Data.Model ?? AgentModel.Unknown,
         State = RunState.Dispatched,
         DispatchedAt = @event.Data.DispatchedAt,
         IsFollowUp = @event.Data.IsFollowUp,
@@ -99,8 +105,16 @@ public sealed class RunDetailsProjection : SingleStreamProjection<RunDetails, Gu
     public void Apply(IEvent<ReviewDispatched> @event, RunDetails view)
     {
         view.ReviewCycle = @event.Data.Cycle;
+        view.ReviewModel = @event.Data.Model ?? AgentModel.Unknown;
         view.State = RunState.UnderReview;
     }
+
+    public void Apply(IEvent<ReviewFixDispatched> @event, RunDetails view) =>
+        view.ReviewModel = @event.Data.Model ?? AgentModel.Unknown;
+
+    // A resumed session keeps the model it started with, so this records rather than replaces.
+    public void Apply(IEvent<ReviewVerdictReprompted> @event, RunDetails view) =>
+        view.ReviewModel = @event.Data.Model ?? AgentModel.Unknown;
 
     public void Apply(IEvent<ReviewCompleted> @event, RunDetails view) =>
         view.LastReviewVerdict = @event.Data.Verdict;
