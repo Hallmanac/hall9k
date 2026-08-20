@@ -51,6 +51,19 @@ public sealed class ProjectSetCommand : Hall9kAsyncCommand<ProjectSetCommand.Set
             + "'default' clears the project override so the platform default applies "
             + "(DaemonOptions.DefaultCommitStyle; narrative unless configured otherwise)")]
         public string? CommitStyle { get; init; }
+
+        [CommandOption("--model <MODEL>")]
+        [Description(
+            "Model every agent session on this project runs on unless a more specific level says "
+            + "otherwise (Decisions Log #33): a tier alias (fable, opus, sonnet, haiku) or an exact "
+            + "model id (claude-opus-5, claude-sonnet-5, or a context variant like claude-opus-5[[1m]]); "
+            + "anything 'claude -p --model' accepts, except the word 'default'. "
+            + "The chain is task override > the node's per-role default (DaemonOptions.ModelByRole) > "
+            + "this project value > the platform default (DaemonOptions.DefaultModel), so a node that "
+            + "sets a default for a role outranks this for that role's sessions. "
+            + "'default' is not a model name: it clears the project override so the levels above and "
+            + "below decide. An exact id is the stabler choice: an alias is re-pointed as new models ship")]
+        public string? Model { get; init; }
     }
 
     protected override async Task<int> ExecuteAsync(Settings settings, CancellationToken cancellationToken)
@@ -76,7 +89,12 @@ public sealed class ProjectSetCommand : Hall9kAsyncCommand<ProjectSetCommand.Set
             context.OwnerId,
             commitStyle: settings.CommitStyle is { } commitStyle
                 ? Optional<CommitStyle>.Of(ParseCommitStyle(commitStyle))
-                : Optional<CommitStyle>.None);
+                : Optional<CommitStyle>.None,
+            // 'default' is Unknown to AgentModel.FromInput at every level, so the clearing
+            // idiom this option documents needs no special case here (Decisions Log #33).
+            model: settings.Model is { } model
+                ? Optional<AgentModel>.Of(AgentModel.FromInput(model))
+                : Optional<AgentModel>.None);
 
         session.Events.Append(details.Id, changed);
         await session.SaveChangesAsync(cancellationToken);

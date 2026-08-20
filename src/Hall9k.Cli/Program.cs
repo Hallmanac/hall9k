@@ -33,8 +33,11 @@ app.Configure(config =>
             .WithExample("project", "show", "hall9k")
             .WithExample("project", "show", "hall");
         project.AddCommand<ProjectSetCommand>("set")
-            .WithDescription("Change project settings: verify gates, skip-permissions, links, parallelism, commit style")
-            .WithExample("project", "set", "hall9k", "--commit-style", "narrative");
+            .WithDescription(
+                "Change project settings: verify gates, skip-permissions, links, parallelism, "
+                + "commit style, agent model")
+            .WithExample("project", "set", "hall9k", "--commit-style", "narrative")
+            .WithExample("project", "set", "hall9k", "--model", "claude-opus-5");
     });
 
     config.AddBranch("pr", pullRequest =>
@@ -118,7 +121,8 @@ app.Configure(config =>
         task.AddCommand<TaskAddCommand>("add")
             .WithDescription("Queue a task (flags or --file task.md); enforces the readiness contract")
             .WithExample("task", "add", "--project", "hall9k", "--objective", "Add the project browse surface",
-                "--criteria", "h9k project list shows one row per project");
+                "--criteria", "h9k project list shows one row per project")
+            .WithExample("task", "add", "--file", "backlog/19-model-policy.md", "--model", "claude-opus-5");
         task.AddCommand<TaskListCommand>("list")
             .WithDescription(
                 "Browse tasks newest-first, across projects or filtered to one (--project) and to a state "

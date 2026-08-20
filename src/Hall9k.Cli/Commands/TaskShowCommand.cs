@@ -4,6 +4,7 @@ using Hall9k.Domain.Features.Run.Projections;
 using Hall9k.Domain.Features.Tasks;
 using Hall9k.Domain.Features.Tasks.Projections;
 using Hall9k.Domain.Shared.Exceptions;
+using Hall9k.Domain.Shared.ValueObjects;
 using Marten;
 using Spectre.Console;
 using Spectre.Console.Cli;
@@ -34,6 +35,11 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
         header.AddRow("State", TaskListCommand.StateMarkup(details.State));
         header.AddRow("Type", details.Type.Value.EscapeMarkup());
         header.AddRow("Id", $"[dim]{details.Id}[/]");
+        if (details.Model != AgentModel.Unknown)
+        {
+            header.AddRow("Model", $"{details.Model.Value.EscapeMarkup()} [dim](task override)[/]");
+        }
+
         if (details.ExternalReference.IsNotBlank())
         {
             header.AddRow("External", details.ExternalReference.EscapeMarkup());
@@ -99,13 +105,16 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
         {
             AnsiConsole.MarkupLine("\n[bold]Runs[/]");
             Table runsTable = new Table().Border(TableBorder.Rounded);
-            runsTable.AddColumns("Run", "Gen", "State", "Dispatched", "PR");
+            runsTable.AddColumns("Run", "Gen", "State", "Model", "Dispatched", "PR");
             foreach (RunListItem run in runs)
             {
+                // A run dispatched before the model chain existed recorded none; "-" says
+                // unknown rather than naming a model the run may never have used.
                 runsTable.AddRow(
                     $"[dim]{TaskListCommand.ShortId(run.Id)}[/]",
                     run.LeaseGeneration.ToString(),
                     run.State.Value.EscapeMarkup(),
+                    (run.Model == AgentModel.Unknown ? "-" : run.Model.Value).EscapeMarkup(),
                     run.DispatchedAt.ToLocalTime().ToString("g").EscapeMarkup(),
                     (run.PullRequestUrl ?? "-").EscapeMarkup());
             }
