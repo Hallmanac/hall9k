@@ -27,6 +27,22 @@ h9k task list --project <name> --state <state>   # browse tasks, newest first (-
 h9k status                   # the attention pane: what needs you, what stalled, what runs
 ```
 
+Task development and task dispatch are separate lifecycles (Decisions Log #34): `h9k task add`
+creates a **draft**, and nothing dispatches until a human publishes and assigns it.
+
+```bash
+h9k task add --project <name> --objective "…"     # creates a Draft (identity, not readiness)
+h9k task revise <id> --criteria "…" --blocked-by <id>   # Draft-only; each option replaces that part
+h9k task publish <id> [--assign]                  # the readiness gate; --assign starts it too
+h9k task assign <id> [<owner>]                    # the dispatch trigger — Queued, or Blocked on dependencies
+h9k task unassign <id>                            # back to Published (refused while leased)
+h9k task draft <id>                               # Published back to Draft, so it can be revised
+```
+
+The edit-after-the-fact path is `unassign → draft → revise → publish → assign`, each step an
+explicit act. A dependency counts as met only at true closeout (the pull request merged and the
+closeout monitor observed it); TASK-MODEL.md §2.3 has the whole picture.
+
 CI runs build + test on ubuntu and windows for every push/PR to main.
 
 ## Coding standards

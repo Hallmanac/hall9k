@@ -35,9 +35,13 @@ per house style).
 
 The §3.3 lifecycle mixes two concerns. Here they separate cleanly:
 
-- **Task state** (work lifecycle): `Queued → Claimed → NeedsHuman ⇄ Claimed → Done | Abandoned`,
+- **Task state** (work lifecycle): `Draft → Published → Queued | Blocked → Claimed → NeedsHuman ⇄ Claimed → Done | Abandoned`,
   with the failure path `Claimed → Failed → Queued | Done | Abandoned`
-  (+ `NeedsRefinement` reserved, not built in v0). Only `Done` and `Abandoned` are terminal:
+  (+ `NeedsRefinement` reserved, not built in v0). The first three states separate task
+  *development* from task *dispatch* (log #34, §2.3 below): `Draft` is being developed and is
+  invisible to the dispatcher, `Published` has passed the readiness gate and is assignable but
+  not claimable, and only an explicit human assignment produces `Queued` (dependencies all
+  closed out) or `Blocked` (some have not). Only `Done` and `Abandoned` are terminal:
   terminal states say how the story ended, and "ended in failure" is only true when a human
   walks away, which is what `Abandoned` means. `Failed` is a needs-human waypoint (log #27)
   with three human-only exits: `Failed → Queued` via `TaskRetried` (re-run, log #25),
@@ -52,7 +56,8 @@ The §3.3 lifecycle mixes two concerns. Here they separate cleanly:
   `ReviewPending`, and `CloseoutParked` record what the closeout monitor observed (see §2.2).
   `Completed` arrives only when the monitor observes the merge.)
 
-`h9k status` composes the display state: a claimed task shows its current run's state.
+`h9k status` composes the display state: a claimed task shows its current run's state, and a
+`Blocked` task whose blocker died reads as `NeedsHuman` while staying Blocked (§2.3).
 
 ### Events (`Features/Task/Events/`, one record per file)
 
@@ -68,7 +73,59 @@ public sealed record TaskAdded(
     ExternalReference? ExternalReference, // set when adopted via --from-issue (resolves open decision #9 for v0)
     DateTimeOffset AddedAt,
     Guid AddedByOwnerId,
-    AgentModel? Model = null);           // the task's model override, most specific link in the log #33 chain
+    AgentModel? Model = null,            // the task's model override, most specific link in the log #33 chain
+    IReadOnlyList<Guid>? BlockedBy = null, // dependency edges declared at creation (§2.3)
+    bool StartsAsDraft = false);         // false is the PRE-SPLIT meaning, so a stream written before log #34
+                                         // replays as it behaved: Queued on arrival, assigned to AddedByOwnerId
+                                         // (the sole owner of a v0 install). Everything h9k creates now passes true.
+
+// The lifecycle split (log #34, §2.3). Each edge is an explicit act with its own event:
+public sealed record TaskPublished(     // Draft -> Published: the readiness gate passed
+    Guid Id,
+    DateTimeOffset PublishedAt,
+    Guid PublishedByOwnerId);
+
+public sealed record TaskRevised(       // Draft-only. Optional<T> carries "left alone" vs "set to this",
+    Guid Id,                            // exactly as ProjectSettingsChanged does
+    Optional<string> Objective,
+    Optional<IReadOnlyList<string>> AcceptanceCriteria,
+    Optional<string> AgentContext,
+    Optional<IReadOnlyList<Guid>> BlockedBy,
+    Optional<TaskType> Type,
+    Optional<AgentModel> Model,
+    DateTimeOffset RevisedAt,
+    Guid RevisedByOwnerId);
+
+public sealed record TaskReturnedToDraft( // Published -> Draft: the explicit revert (refused once assigned)
+    Guid Id,
+    string? Reason,
+    DateTimeOffset ReturnedAt,
+    Guid ReturnedByOwnerId);
+
+public sealed record TaskAssigned(      // Published -> Queued (or Blocked): the dispatch trigger, always human
+    Guid Id,
+    Guid AssignedOwnerId,               // the claim guard reads this: a node claims only its owner's work
+    IReadOnlyList<Guid> UnmetDependencies, // empty => Queued; otherwise Blocked until each closes out
+    DateTimeOffset AssignedAt,
+    Guid AssignedByOwnerId);
+
+public sealed record TaskUnassigned(    // Queued/Blocked -> Published; refused while a lease is held
+    Guid Id,
+    string? Reason,
+    DateTimeOffset UnassignedAt,
+    Guid UnassignedByOwnerId);
+
+public sealed record TaskDependencyCompleted( // a blocker reached TRUE closeout (RunCompleted, §2.2)
+    Guid Id,
+    Guid DependencyId,
+    IReadOnlyList<Guid> RemainingDependencies, // empty => Blocked -> Queued
+    DateTimeOffset CompletedAt);
+
+public sealed record TaskDependencyFailed(    // a blocker can no longer close out (§2.3): the dependent holds.
+    Guid Id,                                  // The dependent STAYS Blocked and reads as NeedsHuman (§2.3)
+    Guid DependencyId,
+    string Reason,
+    DateTimeOffset ObservedAt);
 
 public sealed record TaskClaimed(
     Guid Id,
@@ -168,6 +225,11 @@ public sealed class TaskAggregate
     public FollowUpKind FollowUpKind { get; private set; } // why the pending follow-up exists (prompt selection)
     public int CloseoutAttempts { get; private set; }    // automatic reopens since the last human touch:
                                                          // the bounded closeout-retry counter (§2.2)
+    public Guid? AssignedOwnerId { get; private set; }   // set by TaskAssigned; the claim guard's other half (§2.3)
+    public IReadOnlyList<Guid> BlockedBy { get; }        // declared dependency edges
+    public IReadOnlyList<Guid> UnmetDependencies { get; }// those not yet at true closeout; empty on a Queued task
+    public IReadOnlyList<Guid> DeadDependencies { get; } // blockers observed Failed/Abandoned
+    public string? DependencyFailureReason { get; private set; }
 
     private readonly List<string> _acceptanceCriteria = [];
     public IReadOnlyList<string> AcceptanceCriteria => _acceptanceCriteria;
@@ -175,7 +237,15 @@ public sealed class TaskAggregate
     private readonly List<Guid> _runIds = [];            // accumulated from claims; run DETAILS stay a
     public IReadOnlyList<Guid> RunIds => _runIds;        // read-side query (RunListItem by TaskId)
 
-    public void Apply(TaskAdded @event) { /* Id, ProjectId, contract fields; State = Queued */ }
+    public void Apply(TaskAdded @event) { /* Id, ProjectId, contract fields, BlockedBy;
+                                             State = Draft, or the pre-split Queued + AssignedOwnerId (§2.3) */ }
+    public void Apply(TaskPublished @event) { /* State = Published */ }
+    public void Apply(TaskRevised @event) { /* only the Optional fields that HaveValue */ }
+    public void Apply(TaskReturnedToDraft @event) { /* State = Draft */ }
+    public void Apply(TaskAssigned @event) { /* AssignedOwnerId; State = UnmetDependencies.Count == 0 ? Queued : Blocked */ }
+    public void Apply(TaskUnassigned @event) { /* AssignedOwnerId = null; dependency bookkeeping cleared; State = Published */ }
+    public void Apply(TaskDependencyCompleted @event) { /* drop it from Unmet; empty => Blocked -> Queued */ }
+    public void Apply(TaskDependencyFailed @event) { /* record the dead blocker + reason; State unchanged */ }
     public void Apply(TaskClaimed @event) { /* LeaseGeneration = @event.LeaseGeneration; ClaimedByNodeId; State = Claimed */ }
     public void Apply(TaskRequeued @event) { /* ClaimedByNodeId = null; State = Queued */ }
     public void Apply(QuestionAsked @event) { /* PendingQuestionId; State = NeedsHuman */ }
@@ -264,6 +334,83 @@ parked, Done once merged (or closed). A Queued/Claimed task still carrying a PR 
 follow-up in flight: ClosingOut. A watched run that is no longer the task's current run
 is retired with `RunSuperseded` (a newer follow-up owns the PR).
 
+### 2.3 Task development vs task dispatch (log #34)
+
+Two lifecycles used to be one. Discovery produces a rough task and refines it over hours or
+days; dispatch is a human deciding *this should run now, and on whose nodes*. `TaskAdded →
+Queued` meant the daemon claimed a half-formed thought within seconds of it being written down.
+
+```
+h9k task add          ->  Draft       being developed; editable; invisible to the dispatcher
+h9k task revise       ->  Draft       objective / criteria / context / type / model / BlockedBy
+h9k task publish      ->  Published   the readiness gate; immutable; assignable, NOT claimable
+h9k task assign       ->  Queued      every dependency at true closeout
+                      or  Blocked     at least one is not
+h9k task unassign     ->  Published   refused while a lease is held
+h9k task draft        ->  Draft       refused from Queued/Blocked onward (unassign first)
+```
+
+**Where validation lives.** Creation asks only for identity — a project and an objective. The
+readiness contract (an outcome-phrased objective and at least one checkable acceptance
+criterion, PLAN.md §4) is enforced once, at Publish, as an *invariant of that state* rather
+than a toll booth at creation. Revision is Draft-only because every later state carries a
+promise editing would break: Published promises "a human may assign this at any moment and it
+satisfies the contract"; assigned promises "a node may read this at any moment", and revising a
+claimable task races the dispatcher.
+
+**The claim guard is one rule.** `task.State == Queued && task.AssignedOwnerId == node.OwnerId`.
+There is no other path to a claim, which is also what makes multi-owner projects safe when they
+arrive (backlog/IDEA-task-assignment.md): arbitrary pickup is structurally impossible rather
+than policy-forbidden. The daemon's queue query stays the cheap indexed-friendly filter it
+always was — state plus assigned owner — and dispatch order inside the ready set is unchanged:
+FIFO by `AddedAt`. Dependencies and assignment shape the ready set, not its ordering.
+
+**"Complete" means true closeout.** A `BlockedBy` edge is met only when the dependency's run
+reached `RunCompleted` — which §2.2's closeout monitor appends when it observes the merge.
+Nothing weaker counts, so Draft, Published, Queued, Claimed/Running and AwaitingReview
+dependencies all block by the same rule, and a Done task whose pull request is still open still
+blocks. Unblocking is driven from that same `RunCompleted` append, so whichever node observed
+the merge unblocks the dependents and rings the doorbell; the dispatch loop re-evaluates every
+Blocked task each cycle as the safety net (log #8: NOTIFY is a doorbell, polling is what makes
+it correct).
+
+**A blocker that dies.** A dependency dies when it can no longer reach true closeout, and there
+is more than one door out of the closeout pipeline:
+
+- it ended without one — `Failed` or `Abandoned`; or
+- it reads `Done` while the run that would have carried the merge observation has itself ended
+  without one: `h9k task resolve`'s attestation exit from `Failed` (log #27) leaves the task
+  `Done` on a failed run, a pull request closed unmerged fails the run under a `Done` task, and
+  a killed or superseded run is the same shape; or
+- it reads `Done` with no run on it at all, so there is nothing left to observe.
+
+A `Done` dependency whose run is still *in* the pipeline (`AwaitingReview`, `ChecksFailing`,
+`ReviewPending`, `CloseoutParked`) is not dead — it simply has not got there yet, and blocks.
+Whichever door it went through, the dependent stays `Blocked` with `TaskDependencyFailed`
+recording what was observed, and `h9k status` reads it as NeedsHuman — the same shape the §2.2
+closeout park uses, and for the same reason: silently unblocking would dispatch work whose
+premise died, and silence would strand it. Only the dispatch loop's sweep notices these; none
+of them append a closeout event for the merge-driven path to react to. Origin incident
+(2026-08-20): the rule first enumerated `Failed` and `Abandoned` alone, so a resolved dependency
+held its dependents in `Blocked` forever, with no reason and without reading as NeedsHuman.
+
+**Cycles.** Detection lives at Publish alone. A draft may transiently reference a cycle while a
+graph is being authored; a cycle can never become assignable, and the refusal names the cycle
+hop by hop rather than saying one exists somewhere.
+
+**Migration.** `TaskAdded.StartsAsDraft` defaults to `false` — the pre-split meaning — so a
+stream written before this decision replays exactly as it behaved: Queued on arrival and
+assigned to `AddedByOwnerId`, who is the sole owner of a v0 install. That is an observed fact
+rather than a guess at provenance, and it needs no marker document: rebuilding the projections
+is correct by construction. It does need the rebuild to actually happen. The projections are
+Inline, so a stream that stopped receiving events before the split still carries the pre-split
+document — with no `assignedOwnerId` key at all, which the claim filter reads as nobody's work.
+`TaskLifecycleProjectionBackfill` re-projects exactly those streams at daemon startup, keyed on
+the absent key, so it is idempotent and self-terminating (a current document always writes the
+key, as a value or as an explicit null). Origin incident (2026-08-20): the split first shipped
+the filter without the rebuild, and every task in the dogfooding database became permanently
+unclaimable — silently, because an unclaimable task looks exactly like an idle queue.
+
 ### Claim atomicity
 
 The daemon claims by appending `TaskClaimed` with Marten's **optimistic concurrency on the
@@ -286,8 +433,10 @@ public sealed record ExternalReference(WorkItemProvider Provider, string Referen
 // Closed-vocabulary VOs (house anatomy per §8; static instances shown, plumbing elided):
 public sealed record WorkItemProvider   // GitHub, Jira, Unknown
 public sealed record TaskType           // Feature, Bugfix, Refactor, Chore, Research, Unknown
-public sealed record TaskState          // Queued, Claimed, NeedsHuman, Done, Failed, Abandoned, Unknown
-                                        //   (+ NeedsRefinement reserved, not built in v0)
+public sealed record TaskState          // Draft, Published, Queued, Blocked, Claimed, NeedsHuman, Done, Failed,
+                                        //   Abandoned, Unknown (+ NeedsRefinement reserved, not built in v0)
+public sealed record TaskDependency     // one dependency as the lifecycle rules see it: id, objective, state,
+                                        //   and whether it reached TRUE closeout (§2.3)
 public sealed record RequeueReason      // LeaseExpired, RunFailedRetryable, HumanRequested, Unknown
 public sealed record FollowUpKind       // ReviewFeedback, FailingChecks, Unknown (§2.2 — prompt selection)
 public sealed record AgentModel         // fable | opus | sonnet | haiku aliases, or any exact model id;
