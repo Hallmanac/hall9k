@@ -26,7 +26,7 @@ public sealed class AttentionSurfaceTests
         RunListItem run = new() { Id = runId, State = RunState.Running };
         RunActivity silent = new() { Id = runId, LastActivityAt = Now.AddHours(-2) };
 
-        StatusCommand.StatusRow row = StatusCommand.Compose(
+        TaskStatusRow row = TaskStatusComposer.Compose(
             task,
             new Dictionary<Guid, RunListItem> { [runId] = run },
             new Dictionary<Guid, RunActivity> { [runId] = silent },
@@ -39,6 +39,48 @@ public sealed class AttentionSurfaceTests
     }
 
     [Fact]
+    public void A_claim_whose_run_has_not_appeared_yet_is_live_work_rather_than_a_closed_row()
+    {
+        // TaskClaimed commits in its own transaction and the run document only appears once the
+        // launcher has inspected the pull request and checked a worktree out, so every dispatch
+        // spends seconds as a claim with nothing to refine it. A daemon that dies inside that
+        // window leaves the task there for good: the lease sweep that would requeue it only runs
+        // while the daemon runs. Counting the row as Closed would drop it out of h9k status
+        // entirely, in exactly the situation an operator is looking for it.
+        TaskListItem claimed = new()
+        {
+            Id = DomainId.New(), ProjectId = DomainId.New(), Objective = "x",
+            State = TaskState.Claimed, CurrentRunId = DomainId.New(), AddedAt = Now,
+        };
+
+        TaskStatusRow row = Compose(claimed, run: null);
+
+        row.Bucket.Should().Be("Claimed");
+        row.Attention.Should().Be(AttentionBucket.Active, "the platform holds the claim, so the work is live");
+        row.Priority.Should().Be(2, "the dispatch handoff ranks with the work it is becoming");
+    }
+
+    [Theory]
+    [InlineData("Completed")]
+    [InlineData("Killed")]
+    [InlineData("Superseded")]
+    public void A_finished_run_under_a_still_claimed_task_stays_live_until_the_task_moves(string runState)
+    {
+        // The closing half of the same handoff: the run has ended but the task's own transition
+        // has not committed yet. The claim still says the platform owns the next move.
+        Guid runId = DomainId.New();
+        TaskListItem claimed = new()
+        {
+            Id = DomainId.New(), ProjectId = DomainId.New(), Objective = "x",
+            State = TaskState.Claimed, CurrentRunId = runId, AddedAt = Now,
+        };
+
+        TaskStatusRow row = Compose(claimed, new RunListItem { Id = runId, State = runState });
+
+        row.Attention.Should().Be(AttentionBucket.Active, $"a {runState} run on a claimed task is mid-handoff");
+    }
+
+    [Fact]
     public void Done_with_a_pull_request_reads_as_awaiting_review()
     {
         TaskListItem task = new()
@@ -47,12 +89,12 @@ public sealed class AttentionSurfaceTests
             State = TaskState.Done, PullRequestUrl = "https://github.com/x/y/pull/7", AddedAt = Now,
         };
 
-        StatusCommand.StatusRow row = StatusCommand.Compose(
+        TaskStatusRow row = TaskStatusComposer.Compose(
             task, new Dictionary<Guid, RunListItem>(), new Dictionary<Guid, RunActivity>(),
             new Dictionary<Guid, string>(), Now);
 
         row.Bucket.Should().Be("AwaitingReview");
-        row.PullRequest.Should().Contain("#7");
+        row.PullRequestMarkup.Should().Contain("#7");
         row.Stalled.Should().BeFalse("finished work is never stalled");
     }
 
@@ -96,13 +138,13 @@ public sealed class AttentionSurfaceTests
         };
 
         Compose(queued, run: null).Bucket.Should().Be("ClosingOut", "a reopened task's PR is being driven to completion");
-        StatusCommand.StatusRow running = Compose(claimed, new RunListItem { Id = runId, State = RunState.Running });
+        TaskStatusRow running = Compose(claimed, new RunListItem { Id = runId, State = RunState.Running });
         running.Bucket.Should().Be("ClosingOut");
         running.Priority.Should().Be(2, "an in-flight follow-up ranks with active work");
     }
 
-    private static StatusCommand.StatusRow Compose(TaskListItem task, RunListItem? run) =>
-        StatusCommand.Compose(
+    private static TaskStatusRow Compose(TaskListItem task, RunListItem? run) =>
+        TaskStatusComposer.Compose(
             task,
             run is null ? new Dictionary<Guid, RunListItem>() : new Dictionary<Guid, RunListItem> { [run.Id] = run },
             new Dictionary<Guid, RunActivity>(),
@@ -121,7 +163,7 @@ public sealed class AttentionSurfaceTests
         RunListItem run = new() { Id = runId, State = RunState.UnderReview };
         Dictionary<Guid, RunListItem> runs = new() { [runId] = run };
 
-        StatusCommand.StatusRow active = StatusCommand.Compose(
+        TaskStatusRow active = TaskStatusComposer.Compose(
             task, runs,
             new Dictionary<Guid, RunActivity> { [runId] = new() { Id = runId, LastActivityAt = Now.AddMinutes(-1) } },
             new Dictionary<Guid, string>(),
@@ -130,7 +172,7 @@ public sealed class AttentionSurfaceTests
         active.Priority.Should().Be(2, "a run under review is active work, not waiting");
         active.Stalled.Should().BeFalse();
 
-        StatusCommand.StatusRow silent = StatusCommand.Compose(
+        TaskStatusRow silent = TaskStatusComposer.Compose(
             task, runs,
             new Dictionary<Guid, RunActivity> { [runId] = new() { Id = runId, LastActivityAt = Now.AddHours(-2) } },
             new Dictionary<Guid, string>(),
@@ -170,7 +212,7 @@ public sealed class AttentionSurfaceTests
             State = TaskState.Failed, AddedAt = Now,
         };
 
-        StatusCommand.StatusRow row = Compose(failed, run: null);
+        TaskStatusRow row = Compose(failed, run: null);
 
         row.Bucket.Should().Be("Failed");
         row.Priority.Should().Be(1,
@@ -186,7 +228,7 @@ public sealed class AttentionSurfaceTests
             State = TaskState.NeedsHuman, AddedAt = Now,
         };
 
-        StatusCommand.StatusRow row = StatusCommand.Compose(
+        TaskStatusRow row = TaskStatusComposer.Compose(
             needsHuman, new Dictionary<Guid, RunListItem>(), new Dictionary<Guid, RunActivity>(),
             new Dictionary<Guid, string>(), Now);
 
