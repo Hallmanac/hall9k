@@ -75,5 +75,6 @@ public sealed class TaskRollupTests
                 ? new Dictionary<Guid, RunActivity>()
                 : new Dictionary<Guid, RunActivity> { [run.Id] = new() { Id = run.Id, LastActivityAt = silentSince.Value } },
             new Dictionary<Guid, string>(),
+            new Dictionary<Guid, string>(),
             Now);
 }

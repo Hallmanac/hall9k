@@ -31,6 +31,7 @@ public sealed class AttentionSurfaceTests
             new Dictionary<Guid, RunListItem> { [runId] = run },
             new Dictionary<Guid, RunActivity> { [runId] = silent },
             new Dictionary<Guid, string>(),
+            new Dictionary<Guid, string>(),
             Now);
 
         row.Bucket.Should().Be("Running", "the task's work state refines to the run's execution state");
@@ -91,7 +92,7 @@ public sealed class AttentionSurfaceTests
 
         TaskStatusRow row = TaskStatusComposer.Compose(
             task, new Dictionary<Guid, RunListItem>(), new Dictionary<Guid, RunActivity>(),
-            new Dictionary<Guid, string>(), Now);
+            new Dictionary<Guid, string>(), new Dictionary<Guid, string>(), Now);
 
         row.Bucket.Should().Be("AwaitingReview");
         row.PullRequestMarkup.Should().Contain("#7");
@@ -149,6 +150,7 @@ public sealed class AttentionSurfaceTests
             run is null ? new Dictionary<Guid, RunListItem>() : new Dictionary<Guid, RunListItem> { [run.Id] = run },
             new Dictionary<Guid, RunActivity>(),
             new Dictionary<Guid, string>(),
+            new Dictionary<Guid, string>(),
             Now);
 
     [Fact]
@@ -167,6 +169,7 @@ public sealed class AttentionSurfaceTests
             task, runs,
             new Dictionary<Guid, RunActivity> { [runId] = new() { Id = runId, LastActivityAt = Now.AddMinutes(-1) } },
             new Dictionary<Guid, string>(),
+            new Dictionary<Guid, string>(),
             Now);
         active.Bucket.Should().Be("UnderReview");
         active.Priority.Should().Be(2, "a run under review is active work, not waiting");
@@ -175,6 +178,7 @@ public sealed class AttentionSurfaceTests
         TaskStatusRow silent = TaskStatusComposer.Compose(
             task, runs,
             new Dictionary<Guid, RunActivity> { [runId] = new() { Id = runId, LastActivityAt = Now.AddHours(-2) } },
+            new Dictionary<Guid, string>(),
             new Dictionary<Guid, string>(),
             Now);
         silent.Stalled.Should().BeTrue("a silent review session stalls like any other live session");
@@ -230,7 +234,7 @@ public sealed class AttentionSurfaceTests
 
         TaskStatusRow row = TaskStatusComposer.Compose(
             needsHuman, new Dictionary<Guid, RunListItem>(), new Dictionary<Guid, RunActivity>(),
-            new Dictionary<Guid, string>(), Now);
+            new Dictionary<Guid, string>(), new Dictionary<Guid, string>(), Now);
 
         row.Priority.Should().Be(0);
     }

@@ -20,6 +20,36 @@ public sealed class TaskBrowseTests
 {
     private static readonly DateTimeOffset Now = new(2026, 8, 20, 12, 0, 0, TimeSpan.Zero);
 
+    /// <summary>
+    /// The --help tree is a first-class interface (AGENTS.md), so every group --state accepts
+    /// has to be discoverable from it. Origin incident (2026-08-20): the lifecycle split added
+    /// blocked, ready and draft to the filter and left the help text listing the pre-split
+    /// seven, so an agent looking for its drafts read --help and concluded there was no way.
+    /// </summary>
+    [Fact]
+    public void Every_attention_group_state_accepts_is_named_in_the_state_help_text()
+    {
+        string help = HelpFor(nameof(TaskListCommand.Settings.State));
+        string[] groups = [.. TaskStateFilter.AttentionSpelling.Split(", ")];
+
+        groups.Should().HaveCount(Enum.GetValues<AttentionBucket>().Length,
+            "one spelling per group — the vocabulary and the help text are the same string");
+
+        foreach (string group in groups)
+        {
+            TaskStateFilter.Validate(group);
+            help.Should().Contain(group);
+        }
+    }
+
+    private static string HelpFor(string property) =>
+        typeof(TaskListCommand.Settings)
+            .GetProperty(property)!
+            .GetCustomAttributes(typeof(System.ComponentModel.DescriptionAttribute), inherit: false)
+            .Cast<System.ComponentModel.DescriptionAttribute>()
+            .Single()
+            .Description;
+
     [Fact]
     public void An_attention_word_selects_the_whole_group_and_an_exact_state_selects_one_bucket()
     {
@@ -180,6 +210,7 @@ public sealed class TaskBrowseTests
             run is null || silentSince is null
                 ? new Dictionary<Guid, RunActivity>()
                 : new Dictionary<Guid, RunActivity> { [run.Id] = new() { Id = run.Id, LastActivityAt = silentSince.Value } },
+            new Dictionary<Guid, string>(),
             new Dictionary<Guid, string>(),
             Now);
 }

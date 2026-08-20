@@ -75,6 +75,25 @@ public sealed class TaskTableLayoutTests
         lines.Should().HaveCount(rows.Count, "a pane that scrolls has stopped being glanceable");
     }
 
+    /// <summary>
+    /// The attention pane names the assignee (Decisions Log #34) and still fits one line per
+    /// task: it is borderless, so it has the width to spend. The browse table deliberately does
+    /// not carry the column — six fixed columns already put the objective near its floor there,
+    /// and a seventh would wrap every long row to say what one owner already knows.
+    /// </summary>
+    [Theory]
+    [MemberData(nameof(Widths))]
+    public void The_attention_pane_still_fits_one_line_per_task_once_rows_carry_an_assignee(int width)
+    {
+        IReadOnlyList<TaskStatusRow> rows = [.. Rows().Select(row => row with { Assignee = "Brian Hall" })];
+
+        Render(StatusCommand.SectionTable(rows, width, Now), width).Should().HaveCount(rows.Count);
+        string.Join("\n", Render(StatusCommand.SectionTable(rows, width, Now), width))
+            .Should().Contain("Brian Hall");
+        string.Join("\n", Render(TaskListCommand.Rows(rows, scoped: false, width, Now), width))
+            .Should().NotContain("Brian Hall", "the browse table spends its width on the objective");
+    }
+
     [Fact]
     public void A_wider_console_shows_more_of_the_objective_rather_than_the_same_truncation()
     {
@@ -166,5 +185,6 @@ public sealed class TaskTableLayoutTests
                 ? new Dictionary<Guid, RunActivity>()
                 : new Dictionary<Guid, RunActivity> { [run.Id] = new() { Id = run.Id, LastActivityAt = silentSince.Value } },
             new Dictionary<Guid, string> { [task.ProjectId] = "hall9k-platform" },
+            new Dictionary<Guid, string>(),
             Now);
 }
