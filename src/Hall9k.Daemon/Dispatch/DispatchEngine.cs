@@ -194,8 +194,10 @@ public sealed class DispatchEngine(
     }
 
     /// <summary>
-    /// Claim queued tasks up to the concurrency cap. The claim is the lock: appends race
-    /// on the stream version and the database picks the winner (TASK-MODEL.md §2).
+    /// Claim this owner's queued tasks up to the concurrency cap. The claim is the lock:
+    /// appends race on the stream version and the database picks the winner (TASK-MODEL.md §2).
+    /// Draft, Published and Blocked tasks are structurally invisible here — a task becomes
+    /// claimable only through an explicit human assignment (Decisions Log #34).
     /// </summary>
     public async Task<IReadOnlyList<ClaimedWork>> ClaimEligibleAsync(CancellationToken cancellationToken)
     {
@@ -211,8 +213,14 @@ public sealed class DispatchEngine(
             return [];
         }
 
+        // The whole claim rule, as one indexed-friendly filter (Decisions Log #34): Queued
+        // means a human assigned it and every dependency has closed out, and the owner match
+        // means those were this node's owner's decisions. Ordering is untouched — FIFO by
+        // AddedAt among the ready set; dependencies and assignment shape that set, not its order.
+        Guid ownerId = node.OwnerId;
         IReadOnlyList<TaskListItem> queued = await session.Query<TaskListItem>()
             .Where(t => t.MatchesSql("d.data ->> 'state' = ?", TaskState.Queued.Value))
+            .Where(t => t.AssignedOwnerId == ownerId)
             .OrderBy(t => t.AddedAt)
             .Take(capacity)
             .ToListAsync(cancellationToken);
@@ -235,7 +243,7 @@ public sealed class DispatchEngine(
 
         StreamState? state = await session.Events.FetchStreamStateAsync(taskId, cancellationToken);
         TaskAggregate? task = await session.Events.AggregateStreamAsync<TaskAggregate>(taskId, token: cancellationToken);
-        if (state is null || task is null || task.State != TaskState.Queued)
+        if (state is null || task is null || task.State != TaskState.Queued || task.AssignedOwnerId != node.OwnerId)
         {
             return null;
         }

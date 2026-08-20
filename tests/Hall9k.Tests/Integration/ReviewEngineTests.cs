@@ -22,6 +22,8 @@ using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using Xunit;
 
+using Hall9k.Tests.Fakes;
+
 namespace Hall9k.Tests.Integration;
 
 /// <summary>
@@ -424,11 +426,12 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
         session.Events.StartStream<Hall9k.Domain.Features.Project.ProjectAggregate>(registered.Id, registered);
 
         TaskAggregate task = new();
-        var added = TaskDecider.Add(taskId, projectId, "Review me before the PR", ["reviewed"],
-            TaskType.Chore, null, null, null, Now, node.OwnerId);
-        task.Apply(added);
+        (task, object[] lifecycle) = TaskSeed.Start(
+            TaskDecider.Add(taskId, projectId, "Review me before the PR", ["reviewed"],
+                TaskType.Chore, null, null, null, Now, node.OwnerId),
+            node.OwnerId, Now);
         var claimed = TaskDecider.Claim(task, node.NodeId, node.OwnerId, runId, Now);
-        session.Events.StartStream<TaskAggregate>(taskId, added, claimed);
+        session.Events.StartStream<TaskAggregate>(taskId, [.. lifecycle, claimed]);
         session.Store(new TaskLease { Id = taskId, NodeId = node.NodeId, LeaseGeneration = 1, HeartbeatAt = Now });
 
         session.Events.StartStream<RunAggregate>(runId,

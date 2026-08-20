@@ -113,11 +113,11 @@ public sealed class RunLauncherTests(PostgresFixture postgres) : IClassFixture<P
                 projectId, node.OwnerId, DomainId.New(), $"launcher-{taskId:N}", "/tmp/launcher-repo", null, "main", Now);
             session.Events.StartStream<Hall9k.Domain.Features.Project.ProjectAggregate>(registered.Id, registered);
 
-            TaskAggregate aggregate = new();
-            Hall9k.Domain.Features.Tasks.Events.TaskAdded added = TaskDecider.Add(
-                taskId, projectId, "Already on main", ["merged"], TaskType.Chore,
-                null, null, null, Now.AddHours(-2), node.OwnerId);
-            aggregate.Apply(added);
+            (TaskAggregate aggregate, object[] lifecycle) = TaskSeed.Start(
+                TaskDecider.Add(
+                    taskId, projectId, "Already on main", ["merged"], TaskType.Chore,
+                    null, null, null, Now.AddHours(-2), node.OwnerId),
+                node.OwnerId, Now.AddHours(-2));
             Hall9k.Domain.Features.Tasks.Events.TaskClaimed firstClaim =
                 TaskDecider.Claim(aggregate, node.NodeId, node.OwnerId, DomainId.New(), Now.AddHours(-2));
             aggregate.Apply(firstClaim);
@@ -137,8 +137,8 @@ public sealed class RunLauncherTests(PostgresFixture postgres) : IClassFixture<P
             Hall9k.Domain.Features.Tasks.Events.TaskClaimed nextClaim =
                 TaskDecider.Claim(aggregate, node.NodeId, node.OwnerId, nextRunId, Now);
             aggregate.Apply(nextClaim);
-            session.Events.StartStream<TaskAggregate>(
-                taskId, added, firstClaim, completed, reopened, deadClaim, requeued, nextClaim);
+            session.Events.StartStream<TaskAggregate>(taskId,
+                [.. lifecycle, firstClaim, completed, reopened, deadClaim, requeued, nextClaim]);
             session.Store(new TaskLease
             {
                 Id = taskId, NodeId = node.NodeId, LeaseGeneration = aggregate.LeaseGeneration, HeartbeatAt = Now,
@@ -247,14 +247,14 @@ public sealed class RunLauncherTests(PostgresFixture postgres) : IClassFixture<P
                 model: Optional<AgentModel>.Of(AgentModel.Sonnet));
             session.Events.StartStream<ProjectAggregate>(registered.Id, registered, chose);
 
-            TaskAggregate aggregate = new();
-            Hall9k.Domain.Features.Tasks.Events.TaskAdded added = TaskDecider.Add(
-                taskId, projectId, "Record what I ran on", ["the run says so"], TaskType.Chore,
-                null, null, null, Now, node.OwnerId, model: "claude-opus-5[1m]");
-            aggregate.Apply(added);
+            (TaskAggregate aggregate, object[] lifecycle) = TaskSeed.Start(
+                TaskDecider.Add(
+                    taskId, projectId, "Record what I ran on", ["the run says so"], TaskType.Chore,
+                    null, null, null, Now, node.OwnerId, model: "claude-opus-5[1m]"),
+                node.OwnerId, Now);
             Hall9k.Domain.Features.Tasks.Events.TaskClaimed claimed =
                 TaskDecider.Claim(aggregate, node.NodeId, node.OwnerId, runId, Now);
-            session.Events.StartStream<TaskAggregate>(taskId, added, claimed);
+            session.Events.StartStream<TaskAggregate>(taskId, [.. lifecycle, claimed]);
             session.Store(new TaskLease { Id = taskId, NodeId = node.NodeId, LeaseGeneration = 1, HeartbeatAt = Now });
             await session.SaveChangesAsync(cts.Token);
         }

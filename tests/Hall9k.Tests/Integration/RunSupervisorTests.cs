@@ -21,6 +21,8 @@ using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using Xunit;
 
+using Hall9k.Tests.Fakes;
+
 namespace Hall9k.Tests.Integration;
 
 // Both classes redirect the process-wide HALL9K_HOME; sharing a collection serializes
@@ -144,11 +146,12 @@ public sealed class RunSupervisorTests(PostgresFixture postgres) : IClassFixture
         await using IDocumentSession session = store.LightweightSession();
 
         TaskAggregate task = new();
-        var added = TaskDecider.Add(taskId, DomainId.New(), "Executor test task", ["it completes"],
-            TaskType.Chore, null, null, null, Now, node.OwnerId);
-        task.Apply(added);
+        (task, object[] lifecycle) = TaskSeed.Start(
+            TaskDecider.Add(taskId, DomainId.New(), "Executor test task", ["it completes"],
+                TaskType.Chore, null, null, null, Now, node.OwnerId),
+            node.OwnerId, Now);
         var claimed = TaskDecider.Claim(task, node.NodeId, node.OwnerId, runId, Now);
-        session.Events.StartStream<TaskAggregate>(taskId, added, claimed);
+        session.Events.StartStream<TaskAggregate>(taskId, [.. lifecycle, claimed]);
         session.Store(new TaskLease { Id = taskId, NodeId = node.NodeId, LeaseGeneration = 1, HeartbeatAt = Now });
 
         session.Events.StartStream<RunAggregate>(runId, new RunDispatched(

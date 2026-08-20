@@ -11,6 +11,8 @@ using JasperFx.Events;
 using Marten;
 using Xunit;
 
+using Hall9k.Tests.Fakes;
+
 namespace Hall9k.Tests.Integration;
 
 [Trait("Category", "RequiresDocker")]
@@ -29,12 +31,15 @@ public sealed class TaskClaimConcurrencyTests(PostgresFixture postgres) : IClass
         });
 
         Guid taskId = DomainId.New();
+        Guid ownerId = DomainId.New();
         await using (IDocumentSession setup = store.LightweightSession())
         {
-            setup.Events.StartStream<TaskAggregate>(taskId, TaskDecider.Add(
-                taskId, DomainId.New(), "Prove the claim is the lock",
-                ["exactly one claim survives"], TaskType.Chore,
-                null, null, null, Now, DomainId.New()));
+            setup.Events.StartStream<TaskAggregate>(taskId, TaskSeed.Dispatchable(
+                TaskDecider.Add(
+                    taskId, DomainId.New(), "Prove the claim is the lock",
+                    ["exactly one claim survives"], TaskType.Chore,
+                    null, null, null, Now, ownerId),
+                ownerId, Now));
             await setup.SaveChangesAsync(cts.Token);
         }
 
@@ -46,11 +51,12 @@ public sealed class TaskClaimConcurrencyTests(PostgresFixture postgres) : IClass
         TaskAggregate view1 = (await first.Events.AggregateStreamAsync<TaskAggregate>(taskId, token: cts.Token))!;
         TaskAggregate view2 = (await second.Events.AggregateStreamAsync<TaskAggregate>(taskId, token: cts.Token))!;
 
-        TaskClaimed claim1 = TaskDecider.Claim(view1, DomainId.New(), DomainId.New(), DomainId.New(), Now);
-        TaskClaimed claim2 = TaskDecider.Claim(view2, DomainId.New(), DomainId.New(), DomainId.New(), Now);
+        TaskClaimed claim1 = TaskDecider.Claim(view1, DomainId.New(), ownerId, DomainId.New(), Now);
+        TaskClaimed claim2 = TaskDecider.Claim(view2, DomainId.New(), ownerId, DomainId.New(), Now);
 
-        first.Events.Append(taskId, expectedVersion: 2, claim1);
-        second.Events.Append(taskId, expectedVersion: 2, claim2);
+        // The seed wrote the lifecycle events, so the claim lands one past them.
+        first.Events.Append(taskId, expectedVersion: TaskSeed.EventCount + 1, claim1);
+        second.Events.Append(taskId, expectedVersion: TaskSeed.EventCount + 1, claim2);
 
         await first.SaveChangesAsync(cts.Token);
         Func<Task> losing = () => second.SaveChangesAsync(cts.Token);

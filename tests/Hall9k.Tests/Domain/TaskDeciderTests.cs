@@ -79,14 +79,39 @@ public sealed class TaskDeciderTests
         act.Should().Throw<DomainValidationException>().WithMessage("*not a usable model name*");
     }
 
+    /// <summary>
+    /// Creation is identity, not readiness (Decisions Log #34): a draft exists in order to
+    /// gather criteria, so demanding them at Add would put the gate in the wrong place. The
+    /// gate is Publish, and the test below is the other half of this one.
+    /// </summary>
     [Fact]
-    public void Add_without_acceptance_criteria_fails_the_readiness_contract()
+    public void Add_without_acceptance_criteria_produces_a_draft_rather_than_refusing()
     {
-        Action act = () => TaskDecider.Add(
+        TaskAdded added = TaskDecider.Add(
             DomainId.New(), DomainId.New(), objective: "Add rate limiting to auth endpoints",
             acceptanceCriteria: [" ", ""], TaskType.Feature,
             agentContext: null, constraints: null, externalReference: null,
             addedAt: Now, addedByOwnerId: DomainId.New());
+
+        added.AcceptanceCriteria.Should().BeEmpty("blank criteria are no criteria");
+        added.StartsAsDraft.Should().BeTrue("every task h9k creates now starts as a draft");
+
+        TaskAggregate task = new();
+        task.Apply(added);
+        task.State.Should().Be(TaskState.Draft);
+    }
+
+    [Fact]
+    public void Publish_without_acceptance_criteria_fails_the_readiness_contract()
+    {
+        TaskAggregate task = new();
+        task.Apply(TaskDecider.Add(
+            DomainId.New(), DomainId.New(), objective: "Add rate limiting to auth endpoints",
+            acceptanceCriteria: [], TaskType.Feature,
+            agentContext: null, constraints: null, externalReference: null,
+            addedAt: Now, addedByOwnerId: Owner));
+
+        Action act = () => TaskDecider.Publish(task, TaskDependencyGraph.Empty, Now, Owner);
 
         act.Should().Throw<DomainValidationException>().WithMessage("*acceptance criter*");
     }
@@ -97,7 +122,7 @@ public sealed class TaskDeciderTests
         TaskAggregate task = QueuedTask();
         Guid runId = DomainId.New();
 
-        TaskClaimed claimed = TaskDecider.Claim(task, DomainId.New(), DomainId.New(), runId, Now);
+        TaskClaimed claimed = TaskDecider.Claim(task, DomainId.New(), Owner, runId, Now);
 
         claimed.LeaseGeneration.Should().Be(1);
         claimed.RunId.Should().Be(runId);
@@ -113,7 +138,7 @@ public sealed class TaskDeciderTests
     {
         TaskAggregate task = ClaimedTask();
 
-        Action act = () => TaskDecider.Claim(task, DomainId.New(), DomainId.New(), DomainId.New(), Now);
+        Action act = () => TaskDecider.Claim(task, DomainId.New(), Owner, DomainId.New(), Now);
 
         act.Should().Throw<DomainConflictException>();
     }
@@ -125,7 +150,7 @@ public sealed class TaskDeciderTests
         task.Apply(TaskDecider.Requeue(task, RequeueReason.LeaseExpired, Now));
         task.State.Should().Be(TaskState.Queued);
 
-        TaskClaimed second = TaskDecider.Claim(task, DomainId.New(), DomainId.New(), DomainId.New(), Now);
+        TaskClaimed second = TaskDecider.Claim(task, DomainId.New(), Owner, DomainId.New(), Now);
         second.LeaseGeneration.Should().Be(2, "every claim increments the fencing token");
     }
 
@@ -185,7 +210,7 @@ public sealed class TaskDeciderTests
         task.ClaimedByNodeId.Should().BeNull("a reopened task is queued, and queued work is unclaimed");
         task.CurrentRunId.Should().BeNull();
 
-        TaskClaimed claimed = TaskDecider.Claim(task, DomainId.New(), DomainId.New(), DomainId.New(), Now);
+        TaskClaimed claimed = TaskDecider.Claim(task, DomainId.New(), Owner, DomainId.New(), Now);
         claimed.LeaseGeneration.Should().Be(2, "a follow-up claim moves the fencing token like any other");
 
         task.Apply(claimed);
@@ -222,7 +247,7 @@ public sealed class TaskDeciderTests
 
     private static void CompleteFollowUp(TaskAggregate task)
     {
-        task.Apply(TaskDecider.Claim(task, DomainId.New(), DomainId.New(), DomainId.New(), Now));
+        task.Apply(TaskDecider.Claim(task, DomainId.New(), Owner, DomainId.New(), Now));
         task.Apply(TaskDecider.Complete(task, task.CurrentRunId!.Value, task.PullRequestUrl, Now));
     }
 
@@ -277,7 +302,7 @@ public sealed class TaskDeciderTests
         task.ClaimedByNodeId.Should().BeNull("a retried task is queued, and queued work is unclaimed");
         task.CurrentRunId.Should().BeNull();
 
-        TaskClaimed claimed = TaskDecider.Claim(task, DomainId.New(), DomainId.New(), DomainId.New(), Now);
+        TaskClaimed claimed = TaskDecider.Claim(task, DomainId.New(), Owner, DomainId.New(), Now);
         claimed.LeaseGeneration.Should().Be(2, "a retry claim moves the fencing token like any other");
 
         task.Apply(claimed);
@@ -373,7 +398,7 @@ public sealed class TaskDeciderTests
         task.Apply(TaskDecider.Reopen(
             task, task.CurrentRunId!.Value, "task/abc", "CI checks failing.",
             FollowUpKind.FailingChecks, automatic: true, Now, DomainId.New()));
-        task.Apply(TaskDecider.Claim(task, DomainId.New(), DomainId.New(), DomainId.New(), Now));
+        task.Apply(TaskDecider.Claim(task, DomainId.New(), Owner, DomainId.New(), Now));
         task.Apply(TaskDecider.Fail(task, task.CurrentRunId!.Value, "Follow-up push rejected.", Now));
 
         task.Apply(TaskDecider.Resolve(task, "The follow-up's work is on the PR already.", null, Now, DomainId.New()));
@@ -489,21 +514,41 @@ public sealed class TaskDeciderTests
         return task;
     }
 
-    private static TaskAggregate QueuedTask()
+    /// <summary>
+    /// The owner these helpers assign to. Assignment is the dispatch trigger and the claim
+    /// guard reads it (Decisions Log #34), so a task only reaches Queued through a named owner.
+    /// </summary>
+    private static readonly Guid Owner = DomainId.New();
+
+    private static TaskAggregate DraftTask(params Guid[] blockedBy)
     {
         TaskAggregate task = new();
         task.Apply(TaskDecider.Add(
             DomainId.New(), DomainId.New(), "Add rate limiting to auth endpoints",
             ["429 returned past the limit", "tests cover the limiter"], TaskType.Feature,
             agentContext: null, constraints: null, externalReference: null,
-            addedAt: Now, addedByOwnerId: DomainId.New()));
+            addedAt: Now, addedByOwnerId: Owner, blockedBy: blockedBy));
+        return task;
+    }
+
+    private static TaskAggregate PublishedTask(TaskDependencyGraph? graph = null)
+    {
+        TaskAggregate task = DraftTask();
+        task.Apply(TaskDecider.Publish(task, graph ?? TaskDependencyGraph.Empty, Now, Owner));
+        return task;
+    }
+
+    private static TaskAggregate QueuedTask()
+    {
+        TaskAggregate task = PublishedTask();
+        task.Apply(TaskDecider.Assign(task, Owner, [], Now, Owner));
         return task;
     }
 
     private static TaskAggregate ClaimedTask()
     {
         TaskAggregate task = QueuedTask();
-        task.Apply(TaskDecider.Claim(task, DomainId.New(), DomainId.New(), DomainId.New(), Now));
+        task.Apply(TaskDecider.Claim(task, DomainId.New(), Owner, DomainId.New(), Now));
         return task;
     }
 }

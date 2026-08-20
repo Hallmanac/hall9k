@@ -17,6 +17,8 @@ using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using Xunit;
 
+using Hall9k.Tests.Fakes;
+
 namespace Hall9k.Tests.Integration;
 
 /// <summary>
@@ -531,13 +533,11 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
 
         await using IDocumentSession session = store.LightweightSession();
 
-        TaskAggregate task = new();
-        List<object> taskEvents = [];
-
-        Hall9k.Domain.Features.Tasks.Events.TaskAdded added = TaskDecider.Add(
-            taskId, projectId, "Close me out", ["merged"], TaskType.Chore, null, null, null, Now, ownerId);
-        task.Apply(added);
-        taskEvents.Add(added);
+        (TaskAggregate task, object[] lifecycle) = TaskSeed.Start(
+            TaskDecider.Add(
+                taskId, projectId, "Close me out", ["merged"], TaskType.Chore, null, null, null, Now, ownerId),
+            ownerId, Now);
+        List<object> taskEvents = [.. lifecycle];
         Hall9k.Domain.Features.Tasks.Events.TaskClaimed claimed =
             TaskDecider.Claim(task, node.NodeId, ownerId, DomainId.New(), Now);
         task.Apply(claimed);
