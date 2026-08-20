@@ -61,7 +61,11 @@ app.Configure(config =>
     });
 
     config.AddCommand<StatusCommand>("status")
-        .WithDescription("The one-pane view: what needs you, what's running, what's done");
+        .WithDescription(
+            "The attention pane: what needs you, what has gone quiet, what is running — bounded and "
+            + "glanceable, with everything else counted in the header. Browsing lives under the nouns "
+            + "(h9k task list, h9k project list); this answers \"what should I look at right now\".")
+        .WithExample("status");
     config.AddCommand<LogsCommand>("logs")
         .WithDescription("A run's transcript, rendered (or --raw for stream-json)");
 
