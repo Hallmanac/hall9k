@@ -67,7 +67,8 @@ public sealed record TaskAdded(
     TaskConstraints? Constraints,        // null = no budget, nothing auto-killed (log #11)
     ExternalReference? ExternalReference, // set when adopted via --from-issue (resolves open decision #9 for v0)
     DateTimeOffset AddedAt,
-    Guid AddedByOwnerId);
+    Guid AddedByOwnerId,
+    AgentModel? Model = null);           // the task's model override, most specific link in the log #33 chain
 
 public sealed record TaskClaimed(
     Guid Id,
@@ -289,6 +290,9 @@ public sealed record TaskState          // Queued, Claimed, NeedsHuman, Done, Fa
                                         //   (+ NeedsRefinement reserved, not built in v0)
 public sealed record RequeueReason      // LeaseExpired, RunFailedRetryable, HumanRequested, Unknown
 public sealed record FollowUpKind       // ReviewFeedback, FailingChecks, Unknown (§2.2 — prompt selection)
+public sealed record AgentModel         // fable | opus | sonnet | haiku aliases, or any exact model id;
+                                        // Unknown = "not set at this level" (Shared/ValueObjects, log #33)
+public sealed record AgentRole          // Build, Review, Fix, Refinement, Unknown (log #33 per-role defaults)
 ```
 
 ## 3. Run slice
@@ -307,7 +311,11 @@ public sealed record RunDispatched(
     string WorktreePath,
     string Branch,
     ExecutorMode ExecutorMode,           // Subscription | ApiKey (log #1)
-    DateTimeOffset DispatchedAt);
+    DateTimeOffset DispatchedAt,
+    bool IsFollowUp = false,             // resumes the task's existing PR branch (§2.1)
+    AgentModel? Model = null);           // the model resolved for the Build role and actually spawned on
+                                         // (log #33). Appended with a default, like the log #30 cache
+                                         // counts: older streams replay as Unknown, never as a guess.
 
 public sealed record RunProcessStarted(
     Guid Id,
@@ -352,7 +360,8 @@ public sealed record ReviewDispatched(   // independent reviewer spawned over th
     int Cycle,                           // review rounds, from 1
     int ProcessId,
     DateTimeOffset ProcessStartedAt,
-    DateTimeOffset DispatchedAt);
+    DateTimeOffset DispatchedAt,
+    AgentModel? Model = null);           // resolved for the Review role in its own right (log #33)
 public sealed record ReviewCompleted(    // the verdict milestone; findings artifact:
     Guid Id,                             // review-<cycle>-findings.md in the run directory
     int Cycle,
@@ -365,14 +374,17 @@ public sealed record ReviewVerdictReprompted( // verdict-less reviewer resumed O
     int Cycle,
     int ProcessId,
     DateTimeOffset ProcessStartedAt,
-    DateTimeOffset RepromptedAt);
+    DateTimeOffset RepromptedAt,
+    AgentModel? Model = null);           // the RESUMED session's model, carried and recorded rather than
+                                         // re-resolved: a resume keeps what it started on (log #33)
 public sealed record ReviewFixDispatched( // fix session in the same worktree, findings as prompt;
     Guid Id,                             // counted against MaxAutomaticReviewFixRuns
     Guid SessionId,
     int Cycle,
     int ProcessId,
     DateTimeOffset ProcessStartedAt,
-    DateTimeOffset DispatchedAt);
+    DateTimeOffset DispatchedAt,
+    AgentModel? Model = null);           // resolved for the Fix role, separately from Review (log #33)
 public sealed record ReviewFixCompleted( // Fixed/Unknown -> gates re-run, fresh review; Disputed -> park
     Guid Id,
     int Cycle,
@@ -516,7 +528,11 @@ public sealed record ProjectSettingsChanged(   // Optional<T> pattern: absent �
     Optional<int> MaxParallelAgents,
     Optional<IReadOnlyList<ContextLink>> ContextLinks,
     DateTimeOffset ChangedAt,
-    Guid ChangedByOwnerId);
+    Guid ChangedByOwnerId,
+    Optional<CommitStyle> CommitStyle = default,  // how follow-up runs land fixes on the PR branch (log #26)
+    Optional<AgentModel> Model = default);        // the project's model default (log #33). Unknown is a legal
+                                                  // explicit value: it clears the override so the node's
+                                                  // per-role and platform defaults decide again.
 
 public sealed record VerifyCommand(string Name, string Command);   // "test", "dotnet test"
 
