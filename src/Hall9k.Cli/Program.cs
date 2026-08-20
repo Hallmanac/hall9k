@@ -13,9 +13,25 @@ app.Configure(config =>
 
     config.AddBranch("project", project =>
     {
-        project.SetDescription("Manage projects");
+        project.SetDescription("Manage projects: register them, browse them, inspect one");
         project.AddCommand<ProjectAddCommand>("add")
-            .WithDescription("Register a project (repo path, base branch, connection binding)");
+            .WithDescription("Register a project (repo path, base branch, connection binding)")
+            .WithExample("project", "add", "--name", "hall9k", "--repo", "~/code/hall9k", "--base-branch", "main");
+        project.AddCommand<ProjectListCommand>("list")
+            .WithDescription(
+                "Every registered project, one row each, with its tasks counted by attention bucket "
+                + "(needs you, stalled, active, in review, queued, done, closed). The counts are "
+                + "single-assignment, so a row sums to the project's task count — this is where you look "
+                + "to see which project is asking for something.")
+            .WithExample("project", "list");
+        project.AddCommand<ProjectShowCommand>("show")
+            .WithDescription(
+                "One project in one pane: how it is registered (repository, base branch, connection binding, "
+                + "owner) and every setting the daemon runs it by (skip-permissions, verify gates, parallelism, "
+                + "commit style, context links), plus its task rollup and newest tasks. Takes the project name, "
+                + "an unambiguous fragment of it, or its id.")
+            .WithExample("project", "show", "hall9k")
+            .WithExample("project", "show", "hall");
         project.AddCommand<ProjectSetCommand>("set")
             .WithDescription("Change project settings: verify gates, skip-permissions, links, parallelism, commit style")
             .WithExample("project", "set", "hall9k", "--commit-style", "narrative");
