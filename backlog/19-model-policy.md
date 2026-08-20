@@ -29,3 +29,21 @@ Design constraints:
   accepts.
 - Interaction with sessions that resume (--resume for review re-prompts): the
   resumed session keeps its original model; record, do not re-resolve.
+
+## Post-queue direction (Brian, 2026-08-20 - the running agent has the frozen
+## snapshot above; reconcile these at PR review)
+
+- Sane default: Opus 5 (1M) for everything the platform dispatches - build,
+  review, fix, and future refinement/info-gathering sessions. Fable is the
+  human-interactive tier (long discovery and problem-solving sessions the human
+  is in), not a silent-agent default. Data point from 71 sessions: per-session
+  output volume is nearly identical (~30k) across both models, so the saving is
+  tier weight, not session length.
+- Precedence question to settle at review: Brian wants the NODE able to
+  override the project ("on this node, run Fable"). DaemonOptions is already
+  per-node configuration, so this is about where the node default sits in the
+  chain relative to the project default - the frozen spec has project above
+  platform/node; Brian's direction puts node above project.
+- Multi-executor future: model identity stays an open value (exact-id
+  passthrough), never a Claude-only closed set - other executors (other CLIs,
+  other providers) are on the long-range map.
