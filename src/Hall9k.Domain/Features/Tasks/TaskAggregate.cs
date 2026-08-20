@@ -39,8 +39,34 @@ public sealed class TaskAggregate
     public DateTimeOffset AddedAt { get; private set; }
     public Guid AddedByOwnerId { get; private set; }
 
+    /// <summary>
+    /// Whose work this is. Set by the explicit human act of assignment and read by the claim
+    /// guard: a node claims only its own owner's tasks (Decisions Log #34). Null until
+    /// assigned, and null again after unassign.
+    /// </summary>
+    public Guid? AssignedOwnerId { get; private set; }
+
     private readonly List<string> _acceptanceCriteria = [];
     public IReadOnlyList<string> AcceptanceCriteria => _acceptanceCriteria;
+
+    /// <summary>The tasks this one waits on; declared at creation or revised in Draft.</summary>
+    private readonly List<Guid> _blockedBy = [];
+    public IReadOnlyList<Guid> BlockedBy => _blockedBy;
+
+    /// <summary>
+    /// The subset of <see cref="BlockedBy"/> that had not reached true closeout when this task
+    /// was assigned, minus each one since observed complete. Empty on a Queued task by
+    /// construction: emptying it is what moves Blocked -> Queued.
+    /// </summary>
+    private readonly List<Guid> _unmetDependencies = [];
+    public IReadOnlyList<Guid> UnmetDependencies => _unmetDependencies;
+
+    /// <summary>Blockers observed Failed or Abandoned: they will never close out on their own.</summary>
+    private readonly List<Guid> _deadDependencies = [];
+    public IReadOnlyList<Guid> DeadDependencies => _deadDependencies;
+
+    /// <summary>Why the newest dead dependency died, as observed — the reason the human reads.</summary>
+    public string? DependencyFailureReason { get; private set; }
 
     private readonly List<Guid> _runIds = [];
     public IReadOnlyList<Guid> RunIds => _runIds;
@@ -59,7 +85,127 @@ public sealed class TaskAggregate
         Model = @event.Model ?? AgentModel.Unknown;
         AddedAt = @event.AddedAt;
         AddedByOwnerId = @event.AddedByOwnerId;
+        _blockedBy.Clear();
+        _blockedBy.AddRange(@event.BlockedBy ?? []);
+
+        if (@event.StartsAsDraft)
+        {
+            State = TaskState.Draft;
+            return;
+        }
+
+        // A stream written before the lifecycle split (Decisions Log #34) replays as it
+        // behaved: queued on arrival, assigned to the owner who added it. That owner is the
+        // sole owner of a v0 install, so this reads an observed fact rather than inventing
+        // provenance for a historical task.
+        AssignedOwnerId = @event.AddedByOwnerId;
         State = TaskState.Queued;
+    }
+
+    public void Apply(TaskPublished @event) => State = TaskState.Published;
+
+    // Absent means "left alone" — a revision that reworded the objective must not also claim
+    // the criteria were retyped identically (Optional carries that distinction).
+    public void Apply(TaskRevised @event)
+    {
+        if (@event.Objective.HasValue)
+        {
+            Objective = @event.Objective.Value ?? string.Empty;
+        }
+
+        if (@event.AcceptanceCriteria.HasValue)
+        {
+            _acceptanceCriteria.Clear();
+            _acceptanceCriteria.AddRange(@event.AcceptanceCriteria.Value ?? []);
+        }
+
+        if (@event.AgentContext.HasValue)
+        {
+            AgentContext = @event.AgentContext.Value;
+        }
+
+        if (@event.BlockedBy.HasValue)
+        {
+            _blockedBy.Clear();
+            _blockedBy.AddRange(@event.BlockedBy.Value ?? []);
+        }
+
+        if (@event.Type.HasValue)
+        {
+            Type = @event.Type.Value ?? TaskType.Unknown;
+        }
+
+        if (@event.Model.HasValue)
+        {
+            Model = @event.Model.Value ?? AgentModel.Unknown;
+        }
+    }
+
+    public void Apply(TaskReturnedToDraft @event) => State = TaskState.Draft;
+
+    public void Apply(TaskAssigned @event)
+    {
+        AssignedOwnerId = @event.AssignedOwnerId;
+        _unmetDependencies.Clear();
+        _unmetDependencies.AddRange(@event.UnmetDependencies);
+        _deadDependencies.Clear();
+        DependencyFailureReason = null;
+        State = _unmetDependencies.Count == 0 ? TaskState.Queued : TaskState.Blocked;
+    }
+
+    // Unassigning returns the task to the state it was assigned from, dependency bookkeeping
+    // and all: the unmet set is only meaningful for an assigned task, and the next assignment
+    // recomputes it against the dependencies as they stand then.
+    public void Apply(TaskUnassigned @event)
+    {
+        AssignedOwnerId = null;
+        _unmetDependencies.Clear();
+        _deadDependencies.Clear();
+        DependencyFailureReason = null;
+        State = TaskState.Published;
+    }
+
+    // Dependency bookkeeping only means anything while the task is Blocked, and the decider
+    // only ever emits these two events from that state. Anything else on the stream is a lost
+    // race — a human unassigned or abandoned the task between a resolver's read and its append
+    // — and a lost race replays as a no-op rather than smearing dependency state across a
+    // lifecycle that has already moved on.
+    public void Apply(TaskDependencyCompleted @event)
+    {
+        if (State != TaskState.Blocked)
+        {
+            return;
+        }
+
+        _unmetDependencies.Remove(@event.DependencyId);
+        if (_deadDependencies.Remove(@event.DependencyId) && _deadDependencies.Count == 0)
+        {
+            // The blocker that died was retried and finished after all; nothing is dead now.
+            DependencyFailureReason = null;
+        }
+
+        if (_unmetDependencies.Count == 0)
+        {
+            State = TaskState.Queued;
+        }
+    }
+
+    // A dead blocker leaves the task Blocked on purpose: h9k status reads it as NeedsHuman
+    // (the closeout park does the same, log #22), so the human sees it without the platform
+    // either dispatching work whose premise died or stranding it in silence.
+    public void Apply(TaskDependencyFailed @event)
+    {
+        if (State != TaskState.Blocked)
+        {
+            return;
+        }
+
+        if (!_deadDependencies.Contains(@event.DependencyId))
+        {
+            _deadDependencies.Add(@event.DependencyId);
+        }
+
+        DependencyFailureReason = @event.Reason;
     }
 
     public void Apply(TaskClaimed @event)

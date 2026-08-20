@@ -145,14 +145,14 @@ public sealed class LeaseLivenessTests(PostgresFixture postgres) : IClassFixture
         Guid firstRunId = DomainId.New();
         await using (IDocumentSession session = store.LightweightSession())
         {
-            TaskAggregate task = new();
-            var added = TaskDecider.Add(taskId, DomainId.New(), "Single flight", ["done"], TaskType.Chore,
-                null, null, null, Now, node.OwnerId);
-            task.Apply(added);
+            (TaskAggregate task, object[] lifecycle) = TaskSeed.Start(
+                TaskDecider.Add(taskId, DomainId.New(), "Single flight", ["done"], TaskType.Chore,
+                    null, null, null, Now, node.OwnerId),
+                node.OwnerId, Now);
             var claimed = TaskDecider.Claim(task, node.NodeId, node.OwnerId, firstRunId, Now);
             task.Apply(claimed);
-            session.Events.StartStream<TaskAggregate>(taskId, added, claimed,
-                TaskDecider.Requeue(task, RequeueReason.LeaseExpired, Now));
+            session.Events.StartStream<TaskAggregate>(taskId,
+                [.. lifecycle, claimed, TaskDecider.Requeue(task, RequeueReason.LeaseExpired, Now)]);
 
             session.Events.StartStream<RunAggregate>(firstRunId,
                 new RunDispatched(firstRunId, taskId, node.NodeId, node.OwnerId, 1, DomainId.New(),
@@ -203,12 +203,12 @@ public sealed class LeaseLivenessTests(PostgresFixture postgres) : IClassFixture
         Guid taskId = DomainId.New();
         await using IDocumentSession session = store.LightweightSession();
 
-        TaskAggregate task = new();
-        var added = TaskDecider.Add(taskId, DomainId.New(), "Sleep walk", ["done"], TaskType.Chore,
-            null, null, null, Now.AddHours(-1), ownerId);
-        task.Apply(added);
-        session.Events.StartStream<TaskAggregate>(taskId, added,
-            TaskDecider.Claim(task, nodeId, ownerId, DomainId.New(), Now.AddHours(-1)));
+        (TaskAggregate task, object[] lifecycle) = TaskSeed.Start(
+            TaskDecider.Add(taskId, DomainId.New(), "Sleep walk", ["done"], TaskType.Chore,
+                null, null, null, Now.AddHours(-1), ownerId),
+            ownerId, Now.AddHours(-1));
+        session.Events.StartStream<TaskAggregate>(taskId,
+            [.. lifecycle, TaskDecider.Claim(task, nodeId, ownerId, DomainId.New(), Now.AddHours(-1))]);
         session.Store(new TaskLease { Id = taskId, NodeId = nodeId, LeaseGeneration = 1, HeartbeatAt = heartbeatAt });
         await session.SaveChangesAsync(cancellationToken);
         return taskId;
@@ -223,12 +223,12 @@ public sealed class LeaseLivenessTests(PostgresFixture postgres) : IClassFixture
         Guid runId = DomainId.New();
         await using IDocumentSession session = store.LightweightSession();
 
-        TaskAggregate task = new();
-        var added = TaskDecider.Add(taskId, DomainId.New(), "Sleep walk", ["done"], TaskType.Chore,
-            null, null, null, Now.AddHours(-1), ownerId);
-        task.Apply(added);
-        session.Events.StartStream<TaskAggregate>(taskId, added,
-            TaskDecider.Claim(task, nodeId, ownerId, runId, Now.AddHours(-1)));
+        (TaskAggregate task, object[] lifecycle) = TaskSeed.Start(
+            TaskDecider.Add(taskId, DomainId.New(), "Sleep walk", ["done"], TaskType.Chore,
+                null, null, null, Now.AddHours(-1), ownerId),
+            ownerId, Now.AddHours(-1));
+        session.Events.StartStream<TaskAggregate>(taskId,
+            [.. lifecycle, TaskDecider.Claim(task, nodeId, ownerId, runId, Now.AddHours(-1))]);
         session.Store(new TaskLease { Id = taskId, NodeId = nodeId, LeaseGeneration = 1, HeartbeatAt = heartbeatAt });
 
         session.Events.StartStream<RunAggregate>(runId,

@@ -46,9 +46,11 @@ public sealed class DispatchEngineTests(PostgresFixture postgres) : IClassFixtur
             for (int i = 0; i < 5; i++)
             {
                 Guid id = DomainId.New();
-                seed.Events.StartStream<TaskAggregate>(id, TaskDecider.Add(
-                    id, DomainId.New(), $"Task {i}", ["done"], TaskType.Chore,
-                    null, null, null, Now.AddSeconds(i), node.OwnerId));
+                seed.Events.StartStream<TaskAggregate>(id, TaskSeed.Dispatchable(
+                    TaskDecider.Add(
+                        id, DomainId.New(), $"Task {i}", ["done"], TaskType.Chore,
+                        null, null, null, Now.AddSeconds(i), node.OwnerId),
+                    node.OwnerId, Now));
             }
 
             await seed.SaveChangesAsync(cts.Token);
@@ -124,12 +126,12 @@ public sealed class DispatchEngineTests(PostgresFixture postgres) : IClassFixtur
         Guid parkedNodeId = DomainId.New();
         await using (IDocumentSession session = store.LightweightSession())
         {
-            TaskAggregate task = new();
-            var added = TaskDecider.Add(taskId, DomainId.New(), "Park walk", ["done"], TaskType.Chore,
-                null, null, null, Now, node.OwnerId);
-            task.Apply(added);
-            session.Events.StartStream<TaskAggregate>(taskId, added,
-                TaskDecider.Claim(task, parkedNodeId, node.OwnerId, runId, Now));
+            (TaskAggregate task, object[] lifecycle) = TaskSeed.Start(
+                TaskDecider.Add(taskId, DomainId.New(), "Park walk", ["done"], TaskType.Chore,
+                    null, null, null, Now, node.OwnerId),
+                node.OwnerId, Now);
+            session.Events.StartStream<TaskAggregate>(taskId,
+                [.. lifecycle, TaskDecider.Claim(task, parkedNodeId, node.OwnerId, runId, Now)]);
 
             // The run reaches a review park, then the lease heartbeat decays past the
             // timeout — the daemon slept, or the sweep won the wake-up race (the origin
@@ -197,9 +199,11 @@ public sealed class DispatchEngineTests(PostgresFixture postgres) : IClassFixtur
         Guid taskId = DomainId.New();
         await using (IDocumentSession seed = store.LightweightSession())
         {
-            seed.Events.StartStream<TaskAggregate>(taskId, TaskDecider.Add(
-                taskId, DomainId.New(), "Retry walk", ["done"], TaskType.Chore,
-                null, null, null, Now, node.OwnerId));
+            seed.Events.StartStream<TaskAggregate>(taskId, TaskSeed.Dispatchable(
+                TaskDecider.Add(
+                    taskId, DomainId.New(), "Retry walk", ["done"], TaskType.Chore,
+                    null, null, null, Now, node.OwnerId),
+                node.OwnerId, Now));
             await seed.SaveChangesAsync(cts.Token);
         }
 

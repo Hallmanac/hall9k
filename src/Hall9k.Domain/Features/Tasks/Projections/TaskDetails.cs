@@ -26,6 +26,18 @@ public sealed class TaskDetails
     public string? AgentContext { get; set; }
     public TaskConstraints? Constraints { get; set; }
     public string? ExternalReference { get; set; }
+    /// <summary>Whose work this is; null until an explicit assignment says (Decisions Log #34).</summary>
+    public Guid? AssignedOwnerId { get; set; }
+    /// <summary>The tasks this one waits on, declared at creation or revised in Draft.</summary>
+    public List<Guid> BlockedBy { get; set; } = [];
+    /// <summary>Blockers not yet at true closeout; empty on anything but a Blocked task.</summary>
+    public List<Guid> UnmetDependencies { get; set; } = [];
+    /// <summary>Blockers observed Failed or Abandoned: they will never close out on their own.</summary>
+    public List<Guid> DeadDependencies { get; set; } = [];
+    /// <summary>Why the newest dead blocker died — the reason h9k task show puts in front of the human.</summary>
+    public string? DependencyFailureReason { get; set; }
+    /// <summary>How many times the task has been revised; a draft's edit history at a glance.</summary>
+    public int Revisions { get; set; }
     /// <summary>The task's model override; Unknown means the per-role, project, and platform links decide (Decisions Log #33).</summary>
     public AgentModel Model { get; set; } = AgentModel.Unknown;
     public int LeaseGeneration { get; set; }
@@ -59,7 +71,11 @@ public sealed class TaskDetailsProjection : SingleStreamProjection<TaskDetails, 
         Objective = @event.Data.Objective,
         AcceptanceCriteria = [.. @event.Data.AcceptanceCriteria],
         Type = @event.Data.Type,
-        State = TaskState.Queued,
+        // Pre-lifecycle streams replay as they behaved: queued and assigned to the owner who
+        // added them, which is the sole owner of a v0 install (Decisions Log #34).
+        State = @event.Data.StartsAsDraft ? TaskState.Draft : TaskState.Queued,
+        AssignedOwnerId = @event.Data.StartsAsDraft ? null : @event.Data.AddedByOwnerId,
+        BlockedBy = [.. @event.Data.BlockedBy ?? []],
         AgentContext = @event.Data.AgentContext,
         Constraints = @event.Data.Constraints,
         ExternalReference = @event.Data.ExternalReference?.ToString(),
@@ -67,6 +83,106 @@ public sealed class TaskDetailsProjection : SingleStreamProjection<TaskDetails, 
         AddedAt = @event.Data.AddedAt,
         AddedByOwnerId = @event.Data.AddedByOwnerId,
     };
+
+    public void Apply(IEvent<TaskPublished> @event, TaskDetails view) => view.State = TaskState.Published;
+
+    // Absent means "left alone": a revision that reworded the objective must not also claim
+    // the criteria were retyped identically.
+    public void Apply(IEvent<TaskRevised> @event, TaskDetails view)
+    {
+        if (@event.Data.Objective.HasValue)
+        {
+            view.Objective = @event.Data.Objective.Value ?? string.Empty;
+        }
+
+        if (@event.Data.AcceptanceCriteria.HasValue)
+        {
+            view.AcceptanceCriteria = [.. @event.Data.AcceptanceCriteria.Value ?? []];
+        }
+
+        if (@event.Data.AgentContext.HasValue)
+        {
+            view.AgentContext = @event.Data.AgentContext.Value;
+        }
+
+        if (@event.Data.BlockedBy.HasValue)
+        {
+            view.BlockedBy = [.. @event.Data.BlockedBy.Value ?? []];
+        }
+
+        if (@event.Data.Type.HasValue)
+        {
+            view.Type = @event.Data.Type.Value ?? TaskType.Unknown;
+        }
+
+        if (@event.Data.Model.HasValue)
+        {
+            view.Model = @event.Data.Model.Value ?? AgentModel.Unknown;
+        }
+
+        view.Revisions++;
+    }
+
+    public void Apply(IEvent<TaskReturnedToDraft> @event, TaskDetails view) => view.State = TaskState.Draft;
+
+    public void Apply(IEvent<TaskAssigned> @event, TaskDetails view)
+    {
+        view.AssignedOwnerId = @event.Data.AssignedOwnerId;
+        view.UnmetDependencies = [.. @event.Data.UnmetDependencies];
+        view.DeadDependencies = [];
+        view.DependencyFailureReason = null;
+        view.State = view.UnmetDependencies.Count == 0 ? TaskState.Queued : TaskState.Blocked;
+    }
+
+    public void Apply(IEvent<TaskUnassigned> @event, TaskDetails view)
+    {
+        view.AssignedOwnerId = null;
+        view.UnmetDependencies = [];
+        view.DeadDependencies = [];
+        view.DependencyFailureReason = null;
+        view.State = TaskState.Published;
+    }
+
+    // Dependency bookkeeping only means anything while the task is Blocked, and the decider
+    // only ever emits these two events from that state. Anything else on the stream is a lost
+    // race — a human unassigned or abandoned the task between a resolver's read and its append
+    // — and a lost race replays as a no-op rather than smearing dependency state across a
+    // lifecycle that has already moved on.
+    public void Apply(IEvent<TaskDependencyCompleted> @event, TaskDetails view)
+    {
+        if (view.State != TaskState.Blocked)
+        {
+            return;
+        }
+
+        view.UnmetDependencies = [.. @event.Data.RemainingDependencies];
+        if (view.DeadDependencies.Remove(@event.Data.DependencyId) && view.DeadDependencies.Count == 0)
+        {
+            view.DependencyFailureReason = null;
+        }
+
+        if (view.UnmetDependencies.Count == 0)
+        {
+            view.State = TaskState.Queued;
+        }
+    }
+
+    // The task stays Blocked; the recorded reason is what makes h9k status read it as
+    // NeedsHuman — the same shape the closeout park uses (log #22), for the same reason.
+    public void Apply(IEvent<TaskDependencyFailed> @event, TaskDetails view)
+    {
+        if (view.State != TaskState.Blocked)
+        {
+            return;
+        }
+
+        if (!view.DeadDependencies.Contains(@event.Data.DependencyId))
+        {
+            view.DeadDependencies.Add(@event.Data.DependencyId);
+        }
+
+        view.DependencyFailureReason = @event.Data.Reason;
+    }
 
     public void Apply(IEvent<TaskClaimed> @event, TaskDetails view)
     {

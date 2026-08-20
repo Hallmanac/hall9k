@@ -16,6 +16,8 @@ using Marten;
 using Microsoft.Extensions.Logging.Abstractions;
 using Xunit;
 
+using Hall9k.Tests.Fakes;
+
 namespace Hall9k.Tests.Integration;
 
 [Collection("Hall9kHome")]
@@ -71,11 +73,12 @@ public sealed class PullRequestOpenerTests(PostgresFixture postgres) : IClassFix
         await using (IDocumentSession session = store.LightweightSession())
         {
             TaskAggregate task = new();
-            var added = TaskDecider.Add(taskId, projectId, "Open a PR end to end", ["branch lands on origin"],
-                TaskType.Chore, null, null, null, Now, ownerId);
-            task.Apply(added);
+            (task, object[] lifecycle) = TaskSeed.Start(
+                TaskDecider.Add(taskId, projectId, "Open a PR end to end", ["branch lands on origin"],
+                    TaskType.Chore, null, null, null, Now, ownerId),
+                ownerId, Now);
             var claimed = TaskDecider.Claim(task, DomainId.New(), ownerId, runId, Now);
-            session.Events.StartStream<TaskAggregate>(taskId, added, claimed);
+            session.Events.StartStream<TaskAggregate>(taskId, [.. lifecycle, claimed]);
             session.Store(new TaskLease { Id = taskId, NodeId = claimed.NodeId, LeaseGeneration = 1, HeartbeatAt = Now });
 
             session.Events.StartStream<RunAggregate>(runId,
@@ -154,9 +157,10 @@ public sealed class PullRequestOpenerTests(PostgresFixture postgres) : IClassFix
         await using (IDocumentSession session = store.LightweightSession())
         {
             TaskAggregate task = new();
-            var added = TaskDecider.Add(taskId, projectId, "Follow up end to end", ["review comments resolved"],
-                TaskType.Chore, null, null, null, Now, ownerId);
-            task.Apply(added);
+            (task, object[] lifecycle) = TaskSeed.Start(
+                TaskDecider.Add(taskId, projectId, "Follow up end to end", ["review comments resolved"],
+                    TaskType.Chore, null, null, null, Now, ownerId),
+                ownerId, Now);
             var firstClaim = TaskDecider.Claim(task, DomainId.New(), ownerId, firstRunId, Now);
             task.Apply(firstClaim);
             var completed = TaskDecider.Complete(task, firstRunId, pullRequestUrl, Now);
@@ -167,7 +171,8 @@ public sealed class PullRequestOpenerTests(PostgresFixture postgres) : IClassFix
             task.Apply(reopened);
             var followUpClaim = TaskDecider.Claim(task, DomainId.New(), ownerId, followUpRunId, Now);
             task.Apply(followUpClaim);
-            session.Events.StartStream<TaskAggregate>(taskId, added, firstClaim, completed, reopened, followUpClaim);
+            session.Events.StartStream<TaskAggregate>(taskId,
+                [.. lifecycle, firstClaim, completed, reopened, followUpClaim]);
             session.Store(new TaskLease { Id = taskId, NodeId = followUpClaim.NodeId, LeaseGeneration = 2, HeartbeatAt = Now });
 
             session.Events.StartStream<RunAggregate>(followUpRunId,
@@ -249,9 +254,10 @@ public sealed class PullRequestOpenerTests(PostgresFixture postgres) : IClassFix
         await using (IDocumentSession session = store.LightweightSession())
         {
             TaskAggregate task = new();
-            var added = TaskDecider.Add(taskId, projectId, "Force push follow up", ["fix folded into owning commit"],
-                TaskType.Chore, null, null, null, Now, ownerId);
-            task.Apply(added);
+            (task, object[] lifecycle) = TaskSeed.Start(
+                TaskDecider.Add(taskId, projectId, "Force push follow up", ["fix folded into owning commit"],
+                    TaskType.Chore, null, null, null, Now, ownerId),
+                ownerId, Now);
             var firstClaim = TaskDecider.Claim(task, DomainId.New(), ownerId, firstRunId, Now);
             task.Apply(firstClaim);
             var completed = TaskDecider.Complete(task, firstRunId, pullRequestUrl, Now);
@@ -262,7 +268,8 @@ public sealed class PullRequestOpenerTests(PostgresFixture postgres) : IClassFix
             task.Apply(reopened);
             var followUpClaim = TaskDecider.Claim(task, DomainId.New(), ownerId, followUpRunId, Now);
             task.Apply(followUpClaim);
-            session.Events.StartStream<TaskAggregate>(taskId, added, firstClaim, completed, reopened, followUpClaim);
+            session.Events.StartStream<TaskAggregate>(taskId,
+                [.. lifecycle, firstClaim, completed, reopened, followUpClaim]);
             session.Store(new TaskLease { Id = taskId, NodeId = followUpClaim.NodeId, LeaseGeneration = 2, HeartbeatAt = Now });
 
             session.Events.StartStream<RunAggregate>(followUpRunId,

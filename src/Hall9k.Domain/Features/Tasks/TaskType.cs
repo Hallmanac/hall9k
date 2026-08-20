@@ -1,5 +1,6 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using Hall9k.Domain.Shared.Exceptions;
 
 namespace Hall9k.Domain.Features.Tasks;
 
@@ -22,6 +23,23 @@ public sealed record TaskType
     public static implicit operator string(TaskType? value) => value?.Value ?? string.Empty;
 
     public static implicit operator TaskType(string? value) => value.IsBlank() ? Unknown : new TaskType(value);
+
+    /// <summary>
+    /// The CLI vocabulary, spelled as a human types it. Refuses an unknown word with the
+    /// choices quoted rather than quietly recording Unknown — a task type drives persona,
+    /// prompt template, and verification profile, so a typo must not slip through as nothing.
+    /// A blank input is the documented default rather than an error: Feature.
+    /// </summary>
+    public static TaskType Parse(string? value) => value?.Trim().ToLowerInvariant() switch
+    {
+        null or "" or "feature" => Feature,
+        "bugfix" or "bug" => Bugfix,
+        "refactor" => Refactor,
+        "chore" => Chore,
+        "research" => Research,
+        _ => throw new DomainValidationException(
+            $"Unknown task type '{value}'. Use feature, bugfix, refactor, chore, or research."),
+    };
 
     public bool Equals(TaskType? other) => other is not null && Value == other.Value;
 
