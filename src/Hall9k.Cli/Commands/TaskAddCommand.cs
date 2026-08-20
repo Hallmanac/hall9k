@@ -17,8 +17,11 @@ public sealed class TaskAddCommand : Hall9kAsyncCommand<TaskAddCommand.Settings>
 {
     public sealed class Settings : CommandSettings
     {
-        [CommandOption("--project <NAME_OR_ID>")]
-        [Description("Project name or id the task belongs to")]
+        [CommandOption("--project <PROJECT>")]
+        [Description(
+            "Project the task belongs to: its name, an unambiguous fragment of it, or its full id "
+            + "(h9k project list shows them all). A fragment matching more than one project is "
+            + "rejected as ambiguous rather than guessed at.")]
         public string? Project { get; init; }
 
         [CommandOption("--objective <OBJECTIVE>")]
@@ -74,7 +77,7 @@ public sealed class TaskAddCommand : Hall9kAsyncCommand<TaskAddCommand.Settings>
         using var store = CliStore.Open();
         await using IDocumentSession session = store.LightweightSession();
 
-        ProjectDetails projectDetails = await ResolveProjectAsync(session, project, cancellationToken);
+        ProjectDetails projectDetails = await ProjectResolver.ResolveAsync(session, project, cancellationToken);
         BootstrapContext context = await NodeBootstrap.EnsureAsync(session, cancellationToken);
 
         Guid taskId = DomainId.New();
@@ -98,22 +101,6 @@ public sealed class TaskAddCommand : Hall9kAsyncCommand<TaskAddCommand.Settings>
             $"[green]Task queued[/] in '{projectDetails.Name.EscapeMarkup()}': " +
             $"{added.Objective.EscapeMarkup()} [dim]({taskId})[/]");
         return ExitCodes.Ok;
-    }
-
-    private static async Task<ProjectDetails> ResolveProjectAsync(
-        IDocumentSession session, string nameOrId, CancellationToken cancellationToken)
-    {
-        if (Guid.TryParse(nameOrId, out Guid id))
-        {
-            return await session.LoadAsync<ProjectDetails>(id, cancellationToken)
-                ?? throw new DomainNotFoundException($"No project with id {id}.");
-        }
-
-        ProjectDetails? byName = (await session.Query<ProjectDetails>()
-            .Where(p => p.Name == nameOrId)
-            .Take(1).ToListAsync(cancellationToken)).FirstOrDefault();
-        return byName ?? throw new DomainNotFoundException(
-            $"No project named '{nameOrId}'. Register it first: h9k project add --name {nameOrId} --repo <path>");
     }
 
     private static TaskType TaskTypeFrom(string? type) => type?.Trim().ToLowerInvariant() switch

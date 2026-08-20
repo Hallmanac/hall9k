@@ -18,7 +18,10 @@ public sealed class ProjectSetCommand : Hall9kAsyncCommand<ProjectSetCommand.Set
     public sealed class Settings : CommandSettings
     {
         [CommandArgument(0, "<PROJECT>")]
-        [Description("Project name or id")]
+        [Description(
+            "Project to change: its name, an unambiguous fragment of it, or its full id "
+            + "(h9k project list shows them all). A fragment matching more than one project is "
+            + "rejected as ambiguous rather than guessed at.")]
         public string Project { get; init; } = string.Empty;
 
         [CommandOption("--skip-permissions <BOOL>")]
@@ -26,6 +29,10 @@ public sealed class ProjectSetCommand : Hall9kAsyncCommand<ProjectSetCommand.Set
         public bool? SkipPermissions { get; init; }
 
         [CommandOption("--max-parallel <N>")]
+        [Description(
+            "How many of this project's agents may run at once (at least 1, default 3). The daemon "
+            + "currently enforces its node-wide cap (DaemonOptions.MaxConcurrentRuns); this per-project "
+            + "ceiling is recorded and shown by h9k project show.")]
         public int? MaxParallelAgents { get; init; }
 
         [CommandOption("--verify <NAME=COMMAND>")]
@@ -51,7 +58,7 @@ public sealed class ProjectSetCommand : Hall9kAsyncCommand<ProjectSetCommand.Set
         using var store = CliStore.Open();
         await using IDocumentSession session = store.LightweightSession();
 
-        ProjectDetails details = await ResolveAsync(session, settings.Project, cancellationToken);
+        ProjectDetails details = await ProjectResolver.ResolveAsync(session, settings.Project, cancellationToken);
         ProjectAggregate project = (await session.Events.AggregateStreamAsync<ProjectAggregate>(details.Id, token: cancellationToken))!;
         BootstrapContext context = await NodeBootstrap.EnsureAsync(session, cancellationToken);
 
@@ -105,17 +112,5 @@ public sealed class ProjectSetCommand : Hall9kAsyncCommand<ProjectSetCommand.Set
         return separator <= 0
             ? throw new DomainValidationException($"--link expects name=url, got '{value}'.")
             : new ContextLink(value[..separator].Trim(), new Uri(value[(separator + 1)..].Trim()));
-    }
-
-    private static async Task<ProjectDetails> ResolveAsync(IDocumentSession session, string nameOrId, CancellationToken cancellationToken)
-    {
-        if (Guid.TryParse(nameOrId, out Guid id))
-        {
-            return await session.LoadAsync<ProjectDetails>(id, cancellationToken)
-                ?? throw new DomainNotFoundException($"No project with id {id}.");
-        }
-
-        return (await session.Query<ProjectDetails>().Where(p => p.Name == nameOrId).Take(1).ToListAsync(cancellationToken)).FirstOrDefault()
-            ?? throw new DomainNotFoundException($"No project named '{nameOrId}'.");
     }
 }
