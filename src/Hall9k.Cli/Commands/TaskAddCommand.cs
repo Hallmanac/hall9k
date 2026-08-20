@@ -26,12 +26,25 @@ public sealed class TaskAddCommand : Hall9kAsyncCommand<TaskAddCommand.Settings>
         public string? Project { get; init; }
 
         [CommandOption("--objective <OBJECTIVE>")]
-        [Description("One sentence, outcome-phrased (readiness contract, PLAN.md §4)")]
+        [Description(
+            "One sentence, outcome-phrased — what the draft is about. Together with --project it is "
+            + "everything creation requires: creation is identity, not readiness (Decisions Log #34). "
+            + "The readiness contract is enforced later, once, by h9k task publish")]
         public string? Objective { get; init; }
 
         [CommandOption("--criteria <CRITERION>")]
-        [Description("Checkable acceptance criterion; repeat the option for more")]
+        [Description(
+            "Checkable acceptance criterion; repeat the option for more. Optional here and required "
+            + "by h9k task publish — a draft exists in order to gather them")]
         public string[] Criteria { get; init; } = [];
+
+        [CommandOption("--blocked-by <TASK>")]
+        [Description(
+            "A task this one waits on: its id or an unambiguous fragment; repeat the option for more. "
+            + "A dependency counts as met only at true closeout (the pull request merged and the "
+            + "closeout monitor observed it), so a Done-but-unmerged dependency still blocks. "
+            + "Revise the set later with h9k task revise --blocked-by")]
+        public string[] BlockedBy { get; init; } = [];
 
         [CommandOption("--type <TYPE>")]
         [Description("feature | bugfix | refactor | chore | research")]
@@ -42,7 +55,9 @@ public sealed class TaskAddCommand : Hall9kAsyncCommand<TaskAddCommand.Settings>
         public string? AgentContext { get; init; }
 
         [CommandOption("--file <PATH>")]
-        [Description("Task file: frontmatter (project/type/objective/criteria/model) + markdown body as agent context")]
+        [Description(
+            "Task file: frontmatter (project/type/objective/criteria/model/blocked-by) + markdown body "
+            + "as agent context")]
         public string? File { get; init; }
 
         [CommandOption("--model <MODEL>")]
@@ -65,6 +80,7 @@ public sealed class TaskAddCommand : Hall9kAsyncCommand<TaskAddCommand.Settings>
         string? agentContext = settings.AgentContext;
         string? model = settings.Model;
         IReadOnlyList<string> criteria = settings.Criteria;
+        IReadOnlyList<string> blockedBy = settings.BlockedBy;
 
         if (settings.File.IsNotBlank())
         {
@@ -81,6 +97,7 @@ public sealed class TaskAddCommand : Hall9kAsyncCommand<TaskAddCommand.Settings>
             agentContext ??= file.AgentContext;
             model ??= file.Model;
             criteria = criteria.Count > 0 ? criteria : file.Criteria;
+            blockedBy = blockedBy.Count > 0 ? blockedBy : file.BlockedBy;
         }
 
         if (project.IsBlank())
@@ -94,41 +111,61 @@ public sealed class TaskAddCommand : Hall9kAsyncCommand<TaskAddCommand.Settings>
         ProjectDetails projectDetails = await ProjectResolver.ResolveAsync(session, project, cancellationToken);
         BootstrapContext context = await NodeBootstrap.EnsureAsync(session, cancellationToken);
 
+        Guid[] dependencies = await ResolveDependenciesAsync(session, blockedBy, cancellationToken);
+
         Guid taskId = DomainId.New();
         TaskAdded added = TaskDecider.Add(
             taskId,
             projectDetails.Id,
             objective ?? string.Empty,
             criteria,
-            TaskTypeFrom(type),
+            TaskType.Parse(type),
             agentContext,
             constraints: null,
             externalReference: null,
             DateTimeOffset.UtcNow,
             context.OwnerId,
-            AgentModel.FromInput(model));
+            AgentModel.FromInput(model),
+            dependencies);
         session.Events.StartStream<TaskAggregate>(taskId, added);
 
         await session.SaveChangesAsync(cancellationToken);
-        await Doorbell.RingAsync($"task-added:{taskId}", cancellationToken);
 
+        // No doorbell: a draft is invisible to the dispatcher by design, so there is nothing
+        // for a daemon to wake up for until a human publishes and assigns it (log #34).
         string modelNote = added.Model is { } chosen && chosen != AgentModel.Unknown
             ? $" [dim]on {chosen.Value.EscapeMarkup()}[/]"
             : string.Empty;
         AnsiConsole.MarkupLine(
-            $"[green]Task queued[/] in '{projectDetails.Name.EscapeMarkup()}': " +
+            $"[blue]Draft created[/] in '{projectDetails.Name.EscapeMarkup()}': " +
             $"{added.Objective.EscapeMarkup()}{modelNote} [dim]({taskId})[/]");
+        if (dependencies.Length > 0)
+        {
+            AnsiConsole.MarkupLine(
+                $"[dim]  blocked by {dependencies.Length} task(s): " +
+                $"{string.Join(", ", dependencies.Select(TaskListCommand.ShortId))}[/]");
+        }
+
+        string shortId = TaskListCommand.ShortId(taskId);
+        AnsiConsole.MarkupLine(added.AcceptanceCriteria.Count == 0
+            ? $"[dim]Next:[/] h9k task revise {shortId} --criteria \"…\" [dim]then[/] h9k task publish {shortId}"
+            : $"[dim]Next:[/] h9k task publish {shortId} [dim](a draft never dispatches; publishing then assigning is what starts it)[/]");
         return ExitCodes.Ok;
     }
 
-    private static TaskType TaskTypeFrom(string? type) => type?.Trim().ToLowerInvariant() switch
+    /// <summary>
+    /// Dependency ids as typed: full ids or unambiguous fragments, resolved now so a typo is
+    /// refused at creation rather than becoming an edge that names nothing.
+    /// </summary>
+    private static async Task<Guid[]> ResolveDependenciesAsync(
+        IQuerySession session, IReadOnlyList<string> blockedBy, CancellationToken cancellationToken)
     {
-        null or "" or "feature" => TaskType.Feature,
-        "bugfix" or "bug" => TaskType.Bugfix,
-        "refactor" => TaskType.Refactor,
-        "chore" => TaskType.Chore,
-        "research" => TaskType.Research,
-        _ => throw new DomainValidationException(
-            $"Unknown task type '{type}'. Use feature, bugfix, refactor, chore, or research."),
-    };
+        List<Guid> dependencies = [];
+        foreach (string reference in blockedBy.Where(value => value.IsNotBlank()))
+        {
+            dependencies.Add(await TaskIdResolver.ResolveAsync(session, reference, cancellationToken));
+        }
+
+        return [.. dependencies];
+    }
 }

@@ -9,6 +9,7 @@ using Hall9k.Domain.Infrastructure.Persistence;
 using JasperFx;
 using JasperFx.Events;
 using Marten;
+using Marten.Events;
 using Xunit;
 
 using Hall9k.Tests.Fakes;
@@ -69,6 +70,59 @@ public sealed class TaskClaimConcurrencyTests(PostgresFixture postgres) : IClass
         final.LeaseGeneration.Should().Be(1, "exactly one claim landed");
         final.CurrentRunId.Should().Be(claim1.RunId);
         final.RunIds.Should().ContainSingle();
+    }
+
+    [Fact]
+    public async Task An_unassign_that_races_a_claim_loses_at_the_database()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        using DocumentStore store = DocumentStore.For(opts =>
+        {
+            opts.Connection(postgres.ConnectionString);
+            opts.ConfigureHall9k(AutoCreate.All);
+        });
+
+        Guid taskId = DomainId.New();
+        Guid ownerId = DomainId.New();
+        await using (IDocumentSession setup = store.LightweightSession())
+        {
+            setup.Events.StartStream<TaskAggregate>(taskId, TaskSeed.Dispatchable(
+                TaskDecider.Add(
+                    taskId, DomainId.New(), "Prove unassign cannot outrun a claim",
+                    ["a claimed task stays claimed"], TaskType.Chore,
+                    null, null, null, Now, ownerId),
+                ownerId, Now));
+            await setup.SaveChangesAsync(cts.Token);
+        }
+
+        // h9k task unassign fences the stream and reads the lease — no node holds one yet, so
+        // the decider allows it. The dispatch loop then claims the task inside that window.
+        await using IDocumentSession unassigning = store.LightweightSession();
+        StreamState fence = (await unassigning.Events.FetchStreamStateAsync(taskId, cts.Token))!;
+        TaskAggregate view = (await unassigning.Events.AggregateStreamAsync<TaskAggregate>(
+            taskId, version: fence.Version, token: cts.Token))!;
+        bool leaseHeld = await unassigning.LoadAsync<TaskLease>(taskId, cts.Token) is not null;
+        leaseHeld.Should().BeFalse("no node has claimed the task at the moment the CLI reads it");
+
+        await using (IDocumentSession claiming = store.LightweightSession())
+        {
+            TaskAggregate claimView = (await claiming.Events.AggregateStreamAsync<TaskAggregate>(
+                taskId, token: cts.Token))!;
+            claiming.Events.Append(taskId, expectedVersion: TaskSeed.EventCount + 1,
+                TaskDecider.Claim(claimView, DomainId.New(), ownerId, DomainId.New(), Now));
+            await claiming.SaveChangesAsync(cts.Token);
+        }
+
+        unassigning.Events.Append(taskId, expectedVersion: fence.Version + 1, TaskDecider.Unassign(
+            view, "taking it back", leaseHeld, Now, ownerId));
+        Func<Task> losing = () => unassigning.SaveChangesAsync(cts.Token);
+        await losing.Should().ThrowAsync<EventStreamUnexpectedMaxEventIdException>(
+            "an unfenced unassign would land on top of the claim and orphan a running agent");
+
+        await using IDocumentSession verify = store.LightweightSession();
+        TaskAggregate final = (await verify.Events.AggregateStreamAsync<TaskAggregate>(taskId, token: cts.Token))!;
+        final.State.Should().Be(TaskState.Claimed);
+        final.AssignedOwnerId.Should().Be(ownerId, "the contract stayed under the running agent");
     }
 
     [Fact]

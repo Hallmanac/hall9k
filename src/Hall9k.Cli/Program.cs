@@ -117,12 +117,58 @@ app.Configure(config =>
 
     config.AddBranch("task", task =>
     {
-        task.SetDescription("Manage tasks");
+        task.SetDescription(
+            "Manage tasks. Development and dispatch are separate lifecycles (Decisions Log #34): "
+            + "add drafts, revise develops, publish is the readiness gate, and assign is the go signal. "
+            + "A task runs only once a human assigns it and every dependency has closed out.");
         task.AddCommand<TaskAddCommand>("add")
-            .WithDescription("Queue a task (flags or --file task.md); enforces the readiness contract")
+            .WithDescription(
+                "Create a draft (flags or --file task.md). Creation is identity, not readiness: a project "
+                + "and an objective are all it takes, and the draft is invisible to the dispatcher until "
+                + "you publish and assign it. Acceptance criteria are what h9k task publish demands.")
             .WithExample("task", "add", "--project", "hall9k", "--objective", "Add the project browse surface",
                 "--criteria", "h9k project list shows one row per project")
-            .WithExample("task", "add", "--file", "backlog/19-model-policy.md", "--model", "claude-opus-5");
+            .WithExample("task", "add", "--file", "backlog/19-model-policy.md", "--model", "claude-opus-5")
+            .WithExample("task", "add", "--project", "hall9k", "--objective", "Wire the new pane in",
+                "--blocked-by", "28b19893");
+        task.AddCommand<TaskReviseCommand>("revise")
+            .WithDescription(
+                "Revise a draft: objective, acceptance criteria, agent context, type, model, dependencies. "
+                + "Draft-only by design — a published task promises it may be assigned at any moment and a "
+                + "assigned one promises a node may read it at any moment, and editing would break both. "
+                + "Each option passed replaces that part; each one left off is left alone.")
+            .WithExample("task", "revise", "28b19893", "--criteria", "h9k status shows the blocked reason")
+            .WithExample("task", "revise", "28b19893", "--blocked-by", "3f2a91b2", "--blocked-by", "91bd44c0")
+            .WithExample("task", "revise", "28b19893", "--clear-dependencies");
+        task.AddCommand<TaskPublishCommand>("publish")
+            .WithDescription(
+                "Publish a draft: the readiness gate. Enforces the full contract (an outcome-phrased "
+                + "objective and at least one checkable acceptance criterion, PLAN.md §4) and refuses a "
+                + "dependency cycle, naming it. A published task is immutable and assignable but still "
+                + "will not run — assigning it is a separate, explicit act (--assign does both at once).")
+            .WithExample("task", "publish", "28b19893")
+            .WithExample("task", "publish", "28b19893", "--assign")
+            .WithExample("task", "publish", "28b19893", "--no-assign");
+        task.AddCommand<TaskAssignCommand>("assign")
+            .WithDescription(
+                "Assign a published task to an owner: the dispatch trigger, and the only way a task "
+                + "becomes claimable. It queues when every dependency has reached true closeout (the "
+                + "pull request merged), and blocks otherwise — unblocking itself when the last one lands. "
+                + "Only that owner's nodes may claim it.")
+            .WithExample("task", "assign", "28b19893")
+            .WithExample("task", "assign", "28b19893", "brian");
+        task.AddCommand<TaskUnassignCommand>("unassign")
+            .WithDescription(
+                "Take a queued or blocked task back to Published, so no node claims it. Refused while a "
+                + "node holds the lease — that is a running agent. This is the first step of the "
+                + "edit-after-the-fact path: unassign → draft → revise → publish → assign.")
+            .WithExample("task", "unassign", "28b19893", "--reason", "The criteria missed the migration case");
+        task.AddCommand<TaskDraftCommand>("draft")
+            .WithDescription(
+                "Return a published task to Draft so it can be revised. Refused from Queued and Blocked "
+                + "onward: unassign it first, so a task the dispatcher can see never becomes editable by "
+                + "one keystroke.")
+            .WithExample("task", "draft", "28b19893");
         task.AddCommand<TaskListCommand>("list")
             .WithDescription(
                 "Browse tasks newest-first, across projects or filtered to one (--project) and to a state "
@@ -131,13 +177,17 @@ app.Configure(config =>
                 + "many were held back and how to see them (--all, --limit <n>).")
             .WithExample("task", "list")
             .WithExample("task", "list", "--project", "hall9k", "--state", "needs-you")
+            .WithExample("task", "list", "--state", "draft")
             .WithExample("task", "list", "--state", "in-review", "--all")
             .WithExample("task", "list", "--state", "AwaitingReview");
         task.AddCommand<TaskShowCommand>("show")
             .WithDescription("Task detail: contract, conversation, runs")
             .WithExample("task", "show", "28b19893");
         task.AddCommand<TaskAbandonCommand>("abandon")
-            .WithDescription("Abandon a task (terminal; releases any lease)")
+            .WithDescription(
+                "Abandon a task (terminal; releases any lease). Reaches every non-terminal state, drafts "
+                + "and published tasks included — walking away from an idea you have stopped believing in "
+                + "is the same act as walking away from a run that failed.")
             .WithExample("task", "abandon", "28b19893", "--reason", "Superseded by the noun-first CLI work");
         task.AddCommand<TaskRetryCommand>("retry")
             .WithDescription(

@@ -8,12 +8,14 @@ public sealed record TaskFileContent(
     string? Objective,
     IReadOnlyList<string> Criteria,
     string? AgentContext,
-    string? Model);
+    string? Model,
+    IReadOnlyList<string> BlockedBy);
 
 /// <summary>
 /// Parses the h9k task file format: a minimal frontmatter block (project, type, objective,
-/// criteria as "- " items, optional model) followed by a markdown body that becomes the
-/// agent context. Deliberately not YAML, since five known keys don't warrant a dependency.
+/// criteria as "- " items, optional model, optional blocked-by as "- " items) followed by a
+/// markdown body that becomes the agent context. Deliberately not YAML, since a handful of
+/// known keys don't warrant a dependency.
 /// </summary>
 public static class TaskFileParser
 {
@@ -24,7 +26,7 @@ public static class TaskFileParser
         {
             throw new DomainValidationException(
                 "Task files start with a '---' frontmatter block (project, type, objective, criteria, "
-                + "and an optional model).");
+                + "an optional model, and optional blocked-by dependencies).");
         }
 
         string? project = null;
@@ -32,7 +34,8 @@ public static class TaskFileParser
         string? objective = null;
         string? model = null;
         List<string> criteria = [];
-        bool inCriteria = false;
+        List<string> blockedBy = [];
+        List<string>? list = null;
         int bodyStart = lines.Length;
 
         for (int i = 1; i < lines.Length; i++)
@@ -44,13 +47,13 @@ public static class TaskFileParser
                 break;
             }
 
-            if (inCriteria && line.TrimStart().StartsWith("- ", StringComparison.Ordinal))
+            if (list is not null && line.TrimStart().StartsWith("- ", StringComparison.Ordinal))
             {
-                criteria.Add(line.TrimStart()[2..].Trim());
+                list.Add(line.TrimStart()[2..].Trim());
                 continue;
             }
 
-            inCriteria = false;
+            list = null;
             int separator = line.IndexOf(':');
             if (separator < 0)
             {
@@ -74,12 +77,18 @@ public static class TaskFileParser
                     model = value;
                     break;
                 case "criteria":
-                    inCriteria = true;
+                    list = criteria;
+                    break;
+                case "blocked-by":
+                case "blockedby":
+                    list = blockedBy;
+                    // An inline "blocked-by: a, b" is as natural as the list form; take both.
+                    blockedBy.AddRange(value.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries));
                     break;
             }
         }
 
         string body = string.Join('\n', lines.Skip(bodyStart)).Trim();
-        return new TaskFileContent(project, type, objective, criteria, body.IsBlank() ? null : body, model);
+        return new TaskFileContent(project, type, objective, criteria, body.IsBlank() ? null : body, model, blockedBy);
     }
 }
