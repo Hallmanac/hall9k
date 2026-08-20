@@ -20,6 +20,9 @@ public sealed class TaskAbandonCommand : Hall9kAsyncCommand<TaskAbandonCommand.S
         public string Id { get; init; } = string.Empty;
 
         [CommandOption("--reason <REASON>")]
+        [Description(
+            "Why this task is being walked away from; recorded on TaskAbandoned and left unknown "
+            + "when omitted, never inferred (Decisions Log #27)")]
         public string? Reason { get; init; }
     }
 
