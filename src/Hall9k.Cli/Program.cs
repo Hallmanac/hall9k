@@ -112,13 +112,25 @@ app.Configure(config =>
     {
         task.SetDescription("Manage tasks");
         task.AddCommand<TaskAddCommand>("add")
-            .WithDescription("Queue a task (flags or --file task.md); enforces the readiness contract");
+            .WithDescription("Queue a task (flags or --file task.md); enforces the readiness contract")
+            .WithExample("task", "add", "--project", "hall9k", "--objective", "Add the project browse surface",
+                "--criteria", "h9k project list shows one row per project");
         task.AddCommand<TaskListCommand>("list")
-            .WithDescription("List tasks across projects");
+            .WithDescription(
+                "Browse tasks newest-first, across projects or filtered to one (--project) and to a state "
+                + "(--state, matched against the Status column: an attention group like needs-you or active, "
+                + "or an exact state like Running). Bounded to the newest 20 by default — the footer says how "
+                + "many were held back and how to see them (--all, --limit <n>).")
+            .WithExample("task", "list")
+            .WithExample("task", "list", "--project", "hall9k", "--state", "needs-you")
+            .WithExample("task", "list", "--state", "in-review", "--all")
+            .WithExample("task", "list", "--state", "AwaitingReview");
         task.AddCommand<TaskShowCommand>("show")
-            .WithDescription("Task detail: contract, conversation, runs");
+            .WithDescription("Task detail: contract, conversation, runs")
+            .WithExample("task", "show", "28b19893");
         task.AddCommand<TaskAbandonCommand>("abandon")
-            .WithDescription("Abandon a task (terminal; releases any lease)");
+            .WithDescription("Abandon a task (terminal; releases any lease)")
+            .WithExample("task", "abandon", "28b19893", "--reason", "Superseded by the noun-first CLI work");
         task.AddCommand<TaskRetryCommand>("retry")
             .WithDescription(
                 "Requeue a failed task for another run (human-only; Failed tasks only — Abandoned stays terminal). "
