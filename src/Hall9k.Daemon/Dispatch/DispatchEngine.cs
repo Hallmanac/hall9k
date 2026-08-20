@@ -7,6 +7,7 @@ using Hall9k.Domain.Features.Tasks.Events;
 using Hall9k.Domain.Features.Tasks.Handlers;
 using Hall9k.Domain.Features.Tasks.Projections;
 using Hall9k.Domain.Infrastructure.Ids;
+using Hall9k.Domain.Infrastructure.Persistence;
 using JasperFx.Events;
 using Marten;
 using Marten.Events;
@@ -26,6 +27,7 @@ public sealed record ClaimedWork(Guid TaskId, Guid RunId, int LeaseGeneration);
 public sealed class DispatchEngine(
     IDocumentStore store,
     NodeContext node,
+    DaemonConnection connection,
     IProcessManager processManager,
     IOptions<DaemonOptions> options,
     ILogger<DispatchEngine> logger)
@@ -191,6 +193,37 @@ public sealed class DispatchEngine(
         // the guarantee is a property of "parked", not of one park flavor.
         return run is not null
             && (run.State == RunState.ReviewParked || run.State == RunState.CloseoutParked);
+    }
+
+    /// <summary>
+    /// The dependency safety net (Decisions Log #34). The closeout monitor unblocks dependents
+    /// the moment it observes a merge, but two things only a sweep catches: a merge observed by
+    /// a node that has since stopped, and a blocker that reached Failed or Abandoned — a death
+    /// produces no closeout event to react to. Blocked tasks are waiting rather than working,
+    /// so the set this walks is small.
+    /// </summary>
+    public async Task<DependencyReevaluation> ReevaluateBlockedTasksAsync(CancellationToken cancellationToken)
+    {
+        await using IDocumentSession session = store.LightweightSession();
+        DependencyReevaluation reevaluation = await TaskDependencyResolver.ForEveryBlockedTaskAsync(
+            session, DateTimeOffset.UtcNow, cancellationToken);
+
+        foreach (Guid parked in reevaluation.Parked)
+        {
+            logger.LogWarning(
+                "Task {TaskId} waits on a dependency that failed or was abandoned — held for a human, not unblocked",
+                parked);
+        }
+
+        if (reevaluation.Unblocked.Count > 0)
+        {
+            logger.LogInformation(
+                "{Count} blocked task(s) had their last dependency close out — moved Blocked → Queued",
+                reevaluation.Unblocked.Count);
+            await Doorbell.RingAsync(connection.ConnectionString, "dependencies-met", cancellationToken);
+        }
+
+        return reevaluation;
     }
 
     /// <summary>

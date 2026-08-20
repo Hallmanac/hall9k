@@ -2,6 +2,7 @@ using Hall9k.Daemon.Closeout;
 using Hall9k.Daemon.Execution;
 using Hall9k.Daemon.Worktrees;
 using Hall9k.Domain.Features.Project.Projections;
+using Hall9k.Domain.Infrastructure.Persistence;
 using Hall9k.Domain.Infrastructure.Storage;
 using Marten;
 using Microsoft.Extensions.Options;
@@ -35,6 +36,10 @@ public sealed class DispatchLoop(
         await node.InitializeAsync(store, stoppingToken);
         logger.LogInformation("Node {NodeId} (owner {OwnerId}) starting", node.NodeId, node.OwnerId);
 
+        // Before anything reads the task projections: bring documents written by an older
+        // projection shape up to date, or the claim filter cannot see them (log #34).
+        await BackfillLifecycleProjectionsAsync(stoppingToken);
+
         // Startup order matters: reattach before declaring anything dead, requeue the
         // genuinely abandoned, and only then take new work.
         OrphanAdoption adoption = await supervisor.AdoptOrphansAsync(stoppingToken);
@@ -52,6 +57,8 @@ public sealed class DispatchLoop(
                 // (h9k review resolve) re-enters the pipeline before anything else acts.
                 await supervisor.ResumeResolvedReviewsAsync(stoppingToken);
                 await engine.SweepExpiredLeasesAsync(stoppingToken);
+                // Before claiming: whose dependencies have closed out (or died) since last time.
+                await engine.ReevaluateBlockedTasksAsync(stoppingToken);
                 IReadOnlyList<ClaimedWork> claimed = await engine.ClaimEligibleAsync(stoppingToken);
                 foreach (ClaimedWork work in claimed)
                 {
@@ -181,6 +188,33 @@ public sealed class DispatchLoop(
                     return;
                 }
             }
+        }
+    }
+
+    /// <summary>
+    /// The one-time migration the lifecycle split needs (Decisions Log #34), run at startup
+    /// because the dispatcher is the thing that breaks without it. A failure is logged rather
+    /// than fatal: taking the daemon down would stop the tasks that are fine along with the
+    /// ones that are stale, and the next start tries again.
+    /// </summary>
+    private async Task BackfillLifecycleProjectionsAsync(CancellationToken cancellationToken)
+    {
+        try
+        {
+            IReadOnlyList<Guid> rebuilt = await TaskLifecycleProjectionBackfill.RunAsync(store, cancellationToken);
+            if (rebuilt.Count > 0)
+            {
+                logger.LogInformation(
+                    "Re-projected {Count} task(s) written before the lifecycle split — they carried no "
+                    + "assigned owner, which the claim filter reads as nobody's work",
+                    rebuilt.Count);
+            }
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            logger.LogError(exception,
+                "Re-projecting pre-lifecycle task documents failed. Tasks last projected before the "
+                + "lifecycle split will not be claimed until this succeeds; the next daemon start retries it");
         }
     }
 

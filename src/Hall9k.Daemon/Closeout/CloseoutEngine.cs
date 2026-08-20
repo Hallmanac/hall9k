@@ -5,6 +5,7 @@ using Hall9k.Domain.Features.Run.Events;
 using Hall9k.Domain.Features.Run.Projections;
 using Hall9k.Domain.Features.Tasks;
 using Hall9k.Domain.Features.Tasks.Handlers;
+using Hall9k.Domain.Infrastructure.Persistence;
 using JasperFx.Events;
 using Marten;
 using Marten.Events;
@@ -34,6 +35,7 @@ public sealed record CloseoutSweepResult(int RunsInspected, int MergesObserved);
 public sealed class CloseoutEngine(
     IDocumentStore store,
     NodeContext node,
+    DaemonConnection connection,
     IPullRequestInspector inspector,
     IWorktreeManager worktrees,
     IOptions<DaemonOptions> options,
@@ -308,6 +310,7 @@ public sealed class CloseoutEngine(
         logger.LogInformation(
             "Run {RunId}: pull request {Url} merged — closeout complete", run.Id, run.PullRequestUrl);
 
+        await UnblockDependentsAsync(run.TaskId, now, cancellationToken);
         await RemoveWorktreeBestEffortAsync(project.RepositoryPath, run.WorktreePath, cancellationToken);
         try
         {
@@ -316,6 +319,37 @@ public sealed class CloseoutEngine(
         catch (Exception exception) when (exception is not OperationCanceledException)
         {
             logger.LogWarning(exception, "Branch cleanup failed for {Branch} (safe to delete by hand)", run.Branch);
+        }
+    }
+
+    /// <summary>
+    /// True closeout is the only completion signal a dependency chain accepts (Decisions Log
+    /// #34), so this is where dependents re-evaluate: whichever node observed the merge is the
+    /// node that unblocks them, and the doorbell tells every other node's dispatch loop to
+    /// look. A failure here is logged rather than propagated — the merge is recorded either
+    /// way, and the dispatch loop's own sweep re-evaluates blocked tasks each cycle.
+    /// </summary>
+    private async Task UnblockDependentsAsync(Guid taskId, DateTimeOffset now, CancellationToken cancellationToken)
+    {
+        try
+        {
+            await using IDocumentSession session = store.LightweightSession();
+            DependencyReevaluation reevaluation = await TaskDependencyResolver.ForDependencyAsync(
+                session, taskId, now, cancellationToken);
+            if (!reevaluation.ChangedAnything)
+            {
+                return;
+            }
+
+            logger.LogInformation(
+                "Task {TaskId} closed out — {Unblocked} dependent(s) moved Blocked → Queued",
+                taskId, reevaluation.Unblocked.Count);
+            await Doorbell.RingAsync(connection.ConnectionString, $"dependencies-met:{taskId}", cancellationToken);
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            logger.LogWarning(exception,
+                "Re-evaluating the dependents of task {TaskId} failed; the dispatch loop's sweep retries it", taskId);
         }
     }
 

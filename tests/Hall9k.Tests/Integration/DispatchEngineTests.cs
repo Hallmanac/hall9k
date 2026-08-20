@@ -38,7 +38,8 @@ public sealed class DispatchEngineTests(PostgresFixture postgres) : IClassFixtur
 
         DaemonOptions options = new() { MaxConcurrentRuns = 3, LeaseTimeout = TimeSpan.FromSeconds(60) };
         DispatchEngine engine = new(
-            store, node, new FakeProcessManager(), Options.Create(options), NullLogger<DispatchEngine>.Instance);
+            store, node, new DaemonConnection(postgres.ConnectionString), new FakeProcessManager(),
+            Options.Create(options), NullLogger<DispatchEngine>.Instance);
 
         // Five queued tasks, cap of three.
         await using (IDocumentSession seed = store.LightweightSession())
@@ -116,7 +117,8 @@ public sealed class DispatchEngineTests(PostgresFixture postgres) : IClassFixtur
 
         DaemonOptions options = new() { MaxConcurrentRuns = 50, LeaseTimeout = TimeSpan.FromSeconds(60) };
         DispatchEngine engine = new(
-            store, node, new FakeProcessManager(), Options.Create(options), NullLogger<DispatchEngine>.Instance);
+            store, node, new DaemonConnection(postgres.ConnectionString), new FakeProcessManager(),
+            Options.Create(options), NullLogger<DispatchEngine>.Instance);
 
         // Seeded directly (not through ClaimEligibleAsync) and under its own node id:
         // this class shares one database, and the sibling capacity assertions must not
@@ -194,7 +196,8 @@ public sealed class DispatchEngineTests(PostgresFixture postgres) : IClassFixtur
         // leases may be present — the assertions below target this task alone.
         DaemonOptions options = new() { MaxConcurrentRuns = 50, LeaseTimeout = TimeSpan.FromSeconds(60) };
         DispatchEngine engine = new(
-            store, node, new FakeProcessManager(), Options.Create(options), NullLogger<DispatchEngine>.Instance);
+            store, node, new DaemonConnection(postgres.ConnectionString), new FakeProcessManager(),
+            Options.Create(options), NullLogger<DispatchEngine>.Instance);
 
         Guid taskId = DomainId.New();
         await using (IDocumentSession seed = store.LightweightSession())
