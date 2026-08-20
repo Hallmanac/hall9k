@@ -16,6 +16,11 @@
   </ItemGroup>
 
   <ItemGroup>
+    <!-- The spawn flag set is policy (Decisions Log #1/#5/#33); the tests assert it directly. -->
+    <InternalsVisibleTo Include="Hall9k.Tests" />
+  </ItemGroup>
+
+  <ItemGroup>
     <ProjectReference Include="..\Hall9k.Domain\Hall9k.Domain.csproj" />
     <ProjectReference Include="..\Hall9k.Connectors\Hall9k.Connectors.csproj" />
     <ProjectReference Include="..\Hall9k.ServiceDefaults\Hall9k.ServiceDefaults.csproj" />

@@ -15,6 +15,7 @@ using Hall9k.Domain.Features.Tasks.Projections;
 using Hall9k.Domain.Infrastructure.Ids;
 using Hall9k.Domain.Infrastructure.Persistence;
 using Hall9k.Domain.Infrastructure.Storage;
+using Hall9k.Domain.Shared.ValueObjects;
 using JasperFx;
 using Marten;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -55,8 +56,16 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
 
         public List<AgentSpawnRequest> Spawns { get; } = [];
 
+        /// <summary>Lets a test mutate configuration between legs, the way a config edit mid-run would.</summary>
+        public Action? OnFirstSpawn { get; set; }
+
         public async Task<SpawnedAgent> SpawnAsync(AgentSpawnRequest request, CancellationToken cancellationToken)
         {
+            if (Spawns.Count == 0)
+            {
+                OnFirstSpawn?.Invoke();
+            }
+
             Spawns.Add(request);
             request.SessionArtifactName.Should().NotBeNull("review legs must never overwrite the main session's files");
 
@@ -280,6 +289,82 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
             .And.Contain("Human review verdict");
     }
 
+    /// <summary>
+    /// Review and fix are separate roles with separate knobs (Decisions Log #33), and each
+    /// leg records what it actually ran on, because the record is what makes spend-by-model a
+    /// query rather than a guess.
+    /// </summary>
+    [Fact]
+    public async Task Review_and_fix_sessions_resolve_their_own_role_model_and_record_it()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        using DocumentStore store = NewStore();
+        (Guid taskId, Guid runId, _) = await SeedVerifiedRunAsync(store, cts.Token);
+
+        DaemonOptions options = new()
+        {
+            DefaultModel = "claude-opus-5",
+            ModelByRole = new RoleModelDefaults { Review = "sonnet", Fix = "haiku" },
+        };
+        ScriptedExecutor executor = new(
+            "1. `Auth.cs:42`: limiter never resets.\n\nVERDICT: needs-fixes",
+            "Reset the limiter.\n\nRESOLUTION: fixed",
+            "Re-read the diff; the fix holds.\n\nVERDICT: merge-ready");
+
+        bool mergeReady = await NewEngine(store, executor, options).ReviewAsync(runId, taskId, cts.Token);
+
+        mergeReady.Should().BeTrue();
+        executor.Spawns.Select(spawn => spawn.Model.Value).Should().Equal(
+            ["sonnet", "haiku", "sonnet"], "each leg resolves the chain for its own role");
+
+        await using IQuerySession query = store.QuerySession();
+        List<object> events = [.. (await query.Events.FetchStreamAsync(runId, token: cts.Token)).Select(e => e.Data)];
+        events.OfType<ReviewDispatched>().Select(e => e.Model!.Value).Should().Equal(["sonnet", "sonnet"]);
+        events.OfType<ReviewFixDispatched>().Select(e => e.Model!.Value).Should().Equal(["haiku"]);
+
+        RunDetails run = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
+        run.ReviewModel.Should().Be(AgentModel.Sonnet, "the projection shows the latest review leg's model");
+    }
+
+    /// <summary>
+    /// A resumed session keeps the model it started with, so the re-prompt records that
+    /// model rather than re-resolving the chain, which is visible here because the role
+    /// default changes between the two legs, exactly as a config edit mid-run would.
+    /// </summary>
+    [Fact]
+    public async Task A_verdict_reprompt_records_the_resumed_sessions_model_instead_of_re_resolving()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        using DocumentStore store = NewStore();
+        (Guid taskId, Guid runId, _) = await SeedVerifiedRunAsync(store, cts.Token);
+
+        DaemonOptions options = new()
+        {
+            DefaultModel = "claude-opus-5",
+            ModelByRole = new RoleModelDefaults { Review = "sonnet" },
+        };
+        ScriptedExecutor executor = new(
+            "Checks are still running; I'll deliver the verdict when it completes.",
+            "The checks finished clean.\n\nVERDICT: merge-ready")
+        {
+            // The reviewer is dispatched on sonnet, then the node's role default changes.
+            // The resumed leg must still be recorded as sonnet: that is the session actually
+            // running, and recording anything else would be a guess.
+            OnFirstSpawn = () => options.ModelByRole.Review = "haiku",
+        };
+
+        bool mergeReady = await NewEngine(store, executor, options).ReviewAsync(runId, taskId, cts.Token);
+        mergeReady.Should().BeTrue();
+
+        executor.Spawns[1].ResumeSessionId.Should().Be(executor.Spawns[0].SessionId);
+        executor.Spawns[1].Model.Should().Be(
+            AgentModel.Sonnet, "the resumed session keeps the model it started with");
+
+        await using IQuerySession query = store.QuerySession();
+        List<object> events = [.. (await query.Events.FetchStreamAsync(runId, token: cts.Token)).Select(e => e.Data)];
+        events.OfType<ReviewVerdictReprompted>().Single().Model!.Value.Should().Be("sonnet");
+    }
+
     [Fact]
     public async Task A_review_session_dying_without_a_result_fails_the_run_honestly()
     {
@@ -306,9 +391,12 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
     });
 
     private static ReviewEngine NewEngine(DocumentStore store, IExecutor executor, int maxFixRuns = 2) =>
+        NewEngine(store, executor, new DaemonOptions { MaxAutomaticReviewFixRuns = maxFixRuns });
+
+    private static ReviewEngine NewEngine(DocumentStore store, IExecutor executor, DaemonOptions options) =>
         new(store, executor, new UnixProcessManager(),
             new VerificationRunner(store, Options.Create(new DaemonOptions()), NullLogger<VerificationRunner>.Instance),
-            Options.Create(new DaemonOptions { MaxAutomaticReviewFixRuns = maxFixRuns }),
+            Options.Create(options),
             NullLogger<ReviewEngine>.Instance);
 
     /// <summary>

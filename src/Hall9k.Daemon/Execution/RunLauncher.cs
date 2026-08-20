@@ -11,6 +11,7 @@ using Hall9k.Domain.Features.Tasks.Documents;
 using Hall9k.Domain.Features.Tasks.Handlers;
 using Hall9k.Domain.Features.Tasks.Projections;
 using Hall9k.Domain.Infrastructure.Ids;
+using Hall9k.Domain.Shared.ValueObjects;
 using Marten;
 using Microsoft.Extensions.Options;
 
@@ -68,11 +69,15 @@ public sealed class RunLauncher(
 
             Guid sessionId = DomainId.New();
             ExecutorMode mode = ExecutorMode.Subscription;
+            // Resolved once, here, and carried to both the spawn and the record: the model
+            // the run is dispatched on and the model it actually runs on are the same fact
+            // (Decisions Log #33), so they can never disagree.
+            AgentModel model = options.Value.ResolveModel(AgentRole.Build, task.Model, project.Model);
 
             session.Events.StartStream<RunAggregate>(runId, new RunDispatched(
                 runId, taskId, nodeId, ownerId, leaseGeneration, sessionId,
                 worktree.Path, worktree.Branch, mode, DateTimeOffset.UtcNow,
-                IsFollowUp: followUp is not null));
+                IsFollowUp: followUp is not null, Model: model));
             await session.SaveChangesAsync(cancellationToken);
 
             // The reopen's kind picks the follow-up prompt; Unknown (reopens recorded
@@ -85,7 +90,7 @@ public sealed class RunLauncher(
                     : AgentPromptBuilder.BuildFollowUp(task, project, worktree.Branch, review.PullRequestUrl, commitStyle)
                 : AgentPromptBuilder.Build(task, project, worktree.Branch, worktree.Path, resumesPreviousWork);
             SpawnedAgent agent = await executor.SpawnAsync(
-                new AgentSpawnRequest(runId, sessionId, worktree.Path, prompt, mode, project.SkipPermissions),
+                new AgentSpawnRequest(runId, sessionId, worktree.Path, prompt, mode, model, project.SkipPermissions),
                 cancellationToken);
 
             await using IDocumentSession startSession = store.LightweightSession();

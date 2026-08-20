@@ -1,4 +1,5 @@
 using Hall9k.Domain.Features.Run;
+using Hall9k.Domain.Shared.ValueObjects;
 
 namespace Hall9k.Daemon.Execution;
 
@@ -9,6 +10,10 @@ namespace Hall9k.Daemon.Execution;
 /// ResumeSessionId, when set, re-enters that existing session (claude -p --resume, the
 /// log #5 pattern) instead of starting a fresh one — SessionId then only names this
 /// leg's artifacts.
+/// Model is required and has no default: every caller resolves the chain (Decisions Log
+/// #33) and states the answer, so no spawn can quietly fall back to the human's personal
+/// Claude Code setting. On a resumed session it is the model that session already runs
+/// on, carried so the milestone can record it and never re-applied to the process.
 /// </summary>
 public sealed record AgentSpawnRequest(
     Guid RunId,
@@ -16,6 +21,7 @@ public sealed record AgentSpawnRequest(
     string WorktreePath,
     string Prompt,
     ExecutorMode Mode,
+    AgentModel Model,
     bool SkipPermissions,
     string? SessionArtifactName = null,
     Guid? ResumeSessionId = null);
