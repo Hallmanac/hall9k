@@ -1,4 +1,5 @@
 using Hall9k.Domain.Features.Project.Events;
+using Hall9k.Domain.Shared.ValueObjects;
 using JasperFx.Events;
 using Marten.Events.Aggregation;
 
@@ -16,6 +17,8 @@ public sealed class ProjectDetails
     public bool SkipPermissions { get; set; }
     public int MaxParallelAgents { get; set; } = 3;
     public CommitStyle CommitStyle { get; set; } = CommitStyle.Unknown;
+    /// <summary>The project's model default; Unknown defers to the platform chain (Decisions Log #33).</summary>
+    public AgentModel Model { get; set; } = AgentModel.Unknown;
     public List<VerifyCommand> VerifyCommands { get; set; } = [];
     public List<ContextLink> ContextLinks { get; set; } = [];
     public DateTimeOffset RegisteredAt { get; set; }
@@ -61,6 +64,11 @@ public sealed class ProjectDetailsProjection : SingleStreamProjection<ProjectDet
         if (@event.Data.CommitStyle.HasValue)
         {
             view.CommitStyle = @event.Data.CommitStyle.Value ?? CommitStyle.Unknown;
+        }
+
+        if (@event.Data.Model.HasValue)
+        {
+            view.Model = @event.Data.Model.Value ?? AgentModel.Unknown;
         }
 
         view.SettingsChangedAt = @event.Data.ChangedAt;

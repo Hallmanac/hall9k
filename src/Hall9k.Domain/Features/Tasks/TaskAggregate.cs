@@ -1,4 +1,5 @@
 using Hall9k.Domain.Features.Tasks.Events;
+using Hall9k.Domain.Shared.ValueObjects;
 
 namespace Hall9k.Domain.Features.Tasks;
 
@@ -12,6 +13,8 @@ public sealed class TaskAggregate
     public string? AgentContext { get; private set; }
     public TaskConstraints? Constraints { get; private set; }
     public ExternalReference? ExternalReference { get; private set; }
+    /// <summary>The task's model override, the most specific link in the resolution chain (Decisions Log #33).</summary>
+    public AgentModel Model { get; private set; } = AgentModel.Unknown;
     public int LeaseGeneration { get; private set; }
     public Guid? ClaimedByNodeId { get; private set; }
     public Guid? CurrentRunId { get; private set; }
@@ -53,6 +56,7 @@ public sealed class TaskAggregate
         AgentContext = @event.AgentContext;
         Constraints = @event.Constraints;
         ExternalReference = @event.ExternalReference;
+        Model = @event.Model ?? AgentModel.Unknown;
         AddedAt = @event.AddedAt;
         AddedByOwnerId = @event.AddedByOwnerId;
         State = TaskState.Queued;

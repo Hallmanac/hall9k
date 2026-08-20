@@ -133,4 +133,55 @@ public sealed class ProjectDeciderTests
             baseBranch: null, registeredAt: Now));
         return project;
     }
+
+    /// <summary>
+    /// A project's model default is the third link in the chain (Decisions Log #33), and
+    /// Unknown is a legal explicit value: it clears the override so the node's per-role and
+    /// platform defaults decide again, exactly how CommitStyle behaves.
+    /// </summary>
+    [Fact]
+    public void Change_settings_carries_a_model_default_and_lets_unknown_clear_it()
+    {
+        ProjectAggregate project = Registered();
+
+        ProjectSettingsChanged set = ProjectDecider.ChangeSettings(
+            project, Optional<IReadOnlyList<VerifyCommand>>.None, Optional<bool>.None,
+            Optional<int>.None, Optional<IReadOnlyList<ContextLink>>.None, Now, DomainId.New(),
+            model: Optional<AgentModel>.Of(AgentModel.FromInput("claude-sonnet-5")));
+        project.Apply(set);
+        project.Model.Value.Should().Be("claude-sonnet-5");
+
+        ProjectSettingsChanged cleared = ProjectDecider.ChangeSettings(
+            project, Optional<IReadOnlyList<VerifyCommand>>.None, Optional<bool>.None,
+            Optional<int>.None, Optional<IReadOnlyList<ContextLink>>.None, Now, DomainId.New(),
+            model: Optional<AgentModel>.Of(AgentModel.FromInput("default")));
+        project.Apply(cleared);
+        project.Model.Should().Be(AgentModel.Unknown, "'default' hands the decision back to the chain");
+
+        ProjectSettingsChanged untouched = ProjectDecider.ChangeSettings(
+            project, Optional<IReadOnlyList<VerifyCommand>>.None, Optional<bool>.None,
+            Optional<int>.None, Optional<IReadOnlyList<ContextLink>>.None, Now, DomainId.New());
+        untouched.Model.HasValue.Should().BeFalse("an option not passed leaves the setting alone");
+    }
+
+    [Fact]
+    public void Change_settings_rejects_a_model_that_could_not_be_handed_to_the_executors_shell()
+    {
+        Action act = () => ProjectDecider.ChangeSettings(
+            Registered(), Optional<IReadOnlyList<VerifyCommand>>.None, Optional<bool>.None,
+            Optional<int>.None, Optional<IReadOnlyList<ContextLink>>.None, Now, DomainId.New(),
+            model: Optional<AgentModel>.Of(AgentModel.FromInput("$(id)")));
+
+        act.Should().Throw<DomainValidationException>().WithMessage("*not a usable model name*");
+    }
+
+    private static ProjectAggregate Registered()
+    {
+        ProjectAggregate project = new();
+        project.Apply(ProjectDecider.Register(
+            DomainId.New(), DomainId.New(), DomainId.New(),
+            name: "hall9k", repositoryPath: "/repos/hall9k.git", repositoryUrl: null,
+            baseBranch: "main", registeredAt: Now));
+        return project;
+    }
 }

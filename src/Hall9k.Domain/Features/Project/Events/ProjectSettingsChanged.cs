@@ -10,4 +10,5 @@ public sealed record ProjectSettingsChanged(
     Optional<IReadOnlyList<ContextLink>> ContextLinks,
     DateTimeOffset ChangedAt,
     Guid ChangedByOwnerId,
-    Optional<CommitStyle> CommitStyle = default);
+    Optional<CommitStyle> CommitStyle = default,
+    Optional<AgentModel> Model = default);

@@ -50,7 +50,8 @@ public static class ProjectDecider
         Optional<IReadOnlyList<ContextLink>> contextLinks,
         DateTimeOffset changedAt,
         Guid changedByOwnerId,
-        Optional<CommitStyle> commitStyle = default)
+        Optional<CommitStyle> commitStyle = default,
+        Optional<AgentModel> model = default)
     {
         if (maxParallelAgents.HasValue && maxParallelAgents.Value < 1)
         {
@@ -70,6 +71,17 @@ public static class ProjectDecider
                 + "(how follow-up runs land fixes on the PR branch, Decisions Log #26).");
         }
 
+        // Unknown clears the project override, exactly as it does for CommitStyle. Anything
+        // else must be spawnable: the value reaches the executor's /bin/sh command line, so a
+        // model carrying shell metacharacters is rejected here rather than quoted and hoped for.
+        if (model.HasValue && model.Value is { } chosen && chosen != AgentModel.Unknown && !chosen.IsWellFormed)
+        {
+            throw new DomainValidationException(
+                $"'{chosen.Value}' is not a usable model name. Use a tier alias "
+                + $"({AgentModel.Fable}, {AgentModel.Opus}, {AgentModel.Sonnet}, {AgentModel.Haiku}) or an exact "
+                + $"model id (for example {AgentModel.PlatformFallback}); letters, digits, and . _ - : / @ [ ] only.");
+        }
+
         return new ProjectSettingsChanged(
             project.Id,
             verifyCommands,
@@ -78,6 +90,7 @@ public static class ProjectDecider
             contextLinks,
             changedAt,
             changedByOwnerId,
-            commitStyle);
+            commitStyle,
+            model);
     }
 }

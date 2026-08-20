@@ -1,5 +1,6 @@
 using Hall9k.Domain.Features.Tasks.Events;
 using Hall9k.Domain.Shared.Exceptions;
+using Hall9k.Domain.Shared.ValueObjects;
 
 namespace Hall9k.Domain.Features.Tasks.Handlers;
 
@@ -21,7 +22,8 @@ public static class TaskDecider
         TaskConstraints? constraints,
         ExternalReference? externalReference,
         DateTimeOffset addedAt,
-        Guid addedByOwnerId)
+        Guid addedByOwnerId,
+        AgentModel? model = null)
     {
         if (projectId == Guid.Empty)
         {
@@ -42,9 +44,20 @@ public static class TaskDecider
                 "If you can't write acceptance criteria, the task isn't ready (PLAN.md §4).");
         }
 
+        // The override reaches the executor's /bin/sh command line, so it is vetted here
+        // rather than quoted and hoped for; Unknown simply states no preference.
+        AgentModel chosen = AgentModel.FromInput(model);
+        if (chosen != AgentModel.Unknown && !chosen.IsWellFormed)
+        {
+            throw new DomainValidationException(
+                $"'{chosen.Value}' is not a usable model name. Use a tier alias "
+                + $"({AgentModel.Fable}, {AgentModel.Opus}, {AgentModel.Sonnet}, {AgentModel.Haiku}) or an exact "
+                + $"model id (for example {AgentModel.PlatformFallback}); letters, digits, and . _ - : / @ [ ] only.");
+        }
+
         return new TaskAdded(
             id, projectId, objective, criteria, type, agentContext, constraints,
-            externalReference, addedAt, addedByOwnerId);
+            externalReference, addedAt, addedByOwnerId, chosen);
     }
 
     public static TaskClaimed Claim(TaskAggregate task, Guid nodeId, Guid ownerId, Guid runId, DateTimeOffset claimedAt)

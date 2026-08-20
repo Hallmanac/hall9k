@@ -4,6 +4,7 @@ using Hall9k.Domain.Features.Tasks.Events;
 using Hall9k.Domain.Features.Tasks.Handlers;
 using Hall9k.Domain.Infrastructure.Ids;
 using Hall9k.Domain.Shared.Exceptions;
+using Hall9k.Domain.Shared.ValueObjects;
 using Xunit;
 
 namespace Hall9k.Tests.Domain;
@@ -22,6 +23,60 @@ public sealed class TaskDeciderTests
             addedAt: Now, addedByOwnerId: DomainId.New());
 
         act.Should().Throw<DomainValidationException>().WithMessage("*objective*");
+    }
+
+    /// <summary>
+    /// The task override is the most specific link in the model chain (Decisions Log #33).
+    /// It is vetted here because the value ends up on the executor's /bin/sh command line.
+    /// </summary>
+    [Fact]
+    public void Add_canonicalizes_a_model_override_and_leaves_it_unknown_when_unstated()
+    {
+        TaskAdded withOverride = TaskDecider.Add(
+            DomainId.New(), DomainId.New(), objective: "Pin the model",
+            acceptanceCriteria: ["it is recorded"], TaskType.Feature,
+            agentContext: null, constraints: null, externalReference: null,
+            addedAt: Now, addedByOwnerId: DomainId.New(), model: " OPUS ");
+
+        withOverride.Model.Should().Be(AgentModel.Opus);
+
+        TaskAdded withoutOverride = TaskDecider.Add(
+            DomainId.New(), DomainId.New(), objective: "Let the chain decide",
+            acceptanceCriteria: ["it is recorded"], TaskType.Feature,
+            agentContext: null, constraints: null, externalReference: null,
+            addedAt: Now, addedByOwnerId: DomainId.New());
+
+        withoutOverride.Model.Should().Be(
+            AgentModel.Unknown, "an unstated override defers to the role, project, and platform levels");
+    }
+
+    /// <summary>
+    /// The word 'default' passes the shell charset check, so nothing but the value object
+    /// stops it becoming a task override that spawns on the owner's personal setting.
+    /// </summary>
+    [Fact]
+    public void Add_treats_a_model_of_default_as_no_override_rather_than_as_a_model_name()
+    {
+        TaskAdded added = TaskDecider.Add(
+            DomainId.New(), DomainId.New(), objective: "Leave the model to the chain",
+            acceptanceCriteria: ["It defers"], TaskType.Feature,
+            agentContext: null, constraints: null, externalReference: null,
+            addedAt: Now, addedByOwnerId: DomainId.New(), model: " Default ");
+
+        added.Model.Should().Be(
+            AgentModel.Unknown, "'default' states no preference; it is never the model a session ran on");
+    }
+
+    [Fact]
+    public void Add_rejects_a_model_that_could_not_be_handed_to_the_executors_shell()
+    {
+        Action act = () => TaskDecider.Add(
+            DomainId.New(), DomainId.New(), objective: "Smuggle a command",
+            acceptanceCriteria: ["it is refused"], TaskType.Feature,
+            agentContext: null, constraints: null, externalReference: null,
+            addedAt: Now, addedByOwnerId: DomainId.New(), model: "opus; rm -rf /");
+
+        act.Should().Throw<DomainValidationException>().WithMessage("*not a usable model name*");
     }
 
     [Fact]
