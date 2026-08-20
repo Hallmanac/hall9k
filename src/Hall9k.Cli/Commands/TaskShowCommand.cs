@@ -1,8 +1,10 @@
 using System.ComponentModel;
 using Hall9k.Cli.Infrastructure;
+using Hall9k.Domain.Features.Owner;
 using Hall9k.Domain.Features.Run.Projections;
 using Hall9k.Domain.Features.Tasks;
 using Hall9k.Domain.Features.Tasks.Projections;
+using Hall9k.Domain.Features.Tasks.Queries;
 using Hall9k.Domain.Shared.Exceptions;
 using Hall9k.Domain.Shared.ValueObjects;
 using Marten;
@@ -35,6 +37,7 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
         header.AddRow("State", TaskListCommand.StateMarkup(details.State));
         header.AddRow("Type", details.Type.Value.EscapeMarkup());
         header.AddRow("Id", $"[dim]{details.Id}[/]");
+        header.AddRow("Assigned to", await AssigneeMarkupAsync(session, details, cancellationToken));
         if (details.Model != AgentModel.Unknown)
         {
             header.AddRow("Model", $"{details.Model.Value.EscapeMarkup()} [dim](task override)[/]");
@@ -48,6 +51,11 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
         if (details.PullRequestUrl.IsNotBlank())
         {
             header.AddRow("PR", $"[link]{details.PullRequestUrl.EscapeMarkup()}[/]");
+        }
+
+        if (details.DependencyFailureReason.IsNotBlank())
+        {
+            header.AddRow("Dependency", $"[red]{details.DependencyFailureReason.EscapeMarkup()}[/]");
         }
 
         if (details.FailureReason.IsNotBlank())
@@ -73,9 +81,29 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
         AnsiConsole.Write(header);
 
         AnsiConsole.MarkupLine("\n[bold]Acceptance criteria[/]");
+        if (details.AcceptanceCriteria.Count == 0)
+        {
+            AnsiConsole.MarkupLine(
+                "  [dim]none yet — publishing requires at least one checkable criterion (PLAN.md §4)[/]");
+        }
+
         foreach (string criterion in details.AcceptanceCriteria)
         {
             AnsiConsole.MarkupLine($"  • {criterion.EscapeMarkup()}");
+        }
+
+        if (details.BlockedBy.Count > 0)
+        {
+            IReadOnlyList<TaskDependency> dependencies = await TaskDependencyQuery.LoadAsync(
+                session, details.BlockedBy, cancellationToken);
+            AnsiConsole.MarkupLine(
+                "\n[bold]Blocked by[/] [dim](met only at true closeout: the pull request merged)[/]");
+            foreach (TaskDependency dependency in dependencies)
+            {
+                AnsiConsole.MarkupLine(
+                    $"  {DependencyMark(dependency)} [dim]{TaskListCommand.ShortId(dependency.Id)}[/] "
+                    + $"{dependency.Objective.EscapeMarkup()} [dim]({dependency.State.Value})[/]");
+            }
         }
 
         if (details.AgentContext.IsNotBlank())
@@ -122,6 +150,8 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
             AnsiConsole.Write(runsTable);
         }
 
+        AnnounceNextStep(details);
+
         if (details.State == TaskState.Failed)
         {
             string shortId = TaskListCommand.ShortId(details.Id);
@@ -134,4 +164,56 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
         return ExitCodes.Ok;
     }
 
+    /// <summary>
+    /// Three answers, not two: a blocker that will never close out reads differently from one
+    /// that simply has not yet, because only one of them needs a human (Decisions Log #34).
+    /// </summary>
+    private static string DependencyMark(TaskDependency dependency) => dependency switch
+    {
+        { Blocks: false } => "[green]closed out[/]",
+        { IsDead: true } => "[red]never closes out[/]",
+        _ => "[yellow]waiting[/]",
+    };
+
+    /// <summary>
+    /// Whose nodes may claim this task. Unassigned is a fact, not a gap: nothing dispatches
+    /// until a human assigns it (Decisions Log #34).
+    /// </summary>
+    private static async Task<string> AssigneeMarkupAsync(
+        IQuerySession session, TaskDetails details, CancellationToken cancellationToken)
+    {
+        if (details.AssignedOwnerId is not { } ownerId)
+        {
+            return "[dim]nobody — an unassigned task never dispatches[/]";
+        }
+
+        OwnerDetails? owner = await session.LoadAsync<OwnerDetails>(ownerId, cancellationToken);
+        return owner is null ? $"[dim]{ownerId}[/]" : owner.Name.EscapeMarkup();
+    }
+
+    /// <summary>
+    /// The one next act for where the task actually is. The lifecycle has several explicit
+    /// steps (Decisions Log #34), so every state says which one it is waiting for rather than
+    /// leaving the reader to remember the graph.
+    /// </summary>
+    private static void AnnounceNextStep(TaskDetails details)
+    {
+        string shortId = TaskListCommand.ShortId(details.Id);
+        string? next = details.State.Value switch
+        {
+            "Draft" => details.AcceptanceCriteria.Count == 0
+                ? $"[dim]Next:[/] h9k task revise {shortId} --criteria \"…\" [dim]— publishing needs at least one[/]"
+                : $"[dim]Next:[/] h9k task publish {shortId} [dim]then[/] h9k task assign {shortId}",
+            "Published" => $"[dim]Next:[/] h9k task assign {shortId} [dim]— it will not run until you do[/]",
+            "Blocked" => $"[dim]It queues itself when its dependencies close out. To stop waiting:[/] "
+                + $"h9k task unassign {shortId} [dim]→[/] h9k task draft {shortId} [dim]→[/] h9k task revise {shortId} --clear-dependencies",
+            "Queued" => $"[dim]Waiting for a dispatch cycle on one of the assignee's nodes. To take it back:[/] h9k task unassign {shortId}",
+            _ => null,
+        };
+
+        if (next is not null)
+        {
+            AnsiConsole.MarkupLine($"\n{next}");
+        }
+    }
 }

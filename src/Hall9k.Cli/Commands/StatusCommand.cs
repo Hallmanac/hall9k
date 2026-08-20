@@ -35,7 +35,7 @@ public sealed class StatusCommand : Hall9kAsyncCommand<StatusCommand.Settings>
             session, DateTimeOffset.UtcNow, cancellationToken);
         if (rows.Count == 0)
         {
-            AnsiConsole.MarkupLine("[dim]Nothing tracked yet. Queue work with h9k task add.[/]");
+            AnsiConsole.MarkupLine("[dim]Nothing tracked yet. Draft some work with h9k task add.[/]");
             return ExitCodes.Ok;
         }
 
@@ -47,10 +47,20 @@ public sealed class StatusCommand : Hall9kAsyncCommand<StatusCommand.Settings>
         listed += Section(rows, AttentionBucket.Stalled, "stalled",
             "[red]Stalled[/] [dim]— claimed and live, but the agent stream has been silent for over an hour[/]", now);
         listed += Section(rows, AttentionBucket.Active, "active", "[yellow]Running[/]", now);
+        // Blocked work is neither running nor waiting on you, but the wait has a cause worth
+        // seeing: each row names the dependencies it is still waiting to close out (log #34).
+        listed += Section(rows, AttentionBucket.Blocked, "blocked",
+            "[cyan]Blocked[/] [dim]— assigned, waiting on dependencies to close out[/]", now);
 
         if (listed == 0)
         {
             AnsiConsole.MarkupLine("\n[green]Nothing needs you and nothing is running.[/]");
+            if (TaskRollup.From(rows) is { Draft: > 0 } or { Ready: > 0 })
+            {
+                AnsiConsole.MarkupLine(
+                    "[dim]Drafts and published tasks are counted above; neither dispatches until you "
+                    + "publish and assign:[/] h9k task list --state draft [dim]·[/] h9k task list --state ready");
+            }
         }
 
         AnsiConsole.MarkupLine(
@@ -96,28 +106,37 @@ public sealed class StatusCommand : Hall9kAsyncCommand<StatusCommand.Settings>
         string[] activity = [.. rows.Select(row => row.Activity.IsNotBlank()
             ? $"[dim]{row.Activity}[/]"
             : $"[dim]added {row.AgeMarkup(now)}[/]")];
+        // The owner column earns its width only where there is an assignee to show; on a
+        // one-owner install it would otherwise repeat one name down the pane (log #34).
+        bool assigned = rows.Any(row => row.Assignee.IsNotBlank());
         int objective = TaskStatusRow.ObjectiveWidth(consoleWidth, bordered: false,
         [
             ["id", .. rows.Select(row => row.IdMarkup)],
             ["status", .. rows.Select(row => row.StatusMarkup)],
             ["project", .. rows.Select(row => row.ProjectMarkup)],
+            .. assigned ? (string[][])[["owner", .. rows.Select(row => row.AssigneeMarkup)]] : [],
             ["activity", .. activity],
             ["pr", .. rows.Select(row => row.PullRequestMarkup)],
         ]);
 
         // The headers are hidden but still sized for, so they are measured above with the cells.
         Table table = new Table().Border(TableBorder.None).HideHeaders();
-        table.AddColumns("id", "status", "project", "objective", "activity", "pr");
+        table.AddColumns([
+            "id", "status", "project", .. assigned ? (string[])["owner"] : [], "objective", "activity", "pr",
+        ]);
+
         for (int index = 0; index < rows.Count; index++)
         {
             TaskStatusRow row = rows[index];
-            table.AddRow(
+            table.AddRow([
                 row.IdMarkup,
                 row.StatusMarkup,
                 row.ProjectMarkup,
+                .. assigned ? (string[])[row.AssigneeMarkup] : [],
                 row.ObjectiveMarkup(objective),
                 activity[index],
-                row.PullRequestMarkup);
+                row.PullRequestMarkup,
+            ]);
         }
 
         return table;

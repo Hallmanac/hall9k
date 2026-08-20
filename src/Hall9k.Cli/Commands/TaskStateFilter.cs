@@ -27,12 +27,26 @@ internal static class TaskStateFilter
         ["active"] = AttentionBucket.Active,
         ["inreview"] = AttentionBucket.InReview,
         ["queued"] = AttentionBucket.Queued,
+        ["blocked"] = AttentionBucket.Blocked,
+        ["ready"] = AttentionBucket.Ready,
+        // The state is called Published in the Status column; "ready" is what the group is
+        // called. Both are accepted, because a reader types what they just read.
+        ["published"] = AttentionBucket.Ready,
+        ["draft"] = AttentionBucket.Draft,
         ["done"] = AttentionBucket.Done,
         ["closed"] = AttentionBucket.Closed,
     };
 
-    internal static readonly string[] AttentionSpelling =
-        ["needs-you", "stalled", "active", "in-review", "queued", "done", "closed"];
+    /// <summary>
+    /// The attention groups as --state spells them, in the order h9k status reads them. A
+    /// <c>const</c> rather than an array so the --state <c>[Description]</c> can concatenate
+    /// it: the --help tree is a first-class interface (AGENTS.md), and a second hand-typed
+    /// copy of this vocabulary is exactly how blocked, ready and draft shipped undiscoverable
+    /// while the validation error listed them. Origin incident (2026-08-20): the lifecycle
+    /// split added three groups to this filter and the help text kept the pre-split seven.
+    /// </summary>
+    internal const string AttentionSpelling =
+        "needs-you, stalled, active, in-review, queued, blocked, ready, draft, done, closed";
 
     /// <summary>
     /// Every bucket TaskStatusComposer.Compose can produce: a task's own work state, the
@@ -41,6 +55,10 @@ internal static class TaskStateFilter
     /// </summary>
     internal static readonly string[] Buckets =
     [
+        // Draft and Blocked are deliberately absent as exact buckets: the attention groups
+        // above already spell them, and a word that names both a group and a bucket is the
+        // collision the origin incident was about. Published is spelled by the "ready" group
+        // for the same reason.
         TaskState.Queued.Value, TaskState.Claimed.Value, TaskState.NeedsHuman.Value,
         TaskState.Done.Value, TaskState.Failed.Value, TaskState.Abandoned.Value,
         RunState.Dispatched.Value, RunState.Running.Value, RunState.Verifying.Value,
@@ -63,7 +81,7 @@ internal static class TaskStateFilter
 
         throw new DomainValidationException(
             $"--state '{state}' is not a state h9k tracks. Attention groups (each selects a whole group): "
-            + $"{string.Join(", ", AttentionSpelling)}. Exact states: {string.Join(", ", Buckets)}. "
+            + $"{AttentionSpelling}. Exact states: {string.Join(", ", Buckets)}. "
             + "Hyphens are optional and case does not matter.");
     }
 

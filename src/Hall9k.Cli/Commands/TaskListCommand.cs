@@ -23,8 +23,10 @@ public sealed class TaskListCommand : Hall9kAsyncCommand<TaskListCommand.Setting
         [CommandOption("--state <STATE>")]
         [Description(
             "Only tasks in this state, matched against the Status column. An attention group selects all of "
-            + "it (needs-you, stalled, active, in-review, queued, done, closed); an exact state selects "
-            + "just that one (Running, Verifying, ChecksFailing, NeedsHuman, …). Hyphens and case are optional.")]
+            + "it (" + TaskStateFilter.AttentionSpelling + "); an exact state selects just that one "
+            + "(Running, Verifying, ChecksFailing, NeedsHuman, …). Hyphens and case are optional. "
+            + "draft, ready and blocked are the lifecycle groups: a task is written as a draft, published "
+            + "when it is ready, and blocked while a dependency has not closed out (PLAN.md #34).")]
         public string? State { get; init; }
 
         [CommandOption("--limit <N>")]
@@ -62,7 +64,7 @@ public sealed class TaskListCommand : Hall9kAsyncCommand<TaskListCommand.Setting
         if (all.Count == 0)
         {
             AnsiConsole.MarkupLine(
-                "[dim]No tasks. Add one:[/] h9k task add --project <name> --objective \"…\" --criteria \"…\"");
+                "[dim]No tasks. Draft one:[/] h9k task add --project <name> --objective \"…\"");
             return ExitCodes.Ok;
         }
 
@@ -95,6 +97,12 @@ public sealed class TaskListCommand : Hall9kAsyncCommand<TaskListCommand.Setting
         IReadOnlyList<TaskStatusRow> rows, bool scoped, int consoleWidth, DateTimeOffset now)
     {
         string[] ages = [.. rows.Select(row => $"[dim]{row.AgeMarkup(now)}[/]")];
+        // Deliberately no assignee column here. This table already carries six fixed columns,
+        // and a seventh pushes the objective onto its floor at the widths the one-line promise
+        // is measured at (TaskTableLayoutTests) — while saying nothing a single-owner install
+        // does not already know. The attention pane names the assignee, h9k task show names it
+        // per task, and the browse table is where it goes when multi-owner projects arrive and
+        // the column finally distinguishes something (Decisions Log #34, IDEA-task-assignment).
         int objective = TaskStatusRow.ObjectiveWidth(consoleWidth, bordered: true,
         [
             ["Id", .. rows.Select(row => row.IdMarkup)],
@@ -178,7 +186,10 @@ public sealed class TaskListCommand : Hall9kAsyncCommand<TaskListCommand.Setting
 
     internal static string StateMarkup(TaskState state) => state.Value switch
     {
+        "Draft" => "[dim]Draft[/]",
+        "Published" => "[blue]Published[/]",
         "Queued" => "[blue]Queued[/]",
+        "Blocked" => "[cyan]Blocked[/]",
         "Claimed" => "[yellow]Claimed[/]",
         "NeedsHuman" => "[red bold]NeedsHuman[/]",
         "Done" => "[green]Done[/]",

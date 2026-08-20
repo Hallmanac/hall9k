@@ -76,5 +76,6 @@ public sealed class TaskStatusMarkupTests
             new Dictionary<Guid, RunListItem>(),
             new Dictionary<Guid, RunActivity>(),
             new Dictionary<Guid, string>(),
+            new Dictionary<Guid, string>(),
             Now);
 }

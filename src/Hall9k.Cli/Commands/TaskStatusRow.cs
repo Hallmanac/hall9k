@@ -22,7 +22,10 @@ internal sealed record TaskStatusRow(
     string PullRequestUrl,
     bool Stalled,
     int Priority,
-    DateTimeOffset AddedAt)
+    DateTimeOffset AddedAt,
+    string Assignee = "",
+    IReadOnlyList<Guid>? UnmetDependencies = null,
+    string? DependencyFailureReason = null)
 {
     /// <summary>
     /// A truncated objective still has to say something; below this the column is noise. A
@@ -41,6 +44,14 @@ internal sealed record TaskStatusRow(
     public string ProjectMarkup => Project.EscapeMarkup();
 
     public string TypeMarkup => Type.EscapeMarkup();
+
+    /// <summary>
+    /// Who the task was assigned to, empty when nobody has been. Assignment is the dispatch
+    /// trigger (Decisions Log #34), so an empty cell is a fact worth reading: nothing will
+    /// claim this task.
+    /// </summary>
+    public string AssigneeMarkup => Assignee.IsBlank() ? "[dim]—[/]" : Assignee.EscapeMarkup();
+
 
     public string ObjectiveMarkup(int max) => TaskListCommand.Truncate(Objective, max).EscapeMarkup();
 
@@ -133,6 +144,15 @@ internal enum AttentionBucket
 
     /// <summary>The objective was met.</summary>
     Done,
+
+    /// <summary>Assigned, but waiting on a dependency that has not reached true closeout.</summary>
+    Blocked,
+
+    /// <summary>Published and past the readiness gate: waiting for a human to assign it.</summary>
+    Ready,
+
+    /// <summary>Still being developed: a draft, invisible to the dispatcher until published.</summary>
+    Draft,
 
     /// <summary>Abandoned, or a state this build does not recognize.</summary>
     Closed,

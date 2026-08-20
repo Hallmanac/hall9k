@@ -1,7 +1,9 @@
+using Hall9k.Domain.Features.Owner;
 using Hall9k.Domain.Features.Project.Projections;
 using Hall9k.Domain.Features.Run.Documents;
 using Hall9k.Domain.Features.Run.Projections;
 using Hall9k.Domain.Features.Run;
+using Hall9k.Domain.Features.Tasks;
 using Hall9k.Domain.Features.Tasks.Projections;
 using Marten;
 using Spectre.Console;
@@ -34,12 +36,14 @@ internal static class TaskStatusComposer
 
         Dictionary<Guid, string> projects = (await session.Query<ProjectDetails>().ToListAsync(cancellationToken))
             .ToDictionary(p => p.Id, p => p.Name);
+        Dictionary<Guid, string> owners = (await session.Query<OwnerDetails>().ToListAsync(cancellationToken))
+            .ToDictionary(o => o.Id, o => o.Name);
         Dictionary<Guid, RunListItem> runs = (await session.Query<RunListItem>().ToListAsync(cancellationToken))
             .ToDictionary(r => r.Id);
         Dictionary<Guid, RunActivity> activity = (await session.Query<RunActivity>().ToListAsync(cancellationToken))
             .ToDictionary(a => a.Id);
 
-        return [.. tasks.Select(task => Compose(task, runs, activity, projects, now))];
+        return [.. tasks.Select(task => Compose(task, runs, activity, projects, owners, now))];
     }
 
     /// <summary>
@@ -55,6 +59,7 @@ internal static class TaskStatusComposer
         IReadOnlyDictionary<Guid, RunListItem> runs,
         IReadOnlyDictionary<Guid, RunActivity> activity,
         IReadOnlyDictionary<Guid, string> projects,
+        IReadOnlyDictionary<Guid, string> owners,
         DateTimeOffset now)
     {
         RunListItem? run = task.CurrentRunId is { } runId ? runs.GetValueOrDefault(runId) : null;
@@ -62,6 +67,11 @@ internal static class TaskStatusComposer
 
         string bucket = task.State.Value switch
         {
+            // A blocker that reached Failed or Abandoned will never close out, so the task
+            // cannot unblock itself: it is held for a human with the reason attached. The
+            // task stays Blocked underneath, exactly as a parked closeout stays Done (log #22)
+            // — the state says where the work is, the display says who owes it a decision.
+            "Blocked" when task.DependencyFailureReason.IsNotBlank() => "NeedsHuman",
             // A review-parked run outranks the closeout composition: the loop handed
             // the diff to the human before any pull request could open (log #24).
             "Claimed" when run?.State == RunState.ReviewParked => "NeedsHuman",
@@ -91,6 +101,13 @@ internal static class TaskStatusComposer
             activityText = RelativeAge(silence);
         }
 
+        // A blocked task's "activity" is what it waits on: the pane must never leave a human
+        // hunting for why nothing is happening.
+        if (task.State == TaskState.Blocked && task.UnmetDependencies.Count > 0)
+        {
+            activityText = $"blocked by {string.Join(", ", task.UnmetDependencies.Select(TaskListCommand.ShortId))}";
+        }
+
         return new TaskStatusRow(
             task.Id,
             task.ProjectId,
@@ -104,7 +121,10 @@ internal static class TaskStatusComposer
             task.PullRequestUrl ?? string.Empty,
             stalled,
             Priority(bucket, stalled),
-            task.AddedAt);
+            task.AddedAt,
+            task.AssignedOwnerId is { } assignee ? owners.GetValueOrDefault(assignee) ?? "?" : string.Empty,
+            task.UnmetDependencies,
+            task.DependencyFailureReason);
     }
 
     /// <summary>The composed bucket, coloured; a live bucket gone quiet says so loudly.</summary>
@@ -118,6 +138,9 @@ internal static class TaskStatusComposer
             ? $"[red]{bucket} ⚠ STALLED[/]"
             : $"[yellow]{bucket}[/]",
         "Queued" => "[blue]Queued[/]",
+        "Blocked" => "[cyan]Blocked[/]",
+        "Published" => "[blue]Published[/]",
+        "Draft" => "[dim]Draft[/]",
         "Done" => "[green]Done[/]",
         "Failed" => "[red]Failed[/]",
         "Abandoned" => "[dim]Abandoned[/]",
@@ -140,8 +163,14 @@ internal static class TaskStatusComposer
         "Claimed" or "Completed" or "Killed" or "Superseded" => 2,
         "AwaitingReview" or "ChecksFailing" or "ReviewPending" => 3,
         "Queued" => 4,
-        "Done" => 6,
-        _ => 7,
+        // The development states rank below dispatched work: they are not waiting on the
+        // platform, they are waiting on a human to finish thinking (Blocked is waiting on
+        // another task, which is closer to running than either).
+        "Blocked" => 5,
+        "Published" => 6,
+        "Draft" => 7,
+        "Done" => 8,
+        _ => 9,
     };
 
     /// <summary>
@@ -166,6 +195,12 @@ internal static class TaskStatusComposer
         "Claimed" or "Completed" or "Killed" or "Superseded" => AttentionBucket.Active,
         "AwaitingReview" or "ChecksFailing" or "ReviewPending" => AttentionBucket.InReview,
         "Queued" => AttentionBucket.Queued,
+        // The three lifecycle states before dispatch (Decisions Log #34). None of them is
+        // "closed": a draft is work in progress, a published task is work waiting for a
+        // human's go-ahead, and a blocked one is work waiting on another task.
+        "Blocked" => AttentionBucket.Blocked,
+        "Published" => AttentionBucket.Ready,
+        "Draft" => AttentionBucket.Draft,
         "Done" => AttentionBucket.Done,
         _ => AttentionBucket.Closed,
     };
