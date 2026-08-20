@@ -1,4 +1,5 @@
 using Hall9k.Domain.Features.Project.Events;
+using Hall9k.Domain.Shared.ValueObjects;
 
 namespace Hall9k.Domain.Features.Project;
 
@@ -14,6 +15,8 @@ public sealed class ProjectAggregate
     public bool SkipPermissions { get; private set; }
     public int MaxParallelAgents { get; private set; } = 3;
     public CommitStyle CommitStyle { get; private set; } = CommitStyle.Unknown;
+    /// <summary>The project's model default; Unknown defers to the platform chain (Decisions Log #33).</summary>
+    public AgentModel Model { get; private set; } = AgentModel.Unknown;
     public DateTimeOffset RegisteredAt { get; private set; }
 
     private readonly List<VerifyCommand> _verifyCommands = [];
@@ -61,6 +64,11 @@ public sealed class ProjectAggregate
         if (@event.CommitStyle.HasValue)
         {
             CommitStyle = @event.CommitStyle.Value ?? CommitStyle.Unknown;
+        }
+
+        if (@event.Model.HasValue)
+        {
+            Model = @event.Model.Value ?? AgentModel.Unknown;
         }
     }
 }

@@ -1,4 +1,5 @@
 using Hall9k.Domain.Features.Tasks.Events;
+using Hall9k.Domain.Shared.ValueObjects;
 using JasperFx.Events;
 using Marten.Events.Aggregation;
 
@@ -25,6 +26,8 @@ public sealed class TaskDetails
     public string? AgentContext { get; set; }
     public TaskConstraints? Constraints { get; set; }
     public string? ExternalReference { get; set; }
+    /// <summary>The task's model override; Unknown means the per-role, project, and platform links decide (Decisions Log #33).</summary>
+    public AgentModel Model { get; set; } = AgentModel.Unknown;
     public int LeaseGeneration { get; set; }
     public Guid? ClaimedByNodeId { get; set; }
     public Guid? CurrentRunId { get; set; }
@@ -60,6 +63,7 @@ public sealed class TaskDetailsProjection : SingleStreamProjection<TaskDetails, 
         AgentContext = @event.Data.AgentContext,
         Constraints = @event.Data.Constraints,
         ExternalReference = @event.Data.ExternalReference?.ToString(),
+        Model = @event.Data.Model ?? AgentModel.Unknown,
         AddedAt = @event.Data.AddedAt,
         AddedByOwnerId = @event.Data.AddedByOwnerId,
     };
