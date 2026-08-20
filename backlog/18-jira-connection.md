@@ -6,7 +6,7 @@ criteria:
 - h9k connection add jira registers a Jira Cloud connection on the Connection aggregate (site URL, account email, API token) with the token stored per the existing CredentialRef discipline, never in an event payload
 - A project can bind its Jira project key (h9k project set --jira <KEY>), visible in h9k project show
 - h9k task add --from-jira <ISSUE-KEY> imports a card through the source-agnostic resolver seam from backlog 17: summary seeds the objective, description becomes agent context, the card key lands as ExternalReference; criteria remain human-supplied (never invented from a card)
-- h9k task push-to-jira <task> creates a Jira card from an existing task (objective as summary, criteria and context as description) and records the created key as the task's ExternalReference - the create-cards direction Brian asked for, on demand rather than automatic
+- Card creation is agent-mediated, never modeled by the platform: h9k task push-to-jira <task> dispatches an agent run whose prompt carries the task's content and defers card semantics (issue types, fields, routing rules) to the project's own repo skills and the agent's MCP access; the platform then VERIFIES the agent-reported card key with a config-agnostic API read and records ExternalReference from the observed response, never from the agent's claim
 - Closeout tells Jira what happened: when the monitor observes the merge of a task carrying a Jira reference, it comments on the card with the PR link (comment, not transition - status transitions are workflow-specific and deferred until real usage shows which ones matter)
 - Every Jira API failure is loud and self-correcting (names the site, the key, and the likely auth fix); the platform never retries Jira writes blind
 - dotnet build and dotnet test pass
@@ -16,10 +16,18 @@ project management lives there, and Hall9k should both ingest cards and create t
 Import rides backlog 17's resolver seam; creation is explicit and on-demand.
 
 Design constraints:
-- Platform-native and deterministic: the daemon and CLI talk to Jira's REST API with
-  the registered credential. This is deliberately separate from agents' own MCP
-  access (dispatched agents inherit the user's Atlassian MCP and may read Jira
-  in-run; the PLATFORM's writes go through the connection, auditably).
+- The read/write asymmetry is the doctrine (Brian, 2026-08-20): reading Jira is
+  config-agnostic (a GET returns the same shape however exotic the project's
+  types), writing is config-laden (custom issue types like "dev task" vs "support
+  request", org routing rules). So the platform's registered credential is for
+  READS - import snapshots, verification of agent-reported keys - plus the one
+  config-agnostic write (the closeout comment; comments are untyped). All card
+  AUTHORING goes through agent runs using the project's repo skills and MCP,
+  exactly the setup Brian's team already runs by hand: the org's Jira rules live
+  in a skill file Hall9k never has to model, and DiscoverRepoSkills already
+  delivers it to every dispatched agent.
+- Verification is how never-guess survives agent-mediated writes: the platform
+  records what it observed by reading, never what an agent reported doing.
 - Direction of truth: Hall9k is the source of truth for task state; Jira is a
   mirror surface. Never import state changes from Jira after the initial snapshot,
   and never let a Jira edit mutate a task (the board-as-truth lesson from the
