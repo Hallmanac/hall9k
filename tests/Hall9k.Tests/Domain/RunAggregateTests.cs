@@ -77,35 +77,51 @@ public sealed class RunAggregateTests
         run.Apply(new VerificationPassed(id, Now));
         run.ReviewPhase.Should().Be(ReviewPhase.None, "no review has been dispatched yet");
 
-        Guid reviewSession = DomainId.New();
-        run.Apply(new ReviewDispatched(id, reviewSession, Cycle: 1, ProcessId: 5001, Now, Now));
+        Guid conformanceSession = DomainId.New();
+        Guid adversarialSession = DomainId.New();
+        run.Apply(new ReviewDispatched(
+            id, conformanceSession, Cycle: 1, ProcessId: 5001, Now, Now, Lens: ReviewLens.Conformance));
+        run.Apply(new ReviewDispatched(
+            id, adversarialSession, Cycle: 1, ProcessId: 5011, Now, Now, Lens: ReviewLens.Adversarial));
         run.State.Should().Be(RunState.UnderReview);
         run.State.IsLive.Should().BeTrue("a review session is a live process the daemon watches");
         run.ReviewPhase.Should().Be(ReviewPhase.AwaitingVerdict);
-        run.ActiveReviewSessionId.Should().Be(reviewSession);
-        run.ActiveReviewSessionIsFix.Should().BeFalse();
+        run.InFlightReviewPasses.Select(pass => pass.SessionId).Should().Equal(
+            [conformanceSession, adversarialSession], "both lenses are in flight, in dispatch order");
 
         run.Apply(new TokensRecorded(id, 30_000, 5_000, null, Now));
+        run.Apply(new ReviewPassCompleted(id, 1, ReviewLens.Conformance, ReviewVerdict.MergeReady, Now));
+        run.ReviewPhase.Should().Be(
+            ReviewPhase.AwaitingVerdict, "one clean lens is not a cycle: the other is still reading");
+        run.Apply(new ReviewPassCompleted(id, 1, ReviewLens.Adversarial, ReviewVerdict.NeedsFixes, Now));
         run.Apply(new ReviewCompleted(id, 1, ReviewVerdict.NeedsFixes, Now));
-        run.ReviewPhase.Should().Be(ReviewPhase.FixNeeded);
+        run.ReviewPhase.Should().Be(ReviewPhase.FixNeeded, "either lens finding real problems needs fixes");
         run.LastReviewVerdict.Should().Be(ReviewVerdict.NeedsFixes);
-        run.ActiveReviewSessionId.Should().BeNull("the verdict retires the review session");
+        run.InFlightReviewPasses.Should().BeEmpty("the verdicts retire both review sessions");
+        run.CompletedReviewPasses.Select(pass => pass.Lens).Should().Equal(
+            [ReviewLens.Conformance, ReviewLens.Adversarial], "the cycle records which lens said what");
 
         Guid fixSession = DomainId.New();
         run.Apply(new ReviewFixDispatched(id, fixSession, Cycle: 1, ProcessId: 5002, Now, Now));
         run.ReviewPhase.Should().Be(ReviewPhase.AwaitingFix);
-        run.ReviewFixRuns.Should().Be(1, "the fix leg is what the automatic budget counts");
-        run.ActiveReviewSessionIsFix.Should().BeTrue();
+        run.ReviewFixRuns.Should().Be(1, "one fix session per cycle, whichever lenses found something");
+        run.ActiveFixSessionId.Should().Be(fixSession);
 
         run.Apply(new TokensRecorded(id, 40_000, 8_000, null, Now));
         run.Apply(new ReviewFixCompleted(id, 1, ReviewFixOutcome.Fixed, Now));
         run.ReviewPhase.Should().Be(ReviewPhase.Reverify, "a fixed outcome re-runs the gates before the next review");
 
         run.Apply(new VerificationPassed(id, Now));
-        run.Apply(new ReviewDispatched(id, DomainId.New(), Cycle: 2, ProcessId: 5003, Now, Now));
+        run.Apply(new ReviewDispatched(
+            id, DomainId.New(), Cycle: 2, ProcessId: 5003, Now, Now, Lens: ReviewLens.Conformance));
+        run.Apply(new ReviewDispatched(
+            id, DomainId.New(), Cycle: 2, ProcessId: 5013, Now, Now, Lens: ReviewLens.Adversarial));
+        run.CompletedReviewPasses.Should().BeEmpty("a new cycle starts with no answers, only the last cycle's history");
         run.Apply(new TokensRecorded(id, 25_000, 4_000, null, Now));
+        run.Apply(new ReviewPassCompleted(id, 2, ReviewLens.Conformance, ReviewVerdict.MergeReady, Now));
+        run.Apply(new ReviewPassCompleted(id, 2, ReviewLens.Adversarial, ReviewVerdict.MergeReady, Now));
         run.Apply(new ReviewCompleted(id, 2, ReviewVerdict.MergeReady, Now));
-        run.ReviewPhase.Should().Be(ReviewPhase.MergeReady);
+        run.ReviewPhase.Should().Be(ReviewPhase.MergeReady, "merge-ready takes BOTH lenses clean");
         run.ReviewCycle.Should().Be(2);
 
         run.InputTokens.Should().Be(195_000, "review and fix sessions record tokens like any other session");
@@ -145,23 +161,34 @@ public sealed class RunAggregateTests
             id, DomainId.New(), DomainId.New(), DomainId.New(), 1, DomainId.New(),
             "/wt/x", "task/x", ExecutorMode.Subscription, Now));
 
-        Guid reviewSession = DomainId.New();
-        run.Apply(new ReviewDispatched(id, reviewSession, Cycle: 1, ProcessId: 5001, Now, Now));
+        Guid conformanceSession = DomainId.New();
+        Guid adversarialSession = DomainId.New();
+        run.Apply(new ReviewDispatched(
+            id, conformanceSession, Cycle: 1, ProcessId: 5001, Now, Now, Lens: ReviewLens.Conformance));
+        run.Apply(new ReviewDispatched(
+            id, adversarialSession, Cycle: 1, ProcessId: 5011, Now, Now, Lens: ReviewLens.Adversarial));
+        run.Apply(new ReviewPassCompleted(id, 1, ReviewLens.Conformance, ReviewVerdict.Unknown, Now));
+        run.Apply(new ReviewPassCompleted(id, 1, ReviewLens.Adversarial, ReviewVerdict.MergeReady, Now));
         run.Apply(new ReviewCompleted(id, 1, ReviewVerdict.Unknown, Now));
         run.ReviewPhase.Should().Be(ReviewPhase.VerdictMissing, "no parseable verdict means a re-prompt, not a guess");
-        run.LastReviewSessionId.Should().Be(reviewSession, "the re-prompt resumes the session that already read the diff");
+        run.CompletedReviewPasses.Single(pass => pass.Verdict == ReviewVerdict.Unknown).SessionId.Should().Be(
+            conformanceSession, "the re-prompt resumes the pass that already read the diff");
         run.VerdictRepromptedCycle.Should().Be(0, "the one re-prompt is still available");
 
         Guid artifactId = DomainId.New();
-        run.Apply(new ReviewVerdictReprompted(id, artifactId, reviewSession, Cycle: 1, ProcessId: 5002, Now, Now));
+        run.Apply(new ReviewVerdictReprompted(
+            id, artifactId, conformanceSession, Cycle: 1, ProcessId: 5002, Now, Now, Lens: ReviewLens.Conformance));
         run.ReviewPhase.Should().Be(ReviewPhase.AwaitingVerdict);
-        run.ActiveReviewSessionId.Should().Be(artifactId, "the resumed leg gets its own artifact identity");
-        run.ActiveReviewSessionIsFix.Should().BeFalse();
-        run.VerdictRepromptedCycle.Should().Be(1, "the cycle's one re-prompt is now spent");
-        run.LastReviewSessionId.Should().Be(reviewSession, "the transcript still belongs to the original session");
+        run.InFlightReviewPasses.Single().SessionId.Should().Be(
+            artifactId, "the resumed leg gets its own artifact identity");
+        run.InFlightReviewPasses.Single().TranscriptSessionId.Should().Be(
+            conformanceSession, "the transcript still belongs to the original session");
+        run.VerdictRepromptedCycle.Should().Be(1, "the cycle's one re-prompt is now spent — the CYCLE's, not each lens's");
 
+        run.Apply(new ReviewPassCompleted(id, 1, ReviewLens.Conformance, ReviewVerdict.Unknown, Now));
         run.Apply(new ReviewCompleted(id, 1, ReviewVerdict.Unknown, Now));
         run.ReviewPhase.Should().Be(ReviewPhase.VerdictMissing, "still verdict-less — and the re-prompt is spent");
+        run.CompletedReviewPasses.Should().HaveCount(2, "a re-prompted pass replaces its own answer, it does not add one");
 
         run.Apply(new ReviewParked(id, "No parseable verdict, even after a re-prompt.", Now));
         run.State.Should().Be(RunState.ReviewParked);

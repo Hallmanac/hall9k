@@ -1,3 +1,4 @@
+using System.Collections.ObjectModel;
 using Hall9k.Domain.Features.Run;
 using Hall9k.Domain.Shared.ValueObjects;
 
@@ -24,7 +25,16 @@ public sealed record AgentSpawnRequest(
     AgentModel Model,
     bool SkipPermissions,
     string? SessionArtifactName = null,
-    Guid? ResumeSessionId = null);
+    Guid? ResumeSessionId = null)
+{
+    /// <summary>
+    /// Environment variables layered onto the owner's environment for this session only.
+    /// Empty by default: a spawn inherits the owner's shell and states a variable here only
+    /// when this particular session needs something the owner's environment does not say.
+    /// </summary>
+    public IReadOnlyDictionary<string, string> Environment { get; init; } =
+        ReadOnlyDictionary<string, string>.Empty;
+}
 
 public sealed record SpawnedAgent(int ProcessId, DateTimeOffset StartedAt);
 

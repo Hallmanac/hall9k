@@ -14,6 +14,9 @@ public sealed class FakeProcessManager : IProcessManager
     /// <summary>Every (processId, startedAt) pair IsAlive was asked about, in call order.</summary>
     public List<(int ProcessId, DateTimeOffset StartedAt)> LivenessQueries { get; } = [];
 
+    /// <summary>Every process Terminate was called on, in call order — what the seam was ASKED to kill.</summary>
+    public List<(int ProcessId, DateTimeOffset StartedAt)> Terminations { get; } = [];
+
     public void MarkAlive(int processId) => _alive.Add(processId);
 
     public void MarkDead(int processId) => _alive.Remove(processId);
@@ -24,5 +27,9 @@ public sealed class FakeProcessManager : IProcessManager
         return _alive.Contains(processId);
     }
 
-    public void Terminate(int processId, DateTimeOffset startedAt) => _alive.Remove(processId);
+    public void Terminate(int processId, DateTimeOffset startedAt)
+    {
+        Terminations.Add((processId, startedAt));
+        _alive.Remove(processId);
+    }
 }

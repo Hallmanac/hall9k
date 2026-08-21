@@ -150,12 +150,13 @@ public sealed class AgentPromptBuilderTests : IDisposable
     }
 
     [Fact]
-    public void Review_prompt_demands_verified_findings_with_locations_scenarios_and_a_verdict()
+    public void Conformance_review_prompt_demands_verified_findings_with_locations_scenarios_and_a_verdict()
     {
         ProjectDetails project = SomeProject();
         project.BaseBranch = "main";
 
-        string prompt = AgentPromptBuilder.BuildReview(SomeTask(), project, "task/1-slug", cycle: 2);
+        string prompt = AgentPromptBuilder.BuildReview(
+            SomeTask(), project, "task/1-slug", cycle: 2, ReviewLens.Conformance);
 
         prompt.Should().Contain("independent reviewer with fresh context");
         prompt.Should().Contain("git diff main...HEAD");
@@ -169,12 +170,108 @@ public sealed class AgentPromptBuilderTests : IDisposable
         prompt.Should().Contain("Do NOT modify files");
         prompt.Should().Contain("review cycle 2");
         prompt.Should().Contain("Add rate limiting to auth endpoints", "the reviewer needs the intent to judge the diff");
+        prompt.Should().Contain("Requests over the limit get 429", "the acceptance criteria are this lens's measuring stick");
     }
 
+    /// <summary>
+    /// The adversarial lens is a different attention budget, not a second roll of the same
+    /// prompt (Decisions Log #59): it is told to assume the code is wrong, handed defect
+    /// classes as a warm-up rather than a checklist, and deliberately told nothing about what
+    /// the change was supposed to do — a reviewer holding the intent reads for alignment with
+    /// it, which is the pass that already exists.
+    /// </summary>
     [Fact]
-    public void Review_prompt_forbids_ending_without_a_verdict_even_mid_check()
+    public void Adversarial_review_prompt_hunts_defects_without_ever_naming_the_criteria()
     {
-        string prompt = AgentPromptBuilder.BuildReview(SomeTask(), SomeProject(), "task/1-slug", cycle: 1);
+        ProjectDetails project = SomeProject();
+        project.BaseBranch = "main";
+
+        string prompt = AgentPromptBuilder.BuildReview(
+            SomeTask(), project, "task/1-slug", cycle: 2, ReviewLens.Adversarial);
+
+        prompt.Should().Contain("assume this diff is wrong somewhere");
+        prompt.Should().Contain("NOT being told what this change was");
+        prompt.Should().Contain("NOT a checklist", "a closed checklist becomes the next blind spot");
+        prompt.Should().Contain("Injection and trust boundaries");
+        prompt.Should().Contain("sanitization");
+        prompt.Should().Contain("Concurrency and races");
+        prompt.Should().Contain("API misuse");
+        prompt.Should().Contain("Resource and process lifetime");
+
+        prompt.Should().NotContain(
+            "Add rate limiting to auth endpoints", "the objective would pull this lens back to conformance");
+        prompt.Should().NotContain(
+            "Requests over the limit get 429", "this lens's instructions never mention the acceptance criteria");
+        prompt.Should().NotContain("Acceptance criteria");
+
+        prompt.Should().Contain("git diff main...HEAD", "both lenses read the same diff");
+        prompt.Should().Contain("verified findings only", Exactly.Once());
+        prompt.Should().Contain("Do NOT modify files");
+        prompt.Should().Contain("VERDICT: merge-ready");
+        prompt.Should().Contain("review cycle 2", "the cycle is the cycle, whichever lens is looking");
+        prompt.Should().Contain("Inventing a finding", "a hunt that finds nothing is a real outcome");
+    }
+
+    /// <summary>
+    /// A run dispatched before lenses existed has passes recorded without one; that reviewer
+    /// was the conformance reviewer, so its prompt is the conformance prompt.
+    /// </summary>
+    [Fact]
+    public void A_lensless_review_gets_the_conformance_prompt()
+    {
+        string prompt = AgentPromptBuilder.BuildReview(
+            SomeTask(), SomeProject(), "task/1-slug", cycle: 1, ReviewLens.Unknown);
+
+        prompt.Should().Contain("Add rate limiting to auth endpoints");
+        prompt.Should().NotContain("assume this diff is wrong somewhere");
+    }
+
+    /// <summary>
+    /// The cycle's two lenses read one worktree at the same time (Decisions Log #59), so
+    /// neither may build or test: two builds sharing one obj/bin fail each other, and the
+    /// resulting file-in-use error reads like a defect in the diff. The gates already ran on
+    /// this exact commit, and naming them is what makes the instruction self-evidently safe
+    /// to follow rather than a rule the reviewer has to take on faith.
+    /// </summary>
+    [Theory]
+    [InlineData("Conformance")]
+    [InlineData("Adversarial")]
+    public void Neither_lens_may_build_or_test_while_its_sibling_reads_the_same_worktree(string lens)
+    {
+        ProjectDetails project = SomeProject();
+        project.VerifyCommands = [new VerifyCommand("build", "dotnet build"), new VerifyCommand("test", "dotnet test")];
+
+        string prompt = AgentPromptBuilder.BuildReview(SomeTask(), project, "task/1-slug", cycle: 1, lens);
+
+        prompt.Should().Contain("Do NOT build, test, or run anything that writes into this worktree");
+        prompt.Should().Contain("A second", "the reviewer is told why: it is not alone in this directory");
+        prompt.Should().Contain("already ran and passed against this exact commit");
+        prompt.Should().Contain("- `dotnet build`");
+        prompt.Should().Contain("- `dotnet test`");
+    }
+
+    /// <summary>
+    /// Never guess at unobserved facts: a project with no gates configured had none run, so
+    /// the prompt says that rather than claiming a passing build nobody performed.
+    /// </summary>
+    [Theory]
+    [InlineData("Conformance")]
+    [InlineData("Adversarial")]
+    public void A_project_without_gates_is_told_there_was_no_build_rather_than_that_one_passed(string lens)
+    {
+        string prompt = AgentPromptBuilder.BuildReview(SomeTask(), SomeProject(), "task/1-slug", cycle: 1, lens);
+
+        prompt.Should().Contain("Do NOT build, test, or run anything that writes into this worktree");
+        prompt.Should().Contain("configures no verification gates");
+        prompt.Should().NotContain("already ran and passed");
+    }
+
+    [Theory]
+    [InlineData("Conformance")]
+    [InlineData("Adversarial")]
+    public void Every_lens_forbids_ending_without_a_verdict_even_mid_check(string lens)
+    {
+        string prompt = AgentPromptBuilder.BuildReview(SomeTask(), SomeProject(), "task/1-slug", cycle: 1, lens);
 
         prompt.Should().Contain("never end without it");
         prompt.Should().Contain("You may not end this session without a");

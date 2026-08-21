@@ -47,20 +47,33 @@ public sealed class RunAggregate
     public int ReviewCycle { get; private set; }
     /// <summary>Automatic fix sessions dispatched so far — checked against DaemonOptions.MaxAutomaticReviewFixRuns.</summary>
     public int ReviewFixRuns { get; private set; }
+    /// <summary>The current cycle's merged verdict across its lenses (log #59), not any single pass's.</summary>
     public ReviewVerdict LastReviewVerdict { get; private set; } = ReviewVerdict.Unknown;
     public ReviewPhase ReviewPhase { get; private set; } = ReviewPhase.None;
-    /// <summary>The in-flight review or fix session, cleared when its result is recorded. Identity for adoption.</summary>
-    public Guid? ActiveReviewSessionId { get; private set; }
-    public int? ActiveReviewProcessId { get; private set; }
-    public DateTimeOffset? ActiveReviewProcessStartedAt { get; private set; }
-    public bool ActiveReviewSessionIsFix { get; private set; }
-    /// <summary>The model the in-flight review or fix session was spawned on.</summary>
-    public AgentModel ActiveReviewSessionModel { get; private set; } = AgentModel.Unknown;
-    /// <summary>The last completed review session — the resume target for the one verdict re-prompt.</summary>
-    public Guid? LastReviewSessionId { get; private set; }
-    /// <summary>The model that session runs on; a resume keeps it, so the re-prompt records it rather than re-resolving (log #33).</summary>
-    public AgentModel LastReviewSessionModel { get; private set; } = AgentModel.Unknown;
-    /// <summary>The highest cycle whose verdict re-prompt was already spent (0 = never). One re-prompt per cycle, then park.</summary>
+
+    private readonly List<ReviewPassSession> _inFlightReviewPasses = [];
+    /// <summary>
+    /// This cycle's review passes still awaiting a result, in dispatch order (log #59) —
+    /// the identities the daemon adopts after a restart. Empty between cycles and while a
+    /// fix session holds the loop.
+    /// </summary>
+    public IReadOnlyList<ReviewPassSession> InFlightReviewPasses => _inFlightReviewPasses;
+
+    private readonly List<ReviewPassResult> _completedReviewPasses = [];
+    /// <summary>
+    /// This cycle's review passes whose verdict is recorded, in dispatch order. A re-prompted
+    /// pass replaces its own earlier result in place rather than appearing twice: the cycle
+    /// has one answer per lens.
+    /// </summary>
+    public IReadOnlyList<ReviewPassResult> CompletedReviewPasses => _completedReviewPasses;
+
+    /// <summary>The in-flight fix session, cleared when its outcome is recorded. Identity for adoption.</summary>
+    public Guid? ActiveFixSessionId { get; private set; }
+    public int? ActiveFixProcessId { get; private set; }
+    public DateTimeOffset? ActiveFixProcessStartedAt { get; private set; }
+    /// <summary>The model the in-flight fix session was spawned on.</summary>
+    public AgentModel ActiveFixSessionModel { get; private set; } = AgentModel.Unknown;
+    /// <summary>The highest cycle whose verdict re-prompt was already spent (0 = never). One re-prompt per CYCLE, then park.</summary>
     public int VerdictRepromptedCycle { get; private set; }
     /// <summary>Human findings from a needs-fixes park resolution, consumed by the next fix dispatch.</summary>
     public string? PendingHumanFindings { get; private set; }
@@ -140,43 +153,47 @@ public sealed class RunAggregate
 
     public void Apply(ReviewDispatched @event)
     {
-        ReviewCycle = @event.Cycle;
-        ActiveReviewSessionId = @event.SessionId;
-        ActiveReviewProcessId = @event.ProcessId;
-        ActiveReviewProcessStartedAt = @event.ProcessStartedAt;
-        ActiveReviewSessionIsFix = false;
-        ActiveReviewSessionModel = @event.Model ?? AgentModel.Unknown;
+        StartCycleIfNew(@event.Cycle);
+        AddInFlightPass(
+            @event.Lens ?? ReviewLens.Unknown, @event.SessionId, @event.SessionId,
+            @event.ProcessId, @event.ProcessStartedAt, @event.Model ?? AgentModel.Unknown);
         ReviewPhase = ReviewPhase.AwaitingVerdict;
         State = RunState.UnderReview;
     }
 
+    public void Apply(ReviewPassCompleted @event)
+    {
+        ReviewLens lens = @event.Lens ?? ReviewLens.Unknown;
+        ReviewPassSession? pass = _inFlightReviewPasses.FirstOrDefault(inFlight => inFlight.Lens == lens);
+        // The transcript session, not this leg's artifact identity: a re-prompted pass is
+        // resumed under a new artifact id, and the resume target stays the original session.
+        RecordPassResult(lens, pass?.TranscriptSessionId, pass?.Model ?? AgentModel.Unknown, @event.Verdict);
+        _inFlightReviewPasses.RemoveAll(inFlight => inFlight.Lens == lens);
+        ReviewPhase = DeriveReviewPhase();
+    }
+
     public void Apply(ReviewCompleted @event)
     {
-        LastReviewVerdict = @event.Verdict;
-        if (ActiveReviewSessionId is not null)
+        // A pass still in flight when the cycle concludes belongs to a stream written before
+        // lenses existed, where one ReviewCompleted WAS the whole cycle; it is retired here
+        // with the cycle's verdict, which for that stream is the verdict it actually returned.
+        foreach (ReviewPassSession pass in _inFlightReviewPasses)
         {
-            LastReviewSessionId = ActiveReviewSessionId;
-            LastReviewSessionModel = ActiveReviewSessionModel;
+            RecordPassResult(pass.Lens, pass.TranscriptSessionId, pass.Model, @event.Verdict);
         }
 
-        ClearActiveReviewSession();
-        ReviewPhase = @event.Verdict == ReviewVerdict.MergeReady
-            ? ReviewPhase.MergeReady
-            : @event.Verdict == ReviewVerdict.NeedsFixes
-                ? ReviewPhase.FixNeeded
-                : ReviewPhase.VerdictMissing;
+        _inFlightReviewPasses.Clear();
+        LastReviewVerdict = @event.Verdict;
+        ReviewPhase = PhaseFor(@event.Verdict);
     }
 
     public void Apply(ReviewVerdictReprompted @event)
     {
-        ActiveReviewSessionId = @event.SessionId;
-        ActiveReviewProcessId = @event.ProcessId;
-        ActiveReviewProcessStartedAt = @event.ProcessStartedAt;
-        ActiveReviewSessionIsFix = false;
-        ActiveReviewSessionModel = @event.Model ?? AgentModel.Unknown;
-        // The resumed transcript continues the ORIGINAL session; SessionId above is only
-        // this leg's artifact identity.
-        LastReviewSessionId = @event.ResumedSessionId;
+        // SessionId is this leg's artifact identity only; the resumed transcript — and so the
+        // pass's identity for anything that follows — continues the ORIGINAL session.
+        AddInFlightPass(
+            @event.Lens ?? ReviewLens.Unknown, @event.SessionId, @event.ResumedSessionId,
+            @event.ProcessId, @event.ProcessStartedAt, @event.Model ?? AgentModel.Unknown);
         VerdictRepromptedCycle = @event.Cycle;
         ReviewPhase = ReviewPhase.AwaitingVerdict;
     }
@@ -185,17 +202,16 @@ public sealed class RunAggregate
     {
         ReviewFixRuns++;
         PendingHumanFindings = null;
-        ActiveReviewSessionId = @event.SessionId;
-        ActiveReviewProcessId = @event.ProcessId;
-        ActiveReviewProcessStartedAt = @event.ProcessStartedAt;
-        ActiveReviewSessionIsFix = true;
-        ActiveReviewSessionModel = @event.Model ?? AgentModel.Unknown;
+        ActiveFixSessionId = @event.SessionId;
+        ActiveFixProcessId = @event.ProcessId;
+        ActiveFixProcessStartedAt = @event.ProcessStartedAt;
+        ActiveFixSessionModel = @event.Model ?? AgentModel.Unknown;
         ReviewPhase = ReviewPhase.AwaitingFix;
     }
 
     public void Apply(ReviewFixCompleted @event)
     {
-        ClearActiveReviewSession();
+        ClearActiveFixSession();
         ReviewPhase = @event.Outcome == ReviewFixOutcome.Disputed ? ReviewPhase.Disputed : ReviewPhase.Reverify;
     }
 
@@ -225,13 +241,68 @@ public sealed class RunAggregate
         State = RunState.UnderReview;
     }
 
-    private void ClearActiveReviewSession()
+    /// <summary>A new cycle starts with no passes: the previous cycle's are history, not state.</summary>
+    private void StartCycleIfNew(int cycle)
     {
-        ActiveReviewSessionId = null;
-        ActiveReviewProcessId = null;
-        ActiveReviewProcessStartedAt = null;
-        ActiveReviewSessionIsFix = false;
-        ActiveReviewSessionModel = AgentModel.Unknown;
+        if (cycle == ReviewCycle)
+        {
+            return;
+        }
+
+        ReviewCycle = cycle;
+        _inFlightReviewPasses.Clear();
+        _completedReviewPasses.Clear();
+    }
+
+    private void AddInFlightPass(
+        ReviewLens lens, Guid sessionId, Guid transcriptSessionId,
+        int processId, DateTimeOffset processStartedAt, AgentModel model)
+    {
+        // One in-flight pass per lens: a redispatch (the daemon died between spawn and
+        // record) supersedes its own orphan rather than being waited on twice.
+        _inFlightReviewPasses.RemoveAll(pass => pass.Lens == lens);
+        _inFlightReviewPasses.Add(new ReviewPassSession(
+            lens, sessionId, transcriptSessionId, processId, processStartedAt, model));
+    }
+
+    private void RecordPassResult(ReviewLens lens, Guid? sessionId, AgentModel model, ReviewVerdict verdict)
+    {
+        ReviewPassResult result = new(lens, sessionId, model, verdict);
+        int index = _completedReviewPasses.FindIndex(pass => pass.Lens == lens);
+        if (index >= 0)
+        {
+            _completedReviewPasses[index] = result;
+        }
+        else
+        {
+            _completedReviewPasses.Add(result);
+        }
+    }
+
+    /// <summary>
+    /// Where the cycle stands once a pass lands: still waiting while any lens is in flight or
+    /// any lens has yet to look at all, otherwise the merged verdict of every lens (log #59).
+    /// A cycle one lens short is not a cycle, whatever the lenses that did answer said.
+    /// </summary>
+    private ReviewPhase DeriveReviewPhase() =>
+        _inFlightReviewPasses.Count > 0
+        || ReviewLens.MissingFrom(_completedReviewPasses.Select(pass => pass.Lens)).Count > 0
+            ? ReviewPhase.AwaitingVerdict
+            : PhaseFor(ReviewVerdict.Merge(_completedReviewPasses.Select(pass => pass.Verdict)));
+
+    private static ReviewPhase PhaseFor(ReviewVerdict verdict) => verdict switch
+    {
+        _ when verdict == ReviewVerdict.MergeReady => ReviewPhase.MergeReady,
+        _ when verdict == ReviewVerdict.NeedsFixes => ReviewPhase.FixNeeded,
+        _ => ReviewPhase.VerdictMissing,
+    };
+
+    private void ClearActiveFixSession()
+    {
+        ActiveFixSessionId = null;
+        ActiveFixProcessId = null;
+        ActiveFixProcessStartedAt = null;
+        ActiveFixSessionModel = AgentModel.Unknown;
     }
 
     public void Apply(PullRequestOpened @event)

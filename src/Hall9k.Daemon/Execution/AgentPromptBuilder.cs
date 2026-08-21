@@ -1,6 +1,7 @@
 using System.Text;
 using Hall9k.Domain.Features.Project;
 using Hall9k.Domain.Features.Project.Projections;
+using Hall9k.Domain.Features.Run;
 using Hall9k.Domain.Features.Tasks.Projections;
 using Hall9k.Domain.Features.Tasks.Queries;
 
@@ -322,19 +323,38 @@ public static class AgentPromptBuilder
     }
 
     /// <summary>
-    /// The independent pre-PR reviewer (Decisions Log #23): a fresh session that has not
-    /// seen the implementation reasoning reviews the branch's diff against the base
-    /// before any pull request exists. Verified findings only, and a machine-readable
-    /// verdict on the last line — the daemon parses it.
+    /// The independent pre-PR review (Decisions Log #23), one pass per lens (log #59): a
+    /// fresh session that never saw the implementation reasoning reads the branch's diff
+    /// against the base before any pull request exists. Verified findings only, and a
+    /// machine-readable verdict on the last line — the daemon parses it and merges the
+    /// cycle's verdicts into one.
+    /// <para>
+    /// A lens the platform does not recognize — including the blank lens of a run dispatched
+    /// before lenses existed — gets the conformance prompt, because a single reviewer with no
+    /// stated lens is exactly what the conformance pass has always been.
+    /// </para>
     /// </summary>
-    public static string BuildReview(TaskDetails task, ProjectDetails project, string branch, int cycle)
+    public static string BuildReview(
+        TaskDetails task, ProjectDetails project, string branch, int cycle, ReviewLens lens) =>
+        lens == ReviewLens.Adversarial
+            ? BuildAdversarialReview(project, branch, cycle)
+            : BuildConformanceReview(task, project, branch, cycle);
+
+    /// <summary>
+    /// The conformance lens: does the diff do what the task said it would? The objective and
+    /// the acceptance criteria are the measuring stick, and repo doctrine (AGENTS.md and the
+    /// documents it points at) is the rest of it.
+    /// </summary>
+    private static string BuildConformanceReview(TaskDetails task, ProjectDetails project, string branch, int cycle)
     {
         StringBuilder prompt = new();
         prompt.AppendLine("# Independent review: verify this diff before its pull request opens");
         prompt.AppendLine();
         prompt.AppendLine("You are an independent reviewer with fresh context. A different agent implemented");
         prompt.AppendLine("the task below; you have not seen its reasoning, and that is the point — judge only");
-        prompt.AppendLine("the code. No pull request exists yet; your verdict decides whether one opens.");
+        prompt.AppendLine("the code. No pull request exists yet; your verdict is one of the review passes that");
+        prompt.AppendLine("decide whether one opens, so report everything you find rather than leaving a");
+        prompt.AppendLine("defect for someone else.");
         prompt.AppendLine();
         prompt.AppendLine("## What the diff is supposed to do");
         prompt.AppendLine();
@@ -349,6 +369,100 @@ public static class AgentPromptBuilder
         prompt.AppendLine();
         prompt.AppendLine("## How to review");
         prompt.AppendLine();
+        prompt.AppendLine("- Judge the work against the objective, the acceptance criteria, and the repo's own");
+        prompt.AppendLine("  doctrine (AGENTS.md or CLAUDE.md, and whatever they point at): unmet criteria,");
+        prompt.AppendLine("  work that solves a different problem than the one stated, and house rules broken.");
+        if (project.VerifyCommands.Count > 0)
+        {
+            prompt.AppendLine("- A criterion that asks for a passing build or test suite is already answered by the");
+            prompt.AppendLine("  gate run named below: take that as the observation and spend your attention on the");
+            prompt.AppendLine("  criteria only a reader can judge.");
+        }
+
+        AppendReviewMechanics(prompt, project, branch);
+        AppendVerdictContract(prompt, cycle);
+
+        return prompt.ToString();
+    }
+
+    /// <summary>
+    /// The adversarial lens (Decisions Log #59): a defect hunt that is told nothing about what
+    /// the change was supposed to accomplish. Withholding the objective and the acceptance
+    /// criteria is the whole mechanism — a reviewer handed the intent reads for alignment with
+    /// it, and the defects this pass exists to catch are the ones that are wrong regardless of
+    /// intent. Origin incident (2026-08-21, PR #21): a prompt-injection boundary survived every
+    /// internal conformance cycle and was caught by an outside reviewer's repeated sampling.
+    /// <para>
+    /// The defect classes below are named as a warm-up, explicitly not as a checklist: a
+    /// checklist becomes the next blind spot, which is the failure this lens exists to fix.
+    /// </para>
+    /// </summary>
+    private static string BuildAdversarialReview(ProjectDetails project, string branch, int cycle)
+    {
+        StringBuilder prompt = new();
+        prompt.AppendLine("# Adversarial review: assume this diff is wrong somewhere, and find where");
+        prompt.AppendLine();
+        prompt.AppendLine("You are an independent reviewer with fresh context, reading a diff that is about to");
+        prompt.AppendLine("become a pull request. You are deliberately NOT being told what this change was");
+        prompt.AppendLine("supposed to accomplish: a reviewer who knows the intent reads for alignment with it,");
+        prompt.AppendLine("and your job is the defects that are wrong whatever the intent was.");
+        prompt.AppendLine();
+        prompt.AppendLine("Start from the assumption that something here is broken and find it. Code that is");
+        prompt.AppendLine("wrong rarely looks wrong; the defect is usually in what the code does not handle,");
+        prompt.AppendLine("so read for the input nobody tried, the order nobody expected, and the failure");
+        prompt.AppendLine("nobody cleaned up after.");
+        prompt.AppendLine();
+        prompt.AppendLine("## Where defects hide (a warm-up, NOT a checklist)");
+        prompt.AppendLine();
+        prompt.AppendLine("- **Injection and trust boundaries.** Text from outside this process — files, user");
+        prompt.AppendLine("  input, another agent's output, database rows, network responses — that reaches a");
+        prompt.AppendLine("  prompt, a shell, a query, a path, or any other interpreter while still being");
+        prompt.AppendLine("  treated as trusted. Ask of every string: where did this come from, and who could");
+        prompt.AppendLine("  have written it?");
+        prompt.AppendLine("- **Missing sanitization and validation.** Values used at face value: unbounded");
+        prompt.AppendLine("  lengths, unchecked formats, absent null/empty handling, parsed input assumed");
+        prompt.AppendLine("  well-formed, an identifier interpolated where it should have been parameterized.");
+        prompt.AppendLine("- **Concurrency and races.** Check-then-act and load-then-store on shared state,");
+        prompt.AppendLine("  writers that assume they are alone, async work that outlives its scope, a");
+        prompt.AppendLine("  cancellation token dropped or a lock held across an await.");
+        prompt.AppendLine("- **API misuse.** A call whose contract is subtly violated: arguments transposed, a");
+        prompt.AppendLine("  return value ignored, an exception type that will never be caught where it is");
+        prompt.AppendLine("  caught, an interface used against its documented semantics.");
+        prompt.AppendLine("- **Resource and process lifetime.** Things opened and never closed or disposed,");
+        prompt.AppendLine("  processes spawned and never reaped, temporary state left behind on the failure");
+        prompt.AppendLine("  path, collections that grow without bound.");
+        prompt.AppendLine("- **Failure modes.** What the unhappy path leaves behind: swallowed exceptions, a");
+        prompt.AppendLine("  half-written file, a retry that duplicates an effect, an error message that hides");
+        prompt.AppendLine("  what actually happened.");
+        prompt.AppendLine();
+        prompt.AppendLine("Those are where the last incident's defects were, not where the next one will be.");
+        prompt.AppendLine("Work through them, then keep going where they do not point.");
+        prompt.AppendLine();
+        prompt.AppendLine("## How to review");
+        prompt.AppendLine();
+        prompt.AppendLine("- Read the changed code in its surroundings, not as isolated hunks: a defect is often");
+        prompt.AppendLine("  the interaction between what changed and what did not.");
+        AppendReviewMechanics(prompt, project, branch);
+        AppendVerdictContract(prompt, cycle);
+        prompt.AppendLine();
+        prompt.AppendLine("Hunting hard and finding nothing is a real outcome: if no defect survives your own");
+        prompt.AppendLine("verification, say so plainly and return merge-ready. Inventing a finding to look");
+        prompt.AppendLine("thorough spends a fix session on nothing and teaches everyone to discount this pass.");
+
+        return prompt.ToString();
+    }
+
+    /// <summary>
+    /// The mechanics every review pass shares: which diff, verified findings only, read-only,
+    /// and the one rule the second lens made necessary — no builds and no test runs.
+    /// The cycle's passes are dispatched together and read the same worktree at the same time
+    /// (log #59), so two concurrent builds would share one `obj/`/`bin/` and fail each other
+    /// with file-in-use errors. A pass that reports a collision like that as a verified
+    /// finding spends the cycle's one fix run on a platform failure, so the prompt says
+    /// plainly that the gates already answered the question and are not to be re-run.
+    /// </summary>
+    private static void AppendReviewMechanics(StringBuilder prompt, ProjectDetails project, string branch)
+    {
         prompt.AppendLine($"- You are in the implementation's git worktree on branch `{branch}`.");
         prompt.AppendLine($"  The diff under review: `git diff {project.BaseBranch}...HEAD` (commits:");
         prompt.AppendLine($"  `git log {project.BaseBranch}..HEAD`). Use `origin/{project.BaseBranch}` if the local");
@@ -359,6 +473,46 @@ public static class AgentPromptBuilder
         prompt.AppendLine("  statement of the defect, and a concrete failure scenario (the input or state that");
         prompt.AppendLine("  makes it misbehave, and what goes wrong).");
         prompt.AppendLine("- Do NOT modify files, commit, push, or open pull requests. You are read-only.");
+        prompt.AppendLine("- **Do NOT build, test, or run anything that writes into this worktree.** A second");
+        prompt.AppendLine("  review pass is reading this same directory right now, with its own attention on");
+        prompt.AppendLine("  the same diff. Two builds sharing one `obj/` and `bin/` fail each other with");
+        prompt.AppendLine("  file-in-use errors, and a platform collision reported as a finding costs the");
+        prompt.AppendLine("  cycle a fix run it needed for a real defect.");
+        prompt.AppendLine("  Reading, searching, and read-only git are what this pass is made of.");
+        AppendReviewGateStatus(prompt, project);
+    }
+
+    /// <summary>
+    /// What the platform already observed about this commit, so a reviewer told not to build
+    /// knows the question was answered rather than skipped. VerificationRunner runs the
+    /// project's gates immediately before the review loop is entered, and again on every
+    /// re-verify, so this is a stated observation and not a promise.
+    /// </summary>
+    private static void AppendReviewGateStatus(StringBuilder prompt, ProjectDetails project)
+    {
+        IReadOnlyList<VerifyCommand> gates = project.VerifyCommands;
+        if (gates.Count == 0)
+        {
+            prompt.AppendLine("  This project configures no verification gates, so there is no build of its own");
+            prompt.AppendLine("  for you to reproduce; judge the code as written.");
+            return;
+        }
+
+        prompt.AppendLine("  The project's gates already ran and passed against this exact commit, immediately");
+        prompt.AppendLine("  before this review was dispatched:");
+        foreach (VerifyCommand gate in gates)
+        {
+            prompt.AppendLine($"  - `{gate.Command}`");
+        }
+    }
+
+    /// <summary>
+    /// The VERDICT-line contract, identical for every lens: the daemon parses this line, and a
+    /// pass that ends without one gets the cycle's single re-prompt (log #59 — the re-prompt
+    /// belongs to the cycle, not to each lens) before the run parks for a human.
+    /// </summary>
+    private static void AppendVerdictContract(StringBuilder prompt, int cycle)
+    {
         prompt.AppendLine();
         prompt.AppendLine("## Verdict (required — never end without it)");
         prompt.AppendLine();
@@ -377,8 +531,6 @@ public static class AgentPromptBuilder
         prompt.AppendLine("verdict, and nobody returns to keep it. The platform parses this line; a missing");
         prompt.AppendLine($"verdict stalls the run and hands it to a human. This is review cycle {cycle} for");
         prompt.AppendLine("this run.");
-
-        return prompt.ToString();
     }
 
     /// <summary>
@@ -401,24 +553,28 @@ public static class AgentPromptBuilder
         prompt.AppendLine("- End your final message with exactly one verdict line, nothing after it:");
         prompt.AppendLine("  `VERDICT: merge-ready` or `VERDICT: needs-fixes`.");
         prompt.AppendLine();
-        prompt.AppendLine("This is the only re-prompt you will receive; ending without a verdict again hands");
-        prompt.AppendLine($"the run to a human. This is still review cycle {cycle} for this run.");
+        prompt.AppendLine("This is the only re-prompt this review cycle receives; ending without a verdict");
+        prompt.AppendLine($"again hands the run to a human. This is still review cycle {cycle} for this run.");
 
         return prompt.ToString();
     }
 
     /// <summary>
     /// The fix leg of the review loop (Decisions Log #23): a fresh session resolves the
-    /// reviewer's verified findings in the same worktree. Disputes park for a human
-    /// instead of looping — the daemon parses the resolution line.
+    /// reviewers' verified findings in the same worktree. One fix session per cycle handles
+    /// every lens's findings together (log #59) — the findings it is handed are the cycle's
+    /// merged document, with each finding under the lens that produced it. Disputes park for
+    /// a human instead of looping — the daemon parses the resolution line.
     /// </summary>
     public static string BuildReviewFix(TaskDetails task, string branch, string findings, int cycle)
     {
         StringBuilder prompt = new();
         prompt.AppendLine("# Fix the verified findings from an independent pre-PR review");
         prompt.AppendLine();
-        prompt.AppendLine("An independent reviewer confirmed the defects below in this branch's diff before");
-        prompt.AppendLine("its pull request opens. Your job is to resolve those findings — not to redo the");
+        prompt.AppendLine("Independent reviewers confirmed the defects below in this branch's diff before its");
+        prompt.AppendLine("pull request opens. Each review pass read the diff through its own lens and its");
+        prompt.AppendLine("findings appear under its own heading; two lenses reporting the same defect is");
+        prompt.AppendLine("agreement, not two defects. Your job is to resolve those findings — not to redo the");
         prompt.AppendLine("original work, and not to argue with findings you can verify are real.");
         prompt.AppendLine();
         prompt.AppendLine("## Original objective (context, already implemented)");
