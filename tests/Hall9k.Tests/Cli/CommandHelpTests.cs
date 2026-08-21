@@ -23,6 +23,10 @@ public sealed class CommandHelpTests
         { typeof(TaskListCommand.Settings), nameof(TaskListCommand.Settings.Project) },
         { typeof(ProjectSetCommand.Settings), nameof(ProjectSetCommand.Settings.Project) },
         { typeof(ProjectShowCommand.Settings), nameof(ProjectShowCommand.Settings.Project) },
+        { typeof(IdeaAddCommand.Settings), nameof(IdeaAddCommand.Settings.Project) },
+        { typeof(IdeaListCommand.Settings), nameof(IdeaListCommand.Settings.Project) },
+        { typeof(IdeaAssignCommand.Settings), nameof(IdeaAssignCommand.Settings.Project) },
+        { typeof(IdeaPromoteCommand.Settings), nameof(IdeaPromoteCommand.Settings.Project) },
     };
 
     [Fact]
