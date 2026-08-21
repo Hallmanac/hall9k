@@ -1,6 +1,5 @@
 using System.Text;
 using Hall9k.Connectors.Text;
-using Hall9k.Connectors.WorkItems;
 using Hall9k.Domain.Features.Run.Projections;
 using Hall9k.Domain.Features.Tasks;
 using Hall9k.Domain.Features.Tasks.Projections;
@@ -47,7 +46,7 @@ internal static class PullRequestBody
     /// </summary>
     private static string Block(string text) => WithoutClosingKeywords(RelayedText.Printable(text));
 
-    public static string Build(RunDetails run, TaskDetails task, string? agentSummary)
+    public static string Build(RunDetails run, TaskDetails task, string? agentSummary, Uri? sourceUrl)
     {
         StringBuilder body = new();
         body.AppendLine(OneLine(task.Objective));
@@ -58,7 +57,7 @@ internal static class PullRequestBody
             body.AppendLine($"- [ ] {OneLine(criterion)}");
         }
 
-        if (SourceMention(task.ExternalReference) is { } mention)
+        if (SourceMention(task.ExternalReference, sourceUrl) is { } mention)
         {
             body.AppendLine();
             body.AppendLine(mention);
@@ -79,32 +78,33 @@ internal static class PullRequestBody
     }
 
     /// <summary>
-    /// The line that makes GitHub link the work back to the issue it came from: a plain mention
-    /// of the item's URL, which GitHub turns into a cross-reference on the issue's own timeline.
+    /// The line that links the work back to the item it belongs to: a plain mention of that
+    /// item's URL, which GitHub turns into a cross-reference on the issue's own timeline.
     /// <para>
     /// Deliberately a mention and not a closing keyword. "Closes #42" would make merging this
-    /// pull request change the issue's state, and Hall9k does not move an external item's status
-    /// — v0 adopts and links, nothing more (SLICE-1 S1-11), and which transitions should follow
-    /// a merge is a policy question backlog 18 defers until real usage answers it. A
+    /// pull request change the issue's state, and Hall9k does not move an external item's status:
+    /// which transitions should follow a merge is a policy question (SLICE-1 S1-11, Decisions Log
+    /// #64, where Jira gets a comment at merge and never a transition, for the same reason). A
     /// cross-reference gives a reviewer the round trip without the platform deciding anything.
     /// </para>
     /// <para>
-    /// The URL comes from the resolver seam rather than being formatted here, so a Jira-sourced
-    /// task links to its card by the same route; a reference no registered source can place
+    /// The wording says what is true of both ways a task acquires a reference, and says no more
+    /// than that. "Adopted from" was true while adoption was the only route (§3.1a), and is a
+    /// false provenance claim for a card that exists <em>because</em> of the task
+    /// (h9k task push-to-jira). The projection carries one reference field either way, so the
+    /// body names the link rather than guessing which direction it was made in.
+    /// </para>
+    /// <para>
+    /// The URL is resolved by the caller through the connection-aware resolver seam rather than
+    /// formatted here, because placing a Jira reference needs the site its connection recorded
+    /// and this class has no session to read one from. A reference no registered source can place
     /// falls back to its canonical form, which is still the honest identifier.
     /// </para>
     /// </summary>
-    private static string? SourceMention(string? externalReference)
-    {
-        if (externalReference.IsBlank())
-        {
-            return null;
-        }
-
-        ExternalReference reference = ExternalReference.Parse(externalReference);
-        Uri? url = WorkItemImporter.Default.WebUrl(reference);
-        return $"Adopted from {url?.ToString() ?? reference.ToString()}";
-    }
+    private static string? SourceMention(string? externalReference, Uri? sourceUrl) =>
+        externalReference.IsBlank()
+            ? null
+            : $"Work item: {sourceUrl?.ToString() ?? ExternalReference.Parse(externalReference).ToString()}";
 
     /// <summary>
     /// A closing keyword rendered so GitHub reads it as words rather than as an instruction. The
