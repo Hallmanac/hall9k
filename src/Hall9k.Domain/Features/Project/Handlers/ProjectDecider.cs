@@ -51,7 +51,8 @@ public static class ProjectDecider
         DateTimeOffset changedAt,
         Guid changedByOwnerId,
         Optional<CommitStyle> commitStyle = default,
-        Optional<AgentModel> model = default)
+        Optional<AgentModel> model = default,
+        Optional<ReviewRerequestPolicy> reviewRerequest = default)
     {
         if (maxParallelAgents.HasValue && maxParallelAgents.Value < 1)
         {
@@ -82,6 +83,20 @@ public static class ProjectDecider
                 + $"model id (for example {AgentModel.PlatformFallback}); letters, digits, and . _ - : / @ [ ] only.");
         }
 
+        // Unknown clears the project override so the owner preference (or the node default)
+        // decides again — the same clearing idiom CommitStyle and AgentModel use.
+        if (reviewRerequest.HasValue
+            && reviewRerequest.Value is { } policy
+            && policy != ReviewRerequestPolicy.Unknown
+            && policy != ReviewRerequestPolicy.Enabled
+            && policy != ReviewRerequestPolicy.Disabled)
+        {
+            throw new DomainValidationException(
+                $"The review re-request policy must be {ReviewRerequestPolicy.Enabled} or "
+                + $"{ReviewRerequestPolicy.Disabled} (whether closeout asks the reviewers for another "
+                + "pass after a fix follow-up pushes, Decisions Log #62).");
+        }
+
         return new ProjectSettingsChanged(
             project.Id,
             verifyCommands,
@@ -91,6 +106,7 @@ public static class ProjectDecider
             changedAt,
             changedByOwnerId,
             commitStyle,
-            model);
+            model,
+            reviewRerequest);
     }
 }

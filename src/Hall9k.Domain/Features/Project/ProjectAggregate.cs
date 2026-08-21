@@ -17,6 +17,11 @@ public sealed class ProjectAggregate
     public CommitStyle CommitStyle { get; private set; } = CommitStyle.Unknown;
     /// <summary>The project's model default; Unknown defers to the platform chain (Decisions Log #33).</summary>
     public AgentModel Model { get; private set; } = AgentModel.Unknown;
+    /// <summary>
+    /// Whether closeout asks this project's reviewers for another pass after a fix follow-up
+    /// pushed (Decisions Log #62). Outranks the owner's preference; Unknown defers to it.
+    /// </summary>
+    public ReviewRerequestPolicy ReviewRerequest { get; private set; } = ReviewRerequestPolicy.Unknown;
     public DateTimeOffset RegisteredAt { get; private set; }
 
     private readonly List<VerifyCommand> _verifyCommands = [];
@@ -69,6 +74,11 @@ public sealed class ProjectAggregate
         if (@event.Model.HasValue)
         {
             Model = @event.Model.Value ?? AgentModel.Unknown;
+        }
+
+        if (@event.ReviewRerequest.HasValue)
+        {
+            ReviewRerequest = @event.ReviewRerequest.Value ?? ReviewRerequestPolicy.Unknown;
         }
     }
 }

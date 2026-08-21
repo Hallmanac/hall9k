@@ -65,6 +65,23 @@ public sealed class DaemonOptions
     public TimeSpan BlockerSynthesisTimeout { get; set; } = TimeSpan.FromMinutes(5);
 
     /// <summary>
+    /// This node's default answer to "ask the reviewers for another pass once a fix
+    /// follow-up pushed?" (Decisions Log #62), under both the project and the owner
+    /// settings in the resolution chain. Off, because each pass costs review quota and a
+    /// reviewer re-reading a diff it has already read is how the refinement loop starts.
+    /// </summary>
+    public string DefaultReviewRerequest { get; set; } = ReviewRerequestPolicy.Disabled;
+
+    /// <summary>
+    /// How many countersign re-requests one task's pull request may draw before it settles
+    /// on the internal review, the thread replies, and CI (Decisions Log #62). Its own
+    /// counter beside MaxAutomaticCloseoutRuns rather than part of it: a re-request asks a
+    /// reviewer a question, while the closeout budget bounds the agent runs that answer
+    /// them, and one running out should not silently spend the other.
+    /// </summary>
+    public int MaxReviewRerequestsAfterFixes { get; set; } = 2;
+
+    /// <summary>
     /// Platform-default commit style for follow-up runs (Narrative or Append), applied
     /// when a project sets none of its own (Decisions Log #26). Narrative folds fixes
     /// into their owning commits per the AGENTS.md authored-history rule. This is the

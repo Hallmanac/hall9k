@@ -11,4 +11,5 @@ public sealed record ProjectSettingsChanged(
     DateTimeOffset ChangedAt,
     Guid ChangedByOwnerId,
     Optional<CommitStyle> CommitStyle = default,
-    Optional<AgentModel> Model = default);
+    Optional<AgentModel> Model = default,
+    Optional<ReviewRerequestPolicy> ReviewRerequest = default);

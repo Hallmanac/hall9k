@@ -19,6 +19,11 @@ public sealed class ProjectDetails
     public CommitStyle CommitStyle { get; set; } = CommitStyle.Unknown;
     /// <summary>The project's model default; Unknown defers to the platform chain (Decisions Log #33).</summary>
     public AgentModel Model { get; set; } = AgentModel.Unknown;
+    /// <summary>
+    /// Whether closeout asks this project's reviewers for another pass after a fix follow-up
+    /// pushed (Decisions Log #62). Outranks the owner's preference; Unknown defers to it.
+    /// </summary>
+    public ReviewRerequestPolicy ReviewRerequest { get; set; } = ReviewRerequestPolicy.Unknown;
     public List<VerifyCommand> VerifyCommands { get; set; } = [];
     public List<ContextLink> ContextLinks { get; set; } = [];
     public DateTimeOffset RegisteredAt { get; set; }
@@ -69,6 +74,11 @@ public sealed class ProjectDetailsProjection : SingleStreamProjection<ProjectDet
         if (@event.Data.Model.HasValue)
         {
             view.Model = @event.Data.Model.Value ?? AgentModel.Unknown;
+        }
+
+        if (@event.Data.ReviewRerequest.HasValue)
+        {
+            view.ReviewRerequest = @event.Data.ReviewRerequest.Value ?? ReviewRerequestPolicy.Unknown;
         }
 
         view.SettingsChangedAt = @event.Data.ChangedAt;
