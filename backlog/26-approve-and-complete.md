@@ -3,7 +3,7 @@ project: hall9k
 type: feature
 objective: Make human approval a recorded platform act that drives the merge itself - h9k task approve, and the closeout monitor completes the pull request
 criteria:
-- h9k task approve <task> [--reason] records the human's approval as an event on the task's stream (a human act through the CLI, per the observation-gate doctrine); approving requires the task to be Done with an open pull request
+- h9k task approve <task> [--reason] records the human's approval as an event on the task's stream (a human act through the CLI, per the observation-gate doctrine); approving requires the task to be Done - with its pull request open, or with no pull request at all for transcript-deliverable work
 - With approval recorded, the closeout monitor gains a completion path: approval present + no unresolved review threads + CI green on the current tip -> the DAEMON merges the pull request itself (rebase merge, delete branch), deterministic platform code with no agent involved
 - A stale PR blocks nothing: when the approved PR has fallen behind main (dirty, or a semantic collision like duplicated decision-log numbering), the monitor dispatches a rebase-and-regate follow-up first - rebase onto main, resolve per the repo conventions, gates - and merges on the resulting green, still automatic
 - The merge is recorded from observation as today (PullRequestMerged when the monitor sees it), and the normal closeout continues unchanged: RunCompleted, worktree removal, branch cleanup, dependent unblocking with handoffs
