@@ -1,6 +1,7 @@
 using FluentAssertions;
 using Hall9k.Daemon;
 using Hall9k.Daemon.Closeout;
+using Hall9k.Daemon.Dispatch;
 using Hall9k.Daemon.Execution;
 using Hall9k.Daemon.Review;
 using Hall9k.Daemon.Worktrees;
@@ -155,7 +156,7 @@ public sealed class RunLauncherTests(PostgresFixture postgres) : IClassFixture<P
         MergedInspector inspector = new();
         RefusingWorktreeManager worktrees = new();
         RunLauncher launcher = new(store, worktrees, new RefusingExecutor(),
-            NewSupervisor(store, node), inspector, Options.Create(new DaemonOptions()),
+            NewSupervisor(store, node), NewContextAssembler(store), inspector, Options.Create(new DaemonOptions()),
             NullLogger<RunLauncher>.Instance);
 
         await launcher.LaunchAsync(taskId, nextRunId, node.NodeId, node.OwnerId, 3, cts.Token);
@@ -261,7 +262,7 @@ public sealed class RunLauncherTests(PostgresFixture postgres) : IClassFixture<P
 
         CapturingExecutor executor = new();
         RunLauncher launcher = new(store, new StubWorktreeManager(), executor,
-            NewSupervisor(store, node), new MergedInspector(), Options.Create(new DaemonOptions()),
+            NewSupervisor(store, node), NewContextAssembler(store), new MergedInspector(), Options.Create(new DaemonOptions()),
             NullLogger<RunLauncher>.Instance);
 
         await launcher.LaunchAsync(taskId, runId, node.NodeId, node.OwnerId, 1, cts.Token);
@@ -274,6 +275,15 @@ public sealed class RunLauncherTests(PostgresFixture postgres) : IClassFixture<P
         run.Model.Value.Should().Be("claude-opus-5[1m]", "the run records what it was actually dispatched on");
         (await query.LoadAsync<RunListItem>(runId, cts.Token))!.Model.Value.Should().Be("claude-opus-5[1m]");
     }
+
+    /// <summary>
+    /// Context routing needs no seams here: both tests close out a merged pull request
+    /// without reaching a dispatch, and a task with no BlockedBy edges assembles nothing
+    /// anyway (Decisions Log #36).
+    /// </summary>
+    private static BlockerContextAssembler NewContextAssembler(DocumentStore store) =>
+        new(store, new ClaudeExecutor(NullLogger<ClaudeExecutor>.Instance), new FakeProcessManager(),
+            Options.Create(new DaemonOptions()), NullLogger<BlockerContextAssembler>.Instance);
 
     private static RunSupervisor NewSupervisor(DocumentStore store, NodeContext node)
     {

@@ -49,12 +49,21 @@ public sealed class RunDetails
     public string? ParkedReason { get; set; }
     /// <summary>
     /// Whether this run handed anything down at true closeout, and when not, why (Decisions Log
-    /// #35). Unknown on every run that has not closed out yet, and on streams written before
+    /// #36). Unknown on every run that has not closed out yet, and on streams written before
     /// handoffs existed — those replay as Unknown rather than as a reconstruction.
     /// </summary>
     public HandoffOutcome HandoffOutcome { get; set; } = HandoffOutcome.Unknown;
     /// <summary>The bounded handoff text a dependent's context is built from; null when the outcome records an absence.</summary>
     public string? HandoffSummary { get; set; }
+    /// <summary>Synthesis sessions dispatched to condense this run's own blockers' handoffs (log #36).</summary>
+    public int ContextSynthesisSessions { get; set; }
+    /// <summary>
+    /// Whether the last synthesis pass produced a usable document. Read alongside
+    /// <see cref="ContextSynthesisSessions"/>: zero sessions means the fan-in never warranted
+    /// one, while a session with this false means the pass could not deliver and the run
+    /// started on the raw handoffs instead.
+    /// </summary>
+    public bool ContextSynthesized { get; set; }
     public DateTimeOffset DispatchedAt { get; set; }
     public bool IsFollowUp { get; set; }
     public DateTimeOffset? FinishedAt { get; set; }
@@ -195,6 +204,12 @@ public sealed class RunDetailsProjection : SingleStreamProjection<RunDetails, Gu
         view.HandoffOutcome = @event.Data.Outcome ?? HandoffOutcome.Unknown;
         view.HandoffSummary = @event.Data.Summary;
     }
+
+    public void Apply(IEvent<ContextSynthesisDispatched> @event, RunDetails view) =>
+        view.ContextSynthesisSessions++;
+
+    public void Apply(IEvent<ContextSynthesisCompleted> @event, RunDetails view) =>
+        view.ContextSynthesized = @event.Data.Synthesized;
 
     public void Apply(IEvent<RunCompleted> @event, RunDetails view)
     {

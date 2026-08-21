@@ -2,7 +2,10 @@ using FluentAssertions;
 using Hall9k.Daemon.Execution;
 using Hall9k.Domain.Features.Project;
 using Hall9k.Domain.Features.Project.Projections;
+using Hall9k.Domain.Features.Run;
+using Hall9k.Domain.Features.Tasks;
 using Hall9k.Domain.Features.Tasks.Projections;
+using Hall9k.Domain.Features.Tasks.Queries;
 using Xunit;
 
 namespace Hall9k.Tests.Daemon;
@@ -255,7 +258,7 @@ public sealed class AgentPromptBuilderTests : IDisposable
 
     /// <summary>
     /// The handoff is asked for in the prompt, of the agent doing the work, because that is
-    /// the only session that knows what it deliberately left undone (Decisions Log #35). The
+    /// the only session that knows what it deliberately left undone (Decisions Log #36). The
     /// marker in the instruction is the same constant the parser matches on, so an assertion
     /// that they agree is an assertion they cannot drift.
     /// </summary>
@@ -274,7 +277,7 @@ public sealed class AgentPromptBuilderTests : IDisposable
     /// <summary>
     /// The follow-up run is the run that reaches true closeout on a reopened task, so it is
     /// the run whose handoff travels — asking only the original build session would strand
-    /// every reopened task's handoff (Decisions Log #35).
+    /// every reopened task's handoff (Decisions Log #36).
     /// </summary>
     [Fact]
     public void Follow_up_prompts_ask_for_the_handoff_too()
@@ -284,6 +287,52 @@ public sealed class AgentPromptBuilderTests : IDisposable
             .Should().Contain(HandoffParser.Marker);
         AgentPromptBuilder.BuildFixChecks(SomeTask(), SomeProject(), "task/1-slug", url, CommitStyle.Narrative)
             .Should().Contain(HandoffParser.Marker);
+    }
+
+    [Fact]
+    public void Blocker_context_lands_between_the_task_and_the_working_rules()
+    {
+        string context = BlockerContextDocument.Render(
+        [
+            new BlockerHandoff(
+                Guid.NewGuid(), "Ship the schema", ["applies"], TaskState.Done,
+                HandoffOutcome.Captured, "The column is named Canonical."),
+        ])!;
+
+        string prompt = AgentPromptBuilder.Build(
+            SomeTask(), SomeProject(), "task/1-slug", _worktreePath, blockerContext: context);
+
+        int objectiveAt = prompt.IndexOf("Add rate limiting", StringComparison.Ordinal);
+        int contextAt = prompt.IndexOf(BlockerContextDocument.Heading, StringComparison.Ordinal);
+        int rulesAt = prompt.IndexOf("## Working rules", StringComparison.Ordinal);
+        contextAt.Should().BeGreaterThan(objectiveAt, "the blockers' handoffs are context, never the objective");
+        contextAt.Should().BeLessThan(rulesAt);
+        prompt.Should().Contain("The column is named Canonical.");
+    }
+
+    [Fact]
+    public void A_task_with_no_blockers_gets_no_context_section()
+    {
+        AgentPromptBuilder.Build(SomeTask(), SomeProject(), "task/1-slug", _worktreePath)
+            .Should().NotContain(BlockerContextDocument.Heading);
+    }
+
+    /// <summary>
+    /// The synthesis session condenses, and is told not to judge: a session that drops a
+    /// gotcha because it looked minor defeats the routing it was dispatched to help.
+    /// </summary>
+    [Fact]
+    public void The_synthesis_prompt_forbids_judging_and_inventing()
+    {
+        string prompt = AgentPromptBuilder.BuildContextSynthesis(
+            SomeTask(), blockerCount: 5, blockerContext: "### 1. Ship the schema\n\nWatch the nullable column.");
+
+        prompt.Should().Contain("Watch the nullable column.");
+        prompt.Should().Contain("Add rate limiting", "the condenser knows which task will read its output");
+        prompt.Should().Contain("read-only");
+        prompt.Should().Contain("not deciding what matters");
+        prompt.Should().Contain(BlockerContextDocument.Heading, "the output keeps the shape the build prompt expects");
+        prompt.Should().NotContain(HandoffParser.Marker, "a read-only condenser hands nothing down of its own");
     }
 
     private static TaskDetails SomeTask() => new()

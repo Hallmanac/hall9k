@@ -1,4 +1,5 @@
 using Hall9k.Daemon.Closeout;
+using Hall9k.Daemon.Dispatch;
 using Hall9k.Daemon.Worktrees;
 using Hall9k.Domain.Features.Project;
 using Hall9k.Domain.Features.Project.Projections;
@@ -28,6 +29,7 @@ public sealed class RunLauncher(
     IWorktreeManager worktrees,
     IExecutor executor,
     RunSupervisor supervisor,
+    BlockerContextAssembler blockerContext,
     IPullRequestInspector inspector,
     IOptions<DaemonOptions> options,
     ILogger<RunLauncher> logger)
@@ -84,11 +86,27 @@ public sealed class RunLauncher(
             // before the vocabulary existed) keeps the historic review-feedback meaning.
             // The commit style resolves project-over-platform (Decisions Log #26).
             CommitStyle commitStyle = CommitStyle.Resolve(project.CommitStyle, options.Value.DefaultCommitStyle);
-            string prompt = followUp is { } review
-                ? task.FollowUpKind == FollowUpKind.FailingChecks
+            string prompt;
+            if (followUp is { } review)
+            {
+                // A follow-up resumes work the original session already did with its blockers'
+                // context in hand; re-routing it now would pay for a second synthesis to tell
+                // the agent what it was told the first time. Its job is the review feedback.
+                prompt = task.FollowUpKind == FollowUpKind.FailingChecks
                     ? AgentPromptBuilder.BuildFixChecks(task, project, worktree.Branch, review.PullRequestUrl, commitStyle)
-                    : AgentPromptBuilder.BuildFollowUp(task, project, worktree.Branch, review.PullRequestUrl, commitStyle)
-                : AgentPromptBuilder.Build(task, project, worktree.Branch, worktree.Path, resumesPreviousWork);
+                    : AgentPromptBuilder.BuildFollowUp(task, project, worktree.Branch, review.PullRequestUrl, commitStyle);
+            }
+            else
+            {
+                // Context routing (Decisions Log #36). The run stream exists by now, so the
+                // synthesis pass has somewhere to record itself, and the build session has not
+                // spawned yet — the whole point is that the dependent starts already knowing.
+                string? handoffs = await blockerContext.AssembleAsync(
+                    runId, task, project, worktree.Path, mode, cancellationToken);
+                prompt = AgentPromptBuilder.Build(
+                    task, project, worktree.Branch, worktree.Path, resumesPreviousWork, handoffs);
+            }
+
             SpawnedAgent agent = await executor.SpawnAsync(
                 new AgentSpawnRequest(runId, sessionId, worktree.Path, prompt, mode, model, project.SkipPermissions),
                 cancellationToken);

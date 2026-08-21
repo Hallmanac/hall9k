@@ -10,7 +10,7 @@ using Xunit;
 namespace Hall9k.Tests.Domain;
 
 /// <summary>
-/// The handoff through the run aggregate and read model (Decisions Log #35): what a
+/// The handoff through the run aggregate and read model (Decisions Log #36): what a
 /// completed run hands down, the recorded absence when it hands down nothing, and the
 /// historical stream that replays as Unknown rather than as a reconstruction.
 /// </summary>
@@ -88,6 +88,22 @@ public sealed class RunHandoffProjectionTests
         view.HandoffOutcome.Should().Be(HandoffOutcome.Unknown,
             "a run still working has not yet been asked, which is different from having nothing to say");
         view.HandoffSummary.Should().BeNull();
+    }
+
+    [Fact]
+    public void Synthesis_sessions_are_counted_on_the_run_that_paid_for_them()
+    {
+        RunDetailsProjection projection = new();
+        Guid id = DomainId.New();
+        RunDetails view = projection.Create(new FakeEvent<RunDispatched>(NewDispatch(id)));
+
+        projection.Apply(
+            new FakeEvent<ContextSynthesisDispatched>(
+                new ContextSynthesisDispatched(id, DomainId.New(), 5, 4242, Now, Now, AgentModel.Opus)),
+            view);
+
+        view.ContextSynthesisSessions.Should().Be(1, "the condensing pass is bookkeeping on the dependent's run");
+        view.State.Should().Be(RunState.Dispatched, "synthesis neither moves the run state nor gates anything");
     }
 
     private static RunAggregate Dispatched(Guid id)
