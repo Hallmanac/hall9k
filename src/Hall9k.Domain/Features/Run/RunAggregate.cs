@@ -49,13 +49,64 @@ public sealed class RunAggregate
     /// </summary>
     public int ReviewRerequestsAfterFixes { get; private set; }
 
-    /// <summary>The pre-PR review loop (log #24): which round of review the run is on, from 1.</summary>
+
+    /// The pre-PR review loop (log #24): which round of review the run is on, from 1. Every
+    /// still-active track shares it — tracks only ever advance together, because the only thing
+    /// that advances one is a fix session and gates that every live track then re-reads (log
+    /// #63). A track's OWN cycle count is therefore the cycle it last ran at, which is this
+    /// number while it is active and frozen at its conclusion once it is not.
+    /// </summary>
     public int ReviewCycle { get; private set; }
-    /// <summary>Automatic fix sessions dispatched so far — checked against DaemonOptions.MaxAutomaticReviewFixRuns.</summary>
+    /// <summary>Automatic fix sessions dispatched so far. A count for the record; the loop's bounds are the per-track cycle caps (log #61).</summary>
     public int ReviewFixRuns { get; private set; }
     /// <summary>The current cycle's merged verdict across its lenses (log #59), not any single pass's.</summary>
     public ReviewVerdict LastReviewVerdict { get; private set; } = ReviewVerdict.Unknown;
     public ReviewPhase ReviewPhase { get; private set; } = ReviewPhase.None;
+
+    private readonly List<ReviewTrackOutcome> _concludedReviewTracks = [];
+    /// <summary>
+    /// The review tracks that have finished, in the order they finished (log #61). A concluded
+    /// track is never dispatched again and is deliberately never reawakened by the other
+    /// track's fix sessions.
+    /// </summary>
+    public IReadOnlyList<ReviewTrackOutcome> ConcludedReviewTracks => _concludedReviewTracks;
+
+    /// <summary>
+    /// The tracks a cycle still dispatches: every opening lens that has not concluded (log #61).
+    /// Empty means the loop is finished looking.
+    /// </summary>
+    public IReadOnlyList<ReviewLens> ActiveReviewLenses =>
+        [.. ReviewLens.CycleLenses.Where(lens => !_concludedReviewTracks.Any(track => track.Lens.Covers(lens)))];
+
+    private readonly List<ReviewResidual> _reviewResiduals = [];
+    /// <summary>Every finding the tracks ended on without a reviewer confirming it resolved (log #61).</summary>
+    public IReadOnlyList<ReviewResidual> ReviewResiduals => _reviewResiduals;
+
+    /// <summary>
+    /// How the review ended, once it has (log #61). Unknown while the loop is still running, and
+    /// unknown forever for a run whose review was already in flight before tracks existed —
+    /// that stream never recorded the distinction and this does not invent it.
+    /// </summary>
+    public ReviewSettlement ReviewSettlement { get; private set; } = ReviewSettlement.Unknown;
+
+    /// <summary>
+    /// The cycle the current automatic budget counts from. Zero until a human resolves a park
+    /// with needs-fixes, which — like a manual pr resolve — is a fresh grant (log #22): the
+    /// per-track cycle caps are measured from there, so the run does not re-park on the very
+    /// next cycle for a budget the human just renewed.
+    /// </summary>
+    public int ReviewBudgetBaseCycle { get; private set; }
+
+    /// <summary>This cycle's findings that are still owed a fix session — the loop's "is there anything to fix" (log #61).</summary>
+    public int PendingFixFindings =>
+        _completedReviewPasses.Sum(pass =>
+            pass.Findings.Count(finding => finding.Disposition == ReviewFindingDisposition.Fix));
+
+    /// <summary>Whether this cycle recorded per-pass milestones. False for a pre-lens stream, whose one ReviewCompleted IS the cycle.</summary>
+    private bool _cycleHasPassMilestones;
+
+    /// <summary>Whether a human's merge-ready park resolution is what ended the loop, rather than a clean reviewer.</summary>
+    private bool _humanEndedTheLoop;
 
     private readonly List<ReviewPassSession> _inFlightReviewPasses = [];
     /// <summary>
@@ -184,8 +235,11 @@ public sealed class RunAggregate
         ReviewPassSession? pass = _inFlightReviewPasses.FirstOrDefault(inFlight => inFlight.Lens == lens);
         // The transcript session, not this leg's artifact identity: a re-prompted pass is
         // resumed under a new artifact id, and the resume target stays the original session.
-        RecordPassResult(lens, pass?.TranscriptSessionId, pass?.Model ?? AgentModel.Unknown, @event.Verdict);
+        RecordPassResult(
+            lens, pass?.TranscriptSessionId, pass?.Model ?? AgentModel.Unknown, @event.Verdict,
+            FindingsOf(@event.Findings, @event.Verdict));
         _inFlightReviewPasses.RemoveAll(inFlight => inFlight.Lens == lens);
+        _cycleHasPassMilestones = true;
         ReviewPhase = DeriveReviewPhase();
     }
 
@@ -196,12 +250,63 @@ public sealed class RunAggregate
         // with the cycle's verdict, which for that stream is the verdict it actually returned.
         foreach (ReviewPassSession pass in _inFlightReviewPasses)
         {
-            RecordPassResult(pass.Lens, pass.TranscriptSessionId, pass.Model, @event.Verdict);
+            RecordPassResult(
+                pass.Lens, pass.TranscriptSessionId, pass.Model, @event.Verdict,
+                FindingsOf(null, @event.Verdict));
         }
 
         _inFlightReviewPasses.Clear();
         LastReviewVerdict = @event.Verdict;
-        ReviewPhase = PhaseFor(@event.Verdict);
+        // A pre-lens stream keeps the single-lens phase rule it was written under: its one
+        // ReviewCompleted is the whole cycle, and re-deriving would send a daemon upgraded
+        // mid-review back to top up a lens for a cycle that already concluded.
+        ReviewPhase = _cycleHasPassMilestones ? DeriveReviewPhase() : PhaseFor(@event.Verdict);
+    }
+
+    public void Apply(ReviewTrackConcluded @event)
+    {
+        ReviewLens lens = @event.Lens ?? ReviewLens.Unknown;
+        _concludedReviewTracks.RemoveAll(track => track.Lens == lens);
+        _concludedReviewTracks.Add(new ReviewTrackOutcome(lens, @event.Cycle, @event.Settlement));
+        _reviewResiduals.AddRange(@event.Residuals ?? []);
+        ReviewPhase = DeriveReviewPhase();
+    }
+
+    /// <summary>
+    /// Routing moves nothing in the loop — the track's own cycle count and pending fixes are
+    /// untouched — but it does leave a residual, and this is where that residual is recorded.
+    /// It has to be here rather than on the track's conclusion because a routed finding is
+    /// routed in whatever cycle it was found, including one that another finding forces the
+    /// track to run again; a residual recorded only on a terminal cycle would let a run settle
+    /// Clean over a defect it had in fact exported to a draft bug task.
+    /// <para>
+    /// The scope is stated rather than read off the event because routing already asserts it:
+    /// only a finding tagged out-of-scope is ever routable (<c>ReviewFindingScope.IsRoutable</c>),
+    /// so an out-of-scope tag is a fact this event carries by its own definition.
+    /// </para>
+    /// <para>
+    /// The disposition, by contrast, is read off the event, because the event exists precisely
+    /// to tell the two cases apart: a routing with no <c>DraftTaskId</c> created no draft, and
+    /// recording it as Routed would count a bug task nobody can open and print it back to a
+    /// human as one more defect safely exported.
+    /// </para>
+    /// </summary>
+    public void Apply(ReviewFindingRouted @event) =>
+        _reviewResiduals.Add(new ReviewResidual(
+            @event.Lens ?? ReviewLens.Unknown, @event.Cycle, @event.Severity ?? ReviewSeverity.Unknown,
+            ReviewFindingScope.OutOfScope,
+            @event.DraftTaskId is null
+                ? ReviewResidualDisposition.RoutingFailed
+                : ReviewResidualDisposition.Routed,
+            @event.Location ?? string.Empty));
+
+    public void Apply(ReviewSettled @event)
+    {
+        // The terminal verdict is MergeReady however the loop got here; the settlement is what
+        // says whether a reviewer confirmed it or the gate ended it (log #61).
+        LastReviewVerdict = ReviewVerdict.MergeReady;
+        ReviewSettlement = @event.Settlement;
+        ReviewPhase = ReviewPhase.MergeReady;
     }
 
     public void Apply(ReviewVerdictReprompted @event)
@@ -229,7 +334,13 @@ public sealed class RunAggregate
     public void Apply(ReviewFixCompleted @event)
     {
         ClearActiveFixSession();
-        ReviewPhase = @event.Outcome == ReviewFixOutcome.Disputed ? ReviewPhase.Disputed : ReviewPhase.Reverify;
+        // Every fix session is followed by the gates, including the terminal one the severity
+        // gate let through: what a settled ending ships unreviewed is the reviewers' reading of
+        // those commits, never the build and the tests (log #61). The reverify step is what
+        // decides between another cycle and settling, once the gates have actually run.
+        ReviewPhase = @event.Outcome == ReviewFixOutcome.Disputed
+            ? ReviewPhase.Disputed
+            : ReviewPhase.Reverify;
     }
 
     public void Apply(ReviewParked @event)
@@ -255,16 +366,21 @@ public sealed class RunAggregate
         else if (@event.Verdict == ReviewVerdict.MergeReady)
         {
             LastReviewVerdict = ReviewVerdict.MergeReady;
-            ReviewPhase = ReviewPhase.MergeReady;
+            // A human ending the loop is not a reviewer reading the final tip, so it goes
+            // through the settling step like any other ending and records itself as Settled
+            // (log #61) rather than borrowing the word Clean.
+            _humanEndedTheLoop = true;
+            ReviewPhase = ReviewPhase.Settling;
         }
         else
         {
             LastReviewVerdict = ReviewVerdict.NeedsFixes;
             ReviewPhase = ReviewPhase.FixNeeded;
             PendingHumanFindings = @event.Reason;
-            // Like a manual pr resolve, the human asking is a fresh grant (log #22):
-            // the spent automatic fix budget must not instantly re-park the run.
-            ReviewFixRuns = 0;
+            // Like a manual pr resolve, the human asking is a fresh grant (log #22): the
+            // per-track cycle caps are re-measured from here, so a run parked at its cap does
+            // not re-park on the very next cycle.
+            ReviewBudgetBaseCycle = ReviewCycle;
         }
 
         State = RunState.UnderReview;
@@ -281,6 +397,7 @@ public sealed class RunAggregate
         ReviewCycle = cycle;
         _inFlightReviewPasses.Clear();
         _completedReviewPasses.Clear();
+        _cycleHasPassMilestones = false;
     }
 
     private void AddInFlightPass(
@@ -294,9 +411,11 @@ public sealed class RunAggregate
             lens, sessionId, transcriptSessionId, processId, processStartedAt, model));
     }
 
-    private void RecordPassResult(ReviewLens lens, Guid? sessionId, AgentModel model, ReviewVerdict verdict)
+    private void RecordPassResult(
+        ReviewLens lens, Guid? sessionId, AgentModel model, ReviewVerdict verdict,
+        IReadOnlyList<ReviewFindingRecord> findings)
     {
-        ReviewPassResult result = new(lens, sessionId, model, verdict);
+        ReviewPassResult result = new(lens, sessionId, model, verdict, findings);
         int index = _completedReviewPasses.FindIndex(pass => pass.Lens == lens);
         if (index >= 0)
         {
@@ -309,15 +428,59 @@ public sealed class RunAggregate
     }
 
     /// <summary>
-    /// Where the cycle stands once a pass lands: still waiting while any lens is in flight or
-    /// any lens has yet to look at all, otherwise the merged verdict of every lens (log #59).
-    /// A cycle one lens short is not a cycle, whatever the lenses that did answer said.
+    /// A pass's findings as recorded, or — for a pass written before findings were classified —
+    /// the one thing a needs-fixes verdict does tell us: something must be fixed. That
+    /// placeholder is ungraded and unplaced on purpose (nothing is invented about it), and it
+    /// exists so an older stream still reads as "a fix is owed" rather than as "nothing to do".
     /// </summary>
-    private ReviewPhase DeriveReviewPhase() =>
-        _inFlightReviewPasses.Count > 0
-        || ReviewLens.MissingFrom(_completedReviewPasses.Select(pass => pass.Lens)).Count > 0
-            ? ReviewPhase.AwaitingVerdict
-            : PhaseFor(ReviewVerdict.Merge(_completedReviewPasses.Select(pass => pass.Verdict)));
+    private static IReadOnlyList<ReviewFindingRecord> FindingsOf(
+        IReadOnlyList<ReviewFindingRecord>? recorded, ReviewVerdict verdict) => recorded switch
+    {
+        not null => recorded,
+        _ when verdict == ReviewVerdict.NeedsFixes =>
+        [
+            new ReviewFindingRecord(
+                ReviewSeverity.Unknown, ReviewFindingScope.Unknown, string.Empty, ReviewFindingDisposition.Fix),
+        ],
+        _ => [],
+    };
+
+    /// <summary>
+    /// Where the loop stands once a pass lands or a track concludes (log #59, #61): still
+    /// waiting while any active track is in flight or has yet to look at all; parked on a
+    /// verdict nobody can read; owing a fix session while any of this cycle's findings is
+    /// dispositioned to be fixed; and otherwise finished, with only the account of how it ended
+    /// left to write. A cycle one active lens short is not a cycle, whatever the lenses that
+    /// did answer said.
+    /// </summary>
+    private ReviewPhase DeriveReviewPhase()
+    {
+        if (_inFlightReviewPasses.Count > 0
+            || ReviewLens.MissingFrom(ActiveReviewLenses, _completedReviewPasses.Select(pass => pass.Lens)).Count > 0)
+        {
+            return ReviewPhase.AwaitingVerdict;
+        }
+
+        if (_completedReviewPasses.Any(pass => pass.Verdict == ReviewVerdict.Unknown))
+        {
+            return ReviewPhase.VerdictMissing;
+        }
+
+        return PendingFixFindings > 0 ? ReviewPhase.FixNeeded : ReviewPhase.Settling;
+    }
+
+    /// <summary>
+    /// How the review ended, for the <see cref="Events.ReviewSettled"/> the loop is about to
+    /// write. Clean is the narrow claim it sounds like — every track ended on a reviewer that
+    /// read the tip and found nothing — so a single residual, a single settled track, or a
+    /// human's own merge-ready resolution is enough to make the ending Settled instead.
+    /// </summary>
+    public ReviewSettlement DeriveSettlement() =>
+        _humanEndedTheLoop
+        || _reviewResiduals.Count > 0
+        || _concludedReviewTracks.Any(track => track.Settlement == ReviewSettlement.Settled)
+            ? ReviewSettlement.Settled
+            : ReviewSettlement.Clean;
 
     private static ReviewPhase PhaseFor(ReviewVerdict verdict) => verdict switch
     {

@@ -56,6 +56,20 @@ public sealed class RunDetails
     /// <summary>Pre-PR review loop (log #24): which round of review the run is on, from 1.</summary>
     public int ReviewCycle { get; set; }
     public ReviewVerdict LastReviewVerdict { get; set; } = ReviewVerdict.Unknown;
+    /// <summary>
+    /// How the review loop ended (Decisions Log #62): Clean when a reviewer read the final tip
+    /// and found nothing, Settled when the severity gate, scope routing, or a human's park
+    /// resolution ended it. Unknown while the loop runs, and Unknown forever for a run whose
+    /// review was already in flight before tracks existed — that is an honest gap, not a
+    /// clean bill of health.
+    /// </summary>
+    public ReviewSettlement ReviewSettlement { get; set; } = ReviewSettlement.Unknown;
+    /// <summary>Residual findings the loop fixed without a reviewer ever reading the fix (log #62).</summary>
+    public int ReviewResidualsFixed { get; set; }
+    /// <summary>Residual findings routed to draft bug tasks instead of fixed in this pull request (log #62).</summary>
+    public int ReviewResidualsRouted { get; set; }
+    /// <summary>Residual findings meant for a draft bug task that could not be created — no draft exists for these (log #62).</summary>
+    public int ReviewResidualsRoutingFailed { get; set; }
     public string? FailureReason { get; set; }
     /// <summary>Why closeout was handed to the human — parked is a waiting state, not a failure.</summary>
     public string? ParkedReason { get; set; }
@@ -147,6 +161,26 @@ public sealed class RunDetailsProjection : SingleStreamProjection<RunDetails, Gu
 
     public void Apply(IEvent<ReviewCompleted> @event, RunDetails view) =>
         view.LastReviewVerdict = @event.Data.Verdict;
+
+    /// <summary>
+    /// The terminal verdict is MergeReady however the loop got here; the settlement beside it
+    /// is what keeps a settled ending from reading like a clean one (log #62).
+    /// <para>
+    /// The residual counts are read off this event rather than tallied from the
+    /// <see cref="ReviewTrackConcluded"/> and <see cref="ReviewFindingRouted"/> events the
+    /// stream carries, so the number this view reports and the number the terminal event
+    /// states are the same number rather than two derivations that agree until they do not — an unrecognized disposition, say, that a
+    /// tally here would have to guess a column for.
+    /// </para>
+    /// </summary>
+    public void Apply(IEvent<ReviewSettled> @event, RunDetails view)
+    {
+        view.LastReviewVerdict = ReviewVerdict.MergeReady;
+        view.ReviewSettlement = @event.Data.Settlement;
+        view.ReviewResidualsFixed = @event.Data.ResidualsFixed;
+        view.ReviewResidualsRouted = @event.Data.ResidualsRouted;
+        view.ReviewResidualsRoutingFailed = @event.Data.ResidualsRoutingFailed;
+    }
 
     public void Apply(IEvent<ReviewParked> @event, RunDetails view)
     {

@@ -20,6 +20,13 @@ public enum ReviewPhase
     AwaitingFix,
     /// <summary>The last fix session finished; verification gates re-run, then a fresh review.</summary>
     Reverify,
+    /// <summary>
+    /// Every review track has concluded and nothing is left to fix (Decisions Log #62): the
+    /// loop is over and owes the stream one honest account of how it ended — Clean or Settled,
+    /// with the residuals it leaves behind. One <see cref="Events.ReviewSettled"/> away from
+    /// MergeReady.
+    /// </summary>
+    Settling,
     /// <summary>The last review judged the diff merge-ready; PullRequestOpener may proceed.</summary>
     MergeReady,
     /// <summary>The fix run disputed a finding as not-a-defect or human-territory; a park is next.</summary>

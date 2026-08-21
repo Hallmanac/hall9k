@@ -86,6 +86,39 @@ public sealed class RunReviewProjectionTests
         view.LastReviewVerdict.Should().Be(ReviewVerdict.MergeReady, "the human's verdict is the run's verdict now");
     }
 
+    /// <summary>
+    /// Merge-ready is one word for two different claims (Decisions Log #62), so the row carries
+    /// the settlement beside the verdict: a settled ending reports the residuals it shipped
+    /// without a second read, and a run whose review predates settlements reports neither
+    /// rather than being read as clean.
+    /// <para>
+    /// The counts arrive with the terminal event rather than being tallied from each track's
+    /// conclusion, which is what the assertions before it pin: the residuals a concluded track
+    /// carries move nothing in this view on their own.
+    /// </para>
+    /// </summary>
+    [Fact]
+    public void Run_details_records_how_merge_ready_was_reached_and_what_it_left_behind()
+    {
+        RunDetailsProjection projection = new();
+        Guid id = DomainId.New();
+        RunDetails view = VerifiedRun(projection, id);
+
+        projection.Apply(new FakeEvent<ReviewDispatched>(
+            new ReviewDispatched(id, DomainId.New(), 4, 5001, Now, Now, null, ReviewLens.Adversarial)), view);
+        view.ReviewSettlement.Should().Be(ReviewSettlement.Unknown, "the loop is still running");
+        view.ReviewResidualsFixed.Should().Be(0);
+        view.ReviewResidualsRouted.Should().Be(0);
+
+        projection.Apply(new FakeEvent<ReviewSettled>(
+            new ReviewSettled(id, 4, ReviewSettlement.Settled, 1, 1, 0, Now)), view);
+        view.LastReviewVerdict.Should().Be(
+            ReviewVerdict.MergeReady, "the terminal verdict is MergeReady however the loop got here");
+        view.ReviewSettlement.Should().Be(ReviewSettlement.Settled);
+        view.ReviewResidualsFixed.Should().Be(1, "the terminal event states the count this view reports");
+        view.ReviewResidualsRouted.Should().Be(1);
+    }
+
     [Fact]
     public void Run_list_item_walks_under_review_and_review_parked()
     {

@@ -20,11 +20,26 @@ public sealed class ReviewLensTests
     }
 
     [Fact]
-    public void A_cycle_is_short_until_every_lens_has_looked()
+    public void A_cycle_is_short_until_every_active_lens_has_looked()
     {
-        ReviewLens.MissingFrom([]).Should().Equal([ReviewLens.Conformance, ReviewLens.Adversarial]);
-        ReviewLens.MissingFrom([ReviewLens.Conformance]).Should().Equal([ReviewLens.Adversarial]);
-        ReviewLens.MissingFrom([ReviewLens.Adversarial, ReviewLens.Conformance]).Should().BeEmpty();
+        ReviewLens.MissingFrom(ReviewLens.CycleLenses, [])
+            .Should().Equal([ReviewLens.Conformance, ReviewLens.Adversarial]);
+        ReviewLens.MissingFrom(ReviewLens.CycleLenses, [ReviewLens.Conformance])
+            .Should().Equal([ReviewLens.Adversarial]);
+        ReviewLens.MissingFrom(ReviewLens.CycleLenses, [ReviewLens.Adversarial, ReviewLens.Conformance])
+            .Should().BeEmpty();
+    }
+
+    /// <summary>
+    /// A track that concluded is not missing from the cycle, it is finished with the run
+    /// (Decisions Log #62) — which is what lets a dormant conformance track stay dormant while
+    /// the adversarial one keeps going alone.
+    /// </summary>
+    [Fact]
+    public void A_concluded_track_is_not_owed_another_pass()
+    {
+        ReviewLens.MissingFrom([ReviewLens.Adversarial], []).Should().Equal([ReviewLens.Adversarial]);
+        ReviewLens.MissingFrom([ReviewLens.Adversarial], [ReviewLens.Adversarial]).Should().BeEmpty();
     }
 
     /// <summary>
@@ -37,7 +52,8 @@ public sealed class ReviewLensTests
     {
         ReviewLens.Unknown.Covers(ReviewLens.Conformance).Should().BeTrue();
         ReviewLens.Unknown.Covers(ReviewLens.Adversarial).Should().BeFalse();
-        ReviewLens.MissingFrom([ReviewLens.Unknown]).Should().Equal([ReviewLens.Adversarial]);
+        ReviewLens.MissingFrom(ReviewLens.CycleLenses, [ReviewLens.Unknown])
+            .Should().Equal([ReviewLens.Adversarial]);
     }
 
     [Fact]

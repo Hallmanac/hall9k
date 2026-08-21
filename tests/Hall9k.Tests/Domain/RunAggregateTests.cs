@@ -95,11 +95,14 @@ public sealed class RunAggregateTests
             ReviewPhase.AwaitingVerdict, "one clean lens is not a cycle: the other is still reading");
         run.Apply(new ReviewPassCompleted(id, 1, ReviewLens.Adversarial, ReviewVerdict.NeedsFixes, Now));
         run.Apply(new ReviewCompleted(id, 1, ReviewVerdict.NeedsFixes, Now));
-        run.ReviewPhase.Should().Be(ReviewPhase.FixNeeded, "either lens finding real problems needs fixes");
+        run.Apply(new ReviewTrackConcluded(id, ReviewLens.Conformance, 1, ReviewSettlement.Clean, [], Now));
+        run.ReviewPhase.Should().Be(ReviewPhase.FixNeeded, "either track finding real problems needs fixes");
         run.LastReviewVerdict.Should().Be(ReviewVerdict.NeedsFixes);
         run.InFlightReviewPasses.Should().BeEmpty("the verdicts retire both review sessions");
         run.CompletedReviewPasses.Select(pass => pass.Lens).Should().Equal(
             [ReviewLens.Conformance, ReviewLens.Adversarial], "the cycle records which lens said what");
+        run.ActiveReviewLenses.Should().Equal(
+            [ReviewLens.Adversarial], "the clean track went dormant and is not dispatched again");
 
         Guid fixSession = DomainId.New();
         run.Apply(new ReviewFixDispatched(id, fixSession, Cycle: 1, ProcessId: 5002, Now, Now));
@@ -113,15 +116,20 @@ public sealed class RunAggregateTests
 
         run.Apply(new VerificationPassed(id, Now));
         run.Apply(new ReviewDispatched(
-            id, DomainId.New(), Cycle: 2, ProcessId: 5003, Now, Now, Lens: ReviewLens.Conformance));
-        run.Apply(new ReviewDispatched(
             id, DomainId.New(), Cycle: 2, ProcessId: 5013, Now, Now, Lens: ReviewLens.Adversarial));
         run.CompletedReviewPasses.Should().BeEmpty("a new cycle starts with no answers, only the last cycle's history");
         run.Apply(new TokensRecorded(id, 25_000, 4_000, null, Now));
-        run.Apply(new ReviewPassCompleted(id, 2, ReviewLens.Conformance, ReviewVerdict.MergeReady, Now));
         run.Apply(new ReviewPassCompleted(id, 2, ReviewLens.Adversarial, ReviewVerdict.MergeReady, Now));
         run.Apply(new ReviewCompleted(id, 2, ReviewVerdict.MergeReady, Now));
-        run.ReviewPhase.Should().Be(ReviewPhase.MergeReady, "merge-ready takes BOTH lenses clean");
+        run.Apply(new ReviewTrackConcluded(id, ReviewLens.Adversarial, 2, ReviewSettlement.Clean, [], Now));
+        run.ReviewPhase.Should().Be(
+            ReviewPhase.Settling, "every track has concluded; what is left is recording how the loop ended");
+        run.DeriveSettlement().Should().Be(ReviewSettlement.Clean, "no track left a residual behind");
+
+        run.Apply(new ReviewSettled(id, 2, ReviewSettlement.Clean, 0, 0, 0, Now));
+        run.ReviewPhase.Should().Be(ReviewPhase.MergeReady, "merge-ready takes EVERY track concluded");
+        run.LastReviewVerdict.Should().Be(ReviewVerdict.MergeReady);
+        run.ReviewSettlement.Should().Be(ReviewSettlement.Clean);
         run.ReviewCycle.Should().Be(2);
 
         run.InputTokens.Should().Be(195_000, "review and fix sessions record tokens like any other session");
@@ -129,6 +137,128 @@ public sealed class RunAggregateTests
 
         run.Apply(new PullRequestOpened(id, "https://github.com/x/y/pull/8", 8, Now));
         run.State.Should().Be(RunState.AwaitingReview);
+    }
+
+    /// <summary>
+    /// The loop's designed exit: the severity gate lets a medium through, every track concludes,
+    /// and one last fix session runs over findings no reviewer will read again. What ships
+    /// unreviewed there is the reviewers' reading of those commits, never the gates — so the fix
+    /// completion goes to Reverify like every other one, and the reverify step settles.
+    /// </summary>
+    [Fact]
+    public void The_terminal_fix_still_re_runs_the_gates_before_the_loop_settles()
+    {
+        RunAggregate run = new();
+        Guid id = DomainId.New();
+        run.Apply(new RunDispatched(
+            id, DomainId.New(), DomainId.New(), DomainId.New(), 1, DomainId.New(),
+            "/wt/x", "task/x", ExecutorMode.Subscription, Now));
+        run.Apply(new ReviewDispatched(
+            id, DomainId.New(), Cycle: 4, ProcessId: 5001, Now, Now, Lens: ReviewLens.Adversarial));
+        run.Apply(new ReviewPassCompleted(
+            id, 4, ReviewLens.Adversarial, ReviewVerdict.NeedsFixes, Now,
+            [new ReviewFindingRecord(
+                ReviewSeverity.Medium, ReviewFindingScope.InScope, "Auth.cs:42", ReviewFindingDisposition.Fix)]));
+        run.Apply(new ReviewCompleted(id, 4, ReviewVerdict.NeedsFixes, Now));
+        run.Apply(new ReviewTrackConcluded(id, ReviewLens.Conformance, 1, ReviewSettlement.Clean, [], Now));
+        run.Apply(new ReviewTrackConcluded(
+            id, ReviewLens.Adversarial, 4, ReviewSettlement.Settled,
+            [new ReviewResidual(
+                ReviewLens.Adversarial, 4, ReviewSeverity.Medium, ReviewFindingScope.InScope,
+                ReviewResidualDisposition.FixedUnreviewed, "Auth.cs:42")],
+            Now));
+
+        run.ActiveReviewLenses.Should().BeEmpty("the gate concluded the last live track");
+        run.ReviewPhase.Should().Be(ReviewPhase.FixNeeded, "the medium is still fixed, just never re-reviewed");
+
+        run.Apply(new ReviewFixDispatched(id, DomainId.New(), Cycle: 4, ProcessId: 5002, Now, Now));
+        run.Apply(new ReviewFixCompleted(id, 4, ReviewFixOutcome.Fixed, Now));
+        run.ReviewPhase.Should().Be(
+            ReviewPhase.Reverify,
+            "the terminal fix's commits reach the pull request, so the build and test gates run over them");
+
+        run.Apply(new VerificationPassed(id, Now));
+        run.Apply(new ReviewSettled(id, 4, run.DeriveSettlement(), 1, 0, 0, Now));
+        run.ReviewPhase.Should().Be(ReviewPhase.MergeReady);
+        run.ReviewSettlement.Should().Be(ReviewSettlement.Settled);
+    }
+
+    /// <summary>
+    /// A finding routed away in a cycle the track goes on running past is still a finding this
+    /// pull request exported to a draft bug task, so it is a residual from the moment it is
+    /// routed. Recording it only when the track concludes would let the run settle Clean over a
+    /// defect it knowingly shipped — the one reading a settled ending exists to prevent.
+    /// </summary>
+    [Fact]
+    public void A_finding_routed_in_a_continuing_cycle_is_a_residual_from_the_moment_it_is_routed()
+    {
+        RunAggregate run = new();
+        Guid id = DomainId.New();
+        run.Apply(new RunDispatched(
+            id, DomainId.New(), DomainId.New(), DomainId.New(), 1, DomainId.New(),
+            "/wt/x", "task/x", ExecutorMode.Subscription, Now));
+        run.Apply(new ReviewDispatched(
+            id, DomainId.New(), Cycle: 1, ProcessId: 5001, Now, Now, Lens: ReviewLens.Adversarial));
+        run.Apply(new ReviewPassCompleted(
+            id, 1, ReviewLens.Adversarial, ReviewVerdict.NeedsFixes, Now,
+            [
+                new ReviewFindingRecord(
+                    ReviewSeverity.High, ReviewFindingScope.InScope, "Spawner.cs:60", ReviewFindingDisposition.Fix),
+                new ReviewFindingRecord(
+                    ReviewSeverity.Medium, ReviewFindingScope.OutOfScope, "Legacy.cs:12",
+                    ReviewFindingDisposition.Route),
+            ]));
+        run.Apply(new ReviewCompleted(id, 1, ReviewVerdict.NeedsFixes, Now));
+        // The high forces cycle two, so the adversarial track writes no conclusion here — and
+        // the medium leaves for its draft anyway.
+        run.Apply(new ReviewFindingRouted(
+            id, ReviewLens.Adversarial, 1, ReviewSeverity.Medium, "Legacy.cs:12", DomainId.New(), null, Now));
+        run.Apply(new ReviewTrackConcluded(id, ReviewLens.Conformance, 1, ReviewSettlement.Clean, [], Now));
+
+        run.ReviewResiduals.Should().ContainSingle().Which.Should().BeEquivalentTo(new ReviewResidual(
+            ReviewLens.Adversarial, 1, ReviewSeverity.Medium, ReviewFindingScope.OutOfScope,
+            ReviewResidualDisposition.Routed, "Legacy.cs:12"));
+
+        run.Apply(new ReviewFixDispatched(id, DomainId.New(), Cycle: 1, ProcessId: 5002, Now, Now));
+        run.Apply(new ReviewFixCompleted(id, 1, ReviewFixOutcome.Fixed, Now));
+        run.Apply(new VerificationPassed(id, Now));
+        run.Apply(new ReviewDispatched(
+            id, DomainId.New(), Cycle: 2, ProcessId: 5003, Now, Now, Lens: ReviewLens.Adversarial));
+        run.Apply(new ReviewPassCompleted(id, 2, ReviewLens.Adversarial, ReviewVerdict.MergeReady, Now));
+        run.Apply(new ReviewCompleted(id, 2, ReviewVerdict.MergeReady, Now));
+        run.Apply(new ReviewTrackConcluded(id, ReviewLens.Adversarial, 2, ReviewSettlement.Clean, [], Now));
+
+        run.ReviewPhase.Should().Be(ReviewPhase.Settling);
+        run.DeriveSettlement().Should().Be(
+            ReviewSettlement.Settled,
+            "both tracks ended clean, but a known defect left this pull request for a draft bug task");
+        run.ReviewResiduals.Count(residual => residual.Disposition == ReviewResidualDisposition.Routed)
+            .Should().Be(1, "the routed finding is counted once, in the cycle it was routed in");
+    }
+
+    /// <summary>
+    /// Routing that could not create its draft is a residual all the same — the finding still
+    /// left this pull request — but it is not a routing. No draft bug task exists for it, so
+    /// recording it as Routed would count and report a task nobody can open, and a human
+    /// reading "1 routed" would believe the defect is written down where they can find it.
+    /// </summary>
+    [Fact]
+    public void A_routing_that_failed_to_create_its_draft_is_a_residual_but_not_a_routing()
+    {
+        RunAggregate run = new();
+        Guid id = DomainId.New();
+        run.Apply(new RunDispatched(
+            id, DomainId.New(), DomainId.New(), DomainId.New(), 1, DomainId.New(),
+            "/wt/x", "task/x", ExecutorMode.Subscription, Now));
+        run.Apply(new ReviewFindingRouted(
+            id, ReviewLens.Adversarial, 3, ReviewSeverity.Low, "Legacy.cs:88", null, "the draft stream would not save", Now));
+
+        run.ReviewResiduals.Should().ContainSingle()
+            .Which.Disposition.Should().Be(ReviewResidualDisposition.RoutingFailed);
+        run.ReviewResiduals.Should().NotContain(
+            residual => residual.Disposition == ReviewResidualDisposition.Routed,
+            "no draft was created, and the count a human reads must not claim one was");
+        run.DeriveSettlement().Should().Be(ReviewSettlement.Settled);
     }
 
     [Fact]
@@ -210,8 +340,15 @@ public sealed class RunAggregateTests
         run.Apply(new ReviewParkResolved(id, ReviewVerdict.MergeReady, null, Now, DomainId.New()));
 
         run.State.Should().Be(RunState.UnderReview, "the daemon's resume sweep drives it from here");
-        run.ReviewPhase.Should().Be(ReviewPhase.MergeReady);
+        run.ReviewPhase.Should().Be(
+            ReviewPhase.Settling, "the loop still owes the stream an account of how it ended");
         run.LastReviewVerdict.Should().Be(ReviewVerdict.MergeReady);
+        run.DeriveSettlement().Should().Be(
+            ReviewSettlement.Settled, "a human ending the loop is not a reviewer reading the final tip");
+
+        run.Apply(new ReviewSettled(id, 1, ReviewSettlement.Settled, 0, 0, 0, Now));
+        run.ReviewPhase.Should().Be(ReviewPhase.MergeReady);
+        run.ReviewSettlement.Should().Be(ReviewSettlement.Settled);
     }
 
     /// <summary>
@@ -243,7 +380,7 @@ public sealed class RunAggregateTests
     }
 
     [Fact]
-    public void Review_park_resolved_needs_fixes_restores_the_budget_and_carries_the_human_findings()
+    public void Review_park_resolved_needs_fixes_regrants_the_cycle_caps_and_carries_the_human_findings()
     {
         RunAggregate run = new();
         Guid id = DomainId.New();
@@ -257,20 +394,24 @@ public sealed class RunAggregateTests
         run.Apply(new VerificationPassed(id, Now));
         run.Apply(new ReviewDispatched(id, DomainId.New(), 2, 5003, Now, Now));
         run.Apply(new ReviewCompleted(id, 2, ReviewVerdict.NeedsFixes, Now));
-        run.Apply(new ReviewParked(id, "Budget spent.", Now));
+        run.Apply(new ReviewParked(id, "The conformance track reached its cap.", Now));
         run.ReviewFixRuns.Should().Be(1);
+        run.ReviewBudgetBaseCycle.Should().Be(0, "nothing has been re-granted yet");
 
         run.Apply(new ReviewParkResolved(
             id, ReviewVerdict.NeedsFixes, "The limiter finding is real; fix it.", Now, DomainId.New()));
 
         run.State.Should().Be(RunState.UnderReview);
         run.ReviewPhase.Should().Be(ReviewPhase.FixNeeded);
-        run.ReviewFixRuns.Should().Be(0, "the human asking is a fresh grant (log #22)");
+        run.ReviewBudgetBaseCycle.Should().Be(
+            2, "the human asking is a fresh grant (log #22): the cycle caps are re-measured from here");
+        run.ReviewFixRuns.Should().Be(
+            1, "the fix count is a record of what ran, not a budget, so it is not rewritten");
         run.PendingHumanFindings.Should().Be("The limiter finding is real; fix it.");
 
         run.Apply(new ReviewFixDispatched(id, DomainId.New(), 2, 5004, Now, Now));
         run.PendingHumanFindings.Should().BeNull("the dispatch consumed the human findings");
-        run.ReviewFixRuns.Should().Be(1);
+        run.ReviewFixRuns.Should().Be(2, "the count keeps counting every fix session the run actually ran");
     }
 
     [Fact]

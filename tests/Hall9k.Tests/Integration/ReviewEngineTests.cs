@@ -26,10 +26,11 @@ namespace Hall9k.Tests.Integration;
 
 /// <summary>
 /// The pre-PR review loop (Decisions Log #23) against a real store with the executor
-/// seam scripted: every cycle runs both lenses (log #59), merge-ready proceeds only when
-/// both are clean, needs-fixes drives one fix → gates → a fresh pair of passes, a spent
-/// budget or a dispute or a missing verdict parks for the human, and a dead session fails
-/// the run honestly.
+/// seam scripted: a cycle runs every still-active track (log #59, #61), merge-ready proceeds
+/// only when every track has concluded, needs-fixes drives one fix → gates → a fresh pass per
+/// live track, a track that goes clean goes dormant while the other continues alone, a cap or
+/// a dispute or a missing verdict parks for the human, and a dead session fails the run
+/// honestly.
 /// </summary>
 [Collection("Hall9kHome")]
 [Trait("Category", "RequiresDocker")]
@@ -128,8 +129,12 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
         await using IQuerySession query = store.QuerySession();
         RunDetails run = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
         run.State.Should().Be(RunState.UnderReview, "the PR event, appended by the opener, is what moves the run on");
-        run.ReviewCycle.Should().Be(1, "two lenses are one cycle, not two");
+        run.ReviewCycle.Should().Be(1, "two tracks are one cycle, not two");
         run.LastReviewVerdict.Should().Be(ReviewVerdict.MergeReady);
+        run.ReviewSettlement.Should().Be(
+            ReviewSettlement.Clean, "both tracks read this exact tip and found nothing");
+        run.ReviewResidualsFixed.Should().Be(0);
+        run.ReviewResidualsRouted.Should().Be(0);
         run.InputTokens.Should().Be(2_000, "both passes record tokens on the run — the cost is visible, not hidden");
 
         File.ReadAllText(RunPaths.ReviewLensFindingsFile(runId, 1, ReviewLens.Conformance.Slug))
@@ -201,11 +206,11 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
             "1. `Auth.cs:42` — the limiter never resets.\n\nVERDICT: needs-fixes",
             "Nothing survived verification.\n\nVERDICT: merge-ready",
             "Reset the limiter window.\n\nRESOLUTION: fixed",
-            "Criteria met.\n\nVERDICT: merge-ready",
-            "Hunted again; nothing.\n\nVERDICT: merge-ready");
+            "Criteria met.\n\nVERDICT: merge-ready");
         await NewEngine(store, executor).ReviewAsync(runId, taskId, cts.Token);
 
-        executor.Spawns.Should().HaveCount(5, "two passes → one fix → two passes");
+        executor.Spawns.Should().HaveCount(
+            4, "two passes → one fix → the one track still active, since the adversarial track went dormant");
         List<AgentSpawnRequest> passes = [executor.Spawns[0], executor.Spawns[1]];
 
         passes.Select(SettingsArgument).Should().OnlyHaveUniqueItems(
@@ -223,11 +228,13 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
             argument => argument.StartsWith("--settings", StringComparison.Ordinal));
 
     /// <summary>
-    /// The review history has to teach which lens earns its keep, which it only can if every
-    /// recorded finding says which lens produced it (Decisions Log #59).
+    /// A track that comes back clean goes dormant and the other continues alone (Decisions Log
+    /// #61) — and it stays dormant through the other track's fix session, deliberately. The
+    /// review history has to teach which track earns its keep, which it only can if every
+    /// recorded pass says which lens produced it (log #59).
     /// </summary>
     [Fact]
-    public async Task Every_recorded_pass_says_which_lens_reached_which_verdict()
+    public async Task A_clean_track_goes_dormant_and_the_other_continues_alone()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
         using DocumentStore store = NewStore();
@@ -235,30 +242,73 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
 
         ScriptedExecutor executor = new(
             "Criteria met, doctrine followed.\n\nVERDICT: merge-ready",
-            "1. `Spawner.cs:60` — the child process is never reaped. Scenario: a failed run leaks a claude process.\n\nVERDICT: needs-fixes",
+            "FINDING: severity=high; scope=in-scope; at=Spawner.cs:60\n"
+            + "Defect: the child process is never reaped. Scenario: a failed run leaks a claude process.\n\n"
+            + "VERDICT: needs-fixes",
             "Reaped the child on the failure path.\n\nRESOLUTION: fixed",
-            "Criteria still met.\n\nVERDICT: merge-ready",
             "The lifetime holds now.\n\nVERDICT: merge-ready");
         bool mergeReady = await NewEngine(store, executor).ReviewAsync(runId, taskId, cts.Token);
 
-        mergeReady.Should().BeTrue("the adversarial lens found it, the fix resolved it, both lenses then agreed");
+        mergeReady.Should().BeTrue("the adversarial track found it, the fix resolved it, and it then went clean");
+        executor.Spawns.Should().HaveCount(
+            4, "the conformance track concluded at cycle 1 and is never dispatched again");
 
         await using IQuerySession query = store.QuerySession();
         List<object> events = [.. (await query.Events.FetchStreamAsync(runId, token: cts.Token)).Select(e => e.Data)];
 
         events.OfType<ReviewDispatched>().Select(e => e.Lens).Should().Equal(
-            [ReviewLens.Conformance, ReviewLens.Adversarial, ReviewLens.Conformance, ReviewLens.Adversarial],
-            "every dispatch records the lens it was spawned for");
+            [ReviewLens.Conformance, ReviewLens.Adversarial, ReviewLens.Adversarial],
+            "cycle 2 dispatches only the track that is still active");
         events.OfType<ReviewPassCompleted>().Select(e => (e.Cycle, e.Lens, e.Verdict)).Should().Equal(
         [
             (1, ReviewLens.Conformance, ReviewVerdict.MergeReady),
             (1, ReviewLens.Adversarial, ReviewVerdict.NeedsFixes),
-            (2, ReviewLens.Conformance, ReviewVerdict.MergeReady),
             (2, ReviewLens.Adversarial, ReviewVerdict.MergeReady),
-        ], "which lens found the defect is a fact on the stream, not an impression");
+        ], "which track found the defect is a fact on the stream, not an impression");
+        events.OfType<ReviewTrackConcluded>().Select(e => (e.Lens, e.Cycle, e.Settlement)).Should().Equal(
+            [
+                (ReviewLens.Conformance, 1, ReviewSettlement.Clean),
+                (ReviewLens.Adversarial, 2, ReviewSettlement.Clean),
+            ], "each track's own cycle count is where it ended, not where the run did");
         events.OfType<ReviewCompleted>().Select(e => (e.Cycle, e.Verdict)).Should().Equal(
             [(1, ReviewVerdict.NeedsFixes), (2, ReviewVerdict.MergeReady)],
-            "the cycle's verdict is the merge of its lenses");
+            "the cycle's verdict is the merge of the tracks that were live for it");
+    }
+
+    /// <summary>
+    /// Every finding's grade, scope tag, and disposition ride on the pass milestone (Decisions
+    /// Log #61), so "which severities forced which cycles, on which track" is a query over the
+    /// stream. The finding's own text stays an artifact (log #6).
+    /// </summary>
+    [Fact]
+    public async Task Each_findings_severity_scope_and_disposition_land_on_the_pass_event()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        using DocumentStore store = NewStore();
+        (Guid taskId, Guid runId, _) = await SeedVerifiedRunAsync(store, cts.Token);
+
+        ScriptedExecutor executor = new(
+            "Criteria met.\n\nVERDICT: merge-ready",
+            "FINDING: severity=high; scope=in-scope; at=Spawner.cs:60\nDefect: the child is never reaped.\n\n"
+            + "FINDING: severity=low; scope=out-of-scope; at=Legacy.cs:12\nDefect: a stale comment misleads.\n\n"
+            + "VERDICT: needs-fixes",
+            "Reaped the child.\n\nRESOLUTION: fixed",
+            "Clean now.\n\nVERDICT: merge-ready");
+        await NewEngine(store, executor).ReviewAsync(runId, taskId, cts.Token);
+
+        await using IQuerySession query = store.QuerySession();
+        List<object> events = [.. (await query.Events.FetchStreamAsync(runId, token: cts.Token)).Select(e => e.Data)];
+
+        ReviewPassCompleted adversarial = events.OfType<ReviewPassCompleted>()
+            .Single(pass => pass.Cycle == 1 && pass.Lens == ReviewLens.Adversarial);
+        adversarial.Findings!.Select(f => (f.Severity, f.Scope, f.Location, f.Disposition)).Should().Equal(
+        [
+            (ReviewSeverity.High, ReviewFindingScope.InScope, "Spawner.cs:60", ReviewFindingDisposition.Fix),
+            (ReviewSeverity.Low, ReviewFindingScope.OutOfScope, "Legacy.cs:12", ReviewFindingDisposition.Route),
+        ]);
+        events.OfType<ReviewPassCompleted>()
+            .Single(pass => pass.Cycle == 1 && pass.Lens == ReviewLens.Conformance)
+            .Findings.Should().BeEmpty("a clean pass records no findings, which is a different fact from none recorded");
     }
 
     /// <summary>
@@ -299,26 +349,292 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
             [ReviewLens.Conformance, ReviewLens.Adversarial]);
     }
 
+    /// <summary>
+    /// The severity gate (Decisions Log #61). Cycle 1 is ungated, so a medium forces cycle 2;
+    /// cycle 2 is gated here, so its mediums are fixed and the loop ends without another review
+    /// pass. That is deliberate, and the residual record is what keeps it honest: the verdict
+    /// stays MergeReady, and the settlement says it was Settled rather than Clean.
+    /// </summary>
     [Fact]
-    public async Task A_spent_fix_budget_parks_the_run_with_the_findings_attached()
+    public async Task Past_the_gate_a_medium_is_fixed_and_ships_without_another_review_pass()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
         using DocumentStore store = NewStore();
         (Guid taskId, Guid runId, _) = await SeedVerifiedRunAsync(store, cts.Token);
 
         ScriptedExecutor executor = new(
-            "1. `A.cs:1` — broken. Scenario: boom.\n\nVERDICT: needs-fixes",
-            "Nothing beyond that.\n\nVERDICT: merge-ready",
+            "Criteria met.\n\nVERDICT: merge-ready",
+            "FINDING: severity=medium; scope=in-scope; at=Auth.cs:42\nDefect: the limiter never resets.\n\n"
+            + "VERDICT: needs-fixes",
+            "Reset the limiter.\n\nRESOLUTION: fixed",
+            "FINDING: severity=medium; scope=in-scope; at=Auth.cs:44\nDefect: the window is off by one.\n\n"
+            + "FINDING: severity=low; scope=in-scope; at=Auth.cs:9\nDefect: the name reads badly.\n\n"
+            + "VERDICT: needs-fixes",
+            "Narrowed the window and renamed it.\n\nRESOLUTION: fixed");
+        bool mergeReady = await NewEngine(
+            store, executor, new DaemonOptions { AdversarialSeverityGateFromCycle = 2 })
+            .ReviewAsync(runId, taskId, cts.Token);
+
+        mergeReady.Should().BeTrue("the gate ended the loop rather than parking a converging run");
+        executor.Spawns.Should().HaveCount(
+            5, "two passes, a fix, one more adversarial pass, and the terminal fix — no cycle 3");
+
+        await using IQuerySession query = store.QuerySession();
+        RunDetails run = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
+        run.LastReviewVerdict.Should().Be(ReviewVerdict.MergeReady, "the terminal verdict is MergeReady either way");
+        run.ReviewSettlement.Should().Be(
+            ReviewSettlement.Settled, "no reviewer read the tip the terminal fix produced");
+        run.ReviewResidualsFixed.Should().Be(2, "the medium and the low were fixed but never re-reviewed");
+        run.ReviewResidualsRouted.Should().Be(0);
+
+        List<object> events = [.. (await query.Events.FetchStreamAsync(runId, token: cts.Token)).Select(e => e.Data)];
+        events.OfType<ReviewSettled>().Should().ContainSingle().Which.Settlement
+            .Should().Be(ReviewSettlement.Settled);
+        events.FindLastIndex(recorded => recorded is VerificationPassed).Should().BeGreaterThan(
+            events.FindIndex(recorded => recorded is ReviewFixCompleted fix && fix.Cycle == 2),
+            "what a settled ending ships unreviewed is the reviewers' reading of the terminal fix, "
+            + "never the build and the tests — the gates run over its commits before the pull request opens");
+        events.FindIndex(recorded => recorded is ReviewSettled).Should().BeGreaterThan(
+            events.FindLastIndex(recorded => recorded is VerificationPassed),
+            "the loop settles only after those gates have passed");
+        events.OfType<ReviewTrackConcluded>()
+            .Single(track => track.Lens == ReviewLens.Adversarial)
+            .Residuals.Select(residual => residual.Severity).Should().Equal(
+                [ReviewSeverity.Medium, ReviewSeverity.Low]);
+    }
+
+    /// <summary>
+    /// An out-of-scope non-High is not this pull request's work (Decisions Log #61): the daemon
+    /// turns it into a draft bug task carrying the provenance the observation-gates doctrine
+    /// asks for, and the merged findings tell the fix session to leave it alone.
+    /// </summary>
+    [Fact]
+    public async Task An_out_of_scope_non_high_becomes_a_draft_bug_task_instead_of_a_fix()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        using DocumentStore store = NewStore();
+        (Guid taskId, Guid runId, _) = await SeedVerifiedRunAsync(store, cts.Token);
+
+        ScriptedExecutor executor = new(
+            "Criteria met.\n\nVERDICT: merge-ready",
+            "FINDING: severity=high; scope=in-scope; at=Spawner.cs:60\nDefect: the child is never reaped.\n\n"
+            + "FINDING: severity=medium; scope=out-of-scope; at=Legacy.cs:12\n"
+            + "Defect: the retry duplicates the effect. Scenario: a transient failure charges twice.\n\n"
+            + "VERDICT: needs-fixes",
+            "Reaped the child.\n\nRESOLUTION: fixed",
+            "Clean now.\n\nVERDICT: merge-ready");
+        bool mergeReady = await NewEngine(store, executor).ReviewAsync(runId, taskId, cts.Token);
+
+        mergeReady.Should().BeTrue();
+
+        await using IQuerySession query = store.QuerySession();
+        List<object> events = [.. (await query.Events.FetchStreamAsync(runId, token: cts.Token)).Select(e => e.Data)];
+        ReviewFindingRouted routed = events.OfType<ReviewFindingRouted>().Should().ContainSingle().Subject;
+        routed.Severity.Should().Be(ReviewSeverity.Medium);
+        routed.Location.Should().Be("Legacy.cs:12");
+        routed.Lens.Should().Be(ReviewLens.Adversarial);
+        routed.FailureReason.Should().BeNull();
+
+        TaskDetails draft = (await query.LoadAsync<TaskDetails>(routed.DraftTaskId!.Value, cts.Token))!;
+        draft.State.Should().Be(TaskState.Draft, "it is inert until a human publishes it");
+        draft.Type.Should().Be(TaskType.Bugfix);
+        draft.Objective.Should().Contain("Legacy.cs:12");
+        draft.AgentContext.Should().Contain(taskId.ToString(), "the originating task is recorded, not implied")
+            .And.Contain(runId.ToString())
+            .And.Contain("Pull request: none", "no pull request existed yet, and the draft says so")
+            .And.Contain("charges twice", "the reviewer's own words travel verbatim");
+
+        string merged = File.ReadAllText(RunPaths.ReviewFindingsFile(runId, 1));
+        merged.Should().Contain("routed to draft bug tasks").And.Contain(routed.DraftTaskId!.Value.ToString());
+        executor.Spawns[2].Prompt.Should().Contain("Do NOT fix here",
+            "the fix session is told which findings are not its work");
+
+        // The high forced cycle two and both tracks ended on a reviewer that found nothing, so
+        // every track concluded Clean. The ending is Settled all the same: this pull request
+        // shipped with a known defect exported to a draft, and "clean" would say it did not.
+        RunDetails run = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
+        run.ReviewSettlement.Should().Be(ReviewSettlement.Settled);
+        run.ReviewResidualsRouted.Should().Be(1, "the routed medium is a residual of the cycle it was routed in");
+        run.ReviewResidualsFixed.Should().Be(0, "the high was fixed and re-read clean, so it left nothing behind");
+        events.OfType<ReviewTrackConcluded>().Should().OnlyContain(
+            track => track.Settlement == ReviewSettlement.Clean);
+    }
+
+    /// <summary>
+    /// The empty terminal case (Decisions Log #61): a cycle whose findings all route away leaves
+    /// nothing to fix, so no fix session runs. Re-reviewing would read the identical tip and
+    /// return the identical findings, which is a loop with no exit rather than convergence.
+    /// </summary>
+    [Fact]
+    public async Task A_cycle_whose_findings_all_route_away_ends_the_loop_with_no_fix_session()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        using DocumentStore store = NewStore();
+        (Guid taskId, Guid runId, _) = await SeedVerifiedRunAsync(store, cts.Token);
+
+        ScriptedExecutor executor = new(
+            "Criteria met.\n\nVERDICT: merge-ready",
+            "FINDING: severity=medium; scope=out-of-scope; at=Legacy.cs:12\nDefect: pre-existing, and real.\n\n"
+            + "FINDING: severity=low; scope=out-of-scope; at=Legacy.cs:31\nDefect: also pre-existing.\n\n"
+            + "VERDICT: needs-fixes");
+        bool mergeReady = await NewEngine(store, executor).ReviewAsync(runId, taskId, cts.Token);
+
+        mergeReady.Should().BeTrue();
+        executor.Spawns.Should().HaveCount(2, "there was nothing in this branch to fix, so no fix session ran");
+
+        await using IQuerySession query = store.QuerySession();
+        RunDetails run = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
+        run.LastReviewVerdict.Should().Be(ReviewVerdict.MergeReady);
+        run.ReviewSettlement.Should().Be(ReviewSettlement.Settled);
+        run.ReviewResidualsRouted.Should().Be(2);
+        run.ReviewResidualsFixed.Should().Be(0);
+
+        List<object> events = [.. (await query.Events.FetchStreamAsync(runId, token: cts.Token)).Select(e => e.Data)];
+        events.OfType<ReviewFixDispatched>().Should().BeEmpty();
+        events.OfType<ReviewFindingRouted>().Should().HaveCount(2);
+    }
+
+    /// <summary>
+    /// A routed defect is deliberately left in the tree — the fix session is told to leave it
+    /// alone — and every later reviewer has fresh context, so the same pre-existing line comes
+    /// back for as long as anything else keeps the loop alive. It is exported once (Decisions
+    /// Log #61): one draft, one routing event, one residual. Otherwise a single defect becomes
+    /// a draft per cycle and "3 routed" on the line a human reads to decide how much to trust
+    /// the pull request.
+    /// </summary>
+    [Fact]
+    public async Task A_finding_that_survives_into_a_later_cycle_is_not_routed_a_second_time()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        using DocumentStore store = NewStore();
+        (Guid taskId, Guid runId, _) = await SeedVerifiedRunAsync(store, cts.Token);
+
+        const string preExisting = "FINDING: severity=medium; scope=out-of-scope; at=Legacy.cs:12\n"
+            + "Defect: the retry duplicates the effect. Scenario: a transient failure charges twice.";
+        ScriptedExecutor executor = new(
+            "Criteria met.\n\nVERDICT: merge-ready",
+            "FINDING: severity=high; scope=in-scope; at=Spawner.cs:60\nDefect: the child is never reaped.\n\n"
+            + $"{preExisting}\n\nVERDICT: needs-fixes",
+            "Reaped the child; left the pre-existing one alone.\n\nRESOLUTION: fixed",
+            // Cycle two: the high is gone, and the reviewer reports the untouched legacy line again.
+            $"{preExisting}\n\nVERDICT: needs-fixes");
+        bool mergeReady = await NewEngine(store, executor).ReviewAsync(runId, taskId, cts.Token);
+
+        mergeReady.Should().BeTrue();
+
+        await using IQuerySession query = store.QuerySession();
+        List<object> events = [.. (await query.Events.FetchStreamAsync(runId, token: cts.Token)).Select(e => e.Data)];
+        events.OfType<ReviewFindingRouted>().Should().ContainSingle(
+            "the same defect at the same location was already exported in cycle one");
+
+        RunDetails run = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
+        run.ReviewResidualsRouted.Should().Be(1, "one exported defect is one residual, however often it is reported");
+
+        string merged = File.ReadAllText(RunPaths.ReviewFindingsFile(runId, 2));
+        merged.Should().Contain("already routed to a draft bug task by an earlier cycle of this run",
+            "the fix session is still told the defect is not its work");
+    }
+
+    /// <summary>
+    /// An ungraded finding forces another adversarial cycle by design, so a reviewer whose
+    /// grades never parsed can drive the track to its cap without a single stated High. The
+    /// park reason says what it observed rather than asserting highs nobody recorded: telling
+    /// the human "still returning high-severity findings" there steers them to restart correct
+    /// work over a reviewer that was writing its findings wrong (never guess at unobserved facts).
+    /// </summary>
+    [Fact]
+    public async Task An_adversarial_track_capped_on_ungraded_findings_says_the_grades_did_not_parse()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        using DocumentStore store = NewStore();
+        (Guid taskId, Guid runId, _) = await SeedVerifiedRunAsync(store, cts.Token);
+
+        // No FINDING header at all, so nothing carries a grade the platform can read.
+        const string ungraded = "The spawner's failure path looks wrong to me.\n\nVERDICT: needs-fixes";
+        ScriptedExecutor executor = new(
+            "Criteria met.\n\nVERDICT: merge-ready",
+            ungraded,
+            "Adjusted the failure path.\n\nRESOLUTION: fixed",
+            ungraded);
+        bool mergeReady = await NewEngine(
+            store, executor, new DaemonOptions { MaxAdversarialReviewCycles = 2 })
+            .ReviewAsync(runId, taskId, cts.Token);
+
+        mergeReady.Should().BeFalse();
+
+        await using IQuerySession query = store.QuerySession();
+        RunDetails run = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
+        run.State.Should().Be(RunState.ReviewParked);
+        run.ParkedReason.Should().Contain("no grade the platform could read")
+            .And.Contain("none is graded high")
+            .And.NotContain("still returning high-severity findings",
+                "no finding on this run was ever graded high, and the park may not say one was");
+    }
+
+    /// <summary>
+    /// The adversarial cap is not a spent budget (Decisions Log #61): reaching it means the
+    /// machine kept finding real high-severity problems, and the park reason says exactly that
+    /// so the human knows what they are being asked to look at.
+    /// </summary>
+    [Fact]
+    public async Task An_adversarial_track_still_finding_highs_at_its_cap_parks_and_says_why()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        using DocumentStore store = NewStore();
+        (Guid taskId, Guid runId, _) = await SeedVerifiedRunAsync(store, cts.Token);
+
+        const string high = "FINDING: severity=high; scope=in-scope; at=Auth.cs:42\n"
+            + "Defect: the token check can be bypassed.\n\nVERDICT: needs-fixes";
+        ScriptedExecutor executor = new(
+            "Criteria met.\n\nVERDICT: merge-ready",
+            high,
+            "Tightened the check.\n\nRESOLUTION: fixed",
+            high);
+        bool mergeReady = await NewEngine(
+            store, executor, new DaemonOptions { MaxAdversarialReviewCycles = 2 })
+            .ReviewAsync(runId, taskId, cts.Token);
+
+        mergeReady.Should().BeFalse();
+
+        await using IQuerySession query = store.QuerySession();
+        RunDetails run = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
+        run.State.Should().Be(RunState.ReviewParked);
+        run.ParkedReason.Should().Contain("not a spent budget")
+            .And.Contain("a human should look at why")
+            .And.Contain("fresh agent", "restarting is offered as a resolution, never taken automatically");
+    }
+
+    /// <summary>
+    /// The conformance track grades nothing, so its bound is simply how many times a machine
+    /// may be told the same thing (Decisions Log #61). Still returning findings at its cap parks
+    /// the run, and the reason says why: nothing automated is left to try.
+    /// </summary>
+    [Fact]
+    public async Task A_conformance_track_still_finding_things_at_its_cap_parks_the_run()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        using DocumentStore store = NewStore();
+        (Guid taskId, Guid runId, _) = await SeedVerifiedRunAsync(store, cts.Token);
+
+        ScriptedExecutor executor = new(
+            "1. `A.cs:1` — the criterion is not met. Scenario: boom.\n\nVERDICT: needs-fixes",
+            "Nothing of my own.\n\nVERDICT: merge-ready",
             "Tried.\n\nRESOLUTION: fixed",
-            "2. `A.cs:1` — still broken. Scenario: boom.\n\nVERDICT: needs-fixes",
-            "Still nothing of my own.\n\nVERDICT: merge-ready");
-        bool mergeReady = await NewEngine(store, executor, maxFixRuns: 1).ReviewAsync(runId, taskId, cts.Token);
+            "2. `A.cs:1` — still not met. Scenario: boom.\n\nVERDICT: needs-fixes",
+            "Tried again.\n\nRESOLUTION: fixed",
+            "3. `A.cs:1` — still not met. Scenario: boom.\n\nVERDICT: needs-fixes");
+        bool mergeReady = await NewEngine(
+            store, executor, new DaemonOptions { MaxComplianceReviewCycles = 3 })
+            .ReviewAsync(runId, taskId, cts.Token);
 
         mergeReady.Should().BeFalse();
         await using IQuerySession query = store.QuerySession();
         RunDetails run = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
         run.State.Should().Be(RunState.ReviewParked);
-        run.ParkedReason.Should().Contain("budget is spent").And.Contain(RunPaths.ReviewFindingsFile(runId, 2));
+        run.ReviewCycle.Should().Be(3, "the adversarial track went dormant at cycle 1 and never held the run up");
+        run.ParkedReason.Should().Contain("conformance review is still returning findings")
+            .And.Contain("nothing automated is left to try")
+            .And.Contain(RunPaths.ReviewFindingsFile(runId, 3));
 
         (await query.LoadAsync<TaskListItem>(taskId, cts.Token))!.State.Should().Be(
             TaskState.Claimed, "parking is a waiting state — the task is not failed");
@@ -476,19 +792,18 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
             "1. `Auth.cs:42`: limiter never resets.\n\nVERDICT: needs-fixes",
             "Nothing of my own.\n\nVERDICT: merge-ready",
             "Reset the limiter.\n\nRESOLUTION: fixed",
-            "Criteria met.\n\nVERDICT: merge-ready",
-            "The fix holds.\n\nVERDICT: merge-ready");
+            "Criteria met.\n\nVERDICT: merge-ready");
 
         bool mergeReady = await NewEngine(store, executor, options).ReviewAsync(runId, taskId, cts.Token);
 
         mergeReady.Should().BeTrue();
         executor.Spawns.Select(spawn => spawn.Model.Value).Should().Equal(
-            ["sonnet", "sonnet", "haiku", "sonnet", "sonnet"], "each leg resolves the chain for its own role");
+            ["sonnet", "sonnet", "haiku", "sonnet"], "each leg resolves the chain for its own role");
 
         await using IQuerySession query = store.QuerySession();
         List<object> events = [.. (await query.Events.FetchStreamAsync(runId, token: cts.Token)).Select(e => e.Data)];
         events.OfType<ReviewDispatched>().Select(e => e.Model!.Value).Should().Equal(
-            ["sonnet", "sonnet", "sonnet", "sonnet"], "both passes of both cycles record their model");
+            ["sonnet", "sonnet", "sonnet"], "every pass of every cycle records its model");
         events.OfType<ReviewFixDispatched>().Select(e => e.Model!.Value).Should().Equal(["haiku"]);
 
         RunDetails run = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
@@ -607,8 +922,8 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
         opts.ConfigureHall9k(AutoCreate.All);
     });
 
-    private static ReviewEngine NewEngine(DocumentStore store, ScriptedExecutor executor, int maxFixRuns = 2) =>
-        NewEngine(store, executor, new DaemonOptions { MaxAutomaticReviewFixRuns = maxFixRuns });
+    private static ReviewEngine NewEngine(DocumentStore store, ScriptedExecutor executor) =>
+        NewEngine(store, executor, new DaemonOptions());
 
     private static ReviewEngine NewEngine(DocumentStore store, ScriptedExecutor executor, DaemonOptions options) =>
         new(store, executor, executor.Processes,

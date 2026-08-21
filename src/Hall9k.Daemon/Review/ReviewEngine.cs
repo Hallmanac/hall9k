@@ -9,6 +9,7 @@ using Hall9k.Domain.Features.Run.Events;
 using Hall9k.Domain.Features.Run.Projections;
 using Hall9k.Domain.Features.Tasks;
 using Hall9k.Domain.Features.Tasks.Documents;
+using Hall9k.Domain.Features.Tasks.Events;
 using Hall9k.Domain.Features.Tasks.Handlers;
 using Hall9k.Domain.Features.Tasks.Projections;
 using Hall9k.Domain.Infrastructure.Ids;
@@ -24,20 +25,24 @@ namespace Hall9k.Daemon.Review;
 /// PullRequestOpener: independent review agents — fresh headless sessions that never
 /// saw the implementation reasoning — read the run's diff; a needs-fixes verdict
 /// dispatches a fix session in the same worktree, gates re-run, and fresh reviewers
-/// look again. Bounded by DaemonOptions.MaxAutomaticReviewFixRuns (the closeout
-/// retry-budget pattern); the budget spent or a disputed finding parks the run for the
-/// human, and a missing verdict gets ONE same-session re-prompt before parking. A park
-/// is resolved with h9k review resolve (ReviewParkResolved re-enters the loop here).
-/// The loop is a state machine over the run stream, so a restarted daemon resumes it
-/// exactly where the events left off.
+/// look again. A disputed finding parks the run for the human, and a missing verdict gets
+/// ONE same-session re-prompt before parking. A park is resolved with h9k review resolve
+/// (ReviewParkResolved re-enters the loop here). The loop is a state machine over the run
+/// stream, so a restarted daemon resumes it exactly where the events left off.
 /// <para>
-/// Each cycle runs one pass per lens (Decisions Log #59) — conformance and adversarial —
-/// dispatched together and awaited one at a time, so the wall clock is the slower pass
-/// rather than their sum. The cycle concludes when its last pass lands: the findings merge
-/// into one document, the verdicts merge into one ReviewCompleted, and one fix session
-/// addresses all of it. The budgets stay per cycle, never per lens: one automatic fix run
-/// per cycle against MaxAutomaticReviewFixRuns, and one verdict re-prompt per cycle however
-/// many passes ended without a verdict.
+/// A cycle runs one pass per still-active <b>track</b> (Decisions Log #59, #61) — conformance
+/// and adversarial — dispatched together and awaited one at a time, so the wall clock is the
+/// slower pass rather than their sum. Each track converges on its own terms
+/// (<see cref="ReviewTrackPolicy"/>) and drops out of the loop when it does: a clean track goes
+/// dormant while the other continues alone, and a dormant track is deliberately never
+/// reawakened by the other's fix sessions. Conformance parks the run if it is still finding
+/// things at <see cref="DaemonOptions.MaxComplianceReviewCycles"/>; adversarial runs under the
+/// severity gate up to <see cref="DaemonOptions.MaxAdversarialReviewCycles"/>.
+/// </para>
+/// <para>
+/// What stays per cycle rather than per track: one fix session over every live track's
+/// findings, and one verdict re-prompt however many passes ended without a verdict. Two tracks
+/// do not double the fixing or the parking math.
 /// </para>
 /// </summary>
 public sealed class ReviewEngine(
@@ -103,7 +108,7 @@ public sealed class ReviewEngine(
             {
                 case ReviewPhase.None:
                     await DispatchReviewPassesAsync(
-                        context, run.ReviewCycle + 1, ReviewLens.CycleLenses, cancellationToken);
+                        context, run.ReviewCycle + 1, run.ActiveReviewLenses, cancellationToken);
                     break;
 
                 case ReviewPhase.AwaitingVerdict:
@@ -122,10 +127,14 @@ public sealed class ReviewEngine(
 
                     break;
 
+                case ReviewPhase.Settling:
+                    await SettleAsync(run, cancellationToken);
+                    break;
+
                 case ReviewPhase.MergeReady:
                     logger.LogInformation(
-                        "Run {RunId}: review verdict merge-ready after {Cycle} cycle(s) — every lens clean, the pull request may open",
-                        context.RunId, run.ReviewCycle);
+                        "Run {RunId}: review merge-ready ({Settlement}) after {Cycle} cycle(s) — the pull request may open",
+                        context.RunId, SettlementLabel(run), run.ReviewCycle);
                     return true;
 
                 case ReviewPhase.VerdictMissing when run.VerdictRepromptedCycle >= run.ReviewCycle:
@@ -149,12 +158,8 @@ public sealed class ReviewEngine(
 
                     break;
 
-                case ReviewPhase.FixNeeded when run.ReviewFixRuns >= _options.MaxAutomaticReviewFixRuns:
-                    await ParkAsync(context.RunId,
-                        $"Review still finds defects after {run.ReviewFixRuns} automatic fix run(s) — the budget is spent. " +
-                        $"Unresolved findings: {RunPaths.ReviewFindingsFile(context.RunId, run.ReviewCycle)}. " +
-                        "Fix in the worktree and resolve with h9k review resolve --merge-ready, grant a fix " +
-                        "session with --needs-fixes, or abandon the task.", cancellationToken);
+                case ReviewPhase.FixNeeded when CappedTrack(run) is { } capped:
+                    await ParkAsync(context.RunId, CapParkReason(context.RunId, run, capped), cancellationToken);
                     return false;
 
                 case ReviewPhase.FixNeeded:
@@ -163,7 +168,8 @@ public sealed class ReviewEngine(
 
                 case ReviewPhase.Disputed:
                     await ParkAsync(context.RunId,
-                        $"The fix run disputed a review finding as not-a-defect or human-territory (cycle {run.ReviewCycle}). " +
+                        "The fix run disputed a review finding — as not-a-defect, as human territory, or as " +
+                        $"wrongly graded (cycle {run.ReviewCycle}). " +
                         $"Review position: {RunPaths.ReviewFindingsFile(context.RunId, run.ReviewCycle)}; " +
                         $"fix position: {RunPaths.ReviewFixPositionFile(context.RunId, run.ReviewCycle)}. " +
                         "Decide between them, then resolve with h9k review resolve.", cancellationToken);
@@ -176,8 +182,18 @@ public sealed class ReviewEngine(
                         return false;
                     }
 
+                    if (run.ActiveReviewLenses.Count == 0)
+                    {
+                        // Every track has concluded, so there is nobody left to re-review for and
+                        // the loop goes on to record that it settled (log #61). The gates above
+                        // still ran: a settled ending ships the terminal fix unread by a reviewer,
+                        // never unbuilt and untested.
+                        await SettleAsync(run, cancellationToken);
+                        break;
+                    }
+
                     await DispatchReviewPassesAsync(
-                        context, run.ReviewCycle + 1, ReviewLens.CycleLenses, cancellationToken);
+                        context, run.ReviewCycle + 1, run.ActiveReviewLenses, cancellationToken);
                     break;
 
                 case ReviewPhase.Parked:
@@ -197,8 +213,8 @@ public sealed class ReviewEngine(
     {
         if (await DispatchMissingPassesAsync(context, run, cancellationToken))
         {
-            // A cycle that lost a lens (the daemon died between the two spawns) tops itself
-            // up rather than concluding on one lens; the reloaded run picks them all up.
+            // A cycle that lost a track (the daemon died between the two spawns) tops itself
+            // up rather than concluding on one; the reloaded run picks them all up.
             return true;
         }
 
@@ -227,7 +243,7 @@ public sealed class ReviewEngine(
             return false;
         }
 
-        await RecordReviewPassAsync(context.RunId, run, pass, result, cancellationToken);
+        await RecordReviewPassAsync(context, run, pass, result, cancellationToken);
         return true;
     }
 
@@ -260,15 +276,17 @@ public sealed class ReviewEngine(
     }
 
     /// <summary>
-    /// Dispatches any lens of the current cycle that is neither in flight nor already
+    /// Dispatches any active track of the current cycle that is neither in flight nor already
     /// answered, and reports whether it dispatched anything. This is what makes a cycle's
     /// dispatch idempotent: a daemon that died between the cycle's two spawns resumes with
-    /// one lens recorded, and the missing lens is spawned here instead of being lost.
+    /// one track recorded, and the missing one is spawned here instead of being lost. A track
+    /// that has already concluded is not missing — it is finished, and stays that way.
     /// </summary>
     private async Task<bool> DispatchMissingPassesAsync(
         ReviewContext context, RunAggregate run, CancellationToken cancellationToken)
     {
         IReadOnlyList<ReviewLens> missing = ReviewLens.MissingFrom(
+            run.ActiveReviewLenses,
             [.. run.InFlightReviewPasses.Select(pass => pass.Lens), .. run.CompletedReviewPasses.Select(pass => pass.Lens)]);
         if (missing.Count == 0)
         {
@@ -292,7 +310,7 @@ public sealed class ReviewEngine(
     }
 
     /// <summary>
-    /// Spawns one lens's pass and records it before spawning the next: each session exists
+    /// Spawns one track's pass and records it before spawning the next: each session exists
     /// the moment it is recorded, and a daemon that dies between the two leaves a stream
     /// that says exactly which passes were started.
     /// </summary>
@@ -373,7 +391,7 @@ public sealed class ReviewEngine(
     /// Dispatches a fix session over the cycle's merged findings — or, after a needs-fixes
     /// h9k review resolve, over the human's stated findings (the event carries them; the
     /// findings file still holds the reviewers' own last words). One fix session per cycle,
-    /// whichever lenses found something.
+    /// whichever tracks found something.
     /// </summary>
     private async Task DispatchFixSessionAsync(
         ReviewContext context, int cycle, string? humanFindings, CancellationToken cancellationToken)
@@ -401,43 +419,283 @@ public sealed class ReviewEngine(
     }
 
     /// <summary>
-    /// Records one lens's findings and verdict, and — when it was the cycle's last pass —
-    /// merges the cycle: one findings document with a section per lens, and one
-    /// ReviewCompleted carrying the merged verdict, appended in the same transaction as the
-    /// pass milestone so the two can never disagree.
+    /// Records one track's findings and verdict, and — when it was the cycle's last pass —
+    /// concludes the cycle: every track decides whether it runs again, out-of-scope non-Highs
+    /// are routed to draft bug tasks, the findings merge into one document, and the milestones
+    /// land in one transaction so the pass, the cycle, and the tracks can never disagree.
     /// </summary>
     private async Task RecordReviewPassAsync(
-        Guid runId, RunAggregate run, ReviewPassSession pass, AgentResult result, CancellationToken cancellationToken)
+        ReviewContext context, RunAggregate run, ReviewPassSession pass, AgentResult result,
+        CancellationToken cancellationToken)
     {
+        Guid runId = context.RunId;
         int cycle = run.ReviewCycle;
-        string findings = result.Summary ?? string.Empty;
-        await File.WriteAllTextAsync(LensFindingsFile(runId, cycle, pass.Lens), findings, cancellationToken);
+        string output = result.Summary ?? string.Empty;
+        await File.WriteAllTextAsync(LensFindingsFile(runId, cycle, pass.Lens), output, cancellationToken);
 
-        ReviewVerdict verdict = ReviewResultParser.ParseVerdict(findings);
+        ReviewVerdict verdict = ReviewResultParser.ParseVerdict(output);
+        // A merge-ready pass reports no findings by contract; anything it listed anyway is not
+        // turned into work behind its own verdict. A needs-fixes pass always carries at least
+        // one, even when nothing structured could be read out of it.
+        IReadOnlyList<ReviewFinding> findings = verdict == ReviewVerdict.NeedsFixes
+            ? ReviewTrackPolicy.Stated(ReviewResultParser.ParseFindings(output))
+            : [];
+
         List<ReviewPassResult> completed = MergeCompleted(
-            run.CompletedReviewPasses, new ReviewPassResult(pass.Lens, pass.TranscriptSessionId, pass.Model, verdict));
-        // The cycle concludes only when nothing else is reading AND no lens is still missing:
-        // a merged verdict over a lens that never looked would be the single-sample blind spot
-        // this whole mechanism exists to close.
+            run.CompletedReviewPasses,
+            new ReviewPassResult(pass.Lens, pass.TranscriptSessionId, pass.Model, verdict,
+                [.. findings.Select(finding => finding.ToRecord())]));
+        // The cycle concludes only when nothing else is reading AND no active track is still
+        // missing: a merged verdict over a track that never looked would be the single-sample
+        // blind spot this whole mechanism exists to close.
         bool cycleConcluded = run.InFlightReviewPasses.All(inFlight => inFlight.Lens == pass.Lens)
-            && ReviewLens.MissingFrom(completed.Select(finished => finished.Lens)).Count == 0;
+            && ReviewLens.MissingFrom(run.ActiveReviewLenses, completed.Select(finished => finished.Lens)).Count == 0;
+        ReviewVerdict cycleVerdict = ReviewVerdict.Merge(completed.Select(finished => finished.Verdict));
+
+        // A cycle with an unreadable verdict has decided nothing: its re-prompt is what happens
+        // next, and grading tracks against a pass nobody could read would be the guess the
+        // re-prompt exists to avoid.
+        IReadOnlyList<ReviewTrackPlan> plans = cycleConcluded && cycleVerdict != ReviewVerdict.Unknown
+            ? await PlanCycleAsync(runId, run, completed, cancellationToken)
+            : [];
+        IReadOnlyList<RoutedFinding> routed = await RouteFindingsAsync(context, run, cycle, plans, cancellationToken);
 
         DateTimeOffset now = DateTimeOffset.UtcNow;
         await using IDocumentSession session = store.LightweightSession();
         session.Events.Append(runId, result.ToTokensRecorded(runId, now));
-        session.Events.Append(runId, new ReviewPassCompleted(runId, cycle, pass.Lens, verdict, now));
+        session.Events.Append(runId, new ReviewPassCompleted(
+            runId, cycle, pass.Lens, verdict, now, [.. findings.Select(finding => finding.ToRecord())]));
         if (cycleConcluded)
         {
-            await WriteMergedFindingsAsync(runId, cycle, completed, cancellationToken);
-            session.Events.Append(runId, new ReviewCompleted(
-                runId, cycle, ReviewVerdict.Merge(completed.Select(finished => finished.Verdict)), now));
+            await WriteMergedFindingsAsync(runId, cycle, completed, plans, routed, cancellationToken);
+            session.Events.Append(runId, new ReviewCompleted(runId, cycle, cycleVerdict, now));
+            foreach (ReviewTrackPlan plan in plans.Where(plan => !plan.Continues))
+            {
+                session.Events.Append(runId, new ReviewTrackConcluded(
+                    runId, plan.Lens, cycle, plan.Settlement ?? ReviewSettlement.Unknown, plan.Residuals, now));
+                logger.LogInformation(
+                    "Run {RunId}: the {Lens} track concluded at cycle {Cycle} — {Settlement}, {Residuals} residual(s)",
+                    runId, LensLabel(plan.Lens), cycle, plan.Settlement?.Value ?? "unknown", plan.Residuals.Count);
+            }
         }
 
         await session.SaveChangesAsync(cancellationToken);
         logger.LogInformation(
-            "Run {RunId}: the {Lens} pass of cycle {Cycle} completed — verdict {Verdict} ({Input}in/{Output}out tokens)",
+            "Run {RunId}: the {Lens} pass of cycle {Cycle} completed — verdict {Verdict}, {Findings} finding(s) ({Input}in/{Output}out tokens)",
             runId, LensLabel(pass.Lens), cycle,
-            verdict == ReviewVerdict.Unknown ? "(none)" : verdict.Value, result.TotalInputTokens, result.OutputTokens);
+            verdict == ReviewVerdict.Unknown ? "(none)" : verdict.Value, findings.Count,
+            result.TotalInputTokens, result.OutputTokens);
+    }
+
+    /// <summary>
+    /// What each active track does with the cycle it just finished. Every track's findings are
+    /// re-read from its own artifact rather than threaded through the wait loop, which is what
+    /// makes the decision reproducible on a resumed daemon: the files are the record, and the
+    /// policy over them is pure.
+    /// </summary>
+    private async Task<IReadOnlyList<ReviewTrackPlan>> PlanCycleAsync(
+        Guid runId, RunAggregate run, IReadOnlyList<ReviewPassResult> completed, CancellationToken cancellationToken)
+    {
+        List<ReviewTrackPlan> plans = [];
+        foreach (ReviewPassResult finished in completed.Where(
+            finished => run.ActiveReviewLenses.Any(lens => finished.Lens.Covers(lens))))
+        {
+            plans.Add(ReviewTrackPolicy.Decide(
+                finished.Lens, run.ReviewCycle, finished.Verdict,
+                await ReadFindingsAsync(runId, run.ReviewCycle, finished, cancellationToken),
+                _options));
+        }
+
+        return plans;
+    }
+
+    private static async Task<IReadOnlyList<ReviewFinding>> ReadFindingsAsync(
+        Guid runId, int cycle, ReviewPassResult pass, CancellationToken cancellationToken)
+    {
+        string path = LensFindingsFile(runId, cycle, pass.Lens);
+        return pass.Verdict == ReviewVerdict.NeedsFixes && File.Exists(path)
+            ? ReviewResultParser.ParseFindings(await File.ReadAllTextAsync(path, cancellationToken))
+            : [];
+    }
+
+    /// <summary>
+    /// Turns this cycle's out-of-scope, non-High findings into draft bug tasks (log #61), in
+    /// their own transaction ahead of the cycle's milestones. Nothing in here may fail the
+    /// review: routing is a courtesy paid to a defect this pull request is not fixing, and a
+    /// courtesy that fails is recorded as having failed rather than allowed to take a finished
+    /// review cycle down with it.
+    /// <para>
+    /// A finding is routed <b>once per run</b>, and that is load-bearing rather than tidiness.
+    /// A routed defect is deliberately left in the tree — the fix session is told to leave it
+    /// alone — and every later cycle's reviewer has fresh context, so the same pre-existing
+    /// line comes back as a finding for as long as the other track keeps the loop alive.
+    /// Without this check, one defect becomes one inert draft per cycle, one routing event per
+    /// cycle, and a residual tally that tells the human "3 routed" about a single exported
+    /// defect. The key is the location the reviewer stated, because that is what the run stream
+    /// records; a finding with no location at all cannot be matched to an earlier one, so it
+    /// routes again rather than being silently collapsed into a defect it may not be. A routing
+    /// that failed is not in that set either — no draft exists, so the next cycle to report the
+    /// same line tries again, which is the courtesy working rather than a duplicate.
+    /// </para>
+    /// <para>
+    /// The same check closes the crash seam between this transaction and the cycle's: a daemon
+    /// that dies in between re-reads the same pass on resume, and the routing already on the
+    /// stream is what stops the second draft.
+    /// </para>
+    /// </summary>
+    private async Task<IReadOnlyList<RoutedFinding>> RouteFindingsAsync(
+        ReviewContext context, RunAggregate run, int cycle, IReadOnlyList<ReviewTrackPlan> plans,
+        CancellationToken cancellationToken)
+    {
+        (IReadOnlyList<(ReviewLens Lens, ReviewFinding Finding)> pending, IReadOnlyList<RoutedFinding> repeats) =
+            SplitAlreadyRouted(run, plans);
+        if (pending.Count == 0)
+        {
+            return repeats;
+        }
+
+        DateTimeOffset now = DateTimeOffset.UtcNow;
+        List<RoutedFinding> routed = [];
+        await using IDocumentSession session = store.LightweightSession();
+        foreach ((ReviewLens lens, ReviewFinding finding) in pending)
+        {
+            Guid draftTaskId = DomainId.New();
+            try
+            {
+                TaskAdded added = ReviewDraftBugTask.Compose(
+                    draftTaskId, context.Task, context.RunId, context.Run.Branch, context.Project.BaseBranch,
+                    lens, cycle, finding, now, context.Run.OwnerId);
+                session.Events.StartStream<TaskAggregate>(draftTaskId, added);
+                routed.Add(new RoutedFinding(lens, finding, draftTaskId, null));
+            }
+            catch (Exception exception) when (exception is not OperationCanceledException)
+            {
+                logger.LogWarning(exception,
+                    "Run {RunId}: could not compose a draft bug task for the out-of-scope finding at {Location}",
+                    context.RunId, finding.Location);
+                routed.Add(new RoutedFinding(lens, finding, null, exception.Message));
+            }
+        }
+
+        AppendRouted(session, context.RunId, cycle, routed, now);
+        try
+        {
+            await session.SaveChangesAsync(cancellationToken);
+            logger.LogInformation(
+                "Run {RunId}: routed {Count} out-of-scope finding(s) of cycle {Cycle} to draft bug tasks",
+                context.RunId, routed.Count(entry => entry.DraftTaskId is not null), cycle);
+            return [.. routed, .. repeats];
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            logger.LogWarning(exception,
+                "Run {RunId}: creating draft bug tasks for cycle {Cycle} failed — the review loop continues and the findings are recorded as unrouted",
+                context.RunId, cycle);
+            routed = [.. routed.Select(entry => entry with { DraftTaskId = null, FailureReason = exception.Message })];
+            await RecordRoutingFailureAsync(context.RunId, cycle, routed, now, cancellationToken);
+            return [.. routed, .. repeats];
+        }
+    }
+
+    /// <summary>
+    /// This cycle's routable findings split into the ones this run has not routed yet and the
+    /// ones it already has. A repeat is carried on rather than dropped: the fix session still
+    /// reads the reviewer's text for it in the merged document, and it still has to be told
+    /// that the defect is somebody else's work, or it will fix in this pull request exactly
+    /// what was exported out of it.
+    /// </summary>
+    private static (IReadOnlyList<(ReviewLens Lens, ReviewFinding Finding)> Pending, IReadOnlyList<RoutedFinding> Repeats)
+        SplitAlreadyRouted(RunAggregate run, IReadOnlyList<ReviewTrackPlan> plans)
+    {
+        HashSet<string> routedLocations = new(
+            run.ReviewResiduals
+                .Where(residual => residual.Disposition == ReviewResidualDisposition.Routed
+                    && residual.Location.IsNotBlank())
+                .Select(residual => residual.Location),
+            StringComparer.OrdinalIgnoreCase);
+
+        List<(ReviewLens Lens, ReviewFinding Finding)> pending = [];
+        List<RoutedFinding> repeats = [];
+        foreach (ReviewTrackPlan plan in plans)
+        {
+            foreach (ReviewFinding finding in plan.Route)
+            {
+                // Both tracks can report the same pre-existing line in one cycle, which the
+                // fix prompt already calls agreement rather than two defects; the same set
+                // therefore grows as this cycle routes, not only across cycles.
+                if (finding.Location.IsNotBlank() && !routedLocations.Add(finding.Location))
+                {
+                    repeats.Add(new RoutedFinding(plan.Lens, finding, null, null, AlreadyRouted: true));
+                    continue;
+                }
+
+                pending.Add((plan.Lens, finding));
+            }
+        }
+
+        return (pending, repeats);
+    }
+
+    /// <summary>
+    /// The fallback record when the routing transaction itself could not be written: the
+    /// findings are still recorded as routed-and-failed, on their own, with no draft streams to
+    /// take down with them. If even this cannot be written the loop still continues — the
+    /// review's own verdict does not depend on it.
+    /// </summary>
+    private async Task RecordRoutingFailureAsync(
+        Guid runId, int cycle, IReadOnlyList<RoutedFinding> routed, DateTimeOffset now,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            await using IDocumentSession session = store.LightweightSession();
+            AppendRouted(session, runId, cycle, routed, now);
+            await session.SaveChangesAsync(cancellationToken);
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            logger.LogWarning(exception,
+                "Run {RunId}: could not record cycle {Cycle}'s failed routing on the stream either", runId, cycle);
+        }
+    }
+
+    private static void AppendRouted(
+        IDocumentSession session, Guid runId, int cycle, IReadOnlyList<RoutedFinding> routed, DateTimeOffset now)
+    {
+        foreach (RoutedFinding entry in routed)
+        {
+            session.Events.Append(runId, new ReviewFindingRouted(
+                runId, entry.Lens, cycle, entry.Finding.Severity, entry.Finding.Location,
+                entry.DraftTaskId, entry.FailureReason, now));
+        }
+    }
+
+    /// <summary>
+    /// Writes down how the loop ended (log #61). The verdict the rest of the pipeline reads is
+    /// MergeReady either way; this is the sentence beside it that says whether a reviewer
+    /// confirmed the final tip or the severity gate ended the loop over findings nobody read
+    /// again, and how many residuals that left.
+    /// </summary>
+    private async Task SettleAsync(RunAggregate run, CancellationToken cancellationToken)
+    {
+        ReviewSettlement settlement = run.DeriveSettlement();
+        int fixedResiduals = run.ReviewResiduals.Count(
+            residual => residual.Disposition == ReviewResidualDisposition.FixedUnreviewed);
+        int routedResiduals = run.ReviewResiduals.Count(
+            residual => residual.Disposition == ReviewResidualDisposition.Routed);
+        // Counted apart from the routed ones: no draft bug task exists for these, and adding
+        // them to the routed tally would report defects as exported to tasks nobody can open.
+        int unroutedResiduals = run.ReviewResiduals.Count(
+            residual => residual.Disposition == ReviewResidualDisposition.RoutingFailed);
+
+        await using IDocumentSession session = store.LightweightSession();
+        session.Events.Append(run.Id, new ReviewSettled(
+            run.Id, run.ReviewCycle, settlement, fixedResiduals, routedResiduals, unroutedResiduals,
+            DateTimeOffset.UtcNow));
+        await session.SaveChangesAsync(cancellationToken);
+        logger.LogInformation(
+            "Run {RunId}: review settled {Settlement} at cycle {Cycle} — {Fixed} residual(s) fixed unreviewed, {Routed} routed, {Unrouted} left unrouted",
+            run.Id, settlement.Value, run.ReviewCycle, fixedResiduals, routedResiduals, unroutedResiduals);
     }
 
     private async Task RecordFixResultAsync(Guid runId, int cycle, AgentResult result, CancellationToken cancellationToken)
@@ -475,12 +733,14 @@ public sealed class ReviewEngine(
     }
 
     /// <summary>
-    /// Writes the cycle's merged findings document: every lens's own words under a heading
-    /// that names the lens and its verdict, so the fix session (and the human reading a park)
-    /// sees one list and still knows which attention budget produced each finding.
+    /// Writes the cycle's merged findings document: every track's own words under a heading
+    /// that names the lens and its verdict, followed by what the platform decided about each
+    /// finding. The fix session reads this, and so does the human reading a park, so it has to
+    /// carry both halves — the reviewers' text, and the disposition machinery put on it.
     /// </summary>
     private static async Task WriteMergedFindingsAsync(
-        Guid runId, int cycle, IReadOnlyList<ReviewPassResult> passes, CancellationToken cancellationToken)
+        Guid runId, int cycle, IReadOnlyList<ReviewPassResult> passes, IReadOnlyList<ReviewTrackPlan> plans,
+        IReadOnlyList<RoutedFinding> routed, CancellationToken cancellationToken)
     {
         string mergedPath = RunPaths.ReviewFindingsFile(runId, cycle);
         if (passes.Count == 1 && LensFindingsFile(runId, cycle, passes[0].Lens) == mergedPath)
@@ -507,7 +767,91 @@ public sealed class ReviewEngine(
             merged.AppendLine(text.IsBlank() ? "(this pass recorded no output)" : text.Trim());
         }
 
+        AppendDispositions(merged, plans, routed);
         await File.WriteAllTextAsync(mergedPath, merged.ToString(), cancellationToken);
+    }
+
+    /// <summary>
+    /// What the platform decided about each finding, written by machinery beneath the
+    /// reviewers' own words (log #61). Severity and scope are the reviewer's observations; this
+    /// section is the decision over them, and stating it here is what keeps the fix session
+    /// from having to re-derive a policy it does not know.
+    /// </summary>
+    private static void AppendDispositions(
+        StringBuilder merged, IReadOnlyList<ReviewTrackPlan> plans, IReadOnlyList<RoutedFinding> routed)
+    {
+        List<(ReviewLens Lens, ReviewFinding Finding)> here =
+            [.. plans.SelectMany(plan => plan.Fix.Select(finding => (plan.Lens, Finding: finding)))];
+        if (here.Count == 0 && routed.Count == 0)
+        {
+            return;
+        }
+
+        merged.AppendLine();
+        merged.AppendLine($"## {ReviewFindingDispositions.Heading}");
+        merged.AppendLine();
+        merged.AppendLine("Recorded by the platform from each finding's declared severity and scope tag, not by");
+        merged.AppendLine("a reviewer. It is the disposition the fix session must follow.");
+
+        AppendDispositionGroup(merged, "Fix in this pull request", null,
+            [.. here.Where(entry => !entry.Finding.Scope.IsRoutable)]);
+        AppendDispositionGroup(merged, "Fix in this pull request, in a commit of its own",
+            "These defects are pre-existing. Cleaning them up while you are here is right, and keeping "
+            + "each in its own commit is what keeps the branch's real work separable in the history.",
+            [.. here.Where(entry => entry.Finding.Scope.IsRoutable)]);
+
+        if (routed.Count == 0)
+        {
+            return;
+        }
+
+        merged.AppendLine();
+        merged.AppendLine("### Do NOT fix here — routed to draft bug tasks");
+        merged.AppendLine();
+        merged.AppendLine("These are pre-existing defects outside this branch's work. Each one is now a draft");
+        merged.AppendLine("bug task waiting for a human; fixing them here would grow this diff with unrelated");
+        merged.AppendLine("changes.");
+        foreach (RoutedFinding entry in routed)
+        {
+            string destination = entry switch
+            {
+                { AlreadyRouted: true } => "already routed to a draft bug task by an earlier cycle of this run",
+                { DraftTaskId: { } draftTaskId } => $"draft task {draftTaskId}",
+                _ => $"NOT routed — creating the draft failed ({entry.FailureReason})",
+            };
+            merged.AppendLine($"- {FindingLabel(entry.Lens, entry.Finding)} → {destination}");
+        }
+    }
+
+    private static void AppendDispositionGroup(
+        StringBuilder merged, string heading, string? note,
+        IReadOnlyList<(ReviewLens Lens, ReviewFinding Finding)> entries)
+    {
+        if (entries.Count == 0)
+        {
+            return;
+        }
+
+        merged.AppendLine();
+        merged.AppendLine($"### {heading}");
+        merged.AppendLine();
+        if (note is not null)
+        {
+            merged.AppendLine(note);
+            merged.AppendLine();
+        }
+
+        foreach ((ReviewLens lens, ReviewFinding finding) in entries)
+        {
+            merged.AppendLine($"- {FindingLabel(lens, finding)}");
+        }
+    }
+
+    private static string FindingLabel(ReviewLens lens, ReviewFinding finding)
+    {
+        string location = finding.Location.IsBlank() ? "(no location stated)" : $"`{finding.Location}`";
+        string severity = finding.Severity == ReviewSeverity.Unknown ? "ungraded" : finding.Severity.Value.ToLowerInvariant();
+        return $"{location} — {LensLabel(lens)}, {severity}";
     }
 
     /// <summary>
@@ -635,6 +979,76 @@ public sealed class ReviewEngine(
             ?? throw new InvalidOperationException($"Run stream {runId} not found.");
     }
 
+    /// <summary>The first still-active track that has run as many cycles as it may, or null while every track has room.</summary>
+    private ReviewLens? CappedTrack(RunAggregate run) =>
+        run.ActiveReviewLenses.FirstOrDefault(lens =>
+            ReviewTrackPolicy.CapReached(lens, run.ReviewCycle, run.ReviewBudgetBaseCycle, _options));
+
+    /// <summary>
+    /// Why a capped track parks, in that track's own terms. The two caps mean different things
+    /// and the reason says which: conformance running out is "nothing automated is left to
+    /// try", while adversarial running out is "the machine kept finding real problems, and
+    /// somebody should look at why" — not a failure, and not a budget quietly spent.
+    /// </summary>
+    private string CapParkReason(Guid runId, RunAggregate run, ReviewLens capped)
+    {
+        string findings = RunPaths.ReviewFindingsFile(runId, run.ReviewCycle);
+        string levers =
+            $"Unresolved findings: {findings}. Fix in the worktree and resolve with " +
+            "h9k review resolve --merge-ready, grant a fresh round with --needs-fixes, or abandon the task.";
+        int cycles = run.ReviewCycle - run.ReviewBudgetBaseCycle;
+
+        return capped == ReviewLens.Adversarial
+            ? $"{AdversarialCapReason(run, cycles)} {levers}"
+            : $"The conformance review is still returning findings after {cycles} cycles, its cap — the work " +
+              $"has been told the same thing {cycles} times, so nothing automated is left to try. " + levers;
+    }
+
+    /// <summary>
+    /// What the adversarial track was actually still returning when it hit its cap, read off
+    /// the cycle's recorded findings rather than assumed from the fact that it continued.
+    /// <para>
+    /// A High is not the only thing that keeps this track alive: an <i>ungraded</i> finding
+    /// forces another cycle too (<c>ReviewSeverity.Unknown.ForcesAnotherCycle</c>), by design,
+    /// and a reviewer whose grades never parsed — a word the platform cannot read, or findings
+    /// written without their FINDING header — produces exactly that. Telling a human "still
+    /// returning high-severity findings" in that case steers them to restart correct work over
+    /// a defect nobody ever graded, so the reason says which of the two it observed.
+    /// </para>
+    /// </summary>
+    private static string AdversarialCapReason(RunAggregate run, int cycles)
+    {
+        List<ReviewFindingRecord> owed = [.. run.CompletedReviewPasses
+            .Where(pass => pass.Lens.Covers(ReviewLens.Adversarial))
+            .SelectMany(pass => pass.Findings)
+            .Where(finding => finding.Disposition == ReviewFindingDisposition.Fix)];
+        int high = owed.Count(finding => finding.Severity == ReviewSeverity.High);
+        int ungraded = owed.Count(finding => finding.Severity == ReviewSeverity.Unknown);
+
+        if (high > 0)
+        {
+            return $"The adversarial review is still returning high-severity findings after {cycles} cycles, " +
+                $"its cap — {high} of cycle {run.ReviewCycle}'s findings are graded high. That is not a spent " +
+                "budget: the machine kept finding real problems in this diff, and a human should look at why " +
+                "rather than let the loop keep grinding. Restarting the work with a fresh agent is one way to " +
+                "resolve it.";
+        }
+
+        if (ungraded > 0)
+        {
+            return $"The adversarial review is still returning findings after {cycles} cycles, its cap, and " +
+                $"{ungraded} of cycle {run.ReviewCycle}'s findings carry no grade the platform could read — " +
+                "none is graded high. An ungraded finding forces another cycle deliberately, so the loop may " +
+                "have been kept alive by a reviewer whose grades did not parse rather than by defects that " +
+                "matter. Read the findings before deciding whether it is the diff or the grading that needs " +
+                "your attention.";
+        }
+
+        return $"The adversarial review is still returning findings after {cycles} cycles, its cap, and none " +
+            $"of cycle {run.ReviewCycle}'s findings is graded high. A human should look at what the loop has " +
+            "been spending its cycles on.";
+    }
+
     /// <summary>
     /// Per-session artifact prefix. The session id suffix keeps a redispatched pass (daemon
     /// died between spawn and record) from colliding with its orphan's files, and the lens
@@ -674,6 +1088,10 @@ public sealed class ReviewEngine(
     private static string VerdictLabel(ReviewVerdict verdict) =>
         verdict == ReviewVerdict.Unknown ? "(none stated)" : verdict.Value;
 
+    private static string SettlementLabel(RunAggregate run) => run.ReviewSettlement == ReviewSettlement.Unknown
+        ? "settlement not recorded"
+        : run.ReviewSettlement.Value.ToLowerInvariant();
+
     private static string VerdictlessLensList(RunAggregate run)
     {
         List<string> lenses = [.. run.CompletedReviewPasses
@@ -681,6 +1099,14 @@ public sealed class ReviewEngine(
             .Select(pass => LensLabel(pass.Lens))];
         return lenses.Count == 0 ? "lens not recorded" : string.Join(", ", lenses);
     }
+
+    /// <summary>
+    /// One out-of-scope finding and where it went: the draft task it became, why it could not
+    /// become one, or that an earlier cycle of this run already exported it
+    /// (<paramref name="AlreadyRouted"/> — no second draft, and no second routing event).
+    /// </summary>
+    private sealed record RoutedFinding(
+        ReviewLens Lens, ReviewFinding Finding, Guid? DraftTaskId, string? FailureReason, bool AlreadyRouted = false);
 
     private sealed record ReviewContext(Guid RunId, Guid TaskId, RunDetails Run, TaskDetails Task, ProjectDetails Project);
 }

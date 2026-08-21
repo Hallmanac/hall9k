@@ -36,11 +36,32 @@ public sealed class DaemonOptions
     public int MaxAutomaticCloseoutRuns { get; set; } = 2;
 
     /// <summary>
-    /// Automatic fix runs the pre-PR review loop may dispatch per run before it parks
-    /// the run for the human (the closeout retry-budget pattern, log #24). Each cycle is
-    /// review → fix → gates → review; the budget counts the fix legs.
+    /// Cycles the conformance track may run before the run parks for a human (Decisions Log
+    /// #62). Conformance has no severity grades to gate on — a criterion is met or it is not —
+    /// so its bound is simply "how many times may a machine be told the same thing". A
+    /// conformance review still returning findings at this cycle parks, because at that point
+    /// nothing automated is left to try.
     /// </summary>
-    public int MaxAutomaticReviewFixRuns { get; set; } = 2;
+    public int MaxComplianceReviewCycles { get; set; } = 3;
+
+    /// <summary>
+    /// Cycles the adversarial track may run before the run parks (Decisions Log #62). It is
+    /// deliberately far larger than the conformance cap: the severity gate, not the counter, is
+    /// what ends this track in practice, and reaching this many cycles means the machine kept
+    /// finding real high-severity problems — a fact a human should look at rather than a
+    /// budget that quietly ran out.
+    /// </summary>
+    public int MaxAdversarialReviewCycles { get; set; } = 10;
+
+    /// <summary>
+    /// The first adversarial cycle the severity gate applies to (Decisions Log #62). Before it,
+    /// every finding of every grade is fixed and forces a fresh re-review; from it onward only
+    /// a High forces the next cycle while Mediums and Lows are still fixed. The early cycles
+    /// get full rigor on purpose — the code is still converging there — and the gate exists for
+    /// the nit-churn tail, which is where the conformance-only loop used to park work that
+    /// would have converged one or two cycles later.
+    /// </summary>
+    public int AdversarialSeverityGateFromCycle { get; set; } = 4;
 
     /// <summary>
     /// How many immediate BlockedBy blockers a claimed task may have before their handoffs
