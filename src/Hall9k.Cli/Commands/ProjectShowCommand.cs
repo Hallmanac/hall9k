@@ -79,6 +79,12 @@ public sealed class ProjectShowCommand : Hall9kAsyncCommand<ProjectShowCommand.S
         table.AddRow("Commit style", project.CommitStyle == CommitStyle.Unknown
             ? "[dim]platform default — DaemonOptions.DefaultCommitStyle, narrative unless configured otherwise (log #26)[/]"
             : project.CommitStyle.Value.EscapeMarkup());
+        table.AddRow("Re-request review", ReviewRerequestOption.Describe(
+            project.ReviewRerequest,
+            "after a fix follow-up pushes, closeout asks this pull request's reviewers for another pass, "
+            + "capped by DaemonOptions.MaxReviewRerequestsAfterFixes (log #62)",
+            "the owner preference decides (h9k owner show), else the node default "
+            + "(DaemonOptions.DefaultReviewRerequest, off)"));
         table.AddRow("Verify gates", project.VerifyCommands.Count == 0
             ? $"[dim]none — add one: h9k project set {project.Name.EscapeMarkup()} --verify \"test=dotnet test\"[/]"
             : string.Join("\n", project.VerifyCommands.Select(gate =>

@@ -35,9 +35,29 @@ app.Configure(config =>
         project.AddCommand<ProjectSetCommand>("set")
             .WithDescription(
                 "Change project settings: verify gates, skip-permissions, links, parallelism, "
-                + "commit style, agent model")
+                + "commit style, agent model, review re-requests")
             .WithExample("project", "set", "hall9k", "--commit-style", "narrative")
-            .WithExample("project", "set", "hall9k", "--model", "claude-opus-5");
+            .WithExample("project", "set", "hall9k", "--model", "claude-opus-5")
+            .WithExample("project", "set", "hall9k", "--rerequest-review", "on");
+    });
+
+    config.AddBranch("owner", owner =>
+    {
+        owner.SetDescription("The human every node and project belongs to (PLAN.md §6.2), and their standing preferences");
+        owner.AddCommand<OwnerShowCommand>("show")
+            .WithDescription(
+                "One owner: identity, the projects registered to them, and every preference their work "
+                + "runs by. Takes the owner's name, an unambiguous fragment of it or their email, or their "
+                + "id — omit it entirely when this platform has one owner.")
+            .WithExample("owner", "show")
+            .WithExample("owner", "show", "brian");
+        owner.AddCommand<OwnerSetCommand>("set")
+            .WithDescription(
+                "Change an owner's standing preferences: whether closeout asks a pull request's reviewers "
+                + "to look again once a fix follow-up has pushed (Decisions Log #62). A project setting "
+                + "outranks this; the node default sits under both.")
+            .WithExample("owner", "set", "--rerequest-review", "on")
+            .WithExample("owner", "set", "brian", "--rerequest-review", "default");
     });
 
     config.AddBranch("pr", pullRequest =>

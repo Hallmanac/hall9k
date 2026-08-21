@@ -64,6 +64,20 @@ public sealed class ProjectSetCommand : Hall9kAsyncCommand<ProjectSetCommand.Set
             + "'default' is not a model name: it clears the project override so the levels above and "
             + "below decide. An exact id is the stabler choice: an alias is re-pointed as new models ship")]
         public string? Model { get; init; }
+
+        [CommandOption("--rerequest-review <ON|OFF|DEFAULT>")]
+        [Description(
+            "Whether closeout asks this project's reviewers for another pass once a fix follow-up has "
+            + "pushed, so whoever raised the findings countersigns that they were addressed (Decisions "
+            + "Log #62). 'on' buys that countersignature and spends review quota for it; 'off' lets a "
+            + "pull request settle on the internal review, the in-thread replies, and CI — the guards "
+            + "that already ran before the fixes were pushed. 'default' clears the project override so "
+            + "the owner preference (h9k owner set --rerequest-review), else the node default "
+            + "(DaemonOptions.DefaultReviewRerequest, off), decides. This project value outranks the "
+            + "owner's: a repository is where the review culture lives. Bounded either way — "
+            + "DaemonOptions.MaxReviewRerequestsAfterFixes caps the passes per task, after which the "
+            + "pull request settles rather than looping on its own refinements.")]
+        public string? RerequestReview { get; init; }
     }
 
     protected override async Task<int> ExecuteAsync(Settings settings, CancellationToken cancellationToken)
@@ -94,7 +108,10 @@ public sealed class ProjectSetCommand : Hall9kAsyncCommand<ProjectSetCommand.Set
             // idiom this option documents needs no special case here (Decisions Log #33).
             model: settings.Model is { } model
                 ? Optional<AgentModel>.Of(AgentModel.FromInput(model))
-                : Optional<AgentModel>.None);
+                : Optional<AgentModel>.None,
+            reviewRerequest: settings.RerequestReview is { } rerequestReview
+                ? Optional<ReviewRerequestPolicy>.Of(ReviewRerequestOption.Parse(rerequestReview))
+                : Optional<ReviewRerequestPolicy>.None);
 
         session.Events.Append(details.Id, changed);
         await session.SaveChangesAsync(cancellationToken);

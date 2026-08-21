@@ -26,6 +26,36 @@ internal static class OwnerResolver
     }
 
     /// <summary>
+    /// The named owner, or the sole registered one when no name was given. A platform with
+    /// more than one owner is asked rather than guessed at: acting on the wrong person's
+    /// standing preference is silent until it costs them something.
+    /// </summary>
+    public static async Task<OwnerDetails> ResolveOrSoleAsync(
+        IQuerySession session, string? nameOrFragment, CancellationToken cancellationToken)
+    {
+        if (nameOrFragment.IsNotBlank())
+        {
+            return await ResolveAsync(session, nameOrFragment, cancellationToken);
+        }
+
+        // Take(2) is all it takes to tell the three cases apart, and they are three different
+        // answers: nobody registered yet is not the same failure as too many to choose from.
+        IReadOnlyList<OwnerDetails> owners = await session.Query<OwnerDetails>()
+            .Take(2)
+            .ToListAsync(cancellationToken);
+
+        return owners switch
+        {
+            [OwnerDetails single] => single,
+            [] => throw new DomainNotFoundException(
+                "No owners are registered yet — run any h9k command that touches the database first "
+                + "(the first one registers this machine's owner and node)."),
+            _ => throw new DomainValidationException(
+                "More than one owner is registered, so name the one you mean: h9k owner show <owner>."),
+        };
+    }
+
+    /// <summary>
     /// The platform's sole owner, or null when more than one is registered. Single-owner
     /// convenience is offered only where it cannot be wrong (Decisions Log #34).
     /// </summary>
