@@ -11,11 +11,12 @@ namespace Hall9k.Connectors.WorkItems;
 /// and normalising here would mean the seam holding one source's grammar.
 /// </para>
 /// <para>
-/// <paramref name="WorkingDirectory"/> is the project's repository path. It reads as
-/// filesystem plumbing but it is the source-agnostic half of "which account am I": every
-/// provider Hall9k reaches for is a command-line tool that already holds the machine's
-/// credentials (PLAN.md §10), and the directory it runs in is what tells <c>gh</c> which
-/// repository the project means without the platform restating it.
+/// <paramref name="WorkingDirectory"/> is the project's repository path, and it is there for the
+/// providers that answer "which account am I" from the filesystem: <c>gh</c> holds the machine's
+/// own login (PLAN.md §10) and reads which repository the project means from the directory it
+/// runs in, so passing the path is what saves the platform from restating it. A source with a
+/// registered connection ignores it, because a Jira site and token say who is asking and a
+/// directory says nothing — which is the asymmetry between the two connectors in one field.
 /// </para>
 /// </summary>
 public sealed record WorkItemImportRequest(
