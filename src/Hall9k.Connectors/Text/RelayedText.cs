@@ -168,6 +168,28 @@ public static partial class RelayedText
     }
 
     /// <summary>
+    /// A fence the quoted text cannot close: CommonMark's own rule, a run of backticks longer
+    /// than the longest run inside the text being fenced. Relayed text carries its own fenced
+    /// code blocks constantly — an issue body quoting a code sample, a review finding quoting
+    /// the line it is about — so a fixed three-backtick quote would end wherever that text said
+    /// it did, and everything after that point would read as Hall9k's words rather than the
+    /// quoted author's. That is exactly the boundary the quote exists to draw, which is why the
+    /// rule lives here in one copy: two hand-written fences are two fences that drift.
+    /// </summary>
+    public static string FenceFor(string text)
+    {
+        int longestRun = 0;
+        int currentRun = 0;
+        foreach (char character in text)
+        {
+            currentRun = character is '`' ? currentRun + 1 : 0;
+            longestRun = Math.Max(longestRun, currentRun);
+        }
+
+        return new string('`', Math.Max(3, longestRun + 1));
+    }
+
+    /// <summary>
     /// The shortest run length no unpaired run in the text uses, so the pair this method inserts
     /// can only close against itself: CommonMark pairs a run with the next run of exactly its own
     /// length, and every run the text already had is either inside a span it closed (so it is
