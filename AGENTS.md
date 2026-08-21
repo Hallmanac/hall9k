@@ -25,7 +25,27 @@ h9k project list             # every project with its tasks counted by attention
 h9k project show <name>      # one project: registration, settings, rollup, newest tasks
 h9k task list --project <name> --state <state>   # browse tasks, newest first (--all, --limit)
 h9k status                   # the attention pane: what needs you, what stalled, what runs
+h9k idea add "<text>"        # capture an idea; discovery starts, a project is optional
 ```
+
+Ideas come before tasks (Decisions Log #35). An idea undergoes **discovery** (what is this?);
+a draft task undergoes **refinement** (how does this become executable?). A task is an idea with
+intent, and `h9k idea promote` is the hinge between the two.
+
+```bash
+h9k idea add "<text>"                             # capture: one command, one argument
+h9k idea add "<text>" --project <name>            # --project is optional, at capture and after
+h9k idea list                                     # what is still in discovery, newest first
+h9k idea show <id>                                # note, project, workspace path, history, outcome
+h9k idea revise <id> "<text>"                     # rewrite the note; every version stays on the stream
+h9k idea assign <id> --project <name>             # set or change where it belongs
+h9k idea promote <id> [--project <name>]          # becomes a draft task; needs a project
+h9k idea discard <id> --reason "<why>"            # closed honestly, never deleted
+```
+
+Every idea owns a discovery workspace, `~/.hall9k/ideas/<idea-id>/workspace`, where research
+notes, gathered files, and prototypes accumulate. The stream records milestones only, never file
+contents, and promotion carries the workspace path forward as the draft's agent context.
 
 Task development and task dispatch are separate lifecycles (Decisions Log #34): `h9k task add`
 creates a **draft**, and nothing dispatches until a human publishes and assigns it.
@@ -72,7 +92,7 @@ CI runs build + test on ubuntu and windows for every push/PR to main.
 **Layout**
 - Vertical slices: `Hall9k.Domain/Features/{Feature}/`. Big slices (Task, Run, Project) use
   `Commands/ Events/ Handlers/ Queries/ Projections/ Documents/` subfolders; tiny slices
-  (Owner, Node, Connection) stay flat.
+  (Owner, Node, Connection, Idea) stay flat.
 - Reference graph: `Cli → Domain + Connectors` · `Daemon → Domain + Connectors + ServiceDefaults`
   · `Connectors → Domain`. Domain references no Hall9k project. The CLI never hosts Wolverine.
 - Packages: pinned centrally in `Directory.Packages.props` (transitive pinning on). Add
