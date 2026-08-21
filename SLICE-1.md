@@ -207,7 +207,9 @@ neither, and import is a one-time snapshot that dates its own observation.
      `ExternalReference`, and still enforces the readiness contract (missing criteria → prompt
      the user or reject, not silently pass).
   3. Duplicate adoption of the same issue is rejected with a pointer to the existing task.
-- **Constraints:** no write-back to the issue in v0 beyond linking; no Jira.
+- **Constraints:** no write-back to the issue in v0 beyond linking; no Jira (lifted by
+  backlog 18, which adds Jira as a second provider behind the same seam and, for Jira only,
+  the one write a merge earns: a comment carrying the pull request).
 - **Landed beyond the above:** only an issue positively observed open is adopted, so a closed,
   missing, or never-stated state is refused with a self-correcting message that quotes what was
   seen; the state read at import is recorded as an observation of that moment, and the
@@ -280,4 +282,6 @@ installed mode" objective became the opt-in extra; decision log #31 records the 
 - **Slice 2** (ask/answer): exit-and-resume loop — **preceded by the resume spike** (log #5).
 - **Slice 3**: reviewer agent.
 - Budget auto-kill enforcement (log #11) — lands with Slice 2's run-monitor maturity.
-- `h9k watch [--notify]`, `h9k idea add`, funnel, Jira, multi-node.
+- `h9k watch [--notify]`, funnel, multi-node. (`h9k idea add` landed with Decisions Log #35;
+  Jira landed with backlog 18 and Decisions Log #65, as a read connection plus agent-mediated
+  card authoring rather than as a write connector.)
