@@ -23,17 +23,54 @@ namespace Hall9k.Connectors.WorkItems;
 /// be shaped the same.
 /// </para>
 /// </summary>
-public sealed class JiraAccount(
-    Uri siteUrl, string accountEmail, CredentialReference credential, CredentialVault? vault = null)
+public sealed class JiraAccount
 {
-    private readonly CredentialVault vault = vault ?? CredentialVault.Default;
+    private readonly CredentialVault vault;
 
-    public Uri SiteUrl { get; } = siteUrl;
+    /// <summary>The token itself, and only for an account that has not been written down yet.</summary>
+    private readonly string? unstoredToken;
 
-    public string AccountEmail { get; } = accountEmail;
+    public JiraAccount(
+        Uri siteUrl, string accountEmail, CredentialReference credential, CredentialVault? vault = null)
+    {
+        SiteUrl = siteUrl;
+        AccountEmail = accountEmail;
+        Credential = credential;
+        this.vault = vault ?? CredentialVault.Default;
+    }
 
-    /// <summary>Where the token lives; never the token.</summary>
-    public CredentialReference Credential { get; } = credential;
+    private JiraAccount(Uri siteUrl, string accountEmail, string token)
+    {
+        SiteUrl = siteUrl;
+        AccountEmail = accountEmail;
+        unstoredToken = token;
+        vault = CredentialVault.Default;
+    }
+
+    public Uri SiteUrl { get; }
+
+    public string AccountEmail { get; }
+
+    /// <summary>
+    /// Where the token lives; never the token. Null for the one account that has nowhere yet:
+    /// <see cref="WithTokenInHand"/>, whose token has deliberately not been stored.
+    /// </summary>
+    public CredentialReference? Credential { get; }
+
+    /// <summary>
+    /// An account authenticated by a token held for the length of one command, so a token can be
+    /// proven before anything writes it down.
+    /// <para>
+    /// It exists for registration and nothing else. The file a stored token lands in is named
+    /// from the site and the account, so re-registering the same account writes over the file the
+    /// live connection already points at — and a token that turns out to be expired or mistyped
+    /// would then have destroyed the working one, from a command that reported failure and looked
+    /// like it had changed nothing. Origin incident (2026-08-21): the pre-PR review of the Jira
+    /// branch found h9k connection add jira storing the token before verifying it.
+    /// </para>
+    /// </summary>
+    public static JiraAccount WithTokenInHand(Uri siteUrl, string accountEmail, string token) =>
+        new(siteUrl, accountEmail, token);
 
     /// <summary>
     /// The site as it is written in messages and built into URLs: scheme and host, no trailing
@@ -53,7 +90,16 @@ public sealed class JiraAccount(
     /// </summary>
     public async ValueTask<string> AuthorizationAsync(string purpose, CancellationToken cancellationToken)
     {
-        string token = await vault.ResolveAsync(Credential, purpose, cancellationToken);
+        string token = (unstoredToken, Credential) switch
+        {
+            ({ } inHand, _) => inHand,
+            (_, { } credential) => await vault.ResolveAsync(credential, purpose, cancellationToken),
+            _ => throw new DomainValidationException(
+                $"The account used to {purpose} carries neither a stored credential reference nor a "
+                + "token, so there is nothing to authenticate with. Register the connection again: "
+                + "h9k connection add jira --help"),
+        };
+
         return "Basic " + Convert.ToBase64String(Encoding.UTF8.GetBytes($"{AccountEmail}:{token}"));
     }
 

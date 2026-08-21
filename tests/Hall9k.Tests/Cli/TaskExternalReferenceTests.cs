@@ -1,6 +1,8 @@
 using FluentAssertions;
 using Hall9k.Cli.Commands;
 using Hall9k.Cli.Infrastructure;
+using Hall9k.Connectors.WorkItems;
+using Hall9k.Domain.Features.Connection;
 using Xunit;
 
 namespace Hall9k.Tests.Cli;
@@ -13,10 +15,25 @@ namespace Hall9k.Tests.Cli;
 /// </summary>
 public sealed class TaskExternalReferenceTests
 {
+    /// <summary>The importer an install with no Jira connection registered has.</summary>
+    private static readonly WorkItemImporter GitHubOnly = new(new GitHubWorkItemProvider());
+
+    /// <summary>
+    /// The importer an install with a Jira connection has. Constructing it needs a site, which is
+    /// the whole asymmetry between the two sources: gh carries the machine's own login, Jira needs
+    /// what a connection recorded (PLAN.md §10).
+    /// </summary>
+    private static readonly WorkItemImporter WithJira = new(
+        new GitHubWorkItemProvider(),
+        new JiraWorkItemProvider(new JiraAccount(
+            new Uri("https://hall9k.atlassian.net"),
+            "brian@example.com",
+            CredentialReference.EnvironmentVariable("JIRA_TOKEN"))));
+
     [Fact]
     public void An_adopted_github_issue_renders_as_a_link_to_the_issue()
     {
-        string markup = TaskShowCommand.ExternalMarkup("github:Hallmanac/hall9k#42");
+        string markup = TaskShowCommand.ExternalMarkup(GitHubOnly, "github:Hallmanac/hall9k#42");
 
         markup.Should().Contain("[link=https://github.com/Hallmanac/hall9k/issues/42]")
             .And.Contain("github:Hallmanac/hall9k#42");
@@ -25,17 +42,40 @@ public sealed class TaskExternalReferenceTests
     [Fact]
     public void The_row_says_the_state_behind_it_is_not_being_watched()
     {
-        string markup = TaskShowCommand.ExternalMarkup("github:Hallmanac/hall9k#42");
+        string markup = TaskShowCommand.ExternalMarkup(GitHubOnly, "github:Hallmanac/hall9k#42");
 
-        markup.Should().Contain("read once at import; never re-checked");
+        markup.Should().Contain("read once; never re-checked");
     }
 
     [Fact]
-    public void A_reference_no_source_can_place_prints_itself_without_a_link()
+    public void A_reference_no_registered_source_can_place_prints_itself_without_a_link()
     {
-        string markup = TaskShowCommand.ExternalMarkup("jira:PROJ-123");
+        // Placing a Jira key needs the site the connection recorded, so an install with no Jira
+        // connection genuinely cannot say where PROJ-123 lives — and says nothing rather than
+        // guessing at somebody's tenant.
+        string markup = TaskShowCommand.ExternalMarkup(GitHubOnly, "jira:PROJ-123");
 
         markup.Should().Be("jira:PROJ-123", "a link built on a guess is worse than no link");
+    }
+
+    [Fact]
+    public void A_jira_card_renders_as_a_link_once_a_connection_names_the_site()
+    {
+        string markup = TaskShowCommand.ExternalMarkup(WithJira, "jira:PROJ-123");
+
+        markup.Should().Contain("[link=https://hall9k.atlassian.net/browse/PROJ-123]")
+            .And.Contain("jira:PROJ-123");
+    }
+
+    [Fact]
+    public void A_jira_reference_that_is_not_a_card_key_is_not_dressed_up_as_one()
+    {
+        // The canonical form is provider:key, and anything else under that provider is a
+        // reference nobody can place — a link to /browse/<whatever this is> would be a 404
+        // wearing the shape of an answer.
+        string markup = TaskShowCommand.ExternalMarkup(WithJira, "jira:not a key");
+
+        markup.Should().Be("jira:not a key");
     }
 
     [Fact]

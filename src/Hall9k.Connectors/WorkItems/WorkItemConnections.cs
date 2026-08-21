@@ -22,10 +22,22 @@ namespace Hall9k.Connectors.WorkItems;
 public static class WorkItemConnections
 {
     /// <summary>
+    /// What every surface says when Jira is asked for on an install that has not connected it.
+    /// One string because it is one answer: the import path, the publication path, and the link
+    /// path all fail on the same missing connection, and an agent that learns the remedy from one
+    /// of them should read the same sentence from the others.
+    /// </summary>
+    public const string NoJiraConnection =
+        "No Jira connection is registered on this install, and Hall9k holds no Jira credentials "
+        + "of its own (PLAN.md §10). Register one: h9k connection add jira --site "
+        + "https://your-org.atlassian.net --email you@example.com";
+
+    /// <summary>
     /// The importer for this install: the GitHub provider always, and the Jira provider when a
-    /// Jira connection is registered. A Jira reference on a machine with no Jira connection then
-    /// resolves to no provider at all, which is how <see cref="WorkItemImporter"/> already
-    /// reports "we cannot say" — an honest absence rather than a broken link.
+    /// Jira connection is registered. Without one, Jira is carried as an unregistered source
+    /// rather than left out silently, so importing a card on a machine that has not connected
+    /// Jira is refused with the command that connects it instead of with a list of the sources
+    /// that happen to be configured.
     /// </summary>
     public static async Task<WorkItemImporter> ImporterAsync(
         IQuerySession session, CancellationToken cancellationToken, JiraRequester? requester = null)
@@ -33,6 +45,12 @@ public static class WorkItemConnections
         JiraWorkItemProvider? jira = await TryJiraProviderAsync(session, cancellationToken, requester: requester);
         return jira is null
             ? new WorkItemImporter(new GitHubWorkItemProvider())
+            {
+                Unregistered = new Dictionary<WorkItemProvider, string>
+                {
+                    [WorkItemProvider.Jira] = NoJiraConnection,
+                },
+            }
             : new WorkItemImporter(new GitHubWorkItemProvider(), jira);
     }
 
@@ -59,10 +77,7 @@ public static class WorkItemConnections
         JiraRequester? requester = null)
     {
         ConnectionDetails connection = await FindJiraConnectionAsync(session, cancellationToken)
-            ?? throw new DomainNotFoundException(
-                "No Jira connection is registered on this install, and Hall9k holds no Jira credentials "
-                + "of its own (PLAN.md §10). Register one: h9k connection add jira --site "
-                + "https://your-org.atlassian.net --email you@example.com");
+            ?? throw new DomainNotFoundException(NoJiraConnection);
 
         return Build(connection, vault, requester);
     }
