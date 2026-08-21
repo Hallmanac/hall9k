@@ -1,6 +1,7 @@
 using System.ComponentModel;
 using Hall9k.Cli.Infrastructure;
 using Hall9k.Domain.Features.Owner;
+using Hall9k.Domain.Features.Run;
 using Hall9k.Domain.Features.Run.Projections;
 using Hall9k.Domain.Features.Tasks;
 using Hall9k.Domain.Features.Tasks.Projections;
@@ -121,6 +122,8 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
             AnsiConsole.WriteLine(details.AgentContext);
         }
 
+        await WriteStartingContextAsync(session, details, cancellationToken);
+
         if (details.Conversation.Count > 0)
         {
             AnsiConsole.MarkupLine("\n[bold]Conversation[/]");
@@ -159,6 +162,8 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
             AnsiConsole.Write(runsTable);
         }
 
+        await WriteHandoffAsync(session, details, runs, cancellationToken);
+
         AnnounceNextStep(details);
 
         if (details.State == TaskState.Failed)
@@ -171,6 +176,88 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
         }
 
         return ExitCodes.Ok;
+    }
+
+    /// <summary>
+    /// What this task hands down, once its run reaches true closeout (Decisions Log #36) — the
+    /// reciprocal of the starting-context section above, and the surface that makes a missing
+    /// handoff visible on the task that failed to leave one rather than only on the dependents
+    /// that go without it.
+    /// <para>
+    /// It reads through <see cref="BlockerHandoffQuery"/> against this task's own id, because
+    /// "what does this task hand down" is the same question the query answers about a blocker;
+    /// asking it twice in two ways is how the two answers start to disagree.
+    /// </para>
+    /// </summary>
+    private static async Task WriteHandoffAsync(
+        IQuerySession session, TaskDetails details, IReadOnlyList<RunListItem> runs,
+        CancellationToken cancellationToken)
+    {
+        // Nothing has closed out yet, so there is nothing to hand down and no absence to
+        // report either: a task still working has simply not been asked.
+        if (!runs.Any(run => run.State == RunState.Completed))
+        {
+            return;
+        }
+
+        IReadOnlyList<BlockerHandoff> own = await BlockerHandoffQuery.LoadAsync(
+            session, [details.Id], cancellationToken);
+        if (own is not [{ } handoff])
+        {
+            return;
+        }
+
+        AnsiConsole.MarkupLine("\n[bold]Handoff[/] [dim](what a task blocked by this one would start with)[/]");
+        if (handoff is { HasSummary: true, Summary: { } summary })
+        {
+            AnsiConsole.WriteLine(summary);
+            return;
+        }
+
+        AnsiConsole.MarkupLine(
+            $"  [dim]none recorded: {handoff.Outcome.Describe().EscapeMarkup()}. "
+            + "Dependents fall back to this task's objective and acceptance criteria.[/]");
+    }
+
+    /// <summary>
+    /// The context this task would receive if a node claimed it right now (Decisions Log #36):
+    /// its immediate blockers' handoffs, rendered by the same
+    /// <see cref="BlockerContextDocument"/> the daemon pastes into the agent's prompt. Sharing
+    /// the renderer is the point — a human checking what an agent will start with is reading
+    /// that context itself, not a second telling of it that could drift.
+    /// <para>
+    /// The screen says what it cannot know: whether the fan-in exceeds the claiming node's
+    /// synthesis threshold is that node's configuration, so it is named as a possibility
+    /// rather than predicted here (the AGENTS.md never-guess rule).
+    /// </para>
+    /// </summary>
+    private static async Task WriteStartingContextAsync(
+        IQuerySession session, TaskDetails details, CancellationToken cancellationToken)
+    {
+        if (details.BlockedBy.Count == 0)
+        {
+            return;
+        }
+
+        IReadOnlyList<BlockerHandoff> handoffs = await BlockerHandoffQuery.LoadAsync(
+            session, details.BlockedBy, cancellationToken);
+        if (BlockerContextDocument.Render(handoffs) is not { } context)
+        {
+            return;
+        }
+
+        AnsiConsole.MarkupLine(
+            "\n[bold]Starting context[/] [dim](what a run would be handed if this were claimed now)[/]");
+        int missing = handoffs.Count(handoff => !handoff.HasSummary);
+        if (missing > 0)
+        {
+            AnsiConsole.MarkupLine(
+                $"  [dim]{missing} of {handoffs.Count} blocker(s) have no handoff yet; those fall back to their objective and criteria.[/]");
+        }
+
+        AnsiConsole.MarkupLine(
+            "  [dim]Above the claiming node's blocker-synthesis threshold, a synthesis pass condenses this first.[/]\n");
+        AnsiConsole.WriteLine(context);
     }
 
     /// <summary>
