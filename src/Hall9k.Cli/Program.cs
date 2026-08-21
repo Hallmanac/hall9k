@@ -115,6 +115,64 @@ app.Configure(config =>
         });
     });
 
+    config.AddBranch("idea", idea =>
+    {
+        idea.SetDescription(
+            "Capture and develop ideas. An idea undergoes DISCOVERY — what is this? — and becomes a "
+            + "draft task the moment discovery gives it intent; the draft then undergoes REFINEMENT — "
+            + "how does this become executable? (Decisions Log #35). A task is an idea with intent.");
+        idea.AddCommand<IdeaAddCommand>("add")
+            .WithDescription(
+                "Capture an idea: one command, one argument, no ceremony. --project is the only "
+                + "option and it is optional — an idea may precede its project, or become one. Each "
+                + "idea gets a discovery workspace directory for the research, files, and prototypes "
+                + "that accumulate while you figure out what it is.")
+            .WithExample("idea", "add", "The attention pane should teach the next command")
+            .WithExample("idea", "add", "Stacked PRs for dependency chains", "--project", "hall9k");
+        idea.AddCommand<IdeaListCommand>("list")
+            .WithDescription(
+                "Browse ideas newest-first, with their age and their project (or the honest absence "
+                + "of one). Shows what is still in discovery by default; --state all adds what was "
+                + "promoted or discarded. The footer teaches promotion, which is what the list is for.")
+            .WithExample("idea", "list")
+            .WithExample("idea", "list", "--project", "hall9k")
+            .WithExample("idea", "list", "--unassigned")
+            .WithExample("idea", "list", "--state", "all", "--all");
+        idea.AddCommand<IdeaShowCommand>("show")
+            .WithDescription(
+                "One idea: its note, its project, its discovery workspace path and what has piled up "
+                + "in it, every version the note has had, and what the idea became if it was promoted "
+                + "or why it was discarded.")
+            .WithExample("idea", "show", "28b19893");
+        idea.AddCommand<IdeaReviseCommand>("revise")
+            .WithDescription(
+                "Rewrite the note as discovery sharpens it. No ceremony, unlike a task revision: "
+                + "nothing dispatches from an idea, so there is no promise an edit could break. Every "
+                + "earlier version stays on the stream and in h9k idea show.")
+            .WithExample("idea", "revise", "28b19893", "Ideas need their own discovery workspace, not just a note");
+        idea.AddCommand<IdeaAssignCommand>("assign")
+            .WithDescription(
+                "Set or change the project an idea belongs to — for when capture did not know yet, "
+                + "which is most of the time. An unassigned idea is honest, not incomplete; a project "
+                + "only becomes required at promotion.")
+            .WithExample("idea", "assign", "28b19893", "--project", "hall9k");
+        idea.AddCommand<IdeaPromoteCommand>("promote")
+            .WithDescription(
+                "Promote an idea into a draft task: discovery ends, refinement begins. The note seeds "
+                + "the draft (its first sentence becomes the objective — taken mechanically, never "
+                + "interpreted, and overridable with --objective; the remainder becomes agent context), "
+                + "the discovery workspace pointer rides along, and provenance is recorded both ways. "
+                + "Needs a project, supplied here or already assigned.")
+            .WithExample("idea", "promote", "28b19893")
+            .WithExample("idea", "promote", "28b19893", "--project", "hall9k")
+            .WithExample("idea", "promote", "28b19893", "--objective", "Give every idea a discovery workspace");
+        idea.AddCommand<IdeaDiscardCommand>("discard")
+            .WithDescription(
+                "Close an idea with the reason recorded. Nothing is deleted and the workspace stays "
+                + "put: an idea that keeps coming back is a signal, and only a kept record can show it.")
+            .WithExample("idea", "discard", "28b19893", "--reason", "Superseded by the attachments design");
+    });
+
     config.AddBranch("task", task =>
     {
         task.SetDescription(
