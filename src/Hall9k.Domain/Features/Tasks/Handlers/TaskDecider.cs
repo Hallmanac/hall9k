@@ -27,7 +27,8 @@ public static class TaskDecider
         DateTimeOffset addedAt,
         Guid addedByOwnerId,
         AgentModel? model = null,
-        IReadOnlyList<Guid>? blockedBy = null)
+        IReadOnlyList<Guid>? blockedBy = null,
+        Guid? sourceIdeaId = null)
     {
         if (projectId == Guid.Empty)
         {
@@ -48,7 +49,8 @@ public static class TaskDecider
 
         return new TaskAdded(
             id, projectId, objective, criteria, type, agentContext, constraints,
-            externalReference, addedAt, addedByOwnerId, VetModel(model), dependencies, StartsAsDraft: true);
+            externalReference, addedAt, addedByOwnerId, VetModel(model), dependencies,
+            StartsAsDraft: true, SourceIdeaId: sourceIdeaId);
     }
 
     /// <summary>

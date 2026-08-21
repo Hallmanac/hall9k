@@ -13,6 +13,12 @@ namespace Hall9k.Domain.Features.Tasks.Events;
 /// AddedByOwnerId — which is the sole owner of a v0 install, an observed fact rather than a
 /// guess at who a historical task belonged to. Every task h9k creates now passes true.
 /// </para>
+/// <para>
+/// SourceIdeaId is the other half of promotion's two-way provenance (Decisions Log #35): the
+/// idea's stream names the task it became, and this names the idea it came from. Null means
+/// the task was written directly, which is a fact rather than a gap — and is also how every
+/// stream written before ideas existed replays.
+/// </para>
 /// </summary>
 public sealed record TaskAdded(
     Guid Id,
@@ -27,4 +33,5 @@ public sealed record TaskAdded(
     Guid AddedByOwnerId,
     AgentModel? Model = null,
     IReadOnlyList<Guid>? BlockedBy = null,
-    bool StartsAsDraft = false);
+    bool StartsAsDraft = false,
+    Guid? SourceIdeaId = null);

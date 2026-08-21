@@ -59,6 +59,8 @@ public sealed class TaskDetails
     public string? AbandonedReason { get; set; }
     public DateTimeOffset AddedAt { get; set; }
     public Guid AddedByOwnerId { get; set; }
+    /// <summary>The idea this draft was promoted from; null when the task was written directly (Decisions Log #35).</summary>
+    public Guid? SourceIdeaId { get; set; }
     public DateTimeOffset? FinishedAt { get; set; }
 }
 
@@ -82,6 +84,7 @@ public sealed class TaskDetailsProjection : SingleStreamProjection<TaskDetails, 
         Model = @event.Data.Model ?? AgentModel.Unknown,
         AddedAt = @event.Data.AddedAt,
         AddedByOwnerId = @event.Data.AddedByOwnerId,
+        SourceIdeaId = @event.Data.SourceIdeaId,
     };
 
     public void Apply(IEvent<TaskPublished> @event, TaskDetails view) => view.State = TaskState.Published;
