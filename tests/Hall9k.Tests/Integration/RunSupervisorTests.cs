@@ -1,6 +1,7 @@
 using Hall9k.Domain.Infrastructure.Storage;
 using System.ComponentModel;
 using System.Diagnostics;
+using System.Text.Json;
 using FluentAssertions;
 using Hall9k.Daemon;
 using Hall9k.Daemon.Execution;
@@ -129,6 +130,99 @@ public sealed class RunSupervisorTests(PostgresFixture postgres) : IClassFixture
         (await query.LoadAsync<TaskLease>(taskId, cts.Token)).Should().BeNull("failure releases the lease");
     }
 
+    /// <summary>
+    /// A follow-up that met a review thread it could not honestly judge parks for the human
+    /// instead of pushing (Decisions Log #62): the never-loop rule the pre-PR fix session runs
+    /// on, applied to a reviewer's thread. Both positions land beside the run, and the pipeline
+    /// stops where it stands.
+    /// </summary>
+    [Fact]
+    public async Task A_follow_up_that_disputes_a_review_thread_parks_instead_of_pushing()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        using DocumentStore store = NewStore();
+        (NodeContext node, Guid taskId, Guid runId) = await SeedClaimedTaskAsync(store, cts.Token, asFollowUp: true);
+
+        const string disputed =
+            "Answered three threads. The fourth asks for a different projection shape.\n"
+            + "RESOLUTION: disputed";
+        // printf, not echo: the JSON carries an escaped newline and sh's echo expands it,
+        // which would split the result line in half and leave nothing parseable.
+        int processId = SpawnFakeAgent(runId, $"printf '%s\\n' '{DisputedResultLine(disputed)}'");
+        DateTimeOffset startedAt = await RecordProcessStartedAsync(store, runId, processId, cts.Token);
+
+        RunSupervisor supervisor = NewSupervisor(store, node);
+        supervisor.StartMonitoring(runId, taskId, processId, startedAt, cts.Token);
+
+        RunDetails details = await WaitForStateAsync(store, runId, "ReviewParked", cts.Token);
+        details.ParkedReason.Should().Contain("disputed a review thread");
+        details.ParkedReason.Should().Contain("h9k review resolve", "a park names the human's way back in");
+        details.FailureReason.Should().BeNull("a park is a waiting state, not a failure");
+
+        File.ReadAllText(RunPaths.ReviewThreadDisputeFile(runId)).Should().Contain(
+            "different projection shape", "the human reads the agent's position, not just the marker");
+    }
+
+    /// <summary>The same marker from a first run is text, not an answer: only a follow-up was asked.</summary>
+    [Fact]
+    public async Task The_dispute_marker_is_read_only_from_follow_up_runs()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        using DocumentStore store = NewStore();
+        (NodeContext node, Guid taskId, Guid runId) = await SeedClaimedTaskAsync(store, cts.Token);
+
+        int processId = SpawnFakeAgent(runId,
+            $"printf '%s\\n' '{DisputedResultLine("Quoting the rules: RESOLUTION: disputed is how a follow-up parks.")}'");
+        DateTimeOffset startedAt = await RecordProcessStartedAsync(store, runId, processId, cts.Token);
+
+        NewSupervisor(store, node).StartMonitoring(runId, taskId, processId, startedAt, cts.Token);
+
+        // Verifying is where a build run goes next; the gates then fail it on the missing
+        // worktree, which is fine — what matters is that it was never parked.
+        await WaitForStateAsync(store, runId, "Verifying", cts.Token);
+        await using IQuerySession query = store.QuerySession();
+        (await query.LoadAsync<RunDetails>(runId, cts.Token))!.ParkedReason.Should().BeNull();
+    }
+
+    /// <summary>
+    /// The marker is only an answer where the question was asked (Decisions Log #62). A CI-fix
+    /// follow-up was never taught this vocabulary, so a summary of its own that happens to
+    /// quote the line — the skill file is in the repo it is working in — is text, and parking
+    /// on it would hand a human a "disputed review thread" whose position is about CI.
+    /// </summary>
+    [Fact]
+    public async Task A_checks_follow_up_quoting_the_marker_is_not_read_as_a_dispute()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        using DocumentStore store = NewStore();
+        (NodeContext node, Guid taskId, Guid runId) = await SeedClaimedTaskAsync(
+            store, cts.Token, asFollowUp: true, followUpKind: FollowUpKind.FailingChecks);
+
+        int processId = SpawnFakeAgent(runId, $"printf '%s\\n' '{DisputedResultLine(
+            "Fixed the flaky test. The skill file's park line reads RESOLUTION: disputed.")}'");
+        DateTimeOffset startedAt = await RecordProcessStartedAsync(store, runId, processId, cts.Token);
+
+        NewSupervisor(store, node).StartMonitoring(runId, taskId, processId, startedAt, cts.Token);
+
+        // Verifying is where the run goes instead; the gates then fail it on the missing
+        // worktree, which is fine — what matters is that it was never parked.
+        await WaitForStateAsync(store, runId, "Verifying", cts.Token);
+        await using IQuerySession query = store.QuerySession();
+        (await query.LoadAsync<RunDetails>(runId, cts.Token))!.ParkedReason.Should().BeNull();
+        File.Exists(RunPaths.ReviewThreadDisputeFile(runId)).Should().BeFalse(
+            "nothing was disputed, so no position was written");
+    }
+
+    private static string DisputedResultLine(string summary) =>
+        JsonSerializer.Serialize(new
+        {
+            type = "result",
+            subtype = "success",
+            is_error = false,
+            result = summary,
+            usage = new { input_tokens = 10, output_tokens = 10 },
+        });
+
     private DocumentStore NewStore() => DocumentStore.For(opts =>
     {
         opts.Connection(postgres.ConnectionString);
@@ -136,7 +230,8 @@ public sealed class RunSupervisorTests(PostgresFixture postgres) : IClassFixture
     });
 
     private async Task<(NodeContext Node, Guid TaskId, Guid RunId)> SeedClaimedTaskAsync(
-        DocumentStore store, CancellationToken cancellationToken)
+        DocumentStore store, CancellationToken cancellationToken,
+        bool asFollowUp = false, FollowUpKind? followUpKind = null)
     {
         NodeContext node = new();
         await node.InitializeAsync(store, cancellationToken);
@@ -150,13 +245,29 @@ public sealed class RunSupervisorTests(PostgresFixture postgres) : IClassFixture
             TaskDecider.Add(taskId, DomainId.New(), "Executor test task", ["it completes"],
                 TaskType.Chore, null, null, null, Now, node.OwnerId),
             node.OwnerId, Now);
+        // A follow-up's kind lives on the task, recorded by the reopen that dispatched it, so
+        // a run that has one is seeded through the real edges: claim, complete, reopen, claim.
+        object[] reopen = [];
+        if (followUpKind is not null)
+        {
+            var firstClaim = TaskDecider.Claim(task, node.NodeId, node.OwnerId, DomainId.New(), Now);
+            task.Apply(firstClaim);
+            var completed = TaskDecider.Complete(task, DomainId.New(), "https://github.com/x/y/pull/1", Now);
+            task.Apply(completed);
+            var reopened = TaskDecider.Reopen(
+                task, DomainId.New(), "task/test", "CI checks failing on the pull request.",
+                followUpKind, automatic: true, Now, node.OwnerId);
+            task.Apply(reopened);
+            reopen = [firstClaim, completed, reopened];
+        }
+
         var claimed = TaskDecider.Claim(task, node.NodeId, node.OwnerId, runId, Now);
-        session.Events.StartStream<TaskAggregate>(taskId, [.. lifecycle, claimed]);
+        session.Events.StartStream<TaskAggregate>(taskId, [.. lifecycle, .. reopen, claimed]);
         session.Store(new TaskLease { Id = taskId, NodeId = node.NodeId, LeaseGeneration = 1, HeartbeatAt = Now });
 
         session.Events.StartStream<RunAggregate>(runId, new RunDispatched(
             runId, taskId, node.NodeId, node.OwnerId, 1, DomainId.New(),
-            "/tmp/wt-test", "task/test", ExecutorMode.Subscription, Now));
+            "/tmp/wt-test", "task/test", ExecutorMode.Subscription, Now, IsFollowUp: asFollowUp));
         await session.SaveChangesAsync(cancellationToken);
 
         return (node, taskId, runId);
@@ -213,7 +324,11 @@ public sealed class RunSupervisorTests(PostgresFixture postgres) : IClassFixture
             await Task.Delay(250, cancellationToken);
         }
 
-        throw new TimeoutException($"Run {runId} never reached state {state}.");
+        await using IQuerySession final = store.QuerySession();
+        RunDetails? reached = await final.LoadAsync<RunDetails>(runId, cancellationToken);
+        throw new TimeoutException(
+            $"Run {runId} never reached state {state}; it is {reached?.State.Value ?? "(no projection)"} "
+            + $"(failure: {reached?.FailureReason ?? "none"}, park: {reached?.ParkedReason ?? "none"}).");
     }
 
     private static RunSupervisor NewSupervisor(DocumentStore store, NodeContext node)

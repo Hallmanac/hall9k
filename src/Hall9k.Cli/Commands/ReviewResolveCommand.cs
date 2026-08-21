@@ -21,6 +21,12 @@ namespace Hall9k.Cli.Commands;
 /// request; --needs-fixes dispatches a fix session with the stated reason as its
 /// findings and, like h9k pr resolve, restores the automatic fix budget — the human
 /// asking is a fresh grant.
+/// <para>
+/// One park takes merge-ready differently. The thread-dispute park (Decisions Log #62) is
+/// raised before the gates run, so there is no reviewed diff to sign off: the verdict
+/// settles the disputed thread, and the run re-enters the pipeline at the gates and the
+/// review loop rather than proceeding straight to the pull request. The message says so.
+/// </para>
 /// </summary>
 public sealed class ReviewResolveCommand : Hall9kAsyncCommand<ReviewResolveCommand.Settings>
 {
@@ -31,7 +37,10 @@ public sealed class ReviewResolveCommand : Hall9kAsyncCommand<ReviewResolveComma
         public string Task { get; init; } = string.Empty;
 
         [CommandOption("--merge-ready")]
-        [Description("Your verdict: the diff is sound — the run proceeds to open its pull request")]
+        [Description(
+            "Your verdict: the diff is sound — the run proceeds to open its pull request "
+            + "(on a thread-dispute park, which happens before the gates, it re-enters at the "
+            + "gates and the review loop instead: your call settled the thread, not the diff)")]
         public bool MergeReady { get; init; }
 
         [CommandOption("--needs-fixes <REASON>")]
@@ -102,9 +111,19 @@ public sealed class ReviewResolveCommand : Hall9kAsyncCommand<ReviewResolveComma
         }
         await Doorbell.RingAsync($"review-resolve:{taskId}", cancellationToken);
 
-        AnsiConsole.MarkupLineInterpolated(settings.MergeReady
-            ? (FormattableString)$"[dim]Run {runId} resolved merge-ready — the daemon resumes it and opens the pull request.[/]"
-            : $"[dim]Run {runId} resolved needs-fixes — the daemon dispatches a fix session with your reason as its findings.[/]");
+        // What happens next differs by where the park caught the run, so say which: a
+        // thread-dispute park (log #62) is raised before the gates, and a merge-ready
+        // verdict there re-enters the pipeline rather than skipping to the pull request.
+        FormattableString outcome = (settings.MergeReady, run.ParkedFromState == RunState.Verifying) switch
+        {
+            (true, true) =>
+                $"[dim]Run {runId} resolved merge-ready — the daemon re-enters the pipeline at the gates, then review; the pull request opens if both pass.[/]",
+            (true, false) =>
+                $"[dim]Run {runId} resolved merge-ready — the daemon resumes it and opens the pull request.[/]",
+            _ =>
+                $"[dim]Run {runId} resolved needs-fixes — the daemon dispatches a fix session with your reason as its findings.[/]",
+        };
+        AnsiConsole.MarkupLineInterpolated(outcome);
         return ExitCodes.Ok;
     }
 }

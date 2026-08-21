@@ -10,6 +10,7 @@ using Hall9k.Domain.Features.Run.Projections;
 using Hall9k.Domain.Features.Tasks;
 using Hall9k.Domain.Features.Tasks.Documents;
 using Hall9k.Domain.Features.Tasks.Handlers;
+using Hall9k.Domain.Features.Tasks.Projections;
 using Marten;
 using Marten.Linq.MatchesSql;
 
@@ -229,6 +230,11 @@ public sealed class RunSupervisor(
             result.OutputTokens,
             result.IsError);
 
+        if (!result.IsError && await ParkedOnThreadDisputeAsync(runId, taskId, result, cancellationToken))
+        {
+            return;
+        }
+
         // The pre-PR pipeline (log #24): gates, then the independent review loop, and
         // only a merge-ready verdict lets the pull request open.
         if (!result.IsError
@@ -236,6 +242,85 @@ public sealed class RunSupervisor(
             && await review.ReviewAsync(runId, taskId, cancellationToken))
         {
             await pullRequests.OpenAsync(runId, taskId, cancellationToken);
+        }
+    }
+
+    /// <summary>
+    /// A follow-up that met a review thread it could not honestly judge parks the run for
+    /// the human instead of pushing (Decisions Log #62). The never-loop rule the pre-PR fix
+    /// session already runs on, applied to a reviewer's thread: one honest attempt, and a
+    /// design disagreement goes to a person with both positions recorded rather than being
+    /// settled by whichever side the agent found more persuasive.
+    /// <para>
+    /// Read only from the follow-up runs that were ASKED the question, because a marker in
+    /// any other session's summary is text, not an answer. That is narrower than "this is a
+    /// follow-up": the closeout monitor dispatches two kinds, and only the review-feedback
+    /// prompt teaches this vocabulary, so a CI-fix session quoting the skill file's marker
+    /// line would otherwise park a run with a dispute reason pointing at a CI narrative. The
+    /// gate is <c>RunLauncher</c>'s own prompt-selection condition read back — FailingChecks
+    /// got BuildFixChecks, everything else (including the Unknown of reopens recorded before
+    /// the vocabulary existed) got BuildFollowUp — so the runs that may park are exactly the
+    /// runs that were taught how, off the same field that chose the prompt.
+    /// </para>
+    /// <para>
+    /// The park reuses <see cref="ReviewParked"/> whole: it already surfaces as NeedsHuman,
+    /// keeps the lease refreshed through adoption, and is resolved with h9k review resolve.
+    /// It lands from Verifying rather than UnderReview, which is what tells that resolution
+    /// to re-enter at the gates instead of reporting merge-ready (RunAggregate.ParkedFromState).
+    /// </para>
+    /// </summary>
+    private async Task<bool> ParkedOnThreadDisputeAsync(
+        Guid runId, Guid taskId, AgentResult result, CancellationToken cancellationToken)
+    {
+        if (ReviewResultParser.ParseFixOutcome(result.Summary) != ReviewFixOutcome.Disputed)
+        {
+            return false;
+        }
+
+        await using IDocumentSession session = store.LightweightSession();
+        RunDetails? run = await session.LoadAsync<RunDetails>(runId, cancellationToken);
+        if (run is null || !run.IsFollowUp)
+        {
+            return false;
+        }
+
+        TaskDetails? task = await session.LoadAsync<TaskDetails>(taskId, cancellationToken);
+        if (task is null || task.FollowUpKind == FollowUpKind.FailingChecks)
+        {
+            logger.LogInformation(
+                "Run {RunId} carried the dispute marker but was dispatched to fix CI, which never asked "
+                + "the question — reading it as a verdict would park on a narrative about checks", runId);
+            return false;
+        }
+
+        await WriteDisputePositionAsync(runId, result.Summary, cancellationToken);
+        string reason =
+            "A follow-up disputed a review thread as a design call it cannot honestly make. "
+            + $"Both positions: {RunPaths.ReviewThreadDisputeFile(runId)}. "
+            + "Decide between them, then resolve with h9k review resolve — nothing has been pushed.";
+        session.Events.Append(runId, new ReviewParked(runId, reason, DateTimeOffset.UtcNow));
+        await session.SaveChangesAsync(cancellationToken);
+
+        logger.LogWarning("Run {RunId}: review thread disputed — parked for the human. {Reason}", runId, reason);
+        return true;
+    }
+
+    /// <summary>
+    /// The agent's closing summary, saved as the second position a human reads. Written
+    /// best-effort for the same reason the handoff artifact is: losing the file must not turn
+    /// a park into a failure, and the park reason names the path either way.
+    /// </summary>
+    private async Task WriteDisputePositionAsync(Guid runId, string? summary, CancellationToken cancellationToken)
+    {
+        try
+        {
+            Directory.CreateDirectory(RunPaths.RunDirectory(runId));
+            await File.WriteAllTextAsync(
+                RunPaths.ReviewThreadDisputeFile(runId), summary ?? string.Empty, cancellationToken);
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            logger.LogWarning(exception, "Could not write the thread-dispute position for run {RunId}", runId);
         }
     }
 

@@ -58,6 +58,14 @@ public static class RunPaths
         Path.Combine(RunDirectory(runId), $"review-{cycle}-fix-position.md");
 
     /// <summary>
+    /// A follow-up's closing position when it disputed a review thread rather than settling it
+    /// (Decisions Log #62) — the text a park points the human at, holding both the reviewer's
+    /// position and the agent's. One per run, because a run parks at most once.
+    /// </summary>
+    public static string ReviewThreadDisputeFile(Guid runId) =>
+        Path.Combine(RunDirectory(runId), "review-thread-dispute.md");
+
+    /// <summary>
     /// The run's handoff to whatever depends on it (Decisions Log #36), written at session end
     /// beside the review findings so it is inspectable outside the ledger. The file's three
     /// states are three observations, which is what lets the closeout append record an honest

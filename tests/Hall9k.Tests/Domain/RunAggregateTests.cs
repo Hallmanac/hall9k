@@ -214,6 +214,34 @@ public sealed class RunAggregateTests
         run.LastReviewVerdict.Should().Be(ReviewVerdict.MergeReady);
     }
 
+    /// <summary>
+    /// The thread-dispute park (Decisions Log #62) is raised from Verifying, before a gate has
+    /// run and before any reviewer has read the diff, so a merge-ready resolution there is the
+    /// human settling the disputed THREAD. It must not report merge-ready to PullRequestOpener,
+    /// which would force-push commits that never compiled here: the pipeline re-enters at the
+    /// gates, and a review cycle follows them.
+    /// </summary>
+    [Fact]
+    public void Merge_ready_on_a_thread_dispute_park_re_enters_at_the_gates_rather_than_the_pull_request()
+    {
+        RunAggregate run = new();
+        Guid id = DomainId.New();
+        run.Apply(new RunDispatched(
+            id, DomainId.New(), DomainId.New(), DomainId.New(), 1, DomainId.New(),
+            "/wt/x", "task/x", ExecutorMode.Subscription, Now, IsFollowUp: true));
+        run.Apply(new RunProcessStarted(id, 5001, Now));
+        run.Apply(new AgentSessionCompleted(id, Now));
+        run.Apply(new ReviewParked(id, "A follow-up disputed a review thread.", Now));
+        run.ParkedFromState.Should().Be(RunState.Verifying, "the park caught the run before the gates");
+
+        run.Apply(new ReviewParkResolved(id, ReviewVerdict.MergeReady, null, Now, DomainId.New()));
+
+        run.State.Should().Be(RunState.UnderReview, "the resume sweep drives it from here either way");
+        run.ReviewPhase.Should().Be(ReviewPhase.Reverify, "gates first, then a review cycle");
+        run.LastReviewVerdict.Should().Be(
+            ReviewVerdict.Unknown, "no reviewer read this diff — recording a verdict would invent one");
+    }
+
     [Fact]
     public void Review_park_resolved_needs_fixes_restores_the_budget_and_carries_the_human_findings()
     {

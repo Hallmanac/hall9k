@@ -78,6 +78,17 @@ public sealed class RunAggregate
     /// <summary>Human findings from a needs-fixes park resolution, consumed by the next fix dispatch.</summary>
     public string? PendingHumanFindings { get; private set; }
 
+    /// <summary>
+    /// Where the pipeline stood when a park interrupted it, read off the stream rather than
+    /// carried on the event (Unknown until a park happens). The two parks reach the same
+    /// state from opposite places: the review loop's own parks land from UnderReview, after
+    /// reviewers actually read the diff, while a thread-dispute park (Decisions Log #62)
+    /// lands from Verifying, before the gates ever ran. A merge-ready resolution needs that
+    /// difference — it may overrule findings that exist, but it can never stand in for gates
+    /// and a review that never happened.
+    /// </summary>
+    public RunState ParkedFromState { get; private set; } = RunState.Unknown;
+
     /// <summary>Whether this run handed anything down at true closeout, and when not, why (log #36).</summary>
     public HandoffOutcome HandoffOutcome { get; private set; } = HandoffOutcome.Unknown;
 
@@ -217,13 +228,25 @@ public sealed class RunAggregate
 
     public void Apply(ReviewParked @event)
     {
+        // Captured before the overwrite: State still holds where the park caught the run.
+        ParkedFromState = State;
         ReviewPhase = ReviewPhase.Parked;
         State = RunState.ReviewParked;
     }
 
     public void Apply(ReviewParkResolved @event)
     {
-        if (@event.Verdict == ReviewVerdict.MergeReady)
+        if (@event.Verdict == ReviewVerdict.MergeReady && ParkedFromState == RunState.Verifying)
+        {
+            // A thread-dispute park caught this run before the gates (log #62). The human
+            // decided the disputed thread, not the diff: no gate has run over these commits
+            // and no reviewer has read them, so the pipeline re-enters where the park
+            // interrupted it — Reverify runs the gates, then a review cycle — instead of
+            // reporting merge-ready to PullRequestOpener on a verdict nobody gave.
+            // LastReviewVerdict stays untouched for the same reason: nothing reviewed this.
+            ReviewPhase = ReviewPhase.Reverify;
+        }
+        else if (@event.Verdict == ReviewVerdict.MergeReady)
         {
             LastReviewVerdict = ReviewVerdict.MergeReady;
             ReviewPhase = ReviewPhase.MergeReady;
