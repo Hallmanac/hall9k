@@ -174,7 +174,7 @@ public sealed class IdeaPromoteCommand : Hall9kAsyncCommand<IdeaPromoteCommand.S
             $"[green]Idea {ideaShortId} promoted[/] into draft [dim]{taskShortId}[/] in '{projectName.EscapeMarkup()}'");
         AnsiConsole.MarkupLine(
             $"[dim]  objective ({(objectiveGiven ? "yours" : "the note's first sentence, taken as written")}):[/] "
-            + promoted.Objective.EscapeMarkup());
+            + ExternalText.OneLineMarkup(promoted.Objective));
         AnsiConsole.MarkupLine(seed.Context.IsNotBlank()
             ? "[dim]  context:[/] the rest of the note, plus the discovery workspace path"
             : "[dim]  context:[/] the discovery workspace path");
