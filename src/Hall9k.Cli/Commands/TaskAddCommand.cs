@@ -77,6 +77,19 @@ public sealed class TaskAddCommand : Hall9kAsyncCommand<TaskAddCommand.Settings>
             + "observation of that moment, never re-checked afterwards")]
         public string? FromIssue { get; init; }
 
+        [CommandOption("--from-jira <KEY-OR-URL>")]
+        [Description(
+            "Adopt an existing Jira card (PLAN.md §3.1a): the key (PROJ-123) or the card's URL. Read "
+            + "through the registered Jira connection (h9k connection add jira), which is the account "
+            + "Hall9k signs in as — it holds no credentials of its own. The summary seeds the objective "
+            + "and the description becomes agent context; the card key is recorded as the task's external "
+            + "reference and rendered as a link by h9k task show. Acceptance criteria are NEVER read out "
+            + "of a card description — they are the readiness contract, so you supply them with --criteria "
+            + "or at the prompt. Only a card whose status category is open is adopted, so a closed or "
+            + "missing one is refused; the state read at import is recorded as an observation of that "
+            + "moment, never re-checked afterwards")]
+        public string? FromJira { get; init; }
+
         [CommandOption("--model <MODEL>")]
         [Description(
             "Model this task's sessions run on, overriding every other level of the chain "
@@ -99,11 +112,13 @@ public sealed class TaskAddCommand : Hall9kAsyncCommand<TaskAddCommand.Settings>
         IReadOnlyList<string> criteria = settings.Criteria;
         IReadOnlyList<string> blockedBy = settings.BlockedBy;
 
-        if (settings.File.IsNotBlank() && settings.FromIssue.IsNotBlank())
+        AdoptionSource? adoption = ChooseSource(settings);
+        if (settings.File.IsNotBlank() && adoption is { } seeded)
         {
             throw new DomainValidationException(
-                "--file and --from-issue both seed a draft, from different places; pass one. "
-                + "To adopt an issue and add your own material, use --from-issue with --context.");
+                $"--file and {seeded.Option} both seed a draft, from different places; pass one. "
+                + $"To adopt {seeded.Article} {seeded.Noun} and add your own material, use "
+                + $"{seeded.Option} with --context.");
         }
 
         if (settings.File.IsNotBlank())
@@ -126,8 +141,8 @@ public sealed class TaskAddCommand : Hall9kAsyncCommand<TaskAddCommand.Settings>
 
         if (project.IsBlank())
         {
-            throw new DomainValidationException(settings.FromIssue.IsNotBlank()
-                ? "--from-issue reads the issue through the project's own repository, so it needs "
+            throw new DomainValidationException(adoption is { } source
+                ? $"{source.Option} files the {source.Noun} against a project, so it needs "
                     + "--project <name>."
                 : "A task needs a project (--project or 'project:' in the file).");
         }
@@ -148,14 +163,14 @@ public sealed class TaskAddCommand : Hall9kAsyncCommand<TaskAddCommand.Settings>
         TaskType taskType = TaskType.Parse(type);
         AgentModel taskModel = TaskDecider.VetModel(AgentModel.FromInput(model));
 
-        ImportedWorkItem? imported = settings.FromIssue.IsBlank()
+        ImportedWorkItem? imported = adoption is null
             ? null
-            : await AdoptAsync(session, projectDetails, settings.FromIssue, cancellationToken);
-        if (imported is not null)
+            : await AdoptAsync(session, projectDetails, adoption, cancellationToken);
+        if (imported is not null && adoption is not null)
         {
-            objective = ChooseObjective(objective, imported);
+            objective = ChooseObjective(objective, imported, adoption);
             agentContext = WorkItemContext.Compose(imported, agentContext);
-            criteria = criteria.Count > 0 ? criteria : AskForCriteria(imported);
+            criteria = criteria.Count > 0 ? criteria : AskForCriteria(imported, adoption);
         }
 
         Guid taskId = DomainId.New();
@@ -188,7 +203,7 @@ public sealed class TaskAddCommand : Hall9kAsyncCommand<TaskAddCommand.Settings>
         {
             AnsiConsole.MarkupLine(
                 $"[dim]  adopted {imported.Reference.ToString().EscapeMarkup()}, "
-                + $"{imported.Status.ToString().EscapeMarkup()} when read at "
+                + $"{ExternalText.OneLineMarkup(imported.Status.ToString())} when read at "
                 + $"{imported.ObservedStamp}[/]");
         }
 
@@ -203,8 +218,9 @@ public sealed class TaskAddCommand : Hall9kAsyncCommand<TaskAddCommand.Settings>
         if (imported is not null && added.AcceptanceCriteria.Count == 0)
         {
             AnsiConsole.MarkupLine(
-                "[yellow]No acceptance criteria.[/] [dim]The issue body became agent context; criteria "
-                + "are the readiness contract (PLAN.md §4) and Hall9k will not invent them from it.[/]");
+                $"[yellow]No acceptance criteria.[/] [dim]The {adoption?.Noun ?? "item"} description became "
+                + "agent context; criteria are the readiness contract (PLAN.md §4) and Hall9k will not "
+                + "invent them from it.[/]");
         }
 
         AnsiConsole.MarkupLine(added.AcceptanceCriteria.Count == 0
@@ -214,14 +230,61 @@ public sealed class TaskAddCommand : Hall9kAsyncCommand<TaskAddCommand.Settings>
     }
 
     /// <summary>
+    /// Which source a draft is being seeded from, and the words to say about it. It is a type
+    /// rather than a flag because every message in this command that used to say "issue" now has
+    /// to say either that or "card", and a boolean threaded through six methods is how those
+    /// messages drift apart.
+    /// </summary>
+    private sealed record AdoptionSource(WorkItemProvider Provider, string Reference, string Option, string Noun)
+    {
+        /// <summary>"an issue", "a card" — English, kept beside the noun it belongs to.</summary>
+        public string Article => "aeiou".Contains(char.ToLowerInvariant(Noun[0])) ? "an" : "a";
+    }
+
+    /// <summary>
+    /// The one source this invocation adopts from, or null when it is not adopting. Two sources
+    /// are refused rather than ranked: a task carries one external reference (PLAN.md §3.1a), so
+    /// picking a winner would silently drop the other one the human asked for.
+    /// </summary>
+    private static AdoptionSource? ChooseSource(Settings settings)
+    {
+        AdoptionSource[] named =
+        [
+            .. new[]
+            {
+                new AdoptionSource(WorkItemProvider.GitHub, settings.FromIssue ?? string.Empty, "--from-issue", "issue"),
+                new AdoptionSource(WorkItemProvider.Jira, settings.FromJira ?? string.Empty, "--from-jira", "card"),
+            }.Where(source => source.Reference.IsNotBlank()),
+        ];
+
+        return named.Length switch
+        {
+            0 => null,
+            1 => named[0],
+            _ => throw new DomainValidationException(
+                $"{string.Join(" and ", named.Select(source => source.Option))} each adopt a different "
+                + "item, and a task carries one external reference (PLAN.md §3.1a). Pass one, and write "
+                + "the second task separately if both pieces of work are real."),
+        };
+    }
+
+    /// <summary>
     /// Adopt an existing external item (PLAN.md §3.1a): read it through the resolver seam, then
     /// refuse a second adoption of the same item.
+    /// <para>
+    /// The importer is built from the registered connections rather than from a static default,
+    /// because the two sources need opposite things: gh
+    /// carries the machine's own login, and Jira needs a site and a token this install registered
+    /// (PLAN.md §10). Which is why the seam pays off here rather than only in principle — the
+    /// second source cost a provider and a line, not a second import path.
+    /// </para>
     /// </summary>
     private static async Task<ImportedWorkItem> AdoptAsync(
-        IQuerySession session, ProjectDetails project, string reference, CancellationToken cancellationToken)
+        IQuerySession session, ProjectDetails project, AdoptionSource source, CancellationToken cancellationToken)
     {
-        ImportedWorkItem imported = await WorkItemImporter.Default.ImportAsync(
-            new WorkItemImportRequest(WorkItemProvider.GitHub, reference, project.RepositoryPath),
+        WorkItemImporter importer = await WorkItemConnections.ImporterAsync(session, cancellationToken);
+        ImportedWorkItem imported = await importer.ImportAsync(
+            new WorkItemImportRequest(source.Provider, source.Reference, project.RepositoryPath),
             cancellationToken);
 
         await RefuseSecondAdoptionAsync(session, imported.Reference, cancellationToken);
@@ -292,7 +355,7 @@ public sealed class TaskAddCommand : Hall9kAsyncCommand<TaskAddCommand.Settings>
     /// unattended run is refused outright rather than left to fail two steps further on.
     /// </para>
     /// </summary>
-    private static string ChooseObjective(string? objective, ImportedWorkItem imported)
+    private static string ChooseObjective(string? objective, ImportedWorkItem imported, AdoptionSource source)
     {
         if (objective.IsNotBlank())
         {
@@ -309,10 +372,10 @@ public sealed class TaskAddCommand : Hall9kAsyncCommand<TaskAddCommand.Settings>
                     + "can seed an objective from"
                     + $" (the source reported '{ExternalText.OneLine(imported.Title)}'), and nothing "
                     + "here can ask you for one. Pass the objective yourself: "
-                    + "h9k task add --project <name> --from-issue <ref> --objective \"…\"");
+                    + $"h9k task add --project <name> {source.Option} <ref> --objective \"…\"");
         }
 
-        TextPrompt<string> prompt = new(ObjectivePrompt(imported.Title));
+        TextPrompt<string> prompt = new(ObjectivePrompt(imported.Title, source.Noun));
         return AnsiConsole.Prompt(seed.IsBlank()
             ? prompt
             : prompt.DefaultValue(seed).HideDefaultValue());
@@ -381,13 +444,13 @@ public sealed class TaskAddCommand : Hall9kAsyncCommand<TaskAddCommand.Settings>
     /// is being asked. <see cref="ExternalText.OneLine"/> runs first for that.
     /// </para>
     /// </summary>
-    internal static string ObjectivePrompt(string title)
+    internal static string ObjectivePrompt(string title, string noun = "issue")
     {
         string seed = ObjectiveSeed(title);
         return seed.IsBlank()
-            ? "[bold]Objective[/] [dim](the issue has no title to seed one from, so there is "
+            ? $"[bold]Objective[/] [dim](the {noun} has no title to seed one from, so there is "
                 + "nothing to accept; type it)[/]:"
-            : "[bold]Objective[/] [dim](from the issue title; edit it or press enter)[/] "
+            : $"[bold]Objective[/] [dim](from the {noun} title; edit it or press enter)[/] "
                 + $"[green]({seed.EscapeMarkup()})[/]:";
     }
 
@@ -406,7 +469,7 @@ public sealed class TaskAddCommand : Hall9kAsyncCommand<TaskAddCommand.Settings>
     /// draft goes out without them — and a draft without criteria simply cannot be published,
     /// which is the gate doing its job rather than a silent pass.
     /// </summary>
-    private static IReadOnlyList<string> AskForCriteria(ImportedWorkItem imported)
+    private static IReadOnlyList<string> AskForCriteria(ImportedWorkItem imported, AdoptionSource source)
     {
         if (!AnsiConsole.Profile.Capabilities.Interactive)
         {
@@ -416,8 +479,9 @@ public sealed class TaskAddCommand : Hall9kAsyncCommand<TaskAddCommand.Settings>
         AnsiConsole.WriteLine();
         AnsiConsole.MarkupLine(CriteriaHeading(imported.Title));
         AnsiConsole.MarkupLine(
-            "[dim]The issue body is now this task's agent context. Acceptance criteria are not in it: "
-            + "they are the readiness contract, and Hall9k does not invent them from a description.[/]");
+            $"[dim]The {source.Noun} description is now this task's agent context. Acceptance criteria "
+            + "are not in it: they are the readiness contract, and Hall9k does not invent them from a "
+            + "description.[/]");
         AnsiConsole.MarkupLine("[dim]Type one criterion per line; an empty line ends the list.[/]");
 
         List<string> criteria = [];

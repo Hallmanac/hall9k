@@ -1,4 +1,5 @@
 using System.Net;
+using System.Text;
 using FluentAssertions;
 using Hall9k.Connectors.WorkItems;
 using Hall9k.Domain.Features.Connection;
@@ -54,6 +55,37 @@ public sealed class JiraWorkItemProviderTests : IDisposable
                 CredentialReference.EnvironmentVariable(TokenVariable)),
             requester.Requester,
             new FixedClock(Now));
+
+    /// <summary>
+    /// Registration proves a token before anything writes it down, and this is the account that
+    /// makes that order possible: it authenticates from the token in hand and carries no
+    /// credential reference at all, so there is nothing on disk for it to have replaced.
+    /// <para>
+    /// The order matters because the file a stored token lands in is named from the site and the
+    /// account. Verifying after storing means a mistyped or expired token has already overwritten
+    /// the working one by the time Jira rejects it, and Atlassian shows an API token once. Origin
+    /// incident (2026-08-21): the pre-PR review of the Jira branch found h9k connection add jira
+    /// storing first and verifying second.
+    /// </para>
+    /// </summary>
+    [Fact]
+    public async Task An_account_is_proven_from_a_token_in_hand_before_anything_stores_it()
+    {
+        RecordingRequester requester = new(200, """
+        {"displayName": "Brian Hall"}
+        """);
+        JiraWorkItemProvider provider = new(
+            JiraAccount.WithTokenInHand(
+                new Uri("https://hall9k.atlassian.net"), "brian@example.com", "a-fresh-token"),
+            requester.Requester);
+
+        string displayName = await provider.VerifyAccessAsync(Token);
+
+        displayName.Should().Be("Brian Hall");
+        requester.Requests.Should().ContainSingle().Which.Authorization.Should().Be(
+            "Basic " + Convert.ToBase64String(Encoding.UTF8.GetBytes("brian@example.com:a-fresh-token")),
+            "the token being checked is the one the human just typed, not one read back from a file");
+    }
 
     private static string Card(string statusName, string categoryKey, string? description = "The description.") =>
         $$"""

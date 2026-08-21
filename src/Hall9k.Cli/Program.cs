@@ -38,7 +38,8 @@ app.Configure(config =>
                 + "commit style, agent model, review re-requests")
             .WithExample("project", "set", "hall9k", "--commit-style", "narrative")
             .WithExample("project", "set", "hall9k", "--model", "claude-opus-5")
-            .WithExample("project", "set", "hall9k", "--rerequest-review", "on");
+            .WithExample("project", "set", "hall9k", "--rerequest-review", "on")
+            .WithExample("project", "set", "hall9k", "--jira", "PROJ");
     });
 
     config.AddBranch("owner", owner =>
@@ -58,6 +59,40 @@ app.Configure(config =>
                 + "outranks this; the node default sits under both.")
             .WithExample("owner", "set", "--rerequest-review", "on")
             .WithExample("owner", "set", "brian", "--rerequest-review", "default");
+    });
+
+    config.AddBranch("connection", connection =>
+    {
+        connection.SetDescription(
+            "External accounts this install can reach. Access is modelled as a list of connections — "
+            + "provider, account, credential reference — and projects bind to one, never to \"the "
+            + "machine's GitHub\" (PLAN.md §10). A connection records WHERE its credential lives; the "
+            + "secret itself never reaches an event payload.");
+        connection.AddBranch("add", add =>
+        {
+            add.SetDescription("Register an external account");
+            add.AddCommand<ConnectionAddJiraCommand>("jira")
+                .WithDescription(
+                    "Register the Jira Cloud account Hall9k reads cards through (site, email, API token). "
+                    + "The credentials are verified against the site before anything is recorded, and the "
+                    + "token is stored by reference — an environment variable, a macOS keychain item, or a "
+                    + "file under ~/.hall9k/credentials readable by you alone. Running it again replaces "
+                    + "the existing connection, which is how a rotated token is applied. The account needs "
+                    + "to browse the boards you import from and to comment on their issues: cards are "
+                    + "CREATED by agent runs (h9k task push-to-jira) and never by the platform, but the "
+                    + "platform makes exactly one write of its own (PLAN.md §9.3), a comment on the card "
+                    + "when the task's pull request merges. It never transitions a card.")
+                .WithExample("connection", "add", "jira", "--site", "https://your-org.atlassian.net",
+                    "--email", "you@example.com")
+                .WithExample("connection", "add", "jira", "--site", "https://your-org.atlassian.net",
+                    "--email", "you@example.com", "--token-env", "JIRA_API_TOKEN");
+        });
+        connection.AddCommand<ConnectionListCommand>("list")
+            .WithDescription(
+                "Every registered connection with where its credential lives and how many projects bind "
+                + "to it. Reads what is recorded and calls nothing, so it cannot fail because a site is "
+                + "unreachable.")
+            .WithExample("connection", "list");
     });
 
     config.AddBranch("pr", pullRequest =>
@@ -209,6 +244,7 @@ app.Configure(config =>
                 "--criteria", "h9k project list shows one row per project")
             .WithExample("task", "add", "--file", "backlog/19-model-policy.md", "--model", "claude-opus-5")
             .WithExample("task", "add", "--project", "hall9k", "--from-issue", "42")
+            .WithExample("task", "add", "--project", "hall9k", "--from-jira", "PROJ-123")
             .WithExample("task", "add", "--project", "hall9k",
                 "--from-issue", "https://github.com/Hallmanac/hall9k/issues/42",
                 "--criteria", "The importer refuses a closed issue")
@@ -266,6 +302,25 @@ app.Configure(config =>
         task.AddCommand<TaskShowCommand>("show")
             .WithDescription("Task detail: contract, conversation, runs")
             .WithExample("task", "show", "28b19893");
+        task.AddCommand<TaskPushToJiraCommand>("push-to-jira")
+            .WithDescription(
+                "Publish this task as a Jira card, by dispatching an agent run that writes it. The "
+                + "platform never authors the card itself: issue types, required fields, and routing "
+                + "rules are the organisation's configuration, so the session runs in the project's "
+                + "repository with its own Claude skills and your MCP access. It finishes by calling "
+                + "h9k task link-jira, which reads the card back before Hall9k records anything. Needs a "
+                + "registered Jira connection; the project's bound board (h9k project set --jira) tells "
+                + "the agent where to file it.")
+            .WithExample("task", "push-to-jira", "28b19893");
+        task.AddCommand<TaskLinkJiraCommand>("link-jira")
+            .WithDescription(
+                "Record the Jira card this task belongs to, verified first. The key you pass is read "
+                + "through the registered connection and what gets recorded is the response, never the "
+                + "claim — so a key that does not resolve writes nothing and tells you why, which is what "
+                + "makes this safe for an agent to call at the end of a push-to-jira run. Works the same "
+                + "for a card a human made by hand.")
+            .WithExample("task", "link-jira", "28b19893", "PROJ-123")
+            .WithExample("task", "link-jira", "28b19893", "https://your-org.atlassian.net/browse/PROJ-123");
         task.AddCommand<TaskAbandonCommand>("abandon")
             .WithDescription(
                 "Abandon a task (terminal; releases any lease). Reaches every non-terminal state, drafts "
