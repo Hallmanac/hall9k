@@ -12,6 +12,17 @@ public sealed record CredentialKind
     public static readonly CredentialKind Keychain = new("keychain");
     public static readonly CredentialKind EnvironmentVariable = new("env");
 
+    /// <summary>
+    /// A secret Hall9k itself wrote to a file under the platform home, readable by the owner
+    /// alone. It exists because the other three all point at a credential something else
+    /// already holds — the gh CLI's login, an entry the human put in the keychain, a variable
+    /// their shell exports — and a Jira API token pasted at a prompt is held by nobody yet.
+    /// The reference still names a location rather than carrying the secret, which is the whole
+    /// discipline (PLAN.md §10): the identifier is a file name under ~/.hall9k/credentials, and
+    /// what an event payload records is that name.
+    /// </summary>
+    public static readonly CredentialKind File = new("file");
+
     /// <summary>Kind not recognized or not yet set. Serializes as an empty string.</summary>
     public static readonly CredentialKind Unknown = new("");
 

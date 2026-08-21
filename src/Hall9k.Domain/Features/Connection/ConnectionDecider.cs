@@ -11,7 +11,8 @@ public static class ConnectionDecider
         WorkItemProvider provider,
         string externalAccountId,
         CredentialReference credentialReference,
-        DateTimeOffset registeredAt)
+        DateTimeOffset registeredAt,
+        Uri? siteUrl = null)
     {
         if (provider == WorkItemProvider.Unknown)
         {
@@ -23,6 +24,86 @@ public static class ConnectionDecider
             throw new DomainValidationException("A connection requires the external account id it authenticates as.");
         }
 
-        return new ConnectionRegistered(id, ownerId, provider, externalAccountId, credentialReference, registeredAt);
+        // The credential is a pointer, and a pointer that names nothing points nowhere. gh-cli is
+        // the one kind that needs no identifier, because the thing it points at is "whoever the
+        // machine's gh is logged in as" — every other kind names a variable, a keychain entry, or
+        // a file, and a connection registered without that name would be a credential reference
+        // that cannot be resolved, discovered at the first import rather than here.
+        if (credentialReference.Kind != CredentialKind.GhCli && credentialReference.Identifier.IsBlank())
+        {
+            throw new DomainValidationException(
+                $"A '{credentialReference.Kind.Value}' credential reference names where the secret lives "
+                + "(the variable, the keychain entry, or the file), and this one names nothing.");
+        }
+
+        // gh-cli points at whoever the machine's gh is logged in as, and that login is a GitHub
+        // session holding no token any other provider can present. A Jira connection registered
+        // against it is unusable the moment anything tries to read a card, so it is refused where
+        // it would be written rather than at the first import — the same argument as the rule
+        // above, applied to a pointer that names something real for the wrong provider. Origin:
+        // the pull-request review of the Jira branch (2026-08-22).
+        if (provider != WorkItemProvider.GitHub && credentialReference.Kind == CredentialKind.GhCli)
+        {
+            throw new DomainValidationException(
+                $"A '{provider.Value}' connection cannot borrow the gh CLI's login: it is a GitHub "
+                + "session, and it holds no token Hall9k can present anywhere else (PLAN.md §10). "
+                + "Register it against a token instead, with an env, keychain, or file reference: "
+                + "h9k connection add jira --help");
+        }
+
+        // Jira accounts live at a tenant of their own and nothing can be read without knowing
+        // which; GitHub has exactly one home, so the field stays null there rather than being
+        // filled in with the obvious answer. The rule is stated per provider deliberately: a
+        // site required of every connection would put "https://github.com" on record as an
+        // observation nobody made.
+        if (provider == WorkItemProvider.Jira && siteUrl is null)
+        {
+            throw new DomainValidationException(
+                "A Jira connection requires the site it authenticates against, "
+                + "for example https://your-org.atlassian.net.");
+        }
+
+        // The rule runs both ways, because half of it would let the stream say what the other
+        // half forbids: a GitHub connection carrying https://github.com records a tenant nobody
+        // chose and makes a null SiteUrl mean "not filled in" instead of "there is one home".
+        // Written as "every provider but Jira", so a provider that genuinely has tenants of its
+        // own is refused here the first time somebody adds one, and the decision to let it carry
+        // a site gets made in this method rather than discovered on the stream afterwards.
+        if (provider != WorkItemProvider.Jira && siteUrl is not null)
+        {
+            throw new DomainValidationException(
+                $"A '{provider.Value}' connection has one home, so it records no site, and this one was "
+                + $"given {siteUrl}. Register it without a site; the field is Jira's, where an account "
+                + "lives at a tenant of its own.");
+        }
+
+        return new ConnectionRegistered(
+            id, ownerId, provider, externalAccountId, credentialReference, registeredAt, siteUrl);
+    }
+
+    /// <summary>
+    /// The same connection with new details. It runs the identical rules rather than a relaxed
+    /// set, because a re-registration that could record a Jira connection with no site would make
+    /// registering twice a way around the check that registering once enforces.
+    /// </summary>
+    public static ConnectionReregistered Reregister(
+        ConnectionAggregate connection,
+        string externalAccountId,
+        CredentialReference credentialReference,
+        DateTimeOffset reregisteredAt,
+        Uri? siteUrl = null)
+    {
+        ConnectionRegistered vetted = Register(
+            connection.Id,
+            connection.OwnerId,
+            connection.Provider,
+            externalAccountId,
+            credentialReference,
+            reregisteredAt,
+            siteUrl);
+
+        return new ConnectionReregistered(
+            vetted.Id, vetted.Provider, vetted.ExternalAccountId,
+            vetted.CredentialReference, reregisteredAt, vetted.SiteUrl);
     }
 }
