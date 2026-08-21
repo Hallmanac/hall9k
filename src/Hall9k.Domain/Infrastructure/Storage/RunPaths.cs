@@ -3,9 +3,8 @@ namespace Hall9k.Domain.Infrastructure.Storage;
 /// <summary>Filesystem layout for a run's artifacts: ~/.hall9k/runs/&lt;run-id&gt;/ (log #2).</summary>
 public static class RunPaths
 {
-    // Resolved per call so tests can point HALL9K_HOME at a temp directory.
-    public static string Root => Environment.GetEnvironmentVariable("HALL9K_HOME")
-        ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".hall9k");
+    /// <summary>The platform home, shared with every other on-disk layout (<see cref="PlatformPaths"/>).</summary>
+    public static string Root => PlatformPaths.Home;
 
     public static string RunDirectory(Guid runId) => Path.Combine(Root, "runs", runId.ToString());
 
