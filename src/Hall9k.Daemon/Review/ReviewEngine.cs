@@ -1,4 +1,3 @@
-using System.Text;
 using Hall9k.Daemon.Execution;
 using Hall9k.Daemon.ProcessManagement;
 using Hall9k.Domain.Features.Project.Projections;
@@ -38,9 +37,6 @@ public sealed class ReviewEngine(
     IOptions<DaemonOptions> options,
     ILogger<ReviewEngine> logger)
 {
-    private static readonly TimeSpan TailInterval = TimeSpan.FromSeconds(1);
-    private static readonly TimeSpan DeadProcessGrace = TimeSpan.FromSeconds(5);
-
     private readonly DaemonOptions _options = options.Value;
 
     /// <summary>
@@ -305,54 +301,15 @@ public sealed class ReviewEngine(
     }
 
     /// <summary>
-    /// Waits for the session's terminal result: tail its stream file incrementally
-    /// (cursor in memory — a restarted daemon re-enters the loop and re-reads from the
-    /// start once), keep the run's last-activity fresh while output flows (so h9k status
-    /// stall detection covers review legs), and give buffered output a grace period
-    /// after process death. Null means the session genuinely died without a result.
+    /// Waits for the session's terminal result through the shared waiter, keeping the run's
+    /// last-activity fresh while output flows so h9k status stall detection covers review
+    /// legs. Null means the session genuinely died without a result.
     /// </summary>
-    private async Task<AgentResult?> WaitForSessionResultAsync(
-        Guid runId, string streamFile, int processId, DateTimeOffset processStartedAt, CancellationToken cancellationToken)
-    {
-        DateTimeOffset? deadSince = null;
-        long cursor = 0;
-        StringBuilder partialLine = new();
-
-        while (true)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-
-            (long newCursor, bool sawResult, AgentResult? result) =
-                await StreamTailReader.ReadNewLinesAsync(streamFile, cursor, partialLine, cancellationToken);
-            if (sawResult)
-            {
-                return result;
-            }
-
-            if (newCursor > cursor)
-            {
-                cursor = newCursor;
-                await TouchActivityAsync(runId, cancellationToken);
-            }
-
-            if (!processManager.IsAlive(processId, processStartedAt))
-            {
-                // The grace window keeps polling above, so buffered output that lands
-                // after death still gets read before this gives up.
-                deadSince ??= DateTimeOffset.UtcNow;
-                if (DateTimeOffset.UtcNow - deadSince > DeadProcessGrace)
-                {
-                    return null;
-                }
-            }
-            else
-            {
-                deadSince = null;
-            }
-
-            await Task.Delay(TailInterval, cancellationToken);
-        }
-    }
+    private Task<AgentResult?> WaitForSessionResultAsync(
+        Guid runId, string streamFile, int processId, DateTimeOffset processStartedAt, CancellationToken cancellationToken) =>
+        SessionResultWaiter.WaitAsync(
+            streamFile, processId, processStartedAt, processManager,
+            token => TouchActivityAsync(runId, token), cancellationToken);
 
     private async Task TouchActivityAsync(Guid runId, CancellationToken cancellationToken)
     {
