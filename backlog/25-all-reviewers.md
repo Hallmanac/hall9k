@@ -25,5 +25,11 @@ Design constraints:
 - Judgment stays bounded: the never-loop rule applies to human threads exactly as
   to review parks - one honest attempt per thread per follow-up, disagreement goes
   to a human, no re-litigating.
+- Responses to human feedback land where the feedback lives (Brian, 2026-08-20): an
+  inline review comment gets an in-thread reply, exactly as Copilot threads do today; a
+  review BODY - which GitHub makes unthreadable - gets a top-level PR comment that names
+  the review it answers and summarizes what was done, never silence and never an
+  unanchored comment the reviewer has to connect themselves (origin: the PR #20 human
+  review was answered only through the work itself, with no visible reply on the PR)
 - Do not resolve threads from human reviewers without replying substantively;
   a resolved-without-answer human thread is worse than an open one.
