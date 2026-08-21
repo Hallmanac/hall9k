@@ -2,10 +2,13 @@ using System.Diagnostics;
 using FluentAssertions;
 using Hall9k.Daemon;
 using Hall9k.Daemon.Closeout;
+using Hall9k.Connectors.WorkItems;
 using Hall9k.Daemon.Worktrees;
 using Hall9k.Domain.Features.Owner;
 using Hall9k.Domain.Features.Project;
 using Hall9k.Domain.Features.Project.Events;
+using Hall9k.Domain.Features.Connection;
+using Hall9k.Domain.Shared.ValueObjects;
 using Hall9k.Domain.Features.Run;
 using Hall9k.Domain.Features.Run.Events;
 using Hall9k.Domain.Features.Run.Projections;
@@ -43,6 +46,9 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
     private static readonly DateTimeOffset Now = new(2026, 8, 17, 12, 0, 0, TimeSpan.Zero);
 
     private const string PullRequestUrl = "https://github.com/x/y/pull/7";
+
+    /// <summary>Where the seeded Jira connection's token lives; set and cleared by this class.</summary>
+    private const string JiraTokenVariable = "HALL9K_TEST_CLOSEOUT_JIRA_TOKEN";
 
     private readonly string _root = Path.Combine(Path.GetTempPath(), $"hall9k-closeout-{Guid.NewGuid():N}");
 
@@ -1084,6 +1090,96 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
         await concurrent.SaveChangesAsync(cancellationToken);
     }
 
+    /// <summary>
+    /// Closeout tells the card what happened (backlog 18). A comment and not a transition:
+    /// which status a merge should move a card to is one team's workflow rather than a fact
+    /// about software, so moving somebody's board on the platform's opinion is exactly the guess
+    /// this repo refuses to make.
+    /// </summary>
+    [Fact]
+    public async Task A_merge_comments_the_pull_request_on_the_card_the_task_carries()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        (DocumentStore store, NodeContext node, GitWorktreeManager worktrees, _, string repoPath) =
+            await SetUpAsync(cts.Token);
+        using IDisposable storeLifetime = store;
+        await SeedJiraConnectionAsync(store, node, cts.Token);
+
+        (Guid taskId, _, _) = await SeedAwaitingReviewAsync(
+            store, node, worktrees, repoPath, cts.Token,
+            externalReference: new ExternalReference(WorkItemProvider.Jira, "PROJ-123"));
+
+        RecordingJira jira = new();
+        FakeInspector inspector = new()
+        {
+            Snapshot = FakeInspector.Quiet() with { IsMerged = true, MergedAt = Now.AddHours(2) },
+        };
+        await NewEngine(store, node, inspector, worktrees, jira: jira).PollOnceAsync(cts.Token);
+
+        JiraRequest request = jira.Requests.Should().ContainSingle().Subject;
+        request.Method.Should().Be(HttpMethod.Post);
+        request.Url.ToString().Should().Be("https://hall9k.atlassian.net/rest/api/2/issue/PROJ-123/comment");
+        request.JsonBody.Should().Contain(PullRequestUrl).And.Contain(taskId.ToString());
+        request.JsonBody.Should().Contain("does not change the card",
+            "a card that silently gains a comment and never moves reads like an integration that half worked");
+    }
+
+    [Fact]
+    public async Task A_merge_with_no_jira_reference_says_nothing_to_anybody()
+    {
+        // A GitHub-adopted task gets nothing here on purpose: the pull request body already
+        // mentions the issue, so GitHub cross-references the merge on its own timeline.
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        (DocumentStore store, NodeContext node, GitWorktreeManager worktrees, _, string repoPath) =
+            await SetUpAsync(cts.Token);
+        using IDisposable storeLifetime = store;
+        await SeedJiraConnectionAsync(store, node, cts.Token);
+
+        await SeedAwaitingReviewAsync(
+            store, node, worktrees, repoPath, cts.Token,
+            externalReference: new ExternalReference(WorkItemProvider.GitHub, "o/r#42"));
+
+        RecordingJira jira = new();
+        FakeInspector inspector = new()
+        {
+            Snapshot = FakeInspector.Quiet() with { IsMerged = true, MergedAt = Now.AddHours(2) },
+        };
+        await NewEngine(store, node, inspector, worktrees, jira: jira).PollOnceAsync(cts.Token);
+
+        jira.Requests.Should().BeEmpty();
+    }
+
+    /// <summary>
+    /// The merge is already recorded and the dependents already unblocked by the time the card is
+    /// told, so a Jira outage costs the note and nothing else — and it is not retried, because a
+    /// retry loop around an unwatched write is how one card ends up with four identical comments.
+    /// </summary>
+    [Fact]
+    public async Task A_jira_that_refuses_the_comment_does_not_undo_the_closeout()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        (DocumentStore store, NodeContext node, GitWorktreeManager worktrees, _, string repoPath) =
+            await SetUpAsync(cts.Token);
+        using IDisposable storeLifetime = store;
+        await SeedJiraConnectionAsync(store, node, cts.Token);
+
+        (Guid taskId, Guid runId, _) = await SeedAwaitingReviewAsync(
+            store, node, worktrees, repoPath, cts.Token,
+            externalReference: new ExternalReference(WorkItemProvider.Jira, "PROJ-123"));
+
+        RecordingJira jira = new(statusCode: 403, body: "{\"errorMessages\":[\"No permission\"]}");
+        FakeInspector inspector = new()
+        {
+            Snapshot = FakeInspector.Quiet() with { IsMerged = true, MergedAt = Now.AddHours(2) },
+        };
+        await NewEngine(store, node, inspector, worktrees, jira: jira).PollOnceAsync(cts.Token);
+
+        jira.Requests.Should().ContainSingle("the write is attempted once and never retried blind");
+        await using IQuerySession query = store.QuerySession();
+        (await query.LoadAsync<RunDetails>(runId, cts.Token))!.State.Should().Be(RunState.Completed);
+        (await query.LoadAsync<TaskListItem>(taskId, cts.Token))!.State.Should().Be(TaskState.Done);
+    }
+
     private async Task<(DocumentStore Store, NodeContext Node, GitWorktreeManager Worktrees, string OriginPath, string RepoPath)>
         SetUpAsync(CancellationToken cancellationToken)
     {
@@ -1120,7 +1216,8 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
         string repoPath,
         CancellationToken cancellationToken,
         int priorAutomaticReopens = 0,
-        bool asFollowUp = false)
+        bool asFollowUp = false,
+        ExternalReference? externalReference = null)
     {
         Guid taskId = DomainId.New();
         Guid runId = DomainId.New();
@@ -1138,7 +1235,8 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
 
         (TaskAggregate task, object[] lifecycle) = TaskSeed.Start(
             TaskDecider.Add(
-                taskId, projectId, "Close me out", ["merged"], TaskType.Chore, null, null, null, Now, ownerId),
+                taskId, projectId, "Close me out", ["merged"], TaskType.Chore, null, null,
+                externalReference, Now, ownerId),
             ownerId, Now);
         List<object> taskEvents = [.. lifecycle];
         Hall9k.Domain.Features.Tasks.Events.TaskClaimed claimed =
@@ -1210,8 +1308,10 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
         NodeContext node,
         IPullRequestInspector inspector,
         GitWorktreeManager worktrees,
-        int maxReviewRerequests = 2) =>
+        int maxReviewRerequests = 2,
+        RecordingJira? jira = null) =>
         new(store, node, new DaemonConnection(postgres.ConnectionString), inspector, worktrees,
+            (jira ?? new RecordingJira()).Requester,
             Options.Create(new DaemonOptions
             {
                 MaxAutomaticCloseoutRuns = 2,
@@ -1279,6 +1379,51 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
         return (await query.Events.AggregateStreamAsync<TaskAggregate>(taskId, token: cancellationToken))!.ProjectId;
     }
 
+
+    /// <summary>
+    /// The Jira connector's network seam, recorded. It is registered on the engine even when a
+    /// test seeds no Jira connection, which is itself the assertion in that case: a call that
+    /// should never happen is one this fake would have kept.
+    /// </summary>
+    private sealed class RecordingJira(int statusCode = 201, string body = "{}")
+    {
+        public List<JiraRequest> Requests { get; } = [];
+
+        public JiraRequester Requester => (request, _) =>
+        {
+            Requests.Add(request);
+            return Task.FromResult(new JiraResponse(statusCode, body));
+        };
+    }
+
+    /// <summary>
+    /// A registered Jira connection, with its token in an environment variable so the test
+    /// touches no keychain and writes no file. The credential still travels as a reference —
+    /// the discipline is exercised rather than sidestepped.
+    /// </summary>
+    private static async Task SeedJiraConnectionAsync(
+        DocumentStore store, NodeContext node, CancellationToken cancellationToken)
+    {
+        Environment.SetEnvironmentVariable(JiraTokenVariable, "a-token");
+        await using IDocumentSession session = store.LightweightSession();
+
+        // Once per database, not once per test: every test in this class shares the fixture's
+        // Postgres, and a second registered Jira connection is a state the connector refuses on
+        // purpose (nothing says which account a project uses) — which would make these tests
+        // assert the refusal rather than the comment.
+        if (await WorkItemConnections.FindJiraConnectionAsync(session, cancellationToken) is not null)
+        {
+            return;
+        }
+
+        Guid connectionId = DomainId.New();
+        session.Events.StartStream<ConnectionAggregate>(connectionId, ConnectionDecider.Register(
+            connectionId, node.OwnerId, WorkItemProvider.Jira, "brian@example.com",
+            CredentialReference.EnvironmentVariable(JiraTokenVariable), Now,
+            new Uri("https://hall9k.atlassian.net")));
+        await session.SaveChangesAsync(cancellationToken);
+    }
+
     private static void Git(string workingDirectory, string arguments)
     {
         (int exitCode, string output) = TryGit(workingDirectory, arguments);
@@ -1308,6 +1453,7 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
     public void Dispose()
     {
         Environment.SetEnvironmentVariable("HALL9K_HOME", null);
+        Environment.SetEnvironmentVariable(JiraTokenVariable, null);
         try
         {
             if (Directory.Exists(_home))
