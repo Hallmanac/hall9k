@@ -171,6 +171,7 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
             }
 
             AnsiConsole.Write(runsTable);
+            await WriteReviewOutcomeAsync(session, runs[^1].Id, cancellationToken);
         }
 
         await WriteHandoffAsync(session, details, runs, cancellationToken);
@@ -188,6 +189,50 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
 
         return ExitCodes.Ok;
     }
+
+    /// <summary>
+    /// How the newest run's pre-PR review ended (Decisions Log #62). Merge-ready is one word for
+    /// two different things, and this line is what keeps them apart: clean means a reviewer read
+    /// the final tip and found nothing, while settled means the severity gate ended the loop
+    /// over findings that were fixed but never read again, or routed to bug tasks of their own.
+    /// A reader deciding how much to trust a pull request should not have to dig through the run
+    /// stream to learn which of those happened.
+    /// </summary>
+    private static async Task WriteReviewOutcomeAsync(
+        IQuerySession session, Guid runId, CancellationToken cancellationToken)
+    {
+        RunDetails? run = await session.LoadAsync<RunDetails>(runId, cancellationToken);
+        if (run is null || run.LastReviewVerdict != ReviewVerdict.MergeReady)
+        {
+            return;
+        }
+
+        // A run whose review was already in flight before settlements existed recorded none, so
+        // the line says merge-ready and stops rather than claiming a cleanliness nobody observed.
+        string outcome = run.ReviewSettlement switch
+        {
+            var settlement when settlement == ReviewSettlement.Clean =>
+                "[green]merge-ready (clean)[/] [dim]— a reviewer read the final diff and found nothing[/]",
+            var settlement when settlement == ReviewSettlement.Settled =>
+                $"[yellow]merge-ready (settled[/] [yellow]— {run.ReviewResidualsFixed} residual(s) fixed, "
+                + $"{run.ReviewResidualsRouted} routed{UnroutedClause(run)})[/] "
+                + "[dim]— the loop ended without a clean re-read[/]",
+            _ => "[green]merge-ready[/] [dim]— how it was reached was not recorded[/]",
+        };
+
+        AnsiConsole.MarkupLine($"\n[bold]Pre-PR review[/]  {outcome}");
+    }
+
+    /// <summary>
+    /// The residuals that were meant to become draft bug tasks and did not, said out loud
+    /// rather than counted as routed. "Routed" is what tells a reader the defect is written
+    /// down somewhere they can find it; for these it is written down nowhere but the run
+    /// stream, and that is the opposite fact. Normally there are none and the line says
+    /// nothing extra.
+    /// </summary>
+    private static string UnroutedClause(RunDetails run) => run.ReviewResidualsRoutingFailed > 0
+        ? $", {run.ReviewResidualsRoutingFailed} not routed — creating the draft bug task failed"
+        : string.Empty;
 
     /// <summary>
     /// What this task hands down, once its run reaches true closeout (Decisions Log #36) — the
