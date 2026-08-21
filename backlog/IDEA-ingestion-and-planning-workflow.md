@@ -40,6 +40,9 @@ Ideas ingested from a URL (or a file that needs interpretation) need an objectiv
 
 ## Persona/skill layer for discovery & refinement
 
+> Consolidated (2026-08-21) with IDEA-platform-defaults.md into IDEA-skill-layer.md,
+> which is now the single design surface for this section. Retained here as written.
+
 Separately from the ingestion mechanics above: discovery and refinement are where the actual planning judgment happens, and that's deliberately not baked into Hall9k's backbone. It should be a swappable persona/skill, the same shape as the existing role-persona decision (prompt template + tool policy, no bot identity) — just applied to *how a card gets written* rather than *how code gets implemented*. This lets someone bring their own house style (verbosity, required sections, Jira/Confluence conventions, etc.) without that style being prescribed by Hall9k itself.
 
 ### Skill scoping

@@ -1,3 +1,7 @@
+# CONSOLIDATED (2026-08-21): this sketch merged with the ingestion walkthrough's
+# persona/skill-layer section into IDEA-skill-layer.md - the single design surface
+# for the eventual design session. Retained as the origin record; do not extend here.
+
 # Idea: Platform-level defaults for agent config (skills, commands, AGENTS.md, CLAUDE.md)
 
 Captured 2026-08-17 (mid-MVP session; design discussion deferred to its own session).
