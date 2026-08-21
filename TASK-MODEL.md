@@ -128,6 +128,12 @@ public sealed record TaskDependencyFailed(    // a blocker can no longer close o
     string Reason,
     DateTimeOffset ObservedAt);
 
+public sealed record TaskDependencyRecovered( // that blocker is back in the pipeline (§2.3, log #61):
+    Guid Id,                                  // the hold lifts, the dependent waits ordinarily again
+    Guid DependencyId,
+    string Observation,                       // this blocker only; what still holds is derived on apply
+    DateTimeOffset ObservedAt);
+
 public sealed record TaskClaimed(
     Guid Id,
     Guid NodeId,
@@ -245,8 +251,9 @@ public sealed class TaskAggregate
     public void Apply(TaskReturnedToDraft @event) { /* State = Draft */ }
     public void Apply(TaskAssigned @event) { /* AssignedOwnerId; State = UnmetDependencies.Count == 0 ? Queued : Blocked */ }
     public void Apply(TaskUnassigned @event) { /* AssignedOwnerId = null; dependency bookkeeping cleared; State = Published */ }
-    public void Apply(TaskDependencyCompleted @event) { /* drop it from Unmet; empty => Blocked -> Queued */ }
+    public void Apply(TaskDependencyCompleted @event) { /* drop it from Unmet + Dead; empty => Blocked -> Queued */ }
     public void Apply(TaskDependencyFailed @event) { /* record the dead blocker + reason; State unchanged */ }
+    public void Apply(TaskDependencyRecovered @event) { /* drop that dead blocker; reason = what is left; State unchanged */ }
     public void Apply(TaskClaimed @event) { /* LeaseGeneration = @event.LeaseGeneration; ClaimedByNodeId; State = Claimed */ }
     public void Apply(TaskRequeued @event) { /* ClaimedByNodeId = null; State = Queued */ }
     public void Apply(QuestionAsked @event) { /* PendingQuestionId; State = NeedsHuman */ }
@@ -394,6 +401,21 @@ premise died, and silence would strand it. Only the dispatch loop's sweep notice
 of them append a closeout event for the merge-driven path to react to. Origin incident
 (2026-08-20): the rule first enumerated `Failed` and `Abandoned` alone, so a resolved dependency
 held its dependents in `Blocked` forever, with no reason and without reading as NeedsHuman.
+
+**A blocker that comes back.** Dead is a question the sweep asks fresh every cycle, never a
+flag it sets once. `h9k task retry` puts a failed blocker back to `Queued`, which appends
+nothing to its dependents, so the same sweep that recorded the hold is what notices the hold
+has stopped being true: it appends `TaskDependencyRecovered` on each dependent, the recorded
+death is dropped, and the task returns to plain `Blocked` with the ordinary waiting-on display.
+Both records stay on the stream, because the hold happened and so did the recovery. The same
+pass restates a hold whose *reason* changed rather than clearing it: a failed blocker a human
+resolved is still dead (its run will never carry a merge), but the advice "retry or resolve it"
+is no longer a lever the decider would accept, so the death is re-recorded as the one it now
+is. And a blocker retried into a second failure is simply held again: hold, recover, hold, each
+one observed. Origin incident (2026-08-21): the first overnight crash-recovery failed the
+chain's head honestly and held both dependents, then `h9k task retry` put the blocker back to
+work and the holds did not clear, leaving a board that read "act now" about a situation already
+handled for what would have been the whole rebuild.
 
 **Cycles.** Detection lives at Publish alone. A draft may transiently reference a cycle while a
 graph is being authored; a cycle can never become assignable, and the refusal names the cycle
