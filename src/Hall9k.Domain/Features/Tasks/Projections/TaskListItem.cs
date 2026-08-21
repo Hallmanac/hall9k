@@ -227,4 +227,11 @@ public sealed class TaskListItemProjection : SingleStreamProjection<TaskListItem
     }
 
     public void Apply(IEvent<TaskAbandoned> @event, TaskListItem view) => view.State = TaskState.Abandoned;
+
+    // The row carries the reference wherever it came from. This projection is what the
+    // one-item-one-live-task check reads (TaskAddCommand.RefuseSecondAdoptionAsync), so a task
+    // linked to a card it caused to exist has to block a later import of that same card exactly
+    // as an adopted one does — the two funnel exits meet on this field (PLAN.md §3.1a).
+    public void Apply(IEvent<WorkItemLinked> @event, TaskListItem view) =>
+        view.ExternalReference = @event.Data.Reference.ToString();
 }

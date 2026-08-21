@@ -26,6 +26,28 @@ public sealed class TaskDetails
     public string? AgentContext { get; set; }
     public TaskConstraints? Constraints { get; set; }
     public string? ExternalReference { get; set; }
+    /// <summary>What the external system said the item's status was when Hall9k last read it; never refreshed.</summary>
+    public string? ExternalStatusObserved { get; set; }
+    /// <summary>When that reading happened — the stamp that makes the status above history rather than a claim.</summary>
+    public DateTimeOffset? ExternalObservedAt { get; set; }
+    /// <summary>The system a publication session is outstanding for; null when none is (backlog 18).</summary>
+    public string? PendingPublicationProvider { get; set; }
+    /// <summary>The board that publication was asked to file under; None when the project bound no key.</summary>
+    public JiraProjectKey PendingPublicationProjectKey { get; set; } = JiraProjectKey.None;
+    /// <summary>True once the daemon spawned the pending publication's session: what stops a second card.</summary>
+    public bool PublicationSessionDispatched { get; set; }
+    /// <summary>The session writing the card, which also names the directory its prompt and transcript are in.</summary>
+    public Guid? PublicationSessionId { get; set; }
+    /// <summary>The node that spawned it: the only machine on which the process identity below means anything.</summary>
+    public Guid? PublicationSessionNodeId { get; set; }
+    /// <summary>Pid and start time together — a process identity, so adoption can tell a live session from a reused pid.</summary>
+    public int? PublicationSessionProcessId { get; set; }
+    public DateTimeOffset? PublicationSessionStartedAt { get; set; }
+    public DateTimeOffset? PublicationRequestedAt { get; set; }
+    /// <summary>Who asked. It is what tells a node whether an outstanding publication is its owner's work to do.</summary>
+    public Guid? PublicationRequestedByOwnerId { get; set; }
+    /// <summary>How the last publication session ended, in words — kept because "no link" alone teaches nobody.</summary>
+    public string? PublicationOutcome { get; set; }
     /// <summary>Whose work this is; null until an explicit assignment says (Decisions Log #34).</summary>
     public Guid? AssignedOwnerId { get; set; }
     /// <summary>The tasks this one waits on, declared at creation or revised in Draft.</summary>
@@ -341,5 +363,65 @@ public sealed class TaskDetailsProjection : SingleStreamProjection<TaskDetails, 
         view.RetryBranch = null;
         view.State = TaskState.Abandoned;
         view.FinishedAt = @event.Data.AbandonedAt;
+    }
+
+    // Publication is a side errand, so none of these touch State: what they move is the pending
+    // marker the daemon's publication loop reads and what h9k task show tells the human.
+    public void Apply(IEvent<WorkItemPublicationRequested> @event, TaskDetails view)
+    {
+        view.PendingPublicationProvider = @event.Data.Provider.Value;
+        view.PendingPublicationProjectKey = @event.Data.ProjectKey;
+        ForgetSession(view);
+        view.PublicationRequestedAt = @event.Data.RequestedAt;
+        view.PublicationRequestedByOwnerId = @event.Data.RequestedByOwnerId;
+        view.PublicationOutcome = null;
+    }
+
+    // The session's identity is projected, not just the fact of it: it is what lets a restarted
+    // daemon ask whether that session is still running rather than assume either way, and a
+    // publication left dispatched with nothing watching it is a task stuck saying "a session is
+    // writing the card" forever (origin incident: the pre-PR review of this branch, 2026-08-21).
+    public void Apply(IEvent<WorkItemPublicationDispatched> @event, TaskDetails view)
+    {
+        view.PublicationSessionDispatched = true;
+        view.PublicationSessionId = @event.Data.SessionId;
+        view.PublicationSessionNodeId = @event.Data.NodeId;
+        view.PublicationSessionProcessId = @event.Data.ProcessId;
+        view.PublicationSessionStartedAt = @event.Data.ProcessStartedAt;
+    }
+
+    public void Apply(IEvent<WorkItemPublicationCompleted> @event, TaskDetails view)
+    {
+        view.PendingPublicationProvider = null;
+        view.PendingPublicationProjectKey = JiraProjectKey.None;
+        ForgetSession(view);
+        view.PublicationOutcome = @event.Data.Outcome;
+    }
+
+    // The observed fields travel with the reference deliberately. A status with no stamp reads
+    // as the item's current state, which is exactly what this platform does not know: it took
+    // one reading, at one moment, and never looked again (PLAN.md #60).
+    public void Apply(IEvent<WorkItemLinked> @event, TaskDetails view)
+    {
+        view.ExternalReference = @event.Data.Reference.ToString();
+        view.ExternalStatusObserved = @event.Data.ObservedStatus;
+        view.ExternalObservedAt = @event.Data.ObservedAt;
+        view.PendingPublicationProvider = null;
+        view.PendingPublicationProjectKey = JiraProjectKey.None;
+        ForgetSession(view);
+    }
+
+    /// <summary>
+    /// The publication session's identity, dropped the moment it stops being the live one. Kept in
+    /// one place because every event that ends or restarts a publication has to drop all of it:
+    /// a stale pid left beside a fresh request is what would make adoption judge the wrong process.
+    /// </summary>
+    private static void ForgetSession(TaskDetails view)
+    {
+        view.PublicationSessionDispatched = false;
+        view.PublicationSessionId = null;
+        view.PublicationSessionNodeId = null;
+        view.PublicationSessionProcessId = null;
+        view.PublicationSessionStartedAt = null;
     }
 }

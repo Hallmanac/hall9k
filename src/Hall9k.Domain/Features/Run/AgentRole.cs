@@ -21,6 +21,12 @@ public sealed record AgentRole
     /// <summary>Condenses a fan-in of blocker handoffs into one context document (Decisions Log #36).</summary>
     public static readonly AgentRole Synthesis = new("Synthesis");
     public static readonly AgentRole Refinement = new("Refinement");
+    /// <summary>
+    /// Writes a task up as a card in an external tracker (backlog 18). Its own role because it
+    /// is the one session that writes nothing to the repository and reads almost none of it: its
+    /// work is the project's card-authoring skill, its MCP access, and one h9k command at the end.
+    /// </summary>
+    public static readonly AgentRole Publication = new("Publication");
     /// <summary>Not recognized or not yet set. Serializes as an empty string.</summary>
     public static readonly AgentRole Unknown = new("");
 
