@@ -69,6 +69,24 @@ public sealed class TaskLifecycleSurfaceTests
     }
 
     [Fact]
+    public void A_blocked_task_whose_blocker_was_retried_goes_back_to_waiting_rather_than_shouting()
+    {
+        // What the resolver's recovery event leaves behind (Decisions Log #61): still Blocked,
+        // dead record gone. A board that says "act now" about a handled situation trains its
+        // reader to ignore it.
+        Guid dependencyId = DomainId.New();
+        TaskListItem blocked = Task("Blocked");
+        blocked.UnmetDependencies = [dependencyId];
+        blocked.DependencyFailureReason = null;
+
+        TaskStatusRow row = Compose(blocked);
+
+        row.Bucket.Should().Be("Blocked");
+        row.Attention.Should().NotBe(AttentionBucket.NeedsYou);
+        row.Activity.Should().Be($"blocked by {TaskListCommand.ShortId(dependencyId)}");
+    }
+
+    [Fact]
     public void Every_row_carries_its_assignee_and_an_unassigned_one_says_so()
     {
         Guid ownerId = DomainId.New();

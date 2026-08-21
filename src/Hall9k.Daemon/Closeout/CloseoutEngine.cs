@@ -473,8 +473,11 @@ public sealed class CloseoutEngine(
             await using IDocumentSession session = store.LightweightSession();
             DependencyReevaluation reevaluation = await TaskDependencyResolver.ForDependencyAsync(
                 session, taskId, now, cancellationToken);
-            if (!reevaluation.ChangedAnything)
+            if (reevaluation.Unblocked.Count == 0)
             {
+                // The pass may still have parked or recovered a dependent on one of its other
+                // blockers; nothing there is claimable, so there is no doorbell to ring and no
+                // count worth reporting as an unblocking.
                 return;
             }
 

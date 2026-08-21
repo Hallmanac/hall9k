@@ -197,10 +197,11 @@ public sealed class DispatchEngine(
 
     /// <summary>
     /// The dependency safety net (Decisions Log #34). The closeout monitor unblocks dependents
-    /// the moment it observes a merge, but two things only a sweep catches: a merge observed by
-    /// a node that has since stopped, and a blocker that reached Failed or Abandoned — a death
-    /// produces no closeout event to react to. Blocked tasks are waiting rather than working,
-    /// so the set this walks is small.
+    /// the moment it observes a merge, but three things only a sweep catches: a merge observed
+    /// by a node that has since stopped, a blocker that reached Failed or Abandoned — a death
+    /// produces no closeout event to react to — and the recovery of one, since h9k task retry
+    /// puts the blocker back to work without touching its dependents either (log #61). Blocked
+    /// tasks are waiting rather than working, so the set this walks is small.
     /// </summary>
     public async Task<DependencyReevaluation> ReevaluateBlockedTasksAsync(CancellationToken cancellationToken)
     {
@@ -208,11 +209,35 @@ public sealed class DispatchEngine(
         DependencyReevaluation reevaluation = await TaskDependencyResolver.ForEveryBlockedTaskAsync(
             session, DateTimeOffset.UtcNow, cancellationToken);
 
-        foreach (Guid parked in reevaluation.Parked)
+        // The recorded reason, not a summary of it: a hold is also restated for a blocker that
+        // died a different death since, and "failed or was abandoned" would misstate the cause
+        // that h9k task show reports for exactly those (a resolved blocker reads Done).
+        foreach (DependencyHold hold in reevaluation.Parked)
         {
             logger.LogWarning(
-                "Task {TaskId} waits on a dependency that failed or was abandoned — held for a human, not unblocked",
-                parked);
+                "Task {TaskId} is held for a human rather than unblocked: {Reason}",
+                hold.TaskId, hold.Reason);
+        }
+
+        // A lifted hold is only good news when nothing dead is left behind it. A dependent
+        // waiting on two dead blockers, one of them retried, is still NeedsHuman on h9k status,
+        // so announcing "waits normally again" would say the opposite of what the human reads
+        // on the task itself (review finding, 2026-08-21).
+        foreach (DependencyRecovery recovery in reevaluation.Recovered)
+        {
+            if (recovery.SurvivingReason is null)
+            {
+                logger.LogInformation(
+                    "Task {TaskId}'s dead blocker is back in the pipeline — the hold is lifted "
+                    + "and it waits normally again",
+                    recovery.TaskId);
+                continue;
+            }
+
+            logger.LogWarning(
+                "Task {TaskId}'s dead blocker is back in the pipeline, but it is still held for "
+                + "a human by another one: {Reason}",
+                recovery.TaskId, recovery.SurvivingReason);
         }
 
         if (reevaluation.Unblocked.Count > 0)

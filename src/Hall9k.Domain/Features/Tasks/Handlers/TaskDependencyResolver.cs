@@ -6,11 +6,29 @@ using Marten.Linq.MatchesSql;
 
 namespace Hall9k.Domain.Features.Tasks.Handlers;
 
+/// <summary>
+/// One task held for a human this pass, with the reason it was held for — the same sentence
+/// h9k task show puts in front of the human, so the operator log and the task surface can
+/// never describe the same hold differently.
+/// </summary>
+public sealed record DependencyHold(Guid TaskId, string Reason);
+
+/// <summary>
+/// One task whose dead-blocker hold was lifted this pass, with whatever hold the task is left
+/// carrying afterwards (Decisions Log #61). A dependent waiting on two dead blockers, one of
+/// which the human retried, is not free: the other blocker's reason survives, h9k status still
+/// reads it as NeedsHuman, and a caller that announced the recovery on its own would tell the
+/// operator the opposite of what the task surface says. Null is the ordinary case — nothing
+/// dead is left, and the task waits the ordinary way again.
+/// </summary>
+public sealed record DependencyRecovery(Guid TaskId, string? SurvivingReason);
+
 /// <summary>What one re-evaluation pass changed, so the caller can log it and ring the doorbell.</summary>
 /// <param name="Parked">Tasks newly held for a human, or held for a reason that has since changed.</param>
 /// <param name="Recovered">
-/// Tasks whose dead-blocker hold was lifted because the blocker is back in the pipeline
-/// (Decisions Log #61) — still Blocked, but waiting ordinarily rather than crying wolf.
+/// Tasks that had a dead-blocker hold lifted because that blocker is back in the pipeline
+/// (Decisions Log #61) — still Blocked, and waiting ordinarily rather than crying wolf unless
+/// <see cref="DependencyRecovery.SurvivingReason"/> says another blocker is still dead.
 /// </param>
 /// <remarks>
 /// These are tasks, not observations: a task appears at most once in each list however many
@@ -19,7 +37,9 @@ namespace Hall9k.Domain.Features.Tasks.Handlers;
 /// what actually happened to it.
 /// </remarks>
 public sealed record DependencyReevaluation(
-    IReadOnlyList<Guid> Unblocked, IReadOnlyList<Guid> Parked, IReadOnlyList<Guid> Recovered)
+    IReadOnlyList<Guid> Unblocked,
+    IReadOnlyList<DependencyHold> Parked,
+    IReadOnlyList<DependencyRecovery> Recovered)
 {
     public static readonly DependencyReevaluation Nothing = new([], [], []);
 
@@ -93,8 +113,8 @@ public static class TaskDependencyResolver
         }
 
         List<Guid> unblocked = [];
-        List<Guid> parked = [];
-        List<Guid> recovered = [];
+        List<DependencyHold> parked = [];
+        List<DependencyRecovery> recovered = [];
 
         foreach (TaskListItem candidate in blocked)
         {
@@ -108,7 +128,10 @@ public static class TaskDependencyResolver
             IReadOnlyList<TaskDependency> dependencies = await TaskDependencyQuery.LoadAsync(
                 session, task.UnmetDependencies, cancellationToken);
 
-            bool held = false;
+            // The newest death this pass recorded, which is the one the task surface will show:
+            // a recovery later in the same walk only removes blockers that are alive now, so it
+            // can never displace a death recorded a moment ago.
+            string? held = null;
             bool lifted = false;
 
             // Each decision is applied to the in-memory aggregate as it is appended, so a pass
@@ -139,7 +162,7 @@ public static class TaskDependencyResolver
                     TaskDependencyFailed died = TaskDecider.DependencyFailed(task, dependency.Id, reason, now);
                     session.Events.Append(task.Id, died);
                     task.Apply(died);
-                    held = true;
+                    held = reason;
                     continue;
                 }
 
@@ -159,14 +182,17 @@ public static class TaskDependencyResolver
 
             // One entry per task, decided after its whole dependency set has been walked: two
             // blockers changing on the same task is still one thing to tell the human about.
-            if (held)
+            if (held is not null)
             {
-                parked.Add(task.Id);
+                parked.Add(new DependencyHold(task.Id, held));
             }
 
+            // Read off the aggregate after the whole walk rather than off the recovery itself:
+            // what a lifted hold leaves behind is whatever the task's other blockers still say,
+            // and a blocker that is dead and unchanged appends nothing this pass to say it.
             if (lifted)
             {
-                recovered.Add(task.Id);
+                recovered.Add(new DependencyRecovery(task.Id, task.DependencyFailureReason));
             }
 
             if (task.State == TaskState.Queued)
