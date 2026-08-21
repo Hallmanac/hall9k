@@ -1,0 +1,478 @@
+using System.ComponentModel;
+using System.Globalization;
+using System.Text.Json;
+using Hall9k.Connectors.Processes;
+using Hall9k.Connectors.Text;
+using Hall9k.Domain.Features.Tasks;
+using Hall9k.Domain.Shared.Exceptions;
+using Hall9k.Domain.Shared.ValueObjects;
+
+namespace Hall9k.Connectors.WorkItems;
+
+/// <summary>
+/// GitHub issues through the <c>gh</c> CLI, which is the platform's already-authenticated seam
+/// (PLAN.md §10 — GitHub access piggybacks the machine's <c>gh</c> login, so Hall9k stores no
+/// GitHub token of its own). The daemon already shells out to <c>gh</c> for pull requests; this
+/// is the same credential reached for a different noun.
+/// </summary>
+public sealed class GitHubWorkItemProvider(ProcessRunner? runner = null, TimeProvider? clock = null) : IWorkItemProvider
+{
+    /// <summary>Exactly the fields the import maps. Asking for more would be storing what we do not use.</summary>
+    private const string RequestedFields = "number,title,body,state,url";
+
+    private readonly ProcessRunner runner = runner ?? ExternalProcess.Runner;
+    private readonly TimeProvider clock = clock ?? TimeProvider.System;
+
+    public WorkItemProvider Provider => WorkItemProvider.GitHub;
+
+    public async Task<ImportedWorkItem> ImportAsync(
+        WorkItemImportRequest request, CancellationToken cancellationToken)
+    {
+        (string? repository, int number) = ParseReference(request.Reference);
+
+        List<string> arguments =
+            ["issue", "view", number.ToString(CultureInfo.InvariantCulture), "--json", RequestedFields];
+        if (repository is not null)
+        {
+            arguments.AddRange(["--repo", repository]);
+        }
+
+        ProcessResult result = await RunGhAsync(arguments, request.WorkingDirectory, cancellationToken);
+        if (result.ExitCode != 0)
+        {
+            throw Explain(result.StandardError, repository, number, request.WorkingDirectory);
+        }
+
+        return Map(result.StandardOutput, number, clock.GetUtcNow());
+    }
+
+    /// <summary>
+    /// <c>github:owner/repo#42</c> points at
+    /// <c>https://github.com/owner/repo/issues/42</c>. A format rule rather than a lookup, so it
+    /// is safe to apply without asking GitHub; a reference that does not carry an owner and a
+    /// repository yields null rather than a plausible-looking guess.
+    /// </summary>
+    public Uri? WebUrl(ExternalReference reference)
+    {
+        if (reference.Provider != WorkItemProvider.GitHub)
+        {
+            return null;
+        }
+
+        string[] parts = reference.Reference.Split('#');
+        return parts is [{ } repository, { } number]
+            && repository.Split('/') is [{ Length: > 0 }, { Length: > 0 }]
+            && int.TryParse(number, NumberStyles.None, CultureInfo.InvariantCulture, out _)
+                ? new Uri($"https://github.com/{repository}/issues/{number}")
+                : null;
+    }
+
+    /// <summary>
+    /// The forms a human actually has to hand: the number they are reading on the board, the
+    /// <c>owner/repo#42</c> shorthand GitHub itself prints, and the URL in the address bar.
+    /// A bare number means the project's own repository, which is what <c>gh</c> resolves from
+    /// the working directory.
+    /// </summary>
+    private static (string? Repository, int Number) ParseReference(string reference)
+    {
+        string trimmed = reference?.Trim() ?? string.Empty;
+        if (trimmed.IsBlank())
+        {
+            throw new DomainValidationException(
+                "--from-issue needs an issue to import. Pass the number (42), the owner/repo#42 "
+                + "shorthand, or the issue URL.");
+        }
+
+        return trimmed.StartsWith("http://", StringComparison.OrdinalIgnoreCase)
+            || trimmed.StartsWith("https://", StringComparison.OrdinalIgnoreCase)
+                ? ParseUrl(trimmed)
+                : ParseShorthand(trimmed);
+    }
+
+    private static (string? Repository, int Number) ParseUrl(string reference)
+    {
+        if (!Uri.TryCreate(reference, UriKind.Absolute, out Uri? url))
+        {
+            throw Unreadable(reference);
+        }
+
+        if (!IsGitHubDotCom(url.Host))
+        {
+            throw ForeignHost(reference, url.Host);
+        }
+
+        string[] segments = url.AbsolutePath.Trim('/').Split('/');
+        if (segments is [{ } owner, { } repository, "issues", { } number]
+            && int.TryParse(number, NumberStyles.None, CultureInfo.InvariantCulture, out int parsed))
+        {
+            return ($"{owner}/{repository}", parsed);
+        }
+
+        // A pull request is a different noun with the same URL shape, and gh's own error for
+        // it ("not found") would send the reader hunting for a deleted issue.
+        throw IsPullRequestPath(segments)
+            ? new DomainValidationException(
+                $"{RelayedText.OneLine(reference)} is a pull request, not an issue. --from-issue "
+                + "adopts issues; a pull request is work already under way, so it has no task to "
+                + "seed.")
+            : Unreadable(reference);
+    }
+
+    /// <summary>
+    /// The two hash-shaped forms: <c>owner/repo#42</c>, and the bare issue in the project's own
+    /// repository, which a human is as likely to type the way GitHub prints it (<c>#42</c>) as
+    /// plainly (<c>42</c>). The leading hash comes off before the split, because splitting first
+    /// leaves <c>#42</c> as an empty repository and a number, which reads as a malformed
+    /// <c>owner/repo#42</c> rather than as the form it is.
+    /// </summary>
+    private static (string? Repository, int Number) ParseShorthand(string reference)
+    {
+        string bare = reference.StartsWith('#') ? reference[1..] : reference;
+        if (int.TryParse(bare, NumberStyles.None, CultureInfo.InvariantCulture, out int number))
+        {
+            return (null, number);
+        }
+
+        return reference.Split('#') is [{ } repository, { } suffix]
+            && repository.Split('/') is [{ Length: > 0 }, { Length: > 0 }]
+            && int.TryParse(suffix, NumberStyles.None, CultureInfo.InvariantCulture, out int qualified)
+                ? (repository, qualified)
+                : throw Unreadable(reference);
+    }
+
+    /// <summary>
+    /// The noun is the third path segment (<c>/owner/repo/pull/12</c>), never any occurrence of
+    /// "pull" in the URL. <c>wei/pull</c> is a real and widely used repository, so an issue in it
+    /// reads <c>/wei/pull/issues/100</c> — a substring test refuses that as a pull request, and no
+    /// project whose repository is named <c>pull</c> could adopt an issue at all.
+    /// </summary>
+    private static bool IsPullRequestPath(string[] segments) => segments is [_, _, "pull", ..];
+
+    /// <summary>
+    /// github.com is the only GitHub this provider can honestly adopt from. <c>gh</c> itself would
+    /// take an enterprise host (<c>--repo [HOST/]OWNER/REPO</c>), but an
+    /// <see cref="ExternalReference"/> records <c>owner/repo</c> with no host at all, so an
+    /// enterprise issue would be stored, and later linked back to by <see cref="WebUrl"/>, as the
+    /// github.com repository of the same name. That is a guessed identity, which the never-guess
+    /// rule (AGENTS.md) forbids, so a host we cannot record is refused rather than dropped.
+    /// </summary>
+    private static bool IsGitHubDotCom(string host) =>
+        host.Equals("github.com", StringComparison.OrdinalIgnoreCase)
+        || host.Equals("www.github.com", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// Every refusal below quotes something this class did not write — the reference the human
+    /// typed, the URL gh answered with, a host read out of it — into a message Program.cs prints
+    /// to a terminal, so each quoted value goes through <see cref="RelayedText"/> on the way, the
+    /// same as <see cref="Explain"/> and <see cref="Head"/> already do with gh's own output.
+    /// <para>
+    /// A reference is not obviously hostile text, which is exactly why it was missed: an
+    /// unparseable one is refused, and refusing it is what puts it on screen. A host is no safer,
+    /// because an internationalised host name carries whatever Unicode its registry allows,
+    /// including the overrides that reverse the line it sits in.
+    /// </para>
+    /// </summary>
+    private static DomainValidationException ForeignHost(string url, string host) => new(
+        $"{RelayedText.OneLine(url)} is on {RelayedText.OneLine(host)}, and Hall9k adopts issues "
+        + "from github.com. An adopted reference records owner/repo with no host, so an issue from "
+        + "another GitHub would be filed (and linked back to) as the github.com repository of the "
+        + "same name. Write the task with --objective and --context instead, quoting what the "
+        + "issue says.");
+
+    private static DomainValidationException Unreadable(string reference) => new(
+        $"'{RelayedText.OneLine(reference)}' does not name a GitHub issue. Use the number (42), "
+        + "the owner/repo#42 shorthand, or the issue URL "
+        + "(https://github.com/owner/repo/issues/42).");
+
+    private async Task<ProcessResult> RunGhAsync(
+        IReadOnlyList<string> arguments, string workingDirectory, CancellationToken cancellationToken)
+    {
+        try
+        {
+            return await runner("gh", arguments, workingDirectory, cancellationToken);
+        }
+        catch (Win32Exception exception)
+        {
+            throw CouldNotStartGh(exception, workingDirectory);
+        }
+        catch (TimeoutException exception)
+        {
+            throw GhStoppedAnswering(exception, workingDirectory);
+        }
+    }
+
+    /// <summary>
+    /// gh started and then either went quiet for longer than <see cref="ExternalProcess.Deadline"/>
+    /// or left its output held open past <see cref="ExternalProcess.DrainGrace"/> after exiting, so
+    /// the runner ended it. Which of the two happened is the runner's sentence to write, since only
+    /// it watched; this adds what only this class knows. Translated here rather than left as a
+    /// <see cref="TimeoutException"/> because Program.cs maps <see cref="DomainException"/> and
+    /// nothing else, and because only this class knows which tool was asked what: the runner can
+    /// say a process stopped answering, but not that the way to check it is 'gh auth status'.
+    /// <para>
+    /// The likeliest cause is named rather than guessed at as the cause, and it is the same one
+    /// either way: gh waits for input it has no terminal to ask for when a credential helper needs
+    /// unlocking, and a credential helper is also the thing most likely to be left holding gh's
+    /// output after gh itself is gone. Both are why an import can hang on a machine where the
+    /// same command works by hand.
+    /// </para>
+    /// </summary>
+    private static DomainValidationException GhStoppedAnswering(
+        TimeoutException exception, string workingDirectory) => new(
+        $"{exception.Message} It was reading the issue from {workingDirectory}. An import that "
+        + "stops here is usually gh, or something gh started, waiting on input it cannot ask for "
+        + "— an unlocked keychain or a credential helper — so run 'gh auth status' and then "
+        + "'gh issue view 42' by hand from that directory to see what it is waiting on, and "
+        + "import again.");
+
+    /// <summary>
+    /// A missing gh and a missing working directory arrive as the same exception: .NET reports
+    /// both as <see cref="Win32Exception"/> ("No such file or directory"), so the directory itself
+    /// is the only thing that tells the two apart, and it is read only once starting gh has
+    /// already failed. Origin observation (2026-08-21): this was written as a
+    /// <c>catch (DirectoryNotFoundException)</c>, which <see cref="System.Diagnostics.Process.Start()"/>
+    /// never throws for a bad <c>WorkingDirectory</c>, so a project whose registered repository
+    /// path had moved was told to install the GitHub CLI and run 'gh auth login'.
+    /// </summary>
+    private static DomainException CouldNotStartGh(Win32Exception exception, string workingDirectory) =>
+        Directory.Exists(workingDirectory)
+            ? new DomainValidationException(
+                "Could not run gh, the GitHub CLI Hall9k imports issues through: "
+                + $"{exception.Message}. Install it (https://cli.github.com) and sign in with "
+                + "'gh auth login', then run the import again.")
+            : new DomainNotFoundException(
+                $"The project's repository path does not exist: {workingDirectory}. gh reads the "
+                + "repository from the directory it runs in, so fix the path with "
+                + "'h9k project show <name>' as your reference before importing. gh reported: "
+                + $"{exception.Message}");
+
+    /// <summary>
+    /// Turn gh's stderr into the one sentence that says what to do next. The strings are
+    /// matched rather than parsed because gh reports these as prose; anything unmatched is
+    /// passed through verbatim rather than relabelled as something we recognise.
+    /// <para>
+    /// Verbatim in wording, not in bytes: what is quoted here is another program's output on its
+    /// way to a human's terminal, so it goes through <see cref="RelayedText"/> first. Whether the
+    /// stderr of a tool answering about someone else's repository can carry an escape sequence is
+    /// not a question worth leaving to the tool.
+    /// </para>
+    /// </summary>
+    private static DomainException Explain(
+        string standardError, string? repository, int number, string workingDirectory)
+    {
+        string reported = RelayedText.OneLine(standardError).Trim();
+        string named = repository is null ? $"#{number}" : $"{repository}#{number}";
+
+        // The repository failing to resolve is a different problem from the issue failing to
+        // resolve, and it is worth saying so: GitHub answers "could not resolve" for a
+        // repository that does not exist and for a private one the signed-in account cannot
+        // see, deliberately, so that the API does not leak which. Hall9k cannot tell them apart
+        // either, so it names both rather than picking one — the number is not the thing to
+        // check here, and telling an authenticated user to check it sends them somewhere the
+        // answer is not.
+        if (reported.Contains("Could not resolve to a Repository", StringComparison.OrdinalIgnoreCase))
+        {
+            return new DomainNotFoundException(
+                $"gh could not resolve the repository for {named}"
+                + (repository is null ? $", read from the project's path at {workingDirectory}" : string.Empty)
+                + $". gh reported: {reported}. GitHub answers the same way for a repository that "
+                + "does not exist and for one your account cannot see, so check the owner/repo "
+                + "spelling, and check that the account 'gh auth status' reports has access to it "
+                + "(a private repository needs it, and an organisation behind SSO needs the token "
+                + "authorised for that organisation).");
+        }
+
+        if (reported.Contains("Could not resolve to an Issue", StringComparison.OrdinalIgnoreCase)
+            || reported.Contains("no issues found", StringComparison.OrdinalIgnoreCase))
+        {
+            return new DomainNotFoundException(
+                $"GitHub has no issue {named}"
+                + (repository is null ? $" in the repository at {workingDirectory}" : string.Empty)
+                + $". gh reported: {reported}. Check the number, or pass the full issue URL if the "
+                + "issue lives in another repository.");
+        }
+
+        // Matched on what gh actually says when the account is the problem, and deliberately not
+        // on the bare word "authentication". That word appears in answers this remedy is wrong
+        // for — "HTTP 407 Proxy Authentication Required" is a proxy asking for credentials, and
+        // sending that reader to 'gh auth login' relabels someone else's failure as gh's, which
+        // is the one thing this method promises not to do. An answer with no precise match falls
+        // through to the branch that quotes gh and claims nothing.
+        if (reported.Contains("gh auth login", StringComparison.OrdinalIgnoreCase)
+            || reported.Contains("HTTP 401", StringComparison.OrdinalIgnoreCase))
+        {
+            return new DomainValidationException(
+                $"gh is not authenticated for {named}. Run 'gh auth login' (Hall9k holds no GitHub "
+                + $"token of its own — it uses yours) and import again. gh reported: {reported}");
+        }
+
+        return new DomainValidationException(
+            $"gh could not read issue {named}: {reported}");
+    }
+
+    private static ImportedWorkItem Map(string json, int requestedNumber, DateTimeOffset observedAt)
+    {
+        using JsonDocument document = ReadIssueJson(json);
+        JsonElement root = document.RootElement;
+
+        string? url = ReadString(root, "url");
+        // The kind is checked before the value is read, the way ReadString checks it: TryGetInt32
+        // only reports whether a number fits, and throws outright on anything that is not one, so
+        // a "number" arriving as the string "42" from something on PATH pretending to be gh would
+        // leave as an InvalidOperationException stack trace. The number asked for is the honest
+        // fallback, since it is what the fetch was for.
+        int number = root.TryGetProperty("number", out JsonElement element)
+            && element.ValueKind is JsonValueKind.Number
+            && element.TryGetInt32(out int reported)
+                ? reported
+                : requestedNumber;
+
+        // gh issue view resolves pull requests too — issues and pull requests share one number
+        // sequence, so "42" may be either and only the URL gh returns says which. Caught here
+        // rather than at parse time because a bare number cannot be judged before the fetch.
+        // Origin observation (2026-08-21): `gh issue view 1 --repo cli/cli` returns a merged
+        // pull request, which would otherwise have been adopted as an issue.
+        if (url is not null
+            && Uri.TryCreate(url, UriKind.Absolute, out Uri? resolved)
+            && IsPullRequestPath(resolved.AbsolutePath.Trim('/').Split('/')))
+        {
+            throw new DomainValidationException(
+                $"#{number} is a pull request, not an issue ({RelayedText.OneLine(url)}). Issues "
+                + "and pull requests share one number sequence on GitHub. --from-issue adopts "
+                + "issues; a pull request is work already under way, so it has no task to seed.");
+        }
+
+        return new ImportedWorkItem(
+            new ExternalReference(WorkItemProvider.GitHub, $"{RepositoryFrom(url)}#{number}"),
+            ReadString(root, "title") ?? string.Empty,
+            // An issue with no body has no body. Blank collapses to null so the agent context
+            // says the body was empty rather than printing an empty section under a heading —
+            // but that is the only judgement made here. A body that is present is carried
+            // character for character, because the context contract promises the agent the
+            // issue as written, and in Markdown leading spaces are content: four of them open a
+            // code block, and trimming them turns a code sample into a paragraph.
+            ReadString(root, "body") is { } body && body.IsNotBlank() ? body : null,
+            WorkItemStatus.Parse(ReadString(root, "state")),
+            url is not null && Uri.TryCreate(url, UriKind.Absolute, out Uri? parsed) ? parsed : null,
+            observedAt);
+    }
+
+    /// <summary>
+    /// gh's answer, checked for being the thing it was asked for before anything is read out of
+    /// it. Exit code zero is not on its own a promise of shape: something else on PATH named gh
+    /// (a wrapper, a shim, a corporate proxy for the real thing) succeeds and prints its own
+    /// prose, and an extension can put a notice on stdout ahead of the JSON.
+    /// <para>
+    /// Left unguarded, that reaches the human as a <see cref="JsonException"/> stack trace, since
+    /// Program.cs maps <see cref="DomainException"/> and nothing else — and a stack trace is the
+    /// one error shape an agent cannot self-correct from (AGENTS.md, failures print why). So it
+    /// becomes a refusal that quotes what actually arrived, because what arrived is the only
+    /// evidence of which gh ran.
+    /// </para>
+    /// </summary>
+    private static JsonDocument ReadIssueJson(string json)
+    {
+        JsonDocument document;
+        try
+        {
+            document = JsonDocument.Parse(json);
+        }
+        catch (JsonException exception)
+        {
+            throw NotAnIssueDocument(json, exception.Message);
+        }
+
+        JsonValueKind kind = document.RootElement.ValueKind;
+        if (kind is JsonValueKind.Object)
+        {
+            return document;
+        }
+
+        document.Dispose();
+        throw NotAnIssueDocument(json, $"the JSON it printed is {kind}, not an object");
+    }
+
+    private static DomainValidationException NotAnIssueDocument(string json, string reported) => new(
+        "gh exited successfully but did not answer with an issue in JSON, so there is nothing to "
+        + $"adopt: {reported}. It printed: {Head(json)}. Check that the 'gh' on PATH is the GitHub "
+        + "CLI itself rather than a wrapper of the same name, and that "
+        + "'gh issue view 42 --json number,title' prints JSON from the project's repository.");
+
+    /// <summary>
+    /// Enough of the output to recognise what answered, and no more: the whole of it could be a
+    /// page of an unrelated tool's help text, and an error nobody reads to the end teaches
+    /// nothing. Blank output says so outright rather than leaving an empty pair of quotes.
+    /// <para>
+    /// It is quoting a program that has just proved it is not the one we asked for, into a
+    /// message bound for a terminal, so it is sanitised and cut on a text-element boundary rather
+    /// than at a raw char index (<see cref="RelayedText"/>).
+    /// </para>
+    /// </summary>
+    private static string Head(string output)
+    {
+        string trimmed = RelayedText.OneLine(output).Trim();
+        return trimmed.IsBlank()
+            ? "nothing at all"
+            : RelayedText.Truncate(trimmed, 200);
+    }
+
+    /// <summary>
+    /// owner/repo out of the URL gh returned, which is the observed answer rather than one
+    /// reconstructed from what the caller typed — a bare number carries no repository at all,
+    /// and the canonical reference must name one.
+    /// </summary>
+    private static string RepositoryFrom(string? url)
+    {
+        if (url is null
+            || !Uri.TryCreate(url, UriKind.Absolute, out Uri? parsed)
+            || parsed.AbsolutePath.Trim('/').Split('/') is not [{ } owner, { } repository, ..])
+        {
+            throw new DomainValidationException(
+                "gh returned an issue with no URL, so the repository it belongs to cannot be "
+                + "named. Re-run with the full issue URL so the reference records a repository.");
+        }
+
+        // The host is checked again on what came back, not only on what was typed: a bare number
+        // is resolved by gh against its own default host, which on an enterprise-configured
+        // machine is not github.com, and the reference cannot say so.
+        if (!IsGitHubDotCom(parsed.Host))
+        {
+            throw ForeignHost(url, parsed.Host);
+        }
+
+        return IsGitHubName(owner) && IsGitHubName(repository)
+            ? $"{owner}/{repository}"
+            : throw NotARepositoryPath(url, $"{owner}/{repository}");
+    }
+
+    /// <summary>
+    /// Whether a path segment can be a GitHub owner or repository name: letters, digits, hyphen,
+    /// underscore and dot, and at least one character. It is asked of the URL that came back for
+    /// the same reason the host is (<see cref="IsGitHubDotCom"/>) — exit code zero is not a promise
+    /// of shape, and this reference is stored, then rendered on every surface that shows the task.
+    /// <para>
+    /// The concrete failure is a bracket. <c>Uri.AbsolutePath</c> escapes a space but leaves
+    /// <c>[</c> and <c>]</c> alone, so an owner containing one survives into the canonical
+    /// reference and then into <c>h9k task show</c>, whose external row is Spectre markup of the
+    /// form <c>[link=url]label[/]</c>: the <c>]</c> ends the tag early and every later reading of
+    /// that task throws an unmapped stack trace instead of printing. Refusing the import is the
+    /// honest place to stop, because there is nothing recoverable to store — the alternative is a
+    /// reference that names a repository which cannot exist.
+    /// </para>
+    /// </summary>
+    private static bool IsGitHubName(string segment) =>
+        segment.Length > 0 && segment.All(character =>
+            char.IsAsciiLetterOrDigit(character) || character is '-' or '_' or '.');
+
+    private static DomainValidationException NotARepositoryPath(string url, string path) => new(
+        $"{RelayedText.OneLine(url)} does not name a github.com repository: "
+        + $"'{RelayedText.OneLine(path)}' is not an owner and repository (GitHub names are letters, "
+        + "digits, hyphens, underscores and dots). Nothing here can be adopted, because the "
+        + "reference Hall9k would store names no repository. Re-run with the issue URL as GitHub "
+        + "prints it (https://github.com/owner/repo/issues/42).");
+
+    private static string? ReadString(JsonElement root, string property) =>
+        root.TryGetProperty(property, out JsonElement value) && value.ValueKind == JsonValueKind.String
+            ? value.GetString()
+            : null;
+}

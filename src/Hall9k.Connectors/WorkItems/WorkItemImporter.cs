@@ -1,0 +1,78 @@
+using Hall9k.Connectors.Text;
+using Hall9k.Domain.Features.Tasks;
+using Hall9k.Domain.Shared.Exceptions;
+using Hall9k.Domain.Shared.ValueObjects;
+
+namespace Hall9k.Connectors.WorkItems;
+
+/// <summary>
+/// The one door into the resolver seam: it picks the <see cref="IWorkItemProvider"/> for the
+/// requested system and then applies the policy that is the platform's rather than any one
+/// source's. Adding Jira (backlog 18) is a provider in this list, not a second import path —
+/// which is the point of routing every import through here even while there is only one source.
+/// <para>
+/// Adoption policy lives here for the same reason: "Hall9k adopts open work" is a statement
+/// about the funnel (PLAN.md §3.1a), not about GitHub, so a source that forgot to enforce it
+/// cannot exist. That policy is read positively — only an item a source <em>called</em> open is
+/// adopted — which makes translating a source's own vocabulary into
+/// <see cref="WorkItemStatus"/> a provider's job rather than a gap the gate has to guess across.
+/// </para>
+/// </summary>
+public sealed class WorkItemImporter(params IWorkItemProvider[] providers)
+{
+    /// <summary>
+    /// The sources reachable with no configuration, because their credentials are the
+    /// machine's own (PLAN.md §10). A source needing registered credentials — Jira, whose
+    /// connection carries a site and a token — is constructed per install and will arrive as
+    /// an injected instance rather than joining this list.
+    /// </summary>
+    public static WorkItemImporter Default { get; } = new(new GitHubWorkItemProvider());
+
+    public async Task<ImportedWorkItem> ImportAsync(
+        WorkItemImportRequest request, CancellationToken cancellationToken)
+    {
+        IWorkItemProvider provider = Find(request.Provider)
+            ?? throw new DomainValidationException(
+                $"Hall9k has no importer for '{request.Provider.Value}'. Known sources: "
+                + $"{string.Join(", ", providers.Select(p => p.Provider.Value))}.");
+
+        ImportedWorkItem item = await provider.ImportAsync(request, cancellationToken);
+
+        // The gate is positively open rather than not-closed. A closed item is finished work and
+        // a task seeded from one carries a contract nobody is waiting on; but a state Hall9k
+        // never read, or read and had no rule for, is not evidence of open work either, and
+        // adopting it would be the never-guess rule broken at the funnel's own front door
+        // (AGENTS.md). The observed status is quoted verbatim with its timestamp because that is
+        // all the platform knows: it does not watch the item afterwards, so this says what was
+        // true when we looked and nothing about now.
+        //
+        // The status and the reference are quoted through the one-line rule on the way into the
+        // message rather than raw. Both are the source's own words — WorkItemStatus keeps a state
+        // it had no rule for exactly as it was reported — and this message is printed to a
+        // terminal, where an escape sequence in one of them would repaint the refusal that is
+        // quoting it. Quoting verbatim means the words, not the characters that act.
+        return item.Status.IsOpen
+            ? item
+            : throw new DomainValidationException(
+                $"{RelayedText.OneLine(item.Reference.ToString())} was not open when Hall9k read it: "
+                + $"the source said '{RelayedText.OneLine(item.Status.ToString())}' "
+                + $"({item.ObservedStamp}), and adoption is for "
+                + "work a source positively calls open. Reopen it and import again, or write the "
+                + "task directly: h9k task add --project <name> --objective \"…\"");
+    }
+
+    /// <summary>
+    /// Where a reference points, asked of whichever source owns it; null when no registered
+    /// source recognises the provider, which is an honest "we cannot say" rather than a URL
+    /// shaped like the one we would have guessed.
+    /// </summary>
+    public Uri? WebUrl(ExternalReference? reference) =>
+        reference is null ? null : Find(reference.Provider)?.WebUrl(reference);
+
+    /// <summary>The same question asked of the canonical string a projection stores.</summary>
+    public Uri? WebUrl(string? canonicalReference) =>
+        canonicalReference.IsBlank() ? null : WebUrl(ExternalReference.Parse(canonicalReference));
+
+    private IWorkItemProvider? Find(WorkItemProvider provider) =>
+        providers.FirstOrDefault(candidate => candidate.Provider == provider);
+}
