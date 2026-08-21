@@ -3,6 +3,9 @@ using FluentAssertions;
 using Hall9k.Daemon;
 using Hall9k.Daemon.Closeout;
 using Hall9k.Daemon.Worktrees;
+using Hall9k.Domain.Features.Owner;
+using Hall9k.Domain.Features.Project;
+using Hall9k.Domain.Features.Project.Events;
 using Hall9k.Domain.Features.Run;
 using Hall9k.Domain.Features.Run.Events;
 using Hall9k.Domain.Features.Run.Projections;
@@ -12,6 +15,7 @@ using Hall9k.Domain.Features.Tasks.Projections;
 using Hall9k.Domain.Infrastructure.Ids;
 using Hall9k.Domain.Infrastructure.Persistence;
 using Hall9k.Domain.Infrastructure.Storage;
+using Hall9k.Domain.Shared.ValueObjects;
 using JasperFx;
 using Marten;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -76,13 +80,19 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
             return Snapshot;
         }
 
+        /// <summary>Logins the provider refuses, as GitHub refuses a non-collaborator.</summary>
+        public HashSet<string> RefusedReviewers { get; } = [];
+
         public Task RerequestReviewAsync(
             string repositoryPath, string pullRequestUrl, int pullRequestNumber, PullRequestReviewer reviewer,
             CancellationToken cancellationToken)
         {
             ReviewRerequests.Add(reviewer.Login);
             RerequestedBots.Add(reviewer.IsBot);
-            return Task.CompletedTask;
+            return RefusedReviewers.Contains(reviewer.Login)
+                ? Task.FromException(new InvalidOperationException(
+                    $"gh api ... exited 1: Reviews may only be requested from collaborators ({reviewer.Login})."))
+                : Task.CompletedTask;
         }
 
         /// <summary>Whether each re-request addressed a bot — the [bot]-suffix decision downstream.</summary>
@@ -482,6 +492,292 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
             "the prompt's care rules key off a person waiting");
     }
 
+    /// <summary>
+    /// The countersign is off unless someone said otherwise: nothing about a quiet pull
+    /// request should spend review quota by default (Decisions Log #62).
+    /// </summary>
+    [Fact]
+    public async Task A_quiet_pull_request_is_never_rerequested_by_default()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        (DocumentStore store, NodeContext node, GitWorktreeManager worktrees, _, string repoPath) =
+            await SetUpAsync(cts.Token);
+        using IDisposable storeLifetime = store;
+
+        (_, Guid runId, _) = await SeedAwaitingReviewAsync(
+            store, node, worktrees, repoPath, cts.Token, priorAutomaticReopens: 1, asFollowUp: true);
+
+        FakeInspector inspector = new()
+        {
+            Snapshot = FakeInspector.Quiet() with { Reviewers = [new PullRequestReviewer("teammate", ReviewerKind.Human)] },
+        };
+        await NewEngine(store, node, inspector, worktrees).PollOnceAsync(cts.Token);
+
+        inspector.ReviewRerequests.Should().BeEmpty("the option is off until an owner or a project turns it on");
+        await using (IQuerySession query = store.QuerySession())
+        {
+            RunDetails run = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
+            run.ReviewRerequestsAfterFixes.Should().Be(0);
+            run.State.Should().Be(RunState.AwaitingReview);
+        }
+
+        await RetireWatchAsync(store, runId, cts.Token);
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task An_opted_in_owner_or_project_rerequests_review_once_the_fixes_are_pushed(bool onTheOwner)
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        (DocumentStore store, NodeContext node, GitWorktreeManager worktrees, _, string repoPath) =
+            await SetUpAsync(cts.Token);
+        using IDisposable storeLifetime = store;
+
+        (Guid taskId, Guid runId, _) = await SeedAwaitingReviewAsync(
+            store, node, worktrees, repoPath, cts.Token, priorAutomaticReopens: 1, asFollowUp: true);
+        await EnableReviewRerequestAsync(
+            store,
+            onTheOwner ? node.OwnerId : await ProjectIdAsync(store, taskId, cts.Token),
+            onTheOwner,
+            cts.Token);
+
+        FakeInspector inspector = new()
+        {
+            Snapshot = FakeInspector.Quiet() with
+            {
+                Reviewers = [new PullRequestReviewer("copilot-pull-request-reviewer", ReviewerKind.Bot)],
+            },
+        };
+        CloseoutEngine engine = NewEngine(store, node, inspector, worktrees);
+        await engine.PollOnceAsync(cts.Token);
+
+        inspector.ReviewRerequests.Should().Equal("copilot-pull-request-reviewer");
+        inspector.RerequestedBots.Should().Equal([true],
+            "the [bot]-suffix decision is the provider's actor type, not a guess from the login");
+
+        await using (IQuerySession query = store.QuerySession())
+        {
+            RunDetails run = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
+            run.ReviewRerequestsAfterFixes.Should().Be(1);
+            run.State.Should().Be(RunState.AwaitingReview,
+                "asking for a countersignature is a question, not a finding — the watch continues");
+        }
+
+        // The next sweep must not ask again: this run pushed its fixes once, so it
+        // countersigns them once.
+        await engine.PollOnceAsync(cts.Token);
+        inspector.ReviewRerequests.Should().HaveCount(1);
+
+        await RetireWatchAsync(store, runId, cts.Token);
+        if (onTheOwner)
+        {
+            await ClearOwnerReviewRerequestAsync(store, node.OwnerId, cts.Token);
+        }
+    }
+
+    /// <summary>
+    /// A countersign asks the reviewers who have not seen the head. A reviewer whose latest
+    /// review already sits on the pushed commit — a Copilot pass that recovered, a human who
+    /// re-approved — has nothing left to countersign, and asking anyway would spend a pass,
+    /// reset a standing verdict to pending, and buy a redundant bot pass whose new threads
+    /// spend the OTHER budget (Decisions Log #62).
+    /// </summary>
+    [Fact]
+    public async Task The_countersign_skips_reviewers_whose_latest_review_already_covers_the_head()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        (DocumentStore store, NodeContext node, GitWorktreeManager worktrees, _, string repoPath) =
+            await SetUpAsync(cts.Token);
+        using IDisposable storeLifetime = store;
+
+        (Guid taskId, Guid runId, _) = await SeedAwaitingReviewAsync(
+            store, node, worktrees, repoPath, cts.Token, priorAutomaticReopens: 1, asFollowUp: true);
+        await EnableReviewRerequestAsync(store, node.OwnerId, onTheOwner: true, cts.Token);
+
+        FakeInspector inspector = new()
+        {
+            Snapshot = FakeInspector.Quiet() with
+            {
+                HeadCommit = "cafe1",
+                Reviewers =
+                [
+                    new PullRequestReviewer("copilot", ReviewerKind.Bot, LastReviewedCommit: "cafe1"),
+                    new PullRequestReviewer("teammate", ReviewerKind.Human, LastReviewedCommit: "cafe1"),
+                ],
+            },
+        };
+        CloseoutEngine engine = NewEngine(store, node, inspector, worktrees);
+        await engine.PollOnceAsync(cts.Token);
+
+        inspector.ReviewRerequests.Should().BeEmpty("every reviewer has already read these commits");
+        await using (IQuerySession query = store.QuerySession())
+        {
+            (await query.LoadAsync<RunDetails>(runId, cts.Token))!.ReviewRerequestsAfterFixes.Should().Be(
+                0, "a pass nobody needed must not be charged against the cap");
+        }
+
+        // The teammate's review is now behind the head; only they are asked.
+        inspector.Snapshot = inspector.Snapshot with
+        {
+            HeadCommit = "cafe2",
+            Reviewers =
+            [
+                new PullRequestReviewer("copilot", ReviewerKind.Bot, LastReviewedCommit: "cafe2"),
+                new PullRequestReviewer("teammate", ReviewerKind.Human, LastReviewedCommit: "cafe1"),
+            ],
+        };
+        await engine.PollOnceAsync(cts.Token);
+
+        inspector.ReviewRerequests.Should().Equal("teammate");
+        await using (IQuerySession query = store.QuerySession())
+        {
+            (await query.LoadAsync<RunDetails>(runId, cts.Token))!.ReviewRerequestsAfterFixes.Should().Be(1);
+        }
+
+        await RetireWatchAsync(store, runId, cts.Token);
+        await ClearOwnerReviewRerequestAsync(store, node.OwnerId, cts.Token);
+    }
+
+    /// <summary>
+    /// One reviewer the provider refuses is that reviewer's answer, not the pass's. The pass
+    /// is recorded before the requests go out and a refusal is stepped over, because the
+    /// alternative — append only after all N succeeded — left a rejected reviewer throwing
+    /// with earlier requests already landed and no pass recorded, so every sweep did it all
+    /// again with the cap never binding (Decisions Log #62).
+    /// </summary>
+    [Fact]
+    public async Task A_reviewer_the_provider_refuses_neither_stops_the_pass_nor_repeats_it()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        (DocumentStore store, NodeContext node, GitWorktreeManager worktrees, _, string repoPath) =
+            await SetUpAsync(cts.Token);
+        using IDisposable storeLifetime = store;
+
+        (Guid taskId, Guid runId, _) = await SeedAwaitingReviewAsync(
+            store, node, worktrees, repoPath, cts.Token, priorAutomaticReopens: 1, asFollowUp: true);
+        await EnableReviewRerequestAsync(store, node.OwnerId, onTheOwner: true, cts.Token);
+
+        FakeInspector inspector = new()
+        {
+            Snapshot = FakeInspector.Quiet() with
+            {
+                Reviewers =
+                [
+                    new PullRequestReviewer("departed", ReviewerKind.Human),
+                    new PullRequestReviewer("copilot", ReviewerKind.Bot),
+                ],
+            },
+        };
+        inspector.RefusedReviewers.Add("departed");
+
+        CloseoutEngine engine = NewEngine(store, node, inspector, worktrees);
+        await engine.PollOnceAsync(cts.Token);
+
+        inspector.ReviewRerequests.Should().Equal(
+            ["departed", "copilot"], "the refusal is stepped over, not allowed to abort the pass");
+        await using (IQuerySession query = store.QuerySession())
+        {
+            (await query.LoadAsync<RunDetails>(runId, cts.Token))!.ReviewRerequestsAfterFixes.Should().Be(
+                1, "the pass is spent whether or not every provider accepted it");
+        }
+
+        await engine.PollOnceAsync(cts.Token);
+        inspector.ReviewRerequests.Should().HaveCount(2, "a spent pass is not retried every sweep, forever");
+
+        await RetireWatchAsync(store, runId, cts.Token);
+        await ClearOwnerReviewRerequestAsync(store, node.OwnerId, cts.Token);
+    }
+
+    /// <summary>
+    /// Two sweeps overlapping — the startup catch-up and the monitor's timer both reach this
+    /// pull request — spend one pass between them, not two. The inspection is the slow call
+    /// they overlap inside, so the second sweep is run from inside the first one's, which is
+    /// exactly the window the fence has to cover.
+    /// </summary>
+    [Fact]
+    public async Task Overlapping_sweeps_issue_one_countersign_between_them()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        (DocumentStore store, NodeContext node, GitWorktreeManager worktrees, _, string repoPath) =
+            await SetUpAsync(cts.Token);
+        using IDisposable storeLifetime = store;
+
+        (Guid taskId, Guid runId, _) = await SeedAwaitingReviewAsync(
+            store, node, worktrees, repoPath, cts.Token, priorAutomaticReopens: 1, asFollowUp: true);
+        await EnableReviewRerequestAsync(store, node.OwnerId, onTheOwner: true, cts.Token);
+
+        PullRequestSnapshot quiet = FakeInspector.Quiet() with
+        {
+            Reviewers = [new PullRequestReviewer("copilot", ReviewerKind.Bot)],
+        };
+        FakeInspector second = new() { Snapshot = quiet };
+        CloseoutEngine secondSweep = NewEngine(store, node, second, worktrees);
+        FakeInspector first = new()
+        {
+            Snapshot = quiet,
+            // The whole second sweep lands inside the first one's gh call and commits first.
+            OnInspect = () => secondSweep.PollOnceAsync(cts.Token),
+        };
+
+        await NewEngine(store, node, first, worktrees).PollOnceAsync(cts.Token);
+
+        second.ReviewRerequests.Should().Equal("copilot");
+        first.ReviewRerequests.Should().BeEmpty(
+            "the run had already spent its one pass by the time this sweep came back from gh");
+        await using (IQuerySession query = store.QuerySession())
+        {
+            (await query.LoadAsync<RunDetails>(runId, cts.Token))!.ReviewRerequestsAfterFixes.Should().Be(1);
+        }
+
+        await RetireWatchAsync(store, runId, cts.Token);
+        await ClearOwnerReviewRerequestAsync(store, node.OwnerId, cts.Token);
+    }
+
+    /// <summary>
+    /// The bound against the doom loop (Decisions Log #62): passes are counted across the
+    /// task's runs, so a fresh follow-up run does not hand the loop a fresh budget.
+    /// </summary>
+    [Fact]
+    public async Task The_rerequest_cap_is_summed_across_the_tasks_runs()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        (DocumentStore store, NodeContext node, GitWorktreeManager worktrees, _, string repoPath) =
+            await SetUpAsync(cts.Token);
+        using IDisposable storeLifetime = store;
+
+        (Guid taskId, Guid runId, _) = await SeedAwaitingReviewAsync(
+            store, node, worktrees, repoPath, cts.Token, priorAutomaticReopens: 1, asFollowUp: true);
+        await EnableReviewRerequestAsync(store, node.OwnerId, onTheOwner: true, cts.Token);
+
+        // A previous run of this task already spent the single allowed pass.
+        await using (IDocumentSession spent = store.LightweightSession())
+        {
+            Guid earlier = (await spent.Query<RunDetails>()
+                .Where(candidate => candidate.TaskId == taskId)
+                .ToListAsync(cts.Token))
+                .First(candidate => candidate.Id != runId).Id;
+            spent.Events.Append(earlier, new ReviewRerequestedAfterFixes(earlier, ["copilot"], 1, Now));
+            await spent.SaveChangesAsync(cts.Token);
+        }
+
+        FakeInspector inspector = new()
+        {
+            Snapshot = FakeInspector.Quiet() with { Reviewers = [new PullRequestReviewer("copilot", ReviewerKind.Bot)] },
+        };
+        await NewEngine(store, node, inspector, worktrees, maxReviewRerequests: 1).PollOnceAsync(cts.Token);
+
+        inspector.ReviewRerequests.Should().BeEmpty(
+            "at the cap the pull request settles on the internal review, the thread replies, and CI");
+        await using (IQuerySession query = store.QuerySession())
+        {
+            (await query.LoadAsync<RunDetails>(runId, cts.Token))!.State.Should().Be(RunState.AwaitingReview);
+        }
+
+        await RetireWatchAsync(store, runId, cts.Token);
+        await ClearOwnerReviewRerequestAsync(store, node.OwnerId, cts.Token);
+    }
+
     [Fact]
     public async Task An_errored_copilot_review_holds_the_run_at_review_pending_and_rerequests_once()
     {
@@ -823,7 +1119,8 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
         GitWorktreeManager worktrees,
         string repoPath,
         CancellationToken cancellationToken,
-        int priorAutomaticReopens = 0)
+        int priorAutomaticReopens = 0,
+        bool asFollowUp = false)
     {
         Guid taskId = DomainId.New();
         Guid runId = DomainId.New();
@@ -895,7 +1192,7 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
 
         session.Events.StartStream<RunAggregate>(lastClaimRunId,
             new RunDispatched(lastClaimRunId, taskId, node.NodeId, ownerId, task.LeaseGeneration, DomainId.New(),
-                worktree.Path, worktree.Branch, ExecutorMode.Subscription, Now),
+                worktree.Path, worktree.Branch, ExecutorMode.Subscription, Now, IsFollowUp: asFollowUp),
             new AgentSessionCompleted(lastClaimRunId, Now),
             new VerificationPassed(lastClaimRunId, Now),
             new PullRequestOpened(lastClaimRunId, PullRequestUrl, 7, Now));
@@ -909,10 +1206,78 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
     }
 
     private CloseoutEngine NewEngine(
-        DocumentStore store, NodeContext node, IPullRequestInspector inspector, GitWorktreeManager worktrees) =>
+        DocumentStore store,
+        NodeContext node,
+        IPullRequestInspector inspector,
+        GitWorktreeManager worktrees,
+        int maxReviewRerequests = 2) =>
         new(store, node, new DaemonConnection(postgres.ConnectionString), inspector, worktrees,
-            Options.Create(new DaemonOptions { MaxAutomaticCloseoutRuns = 2 }),
+            Options.Create(new DaemonOptions
+            {
+                MaxAutomaticCloseoutRuns = 2,
+                MaxReviewRerequestsAfterFixes = maxReviewRerequests,
+            }),
             NullLogger<CloseoutEngine>.Instance);
+
+    /// <summary>
+    /// Leaves the watch set as the test found it. One node and one database back this whole
+    /// class, and CloseoutEngine sweeps every watched run the node owns, so a run left
+    /// AwaitingReview on a Done task is inspected by every later test's sweep — one test's
+    /// leftovers become another's tally. Tests whose run legitimately stays watched retire it
+    /// here, exactly as a real follow-up dispatch would.
+    /// </summary>
+    private static async Task RetireWatchAsync(DocumentStore store, Guid runId, CancellationToken cancellationToken)
+    {
+        await using IDocumentSession session = store.LightweightSession();
+        session.Events.Append(runId, new RunSuperseded(runId, 99, Now));
+        await session.SaveChangesAsync(cancellationToken);
+    }
+
+    /// <summary>Turns the countersign on at the level under test, leaving the others unset.</summary>
+    private static async Task EnableReviewRerequestAsync(
+        DocumentStore store, Guid streamId, bool onTheOwner, CancellationToken cancellationToken)
+    {
+        await using IDocumentSession session = store.LightweightSession();
+        if (onTheOwner)
+        {
+            session.Events.Append(streamId, new OwnerSettingsChanged(
+                streamId, Optional<ReviewRerequestPolicy>.Of(ReviewRerequestPolicy.Enabled), Now));
+        }
+        else
+        {
+            session.Events.Append(streamId, new ProjectSettingsChanged(
+                streamId,
+                Optional<IReadOnlyList<VerifyCommand>>.None,
+                Optional<bool>.None,
+                Optional<int>.None,
+                Optional<IReadOnlyList<ContextLink>>.None,
+                Now,
+                Guid.Empty,
+                ReviewRerequest: Optional<ReviewRerequestPolicy>.Of(ReviewRerequestPolicy.Enabled)));
+        }
+
+        await session.SaveChangesAsync(cancellationToken);
+    }
+
+    /// <summary>
+    /// Puts the owner's preference back to unset. The owner is per machine, so it is shared by
+    /// every test in this class: an opt-in left behind would silently opt the others in too.
+    /// </summary>
+    private static async Task ClearOwnerReviewRerequestAsync(
+        DocumentStore store, Guid ownerId, CancellationToken cancellationToken)
+    {
+        await using IDocumentSession session = store.LightweightSession();
+        session.Events.Append(ownerId, new OwnerSettingsChanged(
+            ownerId, Optional<ReviewRerequestPolicy>.Of(ReviewRerequestPolicy.Unknown), Now));
+        await session.SaveChangesAsync(cancellationToken);
+    }
+
+    /// <summary>The project the seeded task belongs to — the stream the project-level setting lands on.</summary>
+    private static async Task<Guid> ProjectIdAsync(DocumentStore store, Guid taskId, CancellationToken cancellationToken)
+    {
+        await using IQuerySession query = store.QuerySession();
+        return (await query.Events.AggregateStreamAsync<TaskAggregate>(taskId, token: cancellationToken))!.ProjectId;
+    }
 
     private static void Git(string workingDirectory, string arguments)
     {

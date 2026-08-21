@@ -36,8 +36,14 @@ public sealed class RunDetails
     public int? UnresolvedHumanReviewThreads { get; set; }
     /// <summary>The last errored review observed — the monitor's dedup key: one re-request per errored review.</summary>
     public string? ErroredReviewUrl { get; set; }
-    /// <summary>Review re-requests issued for this run; adds to the task's CloseoutAttempts against the shared budget.</summary>
+    /// <summary>Errored-review re-requests issued for this run; adds to the task's CloseoutAttempts against the shared budget.</summary>
     public int ReviewRerequestCount { get; set; }
+    /// <summary>
+    /// Countersign re-requests issued after this run pushed its fixes (Decisions Log #62).
+    /// Its own counter, deliberately beside the closeout budget rather than inside it: the
+    /// cap is summed across the task's runs, and at most one is ever issued per run.
+    /// </summary>
+    public int ReviewRerequestsAfterFixes { get; set; }
     public long InputTokens { get; set; }
     /// <summary>Input served from the prompt cache — priced apart from fresh input, so counted apart.</summary>
     public long CacheReadInputTokens { get; set; }
@@ -189,6 +195,11 @@ public sealed class RunDetailsProjection : SingleStreamProjection<RunDetails, Gu
     }
 
     public void Apply(IEvent<ReviewRerequested> @event, RunDetails view) => view.ReviewRerequestCount++;
+
+    // The run stays AwaitingReview: a countersign request is a question asked, not a
+    // finding received, and the monitor must keep watching this pull request for the answer.
+    public void Apply(IEvent<ReviewRerequestedAfterFixes> @event, RunDetails view) =>
+        view.ReviewRerequestsAfterFixes++;
 
     public void Apply(IEvent<CloseoutParked> @event, RunDetails view)
     {

@@ -40,8 +40,14 @@ public sealed class RunAggregate
     /// <summary>The last errored review observed — the monitor's dedup key: one re-request per errored review.</summary>
     public string? ErroredReviewUrl { get; private set; }
 
-    /// <summary>Review re-requests issued for this run; adds to the task's CloseoutAttempts against the shared budget.</summary>
+    /// <summary>Errored-review re-requests issued for this run; adds to the task's CloseoutAttempts against the shared budget.</summary>
     public int ReviewRerequestCount { get; private set; }
+
+    /// <summary>
+    /// Countersign re-requests issued after this run pushed its fixes (Decisions Log #62) — at
+    /// most one per run, so this reads as "has this run already asked".
+    /// </summary>
+    public int ReviewRerequestsAfterFixes { get; private set; }
 
     /// <summary>The pre-PR review loop (log #24): which round of review the run is on, from 1.</summary>
     public int ReviewCycle { get; private set; }
@@ -362,6 +368,10 @@ public sealed class RunAggregate
     }
 
     public void Apply(ReviewRerequested @event) => ReviewRerequestCount++;
+
+    // No state change: a countersign request is a question asked, not a finding received,
+    // so the run stays AwaitingReview while the monitor watches for the answer.
+    public void Apply(ReviewRerequestedAfterFixes @event) => ReviewRerequestsAfterFixes++;
 
     public void Apply(CloseoutParked @event) => State = RunState.CloseoutParked;
 

@@ -1,5 +1,6 @@
 using Hall9k.Daemon.Execution;
 using Hall9k.Daemon.Worktrees;
+using Hall9k.Domain.Features.Owner;
 using Hall9k.Domain.Features.Project.Projections;
 using Hall9k.Domain.Features.Run;
 using Hall9k.Domain.Features.Run.Events;
@@ -8,6 +9,7 @@ using Hall9k.Domain.Features.Tasks;
 using Hall9k.Domain.Features.Tasks.Handlers;
 using Hall9k.Domain.Infrastructure.Persistence;
 using Hall9k.Domain.Infrastructure.Storage;
+using Hall9k.Domain.Shared.ValueObjects;
 using JasperFx.Events;
 using Marten;
 using Marten.Events;
@@ -33,7 +35,9 @@ public sealed record CloseoutSweepResult(int RunsInspected, int MergesObserved);
 /// placeholder produces zero threads — never mistaken for a clean pass), dispatching
 /// follow-up runs through the standard reopen pipeline and re-requesting errored reviews
 /// through the API until the bounded automatic budget is spent — then it parks the run
-/// for the human and keeps watching for the merge only.
+/// for the human and keeps watching for the merge only. Where the owner or the project
+/// opted in, a quiet pull request whose fixes were just pushed also gets a countersign
+/// re-request, bounded by its own pass cap.
 /// </summary>
 public sealed class CloseoutEngine(
     IDocumentStore store,
@@ -223,6 +227,13 @@ public sealed class CloseoutEngine(
             return InspectionOutcome.Inspected;
         }
 
+        // Nothing needs answering: the checks pass, every thread is resolved, and the
+        // review that produced them was real. That is the moment a countersign is worth
+        // asking for, and the only moment it is.
+        await RerequestReviewAfterFixesAsync(
+            session, run, project, fence.Version, task.PullRequestUrl, run.PullRequestNumber.Value,
+            snapshot, now, cancellationToken);
+
         return InspectionOutcome.Inspected;
     }
 
@@ -237,6 +248,177 @@ public sealed class CloseoutEngine(
             ? $"{snapshot.UnresolvedReviewThreadCount} unresolved review thread(s) on the pull request, "
                 + $"{snapshot.UnresolvedHumanThreadCount} of them started by a human reviewer."
             : $"{snapshot.UnresolvedReviewThreadCount} unresolved review thread(s) on the pull request.";
+
+    /// <summary>
+    /// The countersign (Decisions Log #62): a fix follow-up pushed answers to this pull
+    /// request's findings, so the reviewers who raised them are asked to look again and say
+    /// whether they were addressed. Opt-in — the project's setting, else the owner's, else
+    /// the node default, which is off — because each pass costs review quota and invites the
+    /// refinement loop this is bounded against.
+    /// <para>
+    /// Four guards, and each closes a different door. Only a follow-up run asks, because a
+    /// first run's pull request is reviewed on open anyway — any follow-up, whether it was
+    /// dispatched for review threads or for failing checks, because either way the diff the
+    /// reviewer read has changed underneath them. Each run asks at most once, which
+    /// is the natural dedup: a run pushes its fixes once, so "this run has asked" and "these
+    /// fixes have been countersigned" are the same fact. Only reviewers whose latest review
+    /// predates the head are asked, because a reviewer who has already read these commits —
+    /// a recovered Copilot pass, a human who re-approved — has nothing to countersign, and
+    /// asking anyway would spend a pass, reset a fresh approval to pending, and invite a
+    /// redundant bot pass whose new nits spend the OTHER budget. And the passes are summed
+    /// across the task's runs against MaxReviewRerequestsAfterFixes, because the counter has
+    /// to outlive the run that spent it — every follow-up is a fresh run, so a per-run cap
+    /// would be no cap at all. At the cap the pull request settles on the internal review,
+    /// the thread replies, and CI, which is what it would have settled on with the option off.
+    /// </para>
+    /// <para>
+    /// The pass is recorded BEFORE the requests are issued, which is the opposite of the
+    /// errored-review path above and deliberate. That path issues one request; this one issues
+    /// N, and appending only after all N succeed meant a single rejected reviewer (a
+    /// non-collaborator, an account that cannot be requested) threw with earlier POSTs already
+    /// landed and no pass recorded — so the next sweep three minutes later did it all again,
+    /// forever, with the cap never binding. A spent pass with a partially issued request is an
+    /// honest record; an unbounded loop is not. For the same reason a reviewer the provider
+    /// refuses is logged and stepped over rather than allowed to abort the pass.
+    /// </para>
+    /// </summary>
+    private async Task RerequestReviewAfterFixesAsync(
+        IDocumentSession session,
+        RunDetails run,
+        ProjectDetails project,
+        long taskFenceVersion,
+        string pullRequestUrl,
+        int pullRequestNumber,
+        PullRequestSnapshot snapshot,
+        DateTimeOffset now,
+        CancellationToken cancellationToken)
+    {
+        if (!run.IsFollowUp || run.ReviewRerequestsAfterFixes > 0)
+        {
+            return;
+        }
+
+        IReadOnlyList<PullRequestReviewer> outstanding = ReviewersBehindTheHead(snapshot);
+        if (outstanding.Count == 0)
+        {
+            return;
+        }
+
+        OwnerDetails? owner = await session.LoadAsync<OwnerDetails>(project.OwnerId, cancellationToken);
+        ReviewRerequestPolicy policy = ReviewRerequestPolicy.Resolve(
+            project.ReviewRerequest, owner?.ReviewRerequest, _options.DefaultReviewRerequest);
+        if (policy != ReviewRerequestPolicy.Enabled)
+        {
+            return;
+        }
+
+        // The fence, carried the way the reopen path carries it. Three parts, because the
+        // decision was made from documents read before a slow gh call: the task stream is
+        // revalidated (an h9k pr resolve landing in that window means a follow-up is already
+        // in flight and this pull request is no longer settled), the run is re-read at its
+        // current version (a sibling sweep may have spent this run's one pass meanwhile), and
+        // the append is versioned on the run stream so two sweeps that both got this far
+        // cannot both commit. A lost race defers a sweep, which is always safe.
+        StreamState? current = await session.Events.FetchStreamStateAsync(run.TaskId, cancellationToken);
+        if (current is null || current.Version != taskFenceVersion)
+        {
+            logger.LogDebug(
+                "Task {TaskId} advanced before the countersign for {Url}; deferring to the next sweep",
+                run.TaskId, pullRequestUrl);
+            return;
+        }
+
+        StreamState? runFence = await session.Events.FetchStreamStateAsync(run.Id, cancellationToken);
+        RunDetails? fresh = await session.LoadAsync<RunDetails>(run.Id, cancellationToken);
+        if (runFence is null || fresh is null || fresh.ReviewRerequestsAfterFixes > 0)
+        {
+            return;
+        }
+
+        int passesSpent = await ReviewRerequestPassesAsync(session, run.TaskId, cancellationToken);
+        if (passesSpent >= _options.MaxReviewRerequestsAfterFixes)
+        {
+            logger.LogInformation(
+                "Run {RunId}: review re-request cap reached ({Spent}/{Max}) — {Url} settles on the internal "
+                + "review, the thread replies, and CI",
+                run.Id, passesSpent, _options.MaxReviewRerequestsAfterFixes, pullRequestUrl);
+            return;
+        }
+
+        // Recorded before the requests are issued: see the note above — a pass that is only
+        // recorded after every reviewer accepted is a pass that a single refusal turns into
+        // an unbounded retry. Reviewers here is who the pass was ADDRESSED to; whether each
+        // provider accepted is logged below, never assumed.
+        session.Events.Append(run.Id, expectedVersion: runFence.Version + 1, new ReviewRerequestedAfterFixes(
+            run.Id, [.. outstanding.Select(reviewer => reviewer.Login)], passesSpent + 1, now));
+        try
+        {
+            await session.SaveChangesAsync(cancellationToken);
+        }
+        catch (EventStreamUnexpectedMaxEventIdException)
+        {
+            logger.LogDebug(
+                "Run {RunId} advanced while recording a countersign pass; another sweep got there first", run.Id);
+            return;
+        }
+
+        logger.LogInformation(
+            "Run {RunId}: fixes pushed to {Url} — re-requesting review from {Reviewers} (pass {Pass}/{Max})",
+            run.Id, pullRequestUrl, string.Join(", ", outstanding.Select(reviewer => reviewer.Login)),
+            passesSpent + 1, _options.MaxReviewRerequestsAfterFixes);
+
+        foreach (PullRequestReviewer reviewer in outstanding)
+        {
+            try
+            {
+                await inspector.RerequestReviewAsync(
+                    project.RepositoryPath, pullRequestUrl, pullRequestNumber, reviewer, cancellationToken);
+            }
+            catch (Exception exception) when (exception is not OperationCanceledException)
+            {
+                // One reviewer the provider will not accept (no longer a collaborator, an
+                // account that cannot be requested) is that reviewer's answer, not the
+                // pass's. The rest of the pass still goes out.
+                logger.LogWarning(
+                    exception, "Run {RunId}: {Url} refused a review request for {Reviewer}; the rest of the pass stands",
+                    run.Id, pullRequestUrl, reviewer.Login);
+            }
+        }
+    }
+
+    /// <summary>
+    /// The reviewers a countersign has something to ask, which is the ones whose latest review
+    /// predates the pull request's head. A reviewer already sitting on the head has read the
+    /// fixes: asking again resets their standing verdict to pending and, for a bot, buys
+    /// another sample of nits whose follow-up spends the closeout budget (Decisions Log #62).
+    /// <para>
+    /// Both sides have to be observed for the comparison to mean anything. A head the provider
+    /// did not report, or a review reported without a commit, leaves the reviewer in the list:
+    /// the honest reading of an unobserved commit is "cannot tell", and asking a reviewer who
+    /// may be up to date costs a pass, while skipping one who is not loses the countersign the
+    /// option was turned on for.
+    /// </para>
+    /// </summary>
+    private static IReadOnlyList<PullRequestReviewer> ReviewersBehindTheHead(PullRequestSnapshot snapshot) =>
+        snapshot.HeadCommit.IsBlank()
+            ? snapshot.Reviewers
+            : [.. snapshot.Reviewers.Where(reviewer =>
+                !string.Equals(reviewer.LastReviewedCommit, snapshot.HeadCommit, StringComparison.OrdinalIgnoreCase))];
+
+    /// <summary>
+    /// Countersign passes spent on this task, summed over every run that carried its pull
+    /// request. Task-scoped rather than run-scoped on purpose: each follow-up is a new run,
+    /// so the counter has to live where the pull request does.
+    /// </summary>
+    private static async Task<int> ReviewRerequestPassesAsync(
+        IQuerySession session, Guid taskId, CancellationToken cancellationToken)
+    {
+        IReadOnlyList<RunDetails> runs = await session.Query<RunDetails>()
+            .Where(candidate => candidate.TaskId == taskId)
+            .ToListAsync(cancellationToken);
+
+        return runs.Sum(candidate => candidate.ReviewRerequestsAfterFixes);
+    }
 
     /// <summary>
     /// An errored review (zero threads, no verdict) must not read as review-clean: the

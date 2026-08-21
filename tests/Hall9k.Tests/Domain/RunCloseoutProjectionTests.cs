@@ -75,6 +75,25 @@ public sealed class RunCloseoutProjectionTests
         view.UnresolvedHumanReviewThreads.Should().BeNull("zero would claim an observation that never happened");
     }
 
+    /// <summary>
+    /// The countersign asks a question; it does not receive a finding, so the run keeps
+    /// awaiting review and the monitor keeps watching (Decisions Log #62).
+    /// </summary>
+    [Fact]
+    public void A_countersign_rerequest_counts_without_moving_the_run()
+    {
+        RunDetailsProjection projection = new();
+        Guid id = DomainId.New();
+        RunDetails view = AwaitingReviewRun(projection, id);
+
+        projection.Apply(new FakeEvent<ReviewRerequestedAfterFixes>(
+            new ReviewRerequestedAfterFixes(id, ["copilot-pull-request-reviewer", "teammate"], 1, Now)), view);
+
+        view.ReviewRerequestsAfterFixes.Should().Be(1);
+        view.ReviewRerequestCount.Should().Be(0, "the errored-review counter is a different question");
+        view.State.Should().Be(RunState.AwaitingReview);
+    }
+
     [Fact]
     public void Run_details_parks_with_the_reason_when_the_automatic_budget_is_spent()
     {
