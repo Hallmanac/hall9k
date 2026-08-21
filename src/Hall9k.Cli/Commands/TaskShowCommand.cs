@@ -1,5 +1,6 @@
 using System.ComponentModel;
 using Hall9k.Cli.Infrastructure;
+using Hall9k.Connectors.WorkItems;
 using Hall9k.Domain.Features.Owner;
 using Hall9k.Domain.Features.Run;
 using Hall9k.Domain.Features.Run.Projections;
@@ -34,7 +35,7 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
 
         Table header = new Table().Border(TableBorder.None).HideHeaders();
         header.AddColumns("k", "v");
-        header.AddRow("[bold]Objective[/]", details.Objective.EscapeMarkup());
+        header.AddRow("[bold]Objective[/]", ExternalText.OneLineMarkup(details.Objective));
         header.AddRow("State", TaskListCommand.StateMarkup(details.State));
         header.AddRow("Type", details.Type.Value.EscapeMarkup());
         header.AddRow("Id", $"[dim]{details.Id}[/]");
@@ -55,7 +56,7 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
 
         if (details.ExternalReference.IsNotBlank())
         {
-            header.AddRow("External", details.ExternalReference.EscapeMarkup());
+            header.AddRow("External", ExternalMarkup(details.ExternalReference));
         }
 
         if (details.PullRequestUrl.IsNotBlank())
@@ -112,27 +113,37 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
             {
                 AnsiConsole.MarkupLine(
                     $"  {DependencyMark(dependency)} [dim]{TaskListCommand.ShortId(dependency.Id)}[/] "
-                    + $"{dependency.Objective.EscapeMarkup()} [dim]({dependency.State.Value})[/]");
+                    + $"{ExternalText.OneLineMarkup(dependency.Objective)} [dim]({dependency.State.Value})[/]");
             }
         }
 
         if (details.AgentContext.IsNotBlank())
         {
+            // Agent context is the one field on a task that can arrive from outside the machine:
+            // since adoption (PLAN.md §3.1a) it may be an issue body written by anyone who can
+            // file an issue. The agent reads that text out of a prompt, where an escape sequence
+            // is inert; a human reads it out of a terminal, where it is not.
             AnsiConsole.MarkupLine("\n[bold]Agent context[/]");
-            AnsiConsole.WriteLine(details.AgentContext);
+            AnsiConsole.WriteLine(ExternalText.ForTerminal(details.AgentContext));
         }
 
         await WriteStartingContextAsync(session, details, cancellationToken);
 
         if (details.Conversation.Count > 0)
         {
+            // A question is written by the agent, which has just read an issue body it was told
+            // to treat as quoted source (WorkItemContext.Compose) and to quote back when it
+            // summarises. Relaying is exactly how adopted text arrives here, so the same rule
+            // covers it: escaping Spectre's syntax leaves the terminal's own untouched.
             AnsiConsole.MarkupLine("\n[bold]Conversation[/]");
             foreach (TaskQuestion question in details.Conversation)
             {
-                AnsiConsole.MarkupLine($"  [yellow]Q[/] {question.Question.EscapeMarkup()} [dim]({question.AskedAt:g})[/]");
+                AnsiConsole.MarkupLine(
+                    $"  [yellow]Q[/] {ExternalText.OneLineMarkup(question.Question)} [dim]({question.AskedAt:g})[/]");
                 if (question.Answer.IsNotBlank())
                 {
-                    AnsiConsole.MarkupLine($"  [green]A[/] {question.Answer.EscapeMarkup()} [dim]({question.AnsweredAt:g})[/]");
+                    AnsiConsole.MarkupLine(
+                        $"  [green]A[/] {ExternalText.OneLineMarkup(question.Answer)} [dim]({question.AnsweredAt:g})[/]");
                 }
             }
         }
@@ -210,7 +221,10 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
         AnsiConsole.MarkupLine("\n[bold]Handoff[/] [dim](what a task blocked by this one would start with)[/]");
         if (handoff is { HasSummary: true, Summary: { } summary })
         {
-            AnsiConsole.WriteLine(summary);
+            // The agent wrote this, and for an adopted task the agent has just been told to quote
+            // the issue body into what it writes. That makes a handoff a carrier for outside text
+            // by design, not by accident, so it is printed the way outside text is printed.
+            AnsiConsole.WriteLine(ExternalText.ForTerminal(summary));
             return;
         }
 
@@ -257,7 +271,27 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
 
         AnsiConsole.MarkupLine(
             "  [dim]Above the claiming node's blocker-synthesis threshold, a synthesis pass condenses this first.[/]\n");
-        AnsiConsole.WriteLine(context);
+
+        // Same reason as the handoff section above, one remove further out: this document is
+        // assembled from other tasks' handoffs, so it relays what they relayed.
+        AnsiConsole.WriteLine(ExternalText.ForTerminal(context));
+    }
+
+    /// <summary>
+    /// The adopted work item as something a human can click (PLAN.md §3.1a). The URL comes from
+    /// the source's own rule through <see cref="WorkItemImporter"/>, so a provider Hall9k cannot
+    /// place still prints its canonical reference rather than a link built on a guess.
+    /// <para>
+    /// The trailing note is the honest part: the platform read that item once at import and has
+    /// not looked since, so the row must not read as live status.
+    /// </para>
+    /// </summary>
+    internal static string ExternalMarkup(string canonicalReference)
+    {
+        string label = canonicalReference.EscapeMarkup();
+        return WorkItemImporter.Default.WebUrl(canonicalReference) is { } url
+            ? $"[link={url}]{label}[/] [dim](read once at import; never re-checked)[/]"
+            : label;
     }
 
     /// <summary>

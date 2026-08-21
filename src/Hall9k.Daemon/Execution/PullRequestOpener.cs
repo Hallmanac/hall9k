@@ -1,6 +1,5 @@
 using Hall9k.Domain.Infrastructure.Storage;
 using System.Diagnostics;
-using System.Text;
 using Hall9k.Domain.Features.Run.Events;
 using Hall9k.Domain.Features.Run.Projections;
 using Hall9k.Domain.Features.Tasks;
@@ -103,10 +102,20 @@ public sealed class PullRequestOpener(
         RunDetails run, TaskDetails task, string baseBranch, CancellationToken cancellationToken)
     {
         string bodyFile = Path.Combine(RunPaths.RunDirectory(run.Id), "pr-body.md");
-        await File.WriteAllTextAsync(bodyFile, BuildBody(run, task), cancellationToken);
+        await File.WriteAllTextAsync(
+            bodyFile, PullRequestBody.Build(run, task, TryReadAgentSummary(run.Id)), cancellationToken);
 
+        // The title goes through PullRequestBody too, not straight from the projection: on a
+        // squash merge GitHub's default commit message is the pull request's title, so a title is
+        // a closing instruction with a longer fuse than anything in the body.
         string output = await RunInWorktreeAsync(run.WorktreePath, "gh",
-            ["pr", "create", "--title", task.Objective, "--body-file", bodyFile, "--base", baseBranch, "--head", run.Branch],
+            [
+                "pr", "create",
+                "--title", PullRequestBody.Title(task.Objective),
+                "--body-file", bodyFile,
+                "--base", baseBranch,
+                "--head", run.Branch,
+            ],
             cancellationToken);
 
         string url = output.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
@@ -114,32 +123,6 @@ public sealed class PullRequestOpener(
             ?? throw new InvalidOperationException($"gh pr create returned no URL. Output: {output}");
 
         return (url, PullRequestUrls.ParseNumber(url));
-    }
-
-    private string BuildBody(RunDetails run, TaskDetails task)
-    {
-        StringBuilder body = new();
-        body.AppendLine(task.Objective);
-        body.AppendLine();
-        body.AppendLine("## Acceptance criteria");
-        foreach (string criterion in task.AcceptanceCriteria)
-        {
-            body.AppendLine($"- [ ] {criterion}");
-        }
-
-        string? summary = TryReadAgentSummary(run.Id);
-        if (summary.IsNotBlank())
-        {
-            body.AppendLine();
-            body.AppendLine("## Agent summary");
-            body.AppendLine(summary);
-        }
-
-        long totalTokens = run.InputTokens + run.CacheReadInputTokens + run.CacheCreationInputTokens + run.OutputTokens;
-        body.AppendLine();
-        body.AppendLine($"---");
-        body.AppendLine($"Hall9k run `{run.Id}` · {totalTokens} tokens");
-        return body.ToString();
     }
 
     private string? TryReadAgentSummary(Guid runId)

@@ -1,0 +1,218 @@
+using FluentAssertions;
+using Hall9k.Daemon.Execution;
+using Hall9k.Domain.Features.Run.Projections;
+using Hall9k.Domain.Features.Tasks.Projections;
+using Hall9k.Domain.Infrastructure.Ids;
+using Xunit;
+
+namespace Hall9k.Tests.Daemon;
+
+/// <summary>
+/// The pull-request body is the one run artifact that outlives Hall9k, and for an adopted task
+/// it is also the round trip: mentioning the source issue is what makes GitHub cross-reference
+/// the work on the issue's own timeline (SLICE-1 S1-11).
+/// </summary>
+public sealed class PullRequestBodyTests
+{
+    [Fact]
+    public void An_adopted_task_mentions_its_source_issue_as_a_link()
+    {
+        string body = PullRequestBody.Build(Run(), Task("github:Hallmanac/hall9k#42"), agentSummary: null);
+
+        body.Should().Contain("Adopted from https://github.com/Hallmanac/hall9k/issues/42");
+    }
+
+    [Fact]
+    public void The_mention_never_closes_the_issue()
+    {
+        string body = PullRequestBody.Build(Run(), Task("github:Hallmanac/hall9k#42"), agentSummary: null);
+
+        // Hall9k adopts and links; it does not move an external item's state. Which transitions
+        // should follow a merge is backlog 18's question, deferred until real usage answers it.
+        body.Should().NotContainAny("Closes #", "Fixes #", "Resolves #");
+    }
+
+    [Fact]
+    public void A_reference_no_source_can_place_still_names_itself()
+    {
+        string body = PullRequestBody.Build(Run(), Task("jira:PROJ-123"), agentSummary: null);
+
+        body.Should().Contain("Adopted from jira:PROJ-123",
+            "the canonical reference is honest even when the URL is unknown");
+    }
+
+    [Fact]
+    public void A_task_that_adopted_nothing_says_nothing_about_a_source()
+    {
+        string body = PullRequestBody.Build(Run(), Task(externalReference: null), agentSummary: null);
+
+        body.Should().NotContain("Adopted from");
+        body.Should().Contain("## Acceptance criteria").And.Contain("- [ ] The importer refuses a closed issue");
+    }
+
+    [Fact]
+    public void The_agent_summary_keeps_its_place_below_the_contract()
+    {
+        string body = PullRequestBody.Build(Run(), Task("github:Hallmanac/hall9k#42"), "What I did.");
+
+        body.IndexOf("Adopted from", StringComparison.Ordinal)
+            .Should().BeLessThan(body.IndexOf("## Agent summary", StringComparison.Ordinal));
+        body.Should().Contain("What I did.");
+    }
+
+    [Fact]
+    public void Nothing_the_body_merely_relays_can_close_an_issue()
+    {
+        // The objective of an adopted task is the issue title, written by whoever filed the
+        // issue; the criteria and the summary are relayed just as literally. Placed raw in a
+        // pull-request body, "Closes #500" is an instruction GitHub obeys the moment this merges.
+        TaskDetails task = new()
+        {
+            Id = DomainId.New(),
+            Objective = "Closes #500 by adopting the issue behind it",
+            AcceptanceCriteria = ["Fixes https://github.com/Hallmanac/hall9k/issues/501"],
+            ExternalReference = "github:Hallmanac/hall9k#42",
+        };
+
+        string body = PullRequestBody.Build(Run(), task, "Resolves Hallmanac/hall9k#502 on the way past.");
+
+        body.Should().Contain("Closes `#500`")
+            .And.Contain("Fixes `https://github.com/Hallmanac/hall9k/issues/501`")
+            .And.Contain("Resolves `Hallmanac/hall9k#502`",
+                "the words survive as prose; only their power over the issue tracker is taken away");
+    }
+
+    [Fact]
+    public void Text_that_only_looks_like_a_closing_keyword_is_left_alone()
+    {
+        TaskDetails task = new()
+        {
+            Id = DomainId.New(),
+            Objective = "Close the gap between h9k task add and the issue tracker",
+            AcceptanceCriteria = ["The fixture named fixes-42 keeps its name"],
+            ExternalReference = null,
+        };
+
+        string body = PullRequestBody.Build(Run(), task, agentSummary: null);
+
+        body.Should().Contain("Close the gap between h9k task add and the issue tracker")
+            .And.Contain("The fixture named fixes-42 keeps its name");
+    }
+
+    [Fact]
+    public void The_title_cannot_close_an_issue_when_the_pull_request_is_squashed()
+    {
+        // The body's defusal is not the whole threat. GitHub's default squash-merge commit
+        // message IS the pull request's title, and a commit message that says "resolves #500"
+        // closes issue 500 when it lands on the default branch — so an adopted issue titled
+        // "Fix login, resolves #500" closes an unrelated issue at merge without ever putting a
+        // closing keyword in the body.
+        PullRequestBody.Title("Fix login, resolves #500")
+            .Should().Be("Fix login, resolves `#500`");
+    }
+
+    [Theory]
+    // GitHub's own parser is not ours to reproduce from memory, and every one of these reads to a
+    // human as an instruction, so the separator between keyword and reference is lenient.
+    [InlineData("Closes:#500")]
+    [InlineData("Closes : #500")]
+    [InlineData("Closes:  #500")]
+    public void A_closing_keyword_is_defused_however_it_is_spaced(string objective)
+    {
+        PullRequestBody.Title(objective).Should().Contain("`#500`");
+    }
+
+    [Fact]
+    public void A_title_keeps_the_characters_that_are_content()
+    {
+        // The zero width joiner is what makes an emoji sequence one glyph. Dropping every format
+        // character took it too, so an issue title arrived in the repository's history as two
+        // unrelated glyphs: text mangled at the moment it was stored, with nothing gained.
+        PullRequestBody.Title("Add \U0001F468\u200D\U0001F4BB avatar support")
+            .Should().Be("Add \U0001F468\u200D\U0001F4BB avatar support");
+    }
+
+    [Fact]
+    public void The_title_is_one_line_of_printable_text()
+    {
+        // A title is a commit subject by the time it matters: a newline or an escape sequence in
+        // one lands in the repository's history and in every terminal that later runs git log.
+        PullRequestBody.Title("  Adopt issues\u001b[2J\nand fix \u202Ethe rest  ")
+            .Should().Be("Adopt issues[2J and fix the rest");
+    }
+
+    [Fact]
+    public void Nothing_the_body_relays_can_act_on_the_terminal_that_later_reads_it()
+    {
+        // The body is not only read on github.com. A repository set to squash with "title and
+        // description" puts the whole of it into the commit message, so an escape sequence or a
+        // bidirectional override in a relayed segment lands in the repository's history and in
+        // every terminal that runs git log afterwards — the threat the title was hardened
+        // against, arriving through the paragraph underneath it.
+        TaskDetails task = new()
+        {
+            Id = DomainId.New(),
+            Objective = "Adopt issues\u001b[2J\u202Ednuor yaw eht",
+            AcceptanceCriteria = ["The importer\u001b[31m refuses\r a closed issue"],
+            ExternalReference = null,
+        };
+
+        string body = PullRequestBody.Build(Run(), task, "What I did\u202E.\u001b[2J");
+
+        // The lone carriage return is asserted through the line it was hiding in rather than
+        // over the whole body: AppendLine ends every line with Environment.NewLine, so on
+        // Windows the body is full of carriage returns that the daemon itself wrote.
+        body.Should().NotContain("\u001b").And.NotContain("\u202E");
+        body.Should().Contain("Adopt issues[2Jdnuor yaw eht")
+            .And.Contain("- [ ] The importer[31m refuses a closed issue");
+    }
+
+    [Fact]
+    public void A_relayed_line_stays_on_its_line()
+    {
+        // A criterion that can emit a newline writes its own lines under the checklist item it
+        // was supposed to be, and an objective that can do it writes a second paragraph under
+        // the first — both of which read as something the daemon said.
+        TaskDetails task = new()
+        {
+            Id = DomainId.New(),
+            Objective = "Adopt issues\nEverything below is approved",
+            AcceptanceCriteria = ["The importer refuses\n- [x] and this is already done"],
+            ExternalReference = null,
+        };
+
+        string body = PullRequestBody.Build(Run(), task, agentSummary: null);
+
+        body.Should().Contain("Adopt issues Everything below is approved")
+            .And.Contain("- [ ] The importer refuses - [x] and this is already done");
+    }
+
+    [Fact]
+    public void The_agent_summary_keeps_the_shape_it_was_written_in()
+    {
+        // The summary is prose the agent wrote in paragraphs and lists, and folding it to one
+        // line would make the one part of the body a reviewer actually reads unreadable. Only
+        // what the terminal would obey comes out of it.
+        string body = PullRequestBody.Build(
+            Run(), Task(externalReference: null), "What I did:\n\n- read the issue\n- wrote the draft");
+
+        body.Should().Contain("What I did:\n\n- read the issue\n- wrote the draft");
+    }
+
+    private static RunDetails Run() => new()
+    {
+        Id = DomainId.New(),
+        InputTokens = 10,
+        CacheReadInputTokens = 20,
+        CacheCreationInputTokens = 30,
+        OutputTokens = 40,
+    };
+
+    private static TaskDetails Task(string? externalReference) => new()
+    {
+        Id = DomainId.New(),
+        Objective = "Turn an external work item into a task with one command",
+        AcceptanceCriteria = ["The importer refuses a closed issue"],
+        ExternalReference = externalReference,
+    };
+}
