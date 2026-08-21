@@ -34,4 +34,14 @@ public static class RunPaths
     /// <summary>The fix session's closing summary — on a dispute, the second position the human reads.</summary>
     public static string ReviewFixPositionFile(Guid runId, int cycle) =>
         Path.Combine(RunDirectory(runId), $"review-{cycle}-fix-position.md");
+
+    /// <summary>
+    /// The run's handoff to whatever depends on it (Decisions Log #35), written at session end
+    /// beside the review findings so it is inspectable outside the ledger. The file's three
+    /// states are three observations, which is what lets the closeout append record an honest
+    /// HandoffOutcome without guessing: present and non-blank means the agent authored a
+    /// handoff, present and empty means the session's result was read and carried none, and
+    /// absent means there was no session-end capture at all.
+    /// </summary>
+    public static string HandoffFile(Guid runId) => Path.Combine(RunDirectory(runId), "handoff.md");
 }

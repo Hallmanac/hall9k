@@ -253,6 +253,39 @@ public sealed class AgentPromptBuilderTests : IDisposable
             $"---\nname: {name}\ndescription: {description}\n---\n\n# {name}\n\nFull skill body — must never be pasted into the prompt.\n");
     }
 
+    /// <summary>
+    /// The handoff is asked for in the prompt, of the agent doing the work, because that is
+    /// the only session that knows what it deliberately left undone (Decisions Log #35). The
+    /// marker in the instruction is the same constant the parser matches on, so an assertion
+    /// that they agree is an assertion they cannot drift.
+    /// </summary>
+    [Fact]
+    public void The_build_prompt_asks_for_a_handoff_the_parser_can_read()
+    {
+        string prompt = AgentPromptBuilder.Build(SomeTask(), SomeProject(), "task/1-slug", _worktreePath);
+
+        prompt.Should().Contain("## Handoff (required");
+        prompt.Should().Contain(HandoffParser.Marker);
+        prompt.Should().Contain("deliberately left undone");
+        HandoffParser.Parse(prompt).Should().NotBeNull(
+            "an agent echoing the instruction's own shape must produce something the parser reads");
+    }
+
+    /// <summary>
+    /// The follow-up run is the run that reaches true closeout on a reopened task, so it is
+    /// the run whose handoff travels — asking only the original build session would strand
+    /// every reopened task's handoff (Decisions Log #35).
+    /// </summary>
+    [Fact]
+    public void Follow_up_prompts_ask_for_the_handoff_too()
+    {
+        const string url = "https://github.com/x/y/pull/7";
+        AgentPromptBuilder.BuildFollowUp(SomeTask(), SomeProject(), "task/1-slug", url, CommitStyle.Narrative)
+            .Should().Contain(HandoffParser.Marker);
+        AgentPromptBuilder.BuildFixChecks(SomeTask(), SomeProject(), "task/1-slug", url, CommitStyle.Narrative)
+            .Should().Contain(HandoffParser.Marker);
+    }
+
     private static TaskDetails SomeTask() => new()
     {
         Objective = "Add rate limiting to auth endpoints",
