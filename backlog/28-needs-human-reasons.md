@@ -8,6 +8,7 @@ criteria:
 - h9k task show leads with the why: a NeedsHuman (or held) task prints an ATTENTION section at the top - reason and lever before the objective, criteria, and context mountain - so the answer to "why am I looking at this" is the first thing read
 - Every reason names its lever explicitly by command, per the CLI teaching standard; a reason without a next action is not done
 - The waiting-but-handled case reads differently from the act-now case: a hold that will self-clear (a retried blocker en route to closeout) says so, so the human can consciously ignore it (origin incident, 2026-08-21: two dependency holds read as red NeedsHuman for hours after their blocker was already retried and rebuilding, and the human had to ask an orchestrator session what, if anything, was actually needed)
+- Every path that produces a needs-human state REQUIRES a reason at the decider level (a blank is refused, like retry's reason), and the reason is written for the human scanning status, not for a log line; agent-facing prompts state the convention explicitly - when you ask a question or dispute a finding, the reason you give is what the human sees on the board (Brian, 2026-08-21)
 - dotnet build and dotnet test pass
 ---
 Brian's feedback (2026-08-21): status shows that something needs a human but never
