@@ -1,4 +1,5 @@
 using Hall9k.Daemon;
+using Hall9k.Connectors.WorkItems;
 using Hall9k.Daemon.Closeout;
 using Hall9k.Daemon.Dispatch;
 using Hall9k.Daemon.Execution;
@@ -50,6 +51,9 @@ builder.Services.AddSingleton<BlockerContextAssembler>();
 builder.Services.AddSingleton<RunSupervisor>();
 builder.Services.AddSingleton<RunLauncher>();
 builder.Services.AddSingleton<IPullRequestInspector, GitHubPullRequestInspector>();
+// The Jira connector's one seam to the network, registered rather than reached for statically so
+// the closeout comment is testable against recorded responses (the ProcessRunner pattern).
+builder.Services.AddSingleton<JiraRequester>(_ => JiraHttp.Requester);
 builder.Services.AddSingleton<CloseoutEngine>();
 builder.Services.AddSingleton<CardPublicationEngine>();
 
