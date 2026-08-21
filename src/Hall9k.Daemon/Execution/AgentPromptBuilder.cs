@@ -6,6 +6,7 @@ using Hall9k.Domain.Features.Project.Projections;
 using Hall9k.Domain.Features.Run;
 using Hall9k.Domain.Features.Tasks.Projections;
 using Hall9k.Domain.Features.Tasks.Queries;
+using Hall9k.Domain.Shared.ValueObjects;
 
 namespace Hall9k.Daemon.Execution;
 
@@ -1018,6 +1019,142 @@ public static class AgentPromptBuilder
         prompt.AppendLine("heading, keep the depth-one framing (these are immediate blockers; a fact needed from");
         prompt.AppendLine("two hops back means a missing dependency edge, not a gap to work around), and add no");
         prompt.AppendLine("preamble about having been asked to summarize.");
+
+        return prompt.ToString();
+    }
+
+    /// <summary>
+    /// The prompt for a card-publication session (backlog 18): write this task up as a card in an
+    /// external tracker, then report it back through the command that verifies.
+    /// <para>
+    /// What this prompt deliberately does not contain is any instruction about what a card should
+    /// look like — no issue type, no field list, no routing rule. That is the whole design: those
+    /// are one organisation's Jira configuration, they are already written down in the teams that
+    /// have them, and a platform that modelled them would be modelling somebody's admin screen and
+    /// then arguing with it. So the session runs in the project's repository where its own skills
+    /// are, is pointed at them, and is otherwise told what the work is and left to it.
+    /// </para>
+    /// <para>
+    /// The ending is the part that is not left open. The session finishes by running
+    /// <c>h9k task link-jira</c>, and that command reads the key back through the registered
+    /// connection before recording anything — so the prompt says outright that saying a card exists
+    /// is not the same as the platform believing it, and that a refusal from that command is
+    /// information to act on rather than a wall. An agent that understands the gate retries against
+    /// it correctly; one that does not would report success into a void.
+    /// </para>
+    /// </summary>
+    public static string BuildCardPublication(
+        TaskDetails task,
+        ProjectDetails project,
+        string workingDirectory,
+        string site,
+        JiraProjectKey board,
+        string linkCommand)
+    {
+        StringBuilder prompt = new();
+        prompt.AppendLine("# Write this task up as a Jira card");
+        prompt.AppendLine();
+        prompt.AppendLine($"Create one card at {site} for the work below, then report its key back to Hall9k.");
+        prompt.AppendLine("Creating the card is the whole job: you are not implementing anything here.");
+        prompt.AppendLine();
+
+        prompt.AppendLine("## The work");
+        prompt.AppendLine();
+        prompt.AppendLine(task.Objective);
+        prompt.AppendLine();
+
+        if (task.AcceptanceCriteria.Count > 0)
+        {
+            prompt.AppendLine("Acceptance criteria, as they stand on the task:");
+            prompt.AppendLine();
+            foreach (string criterion in task.AcceptanceCriteria)
+            {
+                prompt.AppendLine($"- {criterion}");
+            }
+
+            prompt.AppendLine();
+        }
+
+        if (task.AgentContext.IsNotBlank())
+        {
+            prompt.AppendLine("## Context on the task");
+            prompt.AppendLine();
+            prompt.AppendLine(task.AgentContext);
+            prompt.AppendLine();
+        }
+
+        prompt.AppendLine("## Where it goes");
+        prompt.AppendLine();
+        prompt.AppendLine(board.HasValue
+            ? $"The project '{project.Name}' is bound to board {board.Value}, so that is where the card"
+                + " belongs unless this repository's own rules say otherwise — and if they do, they win."
+            : $"No board is bound to the project '{project.Name}'. Work out from this repository's own"
+                + " rules which project the card belongs in; if nothing says, stop and report that rather"
+                + " than picking one.");
+        prompt.AppendLine();
+        prompt.AppendLine("Hall9k models nothing about how a card should look. Issue type, required fields,");
+        prompt.AppendLine("labels, components, parent links, and which board a piece of work is routed to are");
+        prompt.AppendLine("this organisation's rules, not the platform's. Read them from the repository you are");
+        prompt.AppendLine("in and follow them exactly as a person on this team would.");
+        prompt.AppendLine();
+
+        IReadOnlyList<RepoSkill> skills = DiscoverRepoSkills(workingDirectory);
+        if (skills.Count > 0)
+        {
+            prompt.AppendLine("This repo ships Claude skills; invoke the matching one rather than improvising:");
+            foreach (RepoSkill skill in skills)
+            {
+                prompt.AppendLine(skill.Description is null
+                    ? $"- `{skill.Name}`"
+                    : $"- `{skill.Name}` — {skill.Description}");
+            }
+
+            prompt.AppendLine();
+        }
+
+        if (project.ContextLinks.Count > 0)
+        {
+            prompt.AppendLine("Project links (fetch yourself as needed):");
+            prompt.AppendLine();
+            foreach (ContextLink link in project.ContextLinks)
+            {
+                prompt.AppendLine($"- {link.Name}: {link.Url}");
+            }
+
+            prompt.AppendLine();
+        }
+
+        prompt.AppendLine("## Reporting back (this is what finishes the run)");
+        prompt.AppendLine();
+        prompt.AppendLine("When the card exists, run exactly this with the key you created:");
+        prompt.AppendLine();
+        prompt.AppendLine("```");
+        prompt.AppendLine($"{linkCommand} <ISSUE-KEY>");
+        prompt.AppendLine("```");
+        prompt.AppendLine();
+        prompt.AppendLine("Telling Hall9k a card exists is not the same as Hall9k believing it. That command");
+        prompt.AppendLine("reads the key back from Jira through the platform's own connection and records what");
+        prompt.AppendLine("comes back, so the key you pass is an argument to be checked rather than a fact to be");
+        prompt.AppendLine("accepted. If it refuses, the message says what it looked for and where — read it, fix");
+        prompt.AppendLine("the key or the board, and run it again. A run that never gets a key past that command");
+        prompt.AppendLine("has not published anything, however the card looked in the browser.");
+        prompt.AppendLine();
+
+        prompt.AppendLine("## Working rules");
+        prompt.AppendLine();
+        prompt.AppendLine($"- You are in {workingDirectory}, this project's own repository — not an isolated");
+        prompt.AppendLine("  worktree. Read whatever you need. Do NOT modify files, commit, push, or open pull");
+        prompt.AppendLine("  requests: another agent may be working in this repository right now.");
+        prompt.AppendLine("- Create exactly one card. If you cannot tell whether an earlier attempt already made");
+        prompt.AppendLine("  one, search for it before creating a second — a duplicate is a human's cleanup.");
+        prompt.AppendLine("- The card's audience is people, not agents. Write it the way this team writes cards;");
+        prompt.AppendLine("  the operational detail above stays on the Hall9k task, which is what owns it.");
+        AppendAdoptedContextRule(prompt, task);
+        prompt.AppendLine("- If you genuinely cannot create the card — no access, no rule saying where it goes,");
+        prompt.AppendLine("  a required field nothing here answers — stop and say so plainly. Reporting that is a");
+        prompt.AppendLine("  useful outcome; a card filed on a guess is not.");
+        prompt.AppendLine("- End with a short summary: the key you created, where you filed it and why, and");
+        prompt.AppendLine("  anything a human should check.");
 
         return prompt.ToString();
     }
