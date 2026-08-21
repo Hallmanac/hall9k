@@ -28,13 +28,24 @@ public sealed class WorkItemImporter(params IWorkItemProvider[] providers)
     /// </summary>
     public static WorkItemImporter Default { get; } = new(new GitHubWorkItemProvider());
 
+    /// <summary>
+    /// Sources Hall9k speaks but this install has not registered, each mapped to the refusal that
+    /// says how to register one. It exists because "no importer for jira" and "you have not
+    /// connected Jira yet" are different sentences to the person reading them, and the second one
+    /// is the true one on a first run: an install with no Jira connection builds a GitHub-only
+    /// importer (<see cref="WorkItemConnections.ImporterAsync"/>), and without this the likely
+    /// first command anybody types, h9k task add --from-jira, would answer with a list of known
+    /// sources and no way forward. Origin incident (2026-08-21): the pre-PR review of the Jira
+    /// branch found exactly that message on the unconnected path, while both sibling commands
+    /// named h9k connection add jira.
+    /// </summary>
+    public IReadOnlyDictionary<WorkItemProvider, string> Unregistered { get; init; } =
+        new Dictionary<WorkItemProvider, string>();
+
     public async Task<ImportedWorkItem> ImportAsync(
         WorkItemImportRequest request, CancellationToken cancellationToken)
     {
-        IWorkItemProvider provider = Find(request.Provider)
-            ?? throw new DomainValidationException(
-                $"Hall9k has no importer for '{request.Provider.Value}'. Known sources: "
-                + $"{string.Join(", ", providers.Select(p => p.Provider.Value))}.");
+        IWorkItemProvider provider = Find(request.Provider) ?? throw Unavailable(request.Provider);
 
         ImportedWorkItem item = await provider.ImportAsync(request, cancellationToken);
 
@@ -75,4 +86,16 @@ public sealed class WorkItemImporter(params IWorkItemProvider[] providers)
 
     private IWorkItemProvider? Find(WorkItemProvider provider) =>
         providers.FirstOrDefault(candidate => candidate.Provider == provider);
+
+    /// <summary>
+    /// Why this source is not here: unregistered on this install, which is a thing the human can
+    /// fix and the message says how, or genuinely unknown, which is a typo or a source Hall9k does
+    /// not speak.
+    /// </summary>
+    private Exception Unavailable(WorkItemProvider provider) =>
+        Unregistered.TryGetValue(provider, out string? remedy)
+            ? new DomainNotFoundException(remedy)
+            : new DomainValidationException(
+                $"Hall9k has no importer for '{RelayedText.OneLine(provider.Value)}'. Known sources: "
+                + $"{string.Join(", ", providers.Select(p => p.Provider.Value))}.");
 }
