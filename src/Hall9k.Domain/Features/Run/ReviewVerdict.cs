@@ -21,6 +21,25 @@ public sealed record ReviewVerdict
 
     private ReviewVerdict(string value) => Value = value;
 
+    /// <summary>
+    /// The cycle's verdict over its lenses (Decisions Log #59). MergeReady requires every
+    /// lens to be clean, so any NeedsFixes carries the cycle — one verdict, one merged
+    /// finding list, one fix session. An Unknown outranks even NeedsFixes: a pass that
+    /// returned no parseable verdict is an unread pass, and treating it as "well, we needed
+    /// fixes anyway" would silently drop whatever it found, which is exactly the guessing at
+    /// unobserved facts the re-prompt exists to avoid. No lenses at all is Unknown for the
+    /// same reason.
+    /// </summary>
+    public static ReviewVerdict Merge(IEnumerable<ReviewVerdict> verdicts)
+    {
+        List<ReviewVerdict> all = [.. verdicts];
+        return all.Count == 0 || all.Any(verdict => verdict == Unknown)
+            ? Unknown
+            : all.Any(verdict => verdict == NeedsFixes)
+                ? NeedsFixes
+                : MergeReady;
+    }
+
     public static implicit operator string(ReviewVerdict? value) => value?.Value ?? string.Empty;
 
     public static implicit operator ReviewVerdict(string? value) => value.IsBlank() ? Unknown : new ReviewVerdict(value);

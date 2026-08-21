@@ -15,6 +15,9 @@ namespace Hall9k.Domain.Features.Run.Events;
 /// finished, correct implementation. Model is the model the RESUMED session already runs
 /// on, carried forward and recorded rather than re-resolved: a resumed session keeps the
 /// model it started with, so re-resolving would record a model it never used (log #33).
+/// Lens says which pass of the cycle is being re-prompted (log #59); the one re-prompt is
+/// the CYCLE's, not each lens's, so a second verdict-less pass in the same cycle parks
+/// rather than doubling the parking math.
 /// </summary>
 public sealed record ReviewVerdictReprompted(
     Guid Id,
@@ -24,4 +27,5 @@ public sealed record ReviewVerdictReprompted(
     int ProcessId,
     DateTimeOffset ProcessStartedAt,
     DateTimeOffset RepromptedAt,
-    AgentModel? Model = null);
+    AgentModel? Model = null,
+    ReviewLens? Lens = null);

@@ -24,12 +24,34 @@ public static class RunPaths
     public static string SessionPromptFile(Guid runId, string sessionName) =>
         Path.Combine(RunDirectory(runId), $"{sessionName}.prompt.md");
 
+    /// <summary>
+    /// One session's own settings file. The run-level <see cref="SettingsFile"/> was written
+    /// afresh by every spawn, which was safe only while a run's sessions were strictly
+    /// sequential; a review cycle now spawns its lenses together (log #59), and the second
+    /// spawn's truncate-and-rewrite would land inside the first child's config-loading window.
+    /// A session that owns its file has no writer but itself.
+    /// </summary>
+    public static string SessionSettingsFile(Guid runId, string sessionName) =>
+        Path.Combine(RunDirectory(runId), $"{sessionName}.settings.json");
+
     public static string SessionStandardErrorFile(Guid runId, string sessionName) =>
         Path.Combine(RunDirectory(runId), $"{sessionName}.stderr.log");
 
-    /// <summary>The reviewer's verified findings and verdict for one review cycle, written by the daemon.</summary>
+    /// <summary>
+    /// One review cycle's merged findings: every lens's verified findings under its own
+    /// heading (log #59), written by the daemon when the cycle's last pass lands. This is the
+    /// document the fix session is handed and the one a park points a human at, so the name
+    /// is unchanged from the single-lens loop it replaces.
+    /// </summary>
     public static string ReviewFindingsFile(Guid runId, int cycle) =>
         Path.Combine(RunDirectory(runId), $"review-{cycle}-findings.md");
+
+    /// <summary>
+    /// One lens's own findings for a cycle, exactly as that pass wrote them (log #59) — the
+    /// unmerged record behind each section of <see cref="ReviewFindingsFile"/>.
+    /// </summary>
+    public static string ReviewLensFindingsFile(Guid runId, int cycle, string lensSlug) =>
+        Path.Combine(RunDirectory(runId), $"review-{cycle}-{lensSlug}-findings.md");
 
     /// <summary>The fix session's closing summary — on a dispute, the second position the human reads.</summary>
     public static string ReviewFixPositionFile(Guid runId, int cycle) =>
