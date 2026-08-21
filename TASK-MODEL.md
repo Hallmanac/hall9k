@@ -281,7 +281,7 @@ A merged-in-review-but-not-yet-mergeable PR needs more work on its **existing br
   sweep → claim → launch pipeline untouched; the only branching point is in the launcher,
   which sees `FollowUpBranch` set and checks out the existing PR branch (worktree
   `CheckoutExistingAsync`) instead of cutting a new one, and hands the agent the follow-up
-  prompt (resolve-copilot-reviews skill + PR URL). Verification gates and the push run
+  prompt (resolve-review-threads skill + PR URL). Verification gates and the push run
   through the same `RunSupervisor`/`VerificationRunner`/`PullRequestOpener`; the opener
   sees the task already carries a PR URL, pushes in place, and records `PullRequestUpdated`
   on the run instead of opening a second PR.
@@ -311,8 +311,16 @@ in priority order:
   `PullRequestChecksFailed`, then an automatic `TaskReopened` (Kind = FailingChecks) in
   the same transaction. The follow-up flows through the unchanged claim/launch pipeline
   with the fix-the-CI prompt.
-- **Unresolved Copilot review threads** → `ReviewFeedbackReceived`, then an automatic
-  `TaskReopened` (Kind = ReviewFeedback) with the resolve-copilot-reviews prompt.
+- **Unresolved review threads, from any reviewer** (log #62) → `ReviewFeedbackReceived`,
+  then an automatic `TaskReopened` (Kind = ReviewFeedback) with the resolve-review-threads
+  prompt. Copilot is one reviewer among many: a teammate's unresolved thread, and the pull
+  request author's own self-review note, count identically and dispatch identically. The
+  thread's FIRST comment names the reviewer, because agents only ever reply inside threads
+  and never open one (the invariant is recorded in AGENTS.md beside the no-bot-identity
+  rule); the event carries how many of the threads a human started, so the follow-up's
+  dispatch reason can say a person is waiting. One silence the monitor cannot see: GitHub
+  hides an unsubmitted (`PENDING`) review's comments from the API, so feedback arrives only
+  on submit.
 - **Errored Copilot review** → `ReviewErrored`, then `ReviewRerequested` once the review
   has been re-requested through the provider's API (never the website, which may be down
   when this matters; that was the origin incident's exact circumstance, PR #6 during the
@@ -325,10 +333,22 @@ in priority order:
   re-requested exactly once (the recorded review URL is the dedup key across sweeps). A
   re-review that leaves threads flows through the bullet above; a clean one leaves the
   run waiting for the merge.
+- **A quiet PR whose fixes were just pushed**, where the owner or the project opted in
+  (log #62) → `ReviewRerequestedAfterFixes`, once the pull request's reviewers have been
+  asked for another pass so whoever raised the findings countersigns that they were
+  addressed. Off unless configured (`h9k owner set` / `h9k project set --rerequest-review`,
+  project over owner over `DaemonOptions.DefaultReviewRerequest`), because each pass costs
+  review quota. Only a follow-up run asks, each run asks at most once, and the passes are
+  summed across the task's runs against `DaemonOptions.MaxReviewRerequestsAfterFixes`
+  (default 2), its own counter beside the closeout budget rather than part of it. At the cap the
+  pull request settles on the internal review, the thread replies, and CI.
 
 **Bounded retries.** `TaskAggregate.CloseoutAttempts` counts automatic reopens since the
-last human-initiated one. Review re-requests spend the same budget: the watched run's
-`ReviewRerequestCount` adds to the task's count when either path checks it. At the budget
+last human-initiated one. Errored-review re-requests spend that same budget: the watched
+run's `ReviewRerequestCount` adds to the task's count when either path checks it.
+Countersign passes do not — `ReviewRerequestsAfterFixes` is counted against
+`MaxReviewRerequestsAfterFixes` instead, so one budget running out never silently spends
+the other. At the budget
 (DaemonOptions.MaxAutomaticCloseoutRuns, default 2) the monitor appends `CloseoutParked`
 on the run instead of reopening: the task **stays
 Done** (deliberately, since parking must not break `h9k pr resolve`, whose guard requires
@@ -592,15 +612,21 @@ public sealed record PullRequestChecksFailed( // CI completed and failed; record
     Guid Id,                             // pending, so FailedChecks is the full picture. -> ChecksFailing
     IReadOnlyList<string> FailedChecks,
     DateTimeOffset ObservedAt);
-public sealed record ReviewFeedbackReceived(  // unresolved Copilot review threads. -> ReviewPending
-    Guid Id,
+public sealed record ReviewFeedbackReceived(  // unresolved review threads from any reviewer (log #62).
+    Guid Id,                             // -> ReviewPending
     int UnresolvedThreadCount,
-    DateTimeOffset ObservedAt);
+    DateTimeOffset ObservedAt,
+    int? UnresolvedHumanThreadCount = null);  // null on events written before authorship was counted
 public sealed record ReviewErrored(      // Copilot's latest review is an error placeholder ("unable
     Guid Id,                             // to review"); zero threads must not read as clean.
     string Reviewer,                     // -> ReviewPending; a re-request or a park is appended in
     string ReviewUrl,                    // the same transaction
     DateTimeOffset ObservedAt);
+public sealed record ReviewRerequestedAfterFixes(  // opt-in countersign after a fix follow-up pushed
+    Guid Id,                             // (log #62); its own pass cap, state unchanged
+    IReadOnlyList<string> Reviewers,
+    int Pass,
+    DateTimeOffset RequestedAt);
 public sealed record ReviewRerequested(  // the errored review re-requested via the API; draws on
     Guid Id,                             // the same automatic budget as follow-up dispatches
     string Reviewer,

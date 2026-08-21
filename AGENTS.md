@@ -128,6 +128,22 @@ first-class interface, always, for every command:
 
 - **Commits are authored as the repo owner. No `Co-Authored-By` trailers, no bot attribution,
   no generated-with footers** (PLAN.md §6.6). This is a hard rule for agents.
+- **Agents never START a review thread on a pull request; they only reply inside existing
+  ones.** This is the companion to the rule above, and the platform now depends on it: since
+  every comment is authored under the human's login, the only way to tell a reviewer's
+  comment from an earlier agent's is that a thread's FIRST comment is always a reviewer's,
+  including when its author is the pull request's own owner leaving themselves a note. Open a
+  new thread and the next run cannot tell your comment from feedback. Origin incident
+  (2026-08-20): Brian commented on PR #20 and the machinery was structurally blind to it,
+  because the closeout inspector filtered threads to Copilot authors and agent replies under
+  his login were indistinguishable from his own. The honest long-term answer is node-signed
+  authorship in the P2P identity layer (§16 #38-#58); until then, this invariant is what the
+  discriminator rests on, so breaking it breaks review handling (§16 #62).
+- **Feedback reaches the platform only when a review is submitted.** GitHub hides an
+  unsubmitted (`PENDING`) review's comments from the API entirely, so a reviewer part-way
+  through a draft is invisible to the closeout monitor and to any agent reading the PR. That
+  is correct (nothing has been said yet), but it is why a pull request can look quiet while
+  feedback is being written. Never read silence as "the reviewer had nothing to say".
 - Branch naming for task work: `task/<id>-<slug>`, created off `origin/main` with `--no-track`.
 - `main` is only ever checked out in the `dev/` worktree; agent worktrees are siblings of `dev/`.
 - **PR branches are authored history, not a diary.** Commits read as a natural progression of
@@ -155,7 +171,9 @@ Repo-resident Claude skills live in `.claude/skills/` and are available in every
 - **absorb-review-fixes** — fold review-feedback fixes into their owning commits (fixup +
   autosquash + tree-identity check) so the PR branch stays authored history
 - **commit-plan** — organize the working tree into cohesive, buildable commits ordered for PR review
-- **resolve-copilot-reviews** — triage Copilot review comments on an existing PR: fix, reply, resolve
+- **resolve-review-threads** - triage every unresolved review thread on an existing PR,
+  whoever opened it (Copilot, a teammate, or the author's own self-review): fix, reply
+  in-thread, resolve. Supersedes the Copilot-only `resolve-copilot-reviews` skill (§16 #62)
 - **pr-summary** — generate a PR title/description from the branch's commits (text only — the
   daemon opens PRs; agents never do)
 
