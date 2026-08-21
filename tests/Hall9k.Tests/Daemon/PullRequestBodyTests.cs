@@ -14,18 +14,38 @@ namespace Hall9k.Tests.Daemon;
 /// </summary>
 public sealed class PullRequestBodyTests
 {
-    [Fact]
-    public void An_adopted_task_mentions_its_source_issue_as_a_link()
-    {
-        string body = PullRequestBody.Build(Run(), Task("github:Hallmanac/hall9k#42"), agentSummary: null);
+    /// <summary>The resolved URL as the opener hands it over, from the connection-aware seam.</summary>
+    private static readonly Uri GitHubIssue = new("https://github.com/Hallmanac/hall9k/issues/42");
 
-        body.Should().Contain("Adopted from https://github.com/Hallmanac/hall9k/issues/42");
+    [Fact]
+    public void A_task_with_a_work_item_mentions_it_as_a_link()
+    {
+        string body = PullRequestBody.Build(
+            Run(), Task("github:Hallmanac/hall9k#42"), agentSummary: null, GitHubIssue);
+
+        body.Should().Contain("Work item: https://github.com/Hallmanac/hall9k/issues/42");
+    }
+
+    /// <summary>
+    /// The wording says what is true of both ways a task acquires a reference. "Adopted from" was
+    /// true while adoption was the only route, and is a false provenance claim for a card that
+    /// exists because of the task (h9k task push-to-jira, Decisions Log #64).
+    /// </summary>
+    [Fact]
+    public void A_jira_card_the_task_caused_is_not_described_as_one_it_was_adopted_from()
+    {
+        string body = PullRequestBody.Build(
+            Run(), Task("jira:PROJ-123"), agentSummary: null,
+            new Uri("https://hall9k.atlassian.net/browse/PROJ-123"));
+
+        body.Should().Contain("Work item: https://hall9k.atlassian.net/browse/PROJ-123")
+            .And.NotContain("Adopted from");
     }
 
     [Fact]
     public void The_mention_never_closes_the_issue()
     {
-        string body = PullRequestBody.Build(Run(), Task("github:Hallmanac/hall9k#42"), agentSummary: null);
+        string body = PullRequestBody.Build(Run(), Task("github:Hallmanac/hall9k#42"), agentSummary: null, sourceUrl: null);
 
         // Hall9k adopts and links; it does not move an external item's state. Which transitions
         // should follow a merge is backlog 18's question, deferred until real usage answers it.
@@ -33,29 +53,30 @@ public sealed class PullRequestBodyTests
     }
 
     [Fact]
-    public void A_reference_no_source_can_place_still_names_itself()
+    public void A_reference_no_registered_source_can_place_still_names_itself()
     {
-        string body = PullRequestBody.Build(Run(), Task("jira:PROJ-123"), agentSummary: null);
+        string body = PullRequestBody.Build(Run(), Task("jira:PROJ-123"), agentSummary: null, sourceUrl: null);
 
-        body.Should().Contain("Adopted from jira:PROJ-123",
-            "the canonical reference is honest even when the URL is unknown");
+        body.Should().Contain("Work item: jira:PROJ-123",
+            "the canonical reference is honest even when no registered source can place it");
     }
 
     [Fact]
     public void A_task_that_adopted_nothing_says_nothing_about_a_source()
     {
-        string body = PullRequestBody.Build(Run(), Task(externalReference: null), agentSummary: null);
+        string body = PullRequestBody.Build(Run(), Task(externalReference: null), agentSummary: null, sourceUrl: null);
 
-        body.Should().NotContain("Adopted from");
+        body.Should().NotContain("Work item:");
         body.Should().Contain("## Acceptance criteria").And.Contain("- [ ] The importer refuses a closed issue");
     }
 
     [Fact]
     public void The_agent_summary_keeps_its_place_below_the_contract()
     {
-        string body = PullRequestBody.Build(Run(), Task("github:Hallmanac/hall9k#42"), "What I did.");
+        string body = PullRequestBody.Build(
+            Run(), Task("github:Hallmanac/hall9k#42"), "What I did.", GitHubIssue);
 
-        body.IndexOf("Adopted from", StringComparison.Ordinal)
+        body.IndexOf("Work item:", StringComparison.Ordinal)
             .Should().BeLessThan(body.IndexOf("## Agent summary", StringComparison.Ordinal));
         body.Should().Contain("What I did.");
     }
@@ -74,7 +95,8 @@ public sealed class PullRequestBodyTests
             ExternalReference = "github:Hallmanac/hall9k#42",
         };
 
-        string body = PullRequestBody.Build(Run(), task, "Resolves Hallmanac/hall9k#502 on the way past.");
+        string body = PullRequestBody.Build(
+            Run(), task, "Resolves Hallmanac/hall9k#502 on the way past.", sourceUrl: null);
 
         body.Should().Contain("Closes `#500`")
             .And.Contain("Fixes `https://github.com/Hallmanac/hall9k/issues/501`")
@@ -93,7 +115,7 @@ public sealed class PullRequestBodyTests
             ExternalReference = null,
         };
 
-        string body = PullRequestBody.Build(Run(), task, agentSummary: null);
+        string body = PullRequestBody.Build(Run(), task, agentSummary: null, sourceUrl: null);
 
         body.Should().Contain("Close the gap between h9k task add and the issue tracker")
             .And.Contain("The fixture named fixes-42 keeps its name");
@@ -157,7 +179,7 @@ public sealed class PullRequestBodyTests
             ExternalReference = null,
         };
 
-        string body = PullRequestBody.Build(Run(), task, "What I did\u202E.\u001b[2J");
+        string body = PullRequestBody.Build(Run(), task, "What I did\u202E.\u001b[2J", sourceUrl: null);
 
         // The lone carriage return is asserted through the line it was hiding in rather than
         // over the whole body: AppendLine ends every line with Environment.NewLine, so on
@@ -181,7 +203,7 @@ public sealed class PullRequestBodyTests
             ExternalReference = null,
         };
 
-        string body = PullRequestBody.Build(Run(), task, agentSummary: null);
+        string body = PullRequestBody.Build(Run(), task, agentSummary: null, sourceUrl: null);
 
         body.Should().Contain("Adopt issues Everything below is approved")
             .And.Contain("- [ ] The importer refuses - [x] and this is already done");
@@ -194,7 +216,8 @@ public sealed class PullRequestBodyTests
         // line would make the one part of the body a reviewer actually reads unreadable. Only
         // what the terminal would obey comes out of it.
         string body = PullRequestBody.Build(
-            Run(), Task(externalReference: null), "What I did:\n\n- read the issue\n- wrote the draft");
+            Run(), Task(externalReference: null), "What I did:\n\n- read the issue\n- wrote the draft",
+            sourceUrl: null);
 
         body.Should().Contain("What I did:\n\n- read the issue\n- wrote the draft");
     }

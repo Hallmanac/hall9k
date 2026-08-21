@@ -1,5 +1,6 @@
 using Hall9k.Domain.Infrastructure.Storage;
 using System.Diagnostics;
+using Hall9k.Connectors.WorkItems;
 using Hall9k.Domain.Features.Run.Events;
 using Hall9k.Domain.Features.Run.Projections;
 using Hall9k.Domain.Features.Tasks;
@@ -98,12 +99,47 @@ public sealed class PullRequestOpener(
         }
     }
 
+    /// <summary>
+    /// Where this task's work item lives, asked of the registered connections rather than of a
+    /// default importer: placing a Jira reference needs the site that connection recorded, so a
+    /// card would otherwise fall back to its bare key in every pull request body. Null when no
+    /// registered source recognises the reference, which the body then reports honestly.
+    /// <para>
+    /// A failure here costs the link and not the pull request. The reference is on the task
+    /// either way, and refusing to open a PR because a connection could not be read would let a
+    /// Jira misconfiguration block work that has nothing to do with Jira.
+    /// </para>
+    /// </summary>
+    private async Task<Uri?> SourceUrlAsync(TaskDetails task, CancellationToken cancellationToken)
+    {
+        if (task.ExternalReference.IsBlank())
+        {
+            return null;
+        }
+
+        try
+        {
+            await using IQuerySession query = store.QuerySession();
+            WorkItemImporter importer = await WorkItemConnections.ImporterAsync(query, cancellationToken);
+            return importer.WebUrl(task.ExternalReference);
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            logger.LogWarning(exception,
+                "Could not resolve a link for {Reference}; the pull request will name it by reference",
+                task.ExternalReference);
+            return null;
+        }
+    }
+
     private async Task<(string Url, int Number)> CreatePullRequestAsync(
         RunDetails run, TaskDetails task, string baseBranch, CancellationToken cancellationToken)
     {
         string bodyFile = Path.Combine(RunPaths.RunDirectory(run.Id), "pr-body.md");
         await File.WriteAllTextAsync(
-            bodyFile, PullRequestBody.Build(run, task, TryReadAgentSummary(run.Id)), cancellationToken);
+            bodyFile,
+            PullRequestBody.Build(run, task, TryReadAgentSummary(run.Id), await SourceUrlAsync(task, cancellationToken)),
+            cancellationToken);
 
         // The title goes through PullRequestBody too, not straight from the projection: on a
         // squash merge GitHub's default commit message is the pull request's title, so a title is
