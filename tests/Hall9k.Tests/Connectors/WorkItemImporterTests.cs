@@ -177,7 +177,7 @@ public sealed class WorkItemImporterTests
     [Fact]
     public void The_default_importer_places_a_github_reference()
     {
-        WorkItemImporter.Default.WebUrl("github:Hallmanac/hall9k#42")
+        new WorkItemImporter(new GitHubWorkItemProvider()).WebUrl("github:Hallmanac/hall9k#42")
             .Should().Be(new Uri("https://github.com/Hallmanac/hall9k/issues/42"));
     }
 
