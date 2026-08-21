@@ -43,6 +43,15 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
             header.AddRow("Model", $"{details.Model.Value.EscapeMarkup()} [dim](task override)[/]");
         }
 
+        if (details.SourceIdeaId is { } sourceIdeaId)
+        {
+            // The other half of promotion's two-way provenance (Decisions Log #35): the idea's
+            // stream names this task, and this names the idea it came from.
+            header.AddRow("From idea",
+                $"[dim]{TaskListCommand.ShortId(sourceIdeaId)}[/] "
+                + $"[dim](h9k idea show {TaskListCommand.ShortId(sourceIdeaId)})[/]");
+        }
+
         if (details.ExternalReference.IsNotBlank())
         {
             header.AddRow("External", details.ExternalReference.EscapeMarkup());

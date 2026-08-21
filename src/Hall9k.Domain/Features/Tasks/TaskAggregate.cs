@@ -39,6 +39,9 @@ public sealed class TaskAggregate
     public DateTimeOffset AddedAt { get; private set; }
     public Guid AddedByOwnerId { get; private set; }
 
+    /// <summary>The idea this task was promoted from; null when it was written directly (Decisions Log #35).</summary>
+    public Guid? SourceIdeaId { get; private set; }
+
     /// <summary>
     /// Whose work this is. Set by the explicit human act of assignment and read by the claim
     /// guard: a node claims only its own owner's tasks (Decisions Log #34). Null until
@@ -85,6 +88,7 @@ public sealed class TaskAggregate
         Model = @event.Model ?? AgentModel.Unknown;
         AddedAt = @event.AddedAt;
         AddedByOwnerId = @event.AddedByOwnerId;
+        SourceIdeaId = @event.SourceIdeaId;
         _blockedBy.Clear();
         _blockedBy.AddRange(@event.BlockedBy ?? []);
 
