@@ -584,6 +584,24 @@ public sealed record PullRequestClosed(  // closed without merge: run -> Failed,
     DateTimeOffset? ClosedAt,
     DateTimeOffset ObservedAt);
 
+public sealed record RunHandoffRecorded(  // what this run hands down to whatever depends on it (§3.2).
+    Guid Id,                              // Captured at session end, appended HERE, in the merge
+    HandoffOutcome Outcome,               // transaction, with PullRequestMerged and RunCompleted.
+    string? Summary,                      // Bounded; null whenever the outcome records an absence.
+    DateTimeOffset RecordedAt);
+public sealed record ContextSynthesisDispatched(  // a wide fan-in condensed before this run starts (§3.2)
+    Guid Id,
+    Guid SessionId,
+    int BlockerCount,
+    int ProcessId,
+    DateTimeOffset ProcessStartedAt,
+    DateTimeOffset DispatchedAt,
+    AgentModel? Model = null);
+public sealed record ContextSynthesisCompleted(   // false = fell back to the raw handoffs; never a failure
+    Guid Id,
+    bool Synthesized,
+    DateTimeOffset CompletedAt);
+
 public sealed record RunCompleted(Guid Id, DateTimeOffset CompletedAt);   // terminal: the PR merged (§2.2)
 public sealed record RunFailed(Guid Id, string Reason, DateTimeOffset FailedAt);
 public sealed record RunKilled(Guid Id, KillReason Reason, Guid? KilledByOwnerId, DateTimeOffset KilledAt);
@@ -605,6 +623,8 @@ public sealed record RunState           // Dispatched, Running, Verifying, Under
                                         //   Completed, Failed, Killed, Superseded, Unknown
 public sealed record ReviewVerdict      // MergeReady, NeedsFixes, Unknown (§3.1)
 public sealed record ReviewFixOutcome   // Fixed, Disputed, Unknown (§3.1)
+public sealed record HandoffOutcome     // Captured, NotAuthored, NotCaptured (§3.2),
+                                        //   NotClosedOut (query-only: no run to ask yet), Unknown
 ```
 
 The `RunAggregate` mirrors the Task shape: sealed class, private setters, one `Apply` per event,
@@ -636,6 +656,90 @@ record `TokensRecorded` on the run like any other session, and their transcripts
 beside the main session's in the run directory (`review-<cycle>-<session>.stream.jsonl`).
 The engine is a state machine over the run stream (`ReviewPhase`, derived in the
 aggregate), so a restarted daemon resumes the loop exactly where the events left off.
+
+### 3.2 Context routing along dependency edges (log #36)
+
+A `BlockedBy` edge does double duty. It was declared for scheduling, but "this could not
+start until that finished" is also a statement about *relatedness*: the blocker almost
+certainly touched the same area or produced the thing the dependent builds on. So the graph
+a human already declared answers the context question, and there is no second structure to
+maintain.
+
+**Capture and landing are two moments, deliberately.** The handoff text is read from the
+agent's own session-end result (`HandoffParser` over the terminal result event's summary,
+extending the parsing already there rather than adding a summarizer session) and written to
+`~/.hall9k/runs/<run-id>/handoff.md`. The event that carries it, `RunHandoffRecorded`, is
+appended by `CloseoutEngine` at **true closeout**, in the same transaction as
+`PullRequestMerged` and `RunCompleted` and immediately before the dependents are unblocked.
+That ordering is the guarantee: an unmerged run has no `RunHandoffRecorded`, so its summary
+can never travel to work that builds on code which never landed.
+
+**What lands is the task's handoff, not the completing run's.** Decision #22 makes review
+follow-ups automatic, so a merged pull request is normally the original run (retired with
+`RunSuperseded` when the follow-up was dispatched) plus a follow-up that resolved the review
+threads and reached `Completed`. Selecting the completing run alone would hand a dependent the
+thread resolution and leave the description of the feature unread in a superseded run's
+directory. `CloseoutEngine` therefore composes the landed summary from the `handoff.md` of
+every run that carried the pull request, in dispatch order, so the run that built the thing
+leads. Failed and killed runs are excluded, and that exclusion *is* the retry case: a run that
+died left work which never merged, so its summary must not travel, while a superseded run is
+the opposite situation, the run whose work is in this merge.
+
+**A run that closes out without a usable handoff is valid**, and `HandoffOutcome` says which
+absence it is rather than collapsing them: `Captured` (the agent authored one), `NotAuthored`
+(the result was read and carried none), `NotCaptured` (there was no session-end capture at
+all: a park a human resolved by hand, an agent that never reported a result), `Unknown` (a
+stream written before handoffs existed, and equally an artifact that exists but could not be
+read, since an unread file is not an observed one). The three artifact states on disk (non-blank,
+empty, absent) are exactly the three observations, which is what lets the append be honest
+without guessing (the AGENTS.md never-guess rule). `NotClosedOut` belongs to the same
+vocabulary but is never recorded on a run: only a query about a *task* can observe that
+nothing carried it to true closeout, which is the honest answer for a blocker still in
+flight or one a human attested Done without a merge (log #27). Where a composition finds
+that no run authored a handoff, the recorded absence is the least certain of the ones the
+reads observed, because a file that could not be read might have held the very text the
+dependent wanted.
+
+**Assembly is depth one, and the depth is the design.** When `DispatchEngine` claims a task,
+`BlockerContextAssembler` reads `BlockerHandoffQuery` over the task's **immediate**
+`BlockedBy` edges and stops. A chain A -> B -> C hands C what B learned and nothing of A's.
+If C genuinely needs a fact from A, that is evidence of a missing A -> C edge, something a
+human can fix, rather than a context gap the platform should paper over by walking further
+back; the prompt tells the agent to say so in its own handoff. Accumulating ancestry would
+also mean that by the time a long chain reaches its end, most of what the agent reads is
+about work it will never touch. `TaskDependencyQuery.LoadGraphAsync` still loads the
+transitive closure, because cycle detection at publish must see a cycle anywhere in the
+chain; context assembly reads the first hop on purpose.
+
+Which run a blocker's handoff is read from is settled by the run's own terminal state:
+`RunState.Completed`, which only the closeout monitor's merge observation produces, and which
+is where the composed summary lands. A blocker that died and was retried to a successful merge
+therefore hands down the successful run's summary and never the failed one's, by construction
+rather than by filtering. A blocker with no handoff falls back to its objective and acceptance
+criteria: a blocker with nothing to say still says what it was for.
+
+**Fan-in condenses above a threshold.** Eight tasks converging on an integration task is good
+decomposition, not a smell, but eight handoffs is a heavy way to open a session. Above
+`DaemonOptions.BlockerSynthesisThreshold` (default 3) a platform-dispatched synthesis session
+condenses them into one document first, following the review-session patterns: resolved and
+recorded model (log #33), `TokensRecorded` on the dependent's run, and artifacts
+(`context-synthesis-*.stream.jsonl`, `blocker-context.md`) in that run's own directory. At or
+below the threshold the handoffs pass through raw. A synthesis that dies or returns nothing
+usable records `ContextSynthesisCompleted(Synthesized: false)` and the launch falls back to
+the raw handoffs; condensing is an optimization over a context that already exists, so it may
+never be the reason a dispatch loses one. It is also the only session a dispatch *blocks* on
+(every other spawn is fire-and-forget, monitored in the background), and `LaunchAsync` is
+awaited inside the dispatch loop, so `DaemonOptions.BlockerSynthesisTimeout` (default 5
+minutes) bounds what one hung condenser can cost the node: the wait ends, the session is
+terminated, and the run starts on the handoffs it already had.
+
+`h9k task show` prints the same document the daemon would paste into the prompt, through the
+same `BlockerContextDocument` renderer, so a human checking what an agent will start with is
+reading that context rather than a second telling of it.
+
+Reviewer findings deliberately do **not** travel downstream in v1; only the agent's own
+handoff does. That is noted as an open extension in `backlog/IDEA-context-routing.md` rather
+than built speculatively.
 
 ## 4. Reference aggregates (minimal v0 streams)
 
