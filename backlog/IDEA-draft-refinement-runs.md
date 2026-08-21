@@ -35,3 +35,14 @@ read/write asymmetry doctrine and with the missing-auth conversation flow
 
 Backlog 05 (Draft exists) and realistically IDEA-task-attachments (the run's
 findings need somewhere honest to land). Design after both.
+
+## Generalizes to discovery runs (added 2026-08-20, backlog 22)
+
+Ideas are first-class now (decision #35) and own a discovery workspace, so the
+same shape applies one phase earlier: an agent dispatched at an IDEA, working on
+the question "what is this?" rather than "how does this become executable?" -
+surveying prior art, gathering files into the workspace, proposing a sharper
+note. Same rule keeps it safe: ideas never enter any queue, and a discovery run
+is only ever human-triggered (`h9k idea discover <id> "<mission>"` would be the
+shape). What it produces is IdeaRevised plus files in the workspace, never code.
+Explicitly out of scope in backlog 22, which built the concept and the CLI.

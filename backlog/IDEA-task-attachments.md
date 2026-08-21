@@ -28,6 +28,11 @@ into one ever-growing context blob.
   refinement - revision handles the task's own text, attachments handle
   everything gathered around it. Could land as a fast-follow to 05 (see the
   pointer added in 05's design constraints).
+- **Ideas (decision #35, backlog 22)**: an idea's discovery workspace is the
+  same problem with the honest v1 answer - a directory, with the stream carrying
+  milestones only. When `ContextAttached` exists it should generalize to ideas,
+  which would give per-file provenance for the research that produced a task
+  instead of a single workspace pointer. The pointer stays useful either way.
 - **IDEA-p2p-lazy-sync**: attachments are exactly the "content" a task's
   metadata shell leaves unhydrated until a node takes the lease or a human
   browses.

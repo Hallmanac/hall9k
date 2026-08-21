@@ -18,6 +18,7 @@ of the vertical-slice pattern itself.)
 
 | Stream (aggregate) | Lifespan | Owns |
 |---|---|---|
+| **Idea** | hours–months | one thought, from capture through discovery to what it became (§10) |
 | **Task** | days–weeks | the work's story: readiness contract, claims/leases, conversation, terminal outcome |
 | **Run** | minutes–hours | one dispatch attempt: process, session, verification, PR, tokens |
 | **Owner** | permanent | the human (§6.2 accountability root) |
@@ -695,6 +696,7 @@ public sealed record ContextLink(string Name, Uri Url);            // "jira", "w
 
 | Document | Source stream | Serves |
 |---|---|---|
+| `IdeaDetails` | Idea | `h9k idea list`, `h9k idea show` (one document serves both: ideas are few and small) |
 | `TaskDetails` | Task | `h9k task show` |
 | `TaskListItem` | Task | `h9k status`, daemon queue query (`State == Queued`) |
 | `RunDetails` | Run | `h9k task show`, `h9k logs` header |
@@ -811,3 +813,43 @@ Rules carried over:
 - Exact Marten schema bootstrap for the CLI (AutoCreate.None after `h9kd install` runs migrations).
 - Where `Optional<T>` and shared value objects land (`Hall9k.Domain/Shared/` vs `Hall9k.Contracts`).
 - Package versions: Marten 8.17.0, WolverineFx(.Marten) 5.9.2, UUIDNext 4.2.3 — pinned once, centrally (Directory.Packages.props).
+
+## 10. Idea slice (log #35)
+
+Ideas sit in front of tasks: an idea undergoes **discovery** (what is this?), and a draft task
+undergoes **refinement** (how does this become executable?). A task is an idea with intent, and
+promotion is the hinge. Flat tiny-slice layout, like Owner and Node: aggregate, events, decider,
+and projection as sibling files under `Features/Idea/`.
+
+```csharp
+// Features/Idea/  (one record per file)
+public sealed record IdeaCaptured(Guid Id, Guid OwnerId, string Text, Guid? ProjectId, DateTimeOffset CapturedAt);
+public sealed record IdeaRevised(Guid Id, string Text, DateTimeOffset RevisedAt, Guid RevisedByOwnerId);
+public sealed record IdeaAssignedToProject(
+    Guid Id, Guid ProjectId, Guid? PreviousProjectId, DateTimeOffset AssignedAt, Guid AssignedByOwnerId);
+public sealed record IdeaPromoted(                 // names the draft it became; TaskAdded.SourceIdeaId
+    Guid Id, Guid TaskId, Guid ProjectId,          // names this idea back (two-way provenance)
+    string Objective, DateTimeOffset PromotedAt, Guid PromotedByOwnerId);
+public sealed record IdeaDiscarded(Guid Id, string Reason, DateTimeOffset DiscardedAt, Guid DiscardedByOwnerId);
+
+// IdeaState: Captured (in discovery) -> Promoted | Discarded. Both endings are terminal;
+// there is no "refined" state, because refinement belongs to the draft, not to the idea.
+```
+
+Three things this slice deliberately does not do:
+
+1. **It does not record what discovery produces.** Each idea owns a workspace directory,
+   `~/.hall9k/ideas/<idea-id>/workspace` (`IdeaPaths`), derived from the id exactly as
+   `RunPaths` derives a run's directory. Research notes, gathered files, and prototypes
+   accumulate there; the stream carries milestones only. Per-file provenance is the
+   attachments feature's job (IDEA-task-attachments), not this one's.
+2. **It does not duplicate the task lifecycle.** Promotion emits an ordinary `TaskAdded`
+   (a Draft, per log #34) whose agent context is the note's remainder plus the workspace
+   pointer, and the human then walks the ordinary ceremony: revise, publish, assign.
+3. **It does not interpret the note.** The objective is the first sentence, taken by a
+   mechanical scan and printed back, or whatever `--objective` said. Nothing is inferred.
+
+Reads follow the house rule: one inline `SingleStreamProjection` (`IdeaDetails`), carrying the
+current note, every earlier version of it, the project (or its honest absence), and what the
+idea became. No multi-stream projection: `h9k idea show` issues its own small queries for the
+project, the owner, and the promoted task.
