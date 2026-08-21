@@ -22,6 +22,8 @@ public sealed class ProjectAggregate
     /// pushed (Decisions Log #62). Outranks the owner's preference; Unknown defers to it.
     /// </summary>
     public ReviewRerequestPolicy ReviewRerequest { get; private set; } = ReviewRerequestPolicy.Unknown;
+    /// <summary>The Jira board this project's cards live on; None when nothing is bound (backlog 18).</summary>
+    public JiraProjectKey JiraProjectKey { get; private set; } = JiraProjectKey.None;
     public DateTimeOffset RegisteredAt { get; private set; }
 
     private readonly List<VerifyCommand> _verifyCommands = [];
@@ -79,6 +81,11 @@ public sealed class ProjectAggregate
         if (@event.ReviewRerequest.HasValue)
         {
             ReviewRerequest = @event.ReviewRerequest.Value ?? ReviewRerequestPolicy.Unknown;
+        }
+
+        if (@event.JiraProjectKey.HasValue)
+        {
+            JiraProjectKey = @event.JiraProjectKey.Value ?? JiraProjectKey.None;
         }
     }
 }

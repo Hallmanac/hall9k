@@ -24,6 +24,8 @@ public sealed class ProjectDetails
     /// pushed (Decisions Log #62). Outranks the owner's preference; Unknown defers to it.
     /// </summary>
     public ReviewRerequestPolicy ReviewRerequest { get; set; } = ReviewRerequestPolicy.Unknown;
+    /// <summary>The Jira board this project's cards live on; None when nothing is bound (backlog 18).</summary>
+    public JiraProjectKey JiraProjectKey { get; set; } = JiraProjectKey.None;
     public List<VerifyCommand> VerifyCommands { get; set; } = [];
     public List<ContextLink> ContextLinks { get; set; } = [];
     public DateTimeOffset RegisteredAt { get; set; }
@@ -79,6 +81,11 @@ public sealed class ProjectDetailsProjection : SingleStreamProjection<ProjectDet
         if (@event.Data.ReviewRerequest.HasValue)
         {
             view.ReviewRerequest = @event.Data.ReviewRerequest.Value ?? ReviewRerequestPolicy.Unknown;
+        }
+
+        if (@event.Data.JiraProjectKey.HasValue)
+        {
+            view.JiraProjectKey = @event.Data.JiraProjectKey.Value ?? JiraProjectKey.None;
         }
 
         view.SettingsChangedAt = @event.Data.ChangedAt;
