@@ -7,6 +7,7 @@ criteria:
 - The orchestrator section names the judgment the orchestrator currently owns: sequencing queueable tasks by likely file-footprint collision (what runs in parallel, what waits, what runs alone), with IDEA-coordinator-agent.md cited as its eventual automation
 - The section covers the recovery levers by name and when each applies: task retry (machinery failed, work must re-run), task resolve (objective met despite the failure), task abandon (walk away), pr resolve (PR feedback follow-up), review resolve (parked review verdict)
 - Every existing CLI command and option has .WithDescription/.WithExample per the AGENTS.md CLI command standards; this task backfills any command still missing examples (the standard is already law; audit the full command tree)
+- Missing required arguments never produce stack traces: every command with a required argument prints a teaching error naming what was missing and an example invocation (origin incident, 2026-08-20: bare h9k task publish crashed with an unhandled exception and a raw stack trace instead of teaching)
 - Verified by use: a fresh interactive Claude Code session, given only the repo docs, can add a task, read status, and explain the recovery levers - record how the verification was performed
 - dotnet build and dotnet test pass
 ---
