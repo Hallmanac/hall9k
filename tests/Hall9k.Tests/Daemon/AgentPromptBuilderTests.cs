@@ -1,6 +1,7 @@
 using FluentAssertions;
 using Hall9k.Connectors.WorkItems;
 using Hall9k.Daemon.Execution;
+using Hall9k.Daemon.Review;
 using Hall9k.Domain.Features.Project;
 using Hall9k.Domain.Features.Project.Projections;
 using Hall9k.Domain.Features.Run;
@@ -272,6 +273,49 @@ public sealed class AgentPromptBuilderTests : IDisposable
     }
 
     /// <summary>
+    /// The severity anchors and the scope anchor are stated to the reviewer (Decisions Log
+    /// #62), never left to its intuition: a grade every reviewer invents for itself is not a
+    /// gate, and a scope tag that is a judgment call is not checkable against the diff.
+    /// </summary>
+    [Fact]
+    public void Adversarial_review_prompt_states_the_severity_anchors_and_the_mechanical_scope_anchor()
+    {
+        ProjectDetails project = SomeProject();
+        project.BaseBranch = "main";
+
+        string prompt = AgentPromptBuilder.BuildReview(
+            SomeTask(), project, "task/1-slug", cycle: 5, ReviewLens.Adversarial);
+
+        prompt.Should().Contain($"{ReviewResultParser.FindingMarker} severity=high; scope=in-scope; at=",
+            "the header the platform parses is shown, not described");
+        prompt.Should().Contain("correctness, security, or data-integrity defect reachable in realistic use");
+        prompt.Should().Contain("bounded or unlikely impact, or a doctrine violation");
+        prompt.Should().Contain("`low` — polish.");
+        prompt.Should().Contain("counts as no grade at all",
+            "a reviewer that writes `critical` should learn the platform reads it as ungraded");
+        prompt.Should().Contain("the defective line lives in code this branch added or changed");
+        prompt.Should().Contain("pre-existing on `main`");
+        prompt.Should().Contain("absent from `git diff main...HEAD`", "the scope tag is checkable, not felt");
+        prompt.Should().NotContain(
+            "only a high forces", "telling a reviewer which grade buys another cycle invites it to grade for that");
+    }
+
+    /// <summary>
+    /// The conformance track grades nothing (Decisions Log #62): a criterion is met or it is
+    /// not, so handing it a severity vocabulary would invite grades nobody reads.
+    /// </summary>
+    [Fact]
+    public void Conformance_review_prompt_carries_no_severity_vocabulary()
+    {
+        string prompt = AgentPromptBuilder.BuildReview(
+            SomeTask(), SomeProject(), "task/1-slug", cycle: 1, ReviewLens.Conformance);
+
+        prompt.Should().NotContain("severity=");
+        prompt.Should().NotContain("out-of-scope");
+        prompt.Should().Contain("acceptance criteria", "conformance is the pass that measures against them");
+    }
+
+    /// <summary>
     /// A run dispatched before lenses existed has passes recorded without one; that reviewer
     /// was the conformance reviewer, so its prompt is the conformance prompt.
     /// </summary>
@@ -338,10 +382,12 @@ public sealed class AgentPromptBuilderTests : IDisposable
         prompt.Should().Contain("a promise to deliver the verdict later is not a");
     }
 
-    [Fact]
-    public void Verdict_reprompt_tells_the_resumed_session_to_conclude_and_that_this_is_the_only_retry()
+    [Theory]
+    [InlineData("Conformance")]
+    [InlineData("Adversarial")]
+    public void Verdict_reprompt_tells_the_resumed_session_to_conclude_and_that_this_is_the_only_retry(string lens)
     {
-        string prompt = AgentPromptBuilder.BuildReviewVerdictReprompt(cycle: 3);
+        string prompt = AgentPromptBuilder.BuildReviewVerdictReprompt(SomeProject(), lens, cycle: 3);
 
         prompt.Should().Contain("without the required VERDICT line");
         prompt.Should().Contain("wait for them", "unfinished checks get waited on, then judged");
@@ -349,6 +395,38 @@ public sealed class AgentPromptBuilderTests : IDisposable
         prompt.Should().Contain("VERDICT: needs-fixes");
         prompt.Should().Contain("only re-prompt", "one retry, then the human — never a loop");
         prompt.Should().Contain("review cycle 3");
+    }
+
+    /// <summary>
+    /// The resumed leg's output replaces what the platform read from the first one, so the
+    /// re-prompt has to restate the contract the lens answers in. Asking an adversarial pass
+    /// for prose would strip every finding's severity and scope on the way back in, and the
+    /// loop would read a graded, placed set as one ungraded, unplaced stand-in.
+    /// </summary>
+    [Fact]
+    public void The_adversarial_reprompt_restates_the_finding_contract_it_will_be_parsed_by()
+    {
+        string prompt = AgentPromptBuilder.BuildReviewVerdictReprompt(
+            SomeProject(), ReviewLens.Adversarial, cycle: 3);
+
+        prompt.Should().Contain("FINDING: severity=high; scope=in-scope; at=");
+        prompt.Should().Contain("FINDING header", "the shape is named where the findings are asked for");
+        prompt.Should().Contain("severity and scope are lost", "the reprompt says what a bare restatement costs");
+        prompt.Should().Contain("`out-of-scope`").And.Contain("pre-existing on `main`");
+    }
+
+    /// <summary>
+    /// The conformance track grades nothing and routes nothing, so its re-prompt asks for what
+    /// it was asked for originally rather than a contract it was never given.
+    /// </summary>
+    [Fact]
+    public void The_conformance_reprompt_asks_for_findings_in_the_shape_that_lens_was_given()
+    {
+        string prompt = AgentPromptBuilder.BuildReviewVerdictReprompt(
+            SomeProject(), ReviewLens.Conformance, cycle: 3);
+
+        prompt.Should().Contain("Restate your verified findings (file:line, defect, failure scenario)");
+        prompt.Should().NotContain(ReviewResultParser.FindingMarker);
     }
 
     [Fact]
@@ -401,6 +479,26 @@ public sealed class AgentPromptBuilderTests : IDisposable
         prompt.Should().Contain("RESOLUTION: disputed");
         prompt.Should().Contain("not a defect");
         prompt.Should().Contain("human");
+    }
+
+    /// <summary>
+    /// The fix session follows the platform's disposition rather than re-deciding it, and the
+    /// dispute lever covers a finding's grade as well as the finding (Decisions Log #62). An
+    /// agent that could quietly re-grade a High as a Low would be choosing its own exit from
+    /// the convergence rule.
+    /// </summary>
+    [Fact]
+    public void Review_fix_prompt_binds_the_agent_to_the_disposition_and_lets_it_dispute_a_grade()
+    {
+        string prompt = AgentPromptBuilder.BuildReviewFix(
+            SomeTask(), "task/1-slug", "findings go here", cycle: 4);
+
+        prompt.Should().Contain(ReviewFindingDispositions.Heading,
+            "the instruction names the section the engine actually writes, so the two cannot drift apart");
+        prompt.Should().Contain("commit it on its own", "an out-of-scope cleanup stays separable in the history");
+        prompt.Should().Contain("routed to a draft bug task is NOT yours");
+        prompt.Should().Contain("graded wrongly", "a disputed grade is a dispute, not a private re-grade");
+        prompt.Should().Contain("do not quietly re-grade it");
     }
 
     private void WriteSkill(string name, string description)

@@ -1,5 +1,6 @@
 using System.Text;
 using Hall9k.Connectors.WorkItems;
+using Hall9k.Daemon.Review;
 using Hall9k.Domain.Features.Project;
 using Hall9k.Domain.Features.Project.Projections;
 using Hall9k.Domain.Features.Run;
@@ -581,6 +582,12 @@ public static class AgentPromptBuilder
     /// The conformance lens: does the diff do what the task said it would? The objective and
     /// the acceptance criteria are the measuring stick, and repo doctrine (AGENTS.md and the
     /// documents it points at) is the rest of it.
+    /// <para>
+    /// This track grades nothing (Decisions Log #62). A criterion is met or it is not, so there
+    /// is no severity ordering to gate on and no structured-finding contract here — the
+    /// adversarial pass carries that. Conformance converges the plain way: clean ends it, and
+    /// still finding things at its cycle cap parks the run.
+    /// </para>
     /// </summary>
     private static string BuildConformanceReview(TaskDetails task, ProjectDetails project, string branch, int cycle)
     {
@@ -680,6 +687,7 @@ public static class AgentPromptBuilder
         prompt.AppendLine("- Read the changed code in its surroundings, not as isolated hunks: a defect is often");
         prompt.AppendLine("  the interaction between what changed and what did not.");
         AppendReviewMechanics(prompt, project, branch);
+        AppendFindingContract(prompt, project);
         AppendVerdictContract(prompt, cycle);
         prompt.AppendLine();
         prompt.AppendLine("Hunting hard and finding nothing is a real outcome: if no defect survives your own");
@@ -687,6 +695,54 @@ public static class AgentPromptBuilder
         prompt.AppendLine("thorough spends a fix session on nothing and teaches everyone to discount this pass.");
 
         return prompt.ToString();
+    }
+
+    /// <summary>
+    /// The structured-finding contract the adversarial pass answers in (Decisions Log #62).
+    /// Two tags ride on every finding and the platform reads both: a severity, which decides
+    /// whether the finding forces another review cycle once the gate applies, and a scope tag,
+    /// which decides whether the fix belongs in this pull request or in a draft bug task of its
+    /// own.
+    /// <para>
+    /// The severity anchors are spelled out rather than left to the reviewer's intuition,
+    /// because a grade every reviewer invents for itself is not a gate. The scope anchor is
+    /// mechanical for the same reason: "the defective line lives in code this branch added or
+    /// changed" is checkable against the diff, where "is this really our problem" is not.
+    /// </para>
+    /// </summary>
+    private static void AppendFindingContract(StringBuilder prompt, ProjectDetails project)
+    {
+        prompt.AppendLine();
+        prompt.AppendLine("## How to report each finding (the platform parses this)");
+        prompt.AppendLine();
+        prompt.AppendLine("Open every finding with a header line of exactly this shape, then write the finding");
+        prompt.AppendLine("underneath it in prose:");
+        prompt.AppendLine();
+        prompt.AppendLine($"    {ReviewResultParser.FindingMarker} severity=high; scope=in-scope; at=src/Some/File.cs:123");
+        prompt.AppendLine("    Defect: one sentence saying what is wrong.");
+        prompt.AppendLine("    Scenario: the input or state that makes it misbehave, and what goes wrong.");
+        prompt.AppendLine();
+        prompt.AppendLine("**severity** — grade against these anchors, not against your own sense of importance:");
+        prompt.AppendLine();
+        prompt.AppendLine("- `high` — a correctness, security, or data-integrity defect reachable in realistic use.");
+        prompt.AppendLine("- `medium` — a real defect with bounded or unlikely impact, or a doctrine violation");
+        prompt.AppendLine("  that misleads a reader without corrupting anything.");
+        prompt.AppendLine("- `low` — polish.");
+        prompt.AppendLine();
+        prompt.AppendLine("Use one of those three words exactly. A grade in any other word is one the platform");
+        prompt.AppendLine("cannot read, and it counts as no grade at all rather than as the nearest word to it.");
+        prompt.AppendLine();
+        prompt.AppendLine("**scope** — decide it against the diff, not against your judgment of whose problem it is:");
+        prompt.AppendLine();
+        prompt.AppendLine("- `in-scope` — the defective line lives in code this branch added or changed.");
+        prompt.AppendLine($"- `out-of-scope` — the defect is pre-existing on `{project.BaseBranch}`; this diff only");
+        prompt.AppendLine("  sits next to it. Check before you tag: the line is out of scope only if it is");
+        prompt.AppendLine($"  absent from `git diff {project.BaseBranch}...HEAD`.");
+        prompt.AppendLine();
+        prompt.AppendLine("Report out-of-scope defects — they are worth knowing about, and the platform routes the");
+        prompt.AppendLine("smaller ones to their own bug tasks instead of growing this pull request. Do not stretch");
+        prompt.AppendLine("a tag either way: an in-scope defect tagged out-of-scope leaves this branch broken, and");
+        prompt.AppendLine("an out-of-scope one tagged in-scope drags unrelated work into the diff.");
     }
 
     /// <summary>
@@ -776,19 +832,44 @@ public static class AgentPromptBuilder
     /// re-prompt only — a second verdict-less ending parks the run (log #11 spirit).
     /// Origin incident (2026-08-18): the first live review ended with a promise to
     /// deliver the verdict "when it completes" and parked a correct implementation.
+    /// <para>
+    /// The resumed leg's output <i>replaces</i> what the platform read from the first one
+    /// (<c>ReviewEngine.RecordReviewPassAsync</c> re-parses it and overwrites the lens's
+    /// findings file), so a lens that answers in the structured contract is told the contract
+    /// again here. Asking an adversarial pass to restate its findings as prose would strip the
+    /// severity and scope tags off every one of them, and the loop would then read a graded,
+    /// placed set of findings as one ungraded, unplaced stand-in.
+    /// </para>
     /// </summary>
-    public static string BuildReviewVerdictReprompt(int cycle)
+    public static string BuildReviewVerdictReprompt(ProjectDetails project, ReviewLens lens, int cycle)
     {
+        bool structured = lens == ReviewLens.Adversarial;
         StringBuilder prompt = new();
         prompt.AppendLine("Your review session ended without the required VERDICT line, so the platform");
         prompt.AppendLine("could not read your judgment. Conclude now:");
         prompt.AppendLine();
         prompt.AppendLine("- If any checks or commands are still unfinished, wait for them and fold the");
         prompt.AppendLine("  results into your judgment.");
-        prompt.AppendLine("- Restate your verified findings (file:line, defect, failure scenario), or state");
-        prompt.AppendLine("  that none stand.");
+        if (structured)
+        {
+            prompt.AppendLine("- Restate every verified finding that still stands, in full and in the header");
+            prompt.AppendLine("  contract below — the platform reads this message in place of your earlier one,");
+            prompt.AppendLine("  so a finding restated without its FINDING header arrives ungraded and unplaced,");
+            prompt.AppendLine("  and its severity and scope are lost. If none stand, say so.");
+        }
+        else
+        {
+            prompt.AppendLine("- Restate your verified findings (file:line, defect, failure scenario), or state");
+            prompt.AppendLine("  that none stand.");
+        }
+
         prompt.AppendLine("- End your final message with exactly one verdict line, nothing after it:");
         prompt.AppendLine("  `VERDICT: merge-ready` or `VERDICT: needs-fixes`.");
+        if (structured)
+        {
+            AppendFindingContract(prompt, project);
+        }
+
         prompt.AppendLine();
         prompt.AppendLine("This is the only re-prompt this review cycle receives; ending without a verdict");
         prompt.AppendLine($"again hands the run to a human. This is still review cycle {cycle} for this run.");
@@ -799,9 +880,15 @@ public static class AgentPromptBuilder
     /// <summary>
     /// The fix leg of the review loop (Decisions Log #23): a fresh session resolves the
     /// reviewers' verified findings in the same worktree. One fix session per cycle handles
-    /// every lens's findings together (log #59) — the findings it is handed are the cycle's
-    /// merged document, with each finding under the lens that produced it. Disputes park for
-    /// a human instead of looping — the daemon parses the resolution line.
+    /// every track's findings together (log #59) — the findings it is handed are the cycle's
+    /// merged document, with each finding under the lens that produced it and the platform's
+    /// disposition for it recorded underneath (log #62). Disputes park for a human instead of
+    /// looping — the daemon parses the resolution line.
+    /// <para>
+    /// The dispute lever covers a finding's severity as well as the finding itself, which is
+    /// what keeps the severity gate a gate: an agent that could quietly re-grade a High as a
+    /// Low would be deciding its own way past the convergence rule.
+    /// </para>
     /// </summary>
     public static string BuildReviewFix(TaskDetails task, string branch, string findings, int cycle)
     {
@@ -828,10 +915,24 @@ public static class AgentPromptBuilder
         prompt.AppendLine("- Verify each finding yourself, fix the real ones, and commit on this branch with");
         prompt.AppendLine("  clear messages. Do NOT push, do NOT open a pull request — the platform re-runs");
         prompt.AppendLine("  the verification gates and a fresh review after you finish.");
+        prompt.AppendLine("- **Follow the platform's disposition for each finding**, in the section headed");
+        prompt.AppendLine($"  \"{ReviewFindingDispositions.Heading}\" if the findings above have one. It is");
+        prompt.AppendLine("  machine bookkeeping over the reviewers' declared severity and scope, and it is not");
+        prompt.AppendLine("  yours to re-decide:");
+        prompt.AppendLine("  - A finding listed under \"Fix in this pull request\" is your work.");
+        prompt.AppendLine("  - A finding listed as fix-in-its-own-commit is a pre-existing defect worth cleaning");
+        prompt.AppendLine("    up while you are here. Fix it, and commit it on its own so the pull request's");
+        prompt.AppendLine("    history keeps the branch's real work separable from the cleanup.");
+        prompt.AppendLine("  - A finding listed as routed to a draft bug task is NOT yours. It is already");
+        prompt.AppendLine("    recorded elsewhere, and fixing it here grows this pull request with unrelated");
+        prompt.AppendLine("    changes. Leave it alone.");
         prompt.AppendLine("- If you judge a finding to be not a defect, or human territory (a design");
-        prompt.AppendLine("  disagreement, a scope change), do not paper over it and do not loop: state your");
-        prompt.AppendLine("  position on that finding explicitly in your summary. The platform hands disputes");
-        prompt.AppendLine("  to a human with both positions on record.");
+        prompt.AppendLine("  disagreement, a scope change), or to be graded wrongly — a High that is really a");
+        prompt.AppendLine("  Low, or the reverse — do not paper over it, do not quietly re-grade it, and do not");
+        prompt.AppendLine("  loop: state your position on that finding explicitly in your summary and dispute.");
+        prompt.AppendLine("  The severity decides how the review loop converges, so re-grading one yourself");
+        prompt.AppendLine("  would be deciding your own way past that. The platform hands disputes to a human");
+        prompt.AppendLine("  with both positions on record.");
         prompt.AppendLine();
         prompt.AppendLine("## Resolution (required)");
         prompt.AppendLine();
@@ -840,11 +941,12 @@ public static class AgentPromptBuilder
         prompt.AppendLine();
         prompt.AppendLine("    RESOLUTION: fixed");
         prompt.AppendLine();
-        prompt.AppendLine("when every finding is resolved, or");
+        prompt.AppendLine("when every finding that is yours is resolved, or");
         prompt.AppendLine();
         prompt.AppendLine("    RESOLUTION: disputed");
         prompt.AppendLine();
-        prompt.AppendLine("when any finding is, in your judgment, not a defect or a human decision.");
+        prompt.AppendLine("when any finding is, in your judgment, not a defect, a human decision, or wrongly");
+        prompt.AppendLine("graded.");
 
         return prompt.ToString();
     }

@@ -342,7 +342,10 @@ public sealed class ReviewEngine(
         }
 
         Guid artifactId = DomainId.New();
-        string prompt = AgentPromptBuilder.BuildReviewVerdictReprompt(run.ReviewCycle);
+        // The re-prompt is the pass's own contract restated: its lens decides whether the
+        // findings come back structured, and the resumed output replaces what was read before.
+        string prompt = AgentPromptBuilder.BuildReviewVerdictReprompt(
+            context.Project, verdictless.Lens, run.ReviewCycle);
         // The resumed session keeps the model it was dispatched on: the chain is NOT
         // re-resolved here, or the milestone would record a model the session never ran on
         // (log #33). An older stream that recorded no model stays honestly Unknown.
