@@ -103,6 +103,23 @@ public sealed class DaemonOptions
     public int MaxReviewRerequestsAfterFixes { get; set; } = 2;
 
     /// <summary>
+    /// How long a card-publication session (backlog 18) gets before the daemon stops waiting and
+    /// terminates it. Generous, because the session may be reading a repository's rules and
+    /// talking to Jira over MCP, and bounded for the same reason the synthesis pass is bounded: a
+    /// hung session that nothing ever gives up on holds the publication queue behind it forever,
+    /// and an abandoned agent burning tokens for nobody is worse than a request that says it
+    /// timed out and can be run again.
+    /// </summary>
+    public TimeSpan CardPublicationTimeout { get; set; } = TimeSpan.FromMinutes(15);
+
+    /// <summary>
+    /// How often the daemon looks for publication requests. The doorbell usually gets there
+    /// first (h9k task push-to-jira rings it); this is the sweep that covers a request made while
+    /// the daemon was down.
+    /// </summary>
+    public TimeSpan CardPublicationPollInterval { get; set; } = TimeSpan.FromSeconds(30);
+
+    /// <summary>
     /// Platform-default commit style for follow-up runs (Narrative or Append), applied
     /// when a project sets none of its own (Decisions Log #26). Narrative folds fixes
     /// into their owning commits per the AGENTS.md authored-history rule. This is the
@@ -160,6 +177,9 @@ public sealed class RoleModelDefaults
     /// <summary>The (future) draft-refinement run, backlog IDEA-draft-refinement-runs: configurable before it exists.</summary>
     public string Refinement { get; set; } = string.Empty;
 
+    /// <summary>The session that writes a task up as a card in an external tracker (backlog 18).</summary>
+    public string Publication { get; set; } = string.Empty;
+
     public AgentModel For(AgentRole role) => role switch
     {
         _ when role == AgentRole.Build => AgentModel.FromInput(Build),
@@ -167,6 +187,7 @@ public sealed class RoleModelDefaults
         _ when role == AgentRole.Fix => AgentModel.FromInput(Fix),
         _ when role == AgentRole.Synthesis => AgentModel.FromInput(Synthesis),
         _ when role == AgentRole.Refinement => AgentModel.FromInput(Refinement),
+        _ when role == AgentRole.Publication => AgentModel.FromInput(Publication),
         _ => AgentModel.Unknown,
     };
 }
