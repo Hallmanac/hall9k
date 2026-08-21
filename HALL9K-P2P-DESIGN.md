@@ -10,7 +10,7 @@ is in the repo. It records **end state only** — where the design moved during 
 the destination is written down. Rejected alternatives are kept deliberately (§16), because they
 carry real reasoning and prevent re-litigating settled ground.
 
-Binding one-line summaries live in `PLAN.md` §16 (Decisions Log #25–#43). This document carries the
+Binding one-line summaries live in `PLAN.md` §16 (Decisions Log #38–#56). This document carries the
 rationale and the mechanics.
 
 Read alongside: `PLAN.md` §6.2 (accountability, "the P2P down-payment"), §8.1 (content addressing),

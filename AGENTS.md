@@ -10,6 +10,7 @@ orchestrating detached Claude Code agents. Read in order of need:
 - `PLAN.md` — vision, architecture, and the **v0 Decisions Log** (§16; binding decisions live there)
 - `TASK-MODEL.md` — the domain model: streams, events, aggregates, type discipline
 - `SLICE-1.md` — the current build breakdown and acceptance criteria
+- `HALL9K-P2P-DESIGN.md` — the peer-to-peer layer: identity, discovery, NAT traversal (design only, nothing built; Decisions Log #38-#58)
 
 ## Build / test / run
 

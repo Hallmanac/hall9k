@@ -8,7 +8,7 @@ Paste this into a fresh Claude Code session with `HALL9K-P2P-DESIGN.md` in the r
 
 You are picking up the peer-to-peer layer for Hall9k (roadmap #5). Read
 `HALL9K-P2P-DESIGN.md` in full before doing anything else, plus `PLAN.md` §6.2, §10, §14, §15 and
-§16 (decisions #25–#43), and `AGENTS.md`.
+§16 (decisions #38–#56), and `AGENTS.md`.
 
 **Nothing in that design is built.** It is the output of four long design conversations and it has
 not survived contact with the codebase. Your first job is to attack it, not to implement it.

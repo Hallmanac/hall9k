@@ -1,3 +1,7 @@
+# CONSUMED (2026-08-20): merged into PLAN.md as decisions #38-#58 (+13 renumber from the
+# original #25-#45; the P2P sessions drafted against a pre-fork PLAN ending at #24), section
+# 15 rows 12-29, and the section 14 roadmap amendment. Retained as the merge's source record.
+
 # PLAN.md additions — P2P design session (2026-08-18)
 
 Paste-ready fragments. Four decisions-log entries, three open-decision rows plus one amendment,
