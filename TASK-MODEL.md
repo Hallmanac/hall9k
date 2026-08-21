@@ -546,8 +546,10 @@ public sealed record TokensRecorded(     // from the stream-json result payload,
 
 // Pre-PR review loop (log #24) — appended by the daemon's ReviewEngine between the gates
 // and PullRequestOpener. Full findings text is a disk artifact (log #6), never payload.
-// A cycle runs one pass per lens (log #59), so the dispatch and pass events come one per
-// lens while ReviewCompleted stays the cycle's single merged milestone.
+// A cycle runs one pass per still-active lens (log #59), so the dispatch and pass events
+// come one per lens while ReviewCompleted stays the cycle's single merged milestone. Each
+// lens is a track converging on its own terms (log #62): it concludes with its own event,
+// and the loop ends with one ReviewSettled saying how merge-ready was reached.
 public sealed record ReviewDispatched(   // one review pass spawned over the diff, fresh session;
     Guid Id,                             // one per lens, so a cycle appends two of these (log #59).
     Guid SessionId,                      // -> UnderReview. Pid + start = adoption identity (log #2).
@@ -563,7 +565,10 @@ public sealed record ReviewPassCompleted( // ONE lens of the cycle returned its 
     int Cycle,                           // review-<cycle>-<lens>-findings.md in the run directory
     ReviewLens Lens,                     // the lens rides on the event so "which lens found this"
     ReviewVerdict Verdict,               //   is a query over the stream, not an impression
-    DateTimeOffset CompletedAt);
+    DateTimeOffset CompletedAt,
+    IReadOnlyList<ReviewFindingRecord>?  // each finding's grade, scope tag, pointer, and the
+        Findings = null);                //   disposition the loop chose (log #62) — classification
+                                         //   only, never the text. Null on pre-#62 streams.
 public sealed record ReviewCompleted(    // the CYCLE's merged verdict over every lens (log #59),
     Guid Id,                             // appended in the same transaction as the cycle's last
     int Cycle,                           // ReviewPassCompleted. Merged findings artifact:
@@ -583,18 +588,46 @@ public sealed record ReviewVerdictReprompted( // verdict-less pass resumed ONCE 
     ReviewLens? Lens = null);            // which pass is being re-prompted; the one re-prompt is the
                                          //   CYCLE's, not each lens's (log #59)
 public sealed record ReviewFixDispatched( // fix session in the same worktree, findings as prompt;
-    Guid Id,                             // counted against MaxAutomaticReviewFixRuns
+    Guid Id,                             // counted for the record; the loop's bounds are the
+                                         //   per-track cycle caps (log #62)
     Guid SessionId,
     int Cycle,
     int ProcessId,
     DateTimeOffset ProcessStartedAt,
     DateTimeOffset DispatchedAt,
     AgentModel? Model = null);           // resolved for the Fix role, separately from Review (log #33)
-public sealed record ReviewFixCompleted( // Fixed/Unknown -> gates re-run, fresh review; Disputed -> park
-    Guid Id,
+public sealed record ReviewFixCompleted( // Fixed/Unknown -> gates re-run, then a fresh review (or, with
+    Guid Id,                             //   every track concluded, settling); Disputed -> park. Even the
+                                         //   terminal fix re-runs the gates: a settled ending ships
+                                         //   commits no REVIEWER read, never unbuilt ones (log #62)
     int Cycle,
     ReviewFixOutcome Outcome,
     DateTimeOffset CompletedAt);
+public sealed record ReviewTrackConcluded( // one track finished and went dormant (log #62). Clean = a
+    Guid Id,                             //   reviewer read the tip and found nothing; Settled = the
+    ReviewLens Lens,                     //   severity gate or scope routing ended it. A concluded
+    int Cycle,                           //   track is never dispatched again and is deliberately
+    ReviewSettlement Settlement,         //   never reawakened by the other track's fix sessions.
+    IReadOnlyList<ReviewResidual>        // what it ended on unconfirmed: grade, scope, and
+        Residuals,                       //   fixed-unreviewed vs routed
+    DateTimeOffset ConcludedAt);
+public sealed record ReviewFindingRouted( // an out-of-scope non-high went to a draft bug task instead
+    Guid Id,                             //   of into this diff (log #62). DraftTaskId is null and
+    ReviewLens Lens,                     //   FailureReason set when creation failed: routing is a
+    int Cycle,                           //   courtesy, and a courtesy that fails never fails the
+    ReviewSeverity Severity,             //   review loop — but it is recorded as having failed.
+    string Location,
+    Guid? DraftTaskId,
+    string? FailureReason,
+    DateTimeOffset RoutedAt);
+public sealed record ReviewSettled(      // the loop ended; PullRequestOpener may proceed (log #62).
+    Guid Id,                             //   The verdict is always MergeReady; Settlement is how it
+    int Cycle,                           //   was reached, and the counts are the residuals it left.
+    ReviewSettlement Settlement,         //   Absent on runs whose review predates tracks, whose
+    int ResidualsFixed,                  //   settlement is honestly unknown rather than assumed
+    int ResidualsRouted,                 //   clean. A routing that failed left no draft, so it is
+    int ResidualsRoutingFailed,          //   counted apart rather than reported as one that worked.
+    DateTimeOffset SettledAt);
 public sealed record ReviewParked(       // budget spent, dispute, or no verdict: the human owns the
     Guid Id,                             // diff. Task stays Claimed, lease retained (the expiry sweep
     string Reason,                       // refreshes a parked lease, never requeues it — log #28).
@@ -714,19 +747,47 @@ carrying its lens and that lens's verdict; when the cycle's last pass lands, the
 merge into one document and the verdicts merge into one `ReviewCompleted`, appended in the
 same transaction as that last pass event. **MergeReady requires every lens clean.**
 
-- **merge-ready** → `PullRequestOpener` proceeds; the closeout phase (§2.2) begins as before.
+- **merge-ready** → that track concludes Clean and goes dormant; when the last track does,
+  `ReviewSettled` records how the loop ended and `PullRequestOpener` proceeds (§2.2 follows).
 - **needs-fixes** → **one** fix session runs in the same worktree with the *merged* findings
-  of every lens as its prompt; the gates re-run; a *fresh* set of reviewers looks again
-  (review → fix → gates → review). Bounded by `DaemonOptions.MaxAutomaticReviewFixRuns`
-  (default 2, the §2.2 budget pattern); exhaustion parks the run (`ReviewParked` →
-  NeedsHuman in `h9k status`) with the findings artifact attached.
-- **dispute** — the fix run judging a finding not-a-defect or human-territory — parks
-  immediately with both positions on disk (findings + fix-position artifacts) rather
-  than looping on judgment.
+  of every live lens as its prompt; the gates re-run; a *fresh* set of reviewers looks again
+  (review → fix → gates → review).
+- **dispute** — the fix run judging a finding not-a-defect, human-territory, or wrongly
+  graded — parks immediately with both positions on disk (findings + fix-position
+  artifacts) rather than looping on judgment.
 
-**The budgets are per cycle, never per lens**: one automatic fix run per cycle against
-`MaxAutomaticReviewFixRuns`, and one verdict re-prompt per cycle however many passes ended
-without a `VERDICT:` line. Two lenses do not double the parking math.
+**Each lens is a track with its own cycle count and its own convergence rule** (log #62).
+Conformance grades nothing and ends the moment it is clean; still returning findings at
+`MaxComplianceReviewCycles` (3) parks the run, because nothing automated is left to try.
+Adversarial runs under a **severity gate**: through
+`AdversarialSeverityGateFromCycle - 1` any finding of any grade forces the next cycle, and
+from the gate cycle onward only a `high` does — mediums and lows are still fixed, they
+just stop re-triggering the loop. Its cap is `MaxAdversarialReviewCycles` (10), and highs
+still appearing there park the run as "the machine kept finding real problems", not as a
+spent budget. A track that concludes goes dormant and is deliberately never reawakened by
+the other track's fix sessions.
+
+**Scope routes findings, it does not rank them.** Every adversarial finding carries a
+mechanical scope tag: in-scope if the defective line is in code this branch added or
+changed, out-of-scope if it is pre-existing on the base branch. An out-of-scope **high** is
+fixed here in a commit of its own; an out-of-scope **non-high** is not fixed here at all,
+and the daemon turns it into a **draft bug task** (`ReviewFindingRouted`) that is inert
+until a human publishes it. A failed draft creation is recorded as a failed routing and
+never fails the review loop; it is counted apart from the routings that worked, because no
+draft exists for it. A defect is routed **once per run**: the fix session is told to leave
+a routed line alone and every later reviewer has fresh context, so the same line comes back
+for as long as anything else keeps the loop alive, and re-routing it would turn one defect
+into one inert draft per cycle.
+
+**What stays per cycle rather than per track**: one fix session over every live track's
+findings, and one verdict re-prompt however many passes ended without a `VERDICT:` line.
+Two tracks do not double the fixing or the parking math.
+
+**The terminal verdict stays MergeReady; `ReviewSettlement` says how it was reached.**
+Clean means a reviewer read the final tip and found nothing; Settled means the gate, the
+routing, or a human's park resolution ended it, and the **residuals** (grade, scope, and
+fixed-unreviewed vs routed) are recorded so a settled ending never reads like a clean one.
+`h9k task show` prints the distinction.
 
 A parked run keeps its task Claimed and its lease alive (adoption refreshes the
 heartbeat at startup): the worktree is the human's workspace. Review and fix sessions
