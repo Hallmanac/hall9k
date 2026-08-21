@@ -27,7 +27,40 @@ public sealed record WorkItemStatus
 
     public string Value { get; }
 
-    private WorkItemStatus(string value) => Value = value;
+    /// <summary>
+    /// What the source itself called this state, when that is not the same word as
+    /// <see cref="Value"/>. Null for a source whose vocabulary is already Hall9k's.
+    /// <para>
+    /// It exists because mapping and observing are two different things and a source with its
+    /// own workflow needs both. A Jira card in "In Progress" is open by the platform's rule, and
+    /// the rule is what the adoption gate must read; but the agent context stamps what was
+    /// observed at import, and printing "open" there would quietly replace the board's own word
+    /// with the platform's conclusion about it. Keeping both means the gate reads the mapping
+    /// and the human reads the observation (AGENTS.md, never guess at unobserved facts —
+    /// including never overwriting an observed one with a derived one).
+    /// </para>
+    /// </summary>
+    public string? SourceLabel { get; }
+
+    private WorkItemStatus(string value, string? sourceLabel = null)
+    {
+        Value = value;
+        SourceLabel = sourceLabel;
+    }
+
+    /// <summary>
+    /// This state, carrying the word the source used for it. Identical or blank labels are
+    /// dropped rather than recorded, so "open (open)" cannot happen; the label is folded to one
+    /// printable line first, because it is a value someone else's workflow configuration
+    /// supplied and it ends up in a terminal and in an agent's prompt.
+    /// </summary>
+    public WorkItemStatus As(string? sourceLabel)
+    {
+        string label = Text.RelayedText.OneLine(sourceLabel ?? string.Empty).Trim();
+        return label.IsBlank() || label.Equals(Value, StringComparison.OrdinalIgnoreCase)
+            ? this
+            : new WorkItemStatus(Value, label);
+    }
 
     /// <summary>
     /// Case and surrounding space are normalised only far enough to recognise the two states
@@ -51,5 +84,8 @@ public sealed record WorkItemStatus
     /// <summary>True only when the source positively said open; Unknown is not open.</summary>
     public bool IsOpen => Value == Open.Value;
 
-    public override string ToString() => Value.IsBlank() ? "unknown" : Value;
+    public override string ToString() =>
+        SourceLabel is { } label ? $"{label} ({Mapped})" : Mapped;
+
+    private string Mapped => Value.IsBlank() ? "unknown" : Value;
 }
