@@ -1,3 +1,9 @@
+# SUPERSEDED (2026-08-20): the learnings-loop design now lives in IDEA-learning-capture.md,
+# which arrived from Brian's beads deep-dive session far more developed (inert-by-default
+# quarantine, scope-based replication, absorb/reinforce/retract). This file is retained for
+# what the successor does not carry: the honesty-principle notes in section 1 (including the
+# KNOWN VIOLATION in NodeBootstrap) and the origin-incident convention history.
+
 # Idea: The learnings loop — platform-native lessons that feed future runs
 
 Captured 2026-08-17 (inspired by Collaboard's honesty/lessons mechanics; Hall9k version is
