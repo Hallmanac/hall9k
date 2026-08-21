@@ -2,6 +2,7 @@ using System.Text;
 using Hall9k.Domain.Features.Project;
 using Hall9k.Domain.Features.Project.Projections;
 using Hall9k.Domain.Features.Tasks.Projections;
+using Hall9k.Domain.Features.Tasks.Queries;
 
 namespace Hall9k.Daemon.Execution;
 
@@ -14,7 +15,12 @@ namespace Hall9k.Daemon.Execution;
 public static class AgentPromptBuilder
 {
     public static string Build(
-        TaskDetails task, ProjectDetails project, string branch, string worktreePath, bool resumesPreviousWork = false)
+        TaskDetails task,
+        ProjectDetails project,
+        string branch,
+        string worktreePath,
+        bool resumesPreviousWork = false,
+        string? blockerContext = null)
     {
         StringBuilder prompt = new();
         prompt.AppendLine("# Task");
@@ -53,6 +59,15 @@ public static class AgentPromptBuilder
             prompt.AppendLine("## Context");
             prompt.AppendLine();
             prompt.AppendLine(task.AgentContext);
+            prompt.AppendLine();
+        }
+
+        // What this task's immediate blockers handed down (Decisions Log #36). It sits after
+        // the task's own context and before the project links: nearer than a link the agent
+        // may or may not fetch, and never mistaken for part of the objective.
+        if (blockerContext.IsNotBlank())
+        {
+            prompt.AppendLine(blockerContext);
             prompt.AppendLine();
         }
 
@@ -96,7 +111,7 @@ public static class AgentPromptBuilder
     }
 
     /// <summary>
-    /// The handoff the run leaves for whatever depends on it (Decisions Log #35). It is asked
+    /// The handoff the run leaves for whatever depends on it (Decisions Log #36). It is asked
     /// for here, of the agent that did the work, because that agent is the one that knows what
     /// it deliberately left undone — a separate summarizer session would cost more and know
     /// less. The daemon reads this block off the session's own result at session end and holds
@@ -186,7 +201,7 @@ public static class AgentPromptBuilder
         prompt.AppendLine("- End with a short summary: which comments you addressed, which you dismissed and");
         prompt.AppendLine("  why, and any open questions.");
         // A reopened task's follow-up run is the run that reaches true closeout, so it is the
-        // run whose handoff travels (Decisions Log #35) — it covers the whole task, not only
+        // run whose handoff travels (Decisions Log #36) — it covers the whole task, not only
         // this leg's fixes.
         AppendHandoffRules(prompt);
 
@@ -437,6 +452,71 @@ public static class AgentPromptBuilder
         prompt.AppendLine("    RESOLUTION: disputed");
         prompt.AppendLine();
         prompt.AppendLine("when any finding is, in your judgment, not a defect or a human decision.");
+
+        return prompt.ToString();
+    }
+
+    /// <summary>
+    /// The fan-in synthesis session (Decisions Log #36): when a claimed task has more
+    /// immediate blockers than the node's threshold, this session condenses their handoffs
+    /// into the one context document the build session actually reads. It is a platform
+    /// dispatch like the reviewer — recorded model, recorded tokens, artifacts in the
+    /// dependent run's own directory — and, like the reviewer, strictly read-only.
+    /// <para>
+    /// The instruction is to condense, never to judge: dropping a gotcha because it looked
+    /// minor would defeat the whole point of routing it, and this session knows less about
+    /// the dependent's work than the dependent will.
+    /// </para>
+    /// </summary>
+    public static string BuildContextSynthesis(TaskDetails task, int blockerCount, string blockerContext)
+    {
+        StringBuilder prompt = new();
+        prompt.AppendLine("# Condense these blocker handoffs into one starting context");
+        prompt.AppendLine();
+        prompt.AppendLine($"A task is about to start with the handoffs of {blockerCount} blockers it waited on.");
+        prompt.AppendLine("That is a lot to open a session with, so your only job is to turn them into one");
+        prompt.AppendLine("shorter document that the agent doing the work will read instead.");
+        prompt.AppendLine();
+        prompt.AppendLine("## The task that will read your output");
+        prompt.AppendLine();
+        prompt.AppendLine(task.Objective);
+        prompt.AppendLine();
+        if (task.AcceptanceCriteria.Count > 0)
+        {
+            prompt.AppendLine("Acceptance criteria:");
+            foreach (string criterion in task.AcceptanceCriteria)
+            {
+                prompt.AppendLine($"- {criterion}");
+            }
+
+            prompt.AppendLine();
+        }
+
+        prompt.AppendLine("## The handoffs to condense");
+        prompt.AppendLine();
+        prompt.AppendLine(blockerContext);
+        prompt.AppendLine();
+        prompt.AppendLine("## How to condense");
+        prompt.AppendLine();
+        prompt.AppendLine("- Merge what overlaps and drop what repeats. Several blockers describing the same");
+        prompt.AppendLine("  convention should leave one statement of it, not five.");
+        prompt.AppendLine("- Keep every gotcha, constraint, and deliberate omission, even a small-looking one.");
+        prompt.AppendLine("  You are shortening the text, not deciding what matters — the agent reading this");
+        prompt.AppendLine("  knows its own work better than you do, and a dropped warning routes nothing.");
+        prompt.AppendLine("- Keep each fact attached to the blocker it came from, so a claim can be traced.");
+        prompt.AppendLine("- Say only what the handoffs say. Do not resolve contradictions between them by");
+        prompt.AppendLine("  picking a side, and do not fill gaps from the code or from your own judgment:");
+        prompt.AppendLine("  name the disagreement and move on. An invented fact here reads downstream as");
+        prompt.AppendLine("  something a blocker actually reported.");
+        prompt.AppendLine("- Do NOT modify files, commit, push, or open pull requests. You are read-only.");
+        prompt.AppendLine();
+        prompt.AppendLine("## Output");
+        prompt.AppendLine();
+        prompt.AppendLine("Your final message IS the document — it is pasted into the other agent's prompt");
+        prompt.AppendLine($"verbatim, so write it for that reader. Open with the `{BlockerContextDocument.Heading}`");
+        prompt.AppendLine("heading, keep the depth-one framing (these are immediate blockers; a fact needed from");
+        prompt.AppendLine("two hops back means a missing dependency edge, not a gap to work around), and add no");
+        prompt.AppendLine("preamble about having been asked to summarize.");
 
         return prompt.ToString();
     }

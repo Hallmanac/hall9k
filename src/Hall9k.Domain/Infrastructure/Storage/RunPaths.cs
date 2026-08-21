@@ -36,7 +36,7 @@ public static class RunPaths
         Path.Combine(RunDirectory(runId), $"review-{cycle}-fix-position.md");
 
     /// <summary>
-    /// The run's handoff to whatever depends on it (Decisions Log #35), written at session end
+    /// The run's handoff to whatever depends on it (Decisions Log #36), written at session end
     /// beside the review findings so it is inspectable outside the ledger. The file's three
     /// states are three observations, which is what lets the closeout append record an honest
     /// HandoffOutcome without guessing: present and non-blank means the agent authored a
@@ -44,4 +44,7 @@ public static class RunPaths
     /// absent means there was no session-end capture at all.
     /// </summary>
     public static string HandoffFile(Guid runId) => Path.Combine(RunDirectory(runId), "handoff.md");
+
+    /// <summary>The condensed blocker context a synthesis session produced for this run (log #36).</summary>
+    public static string BlockerContextFile(Guid runId) => Path.Combine(RunDirectory(runId), "blocker-context.md");
 }

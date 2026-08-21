@@ -45,6 +45,7 @@ builder.Services.AddSingleton<IExecutor, ClaudeExecutor>();
 builder.Services.AddSingleton<VerificationRunner>();
 builder.Services.AddSingleton<ReviewEngine>();
 builder.Services.AddSingleton<PullRequestOpener>();
+builder.Services.AddSingleton<BlockerContextAssembler>();
 builder.Services.AddSingleton<RunSupervisor>();
 builder.Services.AddSingleton<RunLauncher>();
 builder.Services.AddSingleton<IPullRequestInspector, GitHubPullRequestInspector>();

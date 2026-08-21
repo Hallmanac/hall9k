@@ -65,11 +65,17 @@ public sealed class RunAggregate
     /// <summary>Human findings from a needs-fixes park resolution, consumed by the next fix dispatch.</summary>
     public string? PendingHumanFindings { get; private set; }
 
-    /// <summary>Whether this run handed anything down at true closeout, and when not, why (log #35).</summary>
+    /// <summary>Whether this run handed anything down at true closeout, and when not, why (log #36).</summary>
     public HandoffOutcome HandoffOutcome { get; private set; } = HandoffOutcome.Unknown;
 
     /// <summary>The bounded handoff text; null whenever the outcome records an absence.</summary>
     public string? HandoffSummary { get; private set; }
+
+    /// <summary>Synthesis sessions dispatched for this run's own starting context (log #36).</summary>
+    public int ContextSynthesisSessions { get; private set; }
+
+    /// <summary>Whether the last synthesis pass produced a usable document; false also means "fell back to raw".</summary>
+    public bool ContextSynthesized { get; private set; }
 
     private readonly List<string> _failedGates = [];
     public IReadOnlyList<string> FailedGates => _failedGates;
@@ -274,6 +280,12 @@ public sealed class RunAggregate
         HandoffOutcome = @event.Outcome ?? HandoffOutcome.Unknown;
         HandoffSummary = @event.Summary;
     }
+
+    // The synthesis session is bookkeeping on the dependent's own run: it neither moves the
+    // run state nor gates anything, so the aggregate records only that it happened.
+    public void Apply(ContextSynthesisDispatched @event) => ContextSynthesisSessions++;
+
+    public void Apply(ContextSynthesisCompleted @event) => ContextSynthesized = @event.Synthesized;
 
     public void Apply(RunCompleted @event) => State = RunState.Completed;
 

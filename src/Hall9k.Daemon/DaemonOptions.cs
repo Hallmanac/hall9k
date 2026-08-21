@@ -43,6 +43,28 @@ public sealed class DaemonOptions
     public int MaxAutomaticReviewFixRuns { get; set; } = 2;
 
     /// <summary>
+    /// How many immediate BlockedBy blockers a claimed task may have before their handoffs
+    /// are condensed rather than passed through raw (Decisions Log #36). Fan-in is healthy —
+    /// eight tasks converging on an integration task is good decomposition — but eight
+    /// handoffs is a heavy way to start, so above this count the daemon dispatches a
+    /// synthesis session first. Configuration rather than a constant, because the right
+    /// number is only visible once real fan-in patterns appear.
+    /// </summary>
+    public int BlockerSynthesisThreshold { get; set; } = 3;
+
+    /// <summary>
+    /// How long a dispatch waits for its synthesis session before giving up and starting on the
+    /// raw handoffs (Decisions Log #36). Unlike every other session the daemon spawns, this one
+    /// is on the critical path — the dependent cannot start until its context is ready — and
+    /// RunLauncher.LaunchAsync is awaited inside the dispatch loop, so a condenser that hangs
+    /// would hold up every other claim on this node. The ceiling is what keeps that cost
+    /// bounded: the wait ends, the timed-out session is terminated, and the run starts with the
+    /// handoffs it already had. Condensing is an optimization over a context that already
+    /// exists, so waiting forever for it is never the right trade.
+    /// </summary>
+    public TimeSpan BlockerSynthesisTimeout { get; set; } = TimeSpan.FromMinutes(5);
+
+    /// <summary>
     /// Platform-default commit style for follow-up runs (Narrative or Append), applied
     /// when a project sets none of its own (Decisions Log #26). Narrative folds fixes
     /// into their owning commits per the AGENTS.md authored-history rule. This is the
@@ -94,6 +116,9 @@ public sealed class RoleModelDefaults
     /// <summary>The session that applies review findings in the run's worktree (log #24).</summary>
     public string Fix { get; set; } = string.Empty;
 
+    /// <summary>The session that condenses a fan-in of blocker handoffs into one document (log #36).</summary>
+    public string Synthesis { get; set; } = string.Empty;
+
     /// <summary>The (future) draft-refinement run, backlog IDEA-draft-refinement-runs: configurable before it exists.</summary>
     public string Refinement { get; set; } = string.Empty;
 
@@ -102,6 +127,7 @@ public sealed class RoleModelDefaults
         _ when role == AgentRole.Build => AgentModel.FromInput(Build),
         _ when role == AgentRole.Review => AgentModel.FromInput(Review),
         _ when role == AgentRole.Fix => AgentModel.FromInput(Fix),
+        _ when role == AgentRole.Synthesis => AgentModel.FromInput(Synthesis),
         _ when role == AgentRole.Refinement => AgentModel.FromInput(Refinement),
         _ => AgentModel.Unknown,
     };
