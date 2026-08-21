@@ -27,9 +27,13 @@ the tracker asking three questions about the idea/task at hand -
   design docs?
 - Does this belong under an existing epic or parent item?
 
-Findings land in the idea's discovery workspace with provenance, inform the
-draft's context, and feed the tracking preference (backlog 32): a card created at
-assignment is created UNDER the right epic, not orphaned.
+Findings land wherever the work is happening (Brian, 2026-08-21): in the idea's
+DISCOVERY workspace when the survey runs during discovery, or in the task's
+REFINEMENT context when you went straight to a task (or already promoted) and
+discover mid-refinement that related backlog items exist - bring them in as
+context and planning input right there. Either way the findings carry provenance,
+inform the draft's context, and feed the tracking preference (backlog 32): a card
+created at assignment is created UNDER the right epic, not orphaned.
 
 ## Fits
 
