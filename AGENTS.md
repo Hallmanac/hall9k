@@ -27,6 +27,7 @@ h9k project show <name>      # one project: registration, settings, rollup, newe
 h9k task list --project <name> --state <state>   # browse tasks, newest first (--all, --limit)
 h9k status                   # the attention pane: what needs you, what stalled, what runs
 h9k idea add "<text>"        # capture an idea; discovery starts, a project is optional
+h9k connection list          # every external account this install can reach, and where its credential lives
 ```
 
 Ideas come before tasks (Decisions Log #35). An idea undergoes **discovery** (what is this?);
@@ -54,6 +55,7 @@ creates a **draft**, and nothing dispatches until a human publishes and assigns 
 ```bash
 h9k task add --project <name> --objective "…"     # creates a Draft (identity, not readiness)
 h9k task add --project <name> --from-issue 42     # adopt a GitHub issue (number, owner/repo#42, or URL)
+h9k task add --project <name> --from-jira PROJ-1  # adopt a Jira card (key or URL)
 h9k task revise <id> --criteria "…" --blocked-by <id>   # Draft-only; each option replaces that part
 h9k task publish <id> [--assign]                  # the readiness gate; --assign starts it too
 h9k task assign <id> [<owner>]                    # the dispatch trigger — Queued, or Blocked on dependencies
@@ -65,12 +67,33 @@ The edit-after-the-fact path is `unassign → draft → revise → publish → a
 explicit act. A dependency counts as met only at true closeout (the pull request merged and the
 closeout monitor observed it); TASK-MODEL.md §2.3 has the whole picture.
 
-`--from-issue` adopts existing external work (PLAN.md §3.1a, Decisions Log #60): the issue title
-seeds the objective, the body becomes agent context, and the issue is recorded as the task's
-`ExternalReference`. Acceptance criteria are never read out of an issue body; supply them with
-`--criteria` or at the prompt. Import is a one-time snapshot, so the state read at import is
-recorded as an observation of that moment and never re-checked. Every source goes through
+`--from-issue` and `--from-jira` adopt existing external work (PLAN.md §3.1a, Decisions Log #60,
+#65): the item's title seeds the objective, its description becomes agent context, and the item is
+recorded as the task's `ExternalReference`. Acceptance criteria are never read out of a description;
+supply them with `--criteria` or at the prompt. Import is a one-time snapshot, so the state read at
+import is recorded as an observation of that moment and never re-checked. Every source goes through
 `IWorkItemProvider` in `Hall9k.Connectors`, so a new one is a resolver rather than a new command.
+
+Jira is connected as a **read** credential plus an agent-mediated pen (Decisions Log #65), because
+reading Jira is configuration-agnostic and writing it is not:
+
+```bash
+h9k connection add jira --site https://your-org.atlassian.net --email you@example.com
+h9k connection list                               # provider, account, site, credential reference
+h9k project set <project> --jira PROJ             # bind the board; 'none' clears it
+h9k task push-to-jira <task>                      # dispatch an agent run that writes the card
+h9k task link-jira <task> PROJ-123                # record the card, verified against Jira first
+```
+
+The platform never authors a card: issue types, required fields and routing rules are the
+organisation's configuration, so `push-to-jira` dispatches a session into the project's own
+repository, where its card-authoring skills live, and that session finishes by calling
+`link-jira`. **Agent-facing commands are observation gates**: `link-jira` reads the key back
+through the registered connection and records what Jira answered, so an agent's claim is an
+argument that gets checked rather than a fact that gets accepted. Registered credentials are
+recorded as references (`env:`, `keychain:`, `file:`) and never as secrets. When a task carrying a
+Jira reference merges, closeout comments the pull request on the card; it never transitions the
+card, because which status a merge means is a team's workflow rather than a fact about software.
 
 CI runs build + test on ubuntu and windows for every push/PR to main.
 
