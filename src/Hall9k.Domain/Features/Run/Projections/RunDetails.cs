@@ -28,6 +28,12 @@ public sealed class RunDetails
     public DateTimeOffset? PullRequestMergedAt { get; set; }
     public List<string> FailingChecks { get; set; } = [];
     public int UnresolvedReviewThreads { get; set; }
+    /// <summary>
+    /// How many of <see cref="UnresolvedReviewThreads"/> a human started (Decisions Log #62).
+    /// Null when the observation predates counting reviewers other than Copilot — an
+    /// unrecorded breakdown, never a claimed zero.
+    /// </summary>
+    public int? UnresolvedHumanReviewThreads { get; set; }
     /// <summary>The last errored review observed — the monitor's dedup key: one re-request per errored review.</summary>
     public string? ErroredReviewUrl { get; set; }
     /// <summary>Review re-requests issued for this run; adds to the task's CloseoutAttempts against the shared budget.</summary>
@@ -172,6 +178,7 @@ public sealed class RunDetailsProjection : SingleStreamProjection<RunDetails, Gu
     public void Apply(IEvent<ReviewFeedbackReceived> @event, RunDetails view)
     {
         view.UnresolvedReviewThreads = @event.Data.UnresolvedThreadCount;
+        view.UnresolvedHumanReviewThreads = @event.Data.UnresolvedHumanThreadCount;
         view.State = RunState.ReviewPending;
     }
 

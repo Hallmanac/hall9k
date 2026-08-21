@@ -28,11 +28,12 @@ public sealed record CloseoutSweepResult(int RunsInspected, int MergesObserved);
 /// tests against a bare store and a fake inspector. Each node watches the
 /// awaiting-review runs it executed (RunDetails.NodeId — the task itself is Done and
 /// lease-free, so run provenance is the only honest owner). Per PR it observes merge,
-/// close, failing checks, unresolved Copilot review threads, and errored Copilot
-/// reviews (an error placeholder produces zero threads — never mistaken for a clean
-/// pass), dispatching follow-up runs through the standard reopen pipeline and
-/// re-requesting errored reviews through the API until the bounded automatic budget is
-/// spent — then it parks the run for the human and keeps watching for the merge only.
+/// close, failing checks, unresolved review threads from every reviewer (Decisions Log
+/// #62 — Copilot is one reviewer among many), and errored Copilot reviews (an error
+/// placeholder produces zero threads — never mistaken for a clean pass), dispatching
+/// follow-up runs through the standard reopen pipeline and re-requesting errored reviews
+/// through the API until the bounded automatic budget is spent — then it parks the run
+/// for the human and keeps watching for the merge only.
 /// </summary>
 public sealed class CloseoutEngine(
     IDocumentStore store,
@@ -202,27 +203,40 @@ public sealed class CloseoutEngine(
             return InspectionOutcome.Inspected;
         }
 
-        if (snapshot.UnresolvedCopilotThreadCount > 0)
+        if (snapshot.UnresolvedReviewThreadCount > 0)
         {
-            session.Events.Append(run.Id, new ReviewFeedbackReceived(run.Id, snapshot.UnresolvedCopilotThreadCount, now));
+            session.Events.Append(run.Id, new ReviewFeedbackReceived(
+                run.Id, snapshot.UnresolvedReviewThreadCount, now, snapshot.UnresolvedHumanThreadCount));
             await DispatchFollowUpOrParkAsync(
                 session, task, run, fence.Version,
                 FollowUpKind.ReviewFeedback,
-                $"{snapshot.UnresolvedCopilotThreadCount} unresolved Copilot review thread(s) on the pull request.",
+                DescribeUnresolvedThreads(snapshot),
                 now, cancellationToken);
             return InspectionOutcome.Inspected;
         }
 
-        if (snapshot.ErroredCopilotReview is { } erroredReview)
+        if (snapshot.ErroredReview is { } erroredReview)
         {
             await RerequestReviewOrParkAsync(
                 session, task, run, project.RepositoryPath, task.PullRequestUrl,
-                run.PullRequestNumber.Value, erroredReview, now, cancellationToken);
+                run.PullRequestNumber.Value, snapshot, erroredReview, now, cancellationToken);
             return InspectionOutcome.Inspected;
         }
 
         return InspectionOutcome.Inspected;
     }
+
+    /// <summary>
+    /// Why a review follow-up was dispatched, in the words the agent's prompt will carry.
+    /// The human count is stated separately rather than folded into the total because it
+    /// changes what the follow-up must do: a person is waiting for an answer, and the
+    /// prompt's care rules key off exactly that (Decisions Log #62).
+    /// </summary>
+    private static string DescribeUnresolvedThreads(PullRequestSnapshot snapshot) =>
+        snapshot.UnresolvedHumanThreadCount > 0
+            ? $"{snapshot.UnresolvedReviewThreadCount} unresolved review thread(s) on the pull request, "
+                + $"{snapshot.UnresolvedHumanThreadCount} of them started by a human reviewer."
+            : $"{snapshot.UnresolvedReviewThreadCount} unresolved review thread(s) on the pull request.";
 
     /// <summary>
     /// An errored review (zero threads, no verdict) must not read as review-clean: the
@@ -241,6 +255,7 @@ public sealed class CloseoutEngine(
         string repositoryPath,
         string pullRequestUrl,
         int pullRequestNumber,
+        PullRequestSnapshot snapshot,
         ErroredReview erroredReview,
         DateTimeOffset now,
         CancellationToken cancellationToken)
@@ -271,8 +286,16 @@ public sealed class CloseoutEngine(
         // The API call precedes the append: no ReviewRerequested lands without the
         // request actually made. A failure here rolls the observation back with it and
         // the next sweep retries the whole step.
+        //
+        // The reviewer is looked up in the snapshot rather than reconstructed, so the
+        // [bot]-suffix decision stays the provider's answer. Only an app account can post
+        // an error placeholder, so the fallback says bot: the errored review was matched by
+        // Copilot's own login in the first place.
+        PullRequestReviewer reviewer = snapshot.Reviewers.FirstOrDefault(
+                candidate => candidate.Login == erroredReview.Reviewer)
+            ?? new PullRequestReviewer(erroredReview.Reviewer, ReviewerKind.Bot);
         await inspector.RerequestReviewAsync(
-            repositoryPath, pullRequestUrl, pullRequestNumber, erroredReview.Reviewer, cancellationToken);
+            repositoryPath, pullRequestUrl, pullRequestNumber, reviewer, cancellationToken);
         session.Events.Append(run.Id, new ReviewRerequested(run.Id, erroredReview.Reviewer, erroredReview.Url, now));
         await session.SaveChangesAsync(cancellationToken);
 

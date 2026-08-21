@@ -50,12 +50,12 @@ public sealed class RunLauncherTests(PostgresFixture postgres) : IClassFixture<P
             Inspections++;
             return Task.FromResult(new PullRequestSnapshot(
                 IsMerged: true, IsClosed: false, MergedAt: Now.AddMinutes(-30), ClosedAt: null,
-                FailingChecks: [], HasPendingChecks: false, UnresolvedCopilotThreadCount: 0,
-                ErroredCopilotReview: null));
+                FailingChecks: [], HasPendingChecks: false, UnresolvedReviewThreadCount: 0,
+                UnresolvedHumanThreadCount: 0, Reviewers: [], ErroredReview: null));
         }
 
         public Task RerequestReviewAsync(
-            string repositoryPath, string pullRequestUrl, int pullRequestNumber, string reviewer,
+            string repositoryPath, string pullRequestUrl, int pullRequestNumber, PullRequestReviewer reviewer,
             CancellationToken cancellationToken) => Task.CompletedTask;
     }
 

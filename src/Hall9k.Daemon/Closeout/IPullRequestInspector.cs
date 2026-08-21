@@ -1,6 +1,55 @@
 namespace Hall9k.Daemon.Closeout;
 
 /// <summary>
+/// What kind of account the provider says an author is. Unpersisted in-process vocabulary
+/// (TASK-MODEL.md §8 allows an enum for exactly that), read from GraphQL's own actor
+/// <c>__typename</c> rather than guessed from the login.
+/// <para>
+/// Mannequin earns its own case because it is neither of the other two: it is the
+/// placeholder GitHub creates for an identity an import never mapped to a real account.
+/// Nobody is behind one, so it must not inflate the human thread count, and the review-request
+/// endpoint rejects it, so it must never be asked for a review either.
+/// </para>
+/// </summary>
+public enum ReviewerKind
+{
+    /// <summary>A person: User, and every other actor type that is not a bot or a mannequin.</summary>
+    Human,
+
+    /// <summary>An app account (GraphQL Bot), including the Copilot reviewer.</summary>
+    Bot,
+
+    /// <summary>An unclaimed placeholder identity — nobody to ask, and nobody waiting.</summary>
+    Mannequin,
+}
+
+/// <summary>
+/// One account that authored something on a pull request, as the provider reported it. The
+/// kind is read from the provider's own actor type rather than guessed from the login,
+/// because the two forms of the same account differ by API surface: GraphQL reports the bare
+/// login (copilot-pull-request-reviewer) and the REST review-request endpoint addresses app
+/// accounts by the [bot]-suffixed form, while a human login must never be suffixed at all.
+/// <para>
+/// LastReviewedCommit is the commit this account's latest review was left on, and is set only
+/// where the account is read as a reviewer — a thread's author carries null, and so does a
+/// review the provider reported without a commit. It is what the countersign compares against
+/// the pull request's head: a reviewer whose latest review already covers the current head has
+/// nothing left to be asked about (Decisions Log #62).
+/// </para>
+/// </summary>
+public sealed record PullRequestReviewer(string Login, ReviewerKind Kind, string? LastReviewedCommit = null)
+{
+    /// <summary>An app account: the [bot] suffix decision downstream rests on this.</summary>
+    public bool IsBot => Kind == ReviewerKind.Bot;
+
+    /// <summary>A person, who may be waiting on an answer — the care asymmetry keys off this.</summary>
+    public bool IsHuman => Kind == ReviewerKind.Human;
+
+    /// <summary>Whether a review request addressed here can be accepted at all.</summary>
+    public bool IsRequestable => Kind is ReviewerKind.Human or ReviewerKind.Bot;
+}
+
+/// <summary>
 /// An error-placeholder review: the reviewer's LATEST review says it could not review
 /// the pull request. Reviewer is the provider login the review was authored under;
 /// Url identifies the exact errored review (the monitor's dedup key, and what a park
@@ -13,11 +62,34 @@ public sealed record ErroredReview(string Reviewer, string Url);
 /// the provider's own (null when unreported — never guessed). FailingChecks holds the
 /// names of checks that completed and failed; HasPendingChecks means the CI picture is
 /// still incomplete, so the monitor waits rather than acting on a partial failure list.
-/// UnresolvedCopilotThreadCount counts unresolved review threads opened by Copilot —
-/// human review conversations belong to humans and are not counted.
-/// ErroredCopilotReview is set when Copilot's latest review is an error placeholder:
-/// an errored review produces zero threads, so without this signal it would read as a
-/// clean pass (origin incident: PR #6, 2026-08-17, GitHub partial outage).
+/// <para>
+/// UnresolvedReviewThreadCount counts EVERY unresolved review thread, whoever started it
+/// (Decisions Log #62): Copilot is one reviewer among many, and a teammate's unresolved
+/// thread is feedback on exactly the same footing. UnresolvedHumanThreadCount is how many
+/// of those a person started, which is what lets the follow-up's dispatch reason say whether
+/// somebody is waiting on an answer — a bot's thread is not counted, and neither is a
+/// mannequin's, since there is nobody behind one. Threads the pull request's own author
+/// started count too, and count as human: agents author as the human but only ever REPLY
+/// within threads, so a thread whose first comment is the author's own is a human's
+/// self-note (the self-review discriminator — see the invariant in AGENTS.md).
+/// </para>
+/// <para>
+/// Reviewers holds the accounts whose latest review is on this pull request, excluding its
+/// author and any account the provider will not accept a review request for, which is who a
+/// countersign re-request is addressed to. HeadCommit is the commit those reviews are
+/// compared against — a reviewer whose latest review sits on the head has already seen what
+/// the fixes pushed — and is null when the provider did not report one, in which case no
+/// reviewer is assumed to be up to date. ErroredReview is set when a reviewer's latest
+/// review is an error placeholder: an errored review produces zero threads, so without this
+/// signal it would read as a clean pass (origin incident: PR #6, 2026-08-17, GitHub partial
+/// outage).
+/// </para>
+/// <para>
+/// One silence this cannot see: GitHub hides a review's comments while the review is still
+/// PENDING (unsubmitted). Feedback reaches the platform only when its author clicks Submit
+/// review, so a reviewer typing comments into a draft is invisible here — correctly, since
+/// nothing has been said yet, but worth knowing when a PR looks quiet.
+/// </para>
 /// </summary>
 public sealed record PullRequestSnapshot(
     bool IsMerged,
@@ -26,14 +98,17 @@ public sealed record PullRequestSnapshot(
     DateTimeOffset? ClosedAt,
     IReadOnlyList<string> FailingChecks,
     bool HasPendingChecks,
-    int UnresolvedCopilotThreadCount,
-    ErroredReview? ErroredCopilotReview);
+    int UnresolvedReviewThreadCount,
+    int UnresolvedHumanThreadCount,
+    IReadOnlyList<PullRequestReviewer> Reviewers,
+    ErroredReview? ErroredReview,
+    string? HeadCommit = null);
 
 /// <summary>
 /// The closeout monitor's seam onto the PR provider (gh in production, a fake in
-/// tests): the read side per poll, plus the one write closeout needs — re-requesting
-/// an errored Copilot review. Both run against the project's shared repository path —
-/// the run's worktree may already be gone, the origin remote is what matters.
+/// tests): the read side per poll, plus the one write closeout needs — re-requesting a
+/// review. Both run against the project's shared repository path — the run's worktree may
+/// already be gone, the origin remote is what matters.
 /// </summary>
 public interface IPullRequestInspector
 {
@@ -41,11 +116,13 @@ public interface IPullRequestInspector
         string repositoryPath, string pullRequestUrl, int pullRequestNumber, CancellationToken cancellationToken);
 
     /// <summary>
-    /// Re-request a review from the reviewer whose review errored, through the
-    /// provider's API — never the website, which may be down when this matters (the
-    /// origin incident's exact circumstance).
+    /// Re-request a review through the provider's API — never the website, which may be
+    /// down when this matters (the origin incident's exact circumstance). Two callers, two
+    /// reasons: a reviewer whose review errored never reviewed at all, and a reviewer whose
+    /// findings a fix follow-up has now pushed answers to is being asked to countersign
+    /// them (Decisions Log #62).
     /// </summary>
     Task RerequestReviewAsync(
-        string repositoryPath, string pullRequestUrl, int pullRequestNumber, string reviewer,
+        string repositoryPath, string pullRequestUrl, int pullRequestNumber, PullRequestReviewer reviewer,
         CancellationToken cancellationToken);
 }

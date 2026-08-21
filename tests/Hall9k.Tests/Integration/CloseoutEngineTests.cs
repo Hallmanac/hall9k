@@ -77,17 +77,21 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
         }
 
         public Task RerequestReviewAsync(
-            string repositoryPath, string pullRequestUrl, int pullRequestNumber, string reviewer,
+            string repositoryPath, string pullRequestUrl, int pullRequestNumber, PullRequestReviewer reviewer,
             CancellationToken cancellationToken)
         {
-            ReviewRerequests.Add(reviewer);
+            ReviewRerequests.Add(reviewer.Login);
+            RerequestedBots.Add(reviewer.IsBot);
             return Task.CompletedTask;
         }
 
+        /// <summary>Whether each re-request addressed a bot — the [bot]-suffix decision downstream.</summary>
+        public List<bool> RerequestedBots { get; } = [];
+
         public static PullRequestSnapshot Quiet() => new(
             IsMerged: false, IsClosed: false, MergedAt: null, ClosedAt: null,
-            FailingChecks: [], HasPendingChecks: false, UnresolvedCopilotThreadCount: 0,
-            ErroredCopilotReview: null);
+            FailingChecks: [], HasPendingChecks: false, UnresolvedReviewThreadCount: 0,
+            UnresolvedHumanThreadCount: 0, Reviewers: [], ErroredReview: null);
     }
 
     /// <summary>
@@ -432,7 +436,7 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
 
         FakeInspector inspector = new()
         {
-            Snapshot = FakeInspector.Quiet() with { UnresolvedCopilotThreadCount = 2 },
+            Snapshot = FakeInspector.Quiet() with { UnresolvedReviewThreadCount = 2 },
         };
         await NewEngine(store, node, inspector, worktrees).PollOnceAsync(cts.Token);
 
@@ -441,6 +445,41 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
         TaskDetails task = (await query.LoadAsync<TaskDetails>(taskId, cts.Token))!;
         task.State.Should().Be(TaskState.Queued);
         task.FollowUpKind.Should().Be(FollowUpKind.ReviewFeedback);
+    }
+
+    /// <summary>
+    /// The reason the whole feature exists (Decisions Log #62, origin incident 2026-08-20): a
+    /// human's unresolved thread was invisible while the inspector counted only Copilot's.
+    /// Same dispatch, same budget, and the human count reaches the follow-up's prompt.
+    /// </summary>
+    [Fact]
+    public async Task A_human_reviewers_unresolved_thread_dispatches_the_same_follow_up()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        (DocumentStore store, NodeContext node, GitWorktreeManager worktrees, _, string repoPath) =
+            await SetUpAsync(cts.Token);
+        using IDisposable storeLifetime = store;
+
+        (Guid taskId, Guid runId, _) = await SeedAwaitingReviewAsync(store, node, worktrees, repoPath, cts.Token);
+
+        FakeInspector inspector = new()
+        {
+            Snapshot = FakeInspector.Quiet() with
+            {
+                UnresolvedReviewThreadCount = 1,
+                UnresolvedHumanThreadCount = 1,
+            },
+        };
+        await NewEngine(store, node, inspector, worktrees).PollOnceAsync(cts.Token);
+
+        await using IQuerySession query = store.QuerySession();
+        (await query.LoadAsync<RunDetails>(runId, cts.Token))!.UnresolvedHumanReviewThreads.Should().Be(
+            1, "who is waiting on an answer is part of the observation, not only how many threads there are");
+        TaskDetails task = (await query.LoadAsync<TaskDetails>(taskId, cts.Token))!;
+        task.State.Should().Be(TaskState.Queued);
+        task.FollowUpKind.Should().Be(FollowUpKind.ReviewFeedback);
+        task.FollowUpReason.Should().Contain("started by a human reviewer",
+            "the prompt's care rules key off a person waiting");
     }
 
     [Fact]
@@ -456,7 +495,7 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
         ErroredReview errored = new("copilot-pull-request-reviewer", $"{PullRequestUrl}#pullrequestreview-1");
         FakeInspector inspector = new()
         {
-            Snapshot = FakeInspector.Quiet() with { ErroredCopilotReview = errored },
+            Snapshot = FakeInspector.Quiet() with { ErroredReview = errored },
         };
         CloseoutEngine engine = NewEngine(store, node, inspector, worktrees);
         await engine.PollOnceAsync(cts.Token);
@@ -502,7 +541,7 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
         {
             inspector.Snapshot = FakeInspector.Quiet() with
             {
-                ErroredCopilotReview = new ErroredReview(
+                ErroredReview = new ErroredReview(
                     "copilot-pull-request-reviewer", $"{PullRequestUrl}#pullrequestreview-{attempt}"),
             };
             await engine.PollOnceAsync(cts.Token);
@@ -536,7 +575,7 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
         {
             Snapshot = FakeInspector.Quiet() with
             {
-                ErroredCopilotReview = new ErroredReview(
+                ErroredReview = new ErroredReview(
                     "copilot-pull-request-reviewer", $"{PullRequestUrl}#pullrequestreview-9"),
             },
         };
@@ -562,7 +601,7 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
         {
             Snapshot = FakeInspector.Quiet() with
             {
-                ErroredCopilotReview = new ErroredReview(
+                ErroredReview = new ErroredReview(
                     "copilot-pull-request-reviewer", $"{PullRequestUrl}#pullrequestreview-1"),
             },
         };
@@ -571,7 +610,7 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
 
         // The re-requested review succeeds and leaves real feedback: latestReviews no
         // longer matches as errored, unresolved threads appear.
-        inspector.Snapshot = FakeInspector.Quiet() with { UnresolvedCopilotThreadCount = 2 };
+        inspector.Snapshot = FakeInspector.Quiet() with { UnresolvedReviewThreadCount = 2 };
         await engine.PollOnceAsync(cts.Token);
 
         await using IQuerySession query = store.QuerySession();
@@ -667,7 +706,7 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
         {
             Snapshot = FakeInspector.Quiet() with
             {
-                FailingChecks = ["build"], HasPendingChecks = true, UnresolvedCopilotThreadCount = 1,
+                FailingChecks = ["build"], HasPendingChecks = true, UnresolvedReviewThreadCount = 1,
             },
         };
         await NewEngine(store, node, inspector, worktrees).PollOnceAsync(cts.Token);

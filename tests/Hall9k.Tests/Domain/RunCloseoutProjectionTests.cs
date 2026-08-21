@@ -32,9 +32,10 @@ public sealed class RunCloseoutProjectionTests
         view.FailingChecks.Should().Equal("build (ubuntu-latest)", "test (windows-latest)");
 
         projection.Apply(new FakeEvent<ReviewFeedbackReceived>(
-            new ReviewFeedbackReceived(id, 3, Now.AddMinutes(10))), view);
+            new ReviewFeedbackReceived(id, 3, Now.AddMinutes(10), UnresolvedHumanThreadCount: 1)), view);
         view.State.Should().Be(RunState.ReviewPending);
         view.UnresolvedReviewThreads.Should().Be(3);
+        view.UnresolvedHumanReviewThreads.Should().Be(1, "a person waiting on an answer is part of the observation");
 
         projection.Apply(new FakeEvent<ReviewErrored>(new ReviewErrored(
             id, "copilot-pull-request-reviewer", $"{PullRequestUrl}#pullrequestreview-1", Now.AddMinutes(20))), view);
@@ -54,6 +55,24 @@ public sealed class RunCloseoutProjectionTests
         view.State.Should().Be(RunState.Completed, "the observed merge is what completes the run");
         view.PullRequestMergedAt.Should().Be(mergedAt);
         view.FinishedAt.Should().Be(mergedAt);
+    }
+
+    /// <summary>
+    /// An observation written before reviewers other than Copilot were counted never looked at
+    /// authorship, so it replays as unknown rather than as "no humans" (Decisions Log #62, and
+    /// the never-guess rule).
+    /// </summary>
+    [Fact]
+    public void A_thread_observation_from_before_authorship_was_counted_replays_as_unknown()
+    {
+        RunDetailsProjection projection = new();
+        Guid id = DomainId.New();
+        RunDetails view = AwaitingReviewRun(projection, id);
+
+        projection.Apply(new FakeEvent<ReviewFeedbackReceived>(new ReviewFeedbackReceived(id, 2, Now)), view);
+
+        view.UnresolvedReviewThreads.Should().Be(2);
+        view.UnresolvedHumanReviewThreads.Should().BeNull("zero would claim an observation that never happened");
     }
 
     [Fact]
