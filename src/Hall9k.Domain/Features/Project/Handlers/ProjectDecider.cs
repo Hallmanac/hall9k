@@ -52,7 +52,8 @@ public static class ProjectDecider
         Guid changedByOwnerId,
         Optional<CommitStyle> commitStyle = default,
         Optional<AgentModel> model = default,
-        Optional<ReviewRerequestPolicy> reviewRerequest = default)
+        Optional<ReviewRerequestPolicy> reviewRerequest = default,
+        Optional<JiraProjectKey> jiraProjectKey = default)
     {
         if (maxParallelAgents.HasValue && maxParallelAgents.Value < 1)
         {
@@ -107,6 +108,7 @@ public static class ProjectDecider
             changedByOwnerId,
             commitStyle,
             model,
-            reviewRerequest);
+            reviewRerequest,
+            jiraProjectKey);
     }
 }

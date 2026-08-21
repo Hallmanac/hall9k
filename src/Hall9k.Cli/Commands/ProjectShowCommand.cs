@@ -89,6 +89,10 @@ public sealed class ProjectShowCommand : Hall9kAsyncCommand<ProjectShowCommand.S
             ? $"[dim]none — add one: h9k project set {project.Name.EscapeMarkup()} --verify \"test=dotnet test\"[/]"
             : string.Join("\n", project.VerifyCommands.Select(gate =>
                 $"{gate.Name.EscapeMarkup()} [dim]→[/] {gate.Command.EscapeMarkup()}")));
+        table.AddRow("Jira board", project.JiraProjectKey.HasValue
+            ? $"{project.JiraProjectKey.Value.EscapeMarkup()} [dim]— new cards are filed here; a reported "
+              + "card key is checked against it[/]"
+            : $"[dim]none bound — bind one: h9k project set {project.Name.EscapeMarkup()} --jira PROJ[/]");
         table.AddRow("Context links", project.ContextLinks.Count == 0
             ? $"[dim]none — add one: h9k project set {project.Name.EscapeMarkup()} --link \"jira=https://…\"[/]"
             : string.Join("\n", project.ContextLinks.Select(link =>
