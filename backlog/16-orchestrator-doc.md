@@ -28,3 +28,22 @@ Design constraints:
 - The WithExample audit is mechanical: walk Program.cs's command tree, list every
   command/branch, verify each against the standard, fix the gaps. Do not restyle
   existing good help text while passing through.
+
+## Post-queue note (Brian + orchestrator session, 2026-08-21 - the queued agent has the frozen snapshot; reconcile at PR review)
+
+The RunSuperseded status joins the FollowingUp vocabulary family: rename to
+FollowedUp (event RunFollowedUp), meaning a completed run that is no longer the
+run of record because a follow-up run was dispatched for its task. "Superseded"
+was silent on cause and agency - it read as though something could have stopped
+the run mid-flight (a human, another agent), when in fact only a finished run is
+ever followed up. The event should also record the successor run id so run
+history reads "followed up by run <id>" without hunting. Persisted vocabulary,
+so this follows the backlog-33 pattern (new event, legacy events replay into
+the new status).
+
+Priority note: Brian rates this low relative to forward-moving work - land it
+with this task if convenient at PR review, or let it slide to a later pass;
+never dispatch dedicated work for it. Deliberately rejected as too big for now:
+splitting run status into two facts (session outcome + a run-of-record pointer
+on the task), which is arguably the cleaner model; the rename does not block
+that remodel if it ever earns its way up the list.
