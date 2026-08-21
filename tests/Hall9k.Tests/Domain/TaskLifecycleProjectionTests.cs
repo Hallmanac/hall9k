@@ -89,6 +89,178 @@ public sealed class TaskLifecycleProjectionTests
     }
 
     [Fact]
+    public void A_recovered_blocker_returns_both_read_models_to_the_ordinary_waiting_on_display()
+    {
+        Guid id = DomainId.New();
+        Guid ownerId = DomainId.New();
+        Guid dependencyId = DomainId.New();
+        TaskListItemProjection list = new();
+        TaskDetailsProjection details = new();
+
+        TaskListItem row = list.Create(new FakeEvent<TaskAdded>(Drafted(id, ownerId, dependencyId)));
+        TaskDetails detail = details.Create(new FakeEvent<TaskAdded>(Drafted(id, ownerId, dependencyId)));
+
+        TaskPublished published = new(id, Now, ownerId);
+        list.Apply(new FakeEvent<TaskPublished>(published), row);
+        details.Apply(new FakeEvent<TaskPublished>(published), detail);
+
+        TaskAssigned assigned = new(id, ownerId, [dependencyId], Now, ownerId);
+        list.Apply(new FakeEvent<TaskAssigned>(assigned), row);
+        details.Apply(new FakeEvent<TaskAssigned>(assigned), detail);
+
+        TaskDependencyFailed died = new(id, dependencyId, "Its blocker failed.", Now);
+        list.Apply(new FakeEvent<TaskDependencyFailed>(died), row);
+        details.Apply(new FakeEvent<TaskDependencyFailed>(died), detail);
+
+        TaskDependencyRecovered lifted = new(id, dependencyId, "It is Queued again.", Now.AddHours(1));
+        list.Apply(new FakeEvent<TaskDependencyRecovered>(lifted), row);
+        details.Apply(new FakeEvent<TaskDependencyRecovered>(lifted), detail);
+
+        row.State.Should().Be(TaskState.Blocked, "the blocker still has to finish before this may run");
+        row.DeadDependencies.Should().BeEmpty();
+        row.UnmetDependencies.Should().Equal([dependencyId], "it waits on the blocker the ordinary way now");
+        row.DependencyFailureReason.Should().BeNull("this is what makes h9k status stop reading NeedsHuman");
+
+        detail.State.Should().Be(TaskState.Blocked);
+        detail.DeadDependencies.Should().BeEmpty();
+        detail.DependencyFailureReason.Should().BeNull();
+    }
+
+    [Fact]
+    public void A_recovery_that_lost_the_race_leaves_a_row_that_still_has_a_dead_blocker_alone()
+    {
+        Guid id = DomainId.New();
+        Guid ownerId = DomainId.New();
+        Guid firstBlocker = DomainId.New();
+        Guid secondBlocker = DomainId.New();
+        TaskListItemProjection list = new();
+
+        TaskListItem row = list.Create(new FakeEvent<TaskAdded>(Drafted(id, ownerId, firstBlocker, secondBlocker)));
+        list.Apply(new FakeEvent<TaskPublished>(new TaskPublished(id, Now, ownerId)), row);
+        list.Apply(
+            new FakeEvent<TaskAssigned>(new TaskAssigned(id, ownerId, [firstBlocker, secondBlocker], Now, ownerId)),
+            row);
+        list.Apply(new FakeEvent<TaskDependencyFailed>(
+            new TaskDependencyFailed(id, firstBlocker, "The first one failed.", Now)), row);
+        list.Apply(new FakeEvent<TaskDependencyFailed>(
+            new TaskDependencyFailed(id, secondBlocker, "The second one was abandoned.", Now)), row);
+
+        // Two nodes observed the same retry, so the second recovery finds nothing to remove.
+        TaskDependencyRecovered lifted = new(id, firstBlocker, "It is Queued again.", Now.AddHours(1));
+        list.Apply(new FakeEvent<TaskDependencyRecovered>(lifted), row);
+        list.Apply(new FakeEvent<TaskDependencyRecovered>(lifted), row);
+
+        row.DeadDependencies.Should().Equal([secondBlocker]);
+        row.DependencyFailureReason.Should().Be(
+            "The second one was abandoned.",
+            "a duplicate recovery must not wipe the reason off a task that is still held");
+    }
+
+    [Fact]
+    public void Both_read_models_replay_a_restated_then_completed_hold_the_way_the_aggregate_does()
+    {
+        // The same events through all three, asserted against each other rather than against a
+        // transcription of the expected answer: a read model that quietly disagreed with the
+        // aggregate would leave h9k task show advising a human about a blocker that is Done
+        // (review finding, 2026-08-21).
+        Guid id = DomainId.New();
+        Guid ownerId = DomainId.New();
+        Guid restated = DomainId.New();
+        Guid abandoned = DomainId.New();
+
+        TaskAdded added = Drafted(id, ownerId, restated, abandoned);
+        TaskPublished published = new(id, Now, ownerId);
+        TaskAssigned assigned = new(id, ownerId, [restated, abandoned], Now, ownerId);
+        TaskDependencyFailed died = new(id, restated, "It failed.", Now);
+        TaskDependencyFailed otherDied = new(id, abandoned, "The other one was abandoned.", Now.AddMinutes(1));
+        // The first blocker died a different death since, so its hold is restated — which makes
+        // it the newest dead one, in the read models as much as in the aggregate.
+        TaskDependencyFailed restatedDeath = new(
+            id, restated, "It reads Done on a run that never merged.", Now.AddHours(1));
+        // And then it was put back under watch and actually merged. What the human is left
+        // reading is the death that still stands, not the one that just closed out.
+        TaskDependencyCompleted closedOut = new(id, restated, [abandoned], Now.AddHours(2));
+
+        TaskListItemProjection list = new();
+        TaskListItem row = list.Create(new FakeEvent<TaskAdded>(added));
+        list.Apply(new FakeEvent<TaskPublished>(published), row);
+        list.Apply(new FakeEvent<TaskAssigned>(assigned), row);
+        list.Apply(new FakeEvent<TaskDependencyFailed>(died), row);
+        list.Apply(new FakeEvent<TaskDependencyFailed>(otherDied), row);
+        list.Apply(new FakeEvent<TaskDependencyFailed>(restatedDeath), row);
+        list.Apply(new FakeEvent<TaskDependencyCompleted>(closedOut), row);
+
+        TaskDetailsProjection details = new();
+        TaskDetails detail = details.Create(new FakeEvent<TaskAdded>(added));
+        details.Apply(new FakeEvent<TaskPublished>(published), detail);
+        details.Apply(new FakeEvent<TaskAssigned>(assigned), detail);
+        details.Apply(new FakeEvent<TaskDependencyFailed>(died), detail);
+        details.Apply(new FakeEvent<TaskDependencyFailed>(otherDied), detail);
+        details.Apply(new FakeEvent<TaskDependencyFailed>(restatedDeath), detail);
+        details.Apply(new FakeEvent<TaskDependencyCompleted>(closedOut), detail);
+
+        TaskAggregate aggregate = new();
+        aggregate.Apply(added);
+        aggregate.Apply(published);
+        aggregate.Apply(assigned);
+        aggregate.Apply(died);
+        aggregate.Apply(otherDied);
+        aggregate.Apply(restatedDeath);
+        aggregate.Apply(closedOut);
+
+        aggregate.DeadDependencies.Should().Equal(abandoned);
+        aggregate.DependencyFailureReason.Should().Be("The other one was abandoned.");
+        row.DeadDependencies.Should().Equal(aggregate.DeadDependencies, "one stream, one state");
+        row.DependencyFailureReason.Should().Be(aggregate.DependencyFailureReason);
+        detail.DeadDependencies.Should().Equal(aggregate.DeadDependencies);
+        detail.DependencyFailureReason.Should().Be(aggregate.DependencyFailureReason);
+    }
+
+    [Fact]
+    public void A_hold_recorded_while_a_recovery_was_in_flight_survives_it_in_both_read_models()
+    {
+        // The concurrency a recovery cannot see: one pass decides the retried blocker is back
+        // while another appends a second blocker's death in between. What survives is derived
+        // where the event is applied, so the newer hold stands (review finding, 2026-08-21).
+        Guid id = DomainId.New();
+        Guid ownerId = DomainId.New();
+        Guid retried = DomainId.New();
+        Guid diedMeanwhile = DomainId.New();
+
+        TaskAdded added = Drafted(id, ownerId, retried, diedMeanwhile);
+        TaskPublished published = new(id, Now, ownerId);
+        TaskAssigned assigned = new(id, ownerId, [retried, diedMeanwhile], Now, ownerId);
+        TaskDependencyFailed died = new(id, retried, "It failed.", Now);
+        TaskDependencyFailed otherDied = new(
+            id, diedMeanwhile, "The other one was abandoned.", Now.AddMinutes(30));
+        TaskDependencyRecovered lifted = new(id, retried, "It is Queued again.", Now.AddHours(1));
+
+        TaskListItemProjection list = new();
+        TaskListItem row = list.Create(new FakeEvent<TaskAdded>(added));
+        list.Apply(new FakeEvent<TaskPublished>(published), row);
+        list.Apply(new FakeEvent<TaskAssigned>(assigned), row);
+        list.Apply(new FakeEvent<TaskDependencyFailed>(died), row);
+        list.Apply(new FakeEvent<TaskDependencyFailed>(otherDied), row);
+        list.Apply(new FakeEvent<TaskDependencyRecovered>(lifted), row);
+
+        TaskDetailsProjection details = new();
+        TaskDetails detail = details.Create(new FakeEvent<TaskAdded>(added));
+        details.Apply(new FakeEvent<TaskPublished>(published), detail);
+        details.Apply(new FakeEvent<TaskAssigned>(assigned), detail);
+        details.Apply(new FakeEvent<TaskDependencyFailed>(died), detail);
+        details.Apply(new FakeEvent<TaskDependencyFailed>(otherDied), detail);
+        details.Apply(new FakeEvent<TaskDependencyRecovered>(lifted), detail);
+
+        row.DeadDependencies.Should().Equal(diedMeanwhile);
+        row.DependencyFailureReason.Should().Be(
+            "The other one was abandoned.",
+            "a hold silenced by a stale snapshot would stay silenced: every later sweep finds "
+            + "that death already recorded and says nothing new");
+        detail.DeadDependencies.Should().Equal(diedMeanwhile);
+        detail.DependencyFailureReason.Should().Be("The other one was abandoned.");
+    }
+
+    [Fact]
     public void Revising_a_draft_records_only_the_fields_it_was_given()
     {
         Guid id = DomainId.New();

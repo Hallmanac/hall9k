@@ -214,8 +214,205 @@ public sealed class TaskLifecycleTests
 
         task.State.Should().Be(TaskState.Blocked, "it must not silently become claimable");
         task.DependencyFailureReason.Should().Contain("will not close out", "and it must not silently go quiet");
-        FluentActions.Invoking(() => TaskDecider.DependencyFailed(task, dependencyId, "Again.", Now))
+        FluentActions.Invoking(() =>
+                TaskDecider.DependencyFailed(task, dependencyId, "It failed and will not close out.", Now))
             .Should().Throw<DomainConflictException>("repeating one observation tells the human nothing new");
+
+        // A death that changed shape is a different observation, not a repeat: the recorded
+        // remedy must never outlive the state it was advice about (Decisions Log #61).
+        task.Apply(TaskDecider.DependencyFailed(
+            task, dependencyId, "It reads Done on a run that will never carry a merge.", Now.AddHours(1)));
+        task.DependencyFailureReason.Should().Contain("never carry a merge");
+        task.DeadDependencies.Should().HaveCount(1, "one blocker is one hold, however often it is restated");
+    }
+
+    [Fact]
+    public void A_blocker_back_in_the_pipeline_lifts_the_hold_without_erasing_that_it_happened()
+    {
+        Guid dependencyId = DomainId.New();
+        TaskAggregate task = Published(dependencyId);
+        task.Apply(TaskDecider.Assign(
+            task, Owner, [Dependency(dependencyId, TaskState.Failed, closedOut: false)], Now, Owner));
+        TaskDependencyFailed died = TaskDecider.DependencyFailed(task, dependencyId, "It failed.", Now);
+        task.Apply(died);
+
+        // What the resolver appends one dispatch cycle after h9k task retry put the blocker back
+        // to work: the blocker is Queued again, so the hold no longer describes anything.
+        task.Apply(TaskDecider.DependencyRecovered(
+            task, dependencyId, "It is Queued again.", Now.AddHours(1)));
+
+        task.State.Should().Be(TaskState.Blocked, "the blocker still has to finish before this may run");
+        task.DeadDependencies.Should().BeEmpty();
+        task.DependencyFailureReason.Should().BeNull("h9k status must stop reading it as NeedsHuman");
+        task.UnmetDependencies.Should().Equal([dependencyId]);
+        died.Should().NotBeNull("the hold happened, and the record of it stays on the stream");
+    }
+
+    [Fact]
+    public void A_retried_blocker_that_dies_again_is_held_again()
+    {
+        Guid dependencyId = DomainId.New();
+        TaskAggregate task = Published(dependencyId);
+        task.Apply(TaskDecider.Assign(
+            task, Owner, [Dependency(dependencyId, TaskState.Failed, closedOut: false)], Now, Owner));
+        task.Apply(TaskDecider.DependencyFailed(task, dependencyId, "It failed.", Now));
+        task.Apply(TaskDecider.DependencyRecovered(
+            task, dependencyId, "It is Queued again.", Now.AddHours(1)));
+
+        task.Apply(TaskDecider.DependencyFailed(task, dependencyId, "It failed again.", Now.AddHours(2)));
+
+        task.DeadDependencies.Should().Equal(dependencyId);
+        task.DependencyFailureReason.Should().Be(
+            "It failed again.", "hold, recover, hold — each one observed, never a one-shot flag");
+    }
+
+    [Fact]
+    public void Recovering_one_of_two_dead_blockers_leaves_the_reason_describing_the_one_still_dead()
+    {
+        Guid stillDead = DomainId.New();
+        Guid retried = DomainId.New();
+        TaskAggregate task = Published(stillDead, retried);
+        task.Apply(TaskDecider.Assign(
+            task,
+            Owner,
+            [Dependency(stillDead, TaskState.Abandoned, closedOut: false), Dependency(retried, TaskState.Failed, closedOut: false)],
+            Now,
+            Owner));
+        task.Apply(TaskDecider.DependencyFailed(task, stillDead, "The abandoned one.", Now));
+        task.Apply(TaskDecider.DependencyFailed(task, retried, "The failed one.", Now));
+
+        task.Apply(TaskDecider.DependencyRecovered(
+            task, retried, "It is Queued again.", Now.AddHours(1)));
+
+        task.DeadDependencies.Should().Equal(stillDead);
+        task.DependencyFailureReason.Should().Be(
+            "The abandoned one.", "the reason a human reads must name a blocker that is still dead");
+    }
+
+    [Fact]
+    public void A_death_recorded_while_a_recovery_was_in_flight_keeps_holding_the_task()
+    {
+        // The race the recovery event cannot see: one pass reads the task, decides the retried
+        // blocker is back, and commits — while another pass appends a second blocker's death in
+        // between. Deriving what survives here, at apply time, is what makes the newer hold
+        // stand; a reason snapshotted before that death would silence the hold for good, since
+        // every later sweep finds that death already recorded and has nothing new to say
+        // (review finding, 2026-08-21).
+        Guid retried = DomainId.New();
+        Guid diedMeanwhile = DomainId.New();
+        TaskAggregate task = Published(retried, diedMeanwhile);
+        task.Apply(TaskDecider.Assign(
+            task,
+            Owner,
+            [Dependency(retried, TaskState.Failed, closedOut: false), Dependency(diedMeanwhile, TaskState.Queued, closedOut: false)],
+            Now,
+            Owner));
+        task.Apply(TaskDecider.DependencyFailed(task, retried, "It failed.", Now));
+
+        // Decided against the world the pass read, where only the retried blocker was dead.
+        TaskDependencyRecovered inFlight = TaskDecider.DependencyRecovered(
+            task, retried, "It is Queued again.", Now.AddHours(1));
+
+        // The other pass gets its death in first.
+        task.Apply(TaskDecider.DependencyFailed(
+            task, diedMeanwhile, "The other one was abandoned.", Now.AddMinutes(30)));
+        task.Apply(inFlight);
+
+        task.DeadDependencies.Should().Equal(diedMeanwhile);
+        task.DependencyFailureReason.Should().Be(
+            "The other one was abandoned.", "the task is still held, and it must still say why");
+    }
+
+    [Fact]
+    public void Completing_one_of_two_dead_blockers_leaves_the_reason_describing_the_one_still_dead()
+    {
+        Guid stillDead = DomainId.New();
+        Guid retried = DomainId.New();
+        TaskAggregate task = Published(stillDead, retried);
+        task.Apply(TaskDecider.Assign(
+            task,
+            Owner,
+            [Dependency(stillDead, TaskState.Abandoned, closedOut: false), Dependency(retried, TaskState.Failed, closedOut: false)],
+            Now,
+            Owner));
+        task.Apply(TaskDecider.DependencyFailed(task, stillDead, "The abandoned one.", Now));
+        task.Apply(TaskDecider.DependencyFailed(task, retried, "The failed one.", Now));
+
+        // Retried, and this time it merged. Closeout carries no surviving reason the way a
+        // recovery does, so the fallback is what the task still records about its other dead
+        // blocker — the one the human actually has to act on.
+        task.Apply(TaskDecider.DependencyCompleted(task, retried, Now.AddHours(1)));
+
+        task.State.Should().Be(TaskState.Blocked, "the abandoned blocker is still unmet");
+        task.DeadDependencies.Should().Equal(stillDead);
+        task.DependencyFailureReason.Should().Be(
+            "The abandoned one.", "a hold must never name a blocker that has since closed out");
+    }
+
+    [Fact]
+    public void A_blocker_whose_death_changed_shape_becomes_the_newest_dead_one()
+    {
+        Guid first = DomainId.New();
+        Guid second = DomainId.New();
+        TaskAggregate task = Published(first, second);
+        task.Apply(TaskDecider.Assign(
+            task,
+            Owner,
+            [Dependency(first, TaskState.Failed, closedOut: false), Dependency(second, TaskState.Abandoned, closedOut: false)],
+            Now,
+            Owner));
+        task.Apply(TaskDecider.DependencyFailed(task, first, "It failed.", Now));
+        task.Apply(TaskDecider.DependencyFailed(task, second, "It was abandoned.", Now.AddMinutes(1)));
+
+        // The first blocker died a different death since, which is a fresh observation rather
+        // than a restatement: it takes the newest slot, because DeadDependencies is read
+        // backwards by everything that asks which reason still stands.
+        task.Apply(TaskDecider.DependencyFailed(
+            task, first, "It reads Done on a run that will never carry a merge.", Now.AddHours(1)));
+
+        task.DeadDependencies.Should().Equal(second, first);
+        task.DependencyFailureReason.Should().Contain("never carry a merge");
+
+        task.Apply(TaskDecider.DependencyCompleted(task, second, Now.AddHours(2)));
+        task.DependencyFailureReason.Should().Contain(
+            "never carry a merge", "the newest death observed is the one the human is left reading");
+    }
+
+    [Fact]
+    public void Revising_the_dead_blocker_out_of_the_dependency_set_clears_the_hold_too()
+    {
+        // The remedy the recorded reason teaches: unassign, draft, revise, publish, assign.
+        // It predates the recovery event and has to keep working unchanged (Decisions Log #61).
+        Guid dependencyId = DomainId.New();
+        TaskAggregate task = Published(dependencyId);
+        task.Apply(TaskDecider.Assign(
+            task, Owner, [Dependency(dependencyId, TaskState.Abandoned, closedOut: false)], Now, Owner));
+        task.Apply(TaskDecider.DependencyFailed(task, dependencyId, "It was abandoned.", Now));
+
+        task.Apply(TaskDecider.Unassign(task, "Dropping the dead blocker", leaseHeld: false, Now, Owner));
+        task.Apply(TaskDecider.ReturnToDraft(task, "Dropping the dead blocker", Now, Owner));
+        task.Apply(TaskDecider.Revise(
+            task, Optional<string>.None, Optional<IReadOnlyList<string>>.None, Optional<string>.None,
+            Optional<IReadOnlyList<Guid>>.Of([]), Optional<TaskType>.None, Optional<AgentModel>.None, Now, Owner));
+        task.Apply(TaskDecider.Publish(task, TaskDependencyGraph.Empty, Now, Owner));
+        task.Apply(TaskDecider.Assign(task, Owner, [], Now, Owner));
+
+        task.State.Should().Be(TaskState.Queued);
+        task.DeadDependencies.Should().BeEmpty();
+        task.DependencyFailureReason.Should().BeNull("the blocker it named is not a blocker any more");
+    }
+
+    [Fact]
+    public void A_recovery_is_refused_for_a_blocker_no_hold_was_ever_recorded_against()
+    {
+        Guid dependencyId = DomainId.New();
+        TaskAggregate task = Published(dependencyId);
+        task.Apply(TaskDecider.Assign(
+            task, Owner, [Dependency(dependencyId, TaskState.Queued, closedOut: false)], Now, Owner));
+
+        FluentActions.Invoking(() => TaskDecider.DependencyRecovered(
+                task, dependencyId, "It looks fine.", Now))
+            .Should().Throw<DomainConflictException>("there is no hold to lift, and inventing one would be a guess");
     }
 
     [Fact]

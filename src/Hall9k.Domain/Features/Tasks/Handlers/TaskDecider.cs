@@ -327,10 +327,13 @@ public static class TaskDecider
         task.DeadDependencies.Contains(dependencyId);
 
     /// <summary>
-    /// A blocker reached Failed or Abandoned. The dependent stays Blocked and surfaces as
+    /// A blocker can no longer reach true closeout. The dependent stays Blocked and surfaces as
     /// NeedsHuman with the reason: silently unblocking would dispatch work whose premise died,
-    /// and silence would strand it. Recorded once per dependency — repeating the observation
-    /// every sweep tells the human nothing new.
+    /// and silence would strand it. The <em>same</em> observation is recorded once — repeating
+    /// it every sweep tells the human nothing new — but a blocker that died a different death
+    /// since (a failed task the human resolved, so the remedy is no longer "retry or resolve
+    /// it") is re-recorded, because a hold whose stated reason has gone stale is the same
+    /// crying-wolf problem the recovery event exists to fix (Decisions Log #61).
     /// </summary>
     public static TaskDependencyFailed DependencyFailed(
         TaskAggregate task, Guid dependencyId, string reason, DateTimeOffset observedAt)
@@ -341,18 +344,53 @@ public static class TaskDecider
                 $"Task {task.Id} is {task.State.Value} and is not waiting on dependency {dependencyId}.");
         }
 
-        if (HasRecordedDependencyFailure(task, dependencyId))
-        {
-            throw new DomainConflictException(
-                $"Task {task.Id} already records dependency {dependencyId} as dead.");
-        }
-
         if (reason.IsBlank())
         {
             throw new DomainValidationException("A dead dependency is recorded with what was observed about it.");
         }
 
+        if (task.RecordedDependencyFailure(dependencyId) == reason)
+        {
+            throw new DomainConflictException(
+                $"Task {task.Id} already records dependency {dependencyId} as dead, for that same reason.");
+        }
+
         return new TaskDependencyFailed(task.Id, dependencyId, reason, observedAt);
+    }
+
+    /// <summary>
+    /// A blocker recorded as dead was observed capable of reaching true closeout again — the
+    /// human retried it, and the hold that named it is no longer true (Decisions Log #61). The
+    /// dependent returns to plain Blocked; the failure record stays on the stream, because the
+    /// hold happened. The caller supplies what it observed about this one blocker; what still
+    /// holds the task afterwards is derived on apply, from the deaths the reader has recorded,
+    /// rather than snapshotted here where a concurrent death is invisible.
+    /// </summary>
+    public static TaskDependencyRecovered DependencyRecovered(
+        TaskAggregate task,
+        Guid dependencyId,
+        string observation,
+        DateTimeOffset observedAt)
+    {
+        if (!AwaitsDependency(task, dependencyId))
+        {
+            throw new DomainConflictException(
+                $"Task {task.Id} is {task.State.Value} and is not waiting on dependency {dependencyId}.");
+        }
+
+        if (!HasRecordedDependencyFailure(task, dependencyId))
+        {
+            throw new DomainConflictException(
+                $"Task {task.Id} does not record dependency {dependencyId} as dead — there is no hold to lift.");
+        }
+
+        if (observation.IsBlank())
+        {
+            throw new DomainValidationException(
+                "A recovered dependency is recorded with what was observed about it, never with a bare flag.");
+        }
+
+        return new TaskDependencyRecovered(task.Id, dependencyId, observation, observedAt);
     }
 
     /// <summary>

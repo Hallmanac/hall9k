@@ -64,12 +64,32 @@ public sealed class TaskAggregate
     private readonly List<Guid> _unmetDependencies = [];
     public IReadOnlyList<Guid> UnmetDependencies => _unmetDependencies;
 
-    /// <summary>Blockers observed Failed or Abandoned: they will never close out on their own.</summary>
+    /// <summary>
+    /// Blockers observed dead: they will never close out on their own. Oldest first, so the
+    /// last entry is the newest observation — which is the one <see cref="DependencyFailureReason"/>
+    /// carries.
+    /// </summary>
     private readonly List<Guid> _deadDependencies = [];
     public IReadOnlyList<Guid> DeadDependencies => _deadDependencies;
 
+    /// <summary>
+    /// What was recorded about each dead blocker, kept per dependency rather than only as the
+    /// newest one. The resolver reads it to answer two questions it cannot otherwise answer
+    /// honestly: what reason survives when one of several dead blockers recovers, and whether
+    /// a blocker that is still dead died a <em>different</em> death since it was last recorded
+    /// (Decisions Log #61).
+    /// </summary>
+    private readonly Dictionary<Guid, string> _deadDependencyReasons = [];
+
     /// <summary>Why the newest dead dependency died, as observed — the reason the human reads.</summary>
     public string? DependencyFailureReason { get; private set; }
+
+    /// <summary>
+    /// What this task currently records about that blocker's death, or null when it records
+    /// none. Null is "nothing recorded", never a stand-in for a death nobody observed.
+    /// </summary>
+    public string? RecordedDependencyFailure(Guid dependencyId) =>
+        _deadDependencyReasons.GetValueOrDefault(dependencyId);
 
     private readonly List<Guid> _runIds = [];
     public IReadOnlyList<Guid> RunIds => _runIds;
@@ -153,6 +173,7 @@ public sealed class TaskAggregate
         _unmetDependencies.Clear();
         _unmetDependencies.AddRange(@event.UnmetDependencies);
         _deadDependencies.Clear();
+        _deadDependencyReasons.Clear();
         DependencyFailureReason = null;
         State = _unmetDependencies.Count == 0 ? TaskState.Queued : TaskState.Blocked;
     }
@@ -165,12 +186,13 @@ public sealed class TaskAggregate
         AssignedOwnerId = null;
         _unmetDependencies.Clear();
         _deadDependencies.Clear();
+        _deadDependencyReasons.Clear();
         DependencyFailureReason = null;
         State = TaskState.Published;
     }
 
     // Dependency bookkeeping only means anything while the task is Blocked, and the decider
-    // only ever emits these two events from that state. Anything else on the stream is a lost
+    // only ever emits these three events from that state. Anything else on the stream is a lost
     // race — a human unassigned or abandoned the task between a resolver's read and its append
     // — and a lost race replays as a no-op rather than smearing dependency state across a
     // lifecycle that has already moved on.
@@ -182,10 +204,17 @@ public sealed class TaskAggregate
         }
 
         _unmetDependencies.Remove(@event.DependencyId);
-        if (_deadDependencies.Remove(@event.DependencyId) && _deadDependencies.Count == 0)
+        if (_deadDependencies.Remove(@event.DependencyId))
         {
-            // The blocker that died was retried and finished after all; nothing is dead now.
-            DependencyFailureReason = null;
+            // The blocker that died was retried and finished after all, so what it said stops
+            // counting. Closeout is the ordinary unblocking path and carries no surviving
+            // reason on the event the way a recovery does, so the display falls back to the
+            // newest death this task still records: a reason it observed and kept, never a
+            // stand-in for one nobody saw. Null when no blocker is left dead.
+            _deadDependencyReasons.Remove(@event.DependencyId);
+            DependencyFailureReason = _deadDependencies.Count == 0
+                ? null
+                : _deadDependencyReasons.GetValueOrDefault(_deadDependencies[^1]);
         }
 
         if (_unmetDependencies.Count == 0)
@@ -204,12 +233,37 @@ public sealed class TaskAggregate
             return;
         }
 
-        if (!_deadDependencies.Contains(@event.DependencyId))
+        // Oldest first, newest observation last, re-observations included: a blocker whose
+        // death changed shape was seen just now, so it takes the newest slot rather than
+        // keeping the one it held when it first died. Everything that reads this list
+        // backwards for "the newest blocker still dead" depends on that staying true.
+        _deadDependencies.Remove(@event.DependencyId);
+        _deadDependencies.Add(@event.DependencyId);
+        _deadDependencyReasons[@event.DependencyId] = @event.Reason;
+        DependencyFailureReason = @event.Reason;
+    }
+
+    // The mirror of the hold: a blocker recorded dead was seen alive again, so the record that
+    // held this task stops counting and the display returns to what the remaining blockers
+    // actually say. Removing nothing means the recovery lost a race with a Completed or an
+    // Unassign that already cleared the record, and a lost race is a no-op rather than a
+    // reason wiped off a task that still has a dead blocker.
+    public void Apply(TaskDependencyRecovered @event)
+    {
+        if (State != TaskState.Blocked || !_deadDependencies.Remove(@event.DependencyId))
         {
-            _deadDependencies.Add(@event.DependencyId);
+            return;
         }
 
-        DependencyFailureReason = @event.Reason;
+        // Derived here rather than read off the event, exactly as the closeout path derives it.
+        // A pass computes what survives from the world it read, and a death appended between
+        // that read and this commit is invisible to it — trusting the snapshot would silence a
+        // hold for a blocker that is still dead, and silence it for good, because every later
+        // sweep compares against these records and finds the death already recorded.
+        _deadDependencyReasons.Remove(@event.DependencyId);
+        DependencyFailureReason = _deadDependencies.Count == 0
+            ? null
+            : _deadDependencyReasons.GetValueOrDefault(_deadDependencies[^1]);
     }
 
     public void Apply(TaskClaimed @event)

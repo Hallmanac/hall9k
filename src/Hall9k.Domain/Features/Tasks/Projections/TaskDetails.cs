@@ -32,10 +32,23 @@ public sealed class TaskDetails
     public List<Guid> BlockedBy { get; set; } = [];
     /// <summary>Blockers not yet at true closeout; empty on anything but a Blocked task.</summary>
     public List<Guid> UnmetDependencies { get; set; } = [];
-    /// <summary>Blockers observed Failed or Abandoned: they will never close out on their own.</summary>
+    /// <summary>
+    /// Blockers observed dead: they will never close out on their own. Oldest first, so the
+    /// last entry is the newest observation — the one <see cref="DependencyFailureReason"/> carries.
+    /// </summary>
     public List<Guid> DeadDependencies { get; set; } = [];
     /// <summary>Why the newest dead blocker died — the reason h9k task show puts in front of the human.</summary>
     public string? DependencyFailureReason { get; set; }
+    /// <summary>
+    /// What was recorded about each dead blocker, kept per dependency the way the aggregate
+    /// keeps it, so this read model answers "which reason survives" from the same records and
+    /// replays to the same state. A document written before Decisions Log #61 has no such map
+    /// while still listing dead blockers, and would answer that question with silence about a
+    /// blocker the stream does record as dead — which is why the field is a staleness marker in
+    /// <see cref="Hall9k.Domain.Infrastructure.Persistence.TaskLifecycleProjectionBackfill"/>
+    /// and every such document is rebuilt from its events before anything reads it.
+    /// </summary>
+    public Dictionary<Guid, string> DeadDependencyReasons { get; set; } = [];
     /// <summary>How many times the task has been revised; a draft's edit history at a glance.</summary>
     public int Revisions { get; set; }
     /// <summary>The task's model override; Unknown means the per-role, project, and platform links decide (Decisions Log #33).</summary>
@@ -133,6 +146,7 @@ public sealed class TaskDetailsProjection : SingleStreamProjection<TaskDetails, 
         view.AssignedOwnerId = @event.Data.AssignedOwnerId;
         view.UnmetDependencies = [.. @event.Data.UnmetDependencies];
         view.DeadDependencies = [];
+        view.DeadDependencyReasons = [];
         view.DependencyFailureReason = null;
         view.State = view.UnmetDependencies.Count == 0 ? TaskState.Queued : TaskState.Blocked;
     }
@@ -142,12 +156,13 @@ public sealed class TaskDetailsProjection : SingleStreamProjection<TaskDetails, 
         view.AssignedOwnerId = null;
         view.UnmetDependencies = [];
         view.DeadDependencies = [];
+        view.DeadDependencyReasons = [];
         view.DependencyFailureReason = null;
         view.State = TaskState.Published;
     }
 
     // Dependency bookkeeping only means anything while the task is Blocked, and the decider
-    // only ever emits these two events from that state. Anything else on the stream is a lost
+    // only ever emits these three events from that state. Anything else on the stream is a lost
     // race — a human unassigned or abandoned the task between a resolver's read and its append
     // — and a lost race replays as a no-op rather than smearing dependency state across a
     // lifecycle that has already moved on.
@@ -159,9 +174,14 @@ public sealed class TaskDetailsProjection : SingleStreamProjection<TaskDetails, 
         }
 
         view.UnmetDependencies = [.. @event.Data.RemainingDependencies];
-        if (view.DeadDependencies.Remove(@event.Data.DependencyId) && view.DeadDependencies.Count == 0)
+        if (view.DeadDependencies.Remove(@event.Data.DependencyId))
         {
-            view.DependencyFailureReason = null;
+            // The blocker that died was retried and finished after all, so what it said stops
+            // counting. Closeout carries no surviving reason on the event, so the display falls
+            // back to the newest death this task still records — the same records the aggregate
+            // falls back to, so the two never replay to different advice.
+            view.DeadDependencyReasons.Remove(@event.Data.DependencyId);
+            view.DependencyFailureReason = SurvivingReason(view);
         }
 
         if (view.UnmetDependencies.Count == 0)
@@ -179,13 +199,40 @@ public sealed class TaskDetailsProjection : SingleStreamProjection<TaskDetails, 
             return;
         }
 
-        if (!view.DeadDependencies.Contains(@event.Data.DependencyId))
-        {
-            view.DeadDependencies.Add(@event.Data.DependencyId);
-        }
-
+        // Oldest first, newest observation last, re-observations included: a blocker whose
+        // death changed shape was seen just now, so it takes the newest slot rather than
+        // keeping the one it held when it first died.
+        view.DeadDependencies.Remove(@event.Data.DependencyId);
+        view.DeadDependencies.Add(@event.Data.DependencyId);
+        view.DeadDependencyReasons[@event.Data.DependencyId] = @event.Data.Reason;
         view.DependencyFailureReason = @event.Data.Reason;
     }
+
+    // The mirror of the hold (Decisions Log #61): the blocker can reach closeout again, so the
+    // recorded death stops counting and h9k task show goes back to the ordinary waiting-on
+    // display. Removing nothing means a Completed or an Unassign already cleared it, and that
+    // lost race is a no-op rather than a reason wiped off a task that still has a dead blocker.
+    public void Apply(IEvent<TaskDependencyRecovered> @event, TaskDetails view)
+    {
+        if (view.State != TaskState.Blocked || !view.DeadDependencies.Remove(@event.Data.DependencyId))
+        {
+            return;
+        }
+
+        view.DeadDependencyReasons.Remove(@event.Data.DependencyId);
+        view.DependencyFailureReason = SurvivingReason(view);
+    }
+
+    /// <summary>
+    /// What the human is left reading once a blocker stops counting: the newest death this view
+    /// still records, and null when none is left. Derived from the records rather than from a
+    /// reason carried on the event, because a pass computes its snapshot from the world it read
+    /// and cannot see a death appended concurrently.
+    /// </summary>
+    private static string? SurvivingReason(TaskDetails view) =>
+        view.DeadDependencies.Count == 0
+            ? null
+            : view.DeadDependencyReasons.GetValueOrDefault(view.DeadDependencies[^1]);
 
     public void Apply(IEvent<TaskClaimed> @event, TaskDetails view)
     {
