@@ -76,9 +76,13 @@ public sealed class TaskPublishCommand : Hall9kAsyncCommand<TaskPublishCommand.S
 
         await session.SaveChangesAsync(cancellationToken);
 
+        // The objective is printed whole rather than cut to a column width. This line is the last
+        // look a human gets at what they are making assignable, and for an adopted task the
+        // objective started life as somebody else's issue title (PLAN.md §3.1a): a long one can
+        // keep its real intent past the point a list view would have stopped reading.
         string shortId = TaskListCommand.ShortId(taskId);
         AnsiConsole.MarkupLine(
-            $"[green]Task {shortId} published[/]: {TaskListCommand.Truncate(task.Objective, 72).EscapeMarkup()}");
+            $"[green]Task {shortId} published[/]: {ExternalText.OneLineMarkup(task.Objective)}");
 
         if (assignee is null || assigned is null)
         {

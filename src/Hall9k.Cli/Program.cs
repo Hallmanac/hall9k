@@ -181,12 +181,17 @@ app.Configure(config =>
             + "A task runs only once a human assigns it and every dependency has closed out.");
         task.AddCommand<TaskAddCommand>("add")
             .WithDescription(
-                "Create a draft (flags or --file task.md). Creation is identity, not readiness: a project "
-                + "and an objective are all it takes, and the draft is invisible to the dispatcher until "
-                + "you publish and assign it. Acceptance criteria are what h9k task publish demands.")
+                "Create a draft (flags, --file task.md, or --from-issue to adopt a GitHub issue). "
+                + "Creation is identity, not readiness: a project and an objective are all it takes, and "
+                + "the draft is invisible to the dispatcher until you publish and assign it. Acceptance "
+                + "criteria are what h9k task publish demands, and an adopted issue never supplies them.")
             .WithExample("task", "add", "--project", "hall9k", "--objective", "Add the project browse surface",
                 "--criteria", "h9k project list shows one row per project")
             .WithExample("task", "add", "--file", "backlog/19-model-policy.md", "--model", "claude-opus-5")
+            .WithExample("task", "add", "--project", "hall9k", "--from-issue", "42")
+            .WithExample("task", "add", "--project", "hall9k",
+                "--from-issue", "https://github.com/Hallmanac/hall9k/issues/42",
+                "--criteria", "The importer refuses a closed issue")
             .WithExample("task", "add", "--project", "hall9k", "--objective", "Wire the new pane in",
                 "--blocked-by", "28b19893");
         task.AddCommand<TaskReviseCommand>("revise")

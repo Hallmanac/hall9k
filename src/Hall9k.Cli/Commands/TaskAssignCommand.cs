@@ -102,7 +102,7 @@ public sealed class TaskAssignCommand : Hall9kAsyncCommand<TaskAssignCommand.Set
         {
             AnsiConsole.MarkupLine(
                 $"  [dim]{TaskListCommand.ShortId(dependency.Id)}[/] "
-                + $"{TaskListCommand.Truncate(dependency.Objective, 60).EscapeMarkup()} "
+                + $"{TaskListCommand.Truncate(ExternalText.OneLine(dependency.Objective), 60).EscapeMarkup()} "
                 + $"[dim]({dependency.State.Value})[/]");
         }
 

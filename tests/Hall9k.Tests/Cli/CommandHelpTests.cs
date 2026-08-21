@@ -46,6 +46,21 @@ public sealed class CommandHelpTests
         undescribed.Should().BeEmpty("every option and argument teaches from --help");
     }
 
+    [Fact]
+    public void The_issue_import_teaches_that_criteria_are_never_read_from_an_issue()
+    {
+        // --help is where an agent learns what a command will and will not do for it. An agent
+        // that believed the import supplied criteria would publish an empty contract, so the
+        // one rule this command exists to hold has to be legible without running it.
+        string description = typeof(TaskAddCommand.Settings)
+            .GetProperty(nameof(TaskAddCommand.Settings.FromIssue))!
+            .GetCustomAttribute<DescriptionAttribute>()!.Description;
+
+        description.Should().Contain("NEVER", "the never-guess rule is the point of the command");
+        description.Should().Contain("--criteria", "and the help names the way to supply them");
+        description.Should().Contain("closed", "a closed issue is refused, which is worth knowing before trying");
+    }
+
     [Theory]
     [MemberData(nameof(ProjectSelectingSettings))]
     public void Every_project_selector_describes_the_resolver_it_actually_uses(Type settings, string property)

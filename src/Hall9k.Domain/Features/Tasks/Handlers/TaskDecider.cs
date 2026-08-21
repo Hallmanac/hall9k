@@ -56,8 +56,14 @@ public static class TaskDecider
     /// <summary>
     /// The override reaches the executor's /bin/sh command line, so it is vetted here rather
     /// than quoted and hoped for; Unknown simply states no preference (Decisions Log #33).
+    /// <para>
+    /// Public because a caller may need the answer before it has an event to build: h9k task add
+    /// prompts a human for an objective and acceptance criteria between reading its options and
+    /// reaching this decider, and refusing an unusable model only at the end would throw away
+    /// what they typed in between. Asking early does not move the rule; the decider still vets.
+    /// </para>
     /// </summary>
-    private static AgentModel VetModel(AgentModel? model)
+    public static AgentModel VetModel(AgentModel? model)
     {
         AgentModel chosen = AgentModel.FromInput(model);
         return chosen == AgentModel.Unknown || chosen.IsWellFormed

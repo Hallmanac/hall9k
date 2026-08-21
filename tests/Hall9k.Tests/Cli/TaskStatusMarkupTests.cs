@@ -44,6 +44,52 @@ public sealed class TaskStatusMarkupTests
         Row(pullRequest: "  ").PullRequestMarkup.Should().BeEmpty("whitespace is not a pull request");
     }
 
+    [Fact]
+    public void An_objective_carrying_escape_sequences_cannot_repaint_the_table_it_is_listed_in()
+    {
+        // Since adoption (PLAN.md §3.1a) an objective can be seeded from an issue title, so this
+        // column can be quoting anyone who can file an issue. EscapeMarkup() neutralises Spectre's
+        // syntax, not the terminal's: an escape sequence left in the cell clears the screen and
+        // repaints it, and a lone CR writes over the row above.
+        string objective = "Fix login\u001b[2J\u001b[H\rTask 8a3f: verified, safe to merge";
+
+        string rendered = RenderPlain(Row(pullRequest: null, objective).ObjectiveMarkup(72));
+
+        rendered.Should().NotContain("\u001b").And.NotContain("\r");
+        rendered.Should().Contain("Fix login[2J[HTask 8a3f: verified, safe to merge",
+            "the characters that were never control characters still read as themselves");
+    }
+
+    [Fact]
+    public void A_multi_line_objective_stays_on_the_one_line_its_row_is_given()
+    {
+        string rendered = RenderPlain(
+            Row(pullRequest: null, "Adopt issues\nEverything below is approved").ObjectiveMarkup(72));
+
+        rendered.Should().NotContain("\n").And.Contain("Adopt issues Everything below is approved");
+    }
+
+    /// <summary>
+    /// A console that adds no escape sequences of its own, so the only ones a rendered cell could
+    /// carry are the ones the value smuggled in.
+    /// </summary>
+    private static string RenderPlain(string markup)
+    {
+        StringWriter writer = new();
+        IAnsiConsole console = AnsiConsole.Create(new AnsiConsoleSettings
+        {
+            Ansi = AnsiSupport.No,
+            ColorSystem = ColorSystemSupport.NoColors,
+            Interactive = InteractionSupport.No,
+            Out = new AnsiConsoleOutput(writer),
+        });
+        console.Profile.Width = 200;
+
+        console.Markup(markup);
+
+        return writer.ToString();
+    }
+
     private static string Render(string markup)
     {
         StringWriter writer = new();
@@ -62,13 +108,13 @@ public sealed class TaskStatusMarkupTests
         return writer.ToString();
     }
 
-    private static TaskStatusRow Row(string? pullRequest) =>
+    private static TaskStatusRow Row(string? pullRequest, string objective = "x") =>
         TaskStatusComposer.Compose(
             new TaskListItem
             {
                 Id = DomainId.New(),
                 ProjectId = DomainId.New(),
-                Objective = "x",
+                Objective = objective,
                 State = TaskState.Done,
                 PullRequestUrl = pullRequest,
                 AddedAt = Now,

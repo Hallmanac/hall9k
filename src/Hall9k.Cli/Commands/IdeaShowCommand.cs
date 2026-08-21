@@ -111,7 +111,7 @@ public sealed class IdeaShowCommand : Hall9kAsyncCommand<IdeaShowCommand.Setting
             string taskShortId = TaskListCommand.ShortId(taskId);
             AnsiConsole.MarkupLine(
                 $"\n[green]Promoted[/] [dim]{idea.PromotedAt?.ToLocalTime():g}[/] into task [dim]{taskShortId}[/] "
-                + (task is null ? string.Empty : $"{task.Objective.EscapeMarkup()} [dim]({task.State.Value})[/]"));
+                + (task is null ? string.Empty : $"{ExternalText.OneLineMarkup(task.Objective)} [dim]({task.State.Value})[/]"));
             AnsiConsole.MarkupLine(
                 $"[dim]Discovery ended there; refinement continues on the draft:[/] h9k task show {taskShortId}");
             return;

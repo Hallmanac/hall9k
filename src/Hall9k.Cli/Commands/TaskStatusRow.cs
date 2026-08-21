@@ -1,3 +1,4 @@
+using Hall9k.Cli.Infrastructure;
 using Spectre.Console;
 using Spectre.Console.Rendering;
 
@@ -52,8 +53,13 @@ internal sealed record TaskStatusRow(
     /// </summary>
     public string AssigneeMarkup => Assignee.IsBlank() ? "[dim]—[/]" : Assignee.EscapeMarkup();
 
-
-    public string ObjectiveMarkup(int max) => TaskListCommand.Truncate(Objective, max).EscapeMarkup();
+    /// <summary>
+    /// The objective as the browse and attention surfaces print it. Sanitised before it is
+    /// truncated, so the column is measured in characters that will actually be rendered, and
+    /// an adopted objective (PLAN.md §3.1a) cannot repaint the table it is listed in.
+    /// </summary>
+    public string ObjectiveMarkup(int max) =>
+        TaskListCommand.Truncate(ExternalText.OneLine(Objective), max).EscapeMarkup();
 
     /// <summary>
     /// How much objective a row can carry and stay scannable: whatever the console has left

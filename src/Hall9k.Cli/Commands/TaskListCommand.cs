@@ -1,5 +1,6 @@
 using System.ComponentModel;
 using Hall9k.Cli.Infrastructure;
+using Hall9k.Connectors.Text;
 using Hall9k.Domain.Features.Project.Projections;
 using Hall9k.Domain.Features.Tasks;
 using Hall9k.Domain.Shared.Exceptions;
@@ -202,6 +203,12 @@ public sealed class TaskListCommand : Hall9kAsyncCommand<TaskListCommand.Setting
     // the random tail is what tells them apart.
     internal static string ShortId(Guid id) => id.ToString("N")[^8..];
 
-    internal static string Truncate(string value, int max) =>
-        value.Length <= max ? value : value[..(max - 1)] + "…";
+    /// <summary>
+    /// A value cut to fit a column, on a text-element boundary rather than at a raw char index.
+    /// Since adoption (PLAN.md §3.1a) the objectives passing through here are issue titles, and an
+    /// emoji or any other character outside the BMP is two chars: slicing between its halves
+    /// leaves a lone surrogate, which renders as the replacement character. The rule is
+    /// <see cref="RelayedText"/>'s, so the daemon cuts relayed text the same way.
+    /// </summary>
+    internal static string Truncate(string value, int max) => RelayedText.Truncate(value, max);
 }
