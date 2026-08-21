@@ -504,20 +504,31 @@ public sealed record TokensRecorded(     // from the stream-json result payload,
 
 // Pre-PR review loop (log #24) — appended by the daemon's ReviewEngine between the gates
 // and PullRequestOpener. Full findings text is a disk artifact (log #6), never payload.
-public sealed record ReviewDispatched(   // independent reviewer spawned over the diff, fresh session.
-    Guid Id,                             // -> UnderReview. Pid + start = adoption identity (log #2).
-    Guid SessionId,
+// A cycle runs one pass per lens (log #59), so the dispatch and pass events come one per
+// lens while ReviewCompleted stays the cycle's single merged milestone.
+public sealed record ReviewDispatched(   // one review pass spawned over the diff, fresh session;
+    Guid Id,                             // one per lens, so a cycle appends two of these (log #59).
+    Guid SessionId,                      // -> UnderReview. Pid + start = adoption identity (log #2).
     int Cycle,                           // review rounds, from 1
     int ProcessId,
     DateTimeOffset ProcessStartedAt,
     DateTimeOffset DispatchedAt,
-    AgentModel? Model = null);           // resolved for the Review role in its own right (log #33)
-public sealed record ReviewCompleted(    // the verdict milestone; findings artifact:
-    Guid Id,                             // review-<cycle>-findings.md in the run directory
-    int Cycle,
-    ReviewVerdict Verdict,               // MergeReady | NeedsFixes | Unknown (no parseable verdict ->
-    DateTimeOffset CompletedAt);         //   one same-session re-prompt, then park; log #28)
-public sealed record ReviewVerdictReprompted( // verdict-less reviewer resumed ONCE in the same session
+    AgentModel? Model = null,            // resolved for the Review role in its own right (log #33)
+    ReviewLens? Lens = null);            // which attention budget this pass carries; null on streams
+                                         //   written before lenses existed (log #59)
+public sealed record ReviewPassCompleted( // ONE lens of the cycle returned its verdict (log #59);
+    Guid Id,                             // that lens's own findings artifact:
+    int Cycle,                           // review-<cycle>-<lens>-findings.md in the run directory
+    ReviewLens Lens,                     // the lens rides on the event so "which lens found this"
+    ReviewVerdict Verdict,               //   is a query over the stream, not an impression
+    DateTimeOffset CompletedAt);
+public sealed record ReviewCompleted(    // the CYCLE's merged verdict over every lens (log #59),
+    Guid Id,                             // appended in the same transaction as the cycle's last
+    int Cycle,                           // ReviewPassCompleted. Merged findings artifact:
+    ReviewVerdict Verdict,               // review-<cycle>-findings.md in the run directory.
+    DateTimeOffset CompletedAt);         // MergeReady needs EVERY lens clean; Unknown (any lens left
+                                         //   no parseable verdict) -> one re-prompt, then park (log #28)
+public sealed record ReviewVerdictReprompted( // verdict-less pass resumed ONCE in the same session
     Guid Id,                             // (claude -p --resume, log #5) and told to conclude (log #28)
     Guid SessionId,                      // this leg's artifact identity — never the resumed transcript's
     Guid ResumedSessionId,
@@ -525,8 +536,10 @@ public sealed record ReviewVerdictReprompted( // verdict-less reviewer resumed O
     int ProcessId,
     DateTimeOffset ProcessStartedAt,
     DateTimeOffset RepromptedAt,
-    AgentModel? Model = null);           // the RESUMED session's model, carried and recorded rather than
+    AgentModel? Model = null,            // the RESUMED session's model, carried and recorded rather than
                                          // re-resolved: a resume keeps what it started on (log #33)
+    ReviewLens? Lens = null);            // which pass is being re-prompted; the one re-prompt is the
+                                         //   CYCLE's, not each lens's (log #59)
 public sealed record ReviewFixDispatched( // fix session in the same worktree, findings as prompt;
     Guid Id,                             // counted against MaxAutomaticReviewFixRuns
     Guid SessionId,
@@ -623,6 +636,9 @@ public sealed record RunState           // Dispatched, Running, Verifying, Under
                                         //   Completed, Failed, Killed, Superseded, Unknown
 public sealed record ReviewVerdict      // MergeReady, NeedsFixes, Unknown (§3.1)
 public sealed record ReviewFixOutcome   // Fixed, Disputed, Unknown (§3.1)
+public sealed record ReviewLens         // Conformance, Adversarial (§3.1); Unknown = a pass recorded
+                                        //   before lenses existed, which covers Conformance without
+                                        //   claiming it said so. CycleLenses is the seam (log #59)
 public sealed record HandoffOutcome     // Captured, NotAuthored, NotCaptured (§3.2),
                                         //   NotClosedOut (query-only: no run to ask yet), Unknown
 ```
@@ -634,28 +650,50 @@ The `RunAggregate` mirrors the Task shape: sealed class, private setters, one `A
 ### 3.1 The pre-PR review loop (log #24)
 
 `VerificationPassed` no longer leads straight to the PR: the daemon's `ReviewEngine`
-dispatches an **independent review agent** — a separate headless session with fresh
-context, never the session that wrote the code — over the run's diff against the base
-branch. Verified findings only (read the surrounding code, confirm the defect, discard
-the unconfirmed), each with file:line, a defect statement, and a concrete failure
-scenario, closed by a parsed `VERDICT:` line.
+dispatches **independent review agents** — separate headless sessions with fresh context,
+never the session that wrote the code — over the run's diff against the base branch.
+Verified findings only (read the surrounding code, confirm the defect, discard the
+unconfirmed), each with file:line, a defect statement, and a concrete failure scenario,
+closed by a parsed `VERDICT:` line.
+
+**Every cycle runs one pass per lens** (log #59), and `ReviewLens.CycleLenses` is that
+list: **Conformance** asks whether the work meets its objective, its acceptance criteria,
+and repo doctrine, while **Adversarial** assumes the code is wrong somewhere and hunts
+defect classes without ever being told what the work was supposed to do. The passes are
+dispatched together and awaited one at a time, so a cycle costs the slower pass rather
+than the sum. Each appends its own `ReviewDispatched` and its own `ReviewPassCompleted`
+carrying its lens and that lens's verdict; when the cycle's last pass lands, the findings
+merge into one document and the verdicts merge into one `ReviewCompleted`, appended in the
+same transaction as that last pass event. **MergeReady requires every lens clean.**
 
 - **merge-ready** → `PullRequestOpener` proceeds; the closeout phase (§2.2) begins as before.
-- **needs-fixes** → a fix session runs in the same worktree with the findings as its
-  prompt; the gates re-run; a *fresh* reviewer looks again (review → fix → gates → review).
-  Bounded by `DaemonOptions.MaxAutomaticReviewFixRuns` (default 2, the §2.2 budget
-  pattern); exhaustion parks the run (`ReviewParked` → NeedsHuman in `h9k status`) with
-  the findings artifact attached.
+- **needs-fixes** → **one** fix session runs in the same worktree with the *merged* findings
+  of every lens as its prompt; the gates re-run; a *fresh* set of reviewers looks again
+  (review → fix → gates → review). Bounded by `DaemonOptions.MaxAutomaticReviewFixRuns`
+  (default 2, the §2.2 budget pattern); exhaustion parks the run (`ReviewParked` →
+  NeedsHuman in `h9k status`) with the findings artifact attached.
 - **dispute** — the fix run judging a finding not-a-defect or human-territory — parks
   immediately with both positions on disk (findings + fix-position artifacts) rather
   than looping on judgment.
 
+**The budgets are per cycle, never per lens**: one automatic fix run per cycle against
+`MaxAutomaticReviewFixRuns`, and one verdict re-prompt per cycle however many passes ended
+without a `VERDICT:` line. Two lenses do not double the parking math.
+
 A parked run keeps its task Claimed and its lease alive (adoption refreshes the
 heartbeat at startup): the worktree is the human's workspace. Review and fix sessions
 record `TokensRecorded` on the run like any other session, and their transcripts live
-beside the main session's in the run directory (`review-<cycle>-<session>.stream.jsonl`).
-The engine is a state machine over the run stream (`ReviewPhase`, derived in the
-aggregate), so a restarted daemon resumes the loop exactly where the events left off.
+beside the main session's in the run directory, named per pass:
+`review-<lens>-<cycle>-<session>.stream.jsonl` (a pass recorded without a lens, from a
+stream written before lenses existed, keeps the original `review-<cycle>-<session>` name,
+which is what lets a daemon upgraded mid-review still find the running session's files).
+The findings artifacts follow the same split: each lens writes its own words to
+`review-<cycle>-<lens>-findings.md`, and the merged document the fix session reads and a
+park points a human at stays `review-<cycle>-findings.md`. The engine is a state machine
+over the run stream (`ReviewPhase`, derived in the aggregate), so a restarted daemon
+resumes the loop exactly where the events left off, including a cycle whose passes were
+only half dispatched: the missing lenses are topped up rather than the finished ones
+re-run.
 
 ### 3.2 Context routing along dependency edges (log #36)
 
