@@ -3,6 +3,7 @@ using Hall9k.Daemon.Closeout;
 using Hall9k.Daemon.Dispatch;
 using Hall9k.Daemon.Execution;
 using Hall9k.Daemon.ProcessManagement;
+using Hall9k.Daemon.Publication;
 using Hall9k.Daemon.Review;
 using Hall9k.Daemon.Worktrees;
 using Hall9k.Domain;
@@ -50,6 +51,7 @@ builder.Services.AddSingleton<RunSupervisor>();
 builder.Services.AddSingleton<RunLauncher>();
 builder.Services.AddSingleton<IPullRequestInspector, GitHubPullRequestInspector>();
 builder.Services.AddSingleton<CloseoutEngine>();
+builder.Services.AddSingleton<CardPublicationEngine>();
 
 builder.Services.AddMartenEventStore(connectionString, AutoCreate.CreateOnly)
     .IntegrateWithWolverine();
@@ -64,6 +66,7 @@ builder.UseWolverine(opts =>
 builder.Services.AddHostedService<DispatchLoop>();
 builder.Services.AddHostedService<LeaseHeartbeatService>();
 builder.Services.AddHostedService<PullRequestMonitor>();
+builder.Services.AddHostedService<CardPublicationLoop>();
 builder.Services.AddHostedService<LogRotationService>();
 
 // h9k daemon stop sends SIGTERM; graceful shutdown means in-flight event appends get
