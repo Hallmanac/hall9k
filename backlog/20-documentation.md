@@ -24,3 +24,11 @@ Design constraints:
   workflow, no aspirational features presented as current.
 - House writing conventions apply throughout (AGENTS.md, and the no-em-dash
   rule for authored prose).
+
+## Post-queue note (Brian, 2026-08-21 - the queued agent has the frozen snapshot; reconcile at PR review)
+
+The prerequisites section should actively encourage installing the CLI toolbelt,
+not just name requirements: git, the GitHub CLI (gh), and Atlassian's Teamwork
+Graph CLI (twg) - plus any CLI tools adopted along the way. Rationale: platform
+agents run slim (backlog 29) and CLIs are their on-demand capability path; a
+well-stocked PATH is what makes slim agents fully capable.
