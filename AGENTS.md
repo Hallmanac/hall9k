@@ -53,6 +53,7 @@ creates a **draft**, and nothing dispatches until a human publishes and assigns 
 
 ```bash
 h9k task add --project <name> --objective "…"     # creates a Draft (identity, not readiness)
+h9k task add --project <name> --from-issue 42     # adopt a GitHub issue (number, owner/repo#42, or URL)
 h9k task revise <id> --criteria "…" --blocked-by <id>   # Draft-only; each option replaces that part
 h9k task publish <id> [--assign]                  # the readiness gate; --assign starts it too
 h9k task assign <id> [<owner>]                    # the dispatch trigger — Queued, or Blocked on dependencies
@@ -63,6 +64,13 @@ h9k task draft <id>                               # Published back to Draft, so 
 The edit-after-the-fact path is `unassign → draft → revise → publish → assign`, each step an
 explicit act. A dependency counts as met only at true closeout (the pull request merged and the
 closeout monitor observed it); TASK-MODEL.md §2.3 has the whole picture.
+
+`--from-issue` adopts existing external work (PLAN.md §3.1a, Decisions Log #60): the issue title
+seeds the objective, the body becomes agent context, and the issue is recorded as the task's
+`ExternalReference`. Acceptance criteria are never read out of an issue body; supply them with
+`--criteria` or at the prompt. Import is a one-time snapshot, so the state read at import is
+recorded as an observation of that moment and never re-checked. Every source goes through
+`IWorkItemProvider` in `Hall9k.Connectors`, so a new one is a resolver rather than a new command.
 
 CI runs build + test on ubuntu and windows for every push/PR to main.
 

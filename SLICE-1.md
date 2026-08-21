@@ -192,7 +192,10 @@ dispatched by the daemon. Manual coding after the flip is the exception and need
 
 ---
 
-## S1-11 · `h9k task add --from-issue <url>` (dispatched via Hall9k)
+## S1-11 · `h9k task add --from-issue <url>` (dispatched via Hall9k) — **COMPLETE 2026-08-21**
+
+Decision log #60 records the design: the title is a seed and the body is context, criteria are
+neither, and import is a one-time snapshot that dates its own observation.
 
 - **Objective:** An existing GitHub issue seeds a ready task with one command.
 - **Type:** feature
@@ -205,6 +208,11 @@ dispatched by the daemon. Manual coding after the flip is the exception and need
      the user or reject, not silently pass).
   3. Duplicate adoption of the same issue is rejected with a pointer to the existing task.
 - **Constraints:** no write-back to the issue in v0 beyond linking; no Jira.
+- **Landed beyond the above:** only an issue positively observed open is adopted, so a closed,
+  missing, or never-stated state is refused with a self-correcting message that quotes what was
+  seen; the state read at import is recorded as an observation of that moment, and the
+  pull-request body mentions the source issue (a cross-reference, never a closing keyword) so
+  GitHub links the work back.
 
 ## S1-12 · CLI-owned daemon lifecycle + refreshing install (dispatched via Hall9k) — **COMPLETE 2026-08-19**
 
