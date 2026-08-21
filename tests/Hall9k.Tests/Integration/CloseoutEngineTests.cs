@@ -11,6 +11,7 @@ using Hall9k.Domain.Features.Tasks.Handlers;
 using Hall9k.Domain.Features.Tasks.Projections;
 using Hall9k.Domain.Infrastructure.Ids;
 using Hall9k.Domain.Infrastructure.Persistence;
+using Hall9k.Domain.Infrastructure.Storage;
 using JasperFx;
 using Marten;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -28,6 +29,10 @@ namespace Hall9k.Tests.Integration;
 /// review holds at ReviewPending and re-requests through the API, a spent budget parks,
 /// and a closed PR fails the run but keeps the branch.
 /// </summary>
+// The handoff that lands at true closeout is read from the run directory, so this class
+// owns HALL9K_HOME for its duration (Decisions Log #36) and shares the serializing
+// collection with every other test that does.
+[Collection("Hall9kHome")]
 [Trait("Category", "RequiresDocker")]
 public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixture<PostgresFixture>, IDisposable
 {
@@ -36,6 +41,15 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
     private const string PullRequestUrl = "https://github.com/x/y/pull/7";
 
     private readonly string _root = Path.Combine(Path.GetTempPath(), $"hall9k-closeout-{Guid.NewGuid():N}");
+
+    private readonly string _home = SetTempHome();
+
+    private static string SetTempHome()
+    {
+        string home = Path.Combine(Path.GetTempPath(), $"hall9k-home-{Guid.NewGuid():N}");
+        Environment.SetEnvironmentVariable("HALL9K_HOME", home);
+        return home;
+    }
 
     private sealed class FakeInspector : IPullRequestInspector
     {
@@ -74,6 +88,197 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
             IsMerged: false, IsClosed: false, MergedAt: null, ClosedAt: null,
             FailingChecks: [], HasPendingChecks: false, UnresolvedCopilotThreadCount: 0,
             ErroredCopilotReview: null);
+    }
+
+    /// <summary>
+    /// The landing half of the capture-then-land split (Decisions Log #36): the handoff was
+    /// written to the run directory at session end, and the event carrying it appends here,
+    /// with RunCompleted, on the merge observation that unblocks the dependents who read it.
+    /// </summary>
+    [Fact]
+    public async Task Merge_lands_the_handoff_captured_at_session_end()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        (DocumentStore store, NodeContext node, GitWorktreeManager worktrees, _, string repoPath) =
+            await SetUpAsync(cts.Token);
+        using IDisposable storeLifetime = store;
+
+        (_, Guid runId, _) = await SeedAwaitingReviewAsync(store, node, worktrees, repoPath, cts.Token);
+        WriteHandoffArtifact(runId, "The column is named Canonical; the rename is deliberate.");
+
+        FakeInspector inspector = new()
+        {
+            Snapshot = FakeInspector.Quiet() with { IsMerged = true, MergedAt = Now.AddHours(2) },
+        };
+        await NewEngine(store, node, inspector, worktrees).PollOnceAsync(cts.Token);
+
+        await using IQuerySession query = store.QuerySession();
+        RunDetails run = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
+        run.State.Should().Be(RunState.Completed);
+        run.HandoffOutcome.Should().Be(HandoffOutcome.Captured);
+        run.HandoffSummary.Should().Be("The column is named Canonical; the rename is deliberate.");
+    }
+
+    /// <summary>
+    /// A run whose pull request never merges hands nothing down, because the only event that
+    /// carries a handoff is appended on the merge path. The artifact still exists on disk —
+    /// that is the point of splitting capture from landing.
+    /// </summary>
+    [Fact]
+    public async Task A_pull_request_closed_unmerged_never_lands_its_handoff()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        (DocumentStore store, NodeContext node, GitWorktreeManager worktrees, _, string repoPath) =
+            await SetUpAsync(cts.Token);
+        using IDisposable storeLifetime = store;
+
+        (_, Guid runId, _) = await SeedAwaitingReviewAsync(store, node, worktrees, repoPath, cts.Token);
+        WriteHandoffArtifact(runId, "Work that never landed on main.");
+
+        FakeInspector inspector = new()
+        {
+            Snapshot = FakeInspector.Quiet() with { IsClosed = true, ClosedAt = Now.AddHours(2) },
+        };
+        await NewEngine(store, node, inspector, worktrees).PollOnceAsync(cts.Token);
+
+        await using IQuerySession query = store.QuerySession();
+        RunDetails run = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
+        run.State.Should().Be(RunState.Failed);
+        run.HandoffOutcome.Should().Be(HandoffOutcome.Unknown, "nothing was handed down, so nothing was recorded");
+        run.HandoffSummary.Should().BeNull();
+        File.Exists(RunPaths.HandoffFile(runId)).Should().BeTrue(
+            "the capture happened at session end; only the landing is withheld");
+    }
+
+    /// <summary>
+    /// The three artifact states are three observations, and each closes out honestly: an
+    /// empty file means the session's result was read and carried no handoff, an absent file
+    /// means there was no session-end capture at all (a park resolved by hand, a historical
+    /// stream). Neither is an error, and neither is silently empty.
+    /// </summary>
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task A_run_with_no_usable_handoff_closes_out_with_the_absence_recorded(bool artifactExists)
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        (DocumentStore store, NodeContext node, GitWorktreeManager worktrees, _, string repoPath) =
+            await SetUpAsync(cts.Token);
+        using IDisposable storeLifetime = store;
+
+        (Guid taskId, Guid runId, _) = await SeedAwaitingReviewAsync(store, node, worktrees, repoPath, cts.Token);
+        if (artifactExists)
+        {
+            WriteHandoffArtifact(runId, string.Empty);
+        }
+
+        FakeInspector inspector = new()
+        {
+            Snapshot = FakeInspector.Quiet() with { IsMerged = true, MergedAt = Now.AddHours(2) },
+        };
+        await NewEngine(store, node, inspector, worktrees).PollOnceAsync(cts.Token);
+
+        await using IQuerySession query = store.QuerySession();
+        RunDetails run = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
+        run.State.Should().Be(RunState.Completed, "a run with no handoff closes out like any other");
+        run.HandoffOutcome.Should().Be(
+            artifactExists ? HandoffOutcome.NotAuthored : HandoffOutcome.NotCaptured,
+            "the absence says which absence it is rather than collapsing both into one");
+        run.HandoffSummary.Should().BeNull();
+        (await query.LoadAsync<TaskListItem>(taskId, cts.Token))!.State.Should().Be(TaskState.Done);
+    }
+
+    /// <summary>
+    /// The handoff a dependent inherits is the task's, not the completing run's. Decision #22
+    /// makes review follow-ups automatic, so a merged pull request is normally the original
+    /// run (retired with RunSuperseded) plus a follow-up that resolved the review threads and
+    /// reached Completed — and the original is the run that wrote the feature. Both handoffs
+    /// land, in dispatch order, so the description of the work leads and the thread resolution
+    /// follows it.
+    /// </summary>
+    [Fact]
+    public async Task A_superseded_run_hands_down_its_work_ahead_of_the_follow_up_that_merged()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        (DocumentStore store, NodeContext node, GitWorktreeManager worktrees, _, string repoPath) =
+            await SetUpAsync(cts.Token);
+        using IDisposable storeLifetime = store;
+
+        (Guid taskId, Guid runId, _) = await SeedAwaitingReviewAsync(
+            store, node, worktrees, repoPath, cts.Token, priorAutomaticReopens: 1);
+        Guid originalRunId = await OnlyOtherRunAsync(store, taskId, runId, cts.Token);
+
+        WriteHandoffArtifact(originalRunId, "The column is named Canonical; the rename is deliberate.");
+        WriteHandoffArtifact(runId, "Resolved three review threads; no behaviour changed.");
+
+        FakeInspector inspector = new()
+        {
+            Snapshot = FakeInspector.Quiet() with { IsMerged = true, MergedAt = Now.AddHours(2) },
+        };
+        await NewEngine(store, node, inspector, worktrees).PollOnceAsync(cts.Token);
+
+        await using IQuerySession query = store.QuerySession();
+        RunDetails run = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
+        run.State.Should().Be(RunState.Completed);
+        run.HandoffOutcome.Should().Be(HandoffOutcome.Captured);
+        run.HandoffSummary.Should().Contain("The column is named Canonical")
+            .And.Contain("Resolved three review threads",
+                "the merge is the work of every run that carried the pull request");
+        run.HandoffSummary!.IndexOf("The column is named Canonical", StringComparison.Ordinal)
+            .Should().BeLessThan(
+                run.HandoffSummary.IndexOf("Resolved three review threads", StringComparison.Ordinal),
+                "dispatch order puts the run that built the thing first");
+    }
+
+    /// <summary>
+    /// The sharp edge of the same rule: a follow-up that resolves review threads often has
+    /// nothing of its own to say, and selecting the completing run alone would have handed the
+    /// dependent a recorded absence while the description of the work sat unread in the
+    /// superseded run's directory.
+    /// </summary>
+    [Fact]
+    public async Task A_follow_up_with_nothing_to_say_still_hands_down_the_original_runs_handoff()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        (DocumentStore store, NodeContext node, GitWorktreeManager worktrees, _, string repoPath) =
+            await SetUpAsync(cts.Token);
+        using IDisposable storeLifetime = store;
+
+        (Guid taskId, Guid runId, _) = await SeedAwaitingReviewAsync(
+            store, node, worktrees, repoPath, cts.Token, priorAutomaticReopens: 1);
+        Guid originalRunId = await OnlyOtherRunAsync(store, taskId, runId, cts.Token);
+
+        WriteHandoffArtifact(originalRunId, "The lifecycle split is why publish and assign are separate.");
+        WriteHandoffArtifact(runId, string.Empty);
+
+        FakeInspector inspector = new()
+        {
+            Snapshot = FakeInspector.Quiet() with { IsMerged = true, MergedAt = Now.AddHours(2) },
+        };
+        await NewEngine(store, node, inspector, worktrees).PollOnceAsync(cts.Token);
+
+        await using IQuerySession query = store.QuerySession();
+        RunDetails run = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
+        run.HandoffOutcome.Should().Be(HandoffOutcome.Captured);
+        run.HandoffSummary.Should().Be("The lifecycle split is why publish and assign are separate.",
+            "one contributor renders as its own text, whichever run authored it");
+    }
+
+    /// <summary>The task's other run, which the seed leaves superseded on the same pull request.</summary>
+    private static async Task<Guid> OnlyOtherRunAsync(
+        DocumentStore store, Guid taskId, Guid watchedRunId, CancellationToken cancellationToken)
+    {
+        await using IQuerySession query = store.QuerySession();
+        IReadOnlyList<RunDetails> runs = await query.Query<RunDetails>()
+            .Where(run => run.TaskId == taskId)
+            .ToListAsync(cancellationToken);
+        return runs.Single(run => run.Id != watchedRunId).Id;
+    }
+
+    private static void WriteHandoffArtifact(Guid runId, string handoff)
+    {
+        Directory.CreateDirectory(RunPaths.RunDirectory(runId));
+        File.WriteAllText(RunPaths.HandoffFile(runId), handoff);
     }
 
     [Fact]
@@ -608,8 +813,13 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
         task.Apply(completed);
         taskEvents.Add(completed);
 
+        // Each reopen retires the run that held the pull request and claims a follow-up onto
+        // the same branch — the ordinary shape since decision #22, and the shape the composed
+        // handoff is about, so the superseded runs get real streams rather than bare ids.
+        List<Guid> superseded = [];
         for (int i = 0; i < priorAutomaticReopens; i++)
         {
+            superseded.Add(task.CurrentRunId!.Value);
             Hall9k.Domain.Features.Tasks.Events.TaskReopened reopened = TaskDecider.Reopen(
                 task, task.CurrentRunId!.Value, worktree.Branch,
                 "CI checks failing.", FollowUpKind.FailingChecks, automatic: true, Now, ownerId);
@@ -628,6 +838,20 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
         // The run under watch is the task's current run — rewrite the last claim's run id.
         Guid lastClaimRunId = task.CurrentRunId!.Value;
         session.Events.StartStream<TaskAggregate>(taskId, [.. taskEvents]);
+
+        for (int i = 0; i < superseded.Count; i++)
+        {
+            // Dispatched strictly before the run under watch, so composition order is the
+            // dispatch order it claims to be rather than an accident of id generation.
+            DateTimeOffset dispatchedAt = Now.AddMinutes(-10 * (superseded.Count - i));
+            session.Events.StartStream<RunAggregate>(superseded[i],
+                new RunDispatched(superseded[i], taskId, node.NodeId, ownerId, i + 1, DomainId.New(),
+                    worktree.Path, worktree.Branch, ExecutorMode.Subscription, dispatchedAt),
+                new AgentSessionCompleted(superseded[i], dispatchedAt),
+                new VerificationPassed(superseded[i], dispatchedAt),
+                new PullRequestOpened(superseded[i], PullRequestUrl, 7, dispatchedAt),
+                new RunSuperseded(superseded[i], i + 2, dispatchedAt));
+        }
 
         session.Events.StartStream<RunAggregate>(lastClaimRunId,
             new RunDispatched(lastClaimRunId, taskId, node.NodeId, ownerId, task.LeaseGeneration, DomainId.New(),
@@ -678,6 +902,18 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
 
     public void Dispose()
     {
+        Environment.SetEnvironmentVariable("HALL9K_HOME", null);
+        try
+        {
+            if (Directory.Exists(_home))
+            {
+                Directory.Delete(_home, recursive: true);
+            }
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+        }
+
         try
         {
             if (Directory.Exists(_root))

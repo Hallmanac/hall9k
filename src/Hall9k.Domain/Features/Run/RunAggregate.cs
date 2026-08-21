@@ -65,6 +65,12 @@ public sealed class RunAggregate
     /// <summary>Human findings from a needs-fixes park resolution, consumed by the next fix dispatch.</summary>
     public string? PendingHumanFindings { get; private set; }
 
+    /// <summary>Whether this run handed anything down at true closeout, and when not, why (log #35).</summary>
+    public HandoffOutcome HandoffOutcome { get; private set; } = HandoffOutcome.Unknown;
+
+    /// <summary>The bounded handoff text; null whenever the outcome records an absence.</summary>
+    public string? HandoffSummary { get; private set; }
+
     private readonly List<string> _failedGates = [];
     public IReadOnlyList<string> FailedGates => _failedGates;
 
@@ -262,6 +268,12 @@ public sealed class RunAggregate
     public void Apply(PullRequestMerged @event) => PullRequestMergedAt = @event.MergedAt;
 
     public void Apply(PullRequestClosed @event) => State = RunState.Failed;
+
+    public void Apply(RunHandoffRecorded @event)
+    {
+        HandoffOutcome = @event.Outcome ?? HandoffOutcome.Unknown;
+        HandoffSummary = @event.Summary;
+    }
 
     public void Apply(RunCompleted @event) => State = RunState.Completed;
 

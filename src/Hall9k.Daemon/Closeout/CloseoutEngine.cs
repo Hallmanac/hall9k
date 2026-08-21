@@ -1,3 +1,4 @@
+using Hall9k.Daemon.Execution;
 using Hall9k.Daemon.Worktrees;
 using Hall9k.Domain.Features.Project.Projections;
 using Hall9k.Domain.Features.Run;
@@ -6,6 +7,7 @@ using Hall9k.Domain.Features.Run.Projections;
 using Hall9k.Domain.Features.Tasks;
 using Hall9k.Domain.Features.Tasks.Handlers;
 using Hall9k.Domain.Infrastructure.Persistence;
+using Hall9k.Domain.Infrastructure.Storage;
 using JasperFx.Events;
 using Marten;
 using Marten.Events;
@@ -294,6 +296,14 @@ public sealed class CloseoutEngine(
     /// worktree retained through closeout (log #21) and the task branch everywhere it
     /// lingers (origin incident: five merged task branches accumulated locally because
     /// nothing owned this step).
+    /// <para>
+    /// This is also the landing half of the handoff's capture-then-land split (Decisions Log
+    /// #36). The text was captured from the agents' own session ends long before now, but the
+    /// event carrying it is appended here, in the same transaction as PullRequestMerged and
+    /// RunCompleted and immediately before the dependents are unblocked. That ordering IS the
+    /// guarantee: an unmerged run has no RunHandoffRecorded, so its summary can never travel
+    /// to work that builds on code which never landed.
+    /// </para>
     /// </summary>
     private async Task CompleteCloseoutAsync(
         IDocumentSession session,
@@ -303,7 +313,9 @@ public sealed class CloseoutEngine(
         DateTimeOffset now,
         CancellationToken cancellationToken)
     {
+        RunHandoffRecorded handoff = await ComposeHandoffAsync(session, run, now, cancellationToken);
         session.Events.Append(run.Id, new PullRequestMerged(run.Id, snapshot.MergedAt, now));
+        session.Events.Append(run.Id, handoff);
         session.Events.Append(run.Id, new RunCompleted(run.Id, snapshot.MergedAt ?? now));
         await session.SaveChangesAsync(cancellationToken);
 
@@ -319,6 +331,131 @@ public sealed class CloseoutEngine(
         catch (Exception exception) when (exception is not OperationCanceledException)
         {
             logger.LogWarning(exception, "Branch cleanup failed for {Branch} (safe to delete by hand)", run.Branch);
+        }
+    }
+
+    /// <summary>
+    /// The handoff the task hands down, composed from every run that carried this pull
+    /// request rather than from the run that happened to observe the merge (Decisions Log
+    /// #36).
+    /// <para>
+    /// The completing run is almost never the run that did the work. Decision #22 makes
+    /// review follow-ups automatic, so a merged pull request is normally an original run
+    /// retired with RunSuperseded plus a follow-up that resolved the review threads and
+    /// reached Completed. Reading only the completing run would hand a dependent the thread
+    /// resolution and leave the description of the feature itself unread in a superseded
+    /// run's directory. Origin incident: the first cut of this method did exactly that, and
+    /// every task on main that had reached true closeout showed the shape (two runs, one
+    /// superseded).
+    /// </para>
+    /// <para>
+    /// Failed and killed runs are excluded, and that exclusion is the retry case: a run that
+    /// died left work which never merged, so its summary must not travel. A superseded run is
+    /// the opposite situation — it is the run whose work is in this merge.
+    /// </para>
+    /// </summary>
+    private async Task<RunHandoffRecorded> ComposeHandoffAsync(
+        IDocumentSession session, RunDetails completing, DateTimeOffset now, CancellationToken cancellationToken)
+    {
+        List<HandoffParser.RunHandoff> authored = [];
+        HandoffOutcome absence = HandoffOutcome.NotCaptured;
+        foreach (Guid runId in await MergedRunsAsync(session, completing, cancellationToken))
+        {
+            (HandoffOutcome outcome, string? text) = await ReadHandoffAsync(runId, cancellationToken);
+            if (text.IsNotBlank())
+            {
+                authored.Add(new HandoffParser.RunHandoff(runId, text));
+                continue;
+            }
+
+            absence = LessCertainOf(absence, outcome);
+        }
+
+        return authored.Count == 0
+            ? new RunHandoffRecorded(completing.Id, absence, null, now)
+            : new RunHandoffRecorded(
+                completing.Id,
+                HandoffOutcome.Captured,
+                HandoffParser.BoundForEvent(
+                    HandoffParser.Compose(authored), [.. authored.Select(handoff => handoff.RunId)]),
+                now);
+    }
+
+    /// <summary>
+    /// The runs whose work is in this merge, oldest dispatch first, so the run that opened the
+    /// work leads the composed handoff. The completing run is appended if the projection did
+    /// not return it, because the run being closed out is a fact this method already holds.
+    /// </summary>
+    private static async Task<IReadOnlyList<Guid>> MergedRunsAsync(
+        IQuerySession session, RunDetails completing, CancellationToken cancellationToken)
+    {
+        Guid taskId = completing.TaskId;
+        IReadOnlyList<RunDetails> runs = await session.Query<RunDetails>()
+            .Where(run => run.TaskId == taskId)
+            .ToListAsync(cancellationToken);
+
+        List<Guid> merged =
+        [
+            .. runs
+                .Where(run => run.State != RunState.Failed && run.State != RunState.Killed)
+                .OrderBy(run => run.DispatchedAt)
+                .ThenBy(run => run.Id)
+                .Select(run => run.Id),
+        ];
+
+        return merged.Contains(completing.Id) ? merged : [.. merged, completing.Id];
+    }
+
+    /// <summary>
+    /// The absence the composed handoff reports when no run authored one. Certainty only ever
+    /// decreases: a file that could not be read (<see cref="HandoffOutcome.Unknown"/>) outranks
+    /// an empty one, because it might have held the very text the dependent wanted, and an
+    /// empty one outranks a missing one, because at least one session's result was read and
+    /// observed to carry nothing. Guessing a stronger absence than the reads support is exactly
+    /// what the never-guess rule forbids.
+    /// </summary>
+    private static HandoffOutcome LessCertainOf(HandoffOutcome absence, HandoffOutcome observed) =>
+        absence == HandoffOutcome.Unknown || observed == HandoffOutcome.Unknown
+            ? HandoffOutcome.Unknown
+            : absence == HandoffOutcome.NotAuthored || observed == HandoffOutcome.NotAuthored
+                ? HandoffOutcome.NotAuthored
+                : HandoffOutcome.NotCaptured;
+
+    /// <summary>
+    /// One run's handoff, read from the artifact its own session end wrote (Decisions Log
+    /// #36). The file's three states are three observations and each maps to its own outcome,
+    /// so the absence of a handoff is always a recorded answer rather than an empty string
+    /// nobody can interpret: non-blank means the agent authored one, empty means its result
+    /// was read and carried none, and absent means there was no session-end capture at all —
+    /// a run parked and resolved by hand, or a stream from before handoffs existed. A run
+    /// closing out without a usable handoff is perfectly valid; what is not valid is
+    /// pretending to know why, which is why a file that exists but cannot be read records
+    /// <see cref="HandoffOutcome.Unknown"/> rather than any of the three.
+    /// </summary>
+    private async Task<(HandoffOutcome Outcome, string? Handoff)> ReadHandoffAsync(
+        Guid runId, CancellationToken cancellationToken)
+    {
+        string path = RunPaths.HandoffFile(runId);
+        try
+        {
+            if (!File.Exists(path))
+            {
+                return (HandoffOutcome.NotCaptured, null);
+            }
+
+            string handoff = (await File.ReadAllTextAsync(path, cancellationToken)).Trim();
+            return handoff.IsBlank()
+                ? (HandoffOutcome.NotAuthored, null)
+                : (HandoffOutcome.Captured, handoff);
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            // The artifact exists but could not be read, which says nothing about whether a
+            // handoff was authored — so the ledger says it does not know, rather than
+            // asserting the absence NotCaptured would claim. An unread file is not an
+            // observed one (the never-guess rule).
+            logger.LogWarning(exception, "Could not read the handoff artifact for run {RunId} at {Path}", runId, path);
+            return (HandoffOutcome.Unknown, null);
         }
     }
 

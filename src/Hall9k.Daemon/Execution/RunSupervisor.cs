@@ -205,6 +205,8 @@ public sealed class RunSupervisor(
     private async Task CompleteRunAsync(Guid runId, Guid taskId, AgentResult result, CancellationToken cancellationToken)
     {
         DateTimeOffset now = DateTimeOffset.UtcNow;
+        await CaptureHandoffAsync(runId, result, cancellationToken);
+
         await using IDocumentSession session = store.LightweightSession();
 
         session.Events.Append(runId, new AgentSessionCompleted(runId, now));
@@ -234,6 +236,42 @@ public sealed class RunSupervisor(
             && await review.ReviewAsync(runId, taskId, cancellationToken))
         {
             await pullRequests.OpenAsync(runId, taskId, cancellationToken);
+        }
+    }
+
+    /// <summary>
+    /// The capture half of the handoff's capture-then-land split (Decisions Log #36). The
+    /// agent's own session-end result is the only place a handoff comes from, and this is
+    /// the moment it exists — but the run has no merge yet, so nothing may travel: the text
+    /// goes to the run directory as an artifact and waits there for CloseoutEngine to land
+    /// RunHandoffRecorded at true closeout. Two moments, one fact, honestly ordered.
+    /// <para>
+    /// The file is written even when the result carried no handoff, empty, because the three
+    /// file states are the three observations closeout reads: non-blank means the agent
+    /// authored one, empty means the result was read and carried none, and absent means
+    /// there was no session-end capture at all. Writing nothing would collapse the middle
+    /// case into the last and lose a fact the platform actually observed.
+    /// </para>
+    /// </summary>
+    private async Task CaptureHandoffAsync(Guid runId, AgentResult result, CancellationToken cancellationToken)
+    {
+        try
+        {
+            string? handoff = HandoffParser.Parse(result.Summary);
+            Directory.CreateDirectory(RunPaths.RunDirectory(runId));
+            await File.WriteAllTextAsync(RunPaths.HandoffFile(runId), handoff ?? string.Empty, cancellationToken);
+            if (handoff is null)
+            {
+                logger.LogInformation(
+                    "Run {RunId}: the agent's result carried no handoff block — recorded as authored-none, not as empty",
+                    runId);
+            }
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            // The run itself succeeded; losing the artifact must not fail it. Closeout then
+            // reads an absent file and records NotCaptured, which is exactly what happened.
+            logger.LogWarning(exception, "Could not write the handoff artifact for run {RunId}", runId);
         }
     }
 

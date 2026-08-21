@@ -90,8 +90,46 @@ public static class AgentPromptBuilder
         prompt.AppendLine("- If something is genuinely ambiguous, make the most reasonable choice and record");
         prompt.AppendLine("  the assumption in your final summary (the ask-a-human loop is not available yet).");
         prompt.AppendLine("- End with a short summary: what you did, decisions made, assumptions, open questions.");
+        AppendHandoffRules(prompt);
 
         return prompt.ToString();
+    }
+
+    /// <summary>
+    /// The handoff the run leaves for whatever depends on it (Decisions Log #35). It is asked
+    /// for here, of the agent that did the work, because that agent is the one that knows what
+    /// it deliberately left undone — a separate summarizer session would cost more and know
+    /// less. The daemon reads this block off the session's own result at session end and holds
+    /// it until the pull request merges; a run whose work never lands hands nothing down.
+    /// <para>
+    /// Brevity is instructed rather than merely enforced: the event that carries this text is
+    /// a milestone on the run stream (log #6), and a handoff nobody finishes reading routes no
+    /// context at all.
+    /// </para>
+    /// </summary>
+    private static void AppendHandoffRules(StringBuilder prompt)
+    {
+        prompt.AppendLine();
+        prompt.AppendLine("## Handoff (required — the last thing in your final message)");
+        prompt.AppendLine();
+        prompt.AppendLine("Tasks that depend on this one start with what you write here, and nothing else you");
+        prompt.AppendLine("learned survives this session. After your summary, end your final message with a");
+        prompt.AppendLine("line reading exactly:");
+        prompt.AppendLine();
+        prompt.AppendLine($"    {HandoffParser.Marker}");
+        prompt.AppendLine();
+        prompt.AppendLine("followed by a short handoff — a few sentences or a handful of bullets, not an essay,");
+        prompt.AppendLine("and nothing after it. Cover three things:");
+        prompt.AppendLine();
+        prompt.AppendLine("- What you actually did, in terms of what now exists that did not before.");
+        prompt.AppendLine("- What someone building on this needs to know: the gotcha, the non-obvious shape, the");
+        prompt.AppendLine("  thing you would tell them in person to save them an hour.");
+        prompt.AppendLine("- What you deliberately left undone, and why — so nobody re-litigates a settled call");
+        prompt.AppendLine("  or assumes an omission was an oversight.");
+        prompt.AppendLine();
+        prompt.AppendLine("Write it for someone with no access to this session. If there is genuinely nothing");
+        prompt.AppendLine("worth handing down, say so in one line rather than padding it — an honest \"nothing");
+        prompt.AppendLine("surprising here\" is useful, and invented significance is not.");
     }
 
     /// <summary>
@@ -147,6 +185,10 @@ public static class AgentPromptBuilder
         AppendCommitStyleRules(prompt, commitStyle, project.BaseBranch);
         prompt.AppendLine("- End with a short summary: which comments you addressed, which you dismissed and");
         prompt.AppendLine("  why, and any open questions.");
+        // A reopened task's follow-up run is the run that reaches true closeout, so it is the
+        // run whose handoff travels (Decisions Log #35) — it covers the whole task, not only
+        // this leg's fixes.
+        AppendHandoffRules(prompt);
 
         return prompt.ToString();
     }
@@ -204,6 +246,7 @@ public static class AgentPromptBuilder
         AppendCommitStyleRules(prompt, commitStyle, project.BaseBranch);
         prompt.AppendLine("- End with a short summary: what was failing, what you changed, and any open");
         prompt.AppendLine("  questions.");
+        AppendHandoffRules(prompt);
 
         return prompt.ToString();
     }

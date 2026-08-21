@@ -47,6 +47,14 @@ public sealed class RunDetails
     public string? FailureReason { get; set; }
     /// <summary>Why closeout was handed to the human — parked is a waiting state, not a failure.</summary>
     public string? ParkedReason { get; set; }
+    /// <summary>
+    /// Whether this run handed anything down at true closeout, and when not, why (Decisions Log
+    /// #35). Unknown on every run that has not closed out yet, and on streams written before
+    /// handoffs existed — those replay as Unknown rather than as a reconstruction.
+    /// </summary>
+    public HandoffOutcome HandoffOutcome { get; set; } = HandoffOutcome.Unknown;
+    /// <summary>The bounded handoff text a dependent's context is built from; null when the outcome records an absence.</summary>
+    public string? HandoffSummary { get; set; }
     public DateTimeOffset DispatchedAt { get; set; }
     public bool IsFollowUp { get; set; }
     public DateTimeOffset? FinishedAt { get; set; }
@@ -180,6 +188,12 @@ public sealed class RunDetailsProjection : SingleStreamProjection<RunDetails, Gu
         view.FailureReason = "Pull request closed without merge.";
         view.State = RunState.Failed;
         view.FinishedAt = @event.Data.ObservedAt;
+    }
+
+    public void Apply(IEvent<RunHandoffRecorded> @event, RunDetails view)
+    {
+        view.HandoffOutcome = @event.Data.Outcome ?? HandoffOutcome.Unknown;
+        view.HandoffSummary = @event.Data.Summary;
     }
 
     public void Apply(IEvent<RunCompleted> @event, RunDetails view)
