@@ -5,6 +5,7 @@ using Hall9k.Domain.Features.Owner;
 using Hall9k.Domain.Infrastructure.Ids;
 using Hall9k.Domain.Shared.ValueObjects;
 using Marten;
+using Marten.Linq.MatchesSql;
 
 namespace Hall9k.Domain.Infrastructure.Bootstrap;
 
@@ -46,7 +47,15 @@ public static class NodeBootstrap
             session.Events.StartStream<NodeAggregate>(nodeId, registered);
         }
 
+        // The GitHub connection specifically, not whichever connection happens to be first.
+        // A project binds to a connection for its repository (PLAN.md §10), and since Jira
+        // connections joined the same list an unfiltered "take one" would hand a project the
+        // Jira account as its repository credential the moment a Jira connection was registered
+        // first. WorkItemProvider is a value object and Marten cannot translate a comparison
+        // against one, so the filter is written as SQL against the stored string, the way every
+        // other value-object filter in this repo is.
         ConnectionDetails? connection = (await session.Query<ConnectionDetails>()
+            .Where(c => c.MatchesSql("d.data ->> 'provider' = ?", WorkItemProvider.GitHub.Value))
             .Take(1).ToListAsync(cancellationToken)).FirstOrDefault();
         Guid connectionId = connection?.Id ?? DomainId.New();
         if (connection is null)
