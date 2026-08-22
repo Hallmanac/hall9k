@@ -154,9 +154,9 @@ public sealed class WorkItemImporterTests
     {
         WorkItemImporter importer = new(new StubProvider(WorkItemProvider.GitHub, WorkItemStatus.Open))
         {
-            Unregistered = new Dictionary<WorkItemProvider, string>
+            Unusable = new Dictionary<WorkItemProvider, Func<DomainException>>
             {
-                [WorkItemProvider.Jira] = WorkItemConnections.NoJiraConnection,
+                [WorkItemProvider.Jira] = () => new DomainNotFoundException(WorkItemConnections.NoJiraConnection),
             },
         };
 
