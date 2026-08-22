@@ -23,6 +23,25 @@ public sealed class RunDetails
     public RunState State { get; set; } = RunState.Unknown;
     public int? ProcessId { get; set; }
     public DateTimeOffset? ProcessStartedAt { get; set; }
+    /// <summary>
+    /// Every agent session the run has in flight, as the stream last recorded it. Empty when the
+    /// last thing recorded was a session ending, which is the honest reading of "nothing is
+    /// running" — the run state alone cannot say (a run sits in UnderReview both while a pass
+    /// reads and between passes).
+    /// <para>
+    /// A list rather than a slot, because a review cycle dispatches one pass per active track and
+    /// both read at once (Decisions Log #59): each pass carries its own lens and its own process
+    /// identity, so the phase line can say which track is still out and the display can observe
+    /// each process rather than assert anything about it (Decisions Log #65). PID plus start time
+    /// is a process identity (the reuse guard, log #2), and without both there is nothing safe to
+    /// check. A document written before this shape existed carries no sessions and therefore reads
+    /// as "no session observed", which is what it honestly is; a run still alive rewrites its
+    /// document on its next event, so nothing needs backfilling. Origin incident (2026-08-22): the
+    /// board said the lane was quiet while a fix agent was editing the worktree, and the
+    /// orchestrator nearly rewrote history under it.
+    /// </para>
+    /// </summary>
+    public List<ActiveSession> ActiveSessions { get; set; } = [];
     public string? PullRequestUrl { get; set; }
     public int? PullRequestNumber { get; set; }
     public DateTimeOffset? PullRequestMergedAt { get; set; }
@@ -71,6 +90,16 @@ public sealed class RunDetails
     /// <summary>Residual findings meant for a draft bug task that could not be created — no draft exists for these (log #63).</summary>
     public int ReviewResidualsRoutingFailed { get; set; }
     public string? FailureReason { get; set; }
+
+    /// <summary>
+    /// The reason recorded when the closeout monitor observed this run's pull request closed
+    /// without a merge. Named rather than written twice, because a reader has to be able to tell
+    /// that case apart from every other way a run reaches <see cref="RunState.Failed"/>: it is the
+    /// one where putting the pull request back under watch achieves nothing, and the attention
+    /// line composes a different lever for it.
+    /// </summary>
+    public const string PullRequestClosedWithoutMerge = "Pull request closed without merge.";
+
     /// <summary>Why closeout was handed to the human — parked is a waiting state, not a failure.</summary>
     public string? ParkedReason { get; set; }
     /// <summary>
@@ -118,16 +147,24 @@ public sealed class RunDetailsProjection : SingleStreamProjection<RunDetails, Gu
     {
         view.ProcessId = @event.Data.ProcessId;
         view.ProcessStartedAt = @event.Data.ProcessStartedAt;
+        StartSession(view, AgentRole.Build, ReviewLens.Unknown, @event.Data.ProcessId, @event.Data.ProcessStartedAt);
         view.State = RunState.Running;
     }
 
+    // A resume records a new process but no start time (log #5's exit-and-resume), so the
+    // session's identity is half-recorded and liveness stays unobservable rather than guessed.
     public void Apply(IEvent<RunResumed> @event, RunDetails view)
     {
         view.ProcessId = @event.Data.ProcessId;
+        StartSession(view, AgentRole.Build, ReviewLens.Unknown, @event.Data.ProcessId, startedAt: null);
         view.State = RunState.Running;
     }
 
-    public void Apply(IEvent<AgentSessionCompleted> @event, RunDetails view) => view.State = RunState.Verifying;
+    public void Apply(IEvent<AgentSessionCompleted> @event, RunDetails view)
+    {
+        EndSessions(view);
+        view.State = RunState.Verifying;
+    }
 
     public void Apply(IEvent<TokensRecorded> @event, RunDetails view)
     {
@@ -147,20 +184,61 @@ public sealed class RunDetailsProjection : SingleStreamProjection<RunDetails, Gu
 
     public void Apply(IEvent<ReviewDispatched> @event, RunDetails view)
     {
+        if (@event.Data.Cycle != view.ReviewCycle)
+        {
+            // A new cycle starts with nothing in flight from the last one; a second dispatch
+            // inside the same cycle is the other lens joining it (log #59), and joining is
+            // exactly what it does — the first lens's pass keeps its own record.
+            EndSessions(view);
+        }
+
         view.ReviewCycle = @event.Data.Cycle;
         view.ReviewModel = @event.Data.Model ?? AgentModel.Unknown;
+        StartSession(
+            view, AgentRole.Review, @event.Data.Lens, @event.Data.ProcessId, @event.Data.ProcessStartedAt);
         view.State = RunState.UnderReview;
     }
 
-    public void Apply(IEvent<ReviewFixDispatched> @event, RunDetails view) =>
+    public void Apply(IEvent<ReviewFixDispatched> @event, RunDetails view)
+    {
         view.ReviewModel = @event.Data.Model ?? AgentModel.Unknown;
+        StartSession(view, AgentRole.Fix, ReviewLens.Unknown, @event.Data.ProcessId, @event.Data.ProcessStartedAt);
+    }
+
+    /// <summary>
+    /// The fix session ended, whatever it decided. The gates run next (or a park does), and
+    /// neither is a session, so nothing is left for the phase line to claim is running.
+    /// </summary>
+    public void Apply(IEvent<ReviewFixCompleted> @event, RunDetails view) => EndSessions(view);
 
     // A resumed session keeps the model it started with, so this records rather than replaces.
-    public void Apply(IEvent<ReviewVerdictReprompted> @event, RunDetails view) =>
+    public void Apply(IEvent<ReviewVerdictReprompted> @event, RunDetails view)
+    {
         view.ReviewModel = @event.Data.Model ?? AgentModel.Unknown;
+        StartSession(
+            view, AgentRole.Review, @event.Data.Lens, @event.Data.ProcessId, @event.Data.ProcessStartedAt);
+    }
 
-    public void Apply(IEvent<ReviewCompleted> @event, RunDetails view) =>
+    /// <summary>
+    /// One lens finished reading. Only that pass's session is cleared: the pass left in flight is
+    /// the fact the phase line needs — a cycle with the adversarial track still out is not a cycle
+    /// nobody is working on — and its process is what the display observes for liveness. Clearing
+    /// the sibling here (or holding a single slot for both) is how a healthy cycle came to read as
+    /// a dead one, since the passes finish in whichever order their diffs allow.
+    /// </summary>
+    public void Apply(IEvent<ReviewPassCompleted> @event, RunDetails view)
+    {
+        ReviewLens lens = @event.Data.Lens ?? ReviewLens.Unknown;
+        view.ActiveSessions.RemoveAll(session => session.Role == AgentRole.Review && session.Lens == lens);
+    }
+
+    public void Apply(IEvent<ReviewCompleted> @event, RunDetails view)
+    {
         view.LastReviewVerdict = @event.Data.Verdict;
+        // A run whose passes predate per-lens milestones records no ReviewPassCompleted at all,
+        // so the cycle's own conclusion is where its sessions are known to have ended.
+        EndSessions(view);
+    }
 
     /// <summary>
     /// The terminal verdict is MergeReady however the loop got here; the settlement beside it
@@ -175,6 +253,7 @@ public sealed class RunDetailsProjection : SingleStreamProjection<RunDetails, Gu
     /// </summary>
     public void Apply(IEvent<ReviewSettled> @event, RunDetails view)
     {
+        EndSessions(view);
         view.LastReviewVerdict = ReviewVerdict.MergeReady;
         view.ReviewSettlement = @event.Data.Settlement;
         view.ReviewResidualsFixed = @event.Data.ResidualsFixed;
@@ -185,6 +264,7 @@ public sealed class RunDetailsProjection : SingleStreamProjection<RunDetails, Gu
     public void Apply(IEvent<ReviewParked> @event, RunDetails view)
     {
         view.ParkedReason = @event.Data.Reason;
+        EndSessions(view);
         view.State = RunState.ReviewParked;
     }
 
@@ -192,6 +272,8 @@ public sealed class RunDetailsProjection : SingleStreamProjection<RunDetails, Gu
     {
         view.LastReviewVerdict = @event.Data.Verdict;
         view.ParkedReason = null;
+        // The resume sweep re-dispatches; until it does, nothing is running.
+        EndSessions(view);
         view.State = RunState.UnderReview;
     }
 
@@ -199,6 +281,7 @@ public sealed class RunDetailsProjection : SingleStreamProjection<RunDetails, Gu
     {
         view.PullRequestUrl = @event.Data.PullRequestUrl;
         view.PullRequestNumber = @event.Data.PullRequestNumber;
+        EndSessions(view);
         view.State = RunState.AwaitingReview;
     }
 
@@ -206,6 +289,7 @@ public sealed class RunDetailsProjection : SingleStreamProjection<RunDetails, Gu
     {
         view.PullRequestUrl = @event.Data.PullRequestUrl;
         view.PullRequestNumber = @event.Data.PullRequestNumber;
+        EndSessions(view);
         view.State = RunState.AwaitingReview;
     }
 
@@ -238,6 +322,7 @@ public sealed class RunDetailsProjection : SingleStreamProjection<RunDetails, Gu
     public void Apply(IEvent<CloseoutParked> @event, RunDetails view)
     {
         view.ParkedReason = @event.Data.Reason;
+        EndSessions(view);
         view.State = RunState.CloseoutParked;
     }
 
@@ -246,7 +331,8 @@ public sealed class RunDetailsProjection : SingleStreamProjection<RunDetails, Gu
 
     public void Apply(IEvent<PullRequestClosed> @event, RunDetails view)
     {
-        view.FailureReason = "Pull request closed without merge.";
+        view.FailureReason = RunDetails.PullRequestClosedWithoutMerge;
+        EndSessions(view);
         view.State = RunState.Failed;
         view.FinishedAt = @event.Data.ObservedAt;
     }
@@ -257,20 +343,29 @@ public sealed class RunDetailsProjection : SingleStreamProjection<RunDetails, Gu
         view.HandoffSummary = @event.Data.Summary;
     }
 
-    public void Apply(IEvent<ContextSynthesisDispatched> @event, RunDetails view) =>
+    public void Apply(IEvent<ContextSynthesisDispatched> @event, RunDetails view)
+    {
         view.ContextSynthesisSessions++;
+        StartSession(
+            view, AgentRole.Synthesis, ReviewLens.Unknown, @event.Data.ProcessId, @event.Data.ProcessStartedAt);
+    }
 
-    public void Apply(IEvent<ContextSynthesisCompleted> @event, RunDetails view) =>
+    public void Apply(IEvent<ContextSynthesisCompleted> @event, RunDetails view)
+    {
         view.ContextSynthesized = @event.Data.Synthesized;
+        EndSessions(view);
+    }
 
     public void Apply(IEvent<RunCompleted> @event, RunDetails view)
     {
+        EndSessions(view);
         view.State = RunState.Completed;
         view.FinishedAt = @event.Data.CompletedAt;
     }
 
     public void Apply(IEvent<RunFailed> @event, RunDetails view)
     {
+        EndSessions(view);
         view.State = RunState.Failed;
         view.FailureReason = @event.Data.Reason;
         view.FinishedAt = @event.Data.FailedAt;
@@ -278,6 +373,7 @@ public sealed class RunDetailsProjection : SingleStreamProjection<RunDetails, Gu
 
     public void Apply(IEvent<RunKilled> @event, RunDetails view)
     {
+        EndSessions(view);
         view.State = RunState.Killed;
         view.FailureReason = @event.Data.Reason;
         view.FinishedAt = @event.Data.KilledAt;
@@ -285,7 +381,40 @@ public sealed class RunDetailsProjection : SingleStreamProjection<RunDetails, Gu
 
     public void Apply(IEvent<RunSuperseded> @event, RunDetails view)
     {
+        EndSessions(view);
         view.State = RunState.Superseded;
         view.FinishedAt = @event.Data.SupersededAt;
     }
+
+    /// <summary>
+    /// Records the session the run just spawned, so a reader can ask the operating system
+    /// whether it is still there instead of inferring it from the run state.
+    /// <para>
+    /// A review pass joins whatever else the cycle already has out and replaces only its own
+    /// track's record, which is what a verdict re-prompt is: the same lens, resumed under a new
+    /// process. Every other role runs alone, so it replaces the lot — a build, fix or synthesis
+    /// session starting is proof that whatever came before it is over.
+    /// </para>
+    /// </summary>
+    private static void StartSession(
+        RunDetails view, AgentRole role, ReviewLens? lens, int processId, DateTimeOffset? startedAt)
+    {
+        ReviewLens track = lens ?? ReviewLens.Unknown;
+        if (role == AgentRole.Review)
+        {
+            view.ActiveSessions.RemoveAll(session => session.Role == AgentRole.Review && session.Lens == track);
+        }
+        else
+        {
+            view.ActiveSessions.Clear();
+        }
+
+        view.ActiveSessions.Add(new ActiveSession(role, track, processId, startedAt));
+    }
+
+    /// <summary>
+    /// Every session ended: the run may well still be busy (gates run in the daemon's own
+    /// process), but no agent process is recorded as running, and saying so is the point.
+    /// </summary>
+    private static void EndSessions(RunDetails view) => view.ActiveSessions.Clear();
 }

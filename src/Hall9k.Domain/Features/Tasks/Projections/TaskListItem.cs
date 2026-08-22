@@ -44,6 +44,18 @@ public sealed class TaskListItem
     /// <summary>Why the newest dead blocker died: what makes h9k status read this task as NeedsHuman.</summary>
     public string? DependencyFailureReason { get; set; }
     /// <summary>
+    /// What was recorded about the failure, so a Failed row on the board can say why rather
+    /// than showing a bare word (Decisions Log #65). It rides here beside
+    /// <see cref="DependencyFailureReason"/> for the same reason that one does: the attention
+    /// surface composes from this row, and the launch-failure path can fail a task before the
+    /// run stream exists at all, so the run's own records are not always there to read.
+    /// Null until something fails, and null again once a retry sends the task back to work.
+    /// A document written before this field existed has no key for it and is rebuilt by
+    /// <see cref="Hall9k.Domain.Infrastructure.Persistence.TaskLifecycleProjectionBackfill"/>,
+    /// which is what keeps an already-Failed task from reading as a failure nobody explained.
+    /// </summary>
+    public string? FailureReason { get; set; }
+    /// <summary>
     /// What was recorded about each dead blocker, kept per dependency the way the aggregate
     /// keeps it, so this read model answers "which reason survives" from the same records and
     /// replays to the same state. A document written before Decisions Log #61 has no such map
@@ -226,12 +238,19 @@ public sealed class TaskListItemProjection : SingleStreamProjection<TaskListItem
         view.State = TaskState.Queued;
     }
 
-    public void Apply(IEvent<TaskFailed> @event, TaskListItem view) => view.State = TaskState.Failed;
+    public void Apply(IEvent<TaskFailed> @event, TaskListItem view)
+    {
+        view.FailureReason = @event.Data.Reason;
+        view.State = TaskState.Failed;
+    }
 
     public void Apply(IEvent<TaskRetried> @event, TaskListItem view)
     {
         view.ClaimedByNodeId = null;
         view.CurrentRunId = null;
+        // The retry answers the failure, so the board stops reporting it: what happened stays
+        // on the stream and in h9k task show, which keeps the retry reason beside it.
+        view.FailureReason = null;
         view.State = TaskState.Queued;
     }
 
