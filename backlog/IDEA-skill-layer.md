@@ -79,3 +79,20 @@ user's, never prescribed by the platform.
 - S1-12 install / backlog 24 doctor: setup is where "bring your skills in" happens.
 - P2P corpus: owner-scope replication is the same rule as owner-scoped learnings.
 - Repo-resident skills (PR #3) stay project-tier unchanged; this adds the owner tier.
+
+## Tension 8, added 2026-08-22: the platform tier the two-tier model is missing
+
+Brian's question at PR 24's gate: does the repo-resident skill travel with the
+install? It does not - and the review machinery now DEPENDS on one. The follow-up
+prompt names resolve-review-threads by name; a project whose repo does not carry
+that skill (any repo but hall9k's own, any other node) dispatches follow-ups whose
+prompt references a skill the agent cannot find. The walkthrough's two tiers
+(project-scoped, owner-scoped) cover judgment that belongs to someone; this is a
+third kind - skills the MACHINERY requires to function, which must ship with
+h9k install into ~/.hall9k and be materialized into worktrees at dispatch, exactly
+as self-contained as the binaries. The platform being the thing we run, on many
+nodes eventually, means repo-resident is a convenience for the hall9k repo, never
+a foundation the daemon may build on. Decide in the design session: which existing
+skills are platform-tier (resolve-review-threads at minimum; absorb-review-fixes,
+commit-plan, pr-summary are candidates), how they version with the binary they
+ship beside, and whether a project may override a platform skill or only extend it.
