@@ -57,7 +57,7 @@ public sealed class RunAggregate
     /// number while it is active and frozen at its conclusion once it is not.
     /// </summary>
     public int ReviewCycle { get; private set; }
-    /// <summary>Automatic fix sessions dispatched so far. A count for the record; the loop's bounds are the per-track cycle caps (log #61).</summary>
+    /// <summary>Automatic fix sessions dispatched so far. A count for the record; the loop's bounds are the per-track cycle caps (log #62).</summary>
     public int ReviewFixRuns { get; private set; }
     /// <summary>The current cycle's merged verdict across its lenses (log #59), not any single pass's.</summary>
     public ReviewVerdict LastReviewVerdict { get; private set; } = ReviewVerdict.Unknown;
@@ -65,25 +65,25 @@ public sealed class RunAggregate
 
     private readonly List<ReviewTrackOutcome> _concludedReviewTracks = [];
     /// <summary>
-    /// The review tracks that have finished, in the order they finished (log #61). A concluded
+    /// The review tracks that have finished, in the order they finished (log #62). A concluded
     /// track is never dispatched again and is deliberately never reawakened by the other
     /// track's fix sessions.
     /// </summary>
     public IReadOnlyList<ReviewTrackOutcome> ConcludedReviewTracks => _concludedReviewTracks;
 
     /// <summary>
-    /// The tracks a cycle still dispatches: every opening lens that has not concluded (log #61).
+    /// The tracks a cycle still dispatches: every opening lens that has not concluded (log #62).
     /// Empty means the loop is finished looking.
     /// </summary>
     public IReadOnlyList<ReviewLens> ActiveReviewLenses =>
         [.. ReviewLens.CycleLenses.Where(lens => !_concludedReviewTracks.Any(track => track.Lens.Covers(lens)))];
 
     private readonly List<ReviewResidual> _reviewResiduals = [];
-    /// <summary>Every finding the tracks ended on without a reviewer confirming it resolved (log #61).</summary>
+    /// <summary>Every finding the tracks ended on without a reviewer confirming it resolved (log #62).</summary>
     public IReadOnlyList<ReviewResidual> ReviewResiduals => _reviewResiduals;
 
     /// <summary>
-    /// How the review ended, once it has (log #61). Unknown while the loop is still running, and
+    /// How the review ended, once it has (log #62). Unknown while the loop is still running, and
     /// unknown forever for a run whose review was already in flight before tracks existed —
     /// that stream never recorded the distinction and this does not invent it.
     /// </summary>
@@ -97,7 +97,7 @@ public sealed class RunAggregate
     /// </summary>
     public int ReviewBudgetBaseCycle { get; private set; }
 
-    /// <summary>This cycle's findings that are still owed a fix session — the loop's "is there anything to fix" (log #61).</summary>
+    /// <summary>This cycle's findings that are still owed a fix session — the loop's "is there anything to fix" (log #62).</summary>
     public int PendingFixFindings =>
         _completedReviewPasses.Sum(pass =>
             pass.Findings.Count(finding => finding.Disposition == ReviewFindingDisposition.Fix));
@@ -303,7 +303,7 @@ public sealed class RunAggregate
     public void Apply(ReviewSettled @event)
     {
         // The terminal verdict is MergeReady however the loop got here; the settlement is what
-        // says whether a reviewer confirmed it or the gate ended it (log #61).
+        // says whether a reviewer confirmed it or the gate ended it (log #62).
         LastReviewVerdict = ReviewVerdict.MergeReady;
         ReviewSettlement = @event.Settlement;
         ReviewPhase = ReviewPhase.MergeReady;
@@ -336,7 +336,7 @@ public sealed class RunAggregate
         ClearActiveFixSession();
         // Every fix session is followed by the gates, including the terminal one the severity
         // gate let through: what a settled ending ships unreviewed is the reviewers' reading of
-        // those commits, never the build and the tests (log #61). The reverify step is what
+        // those commits, never the build and the tests (log #62). The reverify step is what
         // decides between another cycle and settling, once the gates have actually run.
         ReviewPhase = @event.Outcome == ReviewFixOutcome.Disputed
             ? ReviewPhase.Disputed
@@ -368,7 +368,7 @@ public sealed class RunAggregate
             LastReviewVerdict = ReviewVerdict.MergeReady;
             // A human ending the loop is not a reviewer reading the final tip, so it goes
             // through the settling step like any other ending and records itself as Settled
-            // (log #61) rather than borrowing the word Clean.
+            // (log #62) rather than borrowing the word Clean.
             _humanEndedTheLoop = true;
             ReviewPhase = ReviewPhase.Settling;
         }
@@ -446,7 +446,7 @@ public sealed class RunAggregate
     };
 
     /// <summary>
-    /// Where the loop stands once a pass lands or a track concludes (log #59, #61): still
+    /// Where the loop stands once a pass lands or a track concludes (log #59, #62): still
     /// waiting while any active track is in flight or has yet to look at all; parked on a
     /// verdict nobody can read; owing a fix session while any of this cycle's findings is
     /// dispositioned to be fixed; and otherwise finished, with only the account of how it ended
@@ -481,6 +481,63 @@ public sealed class RunAggregate
         || _concludedReviewTracks.Any(track => track.Settlement == ReviewSettlement.Settled)
             ? ReviewSettlement.Settled
             : ReviewSettlement.Clean;
+
+    /// <summary>
+    /// The residual counts for the <see cref="Events.ReviewSettled"/> the loop is about to
+    /// write, per defect rather than per recorded residual (log #62).
+    /// <para>
+    /// Routing is retried: a routing that failed leaves no draft, so the next cycle to report
+    /// the same place tries again, and both records stay on the stream because a stream records
+    /// what happened rather than what it wishes had. Counting the records would say "1 routed,
+    /// 1 not routed" about one defect that was exported on the second try, and "2 not routed"
+    /// about one defect two cycles failed on. So a place that ever routed counts as routed and
+    /// nothing else, and repeated records of one place count once.
+    /// </para>
+    /// <para>
+    /// Fixing unreviewed reaches one place twice by two roads of its own: the tracks conclude
+    /// separately, so both lenses can end on the same defect, and a single terminal cycle can
+    /// state that place in two finding blocks. Neither is two defects, so this count collapses
+    /// per place as well.
+    /// </para>
+    /// <para>
+    /// A residual with no location counts on its own every time. It cannot be shown to be
+    /// another one, and collapsing unplaced findings together would report several defects as
+    /// one on no evidence at all — the same reading the placed dedup gives an unplaced finding.
+    /// </para>
+    /// <para>
+    /// The three counts are deliberately not deduplicated against each other. Only the routing
+    /// pair is, because a failed routing and its retry are one export attempted twice. A defect
+    /// one track fixed unreviewed and another exported really did meet both ends, and a human
+    /// deciding how far to trust this pull request should be told about both.
+    /// </para>
+    /// </summary>
+    public ReviewResidualTally DeriveResidualTally()
+    {
+        List<ReviewResidual> routed = PerDefect(ReviewResidualDisposition.Routed);
+        List<ReviewResidual> failed = [.. PerDefect(ReviewResidualDisposition.RoutingFailed)
+            .Where(residual => !routed.Any(
+                done => ReviewFindingLocations.SamePlace(done.Location, residual.Location)))];
+
+        return new ReviewResidualTally(
+            PerDefect(ReviewResidualDisposition.FixedUnreviewed).Count,
+            routed.Count,
+            failed.Count);
+    }
+
+    /// <summary>This disposition's residuals with every repeat of a place already seen dropped.</summary>
+    private List<ReviewResidual> PerDefect(ReviewResidualDisposition disposition)
+    {
+        List<ReviewResidual> distinct = [];
+        foreach (ReviewResidual residual in _reviewResiduals.Where(residual => residual.Disposition == disposition))
+        {
+            if (!distinct.Any(kept => ReviewFindingLocations.SamePlace(kept.Location, residual.Location)))
+            {
+                distinct.Add(residual);
+            }
+        }
+
+        return distinct;
+    }
 
     private static ReviewPhase PhaseFor(ReviewVerdict verdict) => verdict switch
     {

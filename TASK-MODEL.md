@@ -781,7 +781,10 @@ never fails the review loop; it is counted apart from the routings that worked, 
 draft exists for it. A defect is routed **once per run**: the fix session is told to leave
 a routed line alone and every later reviewer has fresh context, so the same line comes back
 for as long as anything else keeps the loop alive, and re-routing it would turn one defect
-into one inert draft per cycle.
+into one inert draft per cycle. Two reports are the same defect when they name the same
+*place* rather than the same string (`ReviewFindingLocations`), so `src/Legacy.cs:40` and
+`./Legacy.cs:40` match; a different stated line in the same file deliberately does not, because
+collapsing by file would swallow a second, genuinely different defect.
 
 **What stays per cycle rather than per track**: one fix session over every live track's
 findings, and one verdict re-prompt however many passes ended without a `VERDICT:` line.

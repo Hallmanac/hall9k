@@ -531,11 +531,16 @@ public sealed class ReviewEngine(
     /// line comes back as a finding for as long as the other track keeps the loop alive.
     /// Without this check, one defect becomes one inert draft per cycle, one routing event per
     /// cycle, and a residual tally that tells the human "3 routed" about a single exported
-    /// defect. The key is the location the reviewer stated, because that is what the run stream
-    /// records; a finding with no location at all cannot be matched to an earlier one, so it
-    /// routes again rather than being silently collapsed into a defect it may not be. A routing
-    /// that failed is not in that set either — no draft exists, so the next cycle to report the
-    /// same line tries again, which is the courtesy working rather than a duplicate.
+    /// defect. The key is the place the reviewer stated, because that is what the run stream
+    /// records, and two statements of it are compared as places rather than as strings
+    /// (<see cref="ReviewFindingLocations"/>): `./src/Legacy.cs:40`, `src\Legacy.cs:40`, and
+    /// `Legacy.cs:40` are one defect written three ways, and only string equality would call
+    /// them three. A finding with no location at all cannot be matched to an earlier one, so it
+    /// routes again rather than being silently collapsed into a defect it may not be — and so
+    /// does the same file at a different stated line, which is the deliberate boundary
+    /// <see cref="ReviewFindingLocations"/> explains. A routing that failed is not in the set
+    /// either — no draft exists, so the next cycle to report the same place tries again, which
+    /// is the courtesy working rather than a duplicate.
     /// </para>
     /// <para>
     /// The same check closes the crash seam between this transaction and the cycle's: a daemon
@@ -607,12 +612,10 @@ public sealed class ReviewEngine(
     private static (IReadOnlyList<(ReviewLens Lens, ReviewFinding Finding)> Pending, IReadOnlyList<RoutedFinding> Repeats)
         SplitAlreadyRouted(RunAggregate run, IReadOnlyList<ReviewTrackPlan> plans)
     {
-        HashSet<string> routedLocations = new(
-            run.ReviewResiduals
-                .Where(residual => residual.Disposition == ReviewResidualDisposition.Routed
-                    && residual.Location.IsNotBlank())
-                .Select(residual => residual.Location),
-            StringComparer.OrdinalIgnoreCase);
+        List<string> routedLocations = [.. run.ReviewResiduals
+            .Where(residual => residual.Disposition == ReviewResidualDisposition.Routed
+                && residual.Location.IsNotBlank())
+            .Select(residual => residual.Location)];
 
         List<(ReviewLens Lens, ReviewFinding Finding)> pending = [];
         List<RoutedFinding> repeats = [];
@@ -621,12 +624,17 @@ public sealed class ReviewEngine(
             foreach (ReviewFinding finding in plan.Route)
             {
                 // Both tracks can report the same pre-existing line in one cycle, which the
-                // fix prompt already calls agreement rather than two defects; the same set
+                // fix prompt already calls agreement rather than two defects; the same list
                 // therefore grows as this cycle routes, not only across cycles.
-                if (finding.Location.IsNotBlank() && !routedLocations.Add(finding.Location))
+                if (routedLocations.Any(routed => ReviewFindingLocations.SamePlace(routed, finding.Location)))
                 {
                     repeats.Add(new RoutedFinding(plan.Lens, finding, null, null, AlreadyRouted: true));
                     continue;
+                }
+
+                if (finding.Location.IsNotBlank())
+                {
+                    routedLocations.Add(finding.Location);
                 }
 
                 pending.Add((plan.Lens, finding));
@@ -679,23 +687,21 @@ public sealed class ReviewEngine(
     private async Task SettleAsync(RunAggregate run, CancellationToken cancellationToken)
     {
         ReviewSettlement settlement = run.DeriveSettlement();
-        int fixedResiduals = run.ReviewResiduals.Count(
-            residual => residual.Disposition == ReviewResidualDisposition.FixedUnreviewed);
-        int routedResiduals = run.ReviewResiduals.Count(
-            residual => residual.Disposition == ReviewResidualDisposition.Routed);
-        // Counted apart from the routed ones: no draft bug task exists for these, and adding
-        // them to the routed tally would report defects as exported to tasks nobody can open.
-        int unroutedResiduals = run.ReviewResiduals.Count(
-            residual => residual.Disposition == ReviewResidualDisposition.RoutingFailed);
+        // Counted per defect rather than per recorded residual (log #61): a routing that failed
+        // is offered again next cycle, so one defect can leave both records on the stream, and
+        // counting the records would report a defect as unrouted when a draft bug task exists.
+        ReviewResidualTally residuals = run.DeriveResidualTally();
 
         await using IDocumentSession session = store.LightweightSession();
         session.Events.Append(run.Id, new ReviewSettled(
-            run.Id, run.ReviewCycle, settlement, fixedResiduals, routedResiduals, unroutedResiduals,
+            run.Id, run.ReviewCycle, settlement,
+            residuals.FixedUnreviewed, residuals.Routed, residuals.RoutingFailed,
             DateTimeOffset.UtcNow));
         await session.SaveChangesAsync(cancellationToken);
         logger.LogInformation(
             "Run {RunId}: review settled {Settlement} at cycle {Cycle} — {Fixed} residual(s) fixed unreviewed, {Routed} routed, {Unrouted} left unrouted",
-            run.Id, settlement.Value, run.ReviewCycle, fixedResiduals, routedResiduals, unroutedResiduals);
+            run.Id, settlement.Value, run.ReviewCycle,
+            residuals.FixedUnreviewed, residuals.Routed, residuals.RoutingFailed);
     }
 
     private async Task RecordFixResultAsync(Guid runId, int cycle, AgentResult result, CancellationToken cancellationToken)

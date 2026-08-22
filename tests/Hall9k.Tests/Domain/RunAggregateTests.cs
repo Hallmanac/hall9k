@@ -261,6 +261,118 @@ public sealed class RunAggregateTests
         run.DeriveSettlement().Should().Be(ReviewSettlement.Settled);
     }
 
+    /// <summary>
+    /// A failed routing is deliberately retried on a later cycle, so one defect leaves two
+    /// records: the attempt that wrote no draft, and the retry that did. The settlement reports
+    /// defects rather than records, or it tells a human "1 routed, 1 not routed" about a single
+    /// exported defect and sends them looking for one that lives nowhere but this stream.
+    /// </summary>
+    [Fact]
+    public void A_routing_retried_after_a_failure_settles_as_one_routed_defect()
+    {
+        RunAggregate run = Dispatched(out Guid id);
+        run.Apply(new ReviewFindingRouted(
+            id, ReviewLens.Adversarial, 2, ReviewSeverity.Medium, "Legacy.cs:40", null, "the store was unreachable", Now));
+        // The next cycle's reviewer states the same place in its own hand, and the retry works.
+        run.Apply(new ReviewFindingRouted(
+            id, ReviewLens.Adversarial, 3, ReviewSeverity.Medium, "./src/Legacy.cs:40", DomainId.New(), null, Now));
+
+        ReviewResidualTally tally = run.DeriveResidualTally();
+
+        tally.Routed.Should().Be(1, "one defect was exported, on the second attempt");
+        tally.RoutingFailed.Should().Be(0,
+            "the draft the first attempt could not write exists now, so nothing survives only in this stream");
+        run.ReviewResiduals.Should().HaveCount(2, "both attempts happened, and the stream records what happened");
+    }
+
+    /// <summary>
+    /// The same reading in the other direction: a place two cycles failed on is one defect
+    /// nobody can open a draft for, not two.
+    /// </summary>
+    [Fact]
+    public void A_routing_that_failed_twice_is_one_unrouted_defect()
+    {
+        RunAggregate run = Dispatched(out Guid id);
+        run.Apply(new ReviewFindingRouted(
+            id, ReviewLens.Adversarial, 2, ReviewSeverity.Medium, "Legacy.cs:40", null, "the store was unreachable", Now));
+        run.Apply(new ReviewFindingRouted(
+            id, ReviewLens.Adversarial, 3, ReviewSeverity.Medium, "Legacy.cs:40", null, "the store was unreachable", Now));
+        // A finding the reviewer never placed cannot be shown to be either of those, so it
+        // counts on its own rather than being folded into a defect it may have nothing to do with.
+        run.Apply(new ReviewFindingRouted(
+            id, ReviewLens.Adversarial, 3, ReviewSeverity.Low, "", null, "the store was unreachable", Now));
+
+        ReviewResidualTally tally = run.DeriveResidualTally();
+
+        tally.Routed.Should().Be(0);
+        tally.RoutingFailed.Should().Be(2, "one place that failed twice, and one unplaced finding of its own");
+    }
+
+    /// <summary>
+    /// A place can be fixed unreviewed twice over by two roads: the tracks conclude separately,
+    /// so both lenses can end on the same defect, and one terminal cycle can state that place in
+    /// two finding blocks. Either way it is one defect shipped without a second read, and the
+    /// count a human weighs the pull request by has to say one.
+    /// </summary>
+    [Fact]
+    public void A_place_two_tracks_end_on_is_one_fixed_unreviewed_defect()
+    {
+        RunAggregate run = Dispatched(out Guid id);
+        run.Apply(new ReviewTrackConcluded(
+            id, ReviewLens.Conformance, 3, ReviewSettlement.Settled,
+            [Unreviewed(ReviewLens.Conformance, "Auth.cs:42"),
+             // The same cycle's reviewer wrote the one place up twice, in its own hand each time.
+             Unreviewed(ReviewLens.Conformance, "./src/Auth.cs:42")],
+            Now));
+        run.Apply(new ReviewTrackConcluded(
+            id, ReviewLens.Adversarial, 4, ReviewSettlement.Settled,
+            [Unreviewed(ReviewLens.Adversarial, "Auth.cs:42"),
+             // A finding the reviewer never placed stands on its own, as it does for routing.
+             Unreviewed(ReviewLens.Adversarial, "")],
+            Now));
+
+        ReviewResidualTally tally = run.DeriveResidualTally();
+
+        tally.FixedUnreviewed.Should().Be(2, "one place both tracks ended on, and one unplaced finding");
+        run.ReviewResiduals.Should().HaveCount(4, "every record stays, because every one of them happened");
+    }
+
+    /// <summary>
+    /// The counts collapse within themselves and never against each other. A defect one track
+    /// fixed unreviewed and another exported to a draft bug task really did meet both ends, and
+    /// a human deciding how far to trust the pull request is owed both readings of it.
+    /// </summary>
+    [Fact]
+    public void A_defect_fixed_on_one_track_and_routed_on_the_other_is_counted_by_both()
+    {
+        RunAggregate run = Dispatched(out Guid id);
+        run.Apply(new ReviewFindingRouted(
+            id, ReviewLens.Adversarial, 2, ReviewSeverity.Low, "Legacy.cs:40", DomainId.New(), null, Now));
+        run.Apply(new ReviewTrackConcluded(
+            id, ReviewLens.Conformance, 3, ReviewSettlement.Settled,
+            [Unreviewed(ReviewLens.Conformance, "Legacy.cs:40")],
+            Now));
+
+        ReviewResidualTally tally = run.DeriveResidualTally();
+
+        tally.FixedUnreviewed.Should().Be(1);
+        tally.Routed.Should().Be(1, "the export happened, whatever the other track did to the same place");
+    }
+
+    private static ReviewResidual Unreviewed(ReviewLens lens, string location) =>
+        new(lens, 3, ReviewSeverity.Medium, ReviewFindingScope.InScope,
+            ReviewResidualDisposition.FixedUnreviewed, location);
+
+    private static RunAggregate Dispatched(out Guid id)
+    {
+        RunAggregate run = new();
+        id = DomainId.New();
+        run.Apply(new RunDispatched(
+            id, DomainId.New(), DomainId.New(), DomainId.New(), 1, DomainId.New(),
+            "/wt/x", "task/x", ExecutorMode.Subscription, Now));
+        return run;
+    }
+
     [Fact]
     public void Disputed_fix_and_review_park_take_the_run_to_needs_human_territory()
     {

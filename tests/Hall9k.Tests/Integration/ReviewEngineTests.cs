@@ -585,6 +585,41 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
     }
 
     /// <summary>
+    /// Every cycle's reviewer is a fresh session writing the location in its own hand, so the
+    /// once-per-run check compares places rather than strings (Decisions Log #61): `Legacy.cs:12`
+    /// and `./src/Legacy.cs:12` are one defect written twice, and matching them as strings would
+    /// hand a human two inert drafts and a residual tally claiming two exported defects.
+    /// </summary>
+    [Fact]
+    public async Task The_same_defect_written_a_different_way_is_still_routed_only_once()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        using DocumentStore store = NewStore();
+        (Guid taskId, Guid runId, _) = await SeedVerifiedRunAsync(store, cts.Token);
+
+        ScriptedExecutor executor = new(
+            "Criteria met.\n\nVERDICT: merge-ready",
+            "FINDING: severity=high; scope=in-scope; at=Spawner.cs:60\nDefect: the child is never reaped.\n\n"
+            + "FINDING: severity=medium; scope=out-of-scope; at=src/Legacy.cs:12\nDefect: the retry duplicates.\n\n"
+            + "VERDICT: needs-fixes",
+            "Reaped the child; left the pre-existing one alone.\n\nRESOLUTION: fixed",
+            // Cycle two: the same untouched line, written the way this reviewer writes paths.
+            "FINDING: severity=medium; scope=out-of-scope; at=./Legacy.cs:12\nDefect: the retry duplicates.\n\n"
+            + "VERDICT: needs-fixes");
+        bool mergeReady = await NewEngine(store, executor).ReviewAsync(runId, taskId, cts.Token);
+
+        mergeReady.Should().BeTrue();
+
+        await using IQuerySession query = store.QuerySession();
+        List<object> events = [.. (await query.Events.FetchStreamAsync(runId, token: cts.Token)).Select(e => e.Data)];
+        events.OfType<ReviewFindingRouted>().Should().ContainSingle(
+            "the second rendering of a place names the defect cycle one already exported");
+
+        RunDetails run = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
+        run.ReviewResidualsRouted.Should().Be(1);
+    }
+
+    /// <summary>
     /// An ungraded finding forces another adversarial cycle by design, so a reviewer whose
     /// grades never parsed can drive the track to its cap without a single stated High. The
     /// park reason says what it observed rather than asserting highs nobody recorded: telling
