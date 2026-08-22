@@ -378,6 +378,57 @@ public sealed class CardPublicationEngineTests(PostgresFixture postgres) : IClas
         task.ExternalReference.Should().BeNull("nothing came back through the gate, so nothing is linked");
     }
 
+    /// <summary>
+    /// The loop's first sweep runs immediately rather than after a full interval, which is the
+    /// whole reason a request made while the daemon was down is picked up the moment it comes back.
+    /// That only works if the node has an identity by then: every query the sweep makes is scoped
+    /// to this node or its owner, and node bootstrap happens in the dispatch loop, whose own first
+    /// await lets the host start this one. Origin incident (2026-08-21): the pre-PR review of this
+    /// branch found every daemon start logging "Card publication sweep failed" with "NodeContext
+    /// not initialized yet", which pushed the first real sweep out by a full poll interval — the
+    /// exact delay the immediate first sweep exists to avoid.
+    /// </summary>
+    [Fact]
+    public async Task The_loop_waits_for_this_node_to_have_an_identity_before_its_first_sweep()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        using DocumentStore store = NewStore();
+        NodeContext bootstrapped = await NewNodeAsync(store, cts.Token);
+        await SeedAsync(store, bootstrapped, cts.Token);
+
+        // The loop gets a node nothing has initialized, the way the host hands it one.
+        NodeContext node = new();
+        FakeProcessManager processes = new();
+        ScriptedSession session = new("Created PROJ-123.", processes);
+        CardPublicationLoop loop = new(
+            NewEngine(store, node, session, processes),
+            node,
+            new DaemonConnection(postgres.ConnectionString),
+            Options.Create(new DaemonOptions()),
+            NullLogger<CardPublicationLoop>.Instance);
+
+        await loop.StartAsync(cts.Token);
+        try
+        {
+            await Task.Delay(TimeSpan.FromMilliseconds(500), cts.Token);
+            session.Spawns.Should().BeEmpty(
+                "a sweep before bootstrap would throw on NodeContext rather than dispatch anything");
+
+            await node.InitializeAsync(store, cts.Token);
+
+            for (int attempt = 0; attempt < 100 && session.Spawns.Count == 0; attempt++)
+            {
+                await Task.Delay(TimeSpan.FromMilliseconds(100), cts.Token);
+            }
+
+            session.Spawns.Should().ContainSingle(
+                "the sweep runs as soon as the node knows who it is, not a poll interval later");
+        }
+        finally
+        {
+            await loop.StopAsync(CancellationToken.None);
+        }
+    }
     /// <summary>What the daemon appends when it spawns the session, replayed here without one.</summary>
     private static async Task<Guid> DispatchedAsync(
         DocumentStore store, NodeContext node, Guid taskId, int processId, CancellationToken cancellationToken)

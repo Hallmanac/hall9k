@@ -18,11 +18,14 @@ namespace Hall9k.Daemon.Publication;
 /// The first sweep runs immediately rather than after a full interval, unlike the closeout
 /// monitor. Closeout waits on other people (a review, CI); this waits on a request a human made
 /// deliberately, and a request made while the daemon was down should be picked up the moment it
-/// comes back rather than half a minute later.
+/// comes back rather than half a minute later. "Immediately" means as soon as this node knows
+/// who it is, which is the one thing a sweep cannot do without: the sibling services get node
+/// bootstrap for free by ticking before they sweep, and this one waits on it explicitly instead.
 /// </para>
 /// </summary>
 public sealed class CardPublicationLoop(
     CardPublicationEngine engine,
+    NodeContext node,
     DaemonConnection connection,
     IOptions<DaemonOptions> options,
     ILogger<CardPublicationLoop> logger) : BackgroundService
@@ -31,6 +34,18 @@ public sealed class CardPublicationLoop(
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
+        // Before anything else, and before the listener: every query below is scoped to this
+        // node or its owner, and the dispatch loop is what resolves that identity. Waiting here
+        // also means Postgres is up, since bootstrap had to reach it.
+        try
+        {
+            await node.WaitForInitializationAsync(stoppingToken);
+        }
+        catch (OperationCanceledException)
+        {
+            return;
+        }
+
         Task listener = ListenAsync(stoppingToken);
 
         while (!stoppingToken.IsCancellationRequested)
