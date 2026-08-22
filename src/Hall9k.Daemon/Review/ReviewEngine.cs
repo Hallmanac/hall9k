@@ -699,20 +699,45 @@ public sealed class ReviewEngine(
     /// MergeReady either way; this is the sentence beside it that says whether a reviewer
     /// confirmed the final tip or the severity gate ended the loop over findings nobody read
     /// again, and how many residuals that left.
+    /// <para>
+    /// A track the run outlives is concluded here, because the run ending is that track's
+    /// ending too. It is not the track's own convergence rule that retires it — a track can
+    /// still be saying "continue" when the run settles, which is the empty terminal case (a
+    /// cycle whose findings all routed away leaves no track owed a fix) and the human's own
+    /// merge-ready park resolution. Without this the per-track record simply has no entry for
+    /// that lens, and the history cannot answer how or at which cycle it ended: the one
+    /// question <see cref="ReviewTrackConcluded"/> exists to answer.
+    /// </para>
     /// </summary>
     private async Task SettleAsync(RunAggregate run, CancellationToken cancellationToken)
     {
+        // Derived before the conclusions below are appended, and unaffected by them: a track
+        // still active here returned needs-fixes over findings that all routed away, so the run
+        // already carries their residuals — or a human ended the loop, which is Settled by
+        // itself. Those conclusions carry no residuals of their own for the same reason. What
+        // the track left behind, it left behind when it was routed (Apply(ReviewFindingRouted)),
+        // and nothing was fixed on the cycle the run stopped on or the phase would be FixNeeded.
         ReviewSettlement settlement = run.DeriveSettlement();
         // Counted per defect rather than per recorded residual (log #62): a routing that failed
         // is offered again next cycle, so one defect can leave both records on the stream, and
         // counting the records would report a defect as unrouted when a draft bug task exists.
         ReviewResidualTally residuals = run.DeriveResidualTally();
 
+        DateTimeOffset now = DateTimeOffset.UtcNow;
         await using IDocumentSession session = store.LightweightSession();
+        foreach (ReviewLens lens in run.ActiveReviewLenses)
+        {
+            session.Events.Append(run.Id, new ReviewTrackConcluded(
+                run.Id, lens, run.ReviewCycle, ReviewSettlement.Settled, [], now));
+            logger.LogInformation(
+                "Run {RunId}: the {Lens} track ended at cycle {Cycle} with the run — settled, no reviewer read the final tip",
+                run.Id, LensLabel(lens), run.ReviewCycle);
+        }
+
         session.Events.Append(run.Id, new ReviewSettled(
             run.Id, run.ReviewCycle, settlement,
             residuals.FixedUnreviewed, residuals.Routed, residuals.RoutingFailed,
-            DateTimeOffset.UtcNow));
+            now));
         await session.SaveChangesAsync(cancellationToken);
         logger.LogInformation(
             "Run {RunId}: review settled {Settlement} at cycle {Cycle} — {Fixed} residual(s) fixed unreviewed, {Routed} routed, {Unrouted} left unrouted",

@@ -9,8 +9,15 @@ namespace Hall9k.Domain.Features.Run.Events;
 /// A concluded track stops being dispatched and is deliberately never reawakened by the other
 /// track's fix sessions (the accepted trade-off: conformance converges in one or two cycles,
 /// fix sessions are small, and the gates, the external reviewer, and the human merge gate
-/// stand behind the loop). The run reaches merge-ready when every track has one of these and
-/// nothing is left to fix.
+/// stand behind the loop).
+/// </para>
+/// <para>
+/// Every track has one of these by the time the run reaches merge-ready, but a track does not
+/// always get to decide its own ending. The run settles the moment no track is owed a fix, so
+/// a track still asking for another cycle can be outlived by the run — an empty terminal cycle
+/// whose findings all routed away, or a human's merge-ready park resolution. That ending is
+/// recorded here too, as Settled at the cycle the run stopped on, because a track the record
+/// has no entry for cannot be told from one that is somehow still running.
 /// </para>
 /// <para>
 /// <see cref="Residuals"/> is what the track left behind for want of a re-read — empty for

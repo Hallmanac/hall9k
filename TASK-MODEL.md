@@ -605,12 +605,12 @@ public sealed record ReviewFixCompleted( // Fixed/Unknown -> gates re-run, then 
     DateTimeOffset CompletedAt);
 public sealed record ReviewTrackConcluded( // one track finished and went dormant (log #62). Clean = a
     Guid Id,                             //   reviewer read the tip and found nothing; Settled = the
-    ReviewLens Lens,                     //   severity gate or scope routing ended it. A concluded
-    int Cycle,                           //   track is never dispatched again and is deliberately
-    ReviewSettlement Settlement,         //   never reawakened by the other track's fix sessions.
-    IReadOnlyList<ReviewResidual>        // what it ended on unconfirmed: grade, scope, and
-        Residuals,                       //   fixed-unreviewed vs routed
-    DateTimeOffset ConcludedAt);
+    ReviewLens Lens,                     //   severity gate, scope routing, or the run settling out
+    int Cycle,                           //   from under a track still asking for another cycle. A
+    ReviewSettlement Settlement,         //   concluded track is never dispatched again and is never
+    IReadOnlyList<ReviewResidual>        //   reawakened by the other track's fix sessions.
+        Residuals,                       // what it ended on unconfirmed: grade, scope, and
+    DateTimeOffset ConcludedAt);         //   fixed-unreviewed vs routed
 public sealed record ReviewFindingRouted( // an out-of-scope non-high went to a draft bug task instead
     Guid Id,                             //   of into this diff (log #62). DraftTaskId is null and
     ReviewLens Lens,                     //   FailureReason set when creation failed: routing is a

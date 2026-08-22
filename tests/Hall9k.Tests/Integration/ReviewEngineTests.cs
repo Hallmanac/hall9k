@@ -615,6 +615,15 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
         List<object> events = [.. (await query.Events.FetchStreamAsync(runId, token: cts.Token)).Select(e => e.Data)];
         events.OfType<ReviewFixDispatched>().Should().BeEmpty();
         events.OfType<ReviewFindingRouted>().Should().HaveCount(2);
+        // The adversarial track was still saying "continue" when the run settled out from under
+        // it, and its ending is recorded all the same: a lens with no per-track record cannot be
+        // told from one still running, which is the question the record exists to answer.
+        events.OfType<ReviewTrackConcluded>().Select(track => (track.Lens, track.Cycle, track.Settlement))
+            .Should().BeEquivalentTo(
+                [
+                    (ReviewLens.Conformance, 1, ReviewSettlement.Clean),
+                    (ReviewLens.Adversarial, 1, ReviewSettlement.Settled),
+                ], "every track has an ending by the time the run is merge-ready");
     }
 
     /// <summary>
