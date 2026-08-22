@@ -3,6 +3,7 @@ using Hall9k.Cli.Infrastructure;
 using Marten;
 using Spectre.Console;
 using Spectre.Console.Cli;
+using Spectre.Console.Rendering;
 
 namespace Hall9k.Cli.Commands;
 
@@ -10,6 +11,13 @@ namespace Hall9k.Cli.Commands;
 /// The attention pane, not a browse surface: what needs you, what has gone quiet, what is
 /// moving. Everything else is a count in the header — browsing lives under the nouns
 /// (h9k task list, h9k project list).
+/// <para>
+/// Every row is up to two lines (Decisions Log #66). The first carries the three surfaces side
+/// by side: the lifecycle STATE, the objective, and the ATTENTION column's yes-or-no. The second
+/// carries the words — the PHASE line for live work, the derived facts for a Published row, and
+/// the attention cause with its lever. A settled row has no second line at all, so a quiet board
+/// stays one line per task.
+/// </para>
 /// </summary>
 public sealed class StatusCommand : Hall9kAsyncCommand<StatusCommand.Settings>
 {
@@ -45,8 +53,14 @@ public sealed class StatusCommand : Hall9kAsyncCommand<StatusCommand.Settings>
         int listed = 0;
         listed += Section(rows, AttentionBucket.NeedsYou, "needs-you", "[red bold]Needs you[/]", now);
         listed += Section(rows, AttentionBucket.Stalled, "stalled",
-            "[red]Stalled[/] [dim]— claimed and live, but the agent stream has been silent for over an hour[/]", now);
-        listed += Section(rows, AttentionBucket.Active, "active", "[yellow]Running[/]", now);
+            "[red]Stalled[/] [dim]— live work whose stream has gone silent, or whose process is gone[/]", now);
+        listed += Section(rows, AttentionBucket.Working, "attention-working",
+            "[yellow]Working[/] [dim]— a run owns it and has not pushed yet[/]", now);
+        // Delivered work is where "is it my turn?" gets answered, so the pane lists it rather
+        // than counting it in the header: the phase line says whether a follow-up is driving the
+        // pull request or the merge is the only thing left (origin incident, 2026-08-22, PR 24).
+        listed += Section(rows, AttentionBucket.Delivered, "attention-delivered",
+            "[magenta]Delivered[/] [dim]— pushed; the merge has not been observed[/]", now);
         // The queue is normally a count in the header — it needs nothing from anyone. It earns
         // a section only when the node is at its concurrency ceiling (Decisions Log #64),
         // because that is the one case where a board with nothing dispatching is working
@@ -88,8 +102,15 @@ public sealed class StatusCommand : Hall9kAsyncCommand<StatusCommand.Settings>
     }
 
     /// <summary>
-    /// One attention group, bounded — a pane that scrolls has stopped being glanceable.
+    /// One attention group, attention-first inside it (the rows asking for something, then the
+    /// rest, newest first), bounded — a pane that scrolls has stopped being glanceable.
     /// </summary>
+    /// <param name="stateWord">
+    /// How --state spells this group, for the hint under a bounded section. It has to be the
+    /// group's own spelling rather than the lifecycle word beside it in the heading: a bare
+    /// Status-column word selects the column now (Brian's ruling, 2026-08-22), which would send
+    /// a reader who was promised "N more of these" to a different set of rows.
+    /// </param>
     private static int Section(
         IReadOnlyList<TaskStatusRow> rows, AttentionBucket bucket, string stateWord, string heading,
         DateTimeOffset now, bool inServiceOrder = false)
@@ -101,7 +122,7 @@ public sealed class StatusCommand : Hall9kAsyncCommand<StatusCommand.Settings>
         }
 
         AnsiConsole.MarkupLine($"\n{heading}");
-        AnsiConsole.Write(SectionTable([.. matching.Take(PerSection)], AnsiConsole.Profile.Width, now));
+        AnsiConsole.Write(SectionRows([.. matching.Take(PerSection)], AnsiConsole.Profile.Width, now));
 
         int held = matching.Count - Math.Min(matching.Count, PerSection);
         if (held > 0)
@@ -129,22 +150,29 @@ public sealed class StatusCommand : Hall9kAsyncCommand<StatusCommand.Settings>
     internal static IReadOnlyList<TaskStatusRow> SectionRows(
         IReadOnlyList<TaskStatusRow> rows, AttentionBucket bucket, bool inServiceOrder)
     {
-        IEnumerable<TaskStatusRow> inBucket = rows.Where(row => row.Attention == bucket);
+        IEnumerable<TaskStatusRow> inGroup = rows.Where(row => row.Group == bucket);
         return [.. inServiceOrder
-            ? inBucket
+            ? inGroup
                 .OrderBy(row => row.AssignedAt ?? DateTimeOffset.MaxValue)
                 .ThenBy(row => row.AddedAt)
-            : inBucket
+            : inGroup
                 .OrderBy(row => row.Priority)
+                .ThenByDescending(row => row.Attention.Level)
                 .ThenByDescending(row => row.AddedAt)];
     }
 
     /// <summary>
-    /// One section's rows, borderless because the pane is a list rather than a report. The
-    /// objective is truncated to exactly the width the other columns leave it, so a glanceable
-    /// pane stays one line per task. Built apart from the query so the layout can be measured.
+    /// One section's rows, in the layout every task surface shares (<see cref="TaskRowLayout"/>):
+    /// the fixed columns, the objective, and every one of the row's detail lines underneath at
+    /// full width. The pane prints all of them — it is a handful of rows by design, and the
+    /// phase, the facts and the ask are the whole reason it exists.
+    /// <para>
+    /// Headerless on purpose: the pane is read by its section headings, and the width a header
+    /// row would cost goes to the objective instead.
+    /// </para>
     /// </summary>
-    internal static Table SectionTable(IReadOnlyList<TaskStatusRow> rows, int consoleWidth, DateTimeOffset now)
+    internal static IRenderable SectionRows(
+        IReadOnlyList<TaskStatusRow> rows, int consoleWidth, DateTimeOffset now)
     {
         string[] activity = [.. rows.Select(row => row.Activity.IsNotBlank()
             ? $"[dim]{row.Activity}[/]"
@@ -152,36 +180,26 @@ public sealed class StatusCommand : Hall9kAsyncCommand<StatusCommand.Settings>
         // The owner column earns its width only where there is an assignee to show; on a
         // one-owner install it would otherwise repeat one name down the pane (log #34).
         bool assigned = rows.Any(row => row.Assignee.IsNotBlank());
-        int objective = TaskStatusRow.ObjectiveWidth(consoleWidth, bordered: false,
-        [
-            ["id", .. rows.Select(row => row.IdMarkup)],
-            ["status", .. rows.Select(row => row.StatusMarkup)],
-            ["project", .. rows.Select(row => row.ProjectMarkup)],
-            .. assigned ? (string[][])[["owner", .. rows.Select(row => row.AssigneeMarkup)]] : [],
-            ["activity", .. activity],
-            ["pr", .. rows.Select(row => row.PullRequestMarkup)],
-        ]);
 
-        // The headers are hidden but still sized for, so they are measured above with the cells.
-        Table table = new Table().Border(TableBorder.None).HideHeaders();
-        table.AddColumns([
-            "id", "status", "project", .. assigned ? (string[])["owner"] : [], "objective", "activity", "pr",
-        ]);
-
-        for (int index = 0; index < rows.Count; index++)
-        {
-            TaskStatusRow row = rows[index];
-            table.AddRow([
-                row.IdMarkup,
-                row.StatusMarkup,
-                row.ProjectMarkup,
-                .. assigned ? (string[])[row.AssigneeMarkup] : [],
-                row.ObjectiveMarkup(objective),
-                activity[index],
-                row.PullRequestMarkup,
-            ]);
-        }
-
-        return table;
+        // The objective sits after the assignee and before the ask, where the eye reaches it
+        // once it has the state and before it is told whether the row wants something.
+        return TaskRowLayout.Render(
+            rows,
+            [
+                new TaskColumn("Id", [.. rows.Select(row => row.IdMarkup)]),
+                new TaskColumn("Status", [.. rows.Select(row => row.StateMarkup)]),
+                new TaskColumn("Project", [.. rows.Select(row => row.ProjectMarkup)]),
+                .. assigned
+                    ? (TaskColumn[])[new TaskColumn("Owner", [.. rows.Select(row => row.AssigneeMarkup)])]
+                    : [],
+            ],
+            [
+                new TaskColumn("Attention", [.. rows.Select(row => row.AttentionMarkup)]),
+                new TaskColumn("Activity", activity),
+                new TaskColumn("PR", [.. rows.Select(row => row.PullRequestMarkup)]),
+            ],
+            [.. rows.Select(row => row.DetailMarkup)],
+            consoleWidth,
+            headers: false);
     }
 }

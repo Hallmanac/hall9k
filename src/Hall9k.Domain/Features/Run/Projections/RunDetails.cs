@@ -32,7 +32,7 @@ public sealed class RunDetails
     /// A list rather than a slot, because a review cycle dispatches one pass per active track and
     /// both read at once (Decisions Log #59): each pass carries its own lens and its own process
     /// identity, so the phase line can say which track is still out and the display can observe
-    /// each process rather than assert anything about it (Decisions Log #65). PID plus start time
+    /// each process rather than assert anything about it (Decisions Log #66). PID plus start time
     /// is a process identity (the reuse guard, log #2), and without both there is nothing safe to
     /// check. A document written before this shape existed carries no sessions and therefore reads
     /// as "no session observed", which is what it honestly is; a run still alive rewrites its

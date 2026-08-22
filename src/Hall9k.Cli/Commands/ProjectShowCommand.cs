@@ -7,6 +7,7 @@ using Hall9k.Domain.Features.Project.Projections;
 using Marten;
 using Spectre.Console;
 using Spectre.Console.Cli;
+using Spectre.Console.Rendering;
 
 namespace Hall9k.Cli.Commands;
 
@@ -131,37 +132,28 @@ public sealed class ProjectShowCommand : Hall9kAsyncCommand<ProjectShowCommand.S
     }
 
     /// <summary>
-    /// The pane's task table: the same columns h9k task list shows for one project, with the
-    /// objective truncated to exactly the width the fixed columns leave it so a row never
-    /// wraps. Built apart from the query so the layout can be rendered and measured.
+    /// The pane's task list: the same columns h9k task list shows for one project, with the
+    /// objective truncated to exactly the width the fixed columns leave it so a row never wraps,
+    /// and each row's summary line underneath it. Built apart from the query so the layout can be
+    /// rendered and measured.
     /// </summary>
-    internal static Table TaskTable(IReadOnlyList<TaskStatusRow> rows, int consoleWidth, DateTimeOffset now)
+    internal static IRenderable TaskTable(IReadOnlyList<TaskStatusRow> rows, int consoleWidth, DateTimeOffset now)
     {
         string[] ages = [.. rows.Select(row => $"[dim]{row.AgeMarkup(now)}[/]")];
-        int objective = TaskStatusRow.ObjectiveWidth(consoleWidth, bordered: true,
-        [
-            ["Id", .. rows.Select(row => row.IdMarkup)],
-            ["Status", .. rows.Select(row => row.StatusMarkup)],
-            ["Type", .. rows.Select(row => row.TypeMarkup)],
-            ["Added", .. ages],
-            ["PR", .. rows.Select(row => row.PullRequestMarkup)],
-        ]);
-
-        Table table = new Table().Border(TableBorder.Rounded);
-        table.AddColumn(new TableColumn("Id").NoWrap());
-        table.AddColumn(new TableColumn("Status").NoWrap());
-        table.AddColumn(new TableColumn("Type").NoWrap());
-        table.AddColumn("Objective");
-        table.AddColumn(new TableColumn("Added").NoWrap());
-        table.AddColumn(new TableColumn("PR").NoWrap());
-        for (int index = 0; index < rows.Count; index++)
-        {
-            TaskStatusRow row = rows[index];
-            table.AddRow(
-                row.IdMarkup, row.StatusMarkup, row.TypeMarkup,
-                row.ObjectiveMarkup(objective), ages[index], row.PullRequestMarkup);
-        }
-
-        return table;
+        return TaskRowLayout.Render(
+            rows,
+            [
+                new TaskColumn("Id", [.. rows.Select(row => row.IdMarkup)]),
+                new TaskColumn("Status", [.. rows.Select(row => row.StateMarkup)]),
+                new TaskColumn("Type", [.. rows.Select(row => row.TypeMarkup)]),
+            ],
+            [
+                new TaskColumn("Attention", [.. rows.Select(row => row.AttentionMarkup)]),
+                new TaskColumn("Added", ages),
+                new TaskColumn("PR", [.. rows.Select(row => row.PullRequestMarkup)]),
+            ],
+            [.. rows.Select(row => row.SummaryMarkup)],
+            consoleWidth,
+            headers: true);
     }
 }

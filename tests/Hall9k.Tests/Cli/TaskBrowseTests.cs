@@ -2,10 +2,7 @@ using FluentAssertions;
 using Hall9k.Cli.Commands;
 using Hall9k.Domain.Features.Project.Projections;
 using Hall9k.Domain.Features.Run;
-using Hall9k.Domain.Features.Run.Documents;
-using Hall9k.Domain.Features.Run.Projections;
 using Hall9k.Domain.Features.Tasks;
-using Hall9k.Domain.Features.Tasks.Projections;
 using Hall9k.Domain.Infrastructure.Ids;
 using Hall9k.Domain.Shared.Exceptions;
 using Xunit;
@@ -13,13 +10,11 @@ using Xunit;
 namespace Hall9k.Tests.Cli;
 
 /// <summary>
-/// h9k task list's own promises: --state selects exactly what the Status column shows, and
+/// h9k task list's own promises: --state selects what a reader means by the word they typed, and
 /// a bounded list always says what it held back and how to see it.
 /// </summary>
 public sealed class TaskBrowseTests
 {
-    private static readonly DateTimeOffset Now = new(2026, 8, 20, 12, 0, 0, TimeSpan.Zero);
-
     /// <summary>
     /// The --help tree is a first-class interface (AGENTS.md), so every group --state accepts
     /// has to be discoverable from it. Origin incident (2026-08-20): the lifecycle split added
@@ -42,6 +37,18 @@ public sealed class TaskBrowseTests
         }
     }
 
+    [Fact]
+    public void Every_lifecycle_state_the_status_column_shows_is_named_in_the_help_text_too()
+    {
+        string help = HelpFor(nameof(TaskListCommand.Settings.State));
+
+        foreach (string state in TaskStateFilter.LifecycleStates)
+        {
+            TaskStateFilter.Validate(state);
+            help.Should().Contain(state, "a word the Status column prints must be a word --state accepts");
+        }
+    }
+
     private static string HelpFor(string property) =>
         typeof(TaskListCommand.Settings)
             .GetProperty(property)!
@@ -51,15 +58,18 @@ public sealed class TaskBrowseTests
             .Description;
 
     [Fact]
-    public void An_attention_word_selects_the_whole_group_and_an_exact_state_selects_one_bucket()
+    public void A_lifecycle_word_selects_the_column_and_an_attention_word_selects_the_whole_group()
     {
         Guid runId = DomainId.New();
-        TaskStatusRow running = Row(Task(TaskState.Claimed, runId), new RunListItem { Id = runId, State = RunState.Running });
-        TaskStatusRow failed = Row(Task(TaskState.Failed));
+        TaskStatusRow working = StatusFixtures.Compose(
+            StatusFixtures.Task(TaskState.Claimed, runId), StatusFixtures.Run(runId, RunState.Running));
+        TaskStatusRow failed = StatusFixtures.Compose(StatusFixtures.Task(TaskState.Failed));
 
-        TaskStateFilter.Matches(running, "active").Should().BeTrue();
-        TaskStateFilter.Matches(running, "running").Should().BeTrue("an exact bucket matches too");
-        TaskStateFilter.Matches(running, "needs-you").Should().BeFalse();
+        TaskStateFilter.Matches(working, "working").Should().BeTrue("the Status column says Working");
+        TaskStateFilter.Matches(working, "attention-working").Should().BeTrue();
+        TaskStateFilter.Matches(working, "active").Should().BeTrue("the pre-rename group spelling still lands");
+        TaskStateFilter.Matches(working, "running").Should().BeTrue("the run state is selectable on the phase line's material");
+        TaskStateFilter.Matches(working, "needs-you").Should().BeFalse();
 
         TaskStateFilter.Matches(failed, "needs-you").Should().BeTrue("Failed waits for a human decision");
         TaskStateFilter.Matches(failed, "NEEDS_YOU").Should().BeTrue("separators and case are noise");
@@ -67,21 +77,64 @@ public sealed class TaskBrowseTests
         TaskStateFilter.Matches(failed, "done").Should().BeFalse();
     }
 
+    /// <summary>
+    /// The ruling (Brian, 2026-08-22): where a word names both a lifecycle state and an attention
+    /// group, <b>the column wins</b> — the word a reader types selects the rows whose Status
+    /// column shows that word, because that is the word they just read off the screen. A parked
+    /// closeout is the row that made the old group-first precedence a lie: the Status column calls
+    /// it Delivered, the board counts it under needs-you because it has stopped, and
+    /// <c>--state delivered</c> used to leave it out of the very list a reader went looking for
+    /// it in.
+    /// </summary>
     [Fact]
-    public void The_pull_request_group_is_in_review_and_leaves_its_member_states_selectable()
+    public void A_delivered_row_that_needs_you_is_still_returned_by_the_delivered_column_word()
     {
-        // The group covers three buckets, so it must not be spelled like any of them:
-        // normalization erases hyphens and case, so awaiting-review would have become
-        // AwaitingReview and swallowed the one state an operator asks for when they want
-        // the pull requests that are quietly waiting on a reviewer.
-        TaskStatusRow awaitingReview = Closeout(RunState.AwaitingReview);
-        TaskStatusRow checksFailing = Closeout(RunState.ChecksFailing);
-        TaskStatusRow reviewPending = Closeout(RunState.ReviewPending);
+        TaskStatusRow parked = Delivered(RunState.CloseoutParked);
+
+        parked.State.Should().Be(LifecycleState.Delivered);
+        parked.Group.Should().Be(AttentionBucket.NeedsYou, "a parked closeout has stopped and wants a human");
+
+        TaskStateFilter.Matches(parked, "delivered").Should().BeTrue("the Status column says Delivered");
+        TaskStateFilter.Matches(parked, "Delivered").Should().BeTrue();
+        TaskStateFilter.Matches(parked, "needs-you").Should().BeTrue("the group is where the board counts it");
+        TaskStateFilter.Matches(parked, "attention-delivered")
+            .Should().BeFalse("the group spelling selects the group, and this row is not counted in it");
+    }
+
+    /// <summary>
+    /// The structural half of the same ruling: no word reaches two vocabularies, so nothing --state
+    /// accepts can quietly answer with a set the reader did not ask for. Where a word was taken,
+    /// the losing vocabulary gets a spelling of its own — run-failed, and the four attention-
+    /// group spellings — rather than an entry in --help that cannot be selected.
+    /// </summary>
+    [Fact]
+    public void No_word_state_accepts_belongs_to_two_vocabularies()
+    {
+        string[] groups = [.. TaskStateFilter.AttentionSpelling.Split(", ")];
+        string[] all = [.. TaskStateFilter.LifecycleStates, .. groups, .. TaskStateFilter.RunStates];
+
+        string[] normalized = [.. all.Select(word => new string([.. word.Where(char.IsLetterOrDigit)]).ToLowerInvariant())];
+
+        normalized.Should().OnlyHaveUniqueItems(
+            "hyphens and case are noise, so two vocabularies sharing a word share a filter");
+    }
+
+    [Fact]
+    public void The_delivered_group_covers_every_pushed_row_and_leaves_its_run_states_selectable()
+    {
+        // The group must not be spelled like a run state it contains: normalization erases
+        // hyphens and case, so awaiting-review would have become AwaitingReview and swallowed
+        // the one state an operator asks for when they want the quiet pull requests
+        // (origin incident, 2026-08-20).
+        TaskStatusRow awaitingReview = Delivered(RunState.AwaitingReview);
+        TaskStatusRow checksFailing = Delivered(RunState.ChecksFailing);
+        TaskStatusRow reviewPending = Delivered(RunState.ReviewPending);
 
         foreach (TaskStatusRow row in new[] { awaitingReview, checksFailing, reviewPending })
         {
-            TaskStateFilter.Matches(row, "in-review").Should().BeTrue($"{row.Bucket} is an open pull request");
-            TaskStateFilter.Matches(row, "INREVIEW").Should().BeTrue("separators and case are noise");
+            TaskStateFilter.Matches(row, "attention-delivered")
+                .Should().BeTrue($"{row.RunState.Value} is an open pull request");
+            TaskStateFilter.Matches(row, "in-review").Should().BeTrue("the pre-rename spelling still lands");
         }
 
         TaskStateFilter.Matches(awaitingReview, "AwaitingReview").Should().BeTrue();
@@ -90,17 +143,41 @@ public sealed class TaskBrowseTests
     }
 
     [Fact]
-    public void A_state_that_names_a_bucket_selects_that_bucket_and_nothing_wider()
+    public void A_run_state_selects_on_the_phase_lines_material_and_nothing_wider()
     {
-        // The whole vocabulary at once: whatever else --state accepts, a word that spells a
-        // bucket must select exactly that bucket, or the help's promise ("an exact state
-        // selects just that one") is false for the states an attention word happens to spell.
-        foreach (string state in TaskStateFilter.Buckets)
-        {
-            string[] selected = [.. TaskStateFilter.Buckets.Where(bucket => TaskStateFilter.Matches(RowFor(bucket), state))];
+        // Every advertised run state reaches its own rows and no others — including the one whose
+        // own word is taken. Failed names a lifecycle state too and the lifecycle vocabulary is
+        // matched first, so the run state is advertised as run-failed rather than under a word
+        // that would quietly return the tasks that failed instead of the pull requests closed
+        // without merging.
+        TaskStateFilter.RunStates.Should().Contain("run-failed").And.NotContain(RunState.Failed.Value);
 
-            selected.Should().Equal([state], $"--state {state} promises just that one state");
+        foreach (string state in TaskStateFilter.RunStates)
+        {
+            string[] selected = [.. TaskStateFilter.RunStates.Where(other =>
+                TaskStateFilter.Matches(Delivered(RunStateFor(other)), state))];
+
+            selected.Should().Equal([state], $"--state {state} promises just that one run state");
         }
+
+        TaskStateFilter.Matches(Delivered(RunState.Failed), "Failed")
+            .Should().BeFalse("the bare word is the lifecycle state, and this row's task is Delivered");
+    }
+
+    /// <summary>The run state a <c>--state</c> run-vocabulary spelling selects, for building the row it should match.</summary>
+    private static RunState RunStateFor(string spelling) =>
+        spelling == "run-failed"
+            ? RunState.Failed
+            : spelling;
+
+    [Fact]
+    public void Abandoned_still_selects_the_rows_the_column_now_calls_archived()
+    {
+        TaskStatusRow archived = StatusFixtures.Compose(StatusFixtures.Task(TaskState.Abandoned));
+
+        TaskStateFilter.Validate("abandoned");
+        TaskStateFilter.Matches(archived, "abandoned").Should().BeTrue();
+        TaskStateFilter.Matches(archived, "Archived").Should().BeTrue();
     }
 
     [Fact]
@@ -111,29 +188,7 @@ public sealed class TaskBrowseTests
         Action filter = () => TaskStateFilter.Validate("in-progress");
 
         filter.Should().Throw<DomainValidationException>()
-            .WithMessage("*not a state h9k tracks*needs-you*Running*");
-    }
-
-    [Fact]
-    public void Every_composable_bucket_is_a_state_the_filter_accepts()
-    {
-        Guid runId = DomainId.New();
-        string[] buckets =
-        [
-            Row(Task(TaskState.Queued)).Bucket,
-            Row(Task(TaskState.NeedsHuman)).Bucket,
-            Row(Task(TaskState.Failed)).Bucket,
-            Row(Task(TaskState.Abandoned)).Bucket,
-            Row(Task(TaskState.Claimed, runId), new RunListItem { Id = runId, State = RunState.Verifying }).Bucket,
-            Row(Task(TaskState.Claimed, runId, "https://github.com/x/y/pull/7")).Bucket,
-            Row(Task(TaskState.Done, pullRequest: "https://github.com/x/y/pull/7")).Bucket,
-        ];
-
-        foreach (string bucket in buckets)
-        {
-            Action validate = () => TaskStateFilter.Validate(bucket);
-            validate.Should().NotThrow($"'{bucket}' is a state the Status column can show");
-        }
+            .WithMessage("*not a state h9k tracks*Delivered*needs-you*Running*");
     }
 
     [Fact]
@@ -166,51 +221,12 @@ public sealed class TaskBrowseTests
         footer.Should().Contain("--project <name>").And.Contain("--state <state>");
     }
 
-    /// <summary>A task in the closeout phase: done with a pull request, its run in the given state.</summary>
-    private static TaskStatusRow Closeout(RunState state)
+    /// <summary>A pushed task whose run is in the given state: the Delivered family, one member at a time.</summary>
+    private static TaskStatusRow Delivered(RunState state)
     {
         Guid runId = DomainId.New();
-        return Row(
-            Task(TaskState.Done, runId, "https://github.com/x/y/pull/7"),
-            new RunListItem { Id = runId, State = state });
+        return StatusFixtures.Compose(
+            StatusFixtures.Task(TaskState.Done, runId, "https://github.com/x/y/pull/7"),
+            StatusFixtures.Run(runId, state, sessionProcessId: null, pullRequestNumber: 7));
     }
-
-    /// <summary>A composed row that actually sits in the named bucket, whichever surface produces it.</summary>
-    private static TaskStatusRow RowFor(string bucket)
-    {
-        Guid runId = DomainId.New();
-        TaskStatusRow row = bucket switch
-        {
-            "Queued" or "Claimed" or "NeedsHuman" or "Done" or "Failed" or "Abandoned" => Row(Task(bucket)),
-            "ClosingOut" => Row(
-                Task(TaskState.Claimed, runId, "https://github.com/x/y/pull/7"),
-                new RunListItem { Id = runId, State = RunState.Running }),
-            _ => Row(Task(TaskState.Claimed, runId), new RunListItem { Id = runId, State = bucket }),
-        };
-
-        row.Bucket.Should().Be(bucket, "the fixture has to compose the bucket it claims to");
-        return row;
-    }
-
-    private static TaskListItem Task(TaskState state, Guid? runId = null, string? pullRequest = null) => new()
-    {
-        Id = DomainId.New(),
-        ProjectId = DomainId.New(),
-        Objective = "x",
-        State = state,
-        CurrentRunId = runId,
-        PullRequestUrl = pullRequest,
-        AddedAt = Now,
-    };
-
-    private static TaskStatusRow Row(TaskListItem task, RunListItem? run = null, DateTimeOffset? silentSince = null) =>
-        TaskStatusComposer.Compose(
-            task,
-            run is null ? new Dictionary<Guid, RunListItem>() : new Dictionary<Guid, RunListItem> { [run.Id] = run },
-            run is null || silentSince is null
-                ? new Dictionary<Guid, RunActivity>()
-                : new Dictionary<Guid, RunActivity> { [run.Id] = new() { Id = run.Id, LastActivityAt = silentSince.Value } },
-            new Dictionary<Guid, string>(),
-            new Dictionary<Guid, string>(),
-            Now);
 }

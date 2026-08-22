@@ -60,7 +60,7 @@ public sealed class ProjectListCommand : Hall9kAsyncCommand<ProjectListCommand.S
             $"[dim]Settings and recent tasks:[/] h9k project show {first} [dim]· "
             + $"browse its tasks:[/] h9k task list --project {first}");
 
-        if (rows.Any(row => row.Attention is AttentionBucket.NeedsYou or AttentionBucket.Stalled))
+        if (rows.Any(row => row.Group is AttentionBucket.NeedsYou or AttentionBucket.Stalled))
         {
             AnsiConsole.MarkupLine("[dim]Something is waiting on you — see it with:[/] h9k status");
         }

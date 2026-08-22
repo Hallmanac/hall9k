@@ -4,12 +4,17 @@ namespace Hall9k.Cli.Commands;
 /// A set of tasks counted by attention bucket. The buckets are single-assignment, so the
 /// counts always sum to <see cref="Total"/> — a project's row on h9k project list adds up
 /// to its task count with nothing hidden between the columns.
+/// <para>
+/// The columns follow the displayed lifecycle vocabulary (Decisions Log #66): what used to be
+/// counted as Active is Working, and what used to be In review is Delivered, so a count and the
+/// Status column beside it read the same word.
+/// </para>
 /// </summary>
 internal sealed record TaskRollup(
     int NeedsYou,
     int Stalled,
-    int Active,
-    int InReview,
+    int Working,
+    int Delivered,
     int Queued,
     int Blocked,
     int Ready,
@@ -21,21 +26,21 @@ internal sealed record TaskRollup(
 
     /// <summary>Column headers, in the same order as <see cref="Cells"/>.</summary>
     public static readonly string[] Columns =
-        ["Needs you", "Stalled", "Active", "In review", "Queued", "Blocked", "Ready", "Draft", "Done", "Closed"];
+        ["Needs you", "Stalled", "Working", "Delivered", "Queued", "Blocked", "Ready", "Draft", "Done", "Closed"];
 
-    public int Total => NeedsYou + Stalled + Active + InReview + Queued + Blocked + Ready + Draft + Done + Closed;
+    public int Total => NeedsYou + Stalled + Working + Delivered + Queued + Blocked + Ready + Draft + Done + Closed;
 
     public static TaskRollup From(IEnumerable<TaskStatusRow> rows)
     {
         TaskRollup rollup = Empty;
         foreach (TaskStatusRow row in rows)
         {
-            rollup = row.Attention switch
+            rollup = row.Group switch
             {
                 AttentionBucket.NeedsYou => rollup with { NeedsYou = rollup.NeedsYou + 1 },
                 AttentionBucket.Stalled => rollup with { Stalled = rollup.Stalled + 1 },
-                AttentionBucket.Active => rollup with { Active = rollup.Active + 1 },
-                AttentionBucket.InReview => rollup with { InReview = rollup.InReview + 1 },
+                AttentionBucket.Working => rollup with { Working = rollup.Working + 1 },
+                AttentionBucket.Delivered => rollup with { Delivered = rollup.Delivered + 1 },
                 AttentionBucket.Queued => rollup with { Queued = rollup.Queued + 1 },
                 AttentionBucket.Blocked => rollup with { Blocked = rollup.Blocked + 1 },
                 AttentionBucket.Ready => rollup with { Ready = rollup.Ready + 1 },
@@ -53,8 +58,8 @@ internal sealed record TaskRollup(
     [
         Cell(NeedsYou, "red bold"),
         Cell(Stalled, "red"),
-        Cell(Active, "yellow"),
-        Cell(InReview, "magenta"),
+        Cell(Working, "yellow"),
+        Cell(Delivered, "magenta"),
         Cell(Queued, "blue"),
         Cell(Blocked, "cyan"),
         Cell(Ready, "blue"),
@@ -72,8 +77,8 @@ internal sealed record TaskRollup(
         List<string> parts = [];
         Add(parts, NeedsYou, "red bold", "need you");
         Add(parts, Stalled, "red", "stalled");
-        Add(parts, Active, "yellow", "active");
-        Add(parts, InReview, "magenta", "in review");
+        Add(parts, Working, "yellow", "working");
+        Add(parts, Delivered, "magenta", "delivered");
         Add(parts, Queued, "blue", "queued");
         Add(parts, Blocked, "cyan", "blocked");
         Add(parts, Ready, "blue", "ready to assign");

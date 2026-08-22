@@ -1,0 +1,237 @@
+using Hall9k.Domain.Features.Run.Projections;
+using Hall9k.Domain.Features.Tasks;
+using Hall9k.Domain.Features.Tasks.Projections;
+
+namespace Hall9k.Cli.Commands;
+
+/// <summary>
+/// The one composer that maps recorded facts to "does this want a human, why, and what do I
+/// type" (Decisions Log #66, absorbing backlog 28). One owner on purpose: <c>h9k status</c> and
+/// <c>h9k task show</c> read the same answer from here, so they cannot disagree about whether a
+/// row is asking for something.
+/// <para>
+/// Every cause below is read off a record — <c>ReviewParked.Reason</c>, <c>CloseoutParked.Reason</c>,
+/// the dependency-failure record, the recorded failure reason, the observed check and thread
+/// counts. Nothing here re-guesses at a cause, and where a cause is genuinely not recorded
+/// distinctly the line says what was observed instead of inventing a category.
+/// </para>
+/// </summary>
+internal static class AttentionComposer
+{
+    /// <summary>
+    /// What this row is asking of the reader. Ordered by who actually owns the next move: a task
+    /// the human ended asks for nothing at all, an explicit park outranks everything that is
+    /// still live, a dead blocker outranks a live one, and a lane the machinery is still working
+    /// is never red however long it has been going.
+    /// </summary>
+    public static TaskAttention Compose(
+        TaskListItem task, RunDetails? run, LifecycleState state, TaskPhase phase, bool stalled)
+    {
+        string id = TaskListCommand.ShortId(task.Id);
+
+        // A task a human walked away from owes that human nothing, whatever its last run is
+        // still recorded as. Abandon deletes the lease and appends to the task's stream only, so
+        // a run parked for review or closeout stays parked under the archived task forever:
+        // nothing supersedes it, the dispatch sweep iterates leases and the closeout monitor
+        // watches open pull requests, so neither ever reaches it. Without this the park arms
+        // below would keep the row red in Needs-you and in every rollup that counts it, offering
+        // a lever that would resume a run for work the human explicitly dropped.
+        // Origin incident (2026-08-22, pre-PR review cycle 2): the three-surface rewrite widened
+        // those arms from the run's state plus the task's ("Claimed" and review-parked) to the
+        // run's state alone, and an abandoned task with a parked run was the leak.
+        if (state == LifecycleState.Archived)
+        {
+            return TaskAttention.None;
+        }
+
+        // An agent asked a question and stopped. The ask-a-human loop records the question but
+        // no command answers it yet, so the lever is the one that shows it rather than one the
+        // platform does not have (never advise a lever the platform will refuse).
+        if (task.State == TaskState.NeedsHuman)
+        {
+            return new TaskAttention(
+                AttentionLevel.NeedsYou,
+                "the agent asked a question and stopped; no command answers it yet",
+                $"h9k task show {id}");
+        }
+
+        if (run?.State == Domain.Features.Run.RunState.ReviewParked)
+        {
+            return new TaskAttention(
+                AttentionLevel.NeedsYou,
+                Reason(run.ParkedReason, "the pre-PR review loop parked without recording a reason"),
+                $"h9k review resolve {id} --merge-ready (or --needs-fixes \"…\")");
+        }
+
+        if (run?.State == Domain.Features.Run.RunState.CloseoutParked)
+        {
+            return new TaskAttention(
+                AttentionLevel.NeedsYou,
+                Reason(run.ParkedReason, "closeout parked without recording a reason"),
+                $"h9k pr resolve {id} --reason \"…\"");
+        }
+
+        if (state == LifecycleState.Failed)
+        {
+            return new TaskAttention(AttentionLevel.NeedsYou, FailureCause(task, run),
+                $"h9k task retry {id} --reason \"…\" (or resolve, or abandon)");
+        }
+
+        // A blocker observed dead will never close out on its own, so the task cannot unblock
+        // itself. The recorded reason already names the lever the platform will honour (log #61)
+        // and is quoted whole rather than re-derived into a second, possibly different, piece of
+        // advice about the same blocker.
+        if (task.State == TaskState.Blocked && task.DependencyFailureReason.IsNotBlank())
+        {
+            return new TaskAttention(AttentionLevel.NeedsYou, task.DependencyFailureReason);
+        }
+
+        if (stalled)
+        {
+            return new TaskAttention(AttentionLevel.NeedsYou, StallCause(phase), $"h9k logs {id}");
+        }
+
+        if (state == LifecycleState.Delivered)
+        {
+            return Delivered(task, run, id);
+        }
+
+        // Still waiting on blockers that are all alive: it queues itself the moment they close
+        // out, so it is a hold the reader can consciously ignore rather than an ask. Which
+        // blockers, and how many, is on the derived-facts line; this says the ignorable part.
+        if (task.State == TaskState.Blocked)
+        {
+            return new TaskAttention(
+                AttentionLevel.WaitingHandled,
+                "nothing for you to do — it queues itself when its blockers close out");
+        }
+
+        return TaskAttention.None;
+    }
+
+    /// <summary>
+    /// The pushed-but-not-merged rows. Most of them are being handled and a few are the reader's
+    /// turn, and saying which is which is the whole reason this state exists (origin incident,
+    /// 2026-08-22, PR 24).
+    /// </summary>
+    private static TaskAttention Delivered(TaskListItem task, RunDetails? run, string id)
+    {
+        // Delivered work nobody is assigned to. h9k pr resolve reopens a done task to Queued and
+        // keeps its pull request, and h9k task unassign accepts it from there — which leaves an
+        // open pull request, no run watching it, and no owner whose nodes could claim the
+        // follow-up. Nothing moves it until a human assigns it again, so it is a red row with a
+        // lever rather than a wait that clears itself. Checked before the run is read: the reopen
+        // clears CurrentRunId, so the run-is-null arm below would otherwise answer for this row
+        // with the pull request as its only lever.
+        if (task.State == TaskState.Published)
+        {
+            return new TaskAttention(AttentionLevel.NeedsYou,
+                "the pull request is open and the task is unassigned — nothing will claim the follow-up",
+                $"h9k task assign {id}");
+        }
+
+        // A follow-up run owns the pull request: the machinery is mid-move, not the human. The
+        // marker alone, because the phase line above already says what that run is doing and a
+        // second line repeating it is how a pane earns the scroll it was built to avoid.
+        if (task.State != TaskState.Done)
+        {
+            return new TaskAttention(AttentionLevel.WaitingHandled);
+        }
+
+        if (run is null)
+        {
+            return new TaskAttention(AttentionLevel.NeedsYou,
+                "the pull request is open and no run record is watching it for a merge",
+                task.PullRequestUrl ?? string.Empty);
+        }
+
+        return run.State.Value switch
+        {
+            // What the closeout monitor records is a finding: failing checks, unresolved threads,
+            // an errored review. Silence here is therefore an absence of records and not an
+            // observation of a clean pull request — the monitor writes nothing at all while a
+            // check is still reporting — so the cause says what is recorded and sends the reader
+            // to the pull request's own checks rather than handing them an all-clear nobody made.
+            "AwaitingReview" => new TaskAttention(AttentionLevel.NeedsYou,
+                "nothing has been recorded against this pull request — read its checks, then the merge is yours",
+                run.PullRequestUrl ?? string.Empty),
+            // The closeout monitor dispatches a follow-up or parks; while it is neither parked
+            // nor out of budget, this is being handled and the reader can leave it alone.
+            "ChecksFailing" or "ReviewPending" => new TaskAttention(AttentionLevel.WaitingHandled,
+                "the closeout monitor owns the next move on this pull request"),
+            // The run ended without a merge. RunState.Failed is what every run failure records
+            // and a pull request closed without merging (PullRequestClosed) is only one way to
+            // reach it — a gate failure on a task a human then resolved onto this pull request
+            // is another — so the cause quotes the reason the run recorded instead of naming a
+            // closure nobody observed. Those two want different levers, and the recorded reason
+            // is the fact that tells them apart, so the lever is composed from it.
+            "Failed" => new TaskAttention(AttentionLevel.NeedsYou,
+                "the run ended without a merge being observed, and nothing is watching this pull "
+                + $"request any more: {Reason(run.FailureReason, "the run recorded no reason")}",
+                UnwatchedRemedy(task, run, id)),
+            _ => TaskAttention.None,
+        };
+    }
+
+    /// <summary>
+    /// What actually moves a Done task whose run ended with no merge observed. <c>h9k pr resolve</c>
+    /// dispatches a follow-up run onto the existing pull-request branch, and that run rejoins the
+    /// closeout monitor's watch set, so the merge is finally observed — the identical remedy a
+    /// dependent is given for the identical situation (<c>TaskDependency.DescribeDoneRemedy</c>).
+    /// It is named only where the decider would accept it: <c>TaskDecider.Reopen</c> needs a run
+    /// to follow up on (the caller already has one here) and the branch that run pushed, so a run
+    /// document with no branch recorded gets the pull request instead of a command that refuses.
+    /// <para>
+    /// A pull request the monitor observed closed is the exception, and the recorded reason is
+    /// what says so. Reopening would be accepted and would achieve nothing: the follow-up pushes
+    /// to a branch whose pull request nobody can merge, so there is no watch worth rejoining.
+    /// That row's next act is on the pull request itself, which is what the URL is for.
+    /// </para>
+    /// </summary>
+    private static string UnwatchedRemedy(TaskListItem task, RunDetails run, string id) =>
+        run.FailureReason != RunDetails.PullRequestClosedWithoutMerge && run.Branch.IsNotBlank()
+            ? $"h9k pr resolve {id}"
+            : run.PullRequestUrl ?? task.PullRequestUrl ?? string.Empty;
+
+    /// <summary>
+    /// Why a Failed row failed, composed from what is actually recorded rather than shown as the
+    /// bare word (Decisions Log #66). A category is only named where a distinct record supports
+    /// it: failed gates are listed because <c>VerificationFailed</c> names them, a kill is named
+    /// because <c>RunKilled</c> records its reason. Causes with no distinct record yet — token
+    /// exhaustion until backlog 40 lands — arrive here as whatever text the machinery wrote, and
+    /// are shown verbatim rather than sorted into a category nobody observed.
+    /// </summary>
+    public static string FailureCause(TaskListItem task, RunDetails? run)
+    {
+        string recorded = task.FailureReason.IsNotBlank()
+            ? task.FailureReason
+            : run?.FailureReason.IsNotBlank() == true
+                ? run.FailureReason
+                : "the failure was recorded without a reason";
+
+        return run switch
+        {
+            { FailedGates.Count: > 0 } => $"gate failure ({string.Join(", ", run.FailedGates)}): {recorded}",
+            { State.Value: "Killed" } => $"the run was killed: {recorded}",
+            null when task.CurrentRunId is not null =>
+                $"no run record exists for this failure: {recorded}",
+            _ => recorded,
+        };
+    }
+
+    /// <summary>
+    /// A stalled row's cause is whatever the phase already observed: a process that is gone is a
+    /// different problem from a process that is alive and quiet, and they take different levers.
+    /// </summary>
+    private static string StallCause(TaskPhase phase) => phase.Liveness switch
+    {
+        SessionLiveness.Gone =>
+            "the run believes a session is running and its process is gone",
+        SessionLiveness.Alive =>
+            "the session is alive but its stream has been silent past the stall threshold",
+        _ => "the agent stream has been silent past the stall threshold",
+    };
+
+    private static string Reason(string? recorded, string absent) =>
+        recorded.IsNotBlank() ? recorded : absent;
+}

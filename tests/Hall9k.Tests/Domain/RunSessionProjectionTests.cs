@@ -9,7 +9,7 @@ using Xunit;
 namespace Hall9k.Tests.Domain;
 
 /// <summary>
-/// The sessions a run has in flight, as the run stream records them (Decisions Log #65). This is
+/// The sessions a run has in flight, as the run stream records them (Decisions Log #66). This is
 /// the half of the phase line that cannot be inferred: a run sits in UnderReview while a
 /// reviewer reads, while a fix session edits the worktree, and while nothing at all is running,
 /// and only these records tell them apart. Everything the display then adds is one observation of
