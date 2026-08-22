@@ -57,8 +57,9 @@ The §3.3 lifecycle mixes two concerns. Here they separate cleanly:
   `ReviewPending`, and `CloseoutParked` record what the closeout monitor observed (see §2.2).
   `Completed` arrives only when the monitor observes the merge.)
 
-`h9k status` composes the display state: a claimed task shows its current run's state, and a
-`Blocked` task whose blocker died reads as `NeedsHuman` while staying Blocked (§2.3).
+Neither vocabulary is what a human reads. The display is three separate surfaces composed from
+these two (log #66, §2.4): a **lifecycle state** in seven words, a **phase line** for whatever is
+live, and an **attention** column saying whether a human is wanted and why.
 
 ### Events (`Features/Task/Events/`, one record per file)
 
@@ -356,11 +357,21 @@ Done, and merge detection continues for parked runs), the run parks with the rea
 `h9k status` surfaces it as NeedsHuman. A manual `h9k pr resolve` resets the budget; the
 human asking for another attempt is a fresh grant.
 
-**Display composition** (`h9k status`): Done+PR refines by the current run's state.
-AwaitingReview while quiet, ChecksFailing/ReviewPending when observed, NeedsHuman when
-parked, Done once merged (or closed). A Queued/Claimed task still carrying a PR URL is a
-follow-up in flight: ClosingOut. A watched run that is no longer the task's current run
-is retired with `RunSuperseded` (a newer follow-up owns the PR).
+**Display composition** (`h9k status`, log #66 and §2.4): everything here reads as
+**Delivered** until a merge is observed, and the current run's state composes the phase line
+beneath it - "watching PR #24, waiting on your merge" while nothing is recorded against it, the
+failing checks or the unresolved thread count when observed, "automatic follow-ups stopped" when
+parked. The quiet reading says "no finding recorded; its checks may still be reporting" rather than
+claiming a clean pull request, because the monitor writes nothing at all while CI is still
+reporting and an absence of findings is not an observation. A
+Queued/Claimed task still carrying a pull-request URL is a follow-up in flight and says so
+("follow-up on PR #24: building"), which is the distinction the old single `ClosingOut` bucket
+could not make. **Done** appears only once the merge is observed; a run that ended without one stays
+Delivered and quotes the reason the run recorded, which is how a pull request closed without
+merging (`PullRequestClosed` records its own reason) reads differently from a gate failure a
+human then resolved onto that pull request. `RunState.Failed` carries both, so neither the phase
+nor the attention line infers a closure from it. A watched run that is no longer the task's
+current run is retired with `RunSuperseded` (a newer follow-up owns the PR).
 
 ### 2.3 Task development vs task dispatch (log #34)
 
@@ -453,6 +464,53 @@ the absent key, so it is idempotent and self-terminating (a current document alw
 key, as a value or as an explicit null). Origin incident (2026-08-20): the split first shipped
 the filter without the rebuild, and every task in the dogfooding database became permanently
 unclaimable — silently, because an unclaimable task looks exactly like an idle queue.
+
+### 2.4 The display vocabulary (log #66)
+
+Neither `TaskState` nor `RunState` is shown to a human as it stands. One field was answering four
+questions at once - where the work is, what is happening right now, whether it wants a human, and
+why - and the answer is three surfaces, composed in `TaskStatusComposer` and read by every screen.
+
+**State** is the lifecycle, in seven words: `Draft`, `Published`, `Working`, `Delivered`, `Done`,
+`Failed`, `Archived`. It is display-only; nothing about the persisted model changes. `Queued` and
+`Blocked` both render as `Published`, with the difference moved onto that row's derived-facts line
+("assigned and ready; the dispatcher has not claimed it yet", "waiting on 2 dependencies to close
+out"), which is also where the ranking model's facts will land when it retires those two states. A
+queued row names a dispatch slot only where `DispatchPressure` carries a current measurement saying
+this node is full (Decisions Log #64); with none, it says it is ready and stops, because a queue
+that is not moving has many causes and a stopped daemon is the commonest of them. `Delivered` is the new word: pushed, with
+the merge not yet observed, which is the window the old display called `Done` while the pull request
+was still open. `Done` now renders only at true closeout - the merge observed, or the task closed with
+no pull request to watch - which is exactly the bar the dependency rule uses (§2.3), so the board and
+the blocker rule finally agree on the word. The no-pull-request arm is answered before the current run
+is read at all, because `TaskResolved` does not clear `CurrentRunId`: a task closed by hand keeps the
+document of the run it was closed on top of, and reading that run's state would claim a push and a
+pending merge for a task that never pushed anything. A run that ended without an observed merge stays
+`Delivered` and says what it recorded, because closeout ended but not the way `Done` claims.
+
+**Phase** is the run vocabulary's new home. `Dispatched`, `Running`, `Verifying`, `UnderReview`,
+`AwaitingReview`, `ChecksFailing`, `ReviewPending`, `CloseoutParked` compose the line under a
+`Working` or `Delivered` row and never appear in the Status column. It is **derived only** - no new
+events - and it is composed from the run's records **plus one observation of the recorded process**.
+`RunDetails` therefore records every session a run has in flight (each one's role, its lens when it
+is a review pass, its pid, and its start time, which together are the identity the log #2 reuse
+guard needs) - a list, because a review cycle runs one pass per active track at the same time
+(log #59), and a run is reported as having lost its process only when every process it records is
+gone. A phase never claims a session is doing something without observing the process:
+a session on another node, or one whose start time was never recorded, reads as "liveness not
+observed here" rather than as either answer. The two meanings of the old `ClosingOut` separate here
+- "follow-up on PR #24: building, session alive" against "watching PR #24, waiting on your merge" -
+so "is it my turn?" never needs a log dive.
+
+**Attention** is `AttentionComposer`, the single owner of the mapping from recorded facts to a
+one-line cause and a lever. Needs-you or not is a column; the cause and the command are the line
+under the row. Waiting-but-handled (a blocker already retried, a pull request the closeout monitor
+is still working) is its own level and renders dim, so a reader can consciously ignore it - a board
+that says "act now" about a handled situation trains its reader to ignore it. Every cause is quoted
+from a record: `ReviewParked.Reason`, `CloseoutParked.Reason`, the dependency-failure record, the
+recorded failure reason, the observed check and thread counts. A failure with no distinctly recorded
+cause (token exhaustion, until backlog 40 lands) shows the text the machinery wrote rather than a
+category nobody observed, and a park that recorded no reason says that rather than inventing one.
 
 ### Claim atomicity
 

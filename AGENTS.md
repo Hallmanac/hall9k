@@ -25,10 +25,21 @@ h9k daemon start|stop|status # the CLI-owned daemon lifecycle (Decisions Log #31
 h9k project list             # every project with its tasks counted by attention bucket
 h9k project show <name>      # one project: registration, settings, rollup, newest tasks
 h9k task list --project <name> --state <state>   # browse tasks, newest first (--all, --limit)
-h9k status                   # the attention pane: what needs you, what stalled, what runs
+h9k status                   # the attention pane: state, phase, and attention on every row
 h9k idea add "<text>"        # capture an idea; discovery starts, a project is optional
 h9k connection list          # every external account this install can reach, and where its credential lives
 ```
+
+The board answers four questions with three surfaces (Decisions Log #66). **State** is the
+lifecycle in seven words: Draft, Published, Working, Delivered, Done, Failed, Archived.
+**Delivered** is pushed-with-the-merge-not-yet-observed, and **Done** renders only at true
+closeout, which is the same bar the dependency rule uses. **Phase** is the line under a live row,
+composed from the run's records plus an observation of the recorded process - it never claims a
+session is doing something without seeing the process, and says "liveness not observed here" when
+it cannot. **Attention** is needs-you or not, with the one-line cause and the command that clears
+it. The run vocabulary (Running, UnderReview, AwaitingReview, ChecksFailing, …) is the phase
+line's material and never appears in the Status column; `--state` still selects on it (as
+`run-failed` for the one word the lifecycle vocabulary already owns).
 
 Ideas come before tasks (Decisions Log #35). An idea undergoes **discovery** (what is this?);
 a draft task undergoes **refinement** (how does this become executable?). A task is an idea with
