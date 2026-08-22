@@ -149,21 +149,55 @@ public sealed class JiraWorkItemProvider(
             cancellationToken,
             subjectIsCard: false);
 
+        JsonDocument document;
         try
         {
-            using JsonDocument document = JsonDocument.Parse(response.Body);
-            return ReadString(document.RootElement, "displayName") ?? account.AccountEmail;
+            document = JsonDocument.Parse(response.Body);
         }
-        catch (JsonException)
+        catch (JsonException exception)
         {
             // A 2xx that is not JSON is a proxy or a portal answering for the tenant. The
             // credentials are unproven, so this reports the honest thing rather than success.
-            throw new DomainValidationException(
-                $"{account.Site} answered the sign-in check with something that is not Jira. That is "
-                + "usually a proxy or an SSO portal in front of the tenant: check the site URL is the "
-                + "Jira address itself (https://your-org.atlassian.net).");
+            throw NotASignedInUser(RelayedText.OneLine(exception.Message));
+        }
+
+        using (document)
+        {
+            // Parsing is not proof. A 2xx carrying perfectly good JSON that is not a user document
+            // is the same unproven sign-in as a login page: an identity-aware proxy answering
+            // {"error":"authentication required","login_url":"…"}, or an empty array, parses
+            // cleanly, and every property this method wants is simply absent — so without this the
+            // gate would fall through to the AccountEmail default and report a registration that
+            // authenticated nothing. accountId is what makes it a user: Jira answers /myself with
+            // it for every account, and it is the one field that cannot be a coincidence of some
+            // other document's shape. Origin incident (2026-08-22): the pre-PR review of this
+            // branch found the check passing on any parseable body, which is the failure this
+            // whole call exists to catch, deferred to the middle of a dispatched session. Map()
+            // guards its own document the same way and for the same reason.
+            if (document.RootElement.ValueKind != JsonValueKind.Object)
+            {
+                throw NotASignedInUser(
+                    $"the JSON it answered with is {document.RootElement.ValueKind}, not an object");
+            }
+
+            if (ReadString(document.RootElement, "accountId") is null)
+            {
+                throw NotASignedInUser("the JSON it answered with carries no accountId, so it is not a Jira account");
+            }
+
+            return ReadString(document.RootElement, "displayName") ?? account.AccountEmail;
         }
     }
+
+    /// <summary>
+    /// What a sign-in check that came back 2xx and proved nothing is refused with. It names what
+    /// was actually seen, because the site URL is the usual cause and the reader is the person who
+    /// just typed it.
+    /// </summary>
+    private DomainValidationException NotASignedInUser(string reported) => new(
+        $"{account.Site} answered the sign-in check with something that is not a Jira account: {reported}. "
+        + "That is usually a proxy or an SSO portal in front of the tenant: check the site URL is the "
+        + "Jira address itself (https://your-org.atlassian.net).");
 
     private async Task<JiraResponse> SendAsync(
         JiraRequest request,
