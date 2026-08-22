@@ -26,7 +26,20 @@ internal sealed record TaskStatusRow(
     DateTimeOffset AddedAt,
     string Assignee = "",
     IReadOnlyList<Guid>? UnmetDependencies = null,
-    string? DependencyFailureReason = null)
+    string? DependencyFailureReason = null,
+    /// <summary>
+    /// Queued with nowhere to go: this node is at its concurrency ceiling and the reason is
+    /// already in <see cref="Activity"/> (Decisions Log #64). Carried as its own flag so the
+    /// attention pane can decide whether the queue is worth a section at all without reading
+    /// a sentence back out of a display string.
+    /// </summary>
+    bool WaitingForSlot = false,
+    /// <summary>
+    /// When a human assigned the task, null while nothing is assigned. The key the dispatcher
+    /// queues on (Decisions Log #64), carried here so a pane listing a deferred queue can list
+    /// it in the order it will actually be served.
+    /// </summary>
+    DateTimeOffset? AssignedAt = null)
 {
     /// <summary>
     /// A truncated objective still has to say something; below this the column is noise. A
