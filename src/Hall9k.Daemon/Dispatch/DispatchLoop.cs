@@ -25,6 +25,7 @@ public sealed class DispatchLoop(
     IWorktreeManager worktrees,
     CloseoutEngine closeout,
     IOptions<DaemonOptions> options,
+    IConfiguration configuration,
     ILogger<DispatchLoop> logger) : BackgroundService
 {
     private readonly DaemonOptions _options = options.Value;
@@ -35,6 +36,18 @@ public sealed class DispatchLoop(
         await WaitForPostgresAsync(stoppingToken);
         await node.InitializeAsync(store, stoppingToken);
         logger.LogInformation("Node {NodeId} (owner {OwnerId}) starting", node.NodeId, node.OwnerId);
+
+        // The ceiling is stated up front because it is the answer to "why is my queue not
+        // moving" (Decisions Log #64), and because it is per-machine configuration: the number
+        // this node carries is not the number the next one carries.
+        NodeLoad ceiling = new(LiveRuns: 0, _options.MaxConcurrentAgentSessions);
+        logger.LogInformation(
+            "Concurrency ceiling: at most {MaxConcurrentAgentSessions} resident agent session(s) on this node "
+            + "at once, which is {MaxConcurrentRuns} live run(s) at {PeakAgentSessionsPerRun} session(s) each "
+            + "(configure with {Section}:{Setting})",
+            _options.MaxConcurrentAgentSessions, ceiling.MaxConcurrentRuns, NodeLoad.PeakAgentSessionsPerRun,
+            DaemonOptions.SectionName, nameof(DaemonOptions.MaxConcurrentAgentSessions));
+        WarnAboutRetiredCeilingSetting();
 
         // Before anything reads the task projections: bring documents written by an older
         // projection shape up to date, or the claim filter cannot see them (log #34).
@@ -122,6 +135,31 @@ public sealed class DispatchLoop(
         logger.LogInformation(
             "{Marker} — adopted {Adopted} run(s), failed {Failed} orphaned run(s), requeued {Requeued} expired lease(s); {Closeout}",
             DaemonRuntime.CatchUpMarker, adoption.RunsAdopted, adoption.RunsFailed, requeuedLeases, closeoutSummary);
+    }
+
+    /// <summary>
+    /// Say out loud that a configured <c>MaxConcurrentRuns</c> is no longer read (Decisions Log
+    /// #64). The setting was not renamed, it was re-denominated: it used to mean runs and the
+    /// ceiling is now set in agent sessions, so the old number cannot be carried over as an
+    /// alias without silently meaning something else — a tower told to run four would get four
+    /// sessions, which is one or two runs. Binding it quietly would be a guess about intent
+    /// (AGENTS.md: never guess at unobserved facts), and dropping it quietly would leave an
+    /// operator watching a ceiling they thought they had raised. So it is dropped out loud.
+    /// </summary>
+    private void WarnAboutRetiredCeilingSetting()
+    {
+        const string retired = "MaxConcurrentRuns";
+        if (string.IsNullOrWhiteSpace(configuration.GetSection(DaemonOptions.SectionName)[retired]))
+        {
+            return;
+        }
+
+        logger.LogWarning(
+            "{RetiredSetting} is set but is no longer read — the ceiling is now configured in agent "
+            + "sessions as {Section}:{Setting}, which is a different unit, so the old value is not "
+            + "carried over. This node runs on the ceiling logged above until you set the new one",
+            $"{DaemonOptions.SectionName}:{retired}",
+            DaemonOptions.SectionName, nameof(DaemonOptions.MaxConcurrentAgentSessions));
     }
 
     private async Task WaitForPostgresAsync(CancellationToken cancellationToken)
