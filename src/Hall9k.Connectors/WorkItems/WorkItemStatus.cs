@@ -53,11 +53,16 @@ public sealed record WorkItemStatus
     /// dropped rather than recorded, so "open (open)" cannot happen; the label is folded to one
     /// printable line first, because it is a value someone else's workflow configuration
     /// supplied and it ends up in a terminal and in an agent's prompt.
+    /// <para>
+    /// The comparison is against the printed name of the mapping rather than its raw
+    /// <see cref="Value"/>, so a source whose own word for a state Hall9k could not map happens
+    /// to be "unknown" is recorded as that one word too, rather than as "unknown (unknown)".
+    /// </para>
     /// </summary>
     public WorkItemStatus As(string? sourceLabel)
     {
         string label = Text.RelayedText.OneLine(sourceLabel ?? string.Empty).Trim();
-        return label.IsBlank() || label.Equals(Value, StringComparison.OrdinalIgnoreCase)
+        return label.IsBlank() || label.Equals(Mapped, StringComparison.OrdinalIgnoreCase)
             ? this
             : new WorkItemStatus(Value, label);
     }
@@ -83,9 +88,11 @@ public sealed record WorkItemStatus
 
     /// <summary>
     /// The source's own word for a state, recorded without the platform recognising anything in
-    /// it. This is <see cref="Parse"/> minus the two names Hall9k has a rule for, and it exists
-    /// for the adapter that has already decided nothing here maps: it keeps the observed text and
-    /// maps to nothing, so <see cref="IsOpen"/> is false whatever the word happens to be.
+    /// it. It exists for the adapter that has already decided nothing here maps, and it keeps the
+    /// two halves of that in their own places: the observed word becomes the
+    /// <see cref="SourceLabel"/> and the mapping is <see cref="Unknown"/>, so
+    /// <see cref="IsOpen"/> is false whatever the word happens to be and the observation is still
+    /// what gets quoted back ("Open (unknown)").
     /// <para>
     /// The distinction matters at a boundary whose vocabulary is not Hall9k's. A source that says
     /// "open" because that is its own word for open should go through <see cref="Parse"/>; an
@@ -96,12 +103,16 @@ public sealed record WorkItemStatus
     /// <c>statusCategory</c> and the classic default workflow's "Open" was adopted as open, which
     /// is the guess both that adapter and the decisions log say is refused there.
     /// </para>
+    /// <para>
+    /// Second origin incident, same day and the same guess one layer down: this method first
+    /// recorded the observed word as the <em>mapped</em> value, so <c>Unmapped("open")</c> was
+    /// equal to <see cref="Open"/> and read as open — the guard undone by nothing more than a
+    /// tenant spelling their status in lower case, which is exactly the coincidence of vocabulary
+    /// it was added to refuse. A mapping nobody could make has to be representable as no mapping,
+    /// not as the observed text standing in for one.
+    /// </para>
     /// </summary>
-    public static WorkItemStatus Unmapped(string? value)
-    {
-        string observed = value?.Trim() ?? string.Empty;
-        return observed.IsBlank() ? Unknown : new WorkItemStatus(observed);
-    }
+    public static WorkItemStatus Unmapped(string? value) => Unknown.As(value);
 
     /// <summary>True only when the source positively said open; Unknown is not open.</summary>
     public bool IsOpen => Value == Open.Value;

@@ -169,7 +169,9 @@ public sealed class JiraWorkItemProviderTests : IDisposable
     [Theory]
     [InlineData("Bespoke")]
     [InlineData("Open")]
+    [InlineData("open")]
     [InlineData("Closed")]
+    [InlineData("closed")]
     public async Task A_status_with_no_category_is_carried_verbatim_so_the_gate_refuses_it(string name)
     {
         RecordingRequester jira = new(200, $$"""
@@ -180,7 +182,8 @@ public sealed class JiraWorkItemProviderTests : IDisposable
             JiraIssueKey.Parse("PROJ-123", new Uri("https://hall9k.atlassian.net")), Token);
 
         card.Status.IsOpen.Should().BeFalse("a name nobody mapped is not the board saying open");
-        card.Status.ToString().Should().Be(name);
+        card.Status.ToString().Should().Be(
+            $"{name} (unknown)", "the board's own word is the observation and 'nothing mapped' is the reading");
     }
 
     [Fact]

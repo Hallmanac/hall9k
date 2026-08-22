@@ -101,14 +101,17 @@ public sealed class WorkItemImporterTests
     {
         // The refusal is an audit line about a moment: it says what was read. Case-folding
         // "In Review" to "in review" is a small edit to that record, and a record nobody may
-        // edit is the whole reason the observed value rides through unrecognised.
+        // edit is the whole reason the observed value rides through unrecognised. The reading
+        // rides along with it — "(unknown)" — because the observation and what Hall9k made of it
+        // are two different claims, and a state quoted bare in a sentence about open work reads
+        // as though the platform had mapped it.
         WorkItemImporter importer = new(
             new StubProvider(WorkItemProvider.GitHub, WorkItemStatus.Parse("  In Review  ")));
 
         Func<Task> import = () => Import(importer, WorkItemProvider.GitHub);
 
         (await import.Should().ThrowAsync<DomainValidationException>()).Which.Message
-            .Should().Contain("'In Review'");
+            .Should().Contain("'In Review (unknown)'");
     }
 
     [Fact]
@@ -124,7 +127,7 @@ public sealed class WorkItemImporterTests
 
         (await import.Should().ThrowAsync<DomainValidationException>()).Which.Message
             .Should().NotContain("\u001b").And.NotContain("\r")
-            .And.Contain("'in [2Jreview approved'", "the words are still the source's own");
+            .And.Contain("'in [2Jreview approved (unknown)'", "the words are still the source's own");
     }
 
     [Fact]
