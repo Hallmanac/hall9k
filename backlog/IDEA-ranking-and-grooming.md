@@ -176,6 +176,27 @@ Scope it plainly:
 - the **invite flow** adds one
 - **members are equal** — no roles, no permissions
 
+### Closeout authority is the task owner's (ruled 2026-08-22, Brian)
+
+A standing constraint on this slice, recorded before any second member exists so it is
+never discovered by incident. Members are equal *for claiming work*; they are not equal
+for finishing it. Three moments, three different treatments:
+
+- **Approval, by anyone, is eligibility and nothing more.** The closeout monitor should
+  observe approvals (it reads none today) and surface "approved, eligible for completion"
+  on the attention surface for the task's owner. An approval never advances state, never
+  merges, never closes anything out.
+- **Completion is the owner's act, expressed by the owner merging.** The pull request
+  sits eligible until the human who owns the task decides to complete it or do something
+  else. The platform's expected path stays exactly what it is today: merge is a human
+  act, and the monitor observes it.
+- **A merge by a non-owner** (GitHub cannot prevent a member with write access from
+  merging) is still a fact and is still recorded — never-guess cuts both ways — but the
+  closeout effects (Done, the Jira comment, finished-business standing) park as attention
+  for the owner to confirm rather than firing automatically. *Open sub-question, deferred
+  to when this is built:* whether the dependency chain releases on the merge fact (the
+  code the dependents need is in main) or also waits for the owner's confirmation.
+
 ### On roles
 
 Explored and deliberately deferred. Two distinct axes came out of it, worth recording so
