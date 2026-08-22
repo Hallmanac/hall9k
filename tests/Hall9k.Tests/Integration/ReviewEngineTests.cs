@@ -27,7 +27,7 @@ namespace Hall9k.Tests.Integration;
 
 /// <summary>
 /// The pre-PR review loop (Decisions Log #23) against a real store with the executor
-/// seam scripted: a cycle runs every still-active track (log #59, #61), merge-ready proceeds
+/// seam scripted: a cycle runs every still-active track (log #59, #62), merge-ready proceeds
 /// only when every track has concluded, needs-fixes drives one fix → gates → a fresh pass per
 /// live track, a track that goes clean goes dormant while the other continues alone, a cap or
 /// a dispute or a missing verdict parks for the human, and a dead session fails the run
@@ -230,7 +230,7 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
 
     /// <summary>
     /// A track that comes back clean goes dormant and the other continues alone (Decisions Log
-    /// #61) — and it stays dormant through the other track's fix session, deliberately. The
+    /// #62) — and it stays dormant through the other track's fix session, deliberately. The
     /// review history has to teach which track earns its keep, which it only can if every
     /// recorded pass says which lens produced it (log #59).
     /// </summary>
@@ -278,7 +278,7 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
 
     /// <summary>
     /// Every finding's grade, scope tag, and disposition ride on the pass milestone (Decisions
-    /// Log #61), so "which severities forced which cycles, on which track" is a query over the
+    /// Log #62), so "which severities forced which cycles, on which track" is a query over the
     /// stream. The finding's own text stays an artifact (log #6).
     /// </summary>
     [Fact]
@@ -351,6 +351,63 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
     }
 
     /// <summary>
+    /// A routing that failed is deliberately offered again next cycle, so one defect can leave
+    /// two records on the stream: the attempt that created no draft, and the retry that did.
+    /// The settlement reports defects rather than records — "1 routed, 1 not routed" about a
+    /// single exported defect sends a human looking for one that lives nowhere but this stream.
+    /// </summary>
+    [Fact]
+    public async Task A_routing_that_failed_and_later_succeeded_settles_as_one_routed_defect()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        using DocumentStore store = NewStore();
+        (Guid taskId, Guid runId, _) = await SeedVerifiedRunAsync(store, cts.Token);
+
+        const string preExisting = "FINDING: severity=medium; scope=out-of-scope; at=Legacy.cs:12\n"
+            + "Defect: the retry duplicates the effect. Scenario: a transient failure charges twice.";
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            // An adopted run whose first cycle reported this line and could not write its draft
+            // bug task: the store was unreachable, so the finding is recorded as routed-and-failed
+            // and no draft exists for it.
+            session.Events.Append(runId,
+                new ReviewPassCompleted(runId, 1, ReviewLens.Conformance, ReviewVerdict.MergeReady, Now, []),
+                new ReviewPassCompleted(runId, 1, ReviewLens.Adversarial, ReviewVerdict.NeedsFixes, Now,
+                [
+                    new ReviewFindingRecord(ReviewSeverity.Medium, ReviewFindingScope.OutOfScope,
+                        "Legacy.cs:12", ReviewFindingDisposition.Route),
+                ]),
+                new ReviewFindingRouted(runId, ReviewLens.Adversarial, 1, ReviewSeverity.Medium,
+                    "Legacy.cs:12", null, "the draft bug task could not be stored", Now),
+                new ReviewCompleted(runId, 1, ReviewVerdict.NeedsFixes, Now),
+                new ReviewTrackConcluded(runId, ReviewLens.Conformance, 1, ReviewSettlement.Clean, [], Now),
+                new ReviewFixDispatched(runId, DomainId.New(), 1, 5_300, Now, Now, AgentModel.Sonnet),
+                new ReviewFixCompleted(runId, 1, ReviewFixOutcome.Fixed, Now));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        ScriptedExecutor executor = new(
+            // The next cycle's reviewer reports the untouched legacy line again, and this time
+            // the routing succeeds — the retry the failed disposition exists to allow.
+            $"{preExisting}\n\nVERDICT: needs-fixes",
+            "Nothing new survived verification.\n\nVERDICT: merge-ready");
+        bool mergeReady = await NewEngine(store, executor).ReviewAsync(runId, taskId, cts.Token);
+
+        mergeReady.Should().BeTrue();
+
+        await using IQuerySession query = store.QuerySession();
+        List<object> events = [.. (await query.Events.FetchStreamAsync(runId, token: cts.Token)).Select(e => e.Data)];
+        events.OfType<ReviewFindingRouted>().Should().HaveCount(2,
+            "both attempts happened, and the stream records what happened rather than what it wishes had");
+        events.OfType<ReviewFindingRouted>().Last().DraftTaskId.Should().NotBeNull("the retry created the draft");
+
+        ReviewSettled settled = events.OfType<ReviewSettled>().Should().ContainSingle().Subject;
+        settled.ResidualsRouted.Should().Be(1, "one defect was exported, on the second attempt");
+        settled.ResidualsRoutingFailed.Should().Be(0,
+            "the draft the first attempt could not write exists, so nothing survives only in this stream");
+    }
+
+    /// <summary>
     /// A pre-lens run adopted mid-review: its one lens-less pass covers the conformance track,
     /// and the cycle is topped up with an adversarial one. The lens-less pass must keep reading
     /// back its OWN findings, so it files them under a name of its own rather than the merged
@@ -414,7 +471,7 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
     }
 
     /// <summary>
-    /// The severity gate (Decisions Log #61). Cycle 1 is ungated, so a medium forces cycle 2;
+    /// The severity gate (Decisions Log #62). Cycle 1 is ungated, so a medium forces cycle 2;
     /// cycle 2 is gated here, so its mediums are fixed and the loop ends without another review
     /// pass. That is deliberate, and the residual record is what keeps it honest: the verdict
     /// stays MergeReady, and the settlement says it was Settled rather than Clean.
@@ -468,7 +525,7 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
     }
 
     /// <summary>
-    /// An out-of-scope non-High is not this pull request's work (Decisions Log #61): the daemon
+    /// An out-of-scope non-High is not this pull request's work (Decisions Log #62): the daemon
     /// turns it into a draft bug task carrying the provenance the observation-gates doctrine
     /// asks for, and the merged findings tell the fix session to leave it alone.
     /// </summary>
@@ -525,7 +582,7 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
     }
 
     /// <summary>
-    /// The empty terminal case (Decisions Log #61): a cycle whose findings all route away leaves
+    /// The empty terminal case (Decisions Log #62): a cycle whose findings all route away leaves
     /// nothing anywhere to fix, so no fix session runs and the run settles. Re-reviewing would
     /// read the identical tip and return the identical findings, which is a loop with no exit
     /// rather than convergence — and here it is the run, not one track's convergence rule, that
@@ -562,7 +619,7 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
 
     /// <summary>
     /// The same cycle with the other track still live is not the empty terminal case at all
-    /// (Decisions Log #61): the conformance track forces a fix session that rewrites the branch,
+    /// (Decisions Log #62): the conformance track forces a fix session that rewrites the branch,
     /// so the adversarial track has something new to read and stays alive to read it. Retiring
     /// it at cycle one over an out-of-scope medium would leave the fix commits reviewed by
     /// nobody — a dormant track is deliberately never reawakened — and the fix commits are
@@ -611,7 +668,7 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
     /// A routed defect is deliberately left in the tree — the fix session is told to leave it
     /// alone — and every later reviewer has fresh context, so the same pre-existing line comes
     /// back for as long as anything else keeps the loop alive. It is exported once (Decisions
-    /// Log #61): one draft, one routing event, one residual. Otherwise a single defect becomes
+    /// Log #62): one draft, one routing event, one residual. Otherwise a single defect becomes
     /// a draft per cycle and "3 routed" on the line a human reads to decide how much to trust
     /// the pull request.
     /// </summary>
@@ -644,13 +701,13 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
         run.ReviewResidualsRouted.Should().Be(1, "one exported defect is one residual, however often it is reported");
 
         string merged = File.ReadAllText(RunPaths.ReviewFindingsFile(runId, 2));
-        merged.Should().Contain("already routed to a draft bug task by an earlier cycle of this run",
-            "the fix session is still told the defect is not its work");
+        merged.Should().Contain("already routed to a draft bug task by cycle 1 of this run",
+            "the fix session is still told the defect is not its work, and by which cycle it was observed to leave");
     }
 
     /// <summary>
     /// Every cycle's reviewer is a fresh session writing the location in its own hand, so the
-    /// once-per-run check compares places rather than strings (Decisions Log #61): `Legacy.cs:12`
+    /// once-per-run check compares places rather than strings (Decisions Log #62): `Legacy.cs:12`
     /// and `./src/Legacy.cs:12` are one defect written twice, and matching them as strings would
     /// hand a human two inert drafts and a residual tally claiming two exported defects.
     /// </summary>
@@ -681,6 +738,77 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
 
         RunDetails run = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
         run.ReviewResidualsRouted.Should().Be(1);
+    }
+
+    /// <summary>
+    /// The once-per-run check compares places, and a file with no line on it is not a place
+    /// (Decisions Log #62). Two different pre-existing defects in one legacy file, neither of
+    /// which the reviewer put a line number on, are two defects: reading them as one would route
+    /// the first, tell the fix session to leave the second alone as somebody else's work, and
+    /// leave that second defect recorded nowhere but the cycle's artifact file. The duplicate
+    /// draft the other reading risks is inert and a human discards it in a moment; a defect
+    /// routed away from the pull request and written down nowhere is gone for good.
+    /// </summary>
+    [Fact]
+    public async Task Two_defects_in_one_file_that_neither_names_a_line_are_two_defects()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        using DocumentStore store = NewStore();
+        (Guid taskId, Guid runId, _) = await SeedVerifiedRunAsync(store, cts.Token);
+
+        ScriptedExecutor executor = new(
+            "Criteria met.\n\nVERDICT: merge-ready",
+            "FINDING: severity=medium; scope=out-of-scope; at=src/Legacy.cs\n"
+            + "Defect: the retry duplicates the effect. Scenario: a transient failure charges twice.\n\n"
+            + "FINDING: severity=low; scope=out-of-scope; at=src/Legacy.cs\n"
+            + "Defect: the log line prints the token. Scenario: a support bundle carries a live credential.\n\n"
+            + "VERDICT: needs-fixes");
+        bool mergeReady = await NewEngine(store, executor).ReviewAsync(runId, taskId, cts.Token);
+
+        mergeReady.Should().BeTrue();
+
+        await using IQuerySession query = store.QuerySession();
+        List<object> events = [.. (await query.Events.FetchStreamAsync(runId, token: cts.Token)).Select(e => e.Data)];
+        List<ReviewFindingRouted> routed = [.. events.OfType<ReviewFindingRouted>()];
+        routed.Should().HaveCount(2, "two defects the reviewer never placed on a line are two defects");
+        routed.Should().OnlyContain(entry => entry.DraftTaskId != null, "each one is its own draft bug task");
+
+        RunDetails run = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
+        run.ReviewResidualsRouted.Should().Be(2, "the human is told how many defects left this pull request");
+    }
+
+    /// <summary>
+    /// Both tracks read the same tip, so both report the same pre-existing line in the cycle
+    /// they share. That is agreement rather than two defects, so it is exported once — and the
+    /// merged document says which cycle exported it rather than asserting an earlier cycle that
+    /// may not exist (AGENTS.md: never guess at unobserved facts). The disposition line is what
+    /// a human reads at a park and what the fix session is steered by, so a provenance claim in
+    /// it has to be one the platform actually observed.
+    /// </summary>
+    [Fact]
+    public async Task Both_tracks_reporting_one_place_in_one_cycle_export_it_once_and_say_which_cycle()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        using DocumentStore store = NewStore();
+        (Guid taskId, Guid runId, _) = await SeedVerifiedRunAsync(store, cts.Token);
+
+        const string preExisting = "Defect: the retry duplicates the effect. Scenario: a transient failure charges twice.";
+        ScriptedExecutor executor = new(
+            $"FINDING: severity=medium; scope=out-of-scope; at=src/Legacy.cs:12\n{preExisting}\n\nVERDICT: needs-fixes",
+            $"FINDING: severity=medium; scope=out-of-scope; at=./Legacy.cs:12\n{preExisting}\n\nVERDICT: needs-fixes");
+        bool mergeReady = await NewEngine(store, executor).ReviewAsync(runId, taskId, cts.Token);
+
+        mergeReady.Should().BeTrue();
+
+        await using IQuerySession query = store.QuerySession();
+        List<object> events = [.. (await query.Events.FetchStreamAsync(runId, token: cts.Token)).Select(e => e.Data)];
+        events.OfType<ReviewFindingRouted>().Should().ContainSingle(
+            "one place two tracks named in one cycle is one exported defect");
+
+        string merged = File.ReadAllText(RunPaths.ReviewFindingsFile(runId, 1));
+        merged.Should().Contain("already routed to a draft bug task earlier in this cycle")
+            .And.NotContain("by an earlier cycle",
+                "there is no earlier cycle here, and the disposition may not claim one");
     }
 
     /// <summary>
@@ -720,7 +848,7 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
     }
 
     /// <summary>
-    /// The adversarial cap is not a spent budget (Decisions Log #61): reaching it means the
+    /// The adversarial cap is not a spent budget (Decisions Log #62): reaching it means the
     /// machine kept finding real high-severity problems, and the park reason says exactly that
     /// so the human knows what they are being asked to look at.
     /// </summary>
@@ -754,7 +882,7 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
 
     /// <summary>
     /// The conformance track grades nothing, so its bound is simply how many times a machine
-    /// may be told the same thing (Decisions Log #61). Still returning findings at its cap parks
+    /// may be told the same thing (Decisions Log #62). Still returning findings at its cap parks
     /// the run, and the reason says why: nothing automated is left to try.
     /// </summary>
     [Fact]
