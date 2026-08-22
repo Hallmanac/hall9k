@@ -462,8 +462,10 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
 
     /// <summary>
     /// The empty terminal case (Decisions Log #61): a cycle whose findings all route away leaves
-    /// nothing to fix, so no fix session runs. Re-reviewing would read the identical tip and
-    /// return the identical findings, which is a loop with no exit rather than convergence.
+    /// nothing anywhere to fix, so no fix session runs and the run settles. Re-reviewing would
+    /// read the identical tip and return the identical findings, which is a loop with no exit
+    /// rather than convergence — and here it is the run, not one track's convergence rule, that
+    /// closes it: with no track owed a fix, the phase derives Settling whatever the tracks said.
     /// </summary>
     [Fact]
     public async Task A_cycle_whose_findings_all_route_away_ends_the_loop_with_no_fix_session()
@@ -492,6 +494,53 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
         List<object> events = [.. (await query.Events.FetchStreamAsync(runId, token: cts.Token)).Select(e => e.Data)];
         events.OfType<ReviewFixDispatched>().Should().BeEmpty();
         events.OfType<ReviewFindingRouted>().Should().HaveCount(2);
+    }
+
+    /// <summary>
+    /// The same cycle with the other track still live is not the empty terminal case at all
+    /// (Decisions Log #61): the conformance track forces a fix session that rewrites the branch,
+    /// so the adversarial track has something new to read and stays alive to read it. Retiring
+    /// it at cycle one over an out-of-scope medium would leave the fix commits reviewed by
+    /// nobody — a dormant track is deliberately never reawakened — and the fix commits are
+    /// where PR #21's two regressions came from. The acceptance criteria put the empty terminal
+    /// case at cycle four onward for exactly this reason.
+    /// </summary>
+    [Fact]
+    public async Task A_routing_only_cycle_keeps_the_track_alive_while_the_other_one_rewrites_the_branch()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        using DocumentStore store = NewStore();
+        (Guid taskId, Guid runId, _) = await SeedVerifiedRunAsync(store, cts.Token);
+
+        ScriptedExecutor executor = new(
+            "The third acceptance criterion is not met.\n\nVERDICT: needs-fixes",
+            "FINDING: severity=medium; scope=out-of-scope; at=Legacy.cs:12\nDefect: pre-existing, and real.\n\n"
+            + "VERDICT: needs-fixes",
+            "Met the criterion; left the pre-existing one alone.\n\nRESOLUTION: fixed",
+            "Criteria met now.\n\nVERDICT: merge-ready",
+            "Read the fix commits too; nothing survived verification.\n\nVERDICT: merge-ready");
+        bool mergeReady = await NewEngine(store, executor).ReviewAsync(runId, taskId, cts.Token);
+
+        mergeReady.Should().BeTrue();
+
+        await using IQuerySession query = store.QuerySession();
+        List<object> events = [.. (await query.Events.FetchStreamAsync(runId, token: cts.Token)).Select(e => e.Data)];
+        events.OfType<ReviewDispatched>().Select(dispatched => (dispatched.Cycle, dispatched.Lens)).Should().Equal(
+            [
+                (1, ReviewLens.Conformance),
+                (1, ReviewLens.Adversarial),
+                (2, ReviewLens.Conformance),
+                (2, ReviewLens.Adversarial),
+            ], "the adversarial track had routed, not finished — it still owes the rewritten tip a reading");
+        events.OfType<ReviewTrackConcluded>().Should().NotContain(
+            concluded => concluded.Lens == ReviewLens.Adversarial && concluded.Cycle == 1,
+            "a cycle that only routed is not a track's ending before the severity gate applies");
+        events.OfType<ReviewFindingRouted>().Should().ContainSingle(
+            "the pre-existing defect is exported once, however many cycles report it");
+
+        RunDetails run = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
+        run.ReviewSettlement.Should().Be(ReviewSettlement.Settled, "a routed defect leaves a residual behind");
+        run.ReviewResidualsRouted.Should().Be(1);
     }
 
     /// <summary>

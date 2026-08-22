@@ -3,7 +3,7 @@ using Hall9k.Domain.Features.Run;
 namespace Hall9k.Daemon.Review;
 
 /// <summary>
-/// What one review track does with the cycle it just finished (Decisions Log #61). This is the
+/// What one review track does with the cycle it just finished (Decisions Log #62). This is the
 /// convergence rule in one place, kept out of the aggregate (deciders own the judgment, the
 /// aggregate records it) and out of the engine (which owns dispatching, waiting, and writing
 /// the stream).
@@ -35,11 +35,20 @@ public static class ReviewTrackPolicy
     /// A clean verdict ends the track; otherwise the findings split into what this pull request
     /// fixes and what routes away, and whether anything left forces another cycle.
     /// <para>
-    /// A needs-fixes verdict with nothing left to fix ends the track as settled, at every cycle
-    /// and not only past the gate. The alternative is a loop with no exit: nothing was changed,
-    /// so a fresh reviewer would read the identical tip and return the identical findings until
-    /// the cap parked a run over defects it had already routed away. The acceptance criteria
-    /// name this case for cycle four onward; it is the same case earlier, and the same answer.
+    /// A needs-fixes verdict with nothing left to fix ends the track as settled — the empty
+    /// terminal case — and only <b>from the gate cycle</b>, which is where the acceptance
+    /// criteria put it. Before the gate, every stated finding keeps the track alive, a routed
+    /// one included: ending there would retire the track over a tip it is about to stop
+    /// recognizing, because the OTHER track can still be forcing fix sessions that rewrite the
+    /// branch, and a dormant track is deliberately never reawakened. That is how a lens ends up
+    /// having never read the fix commits, which is where PR #21's two regressions came from.
+    /// </para>
+    /// <para>
+    /// This cannot loop forever on an unchanged tip. A cycle where nothing at all is left to fix
+    /// derives <c>ReviewPhase.Settling</c> (<c>RunAggregate.DeriveReviewPhase</c>) and the run
+    /// settles whatever this decided, so "continues" only ever means "look again at what the
+    /// other track's fix session changes" — and if nothing changes it, there is nothing to look
+    /// at and the loop is already over.
     /// </para>
     /// <para>
     /// The residuals a plan carries are only the fixed-unreviewed half. A routed finding leaves
@@ -67,9 +76,10 @@ public static class ReviewTrackPolicy
         List<ReviewFinding> fix = [.. stated.Where(finding => finding.IsFixedHere)];
         List<ReviewFinding> route = [.. stated.Where(finding => !finding.IsFixedHere)];
         bool gated = GateApplies(lens, cycle, options);
-        bool forcesAnotherCycle = gated
-            ? fix.Any(finding => finding.Severity.ForcesAnotherCycle)
-            : fix.Count > 0;
+        // Before the gate, a needs-fixes verdict always runs the track again: every finding of
+        // every grade forces the next cycle, and a cycle that only routed still leaves the
+        // track owed a look at whatever the other track's fix session does to the branch.
+        bool forcesAnotherCycle = !gated || fix.Any(finding => finding.Severity.ForcesAnotherCycle);
 
         return forcesAnotherCycle
             ? new ReviewTrackPlan(lens, Continues: true, Settlement: null, fix, route, [])

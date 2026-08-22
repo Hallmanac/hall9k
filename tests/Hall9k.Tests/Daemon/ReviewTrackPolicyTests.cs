@@ -7,7 +7,7 @@ using Xunit;
 namespace Hall9k.Tests.Daemon;
 
 /// <summary>
-/// The twin-track convergence rules (Decisions Log #61), as the pure decider behind them:
+/// The twin-track convergence rules (Decisions Log #62), as the pure decider behind them:
 /// compliance ends clean or parks at its cap, adversarial runs under the severity gate, and
 /// scope decides where a fix lives rather than how much it matters.
 /// </summary>
@@ -101,14 +101,15 @@ public sealed class ReviewTrackPolicyTests
     }
 
     /// <summary>
-    /// The empty terminal case. Nothing was fixed, so nothing changed, so a fresh reviewer would
-    /// read the identical tip and return the identical findings — the track ends instead, with
-    /// the routing recorded.
+    /// The empty terminal case, which the acceptance criteria place from cycle four onward:
+    /// past the gate, nothing was fixed, so nothing changed, so a fresh reviewer would read the
+    /// identical tip and return the identical findings — the track ends instead, with the
+    /// routing recorded.
     /// </summary>
     [Theory]
-    [InlineData(1)]
+    [InlineData(4)]
     [InlineData(5)]
-    public void A_cycle_whose_findings_all_route_away_ends_the_track_with_no_fix_session(int cycle)
+    public void Past_the_gate_a_cycle_whose_findings_all_route_away_ends_the_track(int cycle)
     {
         ReviewTrackPlan plan = Decide(
             ReviewLens.Adversarial, cycle, ReviewVerdict.NeedsFixes,
@@ -121,6 +122,30 @@ public sealed class ReviewTrackPolicyTests
         plan.Route.Should().HaveCount(2);
         plan.Residuals.Should().BeEmpty(
             "a routed finding's residual is written by the routing event, in the cycle it was routed in");
+    }
+
+    /// <summary>
+    /// Before the gate the same cycle keeps the track alive, because the tip is not the fixed
+    /// point it is past the gate: the other track can still be forcing fix sessions that
+    /// rewrite the branch, and a track retired at cycle one is deliberately never reawakened —
+    /// so it would never read the fix commits, which is where PR #21's two regressions came
+    /// from. It cannot spin on an unchanged tip either: with nothing anywhere left to fix the
+    /// run derives Settling and ends whatever this track said.
+    /// </summary>
+    [Theory]
+    [InlineData(1)]
+    [InlineData(3)]
+    public void Before_the_gate_a_cycle_whose_findings_all_route_away_keeps_the_track_alive(int cycle)
+    {
+        ReviewTrackPlan plan = Decide(
+            ReviewLens.Adversarial, cycle, ReviewVerdict.NeedsFixes,
+            Finding(ReviewSeverity.Medium, ReviewFindingScope.OutOfScope, "Old.cs:1"));
+
+        plan.Continues.Should().BeTrue();
+        plan.Settlement.Should().BeNull("a track that runs again has not ended");
+        plan.Fix.Should().BeEmpty("nothing here is this pull request's work");
+        plan.Route.Should().ContainSingle();
+        plan.Residuals.Should().BeEmpty();
     }
 
     /// <summary>

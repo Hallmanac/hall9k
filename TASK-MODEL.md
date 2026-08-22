@@ -762,7 +762,11 @@ Conformance grades nothing and ends the moment it is clean; still returning find
 Adversarial runs under a **severity gate**: through
 `AdversarialSeverityGateFromCycle - 1` any finding of any grade forces the next cycle, and
 from the gate cycle onward only a `high` does — mediums and lows are still fixed, they
-just stop re-triggering the loop. Its cap is `MaxAdversarialReviewCycles` (10), and highs
+just stop re-triggering the loop. The **empty terminal case** (a cycle whose findings all
+route away, so nothing is left to fix) ends the track from the gate cycle too, and not
+before it: while the other track can still rewrite the branch, a track retired early would
+never read the fix commits. It cannot spin on an unchanged tip, because a cycle with nothing
+anywhere left to fix derives `Settling` and ends the run whatever the track decided. Its cap is `MaxAdversarialReviewCycles` (10), and highs
 still appearing there park the run as "the machine kept finding real problems", not as a
 spent budget. A track that concludes goes dormant and is deliberately never reawakened by
 the other track's fix sessions.
