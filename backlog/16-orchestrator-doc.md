@@ -31,6 +31,11 @@ Design constraints:
 
 ## Post-queue note (Brian + orchestrator session, 2026-08-21 - the queued agent has the frozen snapshot; reconcile at PR review)
 
+AMENDED 2026-08-22: the ClosingOut-to-FollowingUp display rename in this task's
+criteria is SUPERSEDED by backlog 41 (the status redesign dissolves that display
+bucket into a phase line) - at PR review, drop that criterion rather than renaming
+a thing 41 deletes. The RunSuperseded rename below stays parked as written.
+
 The RunSuperseded status joins the FollowingUp vocabulary family: rename to
 FollowedUp (event RunFollowedUp), meaning a completed run that is no longer the
 run of record because a follow-up run was dispatched for its task. "Superseded"

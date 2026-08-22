@@ -25,14 +25,15 @@ Settled in the sitting:
   observation, not new events. If a phase cannot be observed it says so rather than
   guessing (never-guess applies to liveness too).
 
-Relationships to settle at refinement (flagged, not decided):
-- Backlog 28 (needs-human reasons): this task's attention surface IS 28's content -
-  decide whether 28 is absorbed here (mark superseded) or lands first and this builds
-  on it. Absorbing avoids two rewrites of the same composer.
-- Backlog 16's post-queue renames (ClosingOut to FollowingUp, RunSuperseded to
-  FollowedUp): the phase line supersedes the first rename entirely (the bucket
-  dissolves); reconcile 16's note so the queued agent does not rename a thing this
-  task deletes.
+Relationships (decided at review, Brian, 2026-08-22):
+- Backlog 28 (needs-human reasons) is ABSORBED here: its criteria - the one-line
+  cause and lever from recorded facts, the required reason at every decider, the
+  waiting-but-handled distinction, one composer owning the mapping - are part of
+  this task's attention surface. 28's file stays as the origin record, marked
+  absorbed; it is never queued separately.
+- Backlog 16's post-queue note is amended: the ClosingOut-to-FollowingUp rename is
+  superseded (the phase line dissolves that bucket entirely); the RunSuperseded-to-
+  FollowedUp persisted rename half stays parked in 16's note, unchanged.
 - Backlog 33 (Archived rename) stays its own persisted-vocabulary task; this task
   displays whichever word the stream currently records.
 - Backlog 36 (token lines) composes into task show beside the phase line; keep the

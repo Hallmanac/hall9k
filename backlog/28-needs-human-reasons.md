@@ -25,3 +25,7 @@ Design constraints:
   records, QuestionAsked). This task is about surfacing, not capturing.
 - Keep the one-line discipline ruthlessly: the full text stays available in task
   show's attention section; status gets the compressed cause + lever only.
+
+# ABSORBED (2026-08-22): this task's criteria are part of backlog 41's attention
+# surface (the status redesign) and land there - one composer, written once. This
+# file stays as the origin record; do not queue it separately.
