@@ -49,12 +49,31 @@ public static class ReviewDraftBugTask
             addedAt,
             ownerId);
 
+    /// <summary>
+    /// The draft's headline, composed from the reviewer's own words and then defused the way
+    /// every other stored objective seeded from text Hall9k did not author is defused
+    /// (<c>TaskAddCommand.ObjectiveSeed</c>): folded onto one line of printable text, with its
+    /// closing keywords wrapped so they cannot act.
+    /// <para>
+    /// It happens here, at the seed, rather than only where the objective is rendered, for the
+    /// reason that seam carries: an objective is a line in every agent prompt
+    /// (<c>AgentPromptBuilder</c>), an agent naturally opens its first commit with its task's
+    /// headline, and this repository merges fast-forward — so a finding whose prose quoted
+    /// "Closes #500" would close issue 500 when the draft's own branch merged, with the
+    /// platform having written none of it. The daemon's sinks do not cover the gap: the pull
+    /// request's title and body are defused on the way out and the CLI defuses at display, but
+    /// the prompt writes the objective verbatim. That a review agent wrote the text rather than
+    /// a stranger on the issue tracker is not the distinction this repo draws — the pull
+    /// request body already relays an agent's own summary through the same rule.
+    /// </para>
+    /// </summary>
     private static string Objective(ReviewFinding finding)
     {
         string defect = Excerpt(finding);
-        return finding.Location.IsBlank()
+        string objective = finding.Location.IsBlank()
             ? $"Fix a pre-existing defect found by a pre-PR review: {defect}"
             : $"Fix the pre-existing defect at {finding.Location}: {defect}";
+        return RelayedText.WithoutClosingKeywords(RelayedText.OneLine(objective).Trim());
     }
 
     /// <summary>
@@ -78,7 +97,9 @@ public static class ReviewDraftBugTask
                 && !candidate.StartsWith(ReviewResultParser.FindingMarker, StringComparison.OrdinalIgnoreCase));
 
         string text = line.IsBlank() ? "see the finding recorded in the agent context" : line;
-        return RelayedText.Truncate(text, ObjectiveExcerptLength);
+        // Folded to one line before the bound is applied, so the bound counts the characters
+        // that will actually be stored rather than ones Printable is about to drop.
+        return RelayedText.Truncate(RelayedText.OneLine(text), ObjectiveExcerptLength);
     }
 
     private static string AgentContext(

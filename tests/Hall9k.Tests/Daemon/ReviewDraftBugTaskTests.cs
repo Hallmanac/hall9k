@@ -135,6 +135,54 @@ public sealed class ReviewDraftBugTaskTests
             "the finding still travels verbatim — it is quoted, not edited");
     }
 
+    /// <summary>
+    /// The objective is seeded from a reviewer's prose, so it is defused at the seed exactly as
+    /// an adopted issue title is (<c>TaskAddCommand.ObjectiveSeed</c>). An objective is a line
+    /// in every agent prompt, an agent opens its first commit with its task's headline, and
+    /// this repository merges fast-forward — so a keyword left live here closes an issue
+    /// nobody meant to close when the draft's own branch merges. That the text came from our
+    /// own review agent is not the distinction this repo draws: the pull request body already
+    /// relays an agent's own summary through the same rule.
+    /// </summary>
+    [Fact]
+    public void A_closing_keyword_in_the_finding_is_dead_by_the_time_it_is_an_objective()
+    {
+        ReviewFinding finding = new(
+            ReviewSeverity.Medium, ReviewFindingScope.OutOfScope, "Legacy.cs:12",
+            "FINDING: severity=medium; scope=out-of-scope; at=Legacy.cs:12\n"
+            + "Defect: the body says Closes #500, so merging closes the wrong issue.");
+
+        string objective = Compose(DomainId.New(), Origin(), finding).Objective;
+
+        objective.Should().Contain("Closes `#500`",
+            "the reference is wrapped so it reads as prose and cannot act");
+        objective.Should().NotContain("Closes #500");
+    }
+
+    /// <summary>
+    /// A lone carriage return is not a line break: it returns the cursor to column zero, so an
+    /// objective carrying one can overwrite the line printed above it wherever it is shown.
+    /// Splitting on '\n' and trimming strips one only at a line's end, which is why the seed
+    /// folds the whole line rather than trusting the parser's split. It is dropped rather than
+    /// turned into a space, which is <c>RelayedText.Printable</c>'s rule for every character
+    /// that acts instead of reading.
+    /// </summary>
+    [Fact]
+    public void A_control_character_inside_the_finding_never_reaches_the_stored_objective()
+    {
+        ReviewFinding finding = new(
+            ReviewSeverity.Low, ReviewFindingScope.OutOfScope, "Legacy.cs:12",
+            "FINDING: severity=low; scope=out-of-scope; at=Legacy.cs:12\n"
+            + "Defect: the retry duplicates\rthe effect\u001b[2K.");
+
+        string objective = Compose(DomainId.New(), Origin(), finding).Objective;
+
+        objective.Should().NotContain("\r", "a lone carriage return overwrites the line above it")
+            .And.NotContain("\u001b", "an escape sequence repaints whatever is around it");
+        objective.Should().Contain("the retry duplicates").And.Contain("the effect",
+            "only the characters that act are dropped; the reviewer's words are untouched");
+    }
+
     private static TaskAdded Compose(
         Guid draftTaskId, TaskDetails origin, ReviewFinding finding, Guid? runId = null) =>
         ReviewDraftBugTask.Compose(
