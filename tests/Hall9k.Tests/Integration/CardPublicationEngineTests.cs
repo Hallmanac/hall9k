@@ -763,6 +763,75 @@ public sealed class CardPublicationEngineTests(PostgresFixture postgres) : IClas
             .And.Contain("nobody here intends to do", "the refusal says what it was protecting against");
     }
 
+    /// <summary>
+    /// The card says what the task says at the moment the session is dispatched, not what it said
+    /// when the sweep began. A sweep reads its pending requests once and then works through them one
+    /// at a time, each publication blocking on an agent session for up to the publication timeout, so
+    /// a later request can sit for many minutes before its turn — and a task is published from Draft,
+    /// which is the one state h9k task revise edits. Origin incident (2026-08-22): the pre-PR review
+    /// of this branch found the prompt built from the sweep's opening snapshot while every guard
+    /// beside it re-read the aggregate, so a task revised during an earlier session would have had its
+    /// card written from a contract it no longer carried, with nothing downstream to catch it:
+    /// h9k task link-jira verifies that the card exists, never that it matches the task.
+    /// </summary>
+    [Fact]
+    public async Task A_task_revised_while_an_earlier_publication_ran_is_written_up_as_it_now_stands()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        using DocumentStore store = NewStore();
+        NodeContext node = await NewNodeAsync(store, cts.Token);
+        Guid first = await SeedAsync(store, node, cts.Token);
+        Guid second = await SeedAsync(store, node, cts.Token, requestedAt: Now.AddMinutes(1));
+
+        // The owner revises the second task while the first one's session is still running, which is
+        // the window the sweep's serial processing opens.
+        int revised = 0;
+        FakeProcessManager processes = new();
+        ScriptedSession session = new(
+            "Created PROJ-123.", processes, store, first, async () =>
+            {
+                if (Interlocked.Exchange(ref revised, 1) == 0)
+                {
+                    await ReviseAsync(
+                        store, second, "Rewrite the exporter", ["The rewritten criterion"], cts.Token);
+                }
+            });
+
+        await NewEngine(store, node, session, processes).PollOnceAsync(cts.Token);
+
+        session.Failure.Should().BeNull("the scripted revision is what the prompt below is read against");
+        session.Spawns.Should().HaveCount(2, "both requests were the sweep's to run, oldest first");
+        session.Spawns[1].Prompt.Should()
+            .Contain("Rewrite the exporter", "the card is written from the objective the task carries now")
+            .And.Contain("The rewritten criterion")
+            .And.NotContain("Publish me", "the pre-revision contract is not what anybody asked for a card about")
+            .And.NotContain("A criterion");
+    }
+
+    /// <summary>What h9k task revise appends: a draft's contract, rewritten in place.</summary>
+    private static async Task ReviseAsync(
+        DocumentStore store,
+        Guid taskId,
+        string objective,
+        IReadOnlyList<string> criteria,
+        CancellationToken cancellationToken)
+    {
+        await using IDocumentSession session = store.LightweightSession();
+        TaskAggregate task = (await session.Events
+            .AggregateStreamAsync<TaskAggregate>(taskId, token: cancellationToken))!;
+        session.Events.Append(taskId, TaskDecider.Revise(
+            task,
+            Optional<string>.Of(objective),
+            Optional<IReadOnlyList<string>>.Of(criteria),
+            Optional<string>.None,
+            Optional<IReadOnlyList<Guid>>.None,
+            Optional<TaskType>.None,
+            Optional<AgentModel>.None,
+            Now,
+            task.AddedByOwnerId));
+        await session.SaveChangesAsync(cancellationToken);
+    }
+
     /// <summary>What h9k task abandon appends: the walk-away ending, mid-publication or not.</summary>
     private static async Task AbandonAsync(DocumentStore store, Guid taskId, CancellationToken cancellationToken)
     {
@@ -868,7 +937,8 @@ public sealed class CardPublicationEngineTests(PostgresFixture postgres) : IClas
         NodeContext node,
         CancellationToken cancellationToken,
         Guid? requestedBy = null,
-        string? repositoryPath = null)
+        string? repositoryPath = null,
+        DateTimeOffset? requestedAt = null)
     {
         Directory.CreateDirectory(_repository);
         Environment.SetEnvironmentVariable(TokenVariable, "a-token");
@@ -895,7 +965,7 @@ public sealed class CardPublicationEngineTests(PostgresFixture postgres) : IClas
         TaskAggregate task = new();
         task.Apply(added);
         WorkItemPublicationRequested requested = TaskDecider.RequestWorkItemPublication(
-            task, WorkItemProvider.Jira, JiraProjectKey.Parse("PROJ"), Now, requestedBy ?? ownerId);
+            task, WorkItemProvider.Jira, JiraProjectKey.Parse("PROJ"), requestedAt ?? Now, requestedBy ?? ownerId);
         session.Events.StartStream<TaskAggregate>(taskId, added, requested);
 
         await session.SaveChangesAsync(cancellationToken);
