@@ -31,7 +31,7 @@ public sealed class ProjectSetCommand : Hall9kAsyncCommand<ProjectSetCommand.Set
         [CommandOption("--max-parallel <N>")]
         [Description(
             "How many of this project's agents may run at once (at least 1, default 3). The daemon "
-            + "currently enforces its node-wide cap (DaemonOptions.MaxConcurrentRuns); this per-project "
+            + "currently enforces its node-wide cap (DaemonOptions.MaxConcurrentAgentSessions); this per-project "
             + "ceiling is recorded and shown by h9k project show.")]
         public int? MaxParallelAgents { get; init; }
 

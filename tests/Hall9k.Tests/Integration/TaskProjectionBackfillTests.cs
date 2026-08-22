@@ -220,6 +220,6 @@ public sealed class TaskProjectionBackfillTests(PostgresFixture postgres) : ICla
 
     private DispatchEngine NewEngine(DocumentStore store, NodeContext node) =>
         new(store, node, new DaemonConnection(postgres.ConnectionString), new FakeProcessManager(),
-            Options.Create(new DaemonOptions { MaxConcurrentRuns = 10, LeaseTimeout = TimeSpan.FromSeconds(60) }),
+            Options.Create(new DaemonOptions { MaxConcurrentAgentSessions = 100, LeaseTimeout = TimeSpan.FromSeconds(60) }),
             NullLogger<DispatchEngine>.Instance);
 }

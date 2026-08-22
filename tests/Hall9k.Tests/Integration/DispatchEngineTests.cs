@@ -36,7 +36,12 @@ public sealed class DispatchEngineTests(PostgresFixture postgres) : IClassFixtur
         NodeContext node = new();
         await node.InitializeAsync(store, cts.Token);
 
-        DaemonOptions options = new() { MaxConcurrentRuns = 3, LeaseTimeout = TimeSpan.FromSeconds(60) };
+        // A cap of three runs, bought in the unit the setting is denominated in (log #64).
+        DaemonOptions options = new()
+        {
+            MaxConcurrentAgentSessions = 3 * NodeLoad.PeakAgentSessionsPerRun,
+            LeaseTimeout = TimeSpan.FromSeconds(60),
+        };
         DispatchEngine engine = new(
             store, node, new DaemonConnection(postgres.ConnectionString), new FakeProcessManager(),
             Options.Create(options), NullLogger<DispatchEngine>.Instance);
@@ -115,7 +120,7 @@ public sealed class DispatchEngineTests(PostgresFixture postgres) : IClassFixtur
         NodeContext node = new();
         await node.InitializeAsync(store, cts.Token);
 
-        DaemonOptions options = new() { MaxConcurrentRuns = 50, LeaseTimeout = TimeSpan.FromSeconds(60) };
+        DaemonOptions options = new() { MaxConcurrentAgentSessions = 500, LeaseTimeout = TimeSpan.FromSeconds(60) };
         DispatchEngine engine = new(
             store, node, new DaemonConnection(postgres.ConnectionString), new FakeProcessManager(),
             Options.Create(options), NullLogger<DispatchEngine>.Instance);
@@ -194,7 +199,7 @@ public sealed class DispatchEngineTests(PostgresFixture postgres) : IClassFixtur
 
         // A generous cap: this class shares one database, so other tests' queued work and
         // leases may be present — the assertions below target this task alone.
-        DaemonOptions options = new() { MaxConcurrentRuns = 50, LeaseTimeout = TimeSpan.FromSeconds(60) };
+        DaemonOptions options = new() { MaxConcurrentAgentSessions = 500, LeaseTimeout = TimeSpan.FromSeconds(60) };
         DispatchEngine engine = new(
             store, node, new DaemonConnection(postgres.ConnectionString), new FakeProcessManager(),
             Options.Create(options), NullLogger<DispatchEngine>.Instance);

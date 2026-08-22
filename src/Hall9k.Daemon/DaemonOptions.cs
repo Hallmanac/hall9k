@@ -8,8 +8,33 @@ public sealed class DaemonOptions
 {
     public const string SectionName = "Hall9k";
 
-    /// <summary>Node-level cap on simultaneously claimed/running tasks (PLAN.md §6.4 guidance).</summary>
-    public int MaxConcurrentRuns { get; set; } = 3;
+    /// <summary>
+    /// How many agent sessions this node may have resident at once (PLAN.md §6.4 guidance,
+    /// Decisions Log #64). Sessions rather than runs, because a session is the process the
+    /// machine runs out of memory for and a run tree is not one process: a review cycle spawns
+    /// every active lens together and waits on them together (log #59), so a run under review
+    /// is <c>ReviewLens.CycleLenses.Count</c> resident sessions. The dispatcher converts, in
+    /// <c>NodeLoad</c>: it claims in runs, because a run is the only thing it can decline to
+    /// start, and charges each live run the peak sessions its tree can hold. Everything past
+    /// the ceiling stays Queued and is claimed as slots free up.
+    /// <para>
+    /// A run gives its sessions back when its tree ends: completed, failed, parked, or handed
+    /// to a follow-up with nothing running. A task waiting on a merge observation holds no
+    /// memory and so holds nothing.
+    /// </para>
+    /// <para>
+    /// Configuration rather than a constant because the right number is a property of the
+    /// machine: the tower with the memory to hold six agent sessions and the laptop that
+    /// panicked at four are the same platform with different answers. The shipped default is
+    /// the count this machine was observed to carry, which on a two-lens review cycle means one
+    /// run at a time — deliberately, because the alternative is budgeting for the average and
+    /// discovering the peak the way the origin incident did. Origin incident (2026-08-21): an
+    /// OOM killed three of four concurrently dispatched agent sessions the first time the queue
+    /// went four wide, because the dispatcher claimed everything eligible and left the enforcing
+    /// to the machine.
+    /// </para>
+    /// </summary>
+    public int MaxConcurrentAgentSessions { get; set; } = 3;
 
     /// <summary>Fallback sweep interval; the doorbell usually wakes the loop sooner.</summary>
     public TimeSpan PollInterval { get; set; } = TimeSpan.FromSeconds(5);
