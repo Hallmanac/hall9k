@@ -6,6 +6,7 @@ using Hall9k.Daemon.Execution;
 using Hall9k.Daemon.ProcessManagement;
 using Hall9k.Daemon.Publication;
 using Hall9k.Domain.Features.Connection;
+using Hall9k.Domain.Features.Node;
 using Hall9k.Domain.Features.Project;
 using Hall9k.Domain.Features.Project.Handlers;
 using Hall9k.Domain.Features.Tasks;
@@ -393,6 +394,90 @@ public sealed class CardPublicationEngineTests(PostgresFixture postgres) : IClas
     }
 
     /// <summary>
+    /// The one stranding adoption cannot cover: a dispatch recorded against a node that never
+    /// comes back. Adoption is scoped to the node that spawned the session because a pid means
+    /// nothing off the machine that issued it, so a node identity that stops existing leaves the
+    /// task reading "a session is writing the card" with nothing able to clear it — the dispatch
+    /// sweep skips it, push-to-jira refuses while it is outstanding, link-jira needs a card key
+    /// that may not exist, and abandoning keeps the marker on purpose. Origin incident
+    /// (2026-08-22): the pre-PR review of this branch traced it from a machine rename, which gives
+    /// the same install a new node identity through NodeBootstrap's machine-name lookup.
+    /// </summary>
+    [Fact]
+    public async Task A_dispatch_belonging_to_a_node_that_never_came_back_is_ended_on_the_ceiling()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        using DocumentStore store = NewStore();
+        NodeContext node = await NewNodeAsync(store, cts.Token);
+        Guid taskId = await SeedAsync(store, node, cts.Token);
+        Guid gone = await ForeignNodeAsync(store, node, "the-old-machine-name", cts.Token);
+        await DispatchedAsync(
+            store, node, taskId, processId: 4242, cts.Token,
+            nodeId: gone, dispatchedAt: DateTimeOffset.UtcNow - TimeSpan.FromHours(2));
+
+        FakeProcessManager processes = new();
+        ScriptedSession session = new("Created PROJ-123.", processes);
+
+        CardPublicationSweepResult sweep = await NewEngine(store, node, session, processes)
+            .PollOnceAsync(cts.Token);
+
+        sweep.Expired.Should().Be(1, "it is counted apart from adoption: nobody watched that session, only a clock");
+        session.Spawns.Should().BeEmpty("the request is ended, not retried into a second card");
+        processes.Terminations.Should().NotContain(
+            termination => termination.ProcessId == 4242,
+            "the pid on the task belongs to another machine, and judging it from here is the rule this "
+            + "engine does not break");
+
+        await using IQuerySession query = store.QuerySession();
+        TaskDetails task = (await query.LoadAsync<TaskDetails>(taskId, cts.Token))!;
+        task.PendingPublicationProvider.Should().BeNull("the way out is the point");
+        task.PublicationOutcome.Should().Contain("the-old-machine-name", "the machine it belonged to is nameable")
+            .And.Contain("Only the node that spawned a session can judge it")
+            .And.Contain("Check the board", Exactly.Once(),
+                "no card was seen created here, which is not the same as no card");
+
+        TaskAggregate aggregate = (await query.Events
+            .AggregateStreamAsync<TaskAggregate>(taskId, token: cts.Token))!;
+        Action request = () => TaskDecider.RequestWorkItemPublication(
+            aggregate, WorkItemProvider.Jira, JiraProjectKey.Parse("PROJ"), Now, node.OwnerId);
+        request.Should().NotThrow("a request ended on the ceiling must leave the task publishable again");
+    }
+
+    /// <summary>
+    /// And the ceiling is what keeps that from cutting a live session short. Another node running
+    /// a publication right now looks exactly the same from here — dispatched, no outcome, a pid
+    /// this machine cannot ask about — so the only thing separating the two is how long it has
+    /// stood, and inside the ceiling the answer is to leave it alone.
+    /// </summary>
+    [Fact]
+    public async Task A_publication_another_node_is_still_running_is_left_alone_until_the_ceiling()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        using DocumentStore store = NewStore();
+        NodeContext node = await NewNodeAsync(store, cts.Token);
+        Guid taskId = await SeedAsync(store, node, cts.Token);
+        Guid other = await ForeignNodeAsync(store, node, "the-other-machine", cts.Token);
+        await DispatchedAsync(
+            store, node, taskId, processId: 4242, cts.Token,
+            nodeId: other, dispatchedAt: DateTimeOffset.UtcNow);
+
+        FakeProcessManager processes = new();
+        ScriptedSession session = new("Created PROJ-123.", processes);
+
+        CardPublicationSweepResult sweep = await NewEngine(store, node, session, processes)
+            .PollOnceAsync(cts.Token);
+
+        sweep.Expired.Should().Be(0, "inside the ceiling the other node is still the one to finish it");
+        session.Spawns.Should().BeEmpty("a second session would be the second card this engine exists to avoid");
+
+        await using IQuerySession query = store.QuerySession();
+        TaskDetails task = (await query.LoadAsync<TaskDetails>(taskId, cts.Token))!;
+        task.PendingPublicationProvider.Should().Be(WorkItemProvider.Jira.Value,
+            "the publication is still somebody's to finish");
+        task.PublicationOutcome.Should().BeNull("nothing has come of it yet, and saying otherwise would be a guess");
+    }
+
+    /// <summary>
     /// And the way back is open again: the refusal that protects against two cards is exactly what
     /// made the stranded state permanent, so adoption has to leave the task able to be published.
     /// </summary>
@@ -567,6 +652,49 @@ public sealed class CardPublicationEngineTests(PostgresFixture postgres) : IClas
         task.PublicationOutcome.Should().Contain("nothing can say whether it ran")
             .And.Contain("Check the board", "no card was seen, which is not the same as no card");
         task.PendingPublicationProvider.Should().BeNull("the task is publishable again");
+    }
+
+    /// <summary>
+    /// A publication ended after something went wrong still has to say what the task carries,
+    /// rather than assume it carries nothing. The flag on
+    /// <see cref="WorkItemPublicationCompleted"/> is read off the task's own state by contract,
+    /// and the paths that end a publication on a failure are the ones where assuming is easiest
+    /// and wrong: a session's own h9k task link-jira may already have landed. The state seeded
+    /// here is the one the projection can hold — a request appended behind a link, then
+    /// dispatched — because it is the one an outcome can be observed against without breaking
+    /// the store underneath the engine. Origin incident (2026-08-22): the third cycle of this
+    /// branch's pre-PR review found every one of those paths recording "no card produced", plus
+    /// the caution to go hunting for an unrecorded one, whatever the task said.
+    /// </summary>
+    [Fact]
+    public async Task An_outcome_recorded_after_a_failure_says_what_the_task_actually_carries()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        using DocumentStore store = NewStore();
+        NodeContext node = await NewNodeAsync(store, cts.Token);
+        Guid taskId = await SeedAsync(store, node, cts.Token);
+        await LinkAsync(store, taskId, cts.Token);
+        await RequestedBehindTheLinkAsync(store, node, taskId, cts.Token);
+        await DispatchedAsync(store, node, taskId, processId: null, cts.Token);
+
+        FakeProcessManager processes = new();
+        ScriptedSession session = new("Created PROJ-123.", processes);
+
+        CardPublicationSweepResult sweep = await NewEngine(store, node, session, processes)
+            .PollOnceAsync(cts.Token);
+
+        sweep.Adopted.Should().Be(1);
+
+        await using IQuerySession query = store.QuerySession();
+        IReadOnlyList<IEvent> stream = await query.Events.FetchStreamAsync(taskId, token: cts.Token);
+        WorkItemPublicationCompleted completed = stream
+            .Select(@event => @event.Data)
+            .OfType<WorkItemPublicationCompleted>()
+            .Last();
+        completed.Linked.Should().BeTrue(
+            "the task carries a verified key, and the flag reads the task rather than the failure");
+        completed.Outcome.Should().Contain("verified card key")
+            .And.NotContain("Check the board", "there is nothing to go looking for: the card is recorded");
     }
 
     /// <summary>
@@ -795,12 +923,18 @@ public sealed class CardPublicationEngineTests(PostgresFixture postgres) : IClas
     /// died inside that window.
     /// </summary>
     private static async Task<Guid> DispatchedAsync(
-        DocumentStore store, NodeContext node, Guid taskId, int? processId, CancellationToken cancellationToken)
+        DocumentStore store,
+        NodeContext node,
+        Guid taskId,
+        int? processId,
+        CancellationToken cancellationToken,
+        Guid? nodeId = null,
+        DateTimeOffset? dispatchedAt = null)
     {
         Guid sessionId = DomainId.New();
         await using IDocumentSession session = store.LightweightSession();
         session.Events.Append(taskId, new WorkItemPublicationDispatched(
-            taskId, sessionId, node.NodeId, Now, AgentModel.Unknown));
+            taskId, sessionId, nodeId ?? node.NodeId, dispatchedAt ?? Now, AgentModel.Unknown));
         if (processId is { } pid)
         {
             session.Events.Append(taskId, new WorkItemPublicationSessionStarted(taskId, sessionId, pid, Now));
@@ -904,8 +1038,32 @@ public sealed class CardPublicationEngineTests(PostgresFixture postgres) : IClas
     }
 
     private static CardPublicationEngine NewEngine(
-        DocumentStore store, NodeContext node, IExecutor executor, IProcessManager processes) =>
+        DocumentStore store,
+        NodeContext node,
+        IExecutor executor,
+        IProcessManager processes,
+        TimeSpan? foreignCeiling = null) =>
         new(store, node, executor, processes,
-            Options.Create(new DaemonOptions { CardPublicationTimeout = TimeSpan.FromSeconds(20) }),
+            Options.Create(new DaemonOptions
+            {
+                CardPublicationTimeout = TimeSpan.FromSeconds(20),
+                ForeignPublicationCeiling = foreignCeiling ?? TimeSpan.FromHours(1),
+            }),
             NullLogger<CardPublicationEngine>.Instance);
+
+    /// <summary>
+    /// A node that is not this one, registered so the record can name the machine it belonged to.
+    /// A machine rename is the realistic way this arises: the same install comes back with a new
+    /// node identity, and every publication the old identity dispatched is now foreign to it.
+    /// </summary>
+    private static async Task<Guid> ForeignNodeAsync(
+        DocumentStore store, NodeContext node, string machineName, CancellationToken cancellationToken)
+    {
+        Guid nodeId = DomainId.New();
+        await using IDocumentSession session = store.LightweightSession();
+        session.Events.StartStream<NodeAggregate>(nodeId, NodeDecider.Register(
+            nodeId, node.OwnerId, machineName, "macos", Now));
+        await session.SaveChangesAsync(cancellationToken);
+        return nodeId;
+    }
 }

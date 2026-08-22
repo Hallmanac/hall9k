@@ -120,6 +120,25 @@ public sealed class DaemonOptions
     public TimeSpan CardPublicationPollInterval { get; set; } = TimeSpan.FromSeconds(30);
 
     /// <summary>
+    /// How long a publication session dispatched by <em>another</em> node may stand before this
+    /// node ends the request rather than waiting on a machine it cannot ask.
+    /// <para>
+    /// Adoption is scoped to the node that spawned the session, because a pid means nothing off
+    /// the machine that issued it — which leaves a dispatch recorded against a node that never
+    /// comes back with nothing to clear it: the sweep skips a dispatched request, push-to-jira
+    /// refuses while one is outstanding, link-jira needs a card key that may not exist, and
+    /// abandoning deliberately keeps the marker. This is the way out, and it is the same shape as
+    /// <see cref="LeaseTimeout" />: what nobody is heard from about for long enough is ended.
+    /// It is generous next to <see cref="CardPublicationTimeout" /> on purpose — a node that is
+    /// alive stops its own session at that ceiling and records the outcome itself, so anything
+    /// still standing four times later is a node that is not there. Origin incident (2026-08-22):
+    /// the pre-PR review of this branch traced it from a machine rename, which gives the same
+    /// install a new node identity and strands every publication the old one dispatched.
+    /// </para>
+    /// </summary>
+    public TimeSpan ForeignPublicationCeiling { get; set; } = TimeSpan.FromHours(1);
+
+    /// <summary>
     /// Platform-default commit style for follow-up runs (Narrative or Append), applied
     /// when a project sets none of its own (Decisions Log #26). Narrative folds fixes
     /// into their owning commits per the AGENTS.md authored-history rule. This is the
