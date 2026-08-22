@@ -47,6 +47,25 @@ public sealed class StatusCommand : Hall9kAsyncCommand<StatusCommand.Settings>
         listed += Section(rows, AttentionBucket.Stalled, "stalled",
             "[red]Stalled[/] [dim]— claimed and live, but the agent stream has been silent for over an hour[/]", now);
         listed += Section(rows, AttentionBucket.Active, "active", "[yellow]Running[/]", now);
+        // The queue is normally a count in the header — it needs nothing from anyone. It earns
+        // a section only when the node is at its concurrency ceiling (Decisions Log #64),
+        // because that is the one case where a board with nothing dispatching is working
+        // exactly as designed, and a human who cannot see that goes looking for the fault.
+        if (rows.Any(row => row.WaitingForSlot))
+        {
+            // The lever is named once for the whole section rather than repeated on every row:
+            // it is one setting for the node, not a per-task action. The environment form is
+            // the one that reaches an installed daemon, whose working directory is never its
+            // binary directory, so the published appsettings.json is not read there
+            // (DaemonLogging carries that observation); options bind at startup, hence the
+            // restart.
+            listed += Section(rows, AttentionBucket.Queued, "queued",
+                "[blue]Queued[/] [dim]— the node is at its concurrency ceiling; each of these starts as a "
+                + "run finishes. Raise[/] Hall9k__MaxConcurrentAgentSessions [dim]and restart the daemon to run "
+                + "more at once — it is counted in agent sessions, and a run under review holds one per review "
+                + "lens[/]", now, inServiceOrder: true);
+        }
+
         // Blocked work is neither running nor waiting on you, but the wait has a cause worth
         // seeing: each row names the dependencies it is still waiting to close out (log #34).
         listed += Section(rows, AttentionBucket.Blocked, "blocked",
@@ -69,16 +88,13 @@ public sealed class StatusCommand : Hall9kAsyncCommand<StatusCommand.Settings>
     }
 
     /// <summary>
-    /// One attention group, attention-first inside it (NeedsHuman, then stalled, then the
-    /// rest), bounded — a pane that scrolls has stopped being glanceable.
+    /// One attention group, bounded — a pane that scrolls has stopped being glanceable.
     /// </summary>
     private static int Section(
-        IReadOnlyList<TaskStatusRow> rows, AttentionBucket bucket, string stateWord, string heading, DateTimeOffset now)
+        IReadOnlyList<TaskStatusRow> rows, AttentionBucket bucket, string stateWord, string heading,
+        DateTimeOffset now, bool inServiceOrder = false)
     {
-        List<TaskStatusRow> matching = [.. rows
-            .Where(row => row.Attention == bucket)
-            .OrderBy(row => row.Priority)
-            .ThenByDescending(row => row.AddedAt)];
+        IReadOnlyList<TaskStatusRow> matching = SectionRows(rows, bucket, inServiceOrder);
         if (matching.Count == 0)
         {
             return 0;
@@ -94,6 +110,33 @@ public sealed class StatusCommand : Hall9kAsyncCommand<StatusCommand.Settings>
         }
 
         return matching.Count;
+    }
+
+    /// <summary>
+    /// One section's rows in the order it lists them: attention-first (NeedsHuman, then stalled,
+    /// then the rest, newest first inside each), or — for the deferred queue — the order the
+    /// dispatcher will actually serve them in.
+    /// </summary>
+    /// <param name="inServiceOrder">
+    /// Oldest assignment first, ties broken by when the task was added, which is exactly the
+    /// claim query's ordering (Decisions Log #64). The queue section tells a human that each of
+    /// its rows starts as a run finishes, so its top row has to be the one that starts next;
+    /// listed newest-first, the pane's default everywhere else, it showed the eight tasks that
+    /// run last and collapsed the imminent ones into "… and N more" (pre-PR review, 2026-08-22).
+    /// A row with nothing assigned cannot be in that section — the dispatcher cannot see an
+    /// unassigned task — but it sorts last rather than first if one ever is.
+    /// </param>
+    internal static IReadOnlyList<TaskStatusRow> SectionRows(
+        IReadOnlyList<TaskStatusRow> rows, AttentionBucket bucket, bool inServiceOrder)
+    {
+        IEnumerable<TaskStatusRow> inBucket = rows.Where(row => row.Attention == bucket);
+        return [.. inServiceOrder
+            ? inBucket
+                .OrderBy(row => row.AssignedAt ?? DateTimeOffset.MaxValue)
+                .ThenBy(row => row.AddedAt)
+            : inBucket
+                .OrderBy(row => row.Priority)
+                .ThenByDescending(row => row.AddedAt)];
     }
 
     /// <summary>

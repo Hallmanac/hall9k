@@ -240,6 +240,133 @@ public sealed class AttentionSurfaceTests
     }
 
     [Fact]
+    public void A_queued_task_says_it_is_waiting_for_a_slot_when_the_node_is_at_its_ceiling()
+    {
+        // Queued-waiting-for-a-slot is not a state (Decisions Log #64): the task is Queued and
+        // the line is composed from the count the daemon's last sweep published, so a quiet
+        // board reads as throttled rather than stalled.
+        TaskListItem queued = new()
+        {
+            Id = DomainId.New(), ProjectId = DomainId.New(), Objective = "x",
+            State = TaskState.Queued, AddedAt = Now,
+        };
+
+        TaskStatusRow full = Compose(queued, new DispatchPressure(LiveRuns: 3, MaxConcurrentRuns: 3));
+
+        full.Bucket.Should().Be("Queued", "the ceiling defers a claim; it does not restate the task");
+        full.Attention.Should().Be(AttentionBucket.Queued);
+        full.WaitingForSlot.Should().BeTrue();
+        full.Activity.Should().Be("waiting for a slot — 3 of 3 running");
+    }
+
+    [Fact]
+    public void A_queued_task_says_nothing_about_slots_when_there_is_room_or_no_measurement()
+    {
+        TaskListItem queued = new()
+        {
+            Id = DomainId.New(), ProjectId = DomainId.New(), Objective = "x",
+            State = TaskState.Queued, AddedAt = Now,
+        };
+
+        TaskStatusRow room = Compose(queued, new DispatchPressure(LiveRuns: 1, MaxConcurrentRuns: 3));
+        room.WaitingForSlot.Should().BeFalse("a task about to be claimed is not being held back");
+        room.Activity.Should().BeEmpty();
+
+        TaskStatusRow unmeasured = Compose(queued, pressure: null);
+        unmeasured.WaitingForSlot.Should().BeFalse(
+            "no current measurement means nothing is known about capacity, which is not the same as a full node");
+    }
+
+    [Fact]
+    public void A_full_node_says_nothing_about_slots_on_work_it_is_not_holding_back()
+    {
+        // The pressure explains a queue that will not move. A task whose pull request is open
+        // and whose closeout is being watched is waiting on GitHub, not on this machine, and
+        // borrowing the ceiling's line for it would name the wrong cause.
+        TaskListItem awaitingReview = new()
+        {
+            Id = DomainId.New(), ProjectId = DomainId.New(), Objective = "x",
+            State = TaskState.Done, PullRequestUrl = "https://github.com/x/y/pull/7", AddedAt = Now,
+        };
+
+        TaskStatusRow row = Compose(awaitingReview, new DispatchPressure(LiveRuns: 3, MaxConcurrentRuns: 3));
+
+        row.Bucket.Should().Be("AwaitingReview");
+        row.WaitingForSlot.Should().BeFalse();
+    }
+
+    [Fact]
+    public void A_closeout_follow_up_held_back_by_the_ceiling_reads_as_queued_rather_than_running()
+    {
+        // The closeout monitor reopens a task for a failing check or a review thread: Queued
+        // again, its run superseded, its pull request still on it. The dispatcher sees an
+        // ordinary queued task and defers it at the ceiling, so the board has to say so —
+        // composed off the bucket instead of the state, this row read as running work while the
+        // daemon's log called it deferred (pre-PR review, 2026-08-22).
+        TaskListItem reopened = new()
+        {
+            Id = DomainId.New(), ProjectId = DomainId.New(), Objective = "x",
+            State = TaskState.Queued, PullRequestUrl = "https://github.com/x/y/pull/7", AddedAt = Now,
+        };
+
+        TaskStatusRow held = Compose(reopened, new DispatchPressure(LiveRuns: 3, MaxConcurrentRuns: 3));
+
+        held.WaitingForSlot.Should().BeTrue();
+        held.Bucket.Should().Be("Queued", "no follow-up is in flight yet — the run it is waiting to start is");
+        held.Attention.Should().Be(AttentionBucket.Queued, "it belongs in the section that explains the wait");
+        held.Activity.Should().Be("waiting for a slot — 3 of 3 running");
+
+        // With room on the node the follow-up is dispatching, and the row is closeout work again.
+        TaskStatusRow dispatching = Compose(reopened, new DispatchPressure(LiveRuns: 1, MaxConcurrentRuns: 3));
+        dispatching.Bucket.Should().Be("ClosingOut");
+        dispatching.WaitingForSlot.Should().BeFalse();
+    }
+
+    [Fact]
+    public void The_deferred_queue_is_listed_in_the_order_the_dispatcher_will_serve_it()
+    {
+        // The section tells a human that each of its rows starts as a run finishes, so its top
+        // row has to be the one that starts next: oldest assignment first, ties broken by when
+        // the task was added, which is the claim query's ordering exactly (Decisions Log #64).
+        // Every other section lists newest first, which here showed the tasks that run last
+        // (pre-PR review, 2026-08-22).
+        DispatchPressure full = new(LiveRuns: 1, MaxConcurrentRuns: 1);
+        const string OldAssignment = "Drafted in January, assigned last week";
+        const string NewAssignment = "Drafted last week, assigned this morning";
+        TaskStatusRow[] rows =
+        [
+            Compose(Queued(OldAssignment, addedAt: Now, assignedAt: Now.AddHours(1)), full),
+            Compose(Queued(NewAssignment, addedAt: Now.AddHours(5), assignedAt: Now.AddHours(10)), full),
+        ];
+
+        StatusCommand.SectionRows(rows, AttentionBucket.Queued, inServiceOrder: true)
+            .Select(row => row.Objective).Should().Equal([OldAssignment, NewAssignment],
+                "the older assignment is claimed first, so it is listed first — even though the "
+                + "other task was drafted more recently");
+
+        StatusCommand.SectionRows(rows, AttentionBucket.Queued, inServiceOrder: false)
+            .Select(row => row.Objective).Should().Equal([NewAssignment, OldAssignment],
+                "the pane's default is newest arrival first, which is the reverse of the order "
+                + "the dispatcher serves these in");
+    }
+
+    private static TaskListItem Queued(string objective, DateTimeOffset addedAt, DateTimeOffset assignedAt) => new()
+    {
+        Id = DomainId.New(), ProjectId = DomainId.New(), Objective = objective,
+        State = TaskState.Queued, AddedAt = addedAt, AssignedAt = assignedAt,
+    };
+
+    private static TaskStatusRow Compose(TaskListItem task, DispatchPressure? pressure) =>
+        TaskStatusComposer.Compose(
+            task,
+            new Dictionary<Guid, RunListItem>(),
+            new Dictionary<Guid, RunActivity>(),
+            new Dictionary<Guid, string>(),
+            new Dictionary<Guid, string>(),
+            Now,
+            pressure);
+
+    [Fact]
     public void Stream_renderer_shows_text_tools_and_outcome_without_duplicating_the_summary()
     {
         string[] lines =
