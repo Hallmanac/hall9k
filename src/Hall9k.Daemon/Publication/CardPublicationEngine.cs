@@ -434,7 +434,14 @@ public sealed class CardPublicationEngine(
         {
             await CompleteAsync(
                 task.Id,
-                linkedNow: false,
+                // True, and read rather than assumed: the branch condition *is* the read, taken
+                // off the aggregate under the fence a line above. WorkItemPublicationCompleted's
+                // contract is that Linked says what the task carries, and the task carries a
+                // verified key here — the whole reason this refusal exists. Origin incident
+                // (2026-08-22): the second cycle of this branch's pre-PR review found this path
+                // hardcoding false, so the one outcome that knows for certain the task is linked
+                // was the one recording on the stream that it was not.
+                linkedNow: true,
                 $"This task was already linked to {already} by the time the daemon picked the request "
                 + "up, so no session was dispatched: a second session would have created a second card "
                 + "for work that already has one.",

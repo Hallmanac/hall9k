@@ -822,6 +822,12 @@ public sealed class CardPublicationEngineTests(PostgresFixture postgres) : IClas
         task.PendingPublicationProvider.Should().BeNull("the request is answered rather than left hanging");
         task.PublicationOutcome.Should().Contain("already linked to jira:PROJ-123")
             .And.Contain("second card", "the refusal says what it was protecting against");
+
+        IReadOnlyList<IEvent> stream = await query.Events.FetchStreamAsync(taskId, token: cts.Token);
+        stream.Select(@event => @event.Data).OfType<WorkItemPublicationCompleted>().Last()
+            .Linked.Should().BeTrue(
+                "the flag reads the task's own state by contract, and this is the one refusal that "
+                + "read a verified key off the task to decide it was a refusal at all");
     }
 
     /// <summary>
