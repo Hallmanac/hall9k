@@ -1,5 +1,8 @@
+using Hall9k.Daemon.Execution;
 using Hall9k.Daemon.ProcessManagement;
+using Hall9k.Domain.Features.Node;
 using Hall9k.Domain.Features.Run;
+using Hall9k.Domain.Features.Run.Events;
 using Hall9k.Domain.Features.Run.Projections;
 using Hall9k.Domain.Features.Tasks;
 using Hall9k.Domain.Features.Tasks.Documents;
@@ -39,6 +42,14 @@ public sealed class DispatchEngine(
     /// suspension detection. Sweeps run on the single dispatch loop, never concurrently.
     /// </summary>
     private DateTimeOffset? _lastSweepStartedAt;
+
+    /// <summary>
+    /// Tasks already reported as deferred by the ceiling, so the log states each deferral once
+    /// rather than once per sweep — at a five-second cadence, a per-sweep line would bury the
+    /// dispatches it sits between. Rebuilt every sweep from the tasks actually passed over, so
+    /// a task that gets claimed and later queues behind the ceiling again is announced again.
+    /// </summary>
+    private readonly HashSet<Guid> _deferredClaims = [];
 
     /// <summary>
     /// Requeue claimed tasks whose lease heartbeat has gone silent past the timeout —
@@ -83,8 +94,14 @@ public sealed class DispatchEngine(
                 continue;
             }
 
-            if (await CurrentRunIsParkedAsync(session, task, cancellationToken))
+            RunDetails? run = task.CurrentRunId is { } currentRunId
+                ? await session.LoadAsync<RunDetails>(currentRunId, cancellationToken)
+                : null;
+
+            if (run is not null && (run.State == RunState.ReviewParked || run.State == RunState.CloseoutParked))
             {
+                // CloseoutParked normally holds a Done, lease-free task, but it is included so
+                // the guarantee is a property of "parked", not of one park flavor.
                 lease.HeartbeatAt = now;
                 session.Store(lease);
                 logger.LogInformation(
@@ -93,7 +110,7 @@ public sealed class DispatchEngine(
                 continue;
             }
 
-            if (lease.NodeId == node.NodeId && await LocalRunProcessIsAliveAsync(session, task, cancellationToken))
+            if (lease.NodeId == node.NodeId && LocalRunProcessIsAlive(run))
             {
                 lease.HeartbeatAt = now;
                 session.Store(lease);
@@ -105,6 +122,46 @@ public sealed class DispatchEngine(
 
             session.Events.Append(lease.Id, TaskDecider.Requeue(task, RequeueReason.LeaseExpired, now));
             session.Delete<TaskLease>(lease.Id);
+
+            // The run the lease belonged to ends here too, in the same transaction — but only
+            // when it is this node's own run that the lease was covering. Dispatched and Running
+            // are the two states a process is resident for, and the guard above has already
+            // refused to requeue past a live local one, so a local run reaching this line has
+            // been asked about and answered for — and a run left reading Running with nothing
+            // behind it would go on occupying a concurrency slot until the next daemon start's
+            // orphan adoption noticed (Decisions Log #64).
+            //
+            // Another node's run is left exactly as it is. This sweep sees every stale lease in
+            // the database, not only its own, and it cannot ask that machine's operating system
+            // anything: a stopped daemon whose detached agent is still working is the platform's
+            // ordinary case (down is not death, log #29), and recording RunFailed for it would
+            // hide the run from that node's own adoption filter, so the live session is never
+            // re-monitored and its work is thrown away. The requeue still happens — the task is
+            // the shared thing — and the run stays that node's to conclude.
+            //
+            // Nothing startup adoption resumes is failed here, and it resumes three things.
+            // Verifying and UnderReview are two of them: the build session has already exited by
+            // then, so its recorded pid says nothing about whether the run is over. The third is
+            // a run still reading Dispatched or Running whose process is gone but whose result is
+            // already on disk — adoption re-monitors on alive-or-result-on-disk
+            // (RunSupervisor.AdoptOrphansAsync), and the agent that finished while the daemon was
+            // down is exactly that case, so the shared check (RunResultFile) is asked here too.
+            // On the startup path adoption runs immediately before this sweep, so failing any of
+            // the three would record a failure for a pipeline executing at that moment, which the
+            // next event that pipeline appends would silently undo. A resumed pipeline is a live
+            // session tree and goes on holding its slot, honestly.
+            // Origin incident (2026-08-22): pre-PR review of this branch caught the first cut
+            // failing a run whose review cycle adoption had just restarted, a second cut failing
+            // another node's still-running one, and a third the finished-while-down run above.
+            if (lease.NodeId == node.NodeId
+                && run is not null
+                && run.NodeId == node.NodeId
+                && (run.State == RunState.Dispatched || run.State == RunState.Running)
+                && !await RunResultFile.AlreadyWrittenAsync(run.Id, cancellationToken))
+            {
+                session.Events.Append(run.Id, new RunFailed(run.Id, LeaseExpiryFailure(lease, run), now));
+            }
+
             requeued++;
             logger.LogWarning(
                 "Lease expired on task {TaskId} (generation {Generation}, last heartbeat {HeartbeatAt:u}) — requeued",
@@ -166,34 +223,22 @@ public sealed class DispatchEngine(
     /// asked (no pid recorded, or the lease belongs to another node) does the timestamp
     /// decide.
     /// </summary>
-    private async Task<bool> LocalRunProcessIsAliveAsync(
-        IDocumentSession session, TaskAggregate task, CancellationToken cancellationToken)
-    {
-        if (task.CurrentRunId is not { } runId)
-        {
-            return false;
-        }
+    private bool LocalRunProcessIsAlive(RunDetails? run) =>
+        run is { ProcessId: { } processId, ProcessStartedAt: { } startedAt }
+        && run.NodeId == node.NodeId
+        && processManager.IsAlive(processId, startedAt);
 
-        RunDetails? run = await session.LoadAsync<RunDetails>(runId, cancellationToken);
-        return run is { ProcessId: { } processId, ProcessStartedAt: { } startedAt }
-            && run.NodeId == node.NodeId
-            && processManager.IsAlive(processId, startedAt);
-    }
-
-    private static async Task<bool> CurrentRunIsParkedAsync(
-        IDocumentSession session, TaskAggregate task, CancellationToken cancellationToken)
-    {
-        if (task.CurrentRunId is not { } runId)
-        {
-            return false;
-        }
-
-        RunDetails? run = await session.LoadAsync<RunDetails>(runId, cancellationToken);
-        // CloseoutParked normally holds a Done, lease-free task, but it is included so
-        // the guarantee is a property of "parked", not of one park flavor.
-        return run is not null
-            && (run.State == RunState.ReviewParked || run.State == RunState.CloseoutParked);
-    }
+    /// <summary>
+    /// Why the run ended, stated as what the sweep actually observed and no further (AGENTS.md:
+    /// never guess at unobserved facts). A full process identity — pid and start time, the pair
+    /// LocalRunProcessIsAlive needs — means the operating system was asked and said the session
+    /// was gone. Without one there was nothing to ask about, and saying the session "was gone"
+    /// would put an observation in the audit trail that nobody made.
+    /// </summary>
+    private static string LeaseExpiryFailure(TaskLease lease, RunDetails run) =>
+        run is { ProcessId: { } processId, ProcessStartedAt: not null }
+            ? $"Lease expired at generation {lease.LeaseGeneration}; the agent process (pid {processId}) was gone when the sweep asked this machine."
+            : $"Lease expired at generation {lease.LeaseGeneration}; no agent process identity was ever recorded for this run, so there was none to ask about.";
 
     /// <summary>
     /// The dependency safety net (Decisions Log #34). The closeout monitor unblocks dependents
@@ -252,47 +297,194 @@ public sealed class DispatchEngine(
     }
 
     /// <summary>
-    /// Claim this owner's queued tasks up to the concurrency cap. The claim is the lock:
-    /// appends race on the stream version and the database picks the winner (TASK-MODEL.md §2).
-    /// Draft, Published and Blocked tasks are structurally invisible here — a task becomes
-    /// claimable only through an explicit human assignment (Decisions Log #34).
+    /// Claim this owner's queued tasks while the node is under its concurrency ceiling. The
+    /// claim is the lock: appends race on the stream version and the database picks the winner
+    /// (TASK-MODEL.md §2). Draft, Published and Blocked tasks are structurally invisible here —
+    /// a task becomes claimable only through an explicit human assignment (Decisions Log #34).
+    /// <para>
+    /// Everything the ceiling turns away simply stays Queued, which already honestly means
+    /// waiting, and is claimed as slots free up in the same order the queue always had. There
+    /// is no throttled state and no reservation: nothing is written about a deferral beyond the
+    /// load measurement <see cref="NodeDispatchLoad"/> carries for the attention pane.
+    /// </para>
     /// </summary>
     public async Task<IReadOnlyList<ClaimedWork>> ClaimEligibleAsync(CancellationToken cancellationToken)
     {
         await using IDocumentSession session = store.LightweightSession();
 
-        Guid nodeId = node.NodeId;
-        int active = await session.Query<TaskLease>()
-            .Where(lease => lease.NodeId == nodeId)
-            .CountAsync(cancellationToken);
-        int capacity = _options.MaxConcurrentRuns - active;
-        if (capacity <= 0)
-        {
-            return [];
-        }
+        NodeLoad load = await MeasureLoadAsync(session, cancellationToken);
 
         // The whole claim rule, as one indexed-friendly filter (Decisions Log #34): Queued
         // means a human assigned it and every dependency has closed out, and the owner match
-        // means those were this node's owner's decisions. Ordering is untouched — FIFO by
-        // AddedAt among the ready set; dependencies and assignment shape that set, not its order.
+        // means those were this node's owner's decisions. The ceiling shapes how much of this
+        // set is taken, never which end of it (Decisions Log #64).
+        //
+        // Oldest assignment first, because assignment is the act that put the task in this
+        // queue: a task drafted in January and assigned this morning is behind one drafted and
+        // assigned last week, which ordering by AddedAt alone would get backwards. AddedAt
+        // still breaks ties, which is what the bulk import of a backlog assigned in one command
+        // looks like. Every row here has an assignedAt — the projection writes one for
+        // pre-lifecycle streams too, and the startup backfill rebuilds any document old enough
+        // to be missing the key before this query runs.
         Guid ownerId = node.OwnerId;
         IReadOnlyList<TaskListItem> queued = await session.Query<TaskListItem>()
             .Where(t => t.MatchesSql("d.data ->> 'state' = ?", TaskState.Queued.Value))
             .Where(t => t.AssignedOwnerId == ownerId)
-            .OrderBy(t => t.AddedAt)
-            .Take(capacity)
+            .OrderBy(t => t.AssignedAt)
+            .ThenBy(t => t.AddedAt)
             .ToListAsync(cancellationToken);
 
+        // The whole queue is read rather than just the claimable head, so every task the
+        // ceiling defers can be named in the log exactly once. It is the queue of one owner's
+        // ready work, which is the same set the attention pane already loads in full.
         List<ClaimedWork> claimed = [];
+        List<Guid> deferred = [];
         foreach (TaskListItem candidate in queued)
         {
+            if (claimed.Count >= load.Capacity)
+            {
+                deferred.Add(candidate.Id);
+                continue;
+            }
+
             if (await TryClaimAsync(candidate.Id, cancellationToken) is { } work)
             {
                 claimed.Add(work);
             }
         }
 
+        await PublishLoadAsync(session, load, claimed.Count, deferred, cancellationToken);
         return claimed;
+    }
+
+    /// <summary>
+    /// Publish what the node is carrying and name what the ceiling turned away — after the
+    /// claims, and never at their expense.
+    /// <para>
+    /// Both the record and the log describe the node as the sweep leaves it, not as it found it:
+    /// the sweep that fills the node is precisely the one whose deferrals need explaining, and
+    /// publishing the count it started with would have it report spare capacity while it turns
+    /// work away — for as long as the launches it just handed back take, which is minutes on a
+    /// fan-in dispatch. Re-measured rather than added up, so the published number stays something
+    /// this node observed (AGENTS.md: never guess at unobserved facts); the measurement is
+    /// skipped only when this sweep changed nothing.
+    /// </para>
+    /// <para>
+    /// All of it is telemetry, so all of it is caught. Every task claimed above is already leased
+    /// in its own committed transaction, and letting a failed read or a failed document write
+    /// throw out of <see cref="ClaimEligibleAsync"/> would drop that list on the floor before
+    /// <c>RunLauncher</c> ever saw it — and a lease with no run behind it is stranded for good:
+    /// the heartbeat service keeps refreshing it, so the expiry sweep never finds it, and with no
+    /// run document written, startup adoption cannot find it either. Those leases would then
+    /// count as live forever and wedge the whole queue. A missing load measurement costs one
+    /// stale number on the attention pane until the next sweep. Origin incident (2026-08-22):
+    /// pre-PR review of this branch.
+    /// </para>
+    /// </summary>
+    private async Task PublishLoadAsync(
+        IDocumentSession session,
+        NodeLoad measured,
+        int claimedCount,
+        IReadOnlyCollection<Guid> deferred,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            NodeLoad carried = claimedCount == 0
+                ? measured
+                : await MeasureLoadAsync(session, cancellationToken);
+            await RecordLoadAsync(session, carried, DateTimeOffset.UtcNow, cancellationToken);
+            ReportDeferrals(deferred, carried);
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            // The deferred set is left as it was, so the next sweep that gets this far announces
+            // the tasks this one could not.
+            logger.LogWarning(
+                exception,
+                "Recording this node's dispatch load failed; {Claimed} claim(s) are unaffected and h9k status "
+                + "will read the previous measurement until the next sweep",
+                claimedCount);
+        }
+    }
+
+    /// <summary>
+    /// The live-run count this node claims against, and the session ceiling it is measured
+    /// against (Decisions Log #64). The counting rule itself is <see cref="NodeLoad.LiveSlots"/>;
+    /// the conversion from run trees to resident sessions is <see cref="NodeLoad"/>'s; the
+    /// two queries here are just what it needs: this node's leases, and the runs that could
+    /// answer for them.
+    /// </summary>
+    private async Task<NodeLoad> MeasureLoadAsync(IQuerySession session, CancellationToken cancellationToken)
+    {
+        Guid nodeId = node.NodeId;
+        IReadOnlyList<TaskLease> leases = await session.Query<TaskLease>()
+            .Where(lease => lease.NodeId == nodeId)
+            .ToListAsync(cancellationToken);
+
+        IReadOnlyList<RunListItem> live = await session.Query<RunListItem>()
+            .Where(run => run.NodeId == nodeId)
+            .Where(run => run.MatchesSql(
+                "d.data ->> 'state' in (?, ?, ?, ?)",
+                RunState.Dispatched.Value, RunState.Running.Value,
+                RunState.Verifying.Value, RunState.UnderReview.Value))
+            .ToListAsync(cancellationToken);
+
+        // The leased tasks' runs whatever state they are in, because "no run at this
+        // generation yet" and "a run that has already parked" are the two answers the rule
+        // tells apart, and neither shows up in the query above.
+        Guid[] leased = [.. leases.Select(lease => lease.Id)];
+        IReadOnlyList<RunListItem> leaseRuns = leased.Length == 0
+            ? []
+            : await session.Query<RunListItem>()
+                .Where(run => run.NodeId == nodeId && run.TaskId.IsOneOf(leased))
+                .ToListAsync(cancellationToken);
+
+        List<RunListItem> runs = [.. live, .. leaseRuns.Where(run => live.All(other => other.Id != run.Id))];
+        return new NodeLoad(NodeLoad.LiveSlots(nodeId, leases, runs).Count, _options.MaxConcurrentAgentSessions);
+    }
+
+    /// <summary>
+    /// Publish what the node is carrying as the sweep leaves it, so h9k status can say a quiet
+    /// board is throttled rather than stalled without re-deriving the count (Decisions Log #64).
+    /// Written on every sweep, including the ones with spare capacity: a reader needs to know the
+    /// measurement is current as much as it needs the number.
+    /// </summary>
+    private async Task RecordLoadAsync(
+        IDocumentSession session, NodeLoad load, DateTimeOffset now, CancellationToken cancellationToken)
+    {
+        session.Store(new NodeDispatchLoad
+        {
+            Id = node.NodeId,
+            MachineName = Environment.MachineName,
+            LiveRuns = load.LiveRuns,
+            MaxConcurrentRuns = load.MaxConcurrentRuns,
+            LiveAgentSessions = load.LiveAgentSessions,
+            MaxConcurrentAgentSessions = load.MaxConcurrentAgentSessions,
+            ObservedAt = now,
+        });
+        await session.SaveChangesAsync(cancellationToken);
+    }
+
+    /// <summary>
+    /// One line per deferral, not one per sweep (Decisions Log #64). The set is replaced rather
+    /// than added to, so a task announced once goes quiet while it waits and is announced again
+    /// only if it leaves the deferred set and comes back.
+    /// </summary>
+    private void ReportDeferrals(IReadOnlyCollection<Guid> deferred, NodeLoad load)
+    {
+        foreach (Guid taskId in deferred.Where(taskId => !_deferredClaims.Contains(taskId)))
+        {
+            logger.LogInformation(
+                "Task {TaskId} stays queued: this node is at its concurrency ceiling "
+                + "({LiveRuns} of {MaxConcurrentRuns} live run(s), reserving {LiveAgentSessions} of "
+                + "{MaxConcurrentAgentSessions} agent session(s)) — it is claimed as a slot frees up",
+                taskId, load.LiveRuns, load.MaxConcurrentRuns,
+                load.LiveAgentSessions, load.MaxConcurrentAgentSessions);
+        }
+
+        _deferredClaims.Clear();
+        _deferredClaims.UnionWith(deferred);
     }
 
     private async Task<ClaimedWork?> TryClaimAsync(Guid taskId, CancellationToken cancellationToken)

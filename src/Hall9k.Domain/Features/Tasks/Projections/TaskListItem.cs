@@ -22,6 +22,16 @@ public sealed class TaskListItem
     public string? PullRequestUrl { get; set; }
     /// <summary>Whose work this is; null until an explicit assignment says (Decisions Log #34).</summary>
     public Guid? AssignedOwnerId { get; set; }
+    /// <summary>
+    /// When a human said "do this" — the moment that made the task claimable, and so the key
+    /// the dispatcher queues on (Decisions Log #64). It is deliberately not <see cref="AddedAt"/>:
+    /// a task drafted in January and assigned today is newer work than one drafted and assigned
+    /// last week, and once the concurrency ceiling makes the queue's tail wait, that difference
+    /// decides who goes first. Null only while nothing is assigned, which is a state the claim
+    /// filter cannot see anyway; an unassign clears it, so a reassignment joins the back of the
+    /// queue, which is what unassigning and assigning again means.
+    /// </summary>
+    public DateTimeOffset? AssignedAt { get; set; }
     /// <summary>Declared dependency edges — the cheap re-evaluation query filters on this.</summary>
     public List<Guid> BlockedBy { get; set; } = [];
     /// <summary>Blockers not yet at true closeout; empty on anything but a Blocked task.</summary>
@@ -58,6 +68,9 @@ public sealed class TaskListItemProjection : SingleStreamProjection<TaskListItem
         // added them, which is the sole owner of a v0 install (Decisions Log #34).
         State = @event.Data.StartsAsDraft ? TaskState.Draft : TaskState.Queued,
         AssignedOwnerId = @event.Data.StartsAsDraft ? null : @event.Data.AddedByOwnerId,
+        // A pre-lifecycle stream was assigned by the act of being added, so that is the moment
+        // it queued on — the same reading the line above already makes of its owner.
+        AssignedAt = @event.Data.StartsAsDraft ? null : @event.Data.AddedAt,
         BlockedBy = [.. @event.Data.BlockedBy ?? []],
         ExternalReference = @event.Data.ExternalReference?.ToString(),
         AddedAt = @event.Data.AddedAt,
@@ -88,6 +101,7 @@ public sealed class TaskListItemProjection : SingleStreamProjection<TaskListItem
     public void Apply(IEvent<TaskAssigned> @event, TaskListItem view)
     {
         view.AssignedOwnerId = @event.Data.AssignedOwnerId;
+        view.AssignedAt = @event.Data.AssignedAt;
         view.UnmetDependencies = [.. @event.Data.UnmetDependencies];
         view.DeadDependencies = [];
         view.DeadDependencyReasons = [];
@@ -98,6 +112,7 @@ public sealed class TaskListItemProjection : SingleStreamProjection<TaskListItem
     public void Apply(IEvent<TaskUnassigned> @event, TaskListItem view)
     {
         view.AssignedOwnerId = null;
+        view.AssignedAt = null;
         view.UnmetDependencies = [];
         view.DeadDependencies = [];
         view.DeadDependencyReasons = [];

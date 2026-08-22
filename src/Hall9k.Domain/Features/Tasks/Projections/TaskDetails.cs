@@ -28,6 +28,13 @@ public sealed class TaskDetails
     public string? ExternalReference { get; set; }
     /// <summary>Whose work this is; null until an explicit assignment says (Decisions Log #34).</summary>
     public Guid? AssignedOwnerId { get; set; }
+    /// <summary>
+    /// When a human said "do this": the moment that made the task claimable, and the key the
+    /// dispatcher queues on once the concurrency ceiling makes the tail of the queue wait
+    /// (Decisions Log #64). Kept here as well as on <see cref="TaskListItem"/> because the
+    /// backfill's staleness markers are read against both documents.
+    /// </summary>
+    public DateTimeOffset? AssignedAt { get; set; }
     /// <summary>The tasks this one waits on, declared at creation or revised in Draft.</summary>
     public List<Guid> BlockedBy { get; set; } = [];
     /// <summary>Blockers not yet at true closeout; empty on anything but a Blocked task.</summary>
@@ -90,6 +97,9 @@ public sealed class TaskDetailsProjection : SingleStreamProjection<TaskDetails, 
         // added them, which is the sole owner of a v0 install (Decisions Log #34).
         State = @event.Data.StartsAsDraft ? TaskState.Draft : TaskState.Queued,
         AssignedOwnerId = @event.Data.StartsAsDraft ? null : @event.Data.AddedByOwnerId,
+        // A pre-lifecycle stream was assigned by the act of being added, so that is the moment
+        // it queued on — the same reading the line above already makes of its owner.
+        AssignedAt = @event.Data.StartsAsDraft ? null : @event.Data.AddedAt,
         BlockedBy = [.. @event.Data.BlockedBy ?? []],
         AgentContext = @event.Data.AgentContext,
         Constraints = @event.Data.Constraints,
@@ -144,6 +154,7 @@ public sealed class TaskDetailsProjection : SingleStreamProjection<TaskDetails, 
     public void Apply(IEvent<TaskAssigned> @event, TaskDetails view)
     {
         view.AssignedOwnerId = @event.Data.AssignedOwnerId;
+        view.AssignedAt = @event.Data.AssignedAt;
         view.UnmetDependencies = [.. @event.Data.UnmetDependencies];
         view.DeadDependencies = [];
         view.DeadDependencyReasons = [];
@@ -154,6 +165,7 @@ public sealed class TaskDetailsProjection : SingleStreamProjection<TaskDetails, 
     public void Apply(IEvent<TaskUnassigned> @event, TaskDetails view)
     {
         view.AssignedOwnerId = null;
+        view.AssignedAt = null;
         view.UnmetDependencies = [];
         view.DeadDependencies = [];
         view.DeadDependencyReasons = [];

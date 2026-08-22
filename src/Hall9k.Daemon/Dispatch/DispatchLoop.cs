@@ -36,6 +36,17 @@ public sealed class DispatchLoop(
         await node.InitializeAsync(store, stoppingToken);
         logger.LogInformation("Node {NodeId} (owner {OwnerId}) starting", node.NodeId, node.OwnerId);
 
+        // The ceiling is stated up front because it is the answer to "why is my queue not
+        // moving" (Decisions Log #64), and because it is per-machine configuration: the number
+        // this node carries is not the number the next one carries.
+        NodeLoad ceiling = new(LiveRuns: 0, _options.MaxConcurrentAgentSessions);
+        logger.LogInformation(
+            "Concurrency ceiling: at most {MaxConcurrentAgentSessions} resident agent session(s) on this node "
+            + "at once, which is {MaxConcurrentRuns} live run(s) at {PeakAgentSessionsPerRun} session(s) each "
+            + "(configure with {Section}:{Setting})",
+            _options.MaxConcurrentAgentSessions, ceiling.MaxConcurrentRuns, NodeLoad.PeakAgentSessionsPerRun,
+            DaemonOptions.SectionName, nameof(DaemonOptions.MaxConcurrentAgentSessions));
+
         // Before anything reads the task projections: bring documents written by an older
         // projection shape up to date, or the claim filter cannot see them (log #34).
         await BackfillLifecycleProjectionsAsync(stoppingToken);
