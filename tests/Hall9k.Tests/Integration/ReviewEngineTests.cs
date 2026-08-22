@@ -27,7 +27,7 @@ namespace Hall9k.Tests.Integration;
 
 /// <summary>
 /// The pre-PR review loop (Decisions Log #23) against a real store with the executor
-/// seam scripted: a cycle runs every still-active track (log #59, #62), merge-ready proceeds
+/// seam scripted: a cycle runs every still-active track (log #59, #63), merge-ready proceeds
 /// only when every track has concluded, needs-fixes drives one fix → gates → a fresh pass per
 /// live track, a track that goes clean goes dormant while the other continues alone, a cap or
 /// a dispute or a missing verdict parks for the human, and a dead session fails the run
@@ -230,7 +230,7 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
 
     /// <summary>
     /// A track that comes back clean goes dormant and the other continues alone (Decisions Log
-    /// #62) — and it stays dormant through the other track's fix session, deliberately. The
+    /// #63) — and it stays dormant through the other track's fix session, deliberately. The
     /// review history has to teach which track earns its keep, which it only can if every
     /// recorded pass says which lens produced it (log #59).
     /// </summary>
@@ -278,7 +278,7 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
 
     /// <summary>
     /// Every finding's grade, scope tag, and disposition ride on the pass milestone (Decisions
-    /// Log #62), so "which severities forced which cycles, on which track" is a query over the
+    /// Log #63), so "which severities forced which cycles, on which track" is a query over the
     /// stream. The finding's own text stays an artifact (log #6).
     /// </summary>
     [Fact]
@@ -471,7 +471,7 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
     }
 
     /// <summary>
-    /// The severity gate (Decisions Log #62). Cycle 1 is ungated, so a medium forces cycle 2;
+    /// The severity gate (Decisions Log #63). Cycle 1 is ungated, so a medium forces cycle 2;
     /// cycle 2 is gated here, so its mediums are fixed and the loop ends without another review
     /// pass. That is deliberate, and the residual record is what keeps it honest: the verdict
     /// stays MergeReady, and the settlement says it was Settled rather than Clean.
@@ -525,7 +525,7 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
     }
 
     /// <summary>
-    /// An out-of-scope non-High is not this pull request's work (Decisions Log #62): the daemon
+    /// An out-of-scope non-High is not this pull request's work (Decisions Log #63): the daemon
     /// turns it into a draft bug task carrying the provenance the observation-gates doctrine
     /// asks for, and the merged findings tell the fix session to leave it alone.
     /// </summary>
@@ -582,7 +582,7 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
     }
 
     /// <summary>
-    /// The empty terminal case (Decisions Log #62): a cycle whose findings all route away leaves
+    /// The empty terminal case (Decisions Log #63): a cycle whose findings all route away leaves
     /// nothing anywhere to fix, so no fix session runs and the run settles. Re-reviewing would
     /// read the identical tip and return the identical findings, which is a loop with no exit
     /// rather than convergence — and here it is the run, not one track's convergence rule, that
@@ -628,7 +628,7 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
 
     /// <summary>
     /// The same cycle with the other track still live is not the empty terminal case at all
-    /// (Decisions Log #62): the conformance track forces a fix session that rewrites the branch,
+    /// (Decisions Log #63): the conformance track forces a fix session that rewrites the branch,
     /// so the adversarial track has something new to read and stays alive to read it. Retiring
     /// it at cycle one over an out-of-scope medium would leave the fix commits reviewed by
     /// nobody — a dormant track is deliberately never reawakened — and the fix commits are
@@ -677,7 +677,7 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
     /// A routed defect is deliberately left in the tree — the fix session is told to leave it
     /// alone — and every later reviewer has fresh context, so the same pre-existing line comes
     /// back for as long as anything else keeps the loop alive. It is exported once (Decisions
-    /// Log #62): one draft, one routing event, one residual. Otherwise a single defect becomes
+    /// Log #63): one draft, one routing event, one residual. Otherwise a single defect becomes
     /// a draft per cycle and "3 routed" on the line a human reads to decide how much to trust
     /// the pull request.
     /// </summary>
@@ -716,7 +716,7 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
 
     /// <summary>
     /// Every cycle's reviewer is a fresh session writing the location in its own hand, so the
-    /// once-per-run check compares places rather than strings (Decisions Log #62): `Legacy.cs:12`
+    /// once-per-run check compares places rather than strings (Decisions Log #63): `Legacy.cs:12`
     /// and `./src/Legacy.cs:12` are one defect written twice, and matching them as strings would
     /// hand a human two inert drafts and a residual tally claiming two exported defects.
     /// </summary>
@@ -751,7 +751,7 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
 
     /// <summary>
     /// The once-per-run check compares places, and a file with no line on it is not a place
-    /// (Decisions Log #62). Two different pre-existing defects in one legacy file, neither of
+    /// (Decisions Log #63). Two different pre-existing defects in one legacy file, neither of
     /// which the reviewer put a line number on, are two defects: reading them as one would route
     /// the first, tell the fix session to leave the second alone as somebody else's work, and
     /// leave that second defect recorded nowhere but the cycle's artifact file. The duplicate
@@ -857,7 +857,7 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
     }
 
     /// <summary>
-    /// The adversarial cap is not a spent budget (Decisions Log #62): reaching it means the
+    /// The adversarial cap is not a spent budget (Decisions Log #63): reaching it means the
     /// machine kept finding real high-severity problems, and the park reason says exactly that
     /// so the human knows what they are being asked to look at.
     /// </summary>
@@ -891,7 +891,7 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
 
     /// <summary>
     /// The conformance track grades nothing, so its bound is simply how many times a machine
-    /// may be told the same thing (Decisions Log #62). Still returning findings at its cap parks
+    /// may be told the same thing (Decisions Log #63). Still returning findings at its cap parks
     /// the run, and the reason says why: nothing automated is left to try.
     /// </summary>
     [Fact]

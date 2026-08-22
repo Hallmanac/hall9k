@@ -5,7 +5,7 @@ namespace Hall9k.Domain.Features.Run;
 
 /// <summary>
 /// Whether a review finding is about this branch's own work or about code it merely sits
-/// next to (Decisions Log #62). The anchor is mechanical on purpose, so the tag is checkable
+/// next to (Decisions Log #63). The anchor is mechanical on purpose, so the tag is checkable
 /// against the diff rather than a judgment call: in-scope means the defective line lives in
 /// code this branch added or changed, out-of-scope means the defect is pre-existing on the
 /// base branch.

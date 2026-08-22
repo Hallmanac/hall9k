@@ -13,7 +13,7 @@ namespace Hall9k.Domain.Features.Run.Events;
 /// </para>
 /// <para>
 /// <see cref="Findings"/> carries each finding's grade, scope tag, pointer, and the
-/// disposition the loop chose for it (Decisions Log #62) — the classification, never the text.
+/// disposition the loop chose for it (Decisions Log #63) — the classification, never the text.
 /// That is what lets the history answer which severities actually forced cycles and which
 /// track produced them. Null on streams written before findings were classified; an empty
 /// list on a clean pass, which is a different fact and is recorded as one.

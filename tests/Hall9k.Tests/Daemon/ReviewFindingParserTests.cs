@@ -6,7 +6,7 @@ using Xunit;
 namespace Hall9k.Tests.Daemon;
 
 /// <summary>
-/// Reading the adversarial pass's structured findings (Decisions Log #62). Every declared tag
+/// Reading the adversarial pass's structured findings (Decisions Log #63). Every declared tag
 /// is the reviewer's own observation, and every tag the parser cannot read stays Unknown — the
 /// gate decides what an ungraded finding costs, never this parser.
 /// </summary>

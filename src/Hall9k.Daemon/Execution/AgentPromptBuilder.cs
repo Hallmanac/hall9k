@@ -583,7 +583,7 @@ public static class AgentPromptBuilder
     /// the acceptance criteria are the measuring stick, and repo doctrine (AGENTS.md and the
     /// documents it points at) is the rest of it.
     /// <para>
-    /// This track grades nothing (Decisions Log #62). A criterion is met or it is not, so there
+    /// This track grades nothing (Decisions Log #63). A criterion is met or it is not, so there
     /// is no severity ordering to gate on and no structured-finding contract here — the
     /// adversarial pass carries that. Conformance converges the plain way: clean ends it, and
     /// still finding things at its cycle cap parks the run.
@@ -698,7 +698,7 @@ public static class AgentPromptBuilder
     }
 
     /// <summary>
-    /// The structured-finding contract the adversarial pass answers in (Decisions Log #62).
+    /// The structured-finding contract the adversarial pass answers in (Decisions Log #63).
     /// Two tags ride on every finding and the platform reads both: a severity, which decides
     /// whether the finding forces another review cycle once the gate applies, and a scope tag,
     /// which decides whether the fix belongs in this pull request or in a draft bug task of its
@@ -882,7 +882,7 @@ public static class AgentPromptBuilder
     /// reviewers' verified findings in the same worktree. One fix session per cycle handles
     /// every track's findings together (log #59) — the findings it is handed are the cycle's
     /// merged document, with each finding under the lens that produced it and the platform's
-    /// disposition for it recorded underneath (log #62). Disputes park for a human instead of
+    /// disposition for it recorded underneath (log #63). Disputes park for a human instead of
     /// looping — the daemon parses the resolution line.
     /// <para>
     /// The dispute lever covers a finding's severity as well as the finding itself, which is

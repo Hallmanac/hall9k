@@ -5,7 +5,7 @@ namespace Hall9k.Domain.Features.Run;
 
 /// <summary>
 /// How a review track — and, once every track has ended, the run's whole review — reached
-/// merge-ready (Decisions Log #62). The terminal verdict stays
+/// merge-ready (Decisions Log #63). The terminal verdict stays
 /// <see cref="ReviewVerdict.MergeReady"/> either way; this is the honesty that rides beside
 /// it, because "a reviewer saw this exact tip and found nothing" and "the severity gate ended
 /// the loop over findings that were fixed but never re-read" are not the same claim and a

@@ -2,7 +2,7 @@ namespace Hall9k.Domain.Features.Run.Events;
 
 /// <summary>
 /// An out-of-scope, non-High review finding was routed out of this pull request instead of
-/// fixed in it (Decisions Log #62): the daemon turned the reviewer's structured finding into a
+/// fixed in it (Decisions Log #63): the daemon turned the reviewer's structured finding into a
 /// draft bug task, inert until a human publishes it. A pre-existing defect neither grows this
 /// diff nor gets forgotten.
 /// <para>

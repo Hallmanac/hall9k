@@ -191,7 +191,7 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
     }
 
     /// <summary>
-    /// How the newest run's pre-PR review ended (Decisions Log #62). Merge-ready is one word for
+    /// How the newest run's pre-PR review ended (Decisions Log #63). Merge-ready is one word for
     /// two different things, and this line is what keeps them apart: clean means a reviewer read
     /// the final tip and found nothing, while settled means the severity gate ended the loop
     /// over findings that were fixed but never read again, or routed to bug tasks of their own.

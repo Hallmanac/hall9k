@@ -32,7 +32,7 @@ public sealed class ReviewLensTests
 
     /// <summary>
     /// A track that concluded is not missing from the cycle, it is finished with the run
-    /// (Decisions Log #62) — which is what lets a dormant conformance track stay dormant while
+    /// (Decisions Log #63) — which is what lets a dormant conformance track stay dormant while
     /// the adversarial one keeps going alone.
     /// </summary>
     [Fact]

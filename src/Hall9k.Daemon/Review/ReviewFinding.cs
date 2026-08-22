@@ -3,7 +3,7 @@ using Hall9k.Domain.Features.Run;
 namespace Hall9k.Daemon.Review;
 
 /// <summary>
-/// One finding as a reviewer wrote it (Decisions Log #62): the grade and scope tag it declared,
+/// One finding as a reviewer wrote it (Decisions Log #63): the grade and scope tag it declared,
 /// where it points, and its own text. The text lives here rather than on the run stream because
 /// findings are artifacts, not event payload (log #6) — it is carried in process only as far as
 /// the fix session's prompt and, for a routed finding, the draft bug task's context.

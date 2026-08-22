@@ -1,7 +1,7 @@
 namespace Hall9k.Domain.Features.Run;
 
 /// <summary>
-/// The residual counts a settling run reports (Decisions Log #62), counted per <i>defect</i>
+/// The residual counts a settling run reports (Decisions Log #63), counted per <i>defect</i>
 /// rather than per recorded residual. The run stream accumulates a residual every time a finding
 /// is routed or shipped unreviewed, and one defect can leave more than one: a routing that
 /// failed and was retried leaves both records, and so does a routing that failed twice.

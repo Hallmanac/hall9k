@@ -4,7 +4,7 @@ using System.Text.Json.Serialization;
 namespace Hall9k.Domain.Features.Run;
 
 /// <summary>
-/// What the review loop decided to do with one finding (Decisions Log #62), recorded by the
+/// What the review loop decided to do with one finding (Decisions Log #63), recorded by the
 /// machinery rather than by any agent: severity and scope are the reviewer's observations,
 /// and this is the platform's decision over them. Recording it per finding is what lets the
 /// history answer "which findings actually cost a cycle" without re-deriving the policy that

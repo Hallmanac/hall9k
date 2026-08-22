@@ -30,7 +30,7 @@ namespace Hall9k.Daemon.Review;
 /// (ReviewParkResolved re-enters the loop here). The loop is a state machine over the run
 /// stream, so a restarted daemon resumes it exactly where the events left off.
 /// <para>
-/// A cycle runs one pass per still-active <b>track</b> (Decisions Log #59, #62) — conformance
+/// A cycle runs one pass per still-active <b>track</b> (Decisions Log #59, #63) — conformance
 /// and adversarial — dispatched together and awaited one at a time, so the wall clock is the
 /// slower pass rather than their sum. Each track converges on its own terms
 /// (<see cref="ReviewTrackPolicy"/>) and drops out of the loop when it does: a clean track goes
@@ -193,7 +193,7 @@ public sealed class ReviewEngine(
                     if (run.ActiveReviewLenses.Count == 0)
                     {
                         // Every track has concluded, so there is nobody left to re-review for and
-                        // the loop goes on to record that it settled (log #62). The gates above
+                        // the loop goes on to record that it settled (log #63). The gates above
                         // still ran: a settled ending ships the terminal fix unread by a reviewer,
                         // never unbuilt and untested.
                         await SettleAsync(run, cancellationToken);
@@ -527,7 +527,7 @@ public sealed class ReviewEngine(
     }
 
     /// <summary>
-    /// Turns this cycle's out-of-scope, non-High findings into draft bug tasks (log #62), in
+    /// Turns this cycle's out-of-scope, non-High findings into draft bug tasks (log #63), in
     /// their own transaction ahead of the cycle's milestones. Nothing in here may fail the
     /// review: routing is a courtesy paid to a defect this pull request is not fixing, and a
     /// courtesy that fails is recorded as having failed rather than allowed to take a finished
@@ -695,7 +695,7 @@ public sealed class ReviewEngine(
     }
 
     /// <summary>
-    /// Writes down how the loop ended (log #62). The verdict the rest of the pipeline reads is
+    /// Writes down how the loop ended (log #63). The verdict the rest of the pipeline reads is
     /// MergeReady either way; this is the sentence beside it that says whether a reviewer
     /// confirmed the final tip or the severity gate ended the loop over findings nobody read
     /// again, and how many residuals that left.
@@ -718,7 +718,7 @@ public sealed class ReviewEngine(
         // the track left behind, it left behind when it was routed (Apply(ReviewFindingRouted)),
         // and nothing was fixed on the cycle the run stopped on or the phase would be FixNeeded.
         ReviewSettlement settlement = run.DeriveSettlement();
-        // Counted per defect rather than per recorded residual (log #62): a routing that failed
+        // Counted per defect rather than per recorded residual (log #63): a routing that failed
         // is offered again next cycle, so one defect can leave both records on the stream, and
         // counting the records would report a defect as unrouted when a draft bug task exists.
         ReviewResidualTally residuals = run.DeriveResidualTally();
@@ -818,7 +818,7 @@ public sealed class ReviewEngine(
 
     /// <summary>
     /// What the platform decided about each finding, written by machinery beneath the
-    /// reviewers' own words (log #62). Severity and scope are the reviewer's observations; this
+    /// reviewers' own words (log #63). Severity and scope are the reviewer's observations; this
     /// section is the decision over them, and stating it here is what keeps the fix session
     /// from having to re-derive a policy it does not know.
     /// </summary>

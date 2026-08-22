@@ -5,7 +5,7 @@ using Xunit;
 namespace Hall9k.Tests.Daemon;
 
 /// <summary>
-/// Comparing two stated finding locations as places rather than as strings (Decisions Log #62),
+/// Comparing two stated finding locations as places rather than as strings (Decisions Log #63),
 /// which is what keeps one pre-existing defect from becoming one draft bug task per cycle — and,
 /// just as deliberately, what keeps two different defects in one file from being collapsed into
 /// one.

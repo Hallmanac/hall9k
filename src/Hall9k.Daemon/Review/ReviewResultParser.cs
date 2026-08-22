@@ -10,7 +10,7 @@ namespace Hall9k.Daemon.Review;
 /// sentinel — the engine decides what honesty requires, never this parser.
 /// <para>
 /// The adversarial pass additionally opens each finding with a "FINDING:" header carrying its
-/// grade and scope tag (Decisions Log #62), which <see cref="ParseFindings"/> reads. Same
+/// grade and scope tag (Decisions Log #63), which <see cref="ParseFindings"/> reads. Same
 /// discipline: an absent or unrecognized tag becomes Unknown here, and the gate — not this
 /// parser — decides what an ungraded finding costs.
 /// </para>

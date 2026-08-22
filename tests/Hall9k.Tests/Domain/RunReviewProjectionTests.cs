@@ -87,7 +87,7 @@ public sealed class RunReviewProjectionTests
     }
 
     /// <summary>
-    /// Merge-ready is one word for two different claims (Decisions Log #62), so the row carries
+    /// Merge-ready is one word for two different claims (Decisions Log #63), so the row carries
     /// the settlement beside the verdict: a settled ending reports the residuals it shipped
     /// without a second read, and a run whose review predates settlements reports neither
     /// rather than being read as clean.

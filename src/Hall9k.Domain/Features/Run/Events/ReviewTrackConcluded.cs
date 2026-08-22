@@ -1,7 +1,7 @@
 namespace Hall9k.Domain.Features.Run.Events;
 
 /// <summary>
-/// One review track finished and went dormant (Decisions Log #62). Clean means a reviewer read
+/// One review track finished and went dormant (Decisions Log #63). Clean means a reviewer read
 /// the tip and found nothing; Settled means the track ended over findings no reviewer will
 /// confirm resolved — the severity gate closing an adversarial track over Mediums and Lows, or
 /// a cycle whose findings were all routed to draft bug tasks.

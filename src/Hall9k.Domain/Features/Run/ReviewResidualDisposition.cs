@@ -4,7 +4,7 @@ using System.Text.Json.Serialization;
 namespace Hall9k.Domain.Features.Run;
 
 /// <summary>
-/// What became of a finding that a track ended on (Decisions Log #62). It is a separate
+/// What became of a finding that a track ended on (Decisions Log #63). It is a separate
 /// vocabulary from <see cref="ReviewFindingDisposition"/> on purpose: that one says what the
 /// loop decided to do with a finding while the loop was still running, and this one says what
 /// the record shows once the loop is over — including the part a verdict alone would hide,

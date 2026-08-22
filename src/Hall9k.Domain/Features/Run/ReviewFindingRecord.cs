@@ -1,7 +1,7 @@
 namespace Hall9k.Domain.Features.Run;
 
 /// <summary>
-/// One review finding as the run stream records it (Decisions Log #62): its grade, its scope
+/// One review finding as the run stream records it (Decisions Log #63): its grade, its scope
 /// tag, where it points, and what the loop decided to do with it — never the finding's own
 /// text, which stays an artifact in the run's directory (log #6).
 /// <para>

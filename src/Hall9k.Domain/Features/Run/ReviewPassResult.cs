@@ -14,7 +14,7 @@ namespace Hall9k.Domain.Features.Run;
 /// stream, not a decision waiting on a human.
 /// </para>
 /// <para>
-/// Findings is the pass's classified findings (Decisions Log #62) — grade, scope, and the
+/// Findings is the pass's classified findings (Decisions Log #63) — grade, scope, and the
 /// disposition the loop chose — and it is what the loop counts to decide whether anything is
 /// still owed a fix session this cycle. Empty on a clean pass, and empty on a pass recorded
 /// before findings were classified except for the one placeholder a needs-fixes verdict

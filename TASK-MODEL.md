@@ -548,7 +548,7 @@ public sealed record TokensRecorded(     // from the stream-json result payload,
 // and PullRequestOpener. Full findings text is a disk artifact (log #6), never payload.
 // A cycle runs one pass per still-active lens (log #59), so the dispatch and pass events
 // come one per lens while ReviewCompleted stays the cycle's single merged milestone. Each
-// lens is a track converging on its own terms (log #62): it concludes with its own event,
+// lens is a track converging on its own terms (log #63): it concludes with its own event,
 // and the loop ends with one ReviewSettled saying how merge-ready was reached.
 public sealed record ReviewDispatched(   // one review pass spawned over the diff, fresh session;
     Guid Id,                             // one per lens, so a cycle appends two of these (log #59).
@@ -567,8 +567,8 @@ public sealed record ReviewPassCompleted( // ONE lens of the cycle returned its 
     ReviewVerdict Verdict,               //   is a query over the stream, not an impression
     DateTimeOffset CompletedAt,
     IReadOnlyList<ReviewFindingRecord>?  // each finding's grade, scope tag, pointer, and the
-        Findings = null);                //   disposition the loop chose (log #62) — classification
-                                         //   only, never the text. Null on pre-#62 streams.
+        Findings = null);                //   disposition the loop chose (log #63) — classification
+                                         //   only, never the text. Null on pre-#63 streams.
 public sealed record ReviewCompleted(    // the CYCLE's merged verdict over every lens (log #59),
     Guid Id,                             // appended in the same transaction as the cycle's last
     int Cycle,                           // ReviewPassCompleted. Merged findings artifact:
@@ -589,7 +589,7 @@ public sealed record ReviewVerdictReprompted( // verdict-less pass resumed ONCE 
                                          //   CYCLE's, not each lens's (log #59)
 public sealed record ReviewFixDispatched( // fix session in the same worktree, findings as prompt;
     Guid Id,                             // counted for the record; the loop's bounds are the
-                                         //   per-track cycle caps (log #62)
+                                         //   per-track cycle caps (log #63)
     Guid SessionId,
     int Cycle,
     int ProcessId,
@@ -599,11 +599,11 @@ public sealed record ReviewFixDispatched( // fix session in the same worktree, f
 public sealed record ReviewFixCompleted( // Fixed/Unknown -> gates re-run, then a fresh review (or, with
     Guid Id,                             //   every track concluded, settling); Disputed -> park. Even the
                                          //   terminal fix re-runs the gates: a settled ending ships
-                                         //   commits no REVIEWER read, never unbuilt ones (log #62)
+                                         //   commits no REVIEWER read, never unbuilt ones (log #63)
     int Cycle,
     ReviewFixOutcome Outcome,
     DateTimeOffset CompletedAt);
-public sealed record ReviewTrackConcluded( // one track finished and went dormant (log #62). Clean = a
+public sealed record ReviewTrackConcluded( // one track finished and went dormant (log #63). Clean = a
     Guid Id,                             //   reviewer read the tip and found nothing; Settled = the
     ReviewLens Lens,                     //   severity gate, scope routing, or the run settling out
     int Cycle,                           //   from under a track still asking for another cycle. A
@@ -612,7 +612,7 @@ public sealed record ReviewTrackConcluded( // one track finished and went dorman
         Residuals,                       // what it ended on unconfirmed: grade, scope, and
     DateTimeOffset ConcludedAt);         //   fixed-unreviewed vs routed
 public sealed record ReviewFindingRouted( // an out-of-scope non-high went to a draft bug task instead
-    Guid Id,                             //   of into this diff (log #62). DraftTaskId is null and
+    Guid Id,                             //   of into this diff (log #63). DraftTaskId is null and
     ReviewLens Lens,                     //   FailureReason set when creation failed: routing is a
     int Cycle,                           //   courtesy, and a courtesy that fails never fails the
     ReviewSeverity Severity,             //   review loop — but it is recorded as having failed.
@@ -620,7 +620,7 @@ public sealed record ReviewFindingRouted( // an out-of-scope non-high went to a 
     Guid? DraftTaskId,
     string? FailureReason,
     DateTimeOffset RoutedAt);
-public sealed record ReviewSettled(      // the loop ended; PullRequestOpener may proceed (log #62).
+public sealed record ReviewSettled(      // the loop ended; PullRequestOpener may proceed (log #63).
     Guid Id,                             //   The verdict is always MergeReady; Settlement is how it
     int Cycle,                           //   was reached, and the counts are the residuals it left.
     ReviewSettlement Settlement,         //   Absent on runs whose review predates tracks, whose
@@ -756,7 +756,7 @@ same transaction as that last pass event. **MergeReady requires every lens clean
   graded — parks immediately with both positions on disk (findings + fix-position
   artifacts) rather than looping on judgment.
 
-**Each lens is a track with its own cycle count and its own convergence rule** (log #62).
+**Each lens is a track with its own cycle count and its own convergence rule** (log #63).
 Conformance grades nothing and ends the moment it is clean; still returning findings at
 `MaxComplianceReviewCycles` (3) parks the run, because nothing automated is left to try.
 Adversarial runs under a **severity gate**: through

@@ -37,7 +37,7 @@ public sealed class DaemonOptions
 
     /// <summary>
     /// Cycles the conformance track may run before the run parks for a human (Decisions Log
-    /// #62). Conformance has no severity grades to gate on — a criterion is met or it is not —
+    /// #63). Conformance has no severity grades to gate on — a criterion is met or it is not —
     /// so its bound is simply "how many times may a machine be told the same thing". A
     /// conformance review still returning findings at this cycle parks, because at that point
     /// nothing automated is left to try.
@@ -45,7 +45,7 @@ public sealed class DaemonOptions
     public int MaxComplianceReviewCycles { get; set; } = 3;
 
     /// <summary>
-    /// Cycles the adversarial track may run before the run parks (Decisions Log #62). It is
+    /// Cycles the adversarial track may run before the run parks (Decisions Log #63). It is
     /// deliberately far larger than the conformance cap: the severity gate, not the counter, is
     /// what ends this track in practice, and reaching this many cycles means the machine kept
     /// finding real high-severity problems — a fact a human should look at rather than a
@@ -54,7 +54,7 @@ public sealed class DaemonOptions
     public int MaxAdversarialReviewCycles { get; set; } = 10;
 
     /// <summary>
-    /// The first adversarial cycle the severity gate applies to (Decisions Log #62). Before it,
+    /// The first adversarial cycle the severity gate applies to (Decisions Log #63). Before it,
     /// every finding of every grade is fixed and forces a fresh re-review; from it onward only
     /// a High forces the next cycle while Mediums and Lows are still fixed. The early cycles
     /// get full rigor on purpose — the code is still converging there — and the gate exists for

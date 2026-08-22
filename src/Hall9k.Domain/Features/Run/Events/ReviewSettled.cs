@@ -1,7 +1,7 @@
 namespace Hall9k.Domain.Features.Run.Events;
 
 /// <summary>
-/// The pre-PR review loop ended and the run may open its pull request (Decisions Log #62).
+/// The pre-PR review loop ended and the run may open its pull request (Decisions Log #63).
 /// The terminal verdict is always <see cref="ReviewVerdict.MergeReady"/> — that is what the
 /// rest of the pipeline reads — and <see cref="Settlement"/> is how it was reached: Clean when
 /// a reviewer read the final tip and found nothing, Settled when the severity gate closed the

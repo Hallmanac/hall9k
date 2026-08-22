@@ -1,7 +1,7 @@
 namespace Hall9k.Domain.Features.Run;
 
 /// <summary>
-/// Whether two stated finding locations name the same place (Decisions Log #62). A location is
+/// Whether two stated finding locations name the same place (Decisions Log #63). A location is
 /// whatever the reviewer wrote in its finding header — `src/Some/File.cs:123` by contract, but
 /// the same line is also written `./src/Some/File.cs:123`, `src\Some\File.cs:123`, and
 /// `File.cs:123` — so comparing the strings as they arrived reports one defect as several. Two

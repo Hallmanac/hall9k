@@ -12,7 +12,7 @@ namespace Hall9k.Domain.Features.Run;
 /// the code is wrong somewhere and hunts defect classes without being told what the work
 /// was supposed to do.
 /// <para>
-/// A lens is also a <em>track</em> (Decisions Log #62): each one converges on its own terms
+/// A lens is also a <em>track</em> (Decisions Log #63): each one converges on its own terms
 /// and drops out of the loop on its own. Conformance ends the moment it comes back clean and
 /// parks the run if it is still finding things after its cycle cap; Adversarial keeps going
 /// under the severity gate up to its much larger cap. A track that ends goes dormant and the
@@ -79,7 +79,7 @@ public sealed record ReviewLens
     /// have answered: a verdict reached without a lens is a lens that never looked, not a lens
     /// that found nothing.
     /// <para>
-    /// <paramref name="required"/> is the run's still-active tracks (Decisions Log #62), not
+    /// <paramref name="required"/> is the run's still-active tracks (Decisions Log #63), not
     /// <see cref="CycleLenses"/>: a track that already concluded is not missing from the cycle,
     /// it is finished with the run.
     /// </para>

@@ -3,7 +3,7 @@ using Hall9k.Domain.Features.Run;
 namespace Hall9k.Daemon.Review;
 
 /// <summary>
-/// What one review track does with the cycle it just finished (Decisions Log #62). This is the
+/// What one review track does with the cycle it just finished (Decisions Log #63). This is the
 /// convergence rule in one place, kept out of the aggregate (deciders own the judgment, the
 /// aggregate records it) and out of the engine (which owns dispatching, waiting, and writing
 /// the stream).

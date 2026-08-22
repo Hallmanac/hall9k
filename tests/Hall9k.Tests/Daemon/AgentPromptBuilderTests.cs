@@ -274,7 +274,7 @@ public sealed class AgentPromptBuilderTests : IDisposable
 
     /// <summary>
     /// The severity anchors and the scope anchor are stated to the reviewer (Decisions Log
-    /// #62), never left to its intuition: a grade every reviewer invents for itself is not a
+    /// #63), never left to its intuition: a grade every reviewer invents for itself is not a
     /// gate, and a scope tag that is a judgment call is not checkable against the diff.
     /// </summary>
     [Fact]
@@ -301,7 +301,7 @@ public sealed class AgentPromptBuilderTests : IDisposable
     }
 
     /// <summary>
-    /// The conformance track grades nothing (Decisions Log #62): a criterion is met or it is
+    /// The conformance track grades nothing (Decisions Log #63): a criterion is met or it is
     /// not, so handing it a severity vocabulary would invite grades nobody reads.
     /// </summary>
     [Fact]
@@ -483,7 +483,7 @@ public sealed class AgentPromptBuilderTests : IDisposable
 
     /// <summary>
     /// The fix session follows the platform's disposition rather than re-deciding it, and the
-    /// dispute lever covers a finding's grade as well as the finding (Decisions Log #62). An
+    /// dispute lever covers a finding's grade as well as the finding (Decisions Log #63). An
     /// agent that could quietly re-grade a High as a Low would be choosing its own exit from
     /// the convergence rule.
     /// </summary>

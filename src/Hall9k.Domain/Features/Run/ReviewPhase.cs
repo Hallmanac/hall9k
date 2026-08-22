@@ -21,7 +21,7 @@ public enum ReviewPhase
     /// <summary>The last fix session finished; verification gates re-run, then a fresh review.</summary>
     Reverify,
     /// <summary>
-    /// Every review track has concluded and nothing is left to fix (Decisions Log #62): the
+    /// Every review track has concluded and nothing is left to fix (Decisions Log #63): the
     /// loop is over and owes the stream one honest account of how it ended — Clean or Settled,
     /// with the residuals it leaves behind. One <see cref="Events.ReviewSettled"/> away from
     /// MergeReady.

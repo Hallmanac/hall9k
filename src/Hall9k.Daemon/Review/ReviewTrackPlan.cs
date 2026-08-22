@@ -3,7 +3,7 @@ using Hall9k.Domain.Features.Run;
 namespace Hall9k.Daemon.Review;
 
 /// <summary>
-/// What one review track does with the cycle it just finished (Decisions Log #62), as
+/// What one review track does with the cycle it just finished (Decisions Log #63), as
 /// <see cref="ReviewTrackPolicy"/> decided it: whether the track runs again, how it ended if
 /// not, and how its findings split between this pull request and the drafts that carry the
 /// rest away.

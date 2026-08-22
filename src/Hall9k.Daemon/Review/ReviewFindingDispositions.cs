@@ -2,7 +2,7 @@ namespace Hall9k.Daemon.Review;
 
 /// <summary>
 /// The one name for each heading the review loop writes into a cycle's merged findings
-/// (Decisions Log #62). The engine writes each section under these strings and the fix prompt
+/// (Decisions Log #63). The engine writes each section under these strings and the fix prompt
 /// points the agent at them by name, so the two are the same string rather than two spellings
 /// that quietly drift until the instruction refers to a section that is no longer there.
 /// <para>

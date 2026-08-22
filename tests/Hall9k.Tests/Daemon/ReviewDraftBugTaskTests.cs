@@ -10,7 +10,7 @@ using Xunit;
 namespace Hall9k.Tests.Daemon;
 
 /// <summary>
-/// The draft bug task an out-of-scope finding becomes (Decisions Log #62). Everything it says
+/// The draft bug task an out-of-scope finding becomes (Decisions Log #63). Everything it says
 /// about its own provenance is recorded by machinery, and the one fact it does not have — the
 /// pull request, which does not exist at pre-PR review time — is stated as absent rather than
 /// left for a reader to assume went unrecorded.

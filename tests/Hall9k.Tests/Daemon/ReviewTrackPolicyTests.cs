@@ -7,7 +7,7 @@ using Xunit;
 namespace Hall9k.Tests.Daemon;
 
 /// <summary>
-/// The twin-track convergence rules (Decisions Log #62), as the pure decider behind them:
+/// The twin-track convergence rules (Decisions Log #63), as the pure decider behind them:
 /// compliance ends clean or parks at its cap, adversarial runs under the severity gate, and
 /// scope decides where a fix lives rather than how much it matters.
 /// </summary>

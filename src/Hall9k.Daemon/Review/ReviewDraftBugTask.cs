@@ -9,7 +9,7 @@ using Hall9k.Domain.Features.Tasks.Projections;
 namespace Hall9k.Daemon.Review;
 
 /// <summary>
-/// Turns an out-of-scope review finding into a draft bug task (Decisions Log #62). A defect the
+/// Turns an out-of-scope review finding into a draft bug task (Decisions Log #63). A defect the
 /// reviewer found in code this branch never touched should not grow this branch's diff, and it
 /// should not evaporate either; a draft is the shape that does both, because a draft dispatches
 /// nothing until a human publishes and assigns it (log #34).

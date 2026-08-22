@@ -4,7 +4,7 @@ using System.Text.Json.Serialization;
 namespace Hall9k.Domain.Features.Run;
 
 /// <summary>
-/// How much an adversarial review finding matters (Decisions Log #62). The three grades are
+/// How much an adversarial review finding matters (Decisions Log #63). The three grades are
 /// what the severity gate reads: from the gate cycle onward only a High forces another
 /// adversarial cycle, while Mediums and Lows are still fixed and simply stop re-triggering
 /// the loop. The anchors are stated to the reviewer in the prompt rather than left to its
