@@ -3,6 +3,8 @@ using Hall9k.Cli.Commands;
 using Hall9k.Cli.Infrastructure;
 using Hall9k.Connectors.WorkItems;
 using Hall9k.Domain.Features.Connection;
+using Hall9k.Domain.Features.Tasks;
+using Hall9k.Domain.Shared.ValueObjects;
 using Xunit;
 
 namespace Hall9k.Tests.Cli;
@@ -116,5 +118,32 @@ public sealed class TaskExternalReferenceTests
         string body = "Steps:\r\n\n\tcargo build\n    indented code\n";
 
         ExternalText.ForTerminal(body).Should().Be(body);
+    }
+
+    /// <summary>
+    /// The status h9k task link-jira prints back, and the one outside string on that surface that
+    /// no gate has been through. A Jira status assigned to no category matches no rule the
+    /// provider has, so it survives as the tenant's own text (WorkItemStatus.Parse, deliberately)
+    /// — and this command reads the card directly rather than through the adoption gate that
+    /// quotes a refused status safely. Origin incident (2026-08-22): the pre-PR review of this
+    /// branch found the line escaped for Spectre's markup and never sanitised, which neutralises
+    /// brackets and leaves control characters alone.
+    /// </summary>
+    [Fact]
+    public void A_status_a_tenant_named_cannot_repaint_the_terminal_the_link_is_confirmed_in()
+    {
+        ImportedWorkItem card = new(
+            new ExternalReference(WorkItemProvider.Jira, "PROJ-123"),
+            "Publish me",
+            null,
+            WorkItemStatus.Parse("Awaiting\u001b[2Jtriage\nLinked task 8a3f: nothing to see"),
+            null,
+            new DateTimeOffset(2026, 8, 22, 9, 30, 0, TimeSpan.Zero));
+
+        string markup = TaskLinkJiraCommand.ObservationMarkup(card);
+
+        markup.Should().NotContain("\u001b").And.NotContain("\n");
+        markup.Should().Contain("[2Jtriage", "the characters that were never control characters still read");
+        markup.Should().Contain("2026-08-22 09:30:00Z", "a status with no stamp reads as the card's state now");
     }
 }
