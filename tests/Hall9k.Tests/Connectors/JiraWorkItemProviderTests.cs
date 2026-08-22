@@ -309,6 +309,65 @@ public sealed class JiraWorkItemProviderTests : IDisposable
     }
 
     /// <summary>
+    /// A JSON object is not a card either, and this is the gate that says so. Origin incident
+    /// (2026-08-22): the pre-PR review of this branch found the read stopping at "is it an
+    /// object", so an identity-aware proxy answering 200 with its own JSON was mapped into a card
+    /// out of defaults: the key that was asked for, an empty title, and a status nobody read.
+    /// h9k task link-jira has no second gate behind this one, so that card would have been
+    /// recorded on the task as verified, which is the one thing the command exists to prevent.
+    /// </summary>
+    [Theory]
+    [InlineData("""{"error": "authentication required", "login_url": "https://sso.example.com"}""")]
+    [InlineData("{}")]
+    [InlineData("""{"fields": {"summary": "Looks like a card, names none"}}""")]
+    public async Task A_two_hundred_carrying_an_object_that_names_no_card_is_refused(string body)
+    {
+        RecordingRequester jira = new(200, body);
+
+        Func<Task> read = () => Provider(jira).ReadAsync(
+            JiraIssueKey.Parse("PROJ-123", new Uri("https://hall9k.atlassian.net")), Token);
+
+        (await read.Should().ThrowAsync<DomainValidationException>())
+            .WithMessage("*not a Jira card*")
+            .WithMessage("*carries no key*",
+                "the refusal names what was missing, because the site URL is the usual cause");
+    }
+
+    [Fact]
+    public async Task A_key_that_does_not_read_as_one_is_refused_rather_than_swapped_for_the_asked_key()
+    {
+        // The answered key wins over the asked one, so an answer that is not a key leaves nothing
+        // to record: filing the card under the key that was asked for would be recording the
+        // request as though it were the observation.
+        RecordingRequester jira = new(200, """
+            {
+              "key": "not-a-key",
+              "fields": { "summary": "s", "status": { "name": "To Do", "statusCategory": { "key": "new" } } }
+            }
+            """);
+
+        Func<Task> read = () => Provider(jira).ReadAsync(
+            JiraIssueKey.Parse("PROJ-123", new Uri("https://hall9k.atlassian.net")), Token);
+
+        (await read.Should().ThrowAsync<DomainValidationException>())
+            .WithMessage("*not a Jira card*not-a-key*");
+    }
+
+    [Fact]
+    public async Task A_card_document_with_no_fields_is_refused_rather_than_read_as_an_empty_card()
+    {
+        // Every read asks for the fields by name, so a document without them says neither what
+        // the card is called nor what state it is in: there is nothing here that was observed.
+        RecordingRequester jira = new(200, """{"key": "PROJ-123"}""");
+
+        Func<Task> read = () => Provider(jira).ReadAsync(
+            JiraIssueKey.Parse("PROJ-123", new Uri("https://hall9k.atlassian.net")), Token);
+
+        (await read.Should().ThrowAsync<DomainValidationException>())
+            .WithMessage("*not a Jira card*carries no fields*");
+    }
+
+    /// <summary>
     /// The sign-in gate exists to prove credentials before anything is written down, so a 2xx
     /// that proves nothing has to be refused as loudly as a 401. Origin incident (2026-08-22):
     /// the pre-PR review of this branch found the check treating any parseable body as a
