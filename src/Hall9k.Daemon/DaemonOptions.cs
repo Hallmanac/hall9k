@@ -103,6 +103,42 @@ public sealed class DaemonOptions
     public int MaxReviewRerequestsAfterFixes { get; set; } = 2;
 
     /// <summary>
+    /// How long a card-publication session (backlog 18) gets before the daemon stops waiting and
+    /// terminates it. Generous, because the session may be reading a repository's rules and
+    /// talking to Jira over MCP, and bounded for the same reason the synthesis pass is bounded: a
+    /// hung session that nothing ever gives up on holds the publication queue behind it forever,
+    /// and an abandoned agent burning tokens for nobody is worse than a request that says it
+    /// timed out and can be run again.
+    /// </summary>
+    public TimeSpan CardPublicationTimeout { get; set; } = TimeSpan.FromMinutes(15);
+
+    /// <summary>
+    /// How often the daemon looks for publication requests. The doorbell usually gets there
+    /// first (h9k task push-to-jira rings it); this is the sweep that covers a request made while
+    /// the daemon was down.
+    /// </summary>
+    public TimeSpan CardPublicationPollInterval { get; set; } = TimeSpan.FromSeconds(30);
+
+    /// <summary>
+    /// How long a publication session dispatched by <em>another</em> node may stand before this
+    /// node ends the request rather than waiting on a machine it cannot ask.
+    /// <para>
+    /// Adoption is scoped to the node that spawned the session, because a pid means nothing off
+    /// the machine that issued it — which leaves a dispatch recorded against a node that never
+    /// comes back with nothing to clear it: the sweep skips a dispatched request, push-to-jira
+    /// refuses while one is outstanding, link-jira needs a card key that may not exist, and
+    /// abandoning deliberately keeps the marker. This is the way out, and it is the same shape as
+    /// <see cref="LeaseTimeout" />: what nobody is heard from about for long enough is ended.
+    /// It is generous next to <see cref="CardPublicationTimeout" /> on purpose — a node that is
+    /// alive stops its own session at that ceiling and records the outcome itself, so anything
+    /// still standing four times later is a node that is not there. Origin incident (2026-08-22):
+    /// the pre-PR review of this branch traced it from a machine rename, which gives the same
+    /// install a new node identity and strands every publication the old one dispatched.
+    /// </para>
+    /// </summary>
+    public TimeSpan ForeignPublicationCeiling { get; set; } = TimeSpan.FromHours(1);
+
+    /// <summary>
     /// Platform-default commit style for follow-up runs (Narrative or Append), applied
     /// when a project sets none of its own (Decisions Log #26). Narrative folds fixes
     /// into their owning commits per the AGENTS.md authored-history rule. This is the
@@ -160,6 +196,9 @@ public sealed class RoleModelDefaults
     /// <summary>The (future) draft-refinement run, backlog IDEA-draft-refinement-runs: configurable before it exists.</summary>
     public string Refinement { get; set; } = string.Empty;
 
+    /// <summary>The session that writes a task up as a card in an external tracker (backlog 18).</summary>
+    public string Publication { get; set; } = string.Empty;
+
     public AgentModel For(AgentRole role) => role switch
     {
         _ when role == AgentRole.Build => AgentModel.FromInput(Build),
@@ -167,6 +206,7 @@ public sealed class RoleModelDefaults
         _ when role == AgentRole.Fix => AgentModel.FromInput(Fix),
         _ when role == AgentRole.Synthesis => AgentModel.FromInput(Synthesis),
         _ when role == AgentRole.Refinement => AgentModel.FromInput(Refinement),
+        _ when role == AgentRole.Publication => AgentModel.FromInput(Publication),
         _ => AgentModel.Unknown,
     };
 }

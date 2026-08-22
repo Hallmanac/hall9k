@@ -5,7 +5,7 @@ namespace Hall9k.Domain.Features.Connection;
 
 /// <summary>
 /// Structured pointer to where a credential lives — never the secret itself.
-/// Canonical forms: "gh-cli", "keychain:&lt;name&gt;", "env:&lt;variable&gt;".
+/// Canonical forms: "gh-cli", "keychain:&lt;name&gt;", "env:&lt;variable&gt;", "file:&lt;name&gt;".
 /// </summary>
 [JsonConverter(typeof(CredentialReferenceJsonConverter))]
 public sealed record CredentialReference(CredentialKind Kind, string? Identifier)
@@ -15,6 +15,12 @@ public sealed record CredentialReference(CredentialKind Kind, string? Identifier
     public static CredentialReference Keychain(string name) => new(CredentialKind.Keychain, name);
 
     public static CredentialReference EnvironmentVariable(string name) => new(CredentialKind.EnvironmentVariable, name);
+
+    /// <summary>
+    /// A secret Hall9k wrote itself, named by the file it lives in under the platform home.
+    /// The name is the reference; reading it back is the vault's job, not this type's.
+    /// </summary>
+    public static CredentialReference File(string name) => new(CredentialKind.File, name);
 
     public static CredentialReference Parse(string? value)
     {

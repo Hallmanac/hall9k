@@ -624,4 +624,113 @@ public static class TaskDecider
 
         return new TaskAbandoned(task.Id, reason, abandonedAt, abandonedByOwnerId);
     }
+
+    /// <summary>
+    /// Ask for this task to be published as a card in an external system (backlog 18). The
+    /// decision this makes is about the task and only about the task: whether there is work here
+    /// worth a card, and whether one already exists. Everything about the card itself — its
+    /// issue type, its required fields, which board it is routed to — is deliberately not
+    /// modelled here, because those are the project's rules rather than the platform's, and the
+    /// session this request becomes reads them from the project's own repo skills.
+    /// <para>
+    /// It is allowed from any live state, drafts included. A card is how a team sees that work
+    /// exists, and a draft is exactly the stage where somebody wants that visible; making
+    /// publication wait for Published would tie a Jira board to a readiness gate that has
+    /// nothing to do with it.
+    /// </para>
+    /// </summary>
+    public static WorkItemPublicationRequested RequestWorkItemPublication(
+        TaskAggregate task,
+        WorkItemProvider provider,
+        JiraProjectKey projectKey,
+        DateTimeOffset requestedAt,
+        Guid requestedByOwnerId)
+    {
+        if (provider == WorkItemProvider.Unknown)
+        {
+            throw new DomainValidationException("Publishing a task needs a known destination (for example jira).");
+        }
+
+        // An abandoned task is one a human walked away from; filing a card for it would put work
+        // on somebody's board that nobody here intends to do.
+        if (task.State == TaskState.Abandoned)
+        {
+            throw new DomainConflictException(
+                $"Task {task.Id} was abandoned, so there is no work to put on a board. "
+                + "Write a new task if the work came back.");
+        }
+
+        if (task.ExternalReference is { } existing)
+        {
+            throw new DomainConflictException(
+                $"Task {task.Id} is already linked to {existing}. One task carries one external item "
+                + "(PLAN.md §3.1a), so publishing again would create a second card for the same work. "
+                + $"See it with h9k task show {task.Id}.");
+        }
+
+        if (task.PendingPublicationProvider is { } pending)
+        {
+            throw new DomainConflictException(
+                $"Task {task.Id} already has a {pending.Value} publication outstanding"
+                + (task.PublicationSessionDispatched ? " and its session is running" : " and is waiting for the daemon")
+                + ". Two sessions would create two cards; wait for it to finish, or watch it with "
+                + $"h9k task show {task.Id}.");
+        }
+
+        return new WorkItemPublicationRequested(task.Id, provider, projectKey, requestedAt, requestedByOwnerId);
+    }
+
+    /// <summary>
+    /// Whether the task already carries exactly this reference. Asked before
+    /// <see cref="LinkWorkItem"/> so that repeating the link is quiet rather than an error: the
+    /// caller most likely to repeat it is an agent that could not tell whether its first attempt
+    /// landed, and answering "you already told me that, and it is what I have" is the answer that
+    /// lets it move on. A <em>different</em> reference is a real conflict and is refused below.
+    /// </summary>
+    public static bool AlreadyLinkedTo(TaskAggregate task, ExternalReference reference) =>
+        task.ExternalReference is { } existing && existing == reference;
+
+    /// <summary>
+    /// Record the external item this task is linked to, from what the platform observed rather
+    /// than from what anybody claimed (backlog 18). The caller reads the item through the
+    /// registered connection first and passes what came back; this decides only whether the task
+    /// is in a position to accept it.
+    /// </summary>
+    public static WorkItemLinked LinkWorkItem(
+        TaskAggregate task,
+        ExternalReference reference,
+        string observedTitle,
+        string observedStatus,
+        DateTimeOffset observedAt,
+        DateTimeOffset linkedAt,
+        Guid linkedByOwnerId)
+    {
+        if (reference.Provider == WorkItemProvider.Unknown || reference.Reference.IsBlank())
+        {
+            throw new DomainValidationException(
+                "A link needs a provider and a reference (for example jira:PROJ-123).");
+        }
+
+        if (task.State == TaskState.Abandoned)
+        {
+            throw new DomainConflictException(
+                $"Task {task.Id} was abandoned, so linking it to {reference} would attach live work to a "
+                + "task nobody is doing. Link the card to a task that is still going, or write one.");
+        }
+
+        // The already-linked case is a conflict rather than an overwrite, and the reference the
+        // task carries is quoted so the human (or agent) can see which of the two is wrong. The
+        // identical-reference case never reaches here: AlreadyLinkedTo answers it first.
+        if (task.ExternalReference is { } existing)
+        {
+            throw new DomainConflictException(
+                $"Task {task.Id} is already linked to {existing}, and a task carries one external item "
+                + $"(PLAN.md §3.1a). {reference} is a different item: if it is the right one, the link on "
+                + "record is wrong and that is worth a human looking at, because two cards for one task "
+                + "means one of them is now a duplicate somebody has to close.");
+        }
+
+        return new WorkItemLinked(
+            task.Id, reference, observedTitle, observedStatus, observedAt, linkedAt, linkedByOwnerId);
+    }
 }

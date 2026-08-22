@@ -78,6 +78,17 @@ public sealed class ProjectSetCommand : Hall9kAsyncCommand<ProjectSetCommand.Set
             + "DaemonOptions.MaxReviewRerequestsAfterFixes caps the passes per task, after which the "
             + "pull request settles rather than looping on its own refinements.")]
         public string? RerequestReview { get; init; }
+
+        [CommandOption("--jira <KEY>")]
+        [Description(
+            "Bind this project to a Jira board by its project key — the PROJ in PROJ-123. It is what "
+            + "h9k task push-to-jira tells the agent to file new cards under. It is a default rather "
+            + "than a law: h9k task link-jira records a card that landed on another board and says so "
+            + "rather than refusing it, because the project's own routing rules are allowed to know "
+            + "better than this binding does. 'none' clears the binding; a project with none still "
+            + "publishes, and the agent is left to work out from the project's own skills where the "
+            + "card belongs")]
+        public string? JiraProjectKey { get; init; }
     }
 
     protected override async Task<int> ExecuteAsync(Settings settings, CancellationToken cancellationToken)
@@ -111,7 +122,15 @@ public sealed class ProjectSetCommand : Hall9kAsyncCommand<ProjectSetCommand.Set
                 : Optional<AgentModel>.None,
             reviewRerequest: settings.RerequestReview is { } rerequestReview
                 ? Optional<ReviewRerequestPolicy>.Of(ReviewRerequestOption.Parse(rerequestReview))
-                : Optional<ReviewRerequestPolicy>.None);
+                : Optional<ReviewRerequestPolicy>.None,
+            // 'none' is how a binding is cleared, and it reaches JiraProjectKey.Parse as the word
+            // rather than as a key — which would be a perfectly legal one — so it is mapped here,
+            // beside the option that documents it, exactly as --commit-style maps 'default'.
+            jiraProjectKey: settings.JiraProjectKey is { } jiraKey
+                ? Optional<JiraProjectKey>.Of(ClearingWord(jiraKey)
+                    ? JiraProjectKey.None
+                    : JiraProjectKey.Parse(jiraKey))
+                : Optional<JiraProjectKey>.None);
 
         session.Events.Append(details.Id, changed);
         await session.SaveChangesAsync(cancellationToken);
@@ -120,6 +139,15 @@ public sealed class ProjectSetCommand : Hall9kAsyncCommand<ProjectSetCommand.Set
         AnsiConsole.MarkupLine($"[green]Project '{details.Name.EscapeMarkup()}' settings updated.[/]");
         return ExitCodes.Ok;
     }
+
+    /// <summary>
+    /// The word that clears a binding rather than setting one. Spelled out here because "none" is
+    /// a well-formed Jira project key and somebody's board could genuinely be called NONE — in
+    /// which case this command cannot bind it, which is a real limitation and a cheap one, and far
+    /// better than an option with no way to undo it.
+    /// </summary>
+    private static bool ClearingWord(string value) =>
+        value.Trim().Equals("none", StringComparison.OrdinalIgnoreCase);
 
     private static VerifyCommand ParseVerify(string value)
     {

@@ -61,6 +61,71 @@ public sealed class CommandHelpTests
         description.Should().Contain("closed", "a closed issue is refused, which is worth knowing before trying");
     }
 
+    /// <summary>
+    /// The same rule as the GitHub import, asserted separately because it is the rule an agent
+    /// would otherwise get wrong twice: a card description is not an acceptance contract.
+    /// </summary>
+    [Fact]
+    public void The_jira_import_teaches_that_criteria_are_never_read_from_a_card()
+    {
+        string description = typeof(TaskAddCommand.Settings)
+            .GetProperty(nameof(TaskAddCommand.Settings.FromJira))!
+            .GetCustomAttribute<DescriptionAttribute>()!.Description;
+
+        description.Should().Contain("NEVER", "the never-guess rule is the point of the command");
+        description.Should().Contain("--criteria", "and the help names the way to supply them");
+        description.Should().Contain("closed", "a closed card is refused, which is worth knowing before trying");
+    }
+
+    /// <summary>
+    /// The one thing an agent has to understand about <c>h9k task link-jira</c> before it calls
+    /// it: the key is checked, not accepted. An agent that thinks it is filing a claim will treat
+    /// a refusal as a wall; one that knows it is a verification will fix the key and retry, which
+    /// is the whole point of routing agent-reported facts through commands that verify.
+    /// </summary>
+    [Fact]
+    public void The_link_command_teaches_that_it_verifies_before_it_records()
+    {
+        string key = typeof(TaskLinkJiraCommand.Settings)
+            .GetProperty(nameof(TaskLinkJiraCommand.Settings.Key))!
+            .GetCustomAttribute<DescriptionAttribute>()!.Description;
+
+        key.Should().Contain("reads it", "the command reads the card before recording anything");
+        key.Should().Contain("nothing is written", "so a refusal is safe to retry against");
+    }
+
+    /// <summary>
+    /// Clearing a board binding has to be discoverable from --help, because there is no other
+    /// way to find it: 'none' is a word rather than an absence, and an option a human cannot
+    /// undo is worse than one they never set.
+    /// </summary>
+    [Fact]
+    public void The_board_binding_says_how_to_clear_itself()
+    {
+        string description = typeof(ProjectSetCommand.Settings)
+            .GetProperty(nameof(ProjectSetCommand.Settings.JiraProjectKey))!
+            .GetCustomAttribute<DescriptionAttribute>()!.Description;
+
+        description.Should().Contain("'none' clears the binding");
+    }
+
+    /// <summary>
+    /// A registration command that quietly stores a secret somewhere is one nobody can audit, so
+    /// every token option states where the token ends up.
+    /// </summary>
+    [Theory]
+    [InlineData(nameof(ConnectionAddJiraCommand.Settings.Token), "~/.hall9k/credentials")]
+    [InlineData(nameof(ConnectionAddJiraCommand.Settings.TokenEnvironmentVariable), "never copies the value")]
+    [InlineData(nameof(ConnectionAddJiraCommand.Settings.Keychain), "records the service name")]
+    public void Every_way_of_supplying_a_jira_token_says_where_it_ends_up(string property, string expected)
+    {
+        string description = typeof(ConnectionAddJiraCommand.Settings)
+            .GetProperty(property)!
+            .GetCustomAttribute<DescriptionAttribute>()!.Description;
+
+        description.Should().Contain(expected);
+    }
+
     [Theory]
     [MemberData(nameof(ProjectSelectingSettings))]
     public void Every_project_selector_describes_the_resolver_it_actually_uses(Type settings, string property)

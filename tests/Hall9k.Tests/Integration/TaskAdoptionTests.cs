@@ -149,6 +149,44 @@ public sealed class TaskAdoptionTests(PostgresFixture postgres) : IClassFixture<
             .And.NotContain("h9k task abandon", "a Done task cannot be abandoned, so offering it is a dead end");
     }
 
+    /// <summary>
+    /// The rule is about the item, not about how the task got it — so a card a task caused to
+    /// exist holds that card exactly as an imported one does, and <c>h9k task link-jira</c> asks
+    /// the same question <c>--from-jira</c> does before recording a key.
+    /// <para>
+    /// The publication prompt makes this the likely mistake rather than an exotic one: a session
+    /// is told to search for an earlier attempt's card before creating a second, and a session
+    /// that finds another task's card and reports its key back in good faith would otherwise put
+    /// two live tasks on one card, with two sets of runs and two closeout comments on it. Origin
+    /// incident (2026-08-21): the pre-PR review of this branch found link-jira checking only the
+    /// task in front of it.
+    /// </para>
+    /// </summary>
+    [Fact]
+    public async Task A_card_a_task_was_linked_to_is_held_as_firmly_as_one_it_imported()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        using DocumentStore store = DocumentStore.For(opts =>
+        {
+            opts.Connection(postgres.ConnectionString);
+            opts.ConfigureHall9k(AutoCreate.All);
+        });
+
+        ExternalReference card = new(WorkItemProvider.Jira, "PROJ-123");
+        Guid holderId = await AdoptAsync(store, reference: null, "The task the card was made for", cts.Token);
+        await AppendAsync(store, holderId,
+            new WorkItemLinked(holderId, card, "Publish me", "To Do (open)", Now, Now, DomainId.New()),
+            cts.Token);
+
+        await using IQuerySession session = store.QuerySession();
+        Func<Task> secondClaim = () => TaskAddCommand.RefuseSecondAdoptionAsync(session, card, cts.Token);
+
+        (await secondClaim.Should().ThrowAsync<DomainConflictException>()).Which.Message
+            .Should().Contain("jira:PROJ-123")
+            .And.Contain(TaskListCommand.ShortId(holderId))
+            .And.Contain("The task the card was made for");
+    }
+
     private static Task AbandonAsync(IDocumentStore store, Guid taskId, CancellationToken cancellationToken) =>
         AppendAsync(store, taskId, new TaskAbandoned(taskId, "Overtaken by events.", Now, DomainId.New()),
             cancellationToken);
@@ -162,7 +200,7 @@ public sealed class TaskAdoptionTests(PostgresFixture postgres) : IClassFixture<
     }
 
     private static async Task<Guid> AdoptAsync(
-        IDocumentStore store, ExternalReference reference, string objective, CancellationToken cancellationToken)
+        IDocumentStore store, ExternalReference? reference, string objective, CancellationToken cancellationToken)
     {
         Guid taskId = DomainId.New();
         await using IDocumentSession session = store.LightweightSession();

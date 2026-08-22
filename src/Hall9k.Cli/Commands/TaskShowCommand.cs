@@ -56,7 +56,29 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
 
         if (details.ExternalReference.IsNotBlank())
         {
-            header.AddRow("External", ExternalMarkup(details.ExternalReference));
+            // The importer is built from the registered connections rather than the default one:
+            // placing a Jira reference needs the site that connection carries, which is the one
+            // asymmetry between the two sources (PLAN.md §10).
+            WorkItemImporter importer = await WorkItemConnections.ImporterAsync(session, cancellationToken);
+            header.AddRow("External", ExternalMarkup(importer, details.ExternalReference));
+            if (details.ExternalStatusObserved.IsNotBlank() && details.ExternalObservedAt is { } observedAt)
+            {
+                header.AddRow(string.Empty,
+                    $"[dim]{ExternalText.OneLineMarkup(details.ExternalStatusObserved)} when read at "
+                    + $"{observedAt.ToLocalTime():g}[/]");
+            }
+        }
+
+        if (details.PendingPublicationProvider is { } publishingTo)
+        {
+            header.AddRow("Publishing to", PublicationMarkup(details, publishingTo));
+        }
+        else if (details.PublicationOutcome.IsNotBlank() && details.ExternalReference.IsBlank())
+        {
+            // A publication that ended without a link is the case worth surfacing: the session
+            // said something, and nothing came back through the gate, so the human is the one who
+            // has to decide whether a card exists.
+            header.AddRow("Publication", $"[yellow]{ExternalText.OneLineMarkup(details.PublicationOutcome)}[/]");
         }
 
         if (details.PullRequestUrl.IsNotBlank())
@@ -331,12 +353,30 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
     /// not looked since, so the row must not read as live status.
     /// </para>
     /// </summary>
-    internal static string ExternalMarkup(string canonicalReference)
+    internal static string ExternalMarkup(WorkItemImporter importer, string canonicalReference)
     {
         string label = canonicalReference.EscapeMarkup();
-        return WorkItemImporter.Default.WebUrl(canonicalReference) is { } url
-            ? $"[link={url}]{label}[/] [dim](read once at import; never re-checked)[/]"
+        return importer.WebUrl(canonicalReference) is { } url
+            ? $"[link={url}]{label}[/] [dim](read once; never re-checked)[/]"
             : label;
+    }
+
+    /// <summary>
+    /// What is happening to an outstanding publication, in the two states it has: waiting for the
+    /// daemon, or running. Both are worth distinguishing, because they fail for different reasons
+    /// — a request that never leaves the first state means no daemon is running, and one stuck in
+    /// the second means a session that is not finishing.
+    /// </summary>
+    private static string PublicationMarkup(TaskDetails details, string provider)
+    {
+        string board = details.PendingPublicationProjectKey.HasValue
+            ? $" [dim]under {details.PendingPublicationProjectKey.Value.EscapeMarkup()}[/]"
+            : string.Empty;
+        return details.PublicationSessionDispatched
+            ? $"[yellow]{provider.EscapeMarkup()}[/]{board} [dim]— a session is writing the card; it "
+              + "finishes by running h9k task link-jira[/]"
+            : $"[yellow]{provider.EscapeMarkup()}[/]{board} [dim]— requested, waiting for the daemon "
+              + "to dispatch the session (h9k daemon status)[/]";
     }
 
     /// <summary>

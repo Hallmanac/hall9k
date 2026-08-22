@@ -139,6 +139,32 @@ public sealed class WorkItemImporterTests
             .And.Contain("github");
     }
 
+    /// <summary>
+    /// A source this install could speak but has not connected is a different sentence from one
+    /// Hall9k has never heard of, and only one of them has a remedy. h9k task add --from-jira on a
+    /// machine that has not run h9k connection add jira is the likeliest first-run ordering there
+    /// is, and the CLI standard is that a refusal lets an agent self-correct from it (AGENTS.md),
+    /// which a list of the sources that happen to be configured does not.
+    /// </summary>
+    [Fact]
+    public async Task A_source_this_install_has_not_connected_is_refused_with_the_command_that_connects_it()
+    {
+        WorkItemImporter importer = new(new StubProvider(WorkItemProvider.GitHub, WorkItemStatus.Open))
+        {
+            Unregistered = new Dictionary<WorkItemProvider, string>
+            {
+                [WorkItemProvider.Jira] = WorkItemConnections.NoJiraConnection,
+            },
+        };
+
+        Func<Task> import = () => Import(importer, WorkItemProvider.Jira);
+
+        (await import.Should().ThrowAsync<DomainNotFoundException>()).Which.Message
+            .Should().Contain("No Jira connection is registered")
+            .And.Contain("h9k connection add jira --site")
+            .And.NotContain("Known sources", "the sources that are configured are not the answer here");
+    }
+
     [Fact]
     public void A_reference_from_an_unregistered_source_has_no_url_rather_than_a_guessed_one()
     {
@@ -151,7 +177,7 @@ public sealed class WorkItemImporterTests
     [Fact]
     public void The_default_importer_places_a_github_reference()
     {
-        WorkItemImporter.Default.WebUrl("github:Hallmanac/hall9k#42")
+        new WorkItemImporter(new GitHubWorkItemProvider()).WebUrl("github:Hallmanac/hall9k#42")
             .Should().Be(new Uri("https://github.com/Hallmanac/hall9k/issues/42"));
     }
 

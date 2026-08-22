@@ -13,6 +13,24 @@ public sealed class TaskAggregate
     public string? AgentContext { get; private set; }
     public TaskConstraints? Constraints { get; private set; }
     public ExternalReference? ExternalReference { get; private set; }
+
+    /// <summary>
+    /// The system a publication session is outstanding for, or null when none is (backlog 18).
+    /// Set by the request and cleared when the session ends, so the daemon's publication loop
+    /// can tell work still to do from work already done without a second document.
+    /// </summary>
+    public WorkItemProvider? PendingPublicationProvider { get; private set; }
+
+    /// <summary>The board the outstanding publication was asked to file under; None when nothing was bound.</summary>
+    public JiraProjectKey PendingPublicationProjectKey { get; private set; } = JiraProjectKey.None;
+
+    /// <summary>
+    /// True once the daemon has actually spawned the pending publication's session. It is what
+    /// stops the next sweep dispatching a second agent to create a second card for the same
+    /// task — the one failure of this feature that costs a human cleanup in Jira rather than a
+    /// retry here.
+    /// </summary>
+    public bool PublicationSessionDispatched { get; private set; }
     /// <summary>The task's model override, the most specific link in the resolution chain (Decisions Log #33).</summary>
     public AgentModel Model { get; private set; } = AgentModel.Unknown;
     public int LeaseGeneration { get; private set; }
@@ -337,6 +355,43 @@ public sealed class TaskAggregate
         State = TaskState.Queued;
     }
 
+    // Publication is a side errand rather than a lifecycle move: the task's state is untouched
+    // by all three of these, because asking for a card, spawning the session, and the session
+    // ending say nothing about whether the work is drafted, queued, or done. What they move is
+    // the pending marker the daemon's loop reads.
+    public void Apply(WorkItemPublicationRequested @event)
+    {
+        PendingPublicationProvider = @event.Provider;
+        PendingPublicationProjectKey = @event.ProjectKey;
+        PublicationSessionDispatched = false;
+    }
+
+    // Dispatched is the whole of what this aggregate needs: it is the guard that stops a second
+    // session, and it is true from the moment the dispatch is committed — before the process
+    // exists. Which process it turned out to be (WorkItemPublicationSessionStarted) is a question
+    // only the daemon's adoption asks, so it is projected onto TaskDetails and deliberately not
+    // applied here.
+    public void Apply(WorkItemPublicationDispatched @event) => PublicationSessionDispatched = true;
+
+    public void Apply(WorkItemPublicationCompleted @event)
+    {
+        PendingPublicationProvider = null;
+        PendingPublicationProjectKey = JiraProjectKey.None;
+        PublicationSessionDispatched = false;
+    }
+
+    // The link is the errand's real ending, whether or not the session that produced it has
+    // exited yet: once the task carries a reference there is nothing left to publish, and a
+    // pending marker left standing would let the next sweep dispatch a second card for a task
+    // that already has one.
+    public void Apply(WorkItemLinked @event)
+    {
+        ExternalReference = @event.Reference;
+        PendingPublicationProvider = null;
+        PendingPublicationProjectKey = JiraProjectKey.None;
+        PublicationSessionDispatched = false;
+    }
+
     // Abandoning consumes the pending-work markers like Complete and Resolve do — a dead
     // task must not advertise a resumable branch — and clears the pending question so a
     // late answer cannot flip an Abandoned task back to Claimed (Answer guards on
@@ -348,5 +403,23 @@ public sealed class TaskAggregate
         FollowUpKind = FollowUpKind.Unknown;
         RetryBranch = null;
         State = TaskState.Abandoned;
+
+        // A publication nobody has started yet is one of those markers, for the reason
+        // TaskDecider.RequestWorkItemPublication refuses to make one: filing a card for abandoned
+        // work puts it on somebody's board when nobody here intends to do it. That rule only held
+        // at the moment of asking — the daemon's sweep reads the marker and never the state, so
+        // abandoning between the request and the sweep still produced a card, and one nothing
+        // could then record either, because linking an abandoned task is refused too. Origin
+        // incident (2026-08-22): the pre-PR review of this branch traced it from push-to-jira with
+        // the daemon stopped, then abandon, then the daemon starting.
+        //
+        // A dispatched publication keeps its markers. A session is already out there writing a
+        // card, and those markers are how adoption finds it, waits for it and ends it honestly;
+        // clearing them here would leave it detached with nothing watching.
+        if (!PublicationSessionDispatched)
+        {
+            PendingPublicationProvider = null;
+            PendingPublicationProjectKey = JiraProjectKey.None;
+        }
     }
 }

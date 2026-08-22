@@ -1,3 +1,4 @@
+using Hall9k.Connectors.WorkItems;
 using Hall9k.Daemon.Execution;
 using Hall9k.Daemon.Worktrees;
 using Hall9k.Domain.Features.Owner;
@@ -45,6 +46,7 @@ public sealed class CloseoutEngine(
     DaemonConnection connection,
     IPullRequestInspector inspector,
     IWorktreeManager worktrees,
+    JiraRequester jiraRequester,
     IOptions<DaemonOptions> options,
     ILogger<CloseoutEngine> logger)
 {
@@ -172,7 +174,7 @@ public sealed class CloseoutEngine(
 
         if (snapshot.IsMerged)
         {
-            await CompleteCloseoutAsync(session, run, project, snapshot, now, cancellationToken);
+            await CompleteCloseoutAsync(session, run, project, task, snapshot, now, cancellationToken);
             return InspectionOutcome.MergeObserved;
         }
 
@@ -514,6 +516,7 @@ public sealed class CloseoutEngine(
         IDocumentSession session,
         RunDetails run,
         ProjectDetails project,
+        TaskAggregate task,
         PullRequestSnapshot snapshot,
         DateTimeOffset now,
         CancellationToken cancellationToken)
@@ -528,6 +531,7 @@ public sealed class CloseoutEngine(
             "Run {RunId}: pull request {Url} merged — closeout complete", run.Id, run.PullRequestUrl);
 
         await UnblockDependentsAsync(run.TaskId, now, cancellationToken);
+        await TellTheCardAsync(run.TaskId, project, task, cancellationToken);
         await RemoveWorktreeBestEffortAsync(project.RepositoryPath, run.WorktreePath, cancellationToken);
         try
         {
@@ -538,6 +542,80 @@ public sealed class CloseoutEngine(
             logger.LogWarning(exception, "Branch cleanup failed for {Branch} (safe to delete by hand)", run.Branch);
         }
     }
+
+    /// <summary>
+    /// Tell the external work item that the work landed (backlog 18): one comment on the card
+    /// carrying the pull request, at the moment the merge is observed.
+    /// <para>
+    /// A comment and not a transition, deliberately. Which status a merge should move a card to
+    /// is one team's workflow rather than a fact about software — "Done" on one board is "Ready
+    /// for QA" on the next — and moving somebody's card on the platform's opinion is exactly the
+    /// kind of guess this repo refuses to make. A comment is the one Jira write that needs to
+    /// know nothing about how the project is configured, which is why it is the one the platform
+    /// makes itself. Transitions wait until real usage says which ones matter.
+    /// </para>
+    /// <para>
+    /// Best-effort, and loudly so. The merge is already recorded and the dependents are already
+    /// unblocked; a Jira outage must not undo any of that, and it must not be retried blindly
+    /// either — a retry loop around an unwatched write is how one card ends up with four
+    /// identical comments. So a failure is logged with everything needed to do it by hand and
+    /// the closeout carries on.
+    /// </para>
+    /// <para>
+    /// GitHub gets nothing here on purpose: the pull request body already mentions an adopted
+    /// issue, so GitHub cross-references the merge on the issue's own timeline without the
+    /// platform writing a word (PLAN.md #60). Jira has no such link, which is what makes this
+    /// comment the thing that closes the loop rather than a duplicate of one.
+    /// </para>
+    /// </summary>
+    private async Task TellTheCardAsync(
+        Guid taskId, ProjectDetails project, TaskAggregate task, CancellationToken cancellationToken)
+    {
+        if (task.ExternalReference is not { } reference
+            || reference.Provider != WorkItemProvider.Jira
+            || task.PullRequestUrl.IsBlank())
+        {
+            return;
+        }
+
+        try
+        {
+            await using IQuerySession session = store.QuerySession();
+            JiraWorkItemProvider? jira = await WorkItemConnections.TryJiraProviderAsync(
+                session, cancellationToken, requester: jiraRequester);
+            if (jira is null || !JiraIssueKey.TryParseBareKey(reference.Reference, out JiraIssueKey key))
+            {
+                logger.LogWarning(
+                    "Task {TaskId} is linked to {Reference} but this node has no usable Jira connection, "
+                    + "so the merge was not commented on the card", taskId, reference);
+                return;
+            }
+
+            await jira.CommentAsync(key, MergeComment(project, task), cancellationToken);
+            logger.LogInformation("Task {TaskId}: told {Reference} that {Url} merged", taskId, reference, task.PullRequestUrl);
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            logger.LogWarning(exception,
+                "Could not comment the merge of {Url} on {Reference}. Nothing is retried automatically; "
+                + "add the note by hand if it matters",
+                task.PullRequestUrl, task.ExternalReference);
+        }
+    }
+
+    /// <summary>
+    /// What the card is told. Short, factual, and explicit that nothing else is going to happen
+    /// to it — a card that silently gains a comment and never moves reads like an integration
+    /// that half worked, and saying so costs one sentence.
+    /// </summary>
+    private static string MergeComment(ProjectDetails project, TaskAggregate task) =>
+        $"""
+         The pull request for this work has merged: {task.PullRequestUrl}
+
+         Recorded by Hall9k as task {task.Id} in project {project.Name}. This is a one-off note at
+         merge — Hall9k does not change the card's status, because which status a merge means is
+         this project's workflow to decide.
+         """;
 
     /// <summary>
     /// The handoff the task hands down, composed from every run that carried this pull

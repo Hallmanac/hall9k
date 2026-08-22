@@ -8,8 +8,18 @@ namespace Hall9k.Connectors.WorkItems;
 /// <summary>
 /// The one door into the resolver seam: it picks the <see cref="IWorkItemProvider"/> for the
 /// requested system and then applies the policy that is the platform's rather than any one
-/// source's. Adding Jira (backlog 18) is a provider in this list, not a second import path —
-/// which is the point of routing every import through here even while there is only one source.
+/// source's. Jira arrived as a provider in this list rather than as a second import path
+/// (backlog 18), which is the point of routing every import through here even while there was
+/// only one source.
+/// <para>
+/// There is no default instance, and the absence is the shape of the seam rather than an
+/// oversight: GitHub piggybacks the machine's own <c>gh</c> login and can be constructed from
+/// nothing, while Jira needs a site, an account, and a credential reference that only the
+/// connection list knows (PLAN.md §10). One of those can have a static default and the other
+/// cannot, so callers build an importer out of the registered connections
+/// (<see cref="WorkItemConnections"/>), and a surface that could once place a reference with no
+/// configuration is now honest about needing some.
+/// </para>
 /// <para>
 /// Adoption policy lives here for the same reason: "Hall9k adopts open work" is a statement
 /// about the funnel (PLAN.md §3.1a), not about GitHub, so a source that forgot to enforce it
@@ -21,20 +31,23 @@ namespace Hall9k.Connectors.WorkItems;
 public sealed class WorkItemImporter(params IWorkItemProvider[] providers)
 {
     /// <summary>
-    /// The sources reachable with no configuration, because their credentials are the
-    /// machine's own (PLAN.md §10). A source needing registered credentials — Jira, whose
-    /// connection carries a site and a token — is constructed per install and will arrive as
-    /// an injected instance rather than joining this list.
+    /// Sources Hall9k speaks but this install has not registered, each mapped to the refusal that
+    /// says how to register one. It exists because "no importer for jira" and "you have not
+    /// connected Jira yet" are different sentences to the person reading them, and the second one
+    /// is the true one on a first run: an install with no Jira connection builds a GitHub-only
+    /// importer (<see cref="WorkItemConnections.ImporterAsync"/>), and without this the likely
+    /// first command anybody types, h9k task add --from-jira, would answer with a list of known
+    /// sources and no way forward. Origin incident (2026-08-21): the pre-PR review of the Jira
+    /// branch found exactly that message on the unconnected path, while both sibling commands
+    /// named h9k connection add jira.
     /// </summary>
-    public static WorkItemImporter Default { get; } = new(new GitHubWorkItemProvider());
+    public IReadOnlyDictionary<WorkItemProvider, string> Unregistered { get; init; } =
+        new Dictionary<WorkItemProvider, string>();
 
     public async Task<ImportedWorkItem> ImportAsync(
         WorkItemImportRequest request, CancellationToken cancellationToken)
     {
-        IWorkItemProvider provider = Find(request.Provider)
-            ?? throw new DomainValidationException(
-                $"Hall9k has no importer for '{request.Provider.Value}'. Known sources: "
-                + $"{string.Join(", ", providers.Select(p => p.Provider.Value))}.");
+        IWorkItemProvider provider = Find(request.Provider) ?? throw Unavailable(request.Provider);
 
         ImportedWorkItem item = await provider.ImportAsync(request, cancellationToken);
 
@@ -75,4 +88,16 @@ public sealed class WorkItemImporter(params IWorkItemProvider[] providers)
 
     private IWorkItemProvider? Find(WorkItemProvider provider) =>
         providers.FirstOrDefault(candidate => candidate.Provider == provider);
+
+    /// <summary>
+    /// Why this source is not here: unregistered on this install, which is a thing the human can
+    /// fix and the message says how, or genuinely unknown, which is a typo or a source Hall9k does
+    /// not speak.
+    /// </summary>
+    private Exception Unavailable(WorkItemProvider provider) =>
+        Unregistered.TryGetValue(provider, out string? remedy)
+            ? new DomainNotFoundException(remedy)
+            : new DomainValidationException(
+                $"Hall9k has no importer for '{RelayedText.OneLine(provider.Value)}'. Known sources: "
+                + $"{string.Join(", ", providers.Select(p => p.Provider.Value))}.");
 }
