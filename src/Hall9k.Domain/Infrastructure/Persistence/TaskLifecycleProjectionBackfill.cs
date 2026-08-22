@@ -42,7 +42,8 @@ public static class TaskLifecycleProjectionBackfill
     private const string StaleDocument =
         "(not jsonb_exists(d.data, 'assignedOwnerId')"               // pre-lifecycle-split (log #34)
         + " or not jsonb_exists(d.data, 'deadDependencyReasons')"    // pre-blocker-recovery (log #61)
-        + " or not jsonb_exists(d.data, 'assignedAt'))";             // pre-concurrency-ceiling (log #64)
+        + " or not jsonb_exists(d.data, 'assignedAt')"               // pre-concurrency-ceiling (log #64)
+        + " or not jsonb_exists(d.data, 'failureReason'))";          // pre-status-redesign (log #66)
 
     /// <summary>
     /// Rebuilds every task stream still carrying an out-of-date document and returns the ids it
