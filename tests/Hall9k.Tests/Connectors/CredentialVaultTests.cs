@@ -64,6 +64,66 @@ public sealed class CredentialVaultTests : IDisposable
         File.Exists(CredentialVault.FileFor("jira-perms")).Should().BeTrue();
     }
 
+    /// <summary>
+    /// The counterpart to storing one. Rotating a stored token into an environment variable or a
+    /// keychain item leaves the file behind holding a working secret, and the reference the
+    /// connection now carries names somewhere else entirely — so there has to be a way to take it
+    /// off disk, and it has to be narrow enough that it can only ever remove a file this vault
+    /// wrote itself.
+    /// </summary>
+    [Fact]
+    public async Task A_stored_secret_can_be_discarded_once_nothing_points_at_it()
+    {
+        CredentialReference reference = await CredentialVault.StoreAsync("jira-rotated", "the-token", Token);
+        CredentialVault.Holds(reference).Should().BeTrue();
+
+        CredentialVault.Discard(reference).Should().Be(CredentialVault.FileFor("jira-rotated"));
+
+        CredentialVault.Holds(reference).Should().BeFalse();
+        File.Exists(CredentialVault.FileFor("jira-rotated")).Should().BeFalse();
+    }
+
+    /// <summary>
+    /// The names this platform derives are slugs and could not do this, so the guard is for the
+    /// call site that has not been written yet and for the identifier that arrives off the event
+    /// stream. A vault that composed a path out of whatever it was handed would write a token
+    /// outside the owner's credentials directory on one side and resolve a reference to a file it
+    /// does not name on the other. Origin: the pull-request review of the Jira branch (2026-08-22)
+    /// read StoreAsync and asked what stopped a name from carrying a separator.
+    /// </summary>
+    [Fact]
+    public async Task A_credential_name_that_would_leave_the_directory_is_refused_rather_than_composed()
+    {
+        foreach (string escape in new[] { "..", "../outside", "nested/jira", ".", string.Empty })
+        {
+            Func<Task> store = () => CredentialVault.StoreAsync(escape, "the-token", Token);
+            (await store.Should().ThrowAsync<DomainValidationException>()).Which
+                .Message.Should().NotContain("the-token", "a refusal never quotes the secret");
+
+            Func<Task> resolve = () => CredentialVault.Default
+                .ResolveAsync(CredentialReference.File(escape), "read Jira", Token).AsTask();
+            await resolve.Should().ThrowAsync<DomainValidationException>();
+
+            CredentialVault.Holds(CredentialReference.File(escape)).Should()
+                .BeFalse("asking whether a name is stored is not a way around the rule");
+        }
+
+        Directory.Exists(CredentialVault.Directory).Should()
+            .BeFalse("nothing was written, so nothing needed a directory");
+    }
+
+    [Fact]
+    public void Discarding_touches_nothing_it_did_not_write()
+    {
+        // The other kinds point at a secret somebody else put in a store of their own, and this
+        // platform deleting one of those would be it reaching outside what it created. A file that
+        // is already gone is not an error either: the caller asked for it to be absent.
+        CredentialVault.Discard(CredentialReference.EnvironmentVariable(Variable)).Should().BeNull();
+        CredentialVault.Discard(CredentialReference.Keychain("hall9k-jira")).Should().BeNull();
+        CredentialVault.Discard(CredentialReference.GhCli).Should().BeNull();
+        CredentialVault.Discard(CredentialReference.File("never-written")).Should().BeNull();
+    }
+
     [Fact]
     public async Task An_environment_reference_reads_the_variable_and_never_copies_it()
     {

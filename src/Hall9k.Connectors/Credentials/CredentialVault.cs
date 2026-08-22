@@ -34,8 +34,30 @@ public sealed class CredentialVault(ProcessRunner? runner = null)
     /// <summary>Where file-kind secrets live: ~/.hall9k/credentials, the owner's directory alone.</summary>
     public static string Directory => Path.Combine(PlatformPaths.Home, "credentials");
 
-    /// <summary>The file a file-kind reference names.</summary>
-    public static string FileFor(string name) => Path.Combine(Directory, name);
+    /// <summary>
+    /// The file a file-kind reference names, refused when the name is anything other than a
+    /// single file sitting directly in <see cref="Directory"/>.
+    /// <para>
+    /// Every path in and out of the file store is built here, so this is the one place that has
+    /// to hold the line. A name carrying a separator or a parent segment would compose into a
+    /// path outside the owner's credentials directory, which on the write side means writing a
+    /// token somewhere nobody agreed to put one and on the read side means resolving a reference
+    /// to a file it does not name. The names this platform derives are already slugs and cannot
+    /// do either; the guard is here because the identifier on the read side arrives off the event
+    /// stream and a future call site would not know the rule it was keeping.
+    /// </para>
+    /// </summary>
+    public static string FileFor(string name) =>
+        IsStoredFileName(name)
+            ? Path.Combine(Directory, name)
+            : throw new DomainValidationException(
+                $"'{RelayedText.OneLine(name)}' is not a credential name this vault can use. A stored "
+                + "credential is one file in the owner's credentials directory, so the name is a file "
+                + "name alone: no directory separators, and no parent segments.");
+
+    /// <summary>Whether a name composes into a file inside <see cref="Directory"/> and nowhere else.</summary>
+    private static bool IsStoredFileName(string name) =>
+        name.IsNotBlank() && name is not ("." or "..") && name == Path.GetFileName(name);
 
     /// <summary>
     /// The secret <paramref name="reference"/> points at. <paramref name="purpose"/> is what the
@@ -86,6 +108,10 @@ public sealed class CredentialVault(ProcessRunner? runner = null)
             throw new DomainValidationException("There is no secret here to store.");
         }
 
+        // The path is composed first, because composing it is what vets the name and a refusal
+        // should not have created a directory on its way out.
+        string path = FileFor(name);
+
         System.IO.Directory.CreateDirectory(Directory);
         if (!OperatingSystem.IsWindows())
         {
@@ -93,7 +119,6 @@ public sealed class CredentialVault(ProcessRunner? runner = null)
                 Directory, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
         }
 
-        string path = FileFor(name);
         await using (FileStream created = new(path, FileMode.Create, FileAccess.Write, FileShare.None))
         {
             if (!OperatingSystem.IsWindows())
@@ -108,11 +133,42 @@ public sealed class CredentialVault(ProcessRunner? runner = null)
         return CredentialReference.File(name);
     }
 
-    /// <summary>Whether Hall9k stores a secret under this name; used to report re-registration honestly.</summary>
+    /// <summary>Whether Hall9k stores a secret under this name; asked before a re-registration discards one.</summary>
     public static bool Holds(CredentialReference reference) =>
         reference.Kind == CredentialKind.File
-        && reference.Identifier.IsNotBlank()
-        && File.Exists(FileFor(reference.Identifier));
+        && reference.Identifier is { } name
+        && IsStoredFileName(name)
+        && File.Exists(FileFor(name));
+
+    /// <summary>
+    /// Remove a secret Hall9k stored and nothing points at any more, returning the file it
+    /// deleted or null when there was none to delete.
+    /// <para>
+    /// The counterpart to <see cref="StoreAsync"/>, and it exists because the overwrite that
+    /// keeps re-registration clean only covers the case where the new credential lands on the
+    /// same file name. Rotating a stored token into an environment variable, or re-registering
+    /// the same site as a different account, both write a new reference and leave the old file
+    /// holding a working token that nothing mentions again — a secret nobody meant to keep, which
+    /// is exactly what the derived file name was chosen to prevent. Origin incident (2026-08-21):
+    /// the pre-PR review of the Jira branch traced both paths.
+    /// </para>
+    /// <para>
+    /// Only the file kind is touched, and only a file this vault would itself have written. The
+    /// other kinds point at a secret somebody else put in a store of their own, and deleting one
+    /// of those would be this platform reaching outside what it created.
+    /// </para>
+    /// </summary>
+    public static string? Discard(CredentialReference reference)
+    {
+        if (!Holds(reference) || reference.Identifier is not { } name)
+        {
+            return null;
+        }
+
+        string path = FileFor(name);
+        File.Delete(path);
+        return path;
+    }
 
     private static string FromEnvironment(string variable, string purpose) =>
         Environment.GetEnvironmentVariable(variable) is { } value && value.IsNotBlank()
