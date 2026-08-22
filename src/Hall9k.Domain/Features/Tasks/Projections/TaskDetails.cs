@@ -40,6 +40,11 @@ public sealed class TaskDetails
     public Guid? PublicationSessionId { get; set; }
     /// <summary>The node that spawned it: the only machine on which the process identity below means anything.</summary>
     public Guid? PublicationSessionNodeId { get; set; }
+    /// <summary>
+    /// When it was dispatched — the clock a node other than the one above has to judge it by, since
+    /// that node's pid means nothing here and there is no heartbeat behind a publication.
+    /// </summary>
+    public DateTimeOffset? PublicationSessionDispatchedAt { get; set; }
     /// <summary>Pid and start time together — a process identity, so adoption can tell a live session from a reused pid.</summary>
     public int? PublicationSessionProcessId { get; set; }
     public DateTimeOffset? PublicationSessionStartedAt { get; set; }
@@ -411,6 +416,7 @@ public sealed class TaskDetailsProjection : SingleStreamProjection<TaskDetails, 
         view.PublicationSessionDispatched = true;
         view.PublicationSessionId = @event.Data.SessionId;
         view.PublicationSessionNodeId = @event.Data.NodeId;
+        view.PublicationSessionDispatchedAt = @event.Data.DispatchedAt;
     }
 
     public void Apply(IEvent<WorkItemPublicationSessionStarted> @event, TaskDetails view)
@@ -450,6 +456,7 @@ public sealed class TaskDetailsProjection : SingleStreamProjection<TaskDetails, 
         view.PublicationSessionDispatched = false;
         view.PublicationSessionId = null;
         view.PublicationSessionNodeId = null;
+        view.PublicationSessionDispatchedAt = null;
         view.PublicationSessionProcessId = null;
         view.PublicationSessionStartedAt = null;
     }
