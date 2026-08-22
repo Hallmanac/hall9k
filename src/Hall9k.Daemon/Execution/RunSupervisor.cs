@@ -103,7 +103,7 @@ public sealed class RunSupervisor(
             }
 
             bool alive = processManager.IsAlive(run.ProcessId.Value, run.ProcessStartedAt.Value);
-            bool resultOnDisk = await ResultAlreadyWrittenAsync(run.Id, cancellationToken);
+            bool resultOnDisk = await RunResultFile.AlreadyWrittenAsync(run.Id, cancellationToken);
             if (alive || resultOnDisk)
             {
                 logger.LogInformation(
@@ -460,27 +460,6 @@ public sealed class RunSupervisor(
             StreamBytesRead = cursor,
         });
         await session.SaveChangesAsync(cancellationToken);
-    }
-
-    private async Task<bool> ResultAlreadyWrittenAsync(Guid runId, CancellationToken cancellationToken)
-    {
-        string streamFile = RunPaths.StreamFile(runId);
-        if (!File.Exists(streamFile))
-        {
-            return false;
-        }
-
-        using StreamReader reader = new(new FileStream(
-            streamFile, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete));
-        while (await reader.ReadLineAsync(cancellationToken) is { } line)
-        {
-            if (StreamJsonParser.TryParseResult(line, out _))
-            {
-                return true;
-            }
-        }
-
-        return false;
     }
 
     private static string ReadStandardErrorTail(Guid runId)
