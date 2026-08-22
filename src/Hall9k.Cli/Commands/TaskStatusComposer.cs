@@ -42,8 +42,9 @@ internal static class TaskStatusComposer
             .ToDictionary(r => r.Id);
         Dictionary<Guid, RunActivity> activity = (await session.Query<RunActivity>().ToListAsync(cancellationToken))
             .ToDictionary(a => a.Id);
+        DispatchPressure? pressure = await DispatchPressure.ReadAsync(session, now, cancellationToken);
 
-        return [.. tasks.Select(task => Compose(task, runs, activity, projects, owners, now))];
+        return [.. tasks.Select(task => Compose(task, runs, activity, projects, owners, now, pressure))];
     }
 
     /// <summary>
@@ -52,7 +53,9 @@ internal static class TaskStatusComposer
     /// closeout phase (log #18/#22): the current run's closeout state refines the
     /// display — AwaitingReview while quiet, ChecksFailing/ReviewPending when observed,
     /// NeedsHuman when parked, Done once the merge landed. A queued/claimed task that
-    /// still carries a PR URL is a follow-up run in flight: ClosingOut.
+    /// still carries a PR URL is a follow-up run in flight: ClosingOut — unless the node's
+    /// concurrency ceiling has that follow-up waiting for a slot, in which case nothing is in
+    /// flight and the row reads Queued with the reason on it (Decisions Log #64).
     /// </summary>
     public static TaskStatusRow Compose(
         TaskListItem task,
@@ -60,10 +63,22 @@ internal static class TaskStatusComposer
         IReadOnlyDictionary<Guid, RunActivity> activity,
         IReadOnlyDictionary<Guid, string> projects,
         IReadOnlyDictionary<Guid, string> owners,
-        DateTimeOffset now)
+        DateTimeOffset now,
+        DispatchPressure? pressure = null)
     {
         RunListItem? run = task.CurrentRunId is { } runId ? runs.GetValueOrDefault(runId) : null;
         bool inCloseout = task.PullRequestUrl.IsNotBlank();
+
+        // The other way work sits still: a queue that is not moving because the node is full is
+        // throttled, not stalled, and a board that cannot tell the difference sends a human
+        // looking for a fault that is not there (Decisions Log #64). Read off the task's state
+        // rather than the composed bucket, because the dispatcher reads the state too: every
+        // Queued task is deferred at the ceiling, including a closeout follow-up the monitor
+        // reopened, and gating this on the bucket showed exactly those as running work while the
+        // daemon's log called them deferred (pre-PR review, 2026-08-22).
+        DispatchPressure? heldByCeiling = task.State == TaskState.Queued && pressure is { AtCeiling: true }
+            ? pressure
+            : null;
 
         string bucket = task.State.Value switch
         {
@@ -75,7 +90,10 @@ internal static class TaskStatusComposer
             // A review-parked run outranks the closeout composition: the loop handed
             // the diff to the human before any pull request could open (log #24).
             "Claimed" when run?.State == RunState.ReviewParked => "NeedsHuman",
-            "Queued" when inCloseout => "ClosingOut",
+            // A queued task carrying a pull request is a follow-up run in flight — unless the
+            // ceiling is holding it back, in which case no follow-up is in flight yet and the
+            // task is exactly what its state says: queued, in the section that explains why.
+            "Queued" when inCloseout && heldByCeiling is null => "ClosingOut",
             "Claimed" when inCloseout => "ClosingOut",
             "Claimed" when run is not null => run.State.Value,
             "Done" when inCloseout => run?.State.Value switch
@@ -108,6 +126,13 @@ internal static class TaskStatusComposer
             activityText = $"blocked by {string.Join(", ", task.UnmetDependencies.Select(TaskListCommand.ShortId))}";
         }
 
+        // Queued-waiting-for-a-slot is not a state — the task is Queued, and this line is
+        // composed from what the daemon's last sweep measured itself carrying.
+        if (heldByCeiling is not null)
+        {
+            activityText = heldByCeiling.ReasonLine;
+        }
+
         return new TaskStatusRow(
             task.Id,
             task.ProjectId,
@@ -124,7 +149,9 @@ internal static class TaskStatusComposer
             task.AddedAt,
             task.AssignedOwnerId is { } assignee ? owners.GetValueOrDefault(assignee) ?? "?" : string.Empty,
             task.UnmetDependencies,
-            task.DependencyFailureReason);
+            task.DependencyFailureReason,
+            heldByCeiling is not null,
+            task.AssignedAt);
     }
 
     /// <summary>The composed bucket, coloured; a live bucket gone quiet says so loudly.</summary>
