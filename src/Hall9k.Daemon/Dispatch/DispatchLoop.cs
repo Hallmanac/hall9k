@@ -192,10 +192,10 @@ public sealed class DispatchLoop(
     }
 
     /// <summary>
-    /// The one-time migration the lifecycle split needs (Decisions Log #34), run at startup
-    /// because the dispatcher is the thing that breaks without it. A failure is logged rather
-    /// than fatal: taking the daemon down would stop the tasks that are fine along with the
-    /// ones that are stale, and the next start tries again.
+    /// The migration every task-projection shape change needs (Decisions Log #34, #61), run at
+    /// startup because the dispatcher and the attention pane are the things that break without
+    /// it. A failure is logged rather than fatal: taking the daemon down would stop the tasks
+    /// that are fine along with the ones that are stale, and the next start tries again.
     /// </summary>
     private async Task BackfillLifecycleProjectionsAsync(CancellationToken cancellationToken)
     {
@@ -205,16 +205,18 @@ public sealed class DispatchLoop(
             if (rebuilt.Count > 0)
             {
                 logger.LogInformation(
-                    "Re-projected {Count} task(s) written before the lifecycle split — they carried no "
-                    + "assigned owner, which the claim filter reads as nobody's work",
+                    "Re-projected {Count} task(s) whose documents were written before a projection "
+                    + "shape change — an absent field reads as nothing recorded, which is how a task "
+                    + "becomes unclaimable or loses the reason it is held for",
                     rebuilt.Count);
             }
         }
         catch (Exception exception) when (exception is not OperationCanceledException)
         {
             logger.LogError(exception,
-                "Re-projecting pre-lifecycle task documents failed. Tasks last projected before the "
-                + "lifecycle split will not be claimed until this succeeds; the next daemon start retries it");
+                "Re-projecting out-of-date task documents failed. Tasks last projected before a "
+                + "projection shape change will misread until this succeeds; the next daemon start "
+                + "retries it");
         }
     }
 

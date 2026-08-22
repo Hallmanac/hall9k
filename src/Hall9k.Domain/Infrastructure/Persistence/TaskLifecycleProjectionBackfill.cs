@@ -1,39 +1,53 @@
 using Hall9k.Domain.Features.Tasks.Projections;
 using Marten;
+using Marten.Events;
 using Marten.Linq.MatchesSql;
 
 namespace Hall9k.Domain.Infrastructure.Persistence;
 
 /// <summary>
-/// Re-projects task streams whose documents were last written before the lifecycle split
-/// (Decisions Log #34) taught the task projections about AssignedOwnerId. The projections are
-/// Inline, so a document is only ever rewritten when its stream gets a new event: a task that
-/// reached Done last week still carries last week's shape, and nothing in the platform rebuilds
-/// it. That matters because the dispatcher's claim filter is <c>State == Queued</c> plus
-/// <c>AssignedOwnerId == this node's owner</c> — a document with no assignedOwnerId key at all
-/// never matches, so a pre-split task that comes back to Queued (an expired lease, a closeout
-/// reopen, h9k task retry) would never be claimed again, and h9k task show would call it
-/// unowned. The events already say who owns it (TaskAdded replays as assigned to the owner who
-/// added it), so replaying them is the whole migration PLAN.md #34 promised.
+/// Re-projects task streams whose documents were last written before a change to the task
+/// projections' shape. The projections are Inline, so a document is only ever rewritten when
+/// its stream gets a new event: a task that reached Done last week still carries last week's
+/// shape, and nothing else in the platform rebuilds it. Every field the projections learned
+/// after a document was written therefore reads as absent on that document, and the code that
+/// reads the field cannot tell absent-because-old from absent-because-nothing-was-recorded.
+/// The events say the truth in both cases, so replaying them is the whole migration.
 ///
-/// Origin incident (2026-08-20): the lifecycle split shipped the new filter without the
-/// rebuild, and every one of the 24 tasks in the dogfooding database was left permanently
-/// unclaimable — silently, because an unclaimable task looks exactly like an idle queue.
+/// Origin incident (2026-08-20): the lifecycle split (Decisions Log #34) shipped the new claim
+/// filter — <c>State == Queued</c> plus <c>AssignedOwnerId == this node's owner</c> — without
+/// the rebuild, and a document with no assignedOwnerId key at all never matches it. Every one
+/// of the 24 tasks in the dogfooding database was left permanently unclaimable, silently,
+/// because an unclaimable task looks exactly like an idle queue.
+///
+/// Second incident (2026-08-21, caught in review before it shipped): the dead-blocker recovery
+/// (Decisions Log #61) added deadDependencyReasons and made the displayed failure reason derive
+/// from it alone. On a document written before that change the map reads empty while
+/// deadDependencies is still populated, so the first blocker to recover or complete nulls the
+/// reason for the blockers that are <em>still</em> dead — and no later sweep restores it, since
+/// the aggregate (rebuilt from events, so its map is right) sees nothing new to record. The
+/// task sits Blocked with nothing on the board saying why. Every new projection field needs a
+/// marker here for the same reason.
 /// </summary>
 public static class TaskLifecycleProjectionBackfill
 {
     /// <summary>
-    /// What a pre-split document looks like: the key the current projections always write —
-    /// as a value or as an explicit null — is simply absent. Written as jsonb_exists rather
-    /// than the <c>?</c> operator because <c>?</c> is Marten's parameter placeholder.
+    /// What an out-of-date document looks like: a key the current projections always write —
+    /// as a value, an explicit null, or an empty map — is simply absent. One marker per shape
+    /// change, because a document can be old enough to be missing several and new enough to
+    /// have the earlier ones; the alternation is parenthesised so it stays one predicate
+    /// whatever Marten conjoins it with. Written as jsonb_exists rather than the <c>?</c>
+    /// operator because <c>?</c> is Marten's parameter placeholder.
     /// </summary>
-    private const string PreSplitDocument = "not jsonb_exists(d.data, 'assignedOwnerId')";
+    private const string StaleDocument =
+        "(not jsonb_exists(d.data, 'assignedOwnerId')"              // pre-lifecycle-split (log #34)
+        + " or not jsonb_exists(d.data, 'deadDependencyReasons'))"; // pre-blocker-recovery (log #61)
 
     /// <summary>
-    /// Rebuilds every task stream still carrying a pre-split document and returns their ids.
-    /// Idempotent and self-terminating: a rebuilt document has the key, so the next call finds
-    /// nothing. Both task projections are single-stream on the task's own id, so one pass over
-    /// the union of the two stale sets repairs both.
+    /// Rebuilds every task stream still carrying an out-of-date document and returns the ids it
+    /// actually rebuilt. Idempotent and self-terminating: a rebuilt document has every key, so
+    /// the next call finds nothing. Both task projections are single-stream on the task's own
+    /// id, so one pass over the union of the two stale sets repairs both.
     /// </summary>
     public static async Task<IReadOnlyList<Guid>> RunAsync(
         IDocumentStore store, CancellationToken cancellationToken)
@@ -44,13 +58,61 @@ public static class TaskLifecycleProjectionBackfill
             return [];
         }
 
+        List<Guid> rebuilt = [];
         foreach (Guid streamId in stale)
         {
-            await store.Advanced.RebuildSingleStreamAsync<TaskListItem>(streamId, cancellationToken);
-            await store.Advanced.RebuildSingleStreamAsync<TaskDetails>(streamId, cancellationToken);
+            if (await RebuildAsync(store, streamId, cancellationToken))
+            {
+                rebuilt.Add(streamId);
+            }
         }
 
-        return stale;
+        return rebuilt;
+    }
+
+    /// <summary>
+    /// Replays one stream into both task documents, restored at the stream's own version, and
+    /// says whether it did. A document whose stream cannot be replayed is left exactly as it is
+    /// and reported as not rebuilt, rather than counted as repaired work nobody did.
+    /// <para>
+    /// The version is the whole reason this is hand-rolled rather than two calls to Marten's
+    /// <c>Advanced.RebuildSingleStreamAsync</c>. An Inline projection skips an event whose
+    /// version is not newer than the document it is applying to, and that convenience method
+    /// stores the rebuilt document at <em>one past</em> the stream's version (repeated calls
+    /// walk it up by one each time). The next event the stream ever receives is therefore
+    /// silently dropped from the document — and in the case this backfill exists for, that next
+    /// event is precisely the one the repair was needed for: the sweep's TaskDependencyRecovered
+    /// on a task whose dead-blocker reasons were just restored. Deleting and re-storing at the
+    /// version the events actually reach leaves the document where ordinary Inline projection
+    /// left it, so the stream carries on normally. Both operations go in one transaction, so a
+    /// crash mid-repair cannot leave a task with no document at all — a state this backfill
+    /// could not even find again, since it queries the documents.
+    /// </para>
+    /// </summary>
+    private static async Task<bool> RebuildAsync(
+        IDocumentStore store, Guid streamId, CancellationToken cancellationToken)
+    {
+        await using IDocumentSession session = store.LightweightSession();
+
+        StreamState? state = await session.Events.FetchStreamStateAsync(streamId, cancellationToken);
+        TaskListItem? row = state is null
+            ? null
+            : await session.Events.AggregateStreamAsync<TaskListItem>(streamId, token: cancellationToken);
+        TaskDetails? details = row is null
+            ? null
+            : await session.Events.AggregateStreamAsync<TaskDetails>(streamId, token: cancellationToken);
+        if (state is null || row is null || details is null)
+        {
+            return false;
+        }
+
+        session.Delete<TaskListItem>(streamId);
+        session.Delete<TaskDetails>(streamId);
+        session.UpdateRevision(row, (int)state.Version);
+        session.UpdateRevision(details, (int)state.Version);
+
+        await session.SaveChangesAsync(cancellationToken);
+        return true;
     }
 
     private static async Task<Guid[]> StaleStreamsAsync(
@@ -59,11 +121,11 @@ public static class TaskLifecycleProjectionBackfill
         await using IQuerySession session = store.QuerySession();
 
         IReadOnlyList<Guid> rows = await session.Query<TaskListItem>()
-            .Where(task => task.MatchesSql(PreSplitDocument))
+            .Where(task => task.MatchesSql(StaleDocument))
             .Select(task => task.Id)
             .ToListAsync(cancellationToken);
         IReadOnlyList<Guid> details = await session.Query<TaskDetails>()
-            .Where(task => task.MatchesSql(PreSplitDocument))
+            .Where(task => task.MatchesSql(StaleDocument))
             .Select(task => task.Id)
             .ToListAsync(cancellationToken);
 
