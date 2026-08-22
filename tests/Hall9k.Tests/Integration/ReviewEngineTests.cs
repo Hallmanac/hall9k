@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using FluentAssertions;
 using Hall9k.Daemon;
 using Hall9k.Daemon.Execution;
@@ -347,6 +348,69 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
             "the cycle concluded once, after both lenses answered");
         events.OfType<ReviewPassCompleted>().Select(e => e.Lens).Should().Equal(
             [ReviewLens.Conformance, ReviewLens.Adversarial]);
+    }
+
+    /// <summary>
+    /// A pre-lens run adopted mid-review: its one lens-less pass covers the conformance track,
+    /// and the cycle is topped up with an adversarial one. The lens-less pass must keep reading
+    /// back its OWN findings, so it files them under a name of its own rather than the merged
+    /// document's — the merge overwrites that file, and a cycle recorded twice (here: the one
+    /// verdict re-prompt) would otherwise hand the lens-less track the other lens's findings.
+    /// Borrowed findings are not a cosmetic mix-up: they suppress the "something must be fixed"
+    /// placeholder a needs-fixes verdict implies, which settles a track that did find something.
+    /// </summary>
+    [Fact]
+    public async Task A_lens_less_pass_reads_back_its_own_findings_and_not_the_merged_document()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        using DocumentStore store = NewStore();
+        (Guid taskId, Guid runId, _) = await SeedVerifiedRunAsync(store, cts.Token);
+
+        Guid preLensSession = DomainId.New();
+        const string prose = "The second acceptance criterion is not met: nothing records the observation.";
+        await WriteScriptedResultAsync(
+            runId, $"review-1-{preLensSession.ToString("N")[..8]}",
+            $"{prose}\n\nVERDICT: needs-fixes", cts.Token);
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            // A dispatch from before lenses existed: no lens on the event, so the pass is
+            // Unknown and covers conformance without claiming to have been told it was that.
+            session.Events.Append(runId, new ReviewDispatched(
+                runId, preLensSession, 1, 5_200, Now, Now, AgentModel.Sonnet, null));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        const string preExisting = "FINDING: severity=medium; scope=out-of-scope; at=Legacy.cs:12\n"
+            + "Defect: the retry duplicates the effect. Scenario: a transient failure charges twice.";
+        ScriptedExecutor executor = new(
+            // The topped-up adversarial pass ends without a verdict, so the cycle concludes
+            // nothing, writes its merged document, and spends its one re-prompt.
+            preExisting,
+            $"{preExisting}\n\nVERDICT: needs-fixes",
+            "Left the pre-existing one alone; recorded the observation.\n\nRESOLUTION: fixed",
+            "Every acceptance criterion is met now.\n\nVERDICT: merge-ready",
+            "Nothing survived verification.\n\nVERDICT: merge-ready");
+        bool mergeReady = await NewEngine(store, executor).ReviewAsync(runId, taskId, cts.Token);
+
+        mergeReady.Should().BeTrue();
+
+        File.ReadAllText(RunPaths.ReviewLensFindingsFile(runId, 1, "unlensed"))
+            .Should().Contain(prose).And.NotContain("FINDING:",
+                "the merge writes its own file, so the lens-less pass still has its own words");
+        string merged = File.ReadAllText(RunPaths.ReviewFindingsFile(runId, 1));
+        merged.Should().Contain(prose, "the merged document quotes the lens-less pass");
+        Regex.Matches(merged, "^# Independent pre-PR review", RegexOptions.Multiline)
+            .Should().ContainSingle("a cycle recorded twice re-derives the merge rather than nesting its previous self");
+
+        await using IQuerySession query = store.QuerySession();
+        List<object> events = [.. (await query.Events.FetchStreamAsync(runId, token: cts.Token)).Select(e => e.Data)];
+        List<ReviewTrackConcluded> concluded = [.. events.OfType<ReviewTrackConcluded>()];
+        concluded.Should().NotContain(track => track.Lens == ReviewLens.Unknown,
+            "the lens-less track read its own needs-fixes rather than the other lens's routed medium, "
+            + "so cycle one retired nobody");
+        concluded.Should().Contain(track =>
+            track.Lens == ReviewLens.Conformance && track.Cycle == 2 && track.Settlement == ReviewSettlement.Clean,
+            "it ends where a reviewer read the tip the fix produced");
     }
 
     /// <summary>
