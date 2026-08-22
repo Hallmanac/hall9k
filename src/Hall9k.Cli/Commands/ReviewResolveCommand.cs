@@ -19,8 +19,10 @@ namespace Hall9k.Cli.Commands;
 /// its absence left a parked run with no path forward except abandonment): record a
 /// human verdict on a review-parked run. --merge-ready sends the run on to its pull
 /// request; --needs-fixes dispatches a fix session with the stated reason as its
-/// findings and, like h9k pr resolve, restores the automatic fix budget — the human
-/// asking is a fresh grant.
+/// findings and, like h9k pr resolve, re-bases the review's per-track cycle caps on the
+/// cycle it resolved (log #63's ReviewBudgetBaseCycle) — the human asking is a fresh
+/// grant, not one cycle before an immediate re-park. It does not re-open the severity
+/// gate, which is a statement about how converged the diff is rather than a budget.
 /// <para>
 /// One park takes merge-ready differently. The thread-dispute park (Decisions Log #62) is
 /// raised before the gates run, so there is no reviewed diff to sign off: the verdict
