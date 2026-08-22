@@ -85,14 +85,26 @@ public sealed record JiraProjectKey
     /// <summary>
     /// What a refused key is safe to be quoted as. The value came off a command line and the
     /// refusal is printed to a terminal, and this type cannot reach Hall9k.Connectors' relay
-    /// rules from the domain — so it keeps only the characters a key could legally have been
-    /// made of, which drops every control character by construction rather than by a list.
+    /// rules from the domain — so it is a whitelist rather than a copy of that project's list of
+    /// characters that act: only what a key could legally have been made of survives, plus the
+    /// dash, because the commonest mistake this refuses is a card key (PROJ-123) passed where a
+    /// project key belongs and echoing that back unrecognisable would teach nothing.
+    /// <para>
+    /// A whitelist because the list it would otherwise duplicate is long and moves: a control
+    /// character repaints the rows above it, and a bidirectional override (U+202E and the
+    /// isolates) reverses the display of everything after it while leaving the stored string
+    /// alone, so a refusal quoting one would reverse the sentence that explains the refusal.
+    /// Nothing outside the whitelist can do either, and nothing has to be enumerated to know it.
+    /// </para>
     /// </summary>
     private static string RelayedProjectKey(string value)
     {
-        string visible = new([.. value.Take(MaximumLength).Select(c => char.IsControl(c) ? '?' : c)]);
+        string visible = new([.. value.Take(MaximumLength).Select(Legible)]);
         return value.Length > MaximumLength ? visible + "…" : visible;
     }
+
+    private static char Legible(char character) =>
+        char.IsAsciiLetterOrDigit(character) || character is '_' or '-' ? character : '?';
 
     public override string ToString() => Value;
 
