@@ -3,6 +3,7 @@ using FluentAssertions;
 using Hall9k.Connectors.WorkItems;
 using Hall9k.Daemon;
 using Hall9k.Daemon.Execution;
+using Hall9k.Daemon.ProcessManagement;
 using Hall9k.Daemon.Publication;
 using Hall9k.Domain.Features.Connection;
 using Hall9k.Domain.Features.Project;
@@ -17,6 +18,7 @@ using Hall9k.Domain.Infrastructure.Storage;
 using Hall9k.Domain.Shared.ValueObjects;
 using Hall9k.Tests.Fakes;
 using JasperFx;
+using JasperFx.Events;
 using Marten;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
@@ -196,9 +198,18 @@ public sealed class CardPublicationEngineTests(PostgresFixture postgres) : IClas
         TaskDetails task = (await query.LoadAsync<TaskDetails>(taskId, cts.Token))!;
         task.ExternalReference.Should().BeNull("a claim is not a link");
         task.PublicationOutcome.Should().Contain("without a verified card key")
-            .And.Contain("I created PROJ-999", "what it said is kept, as its words rather than as the record");
+            .And.Contain("I created PROJ-999", "what it said is kept, as its words rather than as the record")
+            .And.Contain("Check the board", "PROJ-999 may well exist; what nobody has is proof of it");
     }
 
+    /// <summary>
+    /// Completing clears the pending marker, which is what makes the task publishable again — so
+    /// an outcome that reports no link has to say that no card was <em>seen</em> rather than that
+    /// none exists. A session that died mid-flight may have filed one first, and an operator who
+    /// reads "no card" and runs push-to-jira again gets the duplicate. Origin incident
+    /// (2026-08-21): the pre-PR review of this branch found the caution on the adoption and
+    /// shutdown paths and missing from the ordinary ones.
+    /// </summary>
     [Fact]
     public async Task A_session_that_dies_without_a_result_says_where_to_look()
     {
@@ -215,8 +226,62 @@ public sealed class CardPublicationEngineTests(PostgresFixture postgres) : IClas
         await using IQuerySession query = store.QuerySession();
         TaskDetails task = (await query.LoadAsync<TaskDetails>(taskId, cts.Token))!;
         task.PublicationOutcome.Should().Contain("left no result to read")
-            .And.Contain(RunPaths.Root, "the transcript is somewhere, and the record says where");
+            .And.Contain(RunPaths.Root, "the transcript is somewhere, and the record says where")
+            .And.Contain("Check the board", "it may have filed a card before it died");
         task.PendingPublicationProvider.Should().BeNull();
+    }
+
+    /// <summary>
+    /// The seam failing underneath a session that is still running: what a transient IOException
+    /// out of the tail read, or a dropped connection out of the linked check, looks like from the
+    /// engine. Kills are passed through to the real fake, because whether the session was stopped
+    /// is the assertion.
+    /// </summary>
+    private sealed class UnwatchableProcesses(FakeProcessManager processes) : IProcessManager
+    {
+        public bool IsAlive(int processId, DateTimeOffset startedAt) =>
+            throw new IOException("the session's stream could not be read");
+
+        public void Terminate(int processId, DateTimeOffset startedAt) => processes.Terminate(processId, startedAt);
+    }
+
+    /// <summary>
+    /// Losing track of a running session is not the same fact as never having started one, and
+    /// only the first is what happened here. The session is stopped for the reason the timeout
+    /// path stops one — nobody is watching it and nothing will record what it does next — and the
+    /// outcome says a card may exist, because completing makes the task publishable again and an
+    /// operator told the session could not be run would publish a second time. Origin incident
+    /// (2026-08-21): the second cycle of this branch's pre-PR review found the sweep's catch-all
+    /// recording "the daemon could not run the publication session", with no kill and no caution,
+    /// while the agent it had spawned was still working.
+    /// </summary>
+    [Fact]
+    public async Task A_session_the_daemon_loses_track_of_is_stopped_rather_than_reported_as_never_run()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        using DocumentStore store = NewStore();
+        NodeContext node = await NewNodeAsync(store, cts.Token);
+        Guid taskId = await SeedAsync(store, node, cts.Token);
+
+        FakeProcessManager processes = new();
+        ScriptedSession session = new(null, processes);
+
+        CardPublicationSweepResult sweep = await NewEngine(store, node, session, new UnwatchableProcesses(processes))
+            .PollOnceAsync(cts.Token);
+
+        sweep.Dispatched.Should().Be(1, "a session was spawned, whatever became of watching it");
+        sweep.Linked.Should().Be(0);
+        session.Spawns.Should().ContainSingle();
+        processes.Terminations.Should().ContainSingle(
+            "a session nobody is watching any more is stopped, not left detached with a card to file");
+
+        await using IQuerySession query = store.QuerySession();
+        TaskDetails task = (await query.LoadAsync<TaskDetails>(taskId, cts.Token))!;
+        task.PublicationOutcome.Should().Contain("lost track of it")
+            .And.NotContain("could not run the publication session", "it ran; what failed was watching it")
+            .And.Contain(RunPaths.Root, "the transcript is somewhere, and the record says where")
+            .And.Contain("Check the board", "it was mid-flight, so it may have filed a card first");
+        task.PendingPublicationProvider.Should().BeNull("the task is publishable again, which is why the caution is there");
     }
 
     /// <summary>
@@ -315,7 +380,10 @@ public sealed class CardPublicationEngineTests(PostgresFixture postgres) : IClas
         TaskDetails task = (await query.LoadAsync<TaskDetails>(taskId, cts.Token))!;
         task.PendingPublicationProvider.Should().BeNull("the task is no longer waiting on anything");
         task.PublicationOutcome.Should().Contain("daemon stopped while this session was running")
-            .And.Contain("Check the board", "whether a card exists is the one thing nobody here observed");
+            .And.Contain(
+                "Check the board",
+                Exactly.Once(),
+                "whether a card exists is the one thing nobody here observed, said once");
     }
 
     /// <summary>
@@ -374,7 +442,12 @@ public sealed class CardPublicationEngineTests(PostgresFixture postgres) : IClas
         await using IQuerySession query = store.QuerySession();
         TaskDetails task = (await query.LoadAsync<TaskDetails>(taskId, cts.Token))!;
         task.PublicationOutcome.Should().Contain("picked it back up")
-            .And.Contain("I filed the card but never reported it back.");
+            .And.Contain("I filed the card but never reported it back.")
+            .And.Contain(
+                "Check the board",
+                Exactly.Once(),
+                "the adopted outcome carries the caution the session's own outcome already ended with, "
+                + "and carrying it twice reads as a defect in the record");
         task.ExternalReference.Should().BeNull("nothing came back through the gate, so nothing is linked");
     }
 
@@ -429,14 +502,231 @@ public sealed class CardPublicationEngineTests(PostgresFixture postgres) : IClas
             await loop.StopAsync(CancellationToken.None);
         }
     }
-    /// <summary>What the daemon appends when it spawns the session, replayed here without one.</summary>
+
+    /// <summary>
+    /// The window that two cards come out of, closed. A session spawned before its dispatch is on
+    /// the stream is a live card-writer nothing has a record of, so a lost commit or a kill -9 in
+    /// that window leaves the next sweep free to start a second one against the same request.
+    /// Origin incident (2026-08-21): the pre-PR review of this branch traced both paths.
+    /// </summary>
+    [Fact]
+    public async Task The_dispatch_is_on_the_stream_before_anything_is_spawned()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        using DocumentStore store = NewStore();
+        NodeContext node = await NewNodeAsync(store, cts.Token);
+        Guid taskId = await SeedAsync(store, node, cts.Token);
+
+        FakeProcessManager processes = new();
+        ObservingSession session = new(store, taskId);
+
+        await NewEngine(store, node, session, processes).PollOnceAsync(cts.Token);
+
+        session.DispatchedWhenSpawned.Should().BeTrue(
+            "the guard that refuses a second session has to be up before one exists that could file a card");
+
+        // And the process is recorded once there is one — read off the stream rather than the
+        // projection, which drops the session's identity the moment the errand ends.
+        await using IQuerySession query = store.QuerySession();
+        IReadOnlyList<IEvent> stream = await query.Events.FetchStreamAsync(taskId, token: cts.Token);
+        stream.Select(recorded => recorded.Data).OfType<WorkItemPublicationSessionStarted>()
+            .Should().ContainSingle().Which.ProcessId.Should().Be(9100);
+    }
+
+    /// <summary>
+    /// The other side of that split: a daemon that died between committing the dispatch and
+    /// recording the process it spawned. Nobody can now say whether a session ever ran, so the
+    /// outcome says that rather than picking an answer, and the task is left publishable again.
+    /// </summary>
+    [Fact]
+    public async Task A_dispatch_with_no_process_recorded_beside_it_is_reported_as_unknown()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        using DocumentStore store = NewStore();
+        NodeContext node = await NewNodeAsync(store, cts.Token);
+        Guid taskId = await SeedAsync(store, node, cts.Token);
+        await DispatchedAsync(store, node, taskId, processId: null, cts.Token);
+
+        FakeProcessManager processes = new();
+        ScriptedSession session = new("Created PROJ-123.", processes);
+
+        CardPublicationSweepResult sweep = await NewEngine(store, node, session, processes)
+            .PollOnceAsync(cts.Token);
+
+        sweep.Adopted.Should().Be(1);
+        session.Spawns.Should().BeEmpty("a session may be running; starting a second is the failure to avoid");
+
+        await using IQuerySession query = store.QuerySession();
+        TaskDetails task = (await query.LoadAsync<TaskDetails>(taskId, cts.Token))!;
+        task.PublicationOutcome.Should().Contain("nothing can say whether it ran")
+            .And.Contain("Check the board", "no card was seen, which is not the same as no card");
+        task.PendingPublicationProvider.Should().BeNull("the task is publishable again");
+    }
+
+    /// <summary>
+    /// The decider's other rule, enforced where the card would actually be written. A task that
+    /// already carries a card gets no session, whatever the pending marker says: the sweep is the
+    /// last gate before an agent is told to file one, and one task carries one external item.
+    /// Origin incident (2026-08-21): the pre-PR review of this branch found h9k task push-to-jira
+    /// appending its request unfenced, so a link landing between its read and its append left a
+    /// task both linked and pending — the state this test seeds directly.
+    /// </summary>
+    [Fact]
+    public async Task A_task_that_is_already_linked_gets_no_session_however_it_came_to_be_pending()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        using DocumentStore store = NewStore();
+        NodeContext node = await NewNodeAsync(store, cts.Token);
+        Guid taskId = await SeedAsync(store, node, cts.Token);
+        await LinkAsync(store, taskId, cts.Token);
+        await RequestedBehindTheLinkAsync(store, node, taskId, cts.Token);
+
+        FakeProcessManager processes = new();
+        ScriptedSession session = new("A second card nobody asked for.", processes);
+
+        CardPublicationSweepResult sweep = await NewEngine(store, node, session, processes)
+            .PollOnceAsync(cts.Token);
+
+        sweep.Linked.Should().Be(0);
+        session.Spawns.Should().BeEmpty("a session dispatched here would file a second card for one task");
+
+        await using IQuerySession query = store.QuerySession();
+        TaskDetails task = (await query.LoadAsync<TaskDetails>(taskId, cts.Token))!;
+        task.ExternalReference.Should().Be("jira:PROJ-123", "the card it already had is untouched");
+        task.PendingPublicationProvider.Should().BeNull("the request is answered rather than left hanging");
+        task.PublicationOutcome.Should().Contain("already linked to jira:PROJ-123")
+            .And.Contain("second card", "the refusal says what it was protecting against");
+    }
+
+    /// <summary>
+    /// Abandoning is walking away from the work, and an errand nobody has started yet goes with
+    /// it. The sweep reads the pending marker and nothing else, so a request that outlived the
+    /// intent behind it would still become an agent session filing a real card — for work nobody
+    /// means to do, on a task that could not then record it, because linking an abandoned task is
+    /// refused too. Origin incident (2026-08-22): the pre-PR review of this branch traced it from
+    /// h9k task push-to-jira with the daemon stopped, then h9k task abandon, then the daemon
+    /// starting.
+    /// </summary>
+    [Fact]
+    public async Task Abandoning_before_the_daemon_sweeps_takes_the_request_with_it()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        using DocumentStore store = NewStore();
+        NodeContext node = await NewNodeAsync(store, cts.Token);
+        Guid taskId = await SeedAsync(store, node, cts.Token);
+        await AbandonAsync(store, taskId, cts.Token);
+
+        FakeProcessManager processes = new();
+        ScriptedSession session = new("A card for work nobody is doing.", processes);
+
+        CardPublicationSweepResult sweep = await NewEngine(store, node, session, processes)
+            .PollOnceAsync(cts.Token);
+
+        sweep.Should().Be(new CardPublicationSweepResult(0, 0));
+        session.Spawns.Should().BeEmpty("the request died with the task it was about");
+
+        await using IQuerySession query = store.QuerySession();
+        TaskDetails task = (await query.LoadAsync<TaskDetails>(taskId, cts.Token))!;
+        task.PendingPublicationProvider.Should().BeNull();
+        task.ExternalReference.Should().BeNull("no card was ever asked for");
+    }
+
+    /// <summary>
+    /// The same rule enforced where the consequence is, for a marker that reaches the sweep on an
+    /// abandoned task anyway — the request appended behind the abandon, which is the shape a
+    /// stream written before that rule existed has.
+    /// </summary>
+    [Fact]
+    public async Task An_abandoned_task_gets_no_session_however_it_came_to_be_pending()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        using DocumentStore store = NewStore();
+        NodeContext node = await NewNodeAsync(store, cts.Token);
+        Guid taskId = await SeedAsync(store, node, cts.Token);
+        await AbandonAsync(store, taskId, cts.Token);
+        await RequestedBehindTheLinkAsync(store, node, taskId, cts.Token);
+
+        FakeProcessManager processes = new();
+        ScriptedSession session = new("A card for work nobody is doing.", processes);
+
+        CardPublicationSweepResult sweep = await NewEngine(store, node, session, processes)
+            .PollOnceAsync(cts.Token);
+
+        sweep.Linked.Should().Be(0);
+        session.Spawns.Should().BeEmpty("a card filed here is one nobody can link and nobody wants");
+
+        await using IQuerySession query = store.QuerySession();
+        TaskDetails task = (await query.LoadAsync<TaskDetails>(taskId, cts.Token))!;
+        task.ExternalReference.Should().BeNull();
+        task.PendingPublicationProvider.Should().BeNull("the request is answered rather than left hanging");
+        task.PublicationOutcome.Should().Contain("abandoned before the daemon picked the request up")
+            .And.Contain("nobody here intends to do", "the refusal says what it was protecting against");
+    }
+
+    /// <summary>What h9k task abandon appends: the walk-away ending, mid-publication or not.</summary>
+    private static async Task AbandonAsync(DocumentStore store, Guid taskId, CancellationToken cancellationToken)
+    {
+        await using IDocumentSession session = store.LightweightSession();
+        TaskAggregate task = (await session.Events
+            .AggregateStreamAsync<TaskAggregate>(taskId, token: cancellationToken))!;
+        session.Events.Append(taskId, TaskDecider.Abandon(task, "Superseded", Now, task.AddedByOwnerId));
+        await session.SaveChangesAsync(cancellationToken);
+    }
+
+    /// <summary>
+    /// The request the unfenced command used to be able to append after a link had landed: built
+    /// by hand because <see cref="TaskDecider.RequestWorkItemPublication"/> refuses to produce it,
+    /// which is exactly the rule the daemon is being asked to enforce a second time.
+    /// </summary>
+    private static async Task RequestedBehindTheLinkAsync(
+        DocumentStore store, NodeContext node, Guid taskId, CancellationToken cancellationToken)
+    {
+        await using IDocumentSession session = store.LightweightSession();
+        session.Events.Append(taskId, new WorkItemPublicationRequested(
+            taskId, WorkItemProvider.Jira, JiraProjectKey.Parse("PROJ"), Now, node.OwnerId));
+        await session.SaveChangesAsync(cancellationToken);
+    }
+
+    /// <summary>
+    /// Reads the task at the moment of the spawn, which is the whole assertion.
+    /// </summary>
+    private sealed class ObservingSession(DocumentStore store, Guid taskId) : IExecutor
+    {
+        public bool DispatchedWhenSpawned { get; private set; }
+
+        public async Task<SpawnedAgent> SpawnAsync(AgentSpawnRequest request, CancellationToken cancellationToken)
+        {
+            await using (IQuerySession query = store.QuerySession())
+            {
+                TaskAggregate? task = await query.Events
+                    .AggregateStreamAsync<TaskAggregate>(taskId, token: cancellationToken);
+                DispatchedWhenSpawned = task?.PublicationSessionDispatched is true;
+            }
+
+            await WriteResultAsync(request.RunId, "I filed a card.", cancellationToken);
+            return new SpawnedAgent(9100, Now);
+        }
+    }
+
+    /// <summary>
+    /// What the daemon appends when it dispatches a session, replayed here without one. Two events
+    /// because the daemon writes two: the dispatch is committed before the spawn, so that a crash
+    /// in between cannot leave a live session with nothing on the stream to stop the next sweep
+    /// starting a second one. Pass a null <paramref name="processId"/> to replay a daemon that
+    /// died inside that window.
+    /// </summary>
     private static async Task<Guid> DispatchedAsync(
-        DocumentStore store, NodeContext node, Guid taskId, int processId, CancellationToken cancellationToken)
+        DocumentStore store, NodeContext node, Guid taskId, int? processId, CancellationToken cancellationToken)
     {
         Guid sessionId = DomainId.New();
         await using IDocumentSession session = store.LightweightSession();
         session.Events.Append(taskId, new WorkItemPublicationDispatched(
-            taskId, sessionId, node.NodeId, processId, Now, Now, AgentModel.Unknown));
+            taskId, sessionId, node.NodeId, Now, AgentModel.Unknown));
+        if (processId is { } pid)
+        {
+            session.Events.Append(taskId, new WorkItemPublicationSessionStarted(taskId, sessionId, pid, Now));
+        }
+
         await session.SaveChangesAsync(cancellationToken);
         return sessionId;
     }
@@ -534,7 +824,7 @@ public sealed class CardPublicationEngineTests(PostgresFixture postgres) : IClas
     }
 
     private static CardPublicationEngine NewEngine(
-        DocumentStore store, NodeContext node, IExecutor executor, FakeProcessManager processes) =>
+        DocumentStore store, NodeContext node, IExecutor executor, IProcessManager processes) =>
         new(store, node, executor, processes,
             Options.Create(new DaemonOptions { CardPublicationTimeout = TimeSpan.FromSeconds(20) }),
             NullLogger<CardPublicationEngine>.Instance);

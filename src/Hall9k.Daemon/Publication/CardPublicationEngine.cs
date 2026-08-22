@@ -57,6 +57,27 @@ public sealed class CardPublicationEngine(
     /// </summary>
     private static readonly TimeSpan ShutdownRecordTimeout = TimeSpan.FromSeconds(5);
 
+    /// <summary>
+    /// What every outcome that ends a publication without a link has to say, in one place because
+    /// every one of them has to say it.
+    /// <para>
+    /// Completing clears the pending marker, which is what makes the task publishable again — so
+    /// an outcome that reports no link without this reads as "no card was created" when what it
+    /// actually means is "no card was seen created". Those are different facts, and only the
+    /// second one was observed: the session that timed out, or died leaving nothing behind, may
+    /// have filed a card first. An operator who takes the first reading runs push-to-jira again
+    /// and gets the duplicate this whole class is arranged to avoid. Origin incident (2026-08-21):
+    /// the pre-PR review of this branch found the caution on the adoption and shutdown paths and
+    /// missing from the ordinary timed-out and died-without-a-result ones; its second cycle found
+    /// the last one without it, the sweep's catch-all, which was also ending publications whose
+    /// session was still running.
+    /// </para>
+    /// </summary>
+    private const string CheckTheBoard =
+        "Check the board before running h9k task push-to-jira again: a session that created a card "
+        + "and never reported it back through h9k task link-jira leaves the card there and this task "
+        + "unlinked.";
+
     private readonly DaemonOptions _options = options.Value;
 
     /// <summary>One sweep over this owner's outstanding publication requests.</summary>
@@ -97,11 +118,17 @@ public sealed class CardPublicationEngine(
             }
             catch (Exception exception)
             {
+                // What reaches here is the dispatch failing before a session exists: PublishAsync
+                // owns everything after the spawn, where a live session has to be stopped rather
+                // than merely reported. The caution is still on the message, because a catch-all
+                // cannot prove which side of the spawn it came from — SpawnAsync itself can throw
+                // with a started process behind it — and this outcome clears the pending marker
+                // either way.
                 logger.LogError(exception, "Publication failed for task {TaskId}; recording it and moving on", task.Id);
                 await CompleteAsync(
                     task.Id,
                     linkedNow: false,
-                    $"The daemon could not run the publication session: {exception.Message}",
+                    $"The daemon could not run the publication session: {exception.Message}. {CheckTheBoard}",
                     cancellationToken);
             }
         }
@@ -158,11 +185,22 @@ public sealed class CardPublicationEngine(
             {
                 logger.LogError(
                     exception, "Could not finish the stranded publication for task {TaskId}", task.Id);
+
+                // The same rule the dispatch path follows: the outcome below clears the pending
+                // marker, so an adopted session nobody managed to watch to an end is stopped
+                // rather than left detached to file a card against a task that is publishable
+                // again. Its identity is on the stream, which is what adoption reads.
+                if (task.PublicationSessionProcessId is { } processId
+                    && task.PublicationSessionStartedAt is { } startedAt)
+                {
+                    Terminate(task.Id, new SpawnedAgent(processId, startedAt));
+                }
+
                 await CompleteAsync(
                     task.Id,
                     linkedNow: false,
                     "The daemon stopped while this publication's session was running, and picking it "
-                    + $"back up failed: {exception.Message}. Check the board before requesting it again.",
+                    + $"back up failed: {exception.Message}. {CheckTheBoard}",
                     cancellationToken);
                 adopted++;
             }
@@ -177,15 +215,16 @@ public sealed class CardPublicationEngine(
             || task.PublicationSessionProcessId is not { } processId
             || task.PublicationSessionStartedAt is not { } startedAt)
         {
-            // Dispatched with no process identity recorded beside it, so there is nothing to ask
-            // about it. The honest answer is that nobody knows how it ended, which is what the
-            // outcome says rather than a guess in either direction.
+            // Dispatched with no process identity recorded beside it — the daemon died in the
+            // window between committing the dispatch and recording the process it spawned — so
+            // there is nothing to ask about it. The honest answer is that nobody knows whether a
+            // session ever started, let alone how it ended, which is what the outcome says rather
+            // than a guess in either direction.
             await CompleteAsync(
                 task.Id,
                 linkedNow: false,
-                "This publication's session was dispatched without a recorded process, so nothing can "
-                + "say how it ended. Check the board for a card before running h9k task push-to-jira "
-                + "again.",
+                "This publication's session was dispatched and no process was ever recorded beside it, "
+                + $"so nothing can say whether it ran. {CheckTheBoard}",
                 cancellationToken);
             return;
         }
@@ -204,17 +243,20 @@ public sealed class CardPublicationEngine(
     /// <summary>
     /// What an adopted session that produced no link is recorded as. It says who was watching and
     /// when, because that is the difference between "no card was created" and "no card was seen
-    /// created" — and only the second one is true here, which is why it asks for the board to be
-    /// looked at rather than telling anybody to publish again.
+    /// created" — and only the second one is true here.
+    /// <para>
+    /// The caution is not appended: every outcome this prefixes comes from
+    /// <see cref="WaitAsync"/>'s no-link return, which already ends with <see cref="CheckTheBoard"/>.
+    /// Adding it here said the same thing twice in one sentence, which reads as a bug in the
+    /// record rather than an emphasis. Origin incident (2026-08-22): the pre-PR review of this
+    /// branch found the duplicate on the adoption path in its third cycle.
+    /// </para>
     /// </summary>
     private static string Stranded(bool alive, string outcome) =>
         (alive
             ? "The daemon was restarted while this session was running and picked it back up. "
             : "The daemon stopped while this session was running and was not there when it ended. ")
-        + outcome
-        + " Check the board before running h9k task push-to-jira again: a session that created a "
-        + "card and never reported it back through h9k task link-jira leaves the card there and "
-        + "this task unlinked.";
+        + outcome;
 
     /// <summary>
     /// One request: spawn the session, wait for it under a ceiling, then record what the task
@@ -237,6 +279,46 @@ public sealed class CardPublicationEngine(
         if (aggregate?.PendingPublicationProvider is null || aggregate.PublicationSessionDispatched)
         {
             return null;
+        }
+
+        // The decider's other publication rule, enforced again at the point where a card would
+        // actually be written. TaskDecider.RequestWorkItemPublication refuses a task that already
+        // carries an external reference, and this is the last gate between that rule and a real
+        // second card on somebody's board, so it does not get to be true only in the command that
+        // asked. Origin incident (2026-08-21): the pre-PR review of this branch found
+        // h9k task push-to-jira appending its request unfenced, so a link landing between its read
+        // and its append left a task both linked and pending, and this sweep dispatched a session
+        // to write a card for work that already had one. The command is fenced now; this stays
+        // because the guard belongs where the consequence is.
+        if (aggregate.ExternalReference is { } already)
+        {
+            await CompleteAsync(
+                task.Id,
+                linkedNow: false,
+                $"This task was already linked to {already} by the time the daemon picked the request "
+                + "up, so no session was dispatched: a second session would have created a second card "
+                + "for work that already has one.",
+                cancellationToken);
+            return false;
+        }
+
+        // The decider's first publication rule, enforced again for the same reason as the one
+        // above. TaskDecider.RequestWorkItemPublication refuses an abandoned task because a card
+        // for it would put work on somebody's board that nobody here intends to do, and abandoning
+        // *after* the request is asking for the same thing a moment later: the request outlives
+        // the intent behind it. Abandoning drops the marker now (TaskAggregate.Apply(TaskAbandoned)),
+        // so this is the second lock on the same door rather than the only one — and it is the one
+        // standing where the card would actually be written.
+        if (aggregate.State == TaskState.Abandoned)
+        {
+            await CompleteAsync(
+                task.Id,
+                linkedNow: false,
+                "This task was abandoned before the daemon picked the request up, so no session was "
+                + "dispatched and nothing was put on a board: a card for abandoned work is work "
+                + "nobody here intends to do.",
+                cancellationToken);
+            return false;
         }
 
         ProjectDetails? project = await session.LoadAsync<ProjectDetails>(aggregate.ProjectId, cancellationToken);
@@ -279,6 +361,30 @@ public sealed class CardPublicationEngine(
             aggregate.PendingPublicationProjectKey,
             $"h9k task link-jira {task.Id}");
 
+        // Recorded before anything is spawned, which is RunLauncher's order (RunDispatched, then
+        // spawn, then RunProcessStarted) and it is the order for the same reason. The fence makes
+        // a concurrent writer lose; committing first is what makes a *crash* lose too. Spawned
+        // first, this would leave a window — a dropped connection on the save, a kill -9, a power
+        // cut — where a live session is creating a card and the stream has no record that anything
+        // was dispatched, so the next sweep starts a second one against the same request. Two
+        // sessions mean two cards, and a duplicate card is a human's cleanup rather than a retry
+        // here. Origin incident (2026-08-21): the pre-PR review of this branch traced both paths.
+        session.Events.Append(task.Id, expectedVersion: fence!.Version + 1, new WorkItemPublicationDispatched(
+            task.Id, sessionId, node.NodeId, DateTimeOffset.UtcNow, model));
+        try
+        {
+            await session.SaveChangesAsync(cancellationToken);
+        }
+        catch (EventStreamUnexpectedMaxEventIdException)
+        {
+            // Somebody else moved the task between the read and the append — a link landing, or
+            // another sweep getting there first. Nothing has been spawned, so there is nothing to
+            // stop and nothing to record: the request was simply not this sweep's after all.
+            logger.LogDebug(
+                "Task {TaskId} advanced while its publication was being dispatched; leaving it", task.Id);
+            return null;
+        }
+
         SpawnedAgent agent = await executor.SpawnAsync(
             // RunId doubles as the artifact key and there is no run here: a publication has no
             // worktree, no branch, and no lease. The session's own id names its directory, which
@@ -288,29 +394,86 @@ public sealed class CardPublicationEngine(
                 ExecutorMode.Subscription, model, project.SkipPermissions),
             cancellationToken);
 
+        // Everything past the spawn is handled here rather than by the sweep's catch-all, because
+        // this is the only place that still holds the session's identity and the two failures are
+        // not the same fact. Before the spawn, nothing is running and "the daemon could not run
+        // the publication session" is true. After it, an agent is writing a card, and the sweep's
+        // handler would end the publication as if nothing had started: no kill, no caution to look
+        // at the board, and completing clears the pending marker and the recorded session — so the
+        // live one is invisible to AdoptStrandedAsync, the request is publishable again, and an
+        // operator reading "could not run" runs push-to-jira and gets the second card this class
+        // exists to prevent. Origin incident (2026-08-21): the pre-PR review of this branch traced
+        // it from a transient store failure inside IsLinkedAsync while a session was mid-flight.
         try
         {
-            session.Events.Append(task.Id, expectedVersion: fence!.Version + 1, new WorkItemPublicationDispatched(
-                task.Id, sessionId, node.NodeId, agent.ProcessId, agent.StartedAt, DateTimeOffset.UtcNow, model));
+            await RecordProcessAsync(task.Id, sessionId, agent, cancellationToken);
+
+            logger.LogInformation(
+                "Task {TaskId}: card publication session {SessionId} dispatched (pid {ProcessId}, model {Model}, artifacts in {Directory})",
+                task.Id, sessionId, agent.ProcessId, model.Value, RunPaths.RunDirectory(sessionId));
+
+            (bool linked, string outcome) = await WaitAsync(task.Id, sessionId, agent, cancellationToken);
+            await CompleteAsync(task.Id, linked, outcome, cancellationToken);
+            return linked;
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            // The daemon is stopping, which WaitAsync's shutdown path has already dealt with:
+            // it stopped the session and recorded the outcome itself.
+            throw;
+        }
+        catch (Exception exception)
+        {
+            // The session is stopped for the same reason the timeout path stops one: nobody is
+            // watching it any more, nothing will record what it does next, and a detached session
+            // still writing a card is exactly how a surprise card arrives on a board.
+            logger.LogError(
+                exception,
+                "Task {TaskId}: the card-publication session (pid {ProcessId}) could not be seen through to an "
+                + "outcome; stopping it and recording that",
+                task.Id, agent.ProcessId);
+            Terminate(task.Id, agent);
+            await CompleteAsync(
+                task.Id,
+                linkedNow: false,
+                $"The session was dispatched and the daemon then lost track of it: {exception.Message}. It was "
+                + $"stopped without a verified card key. Its prompt and transcript are in "
+                + $"{RunPaths.RunDirectory(sessionId)}. {CheckTheBoard}",
+                cancellationToken);
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// Record which process the dispatched session turned out to be, in its own session because
+    /// the dispatch is already committed and this is a second observation rather than part of it.
+    /// <para>
+    /// A failure here is logged and not thrown. The session is running and this method's caller
+    /// still holds its identity in memory, so this sweep can see it through to an outcome either
+    /// way; letting the exception out would land in the caller's catch, which records the
+    /// publication as over while a live session is still writing the card. What is lost is only
+    /// the ability of a <em>later</em> daemon to ask about it, and adoption already has an honest
+    /// answer for a dispatch with no process recorded beside it.
+    /// </para>
+    /// </summary>
+    private async Task RecordProcessAsync(
+        Guid taskId, Guid sessionId, SpawnedAgent agent, CancellationToken cancellationToken)
+    {
+        try
+        {
+            await using IDocumentSession session = store.LightweightSession();
+            session.Events.Append(taskId, new WorkItemPublicationSessionStarted(
+                taskId, sessionId, agent.ProcessId, agent.StartedAt));
             await session.SaveChangesAsync(cancellationToken);
         }
-        catch (EventStreamUnexpectedMaxEventIdException)
+        catch (Exception exception) when (exception is not OperationCanceledException)
         {
-            // Somebody else moved the task between the read and the append. The session is already
-            // running and now belongs to nobody, so it is stopped rather than left to create a card
-            // this node has no record of asking for.
-            logger.LogDebug("Task {TaskId} advanced while its publication was being dispatched; stopping the session", task.Id);
-            Terminate(task.Id, agent);
-            return null;
+            logger.LogError(
+                exception,
+                "Task {TaskId}: the card-publication session (pid {ProcessId}) was spawned but its process "
+                + "could not be recorded; a restart will not be able to ask about it",
+                taskId, agent.ProcessId);
         }
-
-        logger.LogInformation(
-            "Task {TaskId}: card publication session {SessionId} dispatched (pid {ProcessId}, model {Model}, artifacts in {Directory})",
-            task.Id, sessionId, agent.ProcessId, model.Value, RunPaths.RunDirectory(sessionId));
-
-        (bool linked, string outcome) = await WaitAsync(task.Id, sessionId, agent, cancellationToken);
-        await CompleteAsync(task.Id, linked, outcome, cancellationToken);
-        return linked;
     }
 
     /// <summary>
@@ -328,6 +491,7 @@ public sealed class CardPublicationEngine(
         Guid taskId, Guid sessionId, SpawnedAgent agent, CancellationToken cancellationToken)
     {
         AgentResult? result;
+        bool timedOut = false;
         using CancellationTokenSource budget = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         budget.CancelAfter(_options.CardPublicationTimeout);
         try
@@ -343,6 +507,7 @@ public sealed class CardPublicationEngine(
                 taskId, _options.CardPublicationTimeout);
             Terminate(taskId, agent);
             result = null;
+            timedOut = true;
         }
         catch (OperationCanceledException)
         {
@@ -360,9 +525,7 @@ public sealed class CardPublicationEngine(
                     taskId,
                     await IsLinkedAsync(taskId, shutdown.Token),
                     "The daemon stopped while this session was writing the card, so the session was "
-                    + "stopped with it. Check the board before running h9k task push-to-jira again: a "
-                    + "session that created a card and never reported it back through h9k task link-jira "
-                    + "leaves the card there and this task unlinked.",
+                    + $"stopped with it. {CheckTheBoard}",
                     shutdown.Token);
             }
             catch (Exception recording)
@@ -377,14 +540,26 @@ public sealed class CardPublicationEngine(
         }
 
         bool linked = await IsLinkedAsync(taskId, cancellationToken);
-        string outcome = linked
-            ? Summarize(result) ?? "The session created the card and reported it through h9k task link-jira."
+        if (linked)
+        {
+            return (true, Summarize(result)
+                ?? "The session created the card and reported it through h9k task link-jira.");
+        }
+
+        // Everything from here ends the errand with no link, and completing clears the pending
+        // marker — so each of these carries the caution, for the same reason the adoption and
+        // shutdown paths do. None of them observed the absence of a card; they observed the
+        // absence of a report, and a session stopped mid-flight is the likeliest of the three to
+        // have left one behind.
+        string what = timedOut
+            ? $"The session was still running after {_options.CardPublicationTimeout} and was stopped "
+              + $"without a verified card key. Its prompt and transcript are in {RunPaths.RunDirectory(sessionId)}."
             : Summarize(result) is { } said
                 ? $"The session ended without a verified card key. It said: {said}"
                 : "The session ended without a verified card key and left no result to read. Its prompt and "
                   + $"transcript are in {RunPaths.RunDirectory(sessionId)}.";
 
-        return (linked, outcome);
+        return (false, $"{what} {CheckTheBoard}");
     }
 
     /// <summary>
