@@ -1,4 +1,5 @@
 using FluentAssertions;
+using Hall9k.Cli.Commands;
 using Hall9k.Daemon;
 using Hall9k.Daemon.Dispatch;
 using Hall9k.Domain.Features.Tasks;
@@ -159,6 +160,57 @@ public sealed class TaskProjectionBackfillTests(PostgresFixture postgres) : ICla
     }
 
     /// <summary>
+    /// The backfill runs at daemon start, and a launch failure is exactly what someone inspects
+    /// with no daemon up — so the window where the lean row has no failureReason key is a window
+    /// a human reads h9k task show in. The screen holds the detail document, which recorded the
+    /// reason, and must not report an absence its own record contradicts (pre-PR review,
+    /// 2026-08-22).
+    /// </summary>
+    [Fact]
+    public async Task A_failure_projected_before_the_status_redesign_still_says_why_before_the_backfill_runs()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        using DocumentStore store = NewStore();
+
+        Guid taskId = DomainId.New();
+        // The launch-failure path fails a task whose run stream was never started (RunLauncher),
+        // so there is no run document to read the reason off either.
+        Guid runId = DomainId.New();
+        await using (IDocumentSession seed = store.LightweightSession())
+        {
+            TaskAdded added = Add(taskId, "Failed on the way out of the launcher");
+            (TaskAggregate task, object[] lifecycle) = TaskSeed.Start(added, DomainId.New(), Now);
+            seed.Events.StartStream<TaskAggregate>(taskId, [
+                .. lifecycle,
+                TaskDecider.Fail(task, runId, "Launch failed: the worktree checkout was refused", Now),
+            ]);
+            await seed.SaveChangesAsync(cts.Token);
+        }
+
+        await StripKeyAsync(taskId, "failureReason", ["mt_doc_tasklistitem"], cts.Token);
+
+        await using (IQuerySession query = store.QuerySession())
+        {
+            TaskDetails details = (await query.LoadAsync<TaskDetails>(taskId, cts.Token))!;
+            TaskStatusRow row = (await TaskStatusComposer.ComposeOneAsync(query, details, Now, cts.Token))!;
+
+            row.State.Should().Be(LifecycleState.Failed);
+            row.Attention.Cause.Should().Be(
+                "Launch failed: the worktree checkout was refused",
+                "the stream recorded why, and the detail document still carries it");
+        }
+
+        (await TaskLifecycleProjectionBackfill.RunAsync(store, cts.Token)).Should().Equal(
+            [taskId], "the missing key is a staleness marker, so the window closes at the next daemon start");
+
+        await using (IQuerySession query = store.QuerySession())
+        {
+            (await query.LoadAsync<TaskListItem>(taskId, cts.Token))!.FailureReason.Should().Be(
+                "Launch failed: the worktree checkout was refused", "and the board reads it from the row again");
+        }
+    }
+
+    /// <summary>
     /// A task Blocked on two blockers, both recorded dead, written through the same deciders the
     /// resolver uses. The blockers themselves need no streams here: what is under test is the
     /// dependent's document, and the records that hold it live on the dependent's own stream.
@@ -195,11 +247,20 @@ public sealed class TaskProjectionBackfillTests(PostgresFixture postgres) : ICla
     private async Task StripAssignedOwnerAsync(Guid taskId, CancellationToken cancellationToken) =>
         await StripKeyAsync(taskId, "assignedOwnerId", cancellationToken);
 
-    private async Task StripKeyAsync(Guid taskId, string key, CancellationToken cancellationToken)
+    private Task StripKeyAsync(Guid taskId, string key, CancellationToken cancellationToken) =>
+        StripKeyAsync(taskId, key, ["mt_doc_tasklistitem", "mt_doc_taskdetails"], cancellationToken);
+
+    /// <summary>
+    /// The same, for a key only one of the two documents lost. The projections learned their
+    /// fields at different times, so a field the detail document has carried for months can be
+    /// absent from the lean row beside it.
+    /// </summary>
+    private async Task StripKeyAsync(
+        Guid taskId, string key, IReadOnlyList<string> tables, CancellationToken cancellationToken)
     {
         await using NpgsqlConnection connection = new(postgres.ConnectionString);
         await connection.OpenAsync(cancellationToken);
-        foreach (string table in (string[])["mt_doc_tasklistitem", "mt_doc_taskdetails"])
+        foreach (string table in tables)
         {
             await using NpgsqlCommand command = new(
                 $"update {table} set data = data - '{key}' where id = @id", connection);

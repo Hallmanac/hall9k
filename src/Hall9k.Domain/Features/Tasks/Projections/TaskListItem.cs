@@ -45,7 +45,7 @@ public sealed class TaskListItem
     public string? DependencyFailureReason { get; set; }
     /// <summary>
     /// What was recorded about the failure, so a Failed row on the board can say why rather
-    /// than showing a bare word (Decisions Log #65). It rides here beside
+    /// than showing a bare word (Decisions Log #66). It rides here beside
     /// <see cref="DependencyFailureReason"/> for the same reason that one does: the attention
     /// surface composes from this row, and the launch-failure path can fail a task before the
     /// run stream exists at all, so the run's own records are not always there to read.

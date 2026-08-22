@@ -33,10 +33,16 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
         TaskDetails details = await session.LoadAsync<TaskDetails>(taskId, cancellationToken)
             ?? throw new DomainNotFoundException($"No task {taskId}.");
 
+        // State, phase, attention — the three surfaces, before the context mountain
+        // (Decisions Log #66). Composed by the same composer h9k status reads, so the answer to
+        // "why am I looking at this" is the same answer on both screens.
+        TaskStatusRow? row = await TaskStatusComposer.ComposeOneAsync(
+            session, details, DateTimeOffset.UtcNow, cancellationToken);
+        WriteStanding(row, details);
+
         Table header = new Table().Border(TableBorder.None).HideHeaders();
         header.AddColumns("k", "v");
         header.AddRow("[bold]Objective[/]", ExternalText.OneLineMarkup(details.Objective));
-        header.AddRow("State", TaskListCommand.StateMarkup(details.State));
         header.AddRow("Type", details.Type.Value.EscapeMarkup());
         header.AddRow("Id", $"[dim]{details.Id}[/]");
         header.AddRow("Assigned to", await AssigneeMarkupAsync(session, details, cancellationToken));
@@ -91,9 +97,15 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
             header.AddRow("Dependency", $"[red]{details.DependencyFailureReason.EscapeMarkup()}[/]");
         }
 
-        if (details.FailureReason.IsNotBlank())
+        // A failure the task has already moved on from — retried, resolved, or abandoned. While
+        // it is still Failed the attention block above leads with the composed cause, so this
+        // row exists for the history rather than for the ask. That suppression is only honest
+        // because the cause is composed from this document's reason when the lifecycle row has
+        // none (TaskStatusComposer.RecordedFailureReason); without it, hiding this row would
+        // leave the screen claiming a failure nobody explained while holding the explanation.
+        if (details.FailureReason.IsNotBlank() && details.State != TaskState.Failed)
         {
-            header.AddRow("Failure", $"[red]{details.FailureReason.EscapeMarkup()}[/]");
+            header.AddRow("Earlier failure", $"[red]{details.FailureReason.EscapeMarkup()}[/]");
         }
 
         if (details.RetryReason.IsNotBlank())
@@ -131,11 +143,17 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
                 session, details.BlockedBy, cancellationToken);
             AnsiConsole.MarkupLine(
                 "\n[bold]Blocked by[/] [dim](met only at true closeout: the pull request merged)[/]");
+            // Each blocker is named in the lifecycle vocabulary, not the persisted one
+            // (Decisions Log #66). This is the one screen that explains the true-closeout rule,
+            // so printing the raw state here would show a pushed-but-unmerged blocker as Done
+            // beside the mark that says it is still holding this task back — the premature Done
+            // the redesign exists to remove, on the screen least able to afford it.
             foreach (TaskDependency dependency in dependencies)
             {
                 AnsiConsole.MarkupLine(
-                    $"  {DependencyMark(dependency)} [dim]{TaskListCommand.ShortId(dependency.Id)}[/] "
-                    + $"{ExternalText.OneLineMarkup(dependency.Objective)} [dim]({dependency.State.Value})[/]");
+                    $"  {TaskStatusComposer.DependencyMark(dependency)} [dim]{TaskListCommand.ShortId(dependency.Id)}[/] "
+                    + $"{ExternalText.OneLineMarkup(dependency.Objective)} "
+                    + $"({TaskStatusComposer.State(dependency).Markup})");
             }
         }
 
@@ -211,6 +229,63 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
 
         return ExitCodes.Ok;
     }
+
+    /// <summary>
+    /// The three surfaces, first, in the order a reader asks them: where the work is, what the
+    /// machinery is doing right now, and whether any of it is waiting on them (Decisions Log
+    /// #66). Everything below this is reference material; this is the answer.
+    /// <para>
+    /// Backlog 36's per-task token accounting composes in here, beside the phase line, when it
+    /// lands: the block is a list of labelled rows for exactly that reason.
+    /// </para>
+    /// </summary>
+    private static void WriteStanding(TaskStatusRow? row, TaskDetails details)
+    {
+        Table standing = new Table().Border(TableBorder.None).HideHeaders();
+        standing.AddColumns("k", "v");
+
+        // A task whose lifecycle row could not be composed still has a persisted state worth
+        // printing; it says what it read rather than nothing at all.
+        standing.AddRow("[bold]State[/]", row is null
+            ? $"[dim]{details.State.Value.EscapeMarkup()}[/] [dim](no lifecycle row composed)[/]"
+            : $"{row.StateMarkup} {StateGloss(row)}");
+
+        if (row?.Phase.HasPhase == true)
+        {
+            standing.AddRow("[bold]Phase[/]", row.Phase.Markup);
+        }
+
+        if (row is { Facts.Count: > 0 })
+        {
+            standing.AddRow("[bold]Waiting on[/]",
+                string.Join(" [dim]·[/] ", row.Facts.Select(fact => $"[dim]{fact.EscapeMarkup()}[/]")));
+        }
+
+        if (row is { Attention.HasCause: true })
+        {
+            standing.AddRow(row.Attention.NeedsYou ? "[red bold]Needs you[/]" : "[dim]Waiting[/]",
+                row.Attention.Markup);
+        }
+
+        AnsiConsole.Write(standing);
+    }
+
+    /// <summary>
+    /// What the lifecycle word means, spelled out once where there is room for it. The board has
+    /// only the word; this screen can afford the sentence, and Delivered in particular is a new
+    /// word that has to teach itself.
+    /// </summary>
+    private static string StateGloss(TaskStatusRow row) => row.State.Word switch
+    {
+        "Draft" => "[dim](being developed; the dispatcher cannot see it)[/]",
+        "Published" => "[dim](past the readiness gate; not working yet)[/]",
+        "Working" => "[dim](a run owns it and has not pushed yet)[/]",
+        "Delivered" => "[dim](pushed; the merge has not been observed)[/]",
+        "Done" => "[dim](true closeout: the merge was observed)[/]",
+        "Failed" => "[dim](a waypoint, not an ending — log #27)[/]",
+        "Archived" => "[dim](walked away from)[/]",
+        _ => "[dim](this build does not recognize the recorded state)[/]",
+    };
 
     /// <summary>
     /// How the newest run's pre-PR review ended (Decisions Log #63). Merge-ready is one word for
@@ -378,17 +453,6 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
             : $"[yellow]{provider.EscapeMarkup()}[/]{board} [dim]— requested, waiting for the daemon "
               + "to dispatch the session (h9k daemon status)[/]";
     }
-
-    /// <summary>
-    /// Three answers, not two: a blocker that will never close out reads differently from one
-    /// that simply has not yet, because only one of them needs a human (Decisions Log #34).
-    /// </summary>
-    private static string DependencyMark(TaskDependency dependency) => dependency switch
-    {
-        { Blocks: false } => "[green]closed out[/]",
-        { IsDead: true } => "[red]never closes out[/]",
-        _ => "[yellow]waiting[/]",
-    };
 
     /// <summary>
     /// Whose nodes may claim this task. Unassigned is a fact, not a gap: nothing dispatches

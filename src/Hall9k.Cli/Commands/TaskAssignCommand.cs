@@ -98,12 +98,20 @@ public sealed class TaskAssignCommand : Hall9kAsyncCommand<TaskAssignCommand.Set
         AnsiConsole.MarkupLine(
             $"[yellow]Task {shortId} assigned to {owner.Name.EscapeMarkup()}[/] — blocked on "
             + $"{assigned.UnmetDependencies.Count} dependency(ies) that have not closed out:");
+        // The lifecycle word rather than the persisted one (Decisions Log #66), and the mark that
+        // word depends on, exactly as h9k task show pairs them. A blocker whose pull request is
+        // still open now reads Delivered here instead of claiming a Done the sentence above it
+        // has just denied. One case survives the word alone: a blocker closed by hand with no
+        // pull request is spelt Done, because there was never a merge to observe, while the
+        // dependency rule still refuses it — so the mark is what carries that disagreement, and
+        // printing the word without it is printing half the sentence.
         foreach (TaskDependency dependency in unmet)
         {
             AnsiConsole.MarkupLine(
-                $"  [dim]{TaskListCommand.ShortId(dependency.Id)}[/] "
+                $"  {TaskStatusComposer.DependencyMark(dependency)} "
+                + $"[dim]{TaskListCommand.ShortId(dependency.Id)}[/] "
                 + $"{TaskListCommand.Truncate(ExternalText.OneLine(dependency.Objective), 60).EscapeMarkup()} "
-                + $"[dim]({dependency.State.Value})[/]");
+                + $"({TaskStatusComposer.State(dependency).Markup})");
         }
 
         AnsiConsole.MarkupLine(

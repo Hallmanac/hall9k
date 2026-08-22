@@ -1,8 +1,8 @@
 using FluentAssertions;
-using Hall9k.Daemon.Execution;
+using Hall9k.Connectors.WorkItems;
 using Xunit;
 
-namespace Hall9k.Tests.Daemon;
+namespace Hall9k.Tests.Connectors;
 
 public sealed class PullRequestUrlsTests
 {

@@ -1,344 +1,159 @@
 using FluentAssertions;
 using Hall9k.Cli.Commands;
 using Hall9k.Domain.Features.Run;
-using Hall9k.Domain.Features.Run.Documents;
 using Hall9k.Domain.Features.Run.Projections;
 using Hall9k.Domain.Features.Tasks;
 using Hall9k.Domain.Features.Tasks.Projections;
 using Hall9k.Domain.Infrastructure.Ids;
+using Hall9k.Tests.Cli;
 using Xunit;
 
 namespace Hall9k.Tests.Domain;
 
+/// <summary>
+/// The attention surface: whether a row wants a human, why, and what to type (Decisions Log
+/// #66, absorbing backlog 28). Grouped here with the ordering the pane reads rows in, because
+/// the two answer the same question at different resolutions.
+/// </summary>
 public sealed class AttentionSurfaceTests
 {
-    private static readonly DateTimeOffset Now = new(2026, 8, 16, 12, 0, 0, TimeSpan.Zero);
+    private static readonly DateTimeOffset Now = StatusFixtures.Now;
 
     [Fact]
-    public void Claimed_task_shows_its_runs_execution_state_and_stalls_after_an_hour_of_silence()
+    public void A_review_parked_run_names_the_recorded_reason_and_the_command_that_clears_it()
     {
         Guid runId = DomainId.New();
-        TaskListItem task = new()
-        {
-            Id = DomainId.New(), ProjectId = DomainId.New(), Objective = "x",
-            State = TaskState.Claimed, CurrentRunId = runId, AddedAt = Now,
-        };
-        RunListItem run = new() { Id = runId, State = RunState.Running };
-        RunActivity silent = new() { Id = runId, LastActivityAt = Now.AddHours(-2) };
+        RunDetails parked = StatusFixtures.Run(runId, RunState.ReviewParked, sessionProcessId: null);
+        parked.ParkedReason = "Automatic fix budget spent at cycle 3; findings in review-3-findings.md.";
 
-        TaskStatusRow row = TaskStatusComposer.Compose(
-            task,
-            new Dictionary<Guid, RunListItem> { [runId] = run },
-            new Dictionary<Guid, RunActivity> { [runId] = silent },
-            new Dictionary<Guid, string>(),
-            new Dictionary<Guid, string>(),
-            Now);
+        TaskStatusRow row = StatusFixtures.Compose(StatusFixtures.Task(TaskState.Claimed, runId), parked);
 
-        row.Bucket.Should().Be("Running", "the task's work state refines to the run's execution state");
-        row.Stalled.Should().BeTrue("two hours of stream silence is past the one-hour threshold");
-        row.StatusMarkup.Should().Contain("STALLED");
-    }
-
-    [Fact]
-    public void A_claim_whose_run_has_not_appeared_yet_is_live_work_rather_than_a_closed_row()
-    {
-        // TaskClaimed commits in its own transaction and the run document only appears once the
-        // launcher has inspected the pull request and checked a worktree out, so every dispatch
-        // spends seconds as a claim with nothing to refine it. A daemon that dies inside that
-        // window leaves the task there for good: the lease sweep that would requeue it only runs
-        // while the daemon runs. Counting the row as Closed would drop it out of h9k status
-        // entirely, in exactly the situation an operator is looking for it.
-        TaskListItem claimed = new()
-        {
-            Id = DomainId.New(), ProjectId = DomainId.New(), Objective = "x",
-            State = TaskState.Claimed, CurrentRunId = DomainId.New(), AddedAt = Now,
-        };
-
-        TaskStatusRow row = Compose(claimed, run: null);
-
-        row.Bucket.Should().Be("Claimed");
-        row.Attention.Should().Be(AttentionBucket.Active, "the platform holds the claim, so the work is live");
-        row.Priority.Should().Be(2, "the dispatch handoff ranks with the work it is becoming");
-    }
-
-    [Theory]
-    [InlineData("Completed")]
-    [InlineData("Killed")]
-    [InlineData("Superseded")]
-    public void A_finished_run_under_a_still_claimed_task_stays_live_until_the_task_moves(string runState)
-    {
-        // The closing half of the same handoff: the run has ended but the task's own transition
-        // has not committed yet. The claim still says the platform owns the next move.
-        Guid runId = DomainId.New();
-        TaskListItem claimed = new()
-        {
-            Id = DomainId.New(), ProjectId = DomainId.New(), Objective = "x",
-            State = TaskState.Claimed, CurrentRunId = runId, AddedAt = Now,
-        };
-
-        TaskStatusRow row = Compose(claimed, new RunListItem { Id = runId, State = runState });
-
-        row.Attention.Should().Be(AttentionBucket.Active, $"a {runState} run on a claimed task is mid-handoff");
-    }
-
-    [Fact]
-    public void Done_with_a_pull_request_reads_as_awaiting_review()
-    {
-        TaskListItem task = new()
-        {
-            Id = DomainId.New(), ProjectId = DomainId.New(), Objective = "x",
-            State = TaskState.Done, PullRequestUrl = "https://github.com/x/y/pull/7", AddedAt = Now,
-        };
-
-        TaskStatusRow row = TaskStatusComposer.Compose(
-            task, new Dictionary<Guid, RunListItem>(), new Dictionary<Guid, RunActivity>(),
-            new Dictionary<Guid, string>(), new Dictionary<Guid, string>(), Now);
-
-        row.Bucket.Should().Be("AwaitingReview");
-        row.PullRequestMarkup.Should().Contain("#7");
-        row.Stalled.Should().BeFalse("finished work is never stalled");
-    }
-
-    [Fact]
-    public void Done_run_states_refine_the_closeout_display()
-    {
-        Guid runId = DomainId.New();
-        TaskListItem task = new()
-        {
-            Id = DomainId.New(), ProjectId = DomainId.New(), Objective = "x",
-            State = TaskState.Done, CurrentRunId = runId,
-            PullRequestUrl = "https://github.com/x/y/pull/7", AddedAt = Now,
-        };
-
-        Compose(task, new RunListItem { Id = runId, State = RunState.AwaitingReview })
-            .Bucket.Should().Be("AwaitingReview");
-        Compose(task, new RunListItem { Id = runId, State = RunState.ChecksFailing })
-            .Bucket.Should().Be("ChecksFailing");
-        Compose(task, new RunListItem { Id = runId, State = RunState.ReviewPending })
-            .Bucket.Should().Be("ReviewPending");
-        Compose(task, new RunListItem { Id = runId, State = RunState.CloseoutParked })
-            .Bucket.Should().Be("NeedsHuman", "a parked closeout belongs on the attention surface");
-        Compose(task, new RunListItem { Id = runId, State = RunState.Completed })
-            .Bucket.Should().Be("Done", "the observed merge ends the closeout — AwaitingReview disappears");
-    }
-
-    [Fact]
-    public void Reopened_task_with_a_pull_request_reads_as_closing_out_through_the_follow_up_run()
-    {
-        Guid runId = DomainId.New();
-        TaskListItem queued = new()
-        {
-            Id = DomainId.New(), ProjectId = DomainId.New(), Objective = "x",
-            State = TaskState.Queued, PullRequestUrl = "https://github.com/x/y/pull/7", AddedAt = Now,
-        };
-        TaskListItem claimed = new()
-        {
-            Id = DomainId.New(), ProjectId = DomainId.New(), Objective = "x",
-            State = TaskState.Claimed, CurrentRunId = runId,
-            PullRequestUrl = "https://github.com/x/y/pull/7", AddedAt = Now,
-        };
-
-        Compose(queued, run: null).Bucket.Should().Be("ClosingOut", "a reopened task's PR is being driven to completion");
-        TaskStatusRow running = Compose(claimed, new RunListItem { Id = runId, State = RunState.Running });
-        running.Bucket.Should().Be("ClosingOut");
-        running.Priority.Should().Be(2, "an in-flight follow-up ranks with active work");
-    }
-
-    private static TaskStatusRow Compose(TaskListItem task, RunListItem? run) =>
-        TaskStatusComposer.Compose(
-            task,
-            run is null ? new Dictionary<Guid, RunListItem>() : new Dictionary<Guid, RunListItem> { [run.Id] = run },
-            new Dictionary<Guid, RunActivity>(),
-            new Dictionary<Guid, string>(),
-            new Dictionary<Guid, string>(),
-            Now);
-
-    [Fact]
-    public void Under_review_reads_as_live_work_between_verifying_and_awaiting_review()
-    {
-        Guid runId = DomainId.New();
-        TaskListItem task = new()
-        {
-            Id = DomainId.New(), ProjectId = DomainId.New(), Objective = "x",
-            State = TaskState.Claimed, CurrentRunId = runId, AddedAt = Now,
-        };
-        RunListItem run = new() { Id = runId, State = RunState.UnderReview };
-        Dictionary<Guid, RunListItem> runs = new() { [runId] = run };
-
-        TaskStatusRow active = TaskStatusComposer.Compose(
-            task, runs,
-            new Dictionary<Guid, RunActivity> { [runId] = new() { Id = runId, LastActivityAt = Now.AddMinutes(-1) } },
-            new Dictionary<Guid, string>(),
-            new Dictionary<Guid, string>(),
-            Now);
-        active.Bucket.Should().Be("UnderReview");
-        active.Priority.Should().Be(2, "a run under review is active work, not waiting");
-        active.Stalled.Should().BeFalse();
-
-        TaskStatusRow silent = TaskStatusComposer.Compose(
-            task, runs,
-            new Dictionary<Guid, RunActivity> { [runId] = new() { Id = runId, LastActivityAt = Now.AddHours(-2) } },
-            new Dictionary<Guid, string>(),
-            new Dictionary<Guid, string>(),
-            Now);
-        silent.Stalled.Should().BeTrue("a silent review session stalls like any other live session");
-    }
-
-    [Fact]
-    public void Review_parked_run_surfaces_as_needs_human_even_mid_closeout()
-    {
-        Guid runId = DomainId.New();
-        TaskListItem claimed = new()
-        {
-            Id = DomainId.New(), ProjectId = DomainId.New(), Objective = "x",
-            State = TaskState.Claimed, CurrentRunId = runId, AddedAt = Now,
-        };
-        TaskListItem followUp = new()
-        {
-            Id = DomainId.New(), ProjectId = DomainId.New(), Objective = "x",
-            State = TaskState.Claimed, CurrentRunId = runId,
-            PullRequestUrl = "https://github.com/x/y/pull/7", AddedAt = Now,
-        };
-        RunListItem parked = new() { Id = runId, State = RunState.ReviewParked };
-
-        Compose(claimed, parked).Bucket.Should().Be("NeedsHuman", "a review park hands the diff to the human");
-        Compose(claimed, parked).Priority.Should().Be(0);
-        Compose(followUp, parked).Bucket.Should().Be(
-            "NeedsHuman", "the park outranks the ClosingOut composition — the follow-up cannot push");
-    }
-
-    [Fact]
-    public void Failed_task_ranks_just_under_needs_human_because_it_waits_for_a_decision()
-    {
-        TaskListItem failed = new()
-        {
-            Id = DomainId.New(), ProjectId = DomainId.New(), Objective = "x",
-            State = TaskState.Failed, AddedAt = Now,
-        };
-
-        TaskStatusRow row = Compose(failed, run: null);
-
-        row.Bucket.Should().Be("Failed");
-        row.Priority.Should().Be(1,
-            "Failed is a needs-human waypoint (log #27): retry, resolve, or abandon is a human's call");
-    }
-
-    [Fact]
-    public void Needs_human_outranks_everything_in_priority()
-    {
-        TaskListItem needsHuman = new()
-        {
-            Id = DomainId.New(), ProjectId = DomainId.New(), Objective = "x",
-            State = TaskState.NeedsHuman, AddedAt = Now,
-        };
-
-        TaskStatusRow row = TaskStatusComposer.Compose(
-            needsHuman, new Dictionary<Guid, RunListItem>(), new Dictionary<Guid, RunActivity>(),
-            new Dictionary<Guid, string>(), new Dictionary<Guid, string>(), Now);
-
+        row.Attention.NeedsYou.Should().BeTrue();
+        row.Attention.Cause.Should().Be(parked.ParkedReason, "the reason is quoted, never re-guessed");
+        row.Attention.Lever.Should().StartWith("h9k review resolve",
+            "a reason without a next action is not done (backlog 28)");
+        row.Group.Should().Be(AttentionBucket.NeedsYou);
         row.Priority.Should().Be(0);
     }
 
     [Fact]
-    public void A_queued_task_says_it_is_waiting_for_a_slot_when_the_node_is_at_its_ceiling()
+    public void A_parked_closeout_names_its_reason_and_its_own_lever()
     {
-        // Queued-waiting-for-a-slot is not a state (Decisions Log #64): the task is Queued and
-        // the line is composed from the count the daemon's last sweep published, so a quiet
-        // board reads as throttled rather than stalled.
-        TaskListItem queued = new()
-        {
-            Id = DomainId.New(), ProjectId = DomainId.New(), Objective = "x",
-            State = TaskState.Queued, AddedAt = Now,
-        };
+        Guid runId = DomainId.New();
+        RunDetails parked = StatusFixtures.Run(runId, RunState.CloseoutParked, sessionProcessId: null, pullRequestNumber: 24);
+        parked.ParkedReason = "Automatic closeout attempts spent (2 of 2).";
 
-        TaskStatusRow full = Compose(queued, new DispatchPressure(LiveRuns: 3, MaxConcurrentRuns: 3));
+        TaskStatusRow row = StatusFixtures.Compose(
+            StatusFixtures.Task(TaskState.Done, runId, "https://github.com/x/y/pull/24"), parked);
 
-        full.Bucket.Should().Be("Queued", "the ceiling defers a claim; it does not restate the task");
-        full.Attention.Should().Be(AttentionBucket.Queued);
-        full.WaitingForSlot.Should().BeTrue();
-        full.Activity.Should().Be("waiting for a slot — 3 of 3 running");
+        row.Attention.NeedsYou.Should().BeTrue();
+        row.Attention.Cause.Should().Be(parked.ParkedReason);
+        row.Attention.Lever.Should().StartWith("h9k pr resolve");
     }
 
     [Fact]
-    public void A_node_over_its_ceiling_says_so_rather_than_reading_as_broken_arithmetic()
+    public void A_row_waiting_on_a_human_is_never_reported_as_a_run_that_went_quiet()
     {
-        // Resolving a review park hands a worktree back to a session tree the node had released,
-        // and the dispatcher accepts that overshoot rather than refusing a human's explicit
-        // resume (Decisions Log #64). The pane has to carry it: this section exists to say the
-        // board is throttled rather than broken, and "4 of 3 running" reads as the opposite.
-        TaskListItem queued = new()
-        {
-            Id = DomainId.New(), ProjectId = DomainId.New(), Objective = "x",
-            State = TaskState.Queued, AddedAt = Now,
-        };
+        // Nothing writes to a run's stream while a human holds the worktree, so a park's last
+        // activity stamp freezes at the park and every parked row crosses the stall threshold an
+        // hour later. Counting that as a stall renames a wait for a human as a machine failure
+        // and files the row out of the Needs-you count into Stalled, which is where a reader
+        // looks for the opposite problem.
+        Guid parkedRunId = DomainId.New();
+        RunDetails parked = StatusFixtures.Run(parkedRunId, RunState.ReviewParked, sessionProcessId: null);
+        parked.ParkedReason = "The fix run disputed a review finding (cycle 2).";
 
-        TaskStatusRow over = Compose(queued, new DispatchPressure(LiveRuns: 4, MaxConcurrentRuns: 3));
+        TaskStatusRow row = StatusFixtures.Compose(
+            StatusFixtures.Task(TaskState.Claimed, parkedRunId), parked, silentSince: Now.AddHours(-9));
 
-        over.WaitingForSlot.Should().BeTrue("a node past its ceiling is holding the queue harder, not less");
-        over.Activity.Should().Be("waiting for a slot — 4 running, over a ceiling of 3");
+        row.Stalled.Should().BeFalse("a parked run is quiet by design");
+        row.Group.Should().Be(AttentionBucket.NeedsYou);
+        row.Attention.Cause.Should().Be(parked.ParkedReason);
+
+        // The same holds for an agent that asked a question: its session exited to wait, so the
+        // stream stops, and the ask is what the row is about.
+        Guid askedRunId = DomainId.New();
+        TaskStatusRow asked = StatusFixtures.Compose(
+            StatusFixtures.Task(TaskState.NeedsHuman, askedRunId),
+            StatusFixtures.Run(askedRunId, RunState.Running, sessionProcessId: null),
+            silentSince: Now.AddHours(-9));
+
+        asked.Stalled.Should().BeFalse();
+        asked.Group.Should().Be(AttentionBucket.NeedsYou);
+        asked.Attention.Cause.Should().Contain("asked a question");
     }
 
     [Fact]
-    public void A_queued_task_says_nothing_about_slots_when_there_is_room_or_no_measurement()
+    public void An_abandoned_task_stops_asking_even_though_its_run_is_still_parked()
     {
-        TaskListItem queued = new()
-        {
-            Id = DomainId.New(), ProjectId = DomainId.New(), Objective = "x",
-            State = TaskState.Queued, AddedAt = Now,
-        };
+        // h9k task abandon appends to the task's stream and deletes its lease; it writes nothing
+        // to the run, so the park outlives the task that owned it. Nothing else reaches that run
+        // either — the dispatch sweep iterates leases and the closeout monitor watches open pull
+        // requests — so a row composed from the run's state alone would sit in Needs-you forever,
+        // offering h9k review resolve for work a human deliberately dropped.
+        Guid runId = DomainId.New();
+        RunDetails parked = StatusFixtures.Run(runId, RunState.ReviewParked, sessionProcessId: null);
+        parked.ParkedReason = "Automatic fix budget spent at cycle 3.";
 
-        TaskStatusRow room = Compose(queued, new DispatchPressure(LiveRuns: 1, MaxConcurrentRuns: 3));
-        room.WaitingForSlot.Should().BeFalse("a task about to be claimed is not being held back");
-        room.Activity.Should().BeEmpty();
+        TaskStatusRow row = StatusFixtures.Compose(StatusFixtures.Task(TaskState.Abandoned, runId), parked);
 
-        TaskStatusRow unmeasured = Compose(queued, pressure: null);
-        unmeasured.WaitingForSlot.Should().BeFalse(
-            "no current measurement means nothing is known about capacity, which is not the same as a full node");
+        row.State.Should().Be(LifecycleState.Archived);
+        row.Attention.NeedsYou.Should().BeFalse("the human already answered this row by walking away");
+        row.Attention.Cause.Should().BeEmpty();
+        row.Attention.Lever.Should().BeEmpty("a lever that resumes an abandoned task is worse than none");
+        row.Group.Should().Be(AttentionBucket.Closed);
     }
 
     [Fact]
-    public void A_full_node_says_nothing_about_slots_on_work_it_is_not_holding_back()
+    public void A_park_that_recorded_no_reason_says_so_rather_than_showing_a_bare_word()
     {
-        // The pressure explains a queue that will not move. A task whose pull request is open
-        // and whose closeout is being watched is waiting on GitHub, not on this machine, and
-        // borrowing the ceiling's line for it would name the wrong cause.
-        TaskListItem awaitingReview = new()
-        {
-            Id = DomainId.New(), ProjectId = DomainId.New(), Objective = "x",
-            State = TaskState.Done, PullRequestUrl = "https://github.com/x/y/pull/7", AddedAt = Now,
-        };
+        Guid runId = DomainId.New();
 
-        TaskStatusRow row = Compose(awaitingReview, new DispatchPressure(LiveRuns: 3, MaxConcurrentRuns: 3));
+        TaskStatusRow row = StatusFixtures.Compose(
+            StatusFixtures.Task(TaskState.Claimed, runId),
+            StatusFixtures.Run(runId, RunState.ReviewParked, sessionProcessId: null));
 
-        row.Bucket.Should().Be("AwaitingReview");
-        row.WaitingForSlot.Should().BeFalse();
+        row.Attention.Cause.Should().Contain("without recording a reason",
+            "an unrecorded reason is a fact about the record, not licence to invent one");
     }
 
     [Fact]
-    public void A_closeout_follow_up_held_back_by_the_ceiling_reads_as_queued_rather_than_running()
+    public void A_failed_row_composes_its_cause_from_what_was_recorded()
     {
-        // The closeout monitor reopens a task for a failing check or a review thread: Queued
-        // again, its run superseded, its pull request still on it. The dispatcher sees an
-        // ordinary queued task and defers it at the ceiling, so the board has to say so —
-        // composed off the bucket instead of the state, this row read as running work while the
-        // daemon's log called it deferred (pre-PR review, 2026-08-22).
-        TaskListItem reopened = new()
-        {
-            Id = DomainId.New(), ProjectId = DomainId.New(), Objective = "x",
-            State = TaskState.Queued, PullRequestUrl = "https://github.com/x/y/pull/7", AddedAt = Now,
-        };
+        Guid runId = DomainId.New();
+        TaskListItem failed = StatusFixtures.Task(TaskState.Failed, runId);
+        failed.FailureReason = "Verification failed: test";
+        RunDetails run = StatusFixtures.Run(runId, RunState.Failed, sessionProcessId: null);
+        run.FailedGates = ["test"];
 
-        TaskStatusRow held = Compose(reopened, new DispatchPressure(LiveRuns: 3, MaxConcurrentRuns: 3));
+        TaskStatusRow row = StatusFixtures.Compose(failed, run);
 
-        held.WaitingForSlot.Should().BeTrue();
-        held.Bucket.Should().Be("Queued", "no follow-up is in flight yet — the run it is waiting to start is");
-        held.Attention.Should().Be(AttentionBucket.Queued, "it belongs in the section that explains the wait");
-        held.Activity.Should().Be("waiting for a slot — 3 of 3 running");
+        row.State.Should().Be(LifecycleState.Failed);
+        row.Attention.Cause.Should().Be("gate failure (test): Verification failed: test");
+        row.Attention.Lever.Should().StartWith("h9k task retry");
+    }
 
-        // With room on the node the follow-up is dispatching, and the row is closeout work again.
-        TaskStatusRow dispatching = Compose(reopened, new DispatchPressure(LiveRuns: 1, MaxConcurrentRuns: 3));
-        dispatching.Bucket.Should().Be("ClosingOut");
-        dispatching.WaitingForSlot.Should().BeFalse();
+    [Fact]
+    public void A_park_outranks_a_failure_inside_the_needs_you_section()
+    {
+        Guid parkedRunId = DomainId.New();
+        RunDetails parked = StatusFixtures.Run(parkedRunId, RunState.ReviewParked, sessionProcessId: null);
+        parked.ParkedReason = "Automatic fix budget spent at cycle 3.";
+        TaskStatusRow park = StatusFixtures.Compose(StatusFixtures.Task(TaskState.Claimed, parkedRunId), parked);
+
+        Guid failedRunId = DomainId.New();
+        TaskListItem failedTask = StatusFixtures.Task(TaskState.Failed, failedRunId);
+        failedTask.FailureReason = "Verification failed: test";
+        RunDetails failedRun = StatusFixtures.Run(failedRunId, RunState.Failed, sessionProcessId: null);
+        TaskStatusRow failure = StatusFixtures.Compose(failedTask, failedRun);
+
+        park.Group.Should().Be(AttentionBucket.NeedsYou);
+        failure.Group.Should().Be(AttentionBucket.NeedsYou);
+        // The pane sorts inside one section, so a rank composed from the group alone would be
+        // the same number here and leave these two ordered by age: a park that has held a
+        // worktree all week would print under a task that failed a minute ago.
+        park.Priority.Should().BeLessThan(failure.Priority,
+            "a park has a worktree stopped behind it; a failure is a decision that can wait its turn");
     }
 
     [Fact]
@@ -354,10 +169,20 @@ public sealed class AttentionSurfaceTests
         const string NewAssignment = "Drafted last week, assigned this morning";
         TaskStatusRow[] rows =
         [
-            Compose(Queued(OldAssignment, addedAt: Now, assignedAt: Now.AddHours(1)), full),
-            Compose(Queued(NewAssignment, addedAt: Now.AddHours(5), assignedAt: Now.AddHours(10)), full),
+            StatusFixtures.Compose(
+                StatusFixtures.Task(
+                    TaskState.Queued, objective: OldAssignment, addedAt: Now, assignedAt: Now.AddHours(1)),
+                pressure: full),
+            StatusFixtures.Compose(
+                StatusFixtures.Task(
+                    TaskState.Queued,
+                    objective: NewAssignment,
+                    addedAt: Now.AddHours(5),
+                    assignedAt: Now.AddHours(10)),
+                pressure: full),
         ];
 
+        rows.Should().OnlyContain(row => row.Group == AttentionBucket.Queued);
         StatusCommand.SectionRows(rows, AttentionBucket.Queued, inServiceOrder: true)
             .Select(row => row.Objective).Should().Equal([OldAssignment, NewAssignment],
                 "the older assignment is claimed first, so it is listed first — even though the "
@@ -369,21 +194,282 @@ public sealed class AttentionSurfaceTests
                 + "the dispatcher serves these in");
     }
 
-    private static TaskListItem Queued(string objective, DateTimeOffset addedAt, DateTimeOffset assignedAt) => new()
+    [Fact]
+    public void A_kill_and_an_unexplained_failure_read_as_the_different_things_they_are()
     {
-        Id = DomainId.New(), ProjectId = DomainId.New(), Objective = objective,
-        State = TaskState.Queued, AddedAt = addedAt, AssignedAt = assignedAt,
-    };
+        Guid killedRunId = DomainId.New();
+        TaskListItem killedTask = StatusFixtures.Task(TaskState.Failed, killedRunId);
+        killedTask.FailureReason = "BudgetExceeded";
+        RunDetails killed = StatusFixtures.Run(killedRunId, RunState.Killed, sessionProcessId: null);
 
-    private static TaskStatusRow Compose(TaskListItem task, DispatchPressure? pressure) =>
-        TaskStatusComposer.Compose(
-            task,
-            new Dictionary<Guid, RunListItem>(),
-            new Dictionary<Guid, RunActivity>(),
-            new Dictionary<Guid, string>(),
-            new Dictionary<Guid, string>(),
-            Now,
-            pressure);
+        StatusFixtures.Compose(killedTask, killed).Attention.Cause
+            .Should().Be("the run was killed: BudgetExceeded");
+
+        // Nothing recorded a cause at all — the display says exactly that. Token exhaustion
+        // arrives here as whatever text the machinery wrote until backlog 40 records it
+        // distinctly, and is shown verbatim rather than sorted into a category nobody observed.
+        StatusFixtures.Compose(StatusFixtures.Task(TaskState.Failed)).Attention.Cause
+            .Should().Be("the failure was recorded without a reason");
+    }
+
+    [Fact]
+    public void A_dead_blocker_needs_you_and_a_live_one_is_a_hold_you_can_ignore()
+    {
+        Guid blocker = DomainId.New();
+        TaskListItem dead = StatusFixtures.Task(TaskState.Blocked);
+        dead.UnmetDependencies = [blocker];
+        dead.DependencyFailureReason = "Dependency 3f2a91b2 will never close out; h9k pr resolve 3f2a91b2.";
+
+        TaskStatusRow held = StatusFixtures.Compose(dead);
+        held.Attention.NeedsYou.Should().BeTrue();
+        held.Attention.Cause.Should().Be(dead.DependencyFailureReason,
+            "the recorded reason already names the lever the platform will honour (log #61)");
+
+        // The mirror: the blocker was retried, the recorded death is gone, and the row goes back
+        // to a wait the reader is meant to be able to ignore. Origin incident (2026-08-21): two
+        // such rows read as red NeedsHuman for hours after their blocker was already rebuilding.
+        TaskListItem waiting = StatusFixtures.Task(TaskState.Blocked);
+        waiting.UnmetDependencies = [blocker];
+
+        TaskStatusRow recovered = StatusFixtures.Compose(waiting);
+        recovered.Attention.Level.Should().Be(AttentionLevel.WaitingHandled);
+        recovered.Attention.Marker.Should().NotContain("needs you", "it is consciously ignorable, not an ask");
+        recovered.Attention.Cause.Should().Contain("nothing for you to do");
+        recovered.Group.Should().Be(AttentionBucket.Blocked);
+    }
+
+    [Fact]
+    public void An_open_pull_request_with_nothing_recorded_against_it_says_the_merge_is_yours()
+    {
+        // Origin incident (2026-08-22, PR 24): watching-and-dispatching-follow-ups and
+        // watching-with-nothing-left-but-your-merge rendered identically, and "is it my turn?"
+        // took a log dive.
+        Guid runId = DomainId.New();
+
+        TaskStatusRow row = StatusFixtures.Compose(
+            StatusFixtures.Task(TaskState.Done, runId, "https://github.com/x/y/pull/24"),
+            StatusFixtures.Run(runId, RunState.AwaitingReview, sessionProcessId: null, pullRequestNumber: 24));
+
+        row.State.Should().Be(LifecycleState.Delivered);
+        row.Attention.NeedsYou.Should().BeTrue();
+        row.Attention.Cause.Should().Contain("the merge is yours");
+        row.Phase.Text.Should().Contain("waiting on your merge");
+
+        // The monitor records findings and records nothing at all while a check is still
+        // reporting, so this row is what an absence of records looks like — not an observation
+        // that the pull request is clean. Saying "observed" here would claim a look nobody took
+        // on every pull request the platform opens, since CI is pending the moment one does.
+        row.Attention.Cause.Should().NotContain("observed");
+        row.Phase.Detail.Should().Be("no finding recorded; its checks may still be reporting");
+    }
+
+    /// <summary>
+    /// Delivered work nobody is assigned to. h9k pr resolve reopens a done task to Queued and
+    /// keeps its pull request; h9k task unassign then takes it to Published, which leaves an open
+    /// pull request with no run watching it and no owner whose nodes could claim the follow-up.
+    /// Origin incident (pre-PR review, 2026-08-22): every non-Done Delivered row was reported as
+    /// waiting-and-handled, so this one said "waiting" while its own phase line said nothing was
+    /// watching it and nothing was ever going to move it.
+    /// </summary>
+    [Fact]
+    public void A_delivered_task_nobody_is_assigned_to_asks_for_the_assignment()
+    {
+        TaskListItem unassigned = StatusFixtures.Task(
+            TaskState.Published, pullRequest: "https://github.com/x/y/pull/24");
+
+        TaskStatusRow row = StatusFixtures.Compose(unassigned);
+
+        row.State.Should().Be(LifecycleState.Delivered);
+        row.Attention.NeedsYou.Should().BeTrue("nothing clears this on its own");
+        row.Attention.Cause.Should().Contain("unassigned");
+        row.Attention.Lever.Should().Be($"h9k task assign {TaskListCommand.ShortId(unassigned.Id)}");
+        row.Group.Should().Be(AttentionBucket.NeedsYou);
+        row.Phase.Detail.Should().Contain("no run record is watching it",
+            "the phase and the attention line tell the same story about this row");
+    }
+
+    [Fact]
+    public void A_pull_request_the_monitor_is_still_working_is_not_an_ask()
+    {
+        Guid runId = DomainId.New();
+        RunDetails failing = StatusFixtures.Run(runId, RunState.ChecksFailing, sessionProcessId: null, pullRequestNumber: 24);
+        failing.FailingChecks = ["build (ubuntu)"];
+
+        TaskStatusRow row = StatusFixtures.Compose(
+            StatusFixtures.Task(TaskState.Done, runId, "https://github.com/x/y/pull/24"), failing);
+
+        row.Attention.Level.Should().Be(AttentionLevel.WaitingHandled);
+        row.Attention.Cause.Should().Contain("closeout monitor owns the next move");
+        row.Phase.Detail.Should().Contain("build (ubuntu)", "the phase names what was observed failing");
+    }
+
+    [Fact]
+    public void A_pull_request_closed_without_merging_is_never_reported_as_done()
+    {
+        Guid runId = DomainId.New();
+        RunDetails closed = StatusFixtures.Run(
+            runId, RunState.Failed, sessionProcessId: null, pullRequestNumber: 24);
+        closed.FailureReason = RunDetails.PullRequestClosedWithoutMerge;
+        closed.PullRequestUrl = "https://github.com/x/y/pull/24";
+
+        TaskStatusRow row = StatusFixtures.Compose(
+            StatusFixtures.Task(TaskState.Done, runId, "https://github.com/x/y/pull/24"), closed);
+
+        row.State.Should().Be(LifecycleState.Delivered, "closeout ended, but not the way Done claims");
+        row.Attention.NeedsYou.Should().BeTrue();
+        row.Attention.Cause.Should().Contain("without a merge being observed").And.Contain(closed.FailureReason,
+            "the closure is quoted from the record that observed it, not inferred from the run state");
+        row.Attention.Lever.Should().Be(closed.PullRequestUrl,
+            "a follow-up run onto a closed pull request's branch rejoins no watch, so the pull "
+            + "request itself is the next act");
+    }
+
+    /// <summary>
+    /// RunState.Failed is what every run failure records, and only one of the ways to reach it is
+    /// a pull request closed without merging. Origin incident (pre-PR review, 2026-08-22): both
+    /// the phase and the attention line read that state as a closure, so a task whose gates had
+    /// failed and which a human then resolved onto a pull request was described, permanently and
+    /// in red, by an event nobody had observed.
+    /// </summary>
+    [Fact]
+    public void A_run_that_failed_on_its_gates_is_never_described_as_a_pull_request_that_closed()
+    {
+        Guid runId = DomainId.New();
+        RunDetails failed = StatusFixtures.Run(runId, RunState.Failed, sessionProcessId: null);
+        failed.FailureReason = "Verification failed: test";
+        failed.FailedGates = ["test"];
+
+        // Resolved onto a pull request the human says the work landed in, so the row is Delivered.
+        TaskStatusRow row = StatusFixtures.Compose(
+            StatusFixtures.Task(TaskState.Done, runId, "https://github.com/x/y/pull/24"), failed);
+
+        row.State.Should().Be(LifecycleState.Delivered);
+        row.Attention.Cause.Should().Contain("Verification failed: test").And.NotContain("closed without merging");
+        row.Phase.Text.Should().NotContain("closed without merging");
+        row.Phase.Text.Should().Contain("the run ended without a merge");
+    }
+
+    /// <summary>
+    /// The pull request in the test above is still open, and h9k pr resolve is exactly what puts
+    /// it back under the closeout monitor's watch — TaskDecider.Reopen accepts a done task with a
+    /// pull request, a recorded run and a branch, which is this row precisely. Origin incident
+    /// (pre-PR review, 2026-08-22): the row offered a bare URL instead, on the false premise that
+    /// pr resolve does not apply to a task the stream records as Done, which left it permanently
+    /// red with nothing that clears it.
+    /// </summary>
+    [Fact]
+    public void An_open_pull_request_nothing_is_watching_is_put_back_under_watch_by_pr_resolve()
+    {
+        Guid runId = DomainId.New();
+        TaskListItem task = StatusFixtures.Task(TaskState.Done, runId, "https://github.com/x/y/pull/24");
+        RunDetails failed = StatusFixtures.Run(runId, RunState.Failed, sessionProcessId: null);
+        failed.FailureReason = "Verification failed: test";
+
+        TaskStatusRow row = StatusFixtures.Compose(task, failed);
+
+        row.Attention.NeedsYou.Should().BeTrue();
+        row.Attention.Lever.Should().Be($"h9k pr resolve {TaskListCommand.ShortId(task.Id)}",
+            "the follow-up run rejoins the watch set, and its merge is observed — the same remedy "
+            + "a dependent blocked on this task is given");
+    }
+
+    /// <summary>
+    /// The one thing that would make that advice a lie: TaskDecider.Reopen refuses a follow-up
+    /// with no branch to resume, so a run document that recorded none gets the pull request rather
+    /// than a command the platform will turn down (the never-advise-a-refused-lever rule).
+    /// </summary>
+    [Fact]
+    public void A_run_with_no_branch_recorded_is_never_sent_to_pr_resolve()
+    {
+        Guid runId = DomainId.New();
+        RunDetails failed = StatusFixtures.Run(
+            runId, RunState.Failed, sessionProcessId: null, branch: string.Empty);
+        failed.FailureReason = "Verification failed: test";
+
+        TaskStatusRow row = StatusFixtures.Compose(
+            StatusFixtures.Task(TaskState.Done, runId, "https://github.com/x/y/pull/24"), failed);
+
+        row.Attention.Lever.Should().Be("https://github.com/x/y/pull/24",
+            "there is no branch to resume, so the reopen would be refused");
+    }
+
+    /// <summary>
+    /// A task closed by hand keeps the run document it was closed on top of, because TaskResolved
+    /// does not clear CurrentRunId. Origin incident (pre-PR review, 2026-08-22): the closeout
+    /// composition read that leftover run before asking whether anything had been pushed, so
+    /// h9k task resolve with no --pr rendered as Delivered — a claim that work was pushed and a
+    /// merge was pending, for a task that never pushed anything and never would again.
+    /// </summary>
+    [Fact]
+    public void A_task_closed_by_hand_with_nothing_pushed_is_done_whatever_its_last_run_recorded()
+    {
+        Guid runId = DomainId.New();
+        RunDetails failed = StatusFixtures.Run(runId, RunState.Failed, sessionProcessId: null);
+        failed.FailureReason = "Verification failed: test";
+
+        TaskStatusRow row = StatusFixtures.Compose(StatusFixtures.Task(TaskState.Done, runId), failed);
+
+        row.State.Should().Be(LifecycleState.Done, "nothing was pushed, so there is no merge to wait for");
+        row.Group.Should().Be(AttentionBucket.Done);
+        row.Attention.NeedsYou.Should().BeFalse("a row nothing will ever move again must not sit in red");
+        row.Attention.Cause.Should().BeEmpty();
+    }
+
+    [Fact]
+    public void A_question_asked_names_the_only_command_the_platform_actually_has()
+    {
+        TaskStatusRow row = StatusFixtures.Compose(StatusFixtures.Task(TaskState.NeedsHuman));
+
+        row.Attention.NeedsYou.Should().BeTrue();
+        row.Attention.Cause.Should().Contain("no command answers it yet",
+            "never advise a lever the platform will refuse");
+        row.Attention.Lever.Should().StartWith("h9k task show");
+        row.Priority.Should().Be(0, "needs-you outranks everything");
+    }
+
+    [Fact]
+    public void A_session_the_machine_says_is_gone_stalls_the_row_and_says_which_silence_it_is()
+    {
+        Guid runId = DomainId.New();
+
+        TaskStatusRow row = StatusFixtures.Compose(
+            StatusFixtures.Task(TaskState.Claimed, runId),
+            StatusFixtures.Run(runId, RunState.Running),
+            liveness: SessionLiveness.Gone);
+
+        row.Stalled.Should().BeTrue();
+        row.Group.Should().Be(AttentionBucket.Stalled);
+        row.Attention.Cause.Should().Contain("process is gone");
+        row.Attention.Lever.Should().StartWith("h9k logs");
+    }
+
+    [Fact]
+    public void A_live_session_whose_stream_went_quiet_stalls_for_the_other_reason()
+    {
+        Guid runId = DomainId.New();
+
+        TaskStatusRow row = StatusFixtures.Compose(
+            StatusFixtures.Task(TaskState.Claimed, runId),
+            StatusFixtures.Run(runId, RunState.Running),
+            silentSince: Now.AddHours(-2));
+
+        row.Stalled.Should().BeTrue();
+        row.Attention.Cause.Should().Contain("alive but its stream has been silent");
+    }
+
+    [Fact]
+    public void Working_and_settled_rows_ask_for_nothing()
+    {
+        Guid runId = DomainId.New();
+
+        StatusFixtures.Compose(
+                StatusFixtures.Task(TaskState.Claimed, runId),
+                StatusFixtures.Run(runId, RunState.Running),
+                silentSince: Now.AddMinutes(-2))
+            .Attention.Level.Should().Be(AttentionLevel.None);
+        StatusFixtures.Compose(StatusFixtures.Task(TaskState.Draft)).Attention.Level.Should().Be(AttentionLevel.None);
+        StatusFixtures.Compose(StatusFixtures.Task(TaskState.Done)).Attention.Level.Should().Be(AttentionLevel.None);
+    }
 
     [Fact]
     public void Stream_renderer_shows_text_tools_and_outcome_without_duplicating_the_summary()

@@ -1,4 +1,4 @@
-namespace Hall9k.Daemon.Execution;
+namespace Hall9k.Connectors.WorkItems;
 
 /// <summary>
 /// Reads the number out of a pull-request URL (https://github.com/&lt;owner&gt;/&lt;repo&gt;/pull/&lt;number&gt;).

@@ -291,13 +291,14 @@ app.Configure(config =>
         task.AddCommand<TaskListCommand>("list")
             .WithDescription(
                 "Browse tasks newest-first, across projects or filtered to one (--project) and to a state "
-                + "(--state, matched against the Status column: an attention group like needs-you or active, "
-                + "or an exact state like Running). Bounded to the newest 20 by default — the footer says how "
+                + "(--state: a lifecycle word, which selects exactly what the Status column shows, such as "
+                + "Delivered; an attention group like needs-you or attention-delivered; or a run state like "
+                + "Running from the phase line). Bounded to the newest 20 by default — the footer says how "
                 + "many were held back and how to see them (--all, --limit <n>).")
             .WithExample("task", "list")
             .WithExample("task", "list", "--project", "hall9k", "--state", "needs-you")
             .WithExample("task", "list", "--state", "draft")
-            .WithExample("task", "list", "--state", "in-review", "--all")
+            .WithExample("task", "list", "--state", "attention-delivered", "--all")
             .WithExample("task", "list", "--state", "AwaitingReview");
         task.AddCommand<TaskShowCommand>("show")
             .WithDescription("Task detail: contract, conversation, runs")
