@@ -19,10 +19,20 @@ namespace Hall9k.Daemon.Publication;
 
 /// <summary>
 /// One sweep's tally: how many publication sessions this node dispatched, how many produced a
-/// verified card, and how many sessions it adopted — ones it had dispatched on an earlier run and
-/// never recorded an outcome for.
+/// verified card, how many sessions it adopted — ones it had dispatched on an earlier run and
+/// never recorded an outcome for — and how many requests it answered without any session running
+/// at all, because a guard refused them at the point where the card would have been written.
+/// <para>
+/// The four are counted apart because the sweep's log line is read as a record of what happened
+/// on somebody's board. A refusal folded into <paramref name="Dispatched" /> reads as an agent
+/// session that ran against a real repository, which is the one thing a refusal is not. Origin
+/// incident (2026-08-22): the second cycle of this branch's pre-PR review found every refusal
+/// counted as a dispatch, so a sweep that turned down a request for an abandoned task logged
+/// "1 session(s) ran, 0 produced a verified card" — and a sweep that did nothing but adopt a
+/// stranded session logged nothing at all.
+/// </para>
 /// </summary>
-public sealed record CardPublicationSweepResult(int Dispatched, int Linked, int Adopted = 0);
+public sealed record CardPublicationSweepResult(int Dispatched, int Linked, int Adopted = 0, int Refused = 0);
 
 /// <summary>
 /// Turns a publication request into an agent session, and records what came of it (backlog 18).
@@ -101,15 +111,26 @@ public sealed class CardPublicationEngine(
 
         int dispatched = 0;
         int linked = 0;
+        int refused = 0;
         foreach (TaskDetails task in pending)
         {
             try
             {
-                bool? result = await PublishAsync(task, cancellationToken);
-                if (result is { } gotLink)
+                switch (await PublishAsync(task, cancellationToken))
                 {
-                    dispatched++;
-                    linked += gotLink ? 1 : 0;
+                    case PublicationAttempt.CardLinked:
+                        dispatched++;
+                        linked++;
+                        break;
+                    case PublicationAttempt.SessionRan:
+                        dispatched++;
+                        break;
+                    case PublicationAttempt.Refused:
+                        refused++;
+                        break;
+                    case PublicationAttempt.NotThisSweeps:
+                    default:
+                        break;
                 }
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -124,6 +145,10 @@ public sealed class CardPublicationEngine(
                 // cannot prove which side of the spawn it came from — SpawnAsync itself can throw
                 // with a started process behind it — and this outcome clears the pending marker
                 // either way.
+                // It is counted as neither dispatched nor refused for that same reason: the tally
+                // is a claim about what ran, and this is the one outcome that cannot make one. The
+                // log below is what reports it, at a level louder than the sweep's summary rather
+                // than hidden behind it.
                 logger.LogError(exception, "Publication failed for task {TaskId}; recording it and moving on", task.Id);
                 await CompleteAsync(
                     task.Id,
@@ -133,7 +158,7 @@ public sealed class CardPublicationEngine(
             }
         }
 
-        return new CardPublicationSweepResult(dispatched, linked, adopted);
+        return new CardPublicationSweepResult(dispatched, linked, adopted, refused);
     }
 
     /// <summary>
@@ -259,11 +284,36 @@ public sealed class CardPublicationEngine(
         + outcome;
 
     /// <summary>
-    /// One request: spawn the session, wait for it under a ceiling, then record what the task
-    /// actually came out carrying. Null means the request was not this sweep's to act on after
-    /// all — another sweep beat it to the dispatch, or the request was already resolved.
+    /// What one publication request came to. An in-process outcome that is never persisted, which
+    /// is the one thing an enum is for here (AGENTS.md, coding standards): what the stream records
+    /// is the outcome text on the task, and this only decides how the sweep counts the request.
     /// </summary>
-    private async Task<bool?> PublishAsync(TaskDetails task, CancellationToken cancellationToken)
+    private enum PublicationAttempt
+    {
+        /// <summary>
+        /// The request was not this sweep's to act on after all — another sweep beat it to the
+        /// dispatch, or the request was already resolved. Nothing was written and nothing counts.
+        /// </summary>
+        NotThisSweeps,
+
+        /// <summary>
+        /// A guard answered the request where the card would have been written, so no session was
+        /// ever spawned. The request is over, and nothing ran against anybody's repository.
+        /// </summary>
+        Refused,
+
+        /// <summary>A session was spawned and finished without a verified card key.</summary>
+        SessionRan,
+
+        /// <summary>A session was spawned and the task came out carrying a verified card.</summary>
+        CardLinked,
+    }
+
+    /// <summary>
+    /// One request: spawn the session, wait for it under a ceiling, then record what the task
+    /// actually came out carrying.
+    /// </summary>
+    private async Task<PublicationAttempt> PublishAsync(TaskDetails task, CancellationToken cancellationToken)
     {
         await using IDocumentSession session = store.LightweightSession();
 
@@ -278,7 +328,7 @@ public sealed class CardPublicationEngine(
                 task.Id, version: fence.Version, token: cancellationToken);
         if (aggregate?.PendingPublicationProvider is null || aggregate.PublicationSessionDispatched)
         {
-            return null;
+            return PublicationAttempt.NotThisSweeps;
         }
 
         // The decider's other publication rule, enforced again at the point where a card would
@@ -299,7 +349,7 @@ public sealed class CardPublicationEngine(
                 + "up, so no session was dispatched: a second session would have created a second card "
                 + "for work that already has one.",
                 cancellationToken);
-            return false;
+            return PublicationAttempt.Refused;
         }
 
         // The decider's first publication rule, enforced again for the same reason as the one
@@ -318,14 +368,14 @@ public sealed class CardPublicationEngine(
                 + "dispatched and nothing was put on a board: a card for abandoned work is work "
                 + "nobody here intends to do.",
                 cancellationToken);
-            return false;
+            return PublicationAttempt.Refused;
         }
 
         ProjectDetails? project = await session.LoadAsync<ProjectDetails>(aggregate.ProjectId, cancellationToken);
         if (project is null)
         {
             await CompleteAsync(task.Id, false, "The task's project is not registered on this node.", cancellationToken);
-            return false;
+            return PublicationAttempt.Refused;
         }
 
         if (!Directory.Exists(project.RepositoryPath))
@@ -336,7 +386,7 @@ public sealed class CardPublicationEngine(
                 $"The project's repository is not at {project.RepositoryPath}, and the session runs there to "
                 + "read this project's card rules. Fix the path and run h9k task push-to-jira again.",
                 cancellationToken);
-            return false;
+            return PublicationAttempt.Refused;
         }
 
         ConnectionDetails? connection = await WorkItemConnections.FindJiraConnectionAsync(session, cancellationToken);
@@ -348,7 +398,7 @@ public sealed class CardPublicationEngine(
                 "No usable Jira connection is registered, so nothing could verify the card this session "
                 + "would create. Register one with h9k connection add jira and request it again.",
                 cancellationToken);
-            return false;
+            return PublicationAttempt.Refused;
         }
 
         Guid sessionId = DomainId.New();
@@ -382,7 +432,7 @@ public sealed class CardPublicationEngine(
             // stop and nothing to record: the request was simply not this sweep's after all.
             logger.LogDebug(
                 "Task {TaskId} advanced while its publication was being dispatched; leaving it", task.Id);
-            return null;
+            return PublicationAttempt.NotThisSweeps;
         }
 
         SpawnedAgent agent = await executor.SpawnAsync(
@@ -419,7 +469,7 @@ public sealed class CardPublicationEngine(
             waiting = true;
             (bool linked, string outcome) = await WaitAsync(task.Id, sessionId, agent, cancellationToken);
             await CompleteAsync(task.Id, linked, outcome, cancellationToken);
-            return linked;
+            return linked ? PublicationAttempt.CardLinked : PublicationAttempt.SessionRan;
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -463,7 +513,10 @@ public sealed class CardPublicationEngine(
                 + $"stopped without a verified card key. Its prompt and transcript are in "
                 + $"{RunPaths.RunDirectory(sessionId)}. {CheckTheBoard}",
                 cancellationToken);
-            return false;
+
+            // It ran, whatever became of watching it: this is the one place that knows the
+            // difference between a session that was spawned and a request that was refused.
+            return PublicationAttempt.SessionRan;
         }
     }
 
