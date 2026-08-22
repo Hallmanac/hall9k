@@ -356,7 +356,6 @@ public sealed class JiraWorkItemProvider(
 
     private ImportedWorkItem Map(string json, JiraIssueKey key, DateTimeOffset observedAt)
     {
-        JsonElement fields;
         JsonDocument document;
         try
         {
@@ -380,17 +379,44 @@ public sealed class JiraWorkItemProvider(
                     $"the JSON it answered with is {document.RootElement.ValueKind}, not an object");
             }
 
-            fields = document.RootElement.TryGetProperty("fields", out JsonElement found)
-                ? found
-                : default;
+            // An object is not a card either, and the sign-in check one call up refuses for exactly
+            // this reason. An identity-aware proxy answering {"error":"authentication required"}
+            // parses cleanly as an object, and then every property below is simply absent, so a
+            // card would be assembled out of defaults: the key that was asked for, an empty title,
+            // and a status nobody read. That matters most on the path with no second gate behind
+            // it. Import refuses anything not positively reported open, but h9k task link-jira
+            // records whatever this returns, so the proxy's answer would go onto the task as a
+            // verified card the platform never saw, which is the one thing that command exists to
+            // prevent. `key` is what makes a document a card: Jira answers it for every issue, and
+            // it cannot be a coincidence of some other document's shape. Origin incident
+            // (2026-08-22): the pre-PR review of this branch found the guard stopping at the
+            // object check, while the sign-in gate's comment already claimed this one covered the
+            // same ground.
+            if (ReadString(document.RootElement, "key") is not { } canonical)
+            {
+                throw NotACardDocument(key, "the JSON it answered with carries no key, so there is no card in it");
+            }
 
             // The key the tenant answered with wins over the one that was asked for: Jira moves a
             // card between projects by giving it a new key and keeps the old one resolving, so the
-            // canonical answer is the one that will still be right tomorrow.
-            string canonical = ReadString(document.RootElement, "key") ?? key.Value;
-            JiraIssueKey resolved = JiraIssueKey.TryParseBareKey(canonical, out JiraIssueKey answered)
-                ? answered
-                : key;
+            // canonical answer is the one that will still be right tomorrow. One that does not read
+            // as a key is refused rather than quietly swapped back to the asked-for one: which card
+            // this is, is precisely what the answer failed to establish.
+            if (!JiraIssueKey.TryParseBareKey(canonical, out JiraIssueKey resolved))
+            {
+                throw NotACardDocument(
+                    key, $"the key it answered with, '{Bounded(canonical)}', does not read as a Jira key");
+            }
+
+            // Every read asks for these fields by name, so a card always answers with the object.
+            // A document without it can say neither what the card is called nor what state it is
+            // in, which is the whole of what is being observed here.
+            if (!document.RootElement.TryGetProperty("fields", out JsonElement fields)
+                || fields.ValueKind != JsonValueKind.Object)
+            {
+                throw NotACardDocument(
+                    key, "the JSON it answered with carries no fields, so there is nothing in it to read as a card");
+            }
 
             return new ImportedWorkItem(
                 resolved.Reference,
