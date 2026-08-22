@@ -34,25 +34,64 @@ public static class WorkItemConnections
 
     /// <summary>
     /// The importer for this install: the GitHub provider always, and the Jira provider when a
-    /// Jira connection is registered. Without one, Jira is carried as an unregistered source
-    /// rather than left out silently, so importing a card on a machine that has not connected
-    /// Jira is refused with the command that connects it instead of with a list of the sources
-    /// that happen to be configured.
+    /// Jira connection is registered and usable. Without one, Jira is carried as an unusable
+    /// source rather than left out silently, so importing a card on a machine that has not
+    /// connected Jira is refused with the command that connects it instead of with a list of the
+    /// sources that happen to be configured.
+    /// <para>
+    /// A Jira connection that cannot be resolved lands in the same place rather than escaping as
+    /// an exception, and that is the whole point of building the importer this way: GitHub needs
+    /// no configuration and cannot be ambiguous, so a Jira misconfiguration must not take it down
+    /// too. The refusal is deferred to whoever actually asks for Jira, with its own words and its
+    /// own kind intact. Origin incident (2026-08-22): the pre-PR review of this branch found that
+    /// two registered Jira connections made h9k task show and h9k task add --from-issue — a pure
+    /// GitHub adoption — exit non-zero quoting a Jira refusal, while the daemon's sibling call
+    /// site (<c>PullRequestOpener.SourceUrlAsync</c>) degraded correctly.
+    /// </para>
     /// </summary>
     public static async Task<WorkItemImporter> ImporterAsync(
         IQuerySession session, CancellationToken cancellationToken, JiraRequester? requester = null)
     {
-        JiraWorkItemProvider? jira = await TryJiraProviderAsync(session, cancellationToken, requester: requester);
+        JiraWorkItemProvider? jira;
+        Func<DomainException> refusal = () => new DomainNotFoundException(NoJiraConnection);
+        try
+        {
+            jira = await TryJiraProviderAsync(session, cancellationToken, requester: requester);
+        }
+        catch (DomainException exception)
+        {
+            // Ambiguous (two connections, nothing saying which) or unusable (a connection with no
+            // site recorded). Both are answers to "which Jira", and both are this install's
+            // problem to fix; neither is an answer to "where does github:owner/repo#42 live".
+            jira = null;
+            refusal = () => Rebuild(exception);
+        }
+
         return jira is null
             ? new WorkItemImporter(new GitHubWorkItemProvider())
             {
-                Unregistered = new Dictionary<WorkItemProvider, string>
+                Unusable = new Dictionary<WorkItemProvider, Func<DomainException>>
                 {
-                    [WorkItemProvider.Jira] = NoJiraConnection,
+                    [WorkItemProvider.Jira] = refusal,
                 },
             }
             : new WorkItemImporter(new GitHubWorkItemProvider(), jira);
     }
+
+    /// <summary>
+    /// The same refusal again, as a new exception of the same kind: the message and the exit code
+    /// a caller asking for Jira should get are the ones the lookup already decided, but the
+    /// instance that carries them is thrown from wherever that caller is rather than replayed
+    /// with a stack trace from the moment the importer was built.
+    /// </summary>
+    private static DomainException Rebuild(DomainException refusal) =>
+        refusal switch
+        {
+            DomainConflictException => new DomainConflictException(refusal.Message),
+            DomainNotFoundException => new DomainNotFoundException(refusal.Message),
+            DomainBusinessRuleException => new DomainBusinessRuleException(refusal.Message),
+            _ => new DomainValidationException(refusal.Message),
+        };
 
     /// <summary>The Jira provider, or null when this install has no Jira connection registered.</summary>
     public static async Task<JiraWorkItemProvider?> TryJiraProviderAsync(
@@ -113,7 +152,11 @@ public static class WorkItemConnections
                 + "project uses, so Hall9k will not pick: "
                 + string.Join(", ", connections.Select(Describe))
                 + ". A project binds one connection and that binding is its repository's, so v0 supports "
-                + "one Jira account per install. Keep the one you want."),
+                + "one Jira account per install. Registering again replaces the connection Hall9k finds "
+                + "rather than adding one, so two can only come of two 'h9k connection add jira' runs "
+                + "overlapping; h9k connection list shows both. There is no remove command yet, so "
+                + "which one survives is a decision about the connection record rather than a retry — "
+                + "only the commands that need Jira are affected in the meantime."),
         };
     }
 

@@ -31,8 +31,8 @@ namespace Hall9k.Connectors.WorkItems;
 public sealed class WorkItemImporter(params IWorkItemProvider[] providers)
 {
     /// <summary>
-    /// Sources Hall9k speaks but this install has not registered, each mapped to the refusal that
-    /// says how to register one. It exists because "no importer for jira" and "you have not
+    /// Sources Hall9k speaks but this install cannot use, each mapped to the refusal that says
+    /// why and what to do about it. It exists because "no importer for jira" and "you have not
     /// connected Jira yet" are different sentences to the person reading them, and the second one
     /// is the true one on a first run: an install with no Jira connection builds a GitHub-only
     /// importer (<see cref="WorkItemConnections.ImporterAsync"/>), and without this the likely
@@ -40,9 +40,17 @@ public sealed class WorkItemImporter(params IWorkItemProvider[] providers)
     /// sources and no way forward. Origin incident (2026-08-21): the pre-PR review of the Jira
     /// branch found exactly that message on the unconnected path, while both sibling commands
     /// named h9k connection add jira.
+    /// <para>
+    /// The refusal is carried as a factory rather than as a sentence because unusable has more
+    /// than one cause and they are not the same kind of failure: nothing registered is a
+    /// <see cref="DomainNotFoundException"/>, while a connection list nobody can choose between
+    /// is a <see cref="DomainConflictException"/>, and the CLI maps those to different exit
+    /// codes. A factory also keeps each refusal a fresh exception, so one importer used twice
+    /// does not rethrow the same instance with somebody else's stack trace on it.
+    /// </para>
     /// </summary>
-    public IReadOnlyDictionary<WorkItemProvider, string> Unregistered { get; init; } =
-        new Dictionary<WorkItemProvider, string>();
+    public IReadOnlyDictionary<WorkItemProvider, Func<DomainException>> Unusable { get; init; } =
+        new Dictionary<WorkItemProvider, Func<DomainException>>();
 
     public async Task<ImportedWorkItem> ImportAsync(
         WorkItemImportRequest request, CancellationToken cancellationToken)
@@ -90,13 +98,13 @@ public sealed class WorkItemImporter(params IWorkItemProvider[] providers)
         providers.FirstOrDefault(candidate => candidate.Provider == provider);
 
     /// <summary>
-    /// Why this source is not here: unregistered on this install, which is a thing the human can
-    /// fix and the message says how, or genuinely unknown, which is a typo or a source Hall9k does
+    /// Why this source is not here: unusable on this install, which is a thing the human can fix
+    /// and the message says how, or genuinely unknown, which is a typo or a source Hall9k does
     /// not speak.
     /// </summary>
     private Exception Unavailable(WorkItemProvider provider) =>
-        Unregistered.TryGetValue(provider, out string? remedy)
-            ? new DomainNotFoundException(remedy)
+        Unusable.TryGetValue(provider, out Func<DomainException>? refusal)
+            ? refusal()
             : new DomainValidationException(
                 $"Hall9k has no importer for '{RelayedText.OneLine(provider.Value)}'. Known sources: "
                 + $"{string.Join(", ", providers.Select(p => p.Provider.Value))}.");
