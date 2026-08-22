@@ -495,8 +495,15 @@ public sealed class AgentPromptBuilderTests : IDisposable
 
         prompt.Should().Contain(ReviewFindingDispositions.Heading,
             "the instruction names the section the engine actually writes, so the two cannot drift apart");
+        // Every group is named by the same constant the merged document writes its heading
+        // from, so a rename cannot leave the agent hunting for a section that is no longer
+        // there — a failure that keeps the build green and only costs the fix session the
+        // sentence telling it which findings are its own.
+        prompt.Should().Contain(ReviewFindingDispositions.FixHere);
+        prompt.Should().Contain(ReviewFindingDispositions.FixHereInItsOwnCommit);
+        prompt.Should().Contain(ReviewFindingDispositions.DoNotFixHere);
         prompt.Should().Contain("commit it on its own", "an out-of-scope cleanup stays separable in the history");
-        prompt.Should().Contain("routed to a draft bug task is NOT yours");
+        prompt.Should().Contain("is NOT yours");
         prompt.Should().Contain("graded wrongly", "a disputed grade is a dispute, not a private re-grade");
         prompt.Should().Contain("do not quietly re-grade it");
     }

@@ -838,9 +838,9 @@ public sealed class ReviewEngine(
         merged.AppendLine("Recorded by the platform from each finding's declared severity and scope tag, not by");
         merged.AppendLine("a reviewer. It is the disposition the fix session must follow.");
 
-        AppendDispositionGroup(merged, "Fix in this pull request", null,
+        AppendDispositionGroup(merged, ReviewFindingDispositions.FixHere, null,
             [.. here.Where(entry => !entry.Finding.Scope.IsRoutable)]);
-        AppendDispositionGroup(merged, "Fix in this pull request, in a commit of its own",
+        AppendDispositionGroup(merged, ReviewFindingDispositions.FixHereInItsOwnCommit,
             "These defects are pre-existing. Cleaning them up while you are here is right, and keeping "
             + "each in its own commit is what keeps the branch's real work separable in the history.",
             [.. here.Where(entry => entry.Finding.Scope.IsRoutable)]);
@@ -851,7 +851,7 @@ public sealed class ReviewEngine(
         }
 
         merged.AppendLine();
-        merged.AppendLine("### Do NOT fix here — routed to draft bug tasks");
+        merged.AppendLine($"### {ReviewFindingDispositions.DoNotFixHere}");
         merged.AppendLine();
         merged.AppendLine("These are pre-existing defects outside this branch's work. Each one is now a draft");
         merged.AppendLine("bug task waiting for a human; fixing them here would grow this diff with unrelated");
