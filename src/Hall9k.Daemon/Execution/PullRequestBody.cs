@@ -84,7 +84,7 @@ internal static class PullRequestBody
     /// Deliberately a mention and not a closing keyword. "Closes #42" would make merging this
     /// pull request change the issue's state, and Hall9k does not move an external item's status:
     /// which transitions should follow a merge is a policy question (SLICE-1 S1-11, Decisions Log
-    /// #64, where Jira gets a comment at merge and never a transition, for the same reason). A
+    /// #65, where Jira gets a comment at merge and never a transition, for the same reason). A
     /// cross-reference gives a reviewer the round trip without the platform deciding anything.
     /// </para>
     /// <para>
