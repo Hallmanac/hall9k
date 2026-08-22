@@ -7,7 +7,9 @@ using Hall9k.Domain.Features.Tasks.Events;
 using Hall9k.Domain.Features.Tasks.Handlers;
 using Hall9k.Domain.Infrastructure.Bootstrap;
 using Hall9k.Domain.Shared.Exceptions;
+using JasperFx.Events;
 using Marten;
+using Marten.Events;
 using Spectre.Console;
 using Spectre.Console.Cli;
 
@@ -54,8 +56,6 @@ public sealed class TaskLinkJiraCommand : Hall9kAsyncCommand<TaskLinkJiraCommand
         await using IDocumentSession session = store.LightweightSession();
 
         Guid taskId = await TaskIdResolver.ResolveAsync(session, settings.Task, cancellationToken);
-        TaskAggregate task = await session.Events.AggregateStreamAsync<TaskAggregate>(taskId, token: cancellationToken)
-            ?? throw new DomainNotFoundException($"No task {taskId}.");
 
         JiraWorkItemProvider provider = await WorkItemConnections.JiraProviderAsync(session, cancellationToken);
         JiraIssueKey key = JiraIssueKey.Parse(settings.Key, new Uri(provider.Site));
@@ -66,6 +66,21 @@ public sealed class TaskLinkJiraCommand : Hall9kAsyncCommand<TaskLinkJiraCommand
         // source calls open") is a rule about starting work, and this is recording a card that was
         // created because the work already exists.
         ImportedWorkItem card = await provider.ReadAsync(key, cancellationToken);
+
+        // Fence, and fence after the read rather than before it. Reading the card is a request to
+        // somebody else's tenant with a 30-second deadline on it, and every guard below is about
+        // the task as it is now: a task read before that call and appended to after it could have
+        // been abandoned in between, which is exactly what LinkWorkItem refuses to link. The
+        // append carries this version, so a write that landed while the tenant was answering fails
+        // the commit rather than being absorbed — including a second link-jira carrying a
+        // different key, which would otherwise see a null reference on both sides of the race and
+        // put two cards on one task. The design expects agents to retry this command, so that
+        // window is a normal Tuesday rather than a thought experiment.
+        StreamState fence = await session.Events.FetchStreamStateAsync(taskId, cancellationToken)
+            ?? throw new DomainNotFoundException($"No task {taskId}.");
+        TaskAggregate task = await session.Events.AggregateStreamAsync<TaskAggregate>(
+                taskId, version: fence.Version, token: cancellationToken)
+            ?? throw new DomainNotFoundException($"No task {taskId}.");
 
         if (TaskDecider.AlreadyLinkedTo(task, card.Reference))
         {
@@ -78,6 +93,15 @@ public sealed class TaskLinkJiraCommand : Hall9kAsyncCommand<TaskLinkJiraCommand
             return ExitCodes.Ok;
         }
 
+        // One item, one live task — the same rule --from-issue and --from-jira enforce at adoption,
+        // applied to the other door into the same field. TaskDecider.LinkWorkItem only knows about
+        // this task, so without this a card another live task already carries could be linked here
+        // too, and one card would end up with two sets of runs and two closeout comments. The
+        // publication prompt makes that the likely mistake rather than an exotic one: a session
+        // told to search for an earlier attempt's card before creating a second can find somebody
+        // else's and report the key back in good faith.
+        await TaskAddCommand.RefuseSecondAdoptionAsync(session, card.Reference, cancellationToken);
+
         BootstrapContext context = await NodeBootstrap.EnsureAsync(session, cancellationToken);
         WorkItemLinked linked = TaskDecider.LinkWorkItem(
             task,
@@ -88,24 +112,50 @@ public sealed class TaskLinkJiraCommand : Hall9kAsyncCommand<TaskLinkJiraCommand
             DateTimeOffset.UtcNow,
             context.OwnerId);
 
-        session.Events.Append(taskId, linked);
-        await session.SaveChangesAsync(cancellationToken);
+        session.Events.Append(taskId, expectedVersion: fence.Version + 1, linked);
+        try
+        {
+            await session.SaveChangesAsync(cancellationToken);
+        }
+        catch (EventStreamUnexpectedMaxEventIdException)
+        {
+            throw new DomainConflictException(
+                $"Task {taskId} changed while {card.Reference} was being read back from Jira, so "
+                + "nothing was linked. The card is untouched either way — this command only ever reads "
+                + "Jira. Check h9k task show and run h9k task link-jira again if the task should still "
+                + "carry it.");
+        }
 
         AnsiConsole.MarkupLine(
             $"[green]Linked[/] task {TaskListCommand.ShortId(taskId)} to "
             + $"{card.Reference.ToString().EscapeMarkup()}: "
             + $"{ExternalText.OneLineMarkup(card.Title)}");
-        AnsiConsole.MarkupLine(
-            $"[dim]  {card.Status.ToString().EscapeMarkup()} when read at {card.ObservedStamp}; "
-            + "Hall9k took one reading and does not watch the card afterwards.[/]");
+        AnsiConsole.MarkupLine(ObservationMarkup(card));
         if (provider.WebUrl(card.Reference) is { } url)
         {
             AnsiConsole.MarkupLine($"[dim]  {url.ToString().EscapeMarkup()}[/]");
         }
 
-        await WarnIfOffTheBoardAsync(session, task, key, cancellationToken);
+        await WarnIfOffTheBoardAsync(session, task, card.Reference, cancellationToken);
         return ExitCodes.Ok;
     }
+
+    /// <summary>
+    /// What was observed, and when, said as the one reading it is: Hall9k does not watch the card
+    /// afterwards, so a status with no stamp beside it would read as the card's current state.
+    /// <para>
+    /// The status goes through <see cref="ExternalText"/> because it is a Jira administrator's
+    /// text rather than the platform's, and this command reaches it without the adoption gate in
+    /// the way: a card whose status has no category maps to no rule, so
+    /// <see cref="WorkItemStatus.Parse"/> keeps the tenant's word verbatim — which is right for
+    /// the record and unsafe for a terminal. Origin incident (2026-08-22): the pre-PR review of
+    /// this branch found this line escaped for Spectre's markup and never sanitised, which
+    /// neutralises brackets and not control characters.
+    /// </para>
+    /// </summary>
+    internal static string ObservationMarkup(ImportedWorkItem card) =>
+        $"[dim]  {ExternalText.OneLineMarkup(card.Status.ToString())} when read at {card.ObservedStamp}; "
+        + "Hall9k took one reading and does not watch the card afterwards.[/]";
 
     /// <summary>
     /// Say so when the card landed somewhere other than the project's bound board — and say it
@@ -123,19 +173,28 @@ public sealed class TaskLinkJiraCommand : Hall9kAsyncCommand<TaskLinkJiraCommand
     /// agent that filed a card somewhere nobody is looking. So it is recorded either way and
     /// pointed at once.
     /// </para>
+    /// <para>
+    /// The board it compares is the one in the reference that was just recorded, not the one in
+    /// the key that was asked for. Jira moves a card between projects by giving it a new key and
+    /// keeps the old key resolving, so the provider deliberately prefers the tenant's canonical
+    /// answer — and a note about a board the task does not carry would send a human looking for a
+    /// mismatch that is not there, or stay quiet about one that is.
+    /// </para>
     /// </summary>
     private static async Task WarnIfOffTheBoardAsync(
-        IQuerySession session, TaskAggregate task, JiraIssueKey key, CancellationToken cancellationToken)
+        IQuerySession session, TaskAggregate task, ExternalReference recorded, CancellationToken cancellationToken)
     {
         ProjectDetails? project = await session.LoadAsync<ProjectDetails>(task.ProjectId, cancellationToken);
-        if (project?.JiraProjectKey is not { HasValue: true } bound || bound.Value == key.Project.Value)
+        if (project?.JiraProjectKey is not { HasValue: true } bound
+            || !JiraIssueKey.TryParseBareKey(recorded.Reference, out JiraIssueKey card)
+            || bound.Value == card.Project.Value)
         {
             return;
         }
 
         AnsiConsole.MarkupLine(
             $"[yellow]  Note:[/] [dim]{project.Name.EscapeMarkup()} is bound to board "
-            + $"{bound.Value.EscapeMarkup()} and this card is on {key.Project.Value.EscapeMarkup()}. "
+            + $"{bound.Value.EscapeMarkup()} and this card is on {card.Project.Value.EscapeMarkup()}. "
             + "That is fine when the project's own routing rules put it there; it is worth a look if "
             + "nobody meant to.[/]");
     }
