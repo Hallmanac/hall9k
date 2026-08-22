@@ -77,8 +77,30 @@ public sealed record WorkItemStatus
             "" => Unknown,
             "open" => Open,
             "closed" => Closed,
-            _ => new WorkItemStatus(observed),
+            _ => Unmapped(observed),
         };
+    }
+
+    /// <summary>
+    /// The source's own word for a state, recorded without the platform recognising anything in
+    /// it. This is <see cref="Parse"/> minus the two names Hall9k has a rule for, and it exists
+    /// for the adapter that has already decided nothing here maps: it keeps the observed text and
+    /// maps to nothing, so <see cref="IsOpen"/> is false whatever the word happens to be.
+    /// <para>
+    /// The distinction matters at a boundary whose vocabulary is not Hall9k's. A source that says
+    /// "open" because that is its own word for open should go through <see cref="Parse"/>; an
+    /// adapter falling through to this one has established that it could not tell, and a card
+    /// whose status merely happens to be named "Open" is not the source saying so. Origin
+    /// incident (2026-08-22): the second cycle of this branch's pre-PR review found the Jira
+    /// adapter's no-category fallback calling <see cref="Parse"/>, so a card with no
+    /// <c>statusCategory</c> and the classic default workflow's "Open" was adopted as open, which
+    /// is the guess both that adapter and the decisions log say is refused there.
+    /// </para>
+    /// </summary>
+    public static WorkItemStatus Unmapped(string? value)
+    {
+        string observed = value?.Trim() ?? string.Empty;
+        return observed.IsBlank() ? Unknown : new WorkItemStatus(observed);
     }
 
     /// <summary>True only when the source positively said open; Unknown is not open.</summary>

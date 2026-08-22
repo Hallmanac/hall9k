@@ -472,7 +472,14 @@ public sealed class JiraWorkItemProvider(
         {
             "done" => WorkItemStatus.Closed.As(name),
             "new" or "indeterminate" => WorkItemStatus.Open.As(name),
-            _ => WorkItemStatus.Parse(name),
+            // Unmapped rather than Parse, because Parse recognises the words "open" and "closed"
+            // and this arm has already established that nobody could say. Jira's classic default
+            // workflow names a status "Open", so a card answered with no statusCategory — a
+            // customised tenant, a proxy, a partial render — would otherwise be adopted as open
+            // on the strength of a coincidence of vocabulary, which is precisely the guess the
+            // doc above and decision #64 say is refused here. Origin incident (2026-08-22): the
+            // second cycle of this branch's pre-PR review found the guard documented and absent.
+            _ => WorkItemStatus.Unmapped(name),
         };
     }
 

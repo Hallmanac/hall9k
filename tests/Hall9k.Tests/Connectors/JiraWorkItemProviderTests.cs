@@ -154,20 +154,33 @@ public sealed class JiraWorkItemProviderTests : IDisposable
         card.Status.ToString().Should().Contain(name, "the board's own word for the state is the observation");
     }
 
-    [Fact]
-    public async Task A_status_with_no_category_is_carried_verbatim_so_the_gate_refuses_it()
+    /// <summary>
+    /// Nobody could say whether this is open, and the importer's gate reads positively. The raw
+    /// name survives so the refusal quotes what was actually observed.
+    /// <para>
+    /// "Open" and "Closed" are in the theory on purpose: they are what Jira's classic default
+    /// workflow calls its states, so they are the names a card with no <c>statusCategory</c> is
+    /// likeliest to arrive carrying, and they are the two words a name-based mapping would
+    /// recognise. Origin incident (2026-08-22): the second cycle of this branch's pre-PR review
+    /// found the fallback going through <see cref="WorkItemStatus.Parse"/>, which maps exactly
+    /// those two, so the guard this test asserts was documented and absent.
+    /// </para>
+    /// </summary>
+    [Theory]
+    [InlineData("Bespoke")]
+    [InlineData("Open")]
+    [InlineData("Closed")]
+    public async Task A_status_with_no_category_is_carried_verbatim_so_the_gate_refuses_it(string name)
     {
-        // Nobody could say whether this is open, and the importer's gate reads positively. The
-        // raw name survives so the refusal quotes what was actually observed.
-        RecordingRequester jira = new(200, """
-            { "key": "PROJ-123", "fields": { "summary": "s", "status": { "name": "Bespoke" } } }
+        RecordingRequester jira = new(200, $$"""
+            { "key": "PROJ-123", "fields": { "summary": "s", "status": { "name": "{{name}}" } } }
             """);
 
         ImportedWorkItem card = await Provider(jira).ReadAsync(
             JiraIssueKey.Parse("PROJ-123", new Uri("https://hall9k.atlassian.net")), Token);
 
-        card.Status.IsOpen.Should().BeFalse();
-        card.Status.ToString().Should().Be("Bespoke");
+        card.Status.IsOpen.Should().BeFalse("a name nobody mapped is not the board saying open");
+        card.Status.ToString().Should().Be(name);
     }
 
     [Fact]
