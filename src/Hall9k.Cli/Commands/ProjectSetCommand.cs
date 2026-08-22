@@ -82,10 +82,12 @@ public sealed class ProjectSetCommand : Hall9kAsyncCommand<ProjectSetCommand.Set
         [CommandOption("--jira <KEY>")]
         [Description(
             "Bind this project to a Jira board by its project key — the PROJ in PROJ-123. It is what "
-            + "h9k task push-to-jira tells the agent to file new cards under, and what h9k task link-jira "
-            + "checks a reported card against, so a card created on the wrong board is caught rather "
-            + "than recorded. 'none' clears the binding; a project with none still publishes, and the "
-            + "agent is left to work out from the project's own skills where the card belongs")]
+            + "h9k task push-to-jira tells the agent to file new cards under. It is a default rather "
+            + "than a law: h9k task link-jira records a card that landed on another board and says so "
+            + "rather than refusing it, because the project's own routing rules are allowed to know "
+            + "better than this binding does. 'none' clears the binding; a project with none still "
+            + "publishes, and the agent is left to work out from the project's own skills where the "
+            + "card belongs")]
         public string? JiraProjectKey { get; init; }
     }
 
