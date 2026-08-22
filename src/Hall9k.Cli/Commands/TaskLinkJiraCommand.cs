@@ -147,7 +147,7 @@ public sealed class TaskLinkJiraCommand : Hall9kAsyncCommand<TaskLinkJiraCommand
     /// The status goes through <see cref="ExternalText"/> because it is a Jira administrator's
     /// text rather than the platform's, and this command reaches it without the adoption gate in
     /// the way: a card whose status has no category maps to no rule, so
-    /// <see cref="WorkItemStatus.Parse"/> keeps the tenant's word verbatim — which is right for
+    /// <see cref="WorkItemStatus.Unmapped"/> keeps the tenant's word verbatim, which is right for
     /// the record and unsafe for a terminal. Origin incident (2026-08-22): the pre-PR review of
     /// this branch found this line escaped for Spectre's markup and never sanitised, which
     /// neutralises brackets and not control characters.
