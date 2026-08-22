@@ -29,7 +29,7 @@ public sealed class PullRequestBodyTests
     /// <summary>
     /// The wording says what is true of both ways a task acquires a reference. "Adopted from" was
     /// true while adoption was the only route, and is a false provenance claim for a card that
-    /// exists because of the task (h9k task push-to-jira, Decisions Log #64).
+    /// exists because of the task (h9k task push-to-jira, Decisions Log #65).
     /// </summary>
     [Fact]
     public void A_jira_card_the_task_caused_is_not_described_as_one_it_was_adopted_from()
