@@ -223,7 +223,9 @@ public sealed class CardPublicationEngineTests(PostgresFixture postgres) : IClas
         CardPublicationSweepResult sweep = await NewEngine(store, node, session, processes)
             .PollOnceAsync(cts.Token);
 
-        sweep.Linked.Should().Be(0);
+        sweep.Should().Be(
+            new CardPublicationSweepResult(Dispatched: 1, Linked: 0),
+            "a session ran; what it did not do is produce a card anybody verified");
         await using IQuerySession query = store.QuerySession();
         TaskDetails task = (await query.LoadAsync<TaskDetails>(taskId, cts.Token))!;
         task.ExternalReference.Should().BeNull("a claim is not a link");
@@ -371,8 +373,12 @@ public sealed class CardPublicationEngineTests(PostgresFixture postgres) : IClas
         FakeProcessManager processes = new();
         ScriptedSession session = new("Created PROJ-123.", processes);
 
-        await NewEngine(store, node, session, processes).PollOnceAsync(cts.Token);
+        CardPublicationSweepResult sweep = await NewEngine(store, node, session, processes)
+            .PollOnceAsync(cts.Token);
 
+        sweep.Should().Be(
+            new CardPublicationSweepResult(Dispatched: 0, Linked: 0, Adopted: 0, Refused: 1),
+            "there was no repository to dispatch into, so no session ran");
         session.Spawns.Should().BeEmpty();
         await using IQuerySession query = store.QuerySession();
         (await query.LoadAsync<TaskDetails>(taskId, cts.Token))!.PublicationOutcome
@@ -676,7 +682,10 @@ public sealed class CardPublicationEngineTests(PostgresFixture postgres) : IClas
         CardPublicationSweepResult sweep = await NewEngine(store, node, session, processes)
             .PollOnceAsync(cts.Token);
 
-        sweep.Linked.Should().Be(0);
+        sweep.Should().Be(
+            new CardPublicationSweepResult(Dispatched: 0, Linked: 0, Adopted: 0, Refused: 1),
+            "the request was answered by a guard, and counting it as a session that ran would put an "
+            + "agent in somebody's repository in the daemon's log that was never there");
         session.Spawns.Should().BeEmpty("a session dispatched here would file a second card for one task");
 
         await using IQuerySession query = store.QuerySession();
@@ -741,7 +750,9 @@ public sealed class CardPublicationEngineTests(PostgresFixture postgres) : IClas
         CardPublicationSweepResult sweep = await NewEngine(store, node, session, processes)
             .PollOnceAsync(cts.Token);
 
-        sweep.Linked.Should().Be(0);
+        sweep.Should().Be(
+            new CardPublicationSweepResult(Dispatched: 0, Linked: 0, Adopted: 0, Refused: 1),
+            "a refusal is counted as a refusal; nothing ran");
         session.Spawns.Should().BeEmpty("a card filed here is one nobody can link and nobody wants");
 
         await using IQuerySession query = store.QuerySession();
