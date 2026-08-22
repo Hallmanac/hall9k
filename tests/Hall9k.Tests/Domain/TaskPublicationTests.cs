@@ -95,7 +95,7 @@ public sealed class TaskPublicationTests
         task.Apply(Request(task));
         task.PublicationSessionDispatched.Should().BeFalse("nothing has been spawned yet");
 
-        task.Apply(new WorkItemPublicationDispatched(task.Id, DomainId.New(), DomainId.New(), 42, Now, Now));
+        task.Apply(new WorkItemPublicationDispatched(task.Id, DomainId.New(), DomainId.New(), Now));
 
         task.PublicationSessionDispatched.Should().BeTrue();
     }
@@ -121,7 +121,7 @@ public sealed class TaskPublicationTests
         // sweep dispatch a second card for a task that already has one.
         TaskAggregate task = Draft();
         task.Apply(Request(task));
-        task.Apply(new WorkItemPublicationDispatched(task.Id, DomainId.New(), DomainId.New(), 42, Now, Now));
+        task.Apply(new WorkItemPublicationDispatched(task.Id, DomainId.New(), DomainId.New(), Now));
 
         task.Apply(TaskDecider.LinkWorkItem(task, Card, "s", "To Do (open)", Now, Now, Owner));
 
@@ -214,9 +214,117 @@ public sealed class TaskPublicationTests
 
         projection.Apply(
             new FakeEvent<WorkItemPublicationDispatched>(
-                new WorkItemPublicationDispatched(added.Id, DomainId.New(), DomainId.New(), 42, Now, Now)),
+                new WorkItemPublicationDispatched(added.Id, DomainId.New(), DomainId.New(), Now)),
             detail);
 
         detail.PublicationSessionDispatched.Should().BeTrue();
+        detail.PublicationSessionProcessId.Should().BeNull(
+            "the dispatch is committed before anything is spawned, so there is no process yet");
+
+        projection.Apply(
+            new FakeEvent<WorkItemPublicationSessionStarted>(
+                new WorkItemPublicationSessionStarted(added.Id, DomainId.New(), 4242, Now)),
+            detail);
+
+        detail.PublicationSessionProcessId.Should().Be(4242);
+        detail.PublicationSessionStartedAt.Should().Be(Now);
+    }
+
+    /// <summary>
+    /// The window the two-event split exists to close. A session spawned before its dispatch was
+    /// recorded is a live card-writer the stream has never heard of, so a crash in that window
+    /// leaves the next sweep free to start a second one — and two sessions mean two cards. The
+    /// marker that refuses the second dispatch is therefore set by the first event, which is
+    /// committed before anything can create anything.
+    /// </summary>
+    [Fact]
+    public void The_dispatch_marker_is_set_before_a_process_exists_to_record()
+    {
+        TaskAggregate task = Draft();
+        task.Apply(Request(task));
+
+        task.Apply(new WorkItemPublicationDispatched(task.Id, DomainId.New(), DomainId.New(), Now));
+
+        task.PublicationSessionDispatched.Should().BeTrue(
+            "nothing has been spawned yet, and that is exactly when the guard has to be up");
+        Action second = () => TaskDecider.RequestWorkItemPublication(
+            task, WorkItemProvider.Jira, JiraProjectKey.Parse("PROJ"), Now, Owner);
+        second.Should().Throw<DomainConflictException>();
+    }
+
+    /// <summary>
+    /// The other order of the same two commands. Requesting a card for an abandoned task is
+    /// refused by name; abandoning a task with a request outstanding used to leave the marker
+    /// standing, and the marker is the only thing the daemon's sweep reads — so the refusal held
+    /// for a second and the card got filed anyway, on work nobody intends to do and on a task
+    /// that could not then record it (linking an abandoned task is refused too). Origin incident
+    /// (2026-08-22): the pre-PR review of this branch traced it from push-to-jira with the daemon
+    /// stopped, then abandon, then the daemon starting.
+    /// </summary>
+    [Fact]
+    public void Abandoning_takes_the_publication_nobody_has_started_with_it()
+    {
+        TaskAggregate task = Draft();
+        task.Apply(Request(task));
+
+        task.Apply(TaskDecider.Abandon(task, "Superseded", Now, Owner));
+
+        task.PendingPublicationProvider.Should().BeNull("the request outlived the intent behind it");
+        task.PendingPublicationProjectKey.Should().Be(JiraProjectKey.None);
+    }
+
+    /// <summary>
+    /// And the case where it must not: a session is already out there writing a card, and the
+    /// markers are how the daemon finds it, waits for it and ends it honestly. Cleared here, it
+    /// would be detached with nothing watching, which is exactly how a surprise card arrives on
+    /// a board with no record of where it came from.
+    /// </summary>
+    [Fact]
+    public void Abandoning_leaves_a_dispatched_publication_for_adoption_to_finish()
+    {
+        TaskAggregate task = Draft();
+        task.Apply(Request(task));
+        task.Apply(new WorkItemPublicationDispatched(task.Id, DomainId.New(), DomainId.New(), Now));
+
+        task.Apply(TaskDecider.Abandon(task, "Superseded", Now, Owner));
+
+        task.PendingPublicationProvider.Should().Be(WorkItemProvider.Jira);
+        task.PublicationSessionDispatched.Should().BeTrue("adoption reads both of these to find the session");
+    }
+
+    /// <summary>
+    /// The projection tells the same story, and here it matters most: this view is what the
+    /// daemon's sweep queries and what h9k task show reads, so an abandoned task must stop
+    /// saying a publication is waiting for the daemon.
+    /// </summary>
+    [Fact]
+    public void The_detail_pane_drops_an_unstarted_publication_when_the_task_is_abandoned()
+    {
+        TaskAdded added = TaskDecider.Add(
+            DomainId.New(), DomainId.New(), "Objective", ["A criterion"], TaskType.Feature,
+            agentContext: null, constraints: null, externalReference: null, Now, Owner);
+        WorkItemPublicationRequested requested = new(
+            added.Id, WorkItemProvider.Jira, JiraProjectKey.Parse("PROJ"), Now, Owner);
+
+        TaskDetailsProjection projection = new();
+        TaskDetails waiting = projection.Create(new FakeEvent<TaskAdded>(added));
+        projection.Apply(new FakeEvent<WorkItemPublicationRequested>(requested), waiting);
+        projection.Apply(
+            new FakeEvent<TaskAbandoned>(new TaskAbandoned(added.Id, "Superseded", Now, Owner)), waiting);
+
+        waiting.PendingPublicationProvider.Should().BeNull();
+        waiting.PendingPublicationProjectKey.Should().Be(JiraProjectKey.None);
+
+        TaskDetails running = projection.Create(new FakeEvent<TaskAdded>(added));
+        projection.Apply(new FakeEvent<WorkItemPublicationRequested>(requested), running);
+        projection.Apply(
+            new FakeEvent<WorkItemPublicationDispatched>(
+                new WorkItemPublicationDispatched(added.Id, DomainId.New(), DomainId.New(), Now)),
+            running);
+        projection.Apply(
+            new FakeEvent<TaskAbandoned>(new TaskAbandoned(added.Id, "Superseded", Now, Owner)), running);
+
+        running.PendingPublicationProvider.Should().Be("jira", "adoption queries this view for the session");
+        running.PublicationSessionDispatched.Should().BeTrue();
     }
 }
