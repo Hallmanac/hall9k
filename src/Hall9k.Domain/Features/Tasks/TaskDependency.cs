@@ -1,4 +1,5 @@
 using Hall9k.Domain.Features.Run;
+using Hall9k.Domain.Infrastructure.Extensions;
 
 namespace Hall9k.Domain.Features.Tasks;
 
@@ -13,12 +14,19 @@ namespace Hall9k.Domain.Features.Tasks;
 /// says whether a merge observation can still arrive. Null is the honest answer for "no run
 /// to observe", never a stand-in for one (the AGENTS.md never-guess rule).
 /// </param>
+/// <param name="PullRequestUrl">
+/// The pull request this dependency recorded, or null when it never opened one. Carried so a
+/// dependent's advice can name h9k pr resolve only when that command would actually be
+/// accepted: it reopens a done task onto its existing pull-request branch, and refuses a task
+/// that has no pull request to follow up on.
+/// </param>
 public sealed record TaskDependency(
     Guid Id,
     string Objective,
     TaskState State,
     bool IsClosedOut,
     RunState? CurrentRunState,
+    string? PullRequestUrl,
     IReadOnlyList<Guid> BlockedBy)
 {
     /// <summary>
@@ -47,8 +55,11 @@ public sealed record TaskDependency(
     /// </summary>
     private bool CloseoutCanStillArrive => CurrentRunState is { } run && !run.IsTerminal;
 
+    /// <summary>The id fragment h9k accepts on the command line, as every surface prints it.</summary>
+    private string ShortId => Id.ToString("N")[^8..];
+
     /// <summary>How the dependency reads in an error a human has to act on.</summary>
-    public string Describe() => $"{Id.ToString("N")[^8..]} \"{Objective}\" ({State.Value})";
+    public string Describe() => $"{ShortId} \"{Objective}\" ({State.Value})";
 
     /// <summary>
     /// Why this blocker will never close out and what moves it, as the first half of the
@@ -67,11 +78,31 @@ public sealed record TaskDependency(
                 ? $"Dependency {Describe()} was abandoned and will never close out on its own; "
                   + "abandoned is a dead end by design, so revise this task's dependencies"
                 : $"Dependency {Describe()} reads Done, but {DescribeAbsentMerge()}, so the merge observation "
-                  + "true closeout waits on will never arrive. Land its work and let the closeout monitor see "
-                  + "the merge, or revise this task's dependencies";
+                  + $"true closeout waits on will never arrive. {DescribeDoneRemedy()}";
 
     private string DescribeAbsentMerge() =>
         CurrentRunState is null
             ? "it has no run left to carry a pull request"
             : $"its run ended {CurrentRunState.Value} rather than Completed";
+
+    /// <summary>
+    /// What actually moves a Done-but-never-closing-out blocker. Merging its pull request by
+    /// hand does nothing here: the closeout monitor only inspects runs still in the watch set
+    /// (AwaitingReview, ReviewPending, CloseoutParked), and this blocker is dead precisely
+    /// because its run left it — so a merge made on that advice is never observed and the hold
+    /// never lifts. h9k pr resolve dispatches a follow-up run onto the existing pull-request
+    /// branch, which puts the pull request back under watch, and that run's merge is observed.
+    /// Named only when the decider would accept it: a reopen needs a recorded run to follow up
+    /// on and a pull request to follow up about (review finding, 2026-08-21).
+    /// </summary>
+    private string DescribeDoneRemedy() => (CurrentRunState, PullRequestUrl.IsBlank()) switch
+    {
+        (null, _) => "Nothing is left to put back under watch, so the only lever is on this side: "
+                     + "revise this task's dependencies",
+        (_, true) => "It has no pull request to put back under watch, so the only lever is on this "
+                     + "side: revise this task's dependencies",
+        _ => $"Put it back under watch with h9k pr resolve {ShortId} — the follow-up run that "
+             + "dispatches rejoins the closeout monitor's watch set, and its merge is observed — "
+             + "or revise this task's dependencies",
+    };
 }

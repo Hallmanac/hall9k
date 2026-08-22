@@ -461,7 +461,7 @@ public sealed class TaskLifecycleTests
     }
 
     private static TaskDependency Dependency(Guid id, TaskState state, bool closedOut) =>
-        new(id, "A blocker", state, closedOut, CurrentRunState: null, []);
+        new(id, "A blocker", state, closedOut, CurrentRunState: null, PullRequestUrl: null, []);
 
     private static TaskRevised Revise(TaskAggregate task, string objective) => TaskDecider.Revise(
         task, Optional<string>.Of(objective), Optional<IReadOnlyList<string>>.None, Optional<string>.None,

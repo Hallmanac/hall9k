@@ -16,6 +16,8 @@ namespace Hall9k.Tests.Domain;
 /// </summary>
 public sealed class TaskDependencyClosureTests
 {
+    private const string PullRequest = "https://github.com/x/y/pull/7";
+
     [Fact]
     public void A_done_dependency_whose_run_the_monitor_completed_has_closed_out()
     {
@@ -46,12 +48,39 @@ public sealed class TaskDependencyClosureTests
     [InlineData("Superseded")]
     public void A_done_dependency_whose_run_ended_without_a_merge_will_never_close_out(string runState)
     {
-        TaskDependency dependency = Dependency(TaskState.Done, runState, closedOut: false);
+        TaskDependency dependency = Dependency(
+            TaskState.Done, runState, closedOut: false, PullRequest);
 
         dependency.Blocks.Should().BeTrue();
         dependency.IsDead.Should().BeTrue(
             "no run is left to observe a merge, so waiting on one is waiting forever");
         dependency.DescribeDeath().Should().Contain(runState).And.Contain("reads Done");
+    }
+
+    [Fact]
+    public void A_done_dependency_names_the_lever_that_puts_its_pull_request_back_under_watch()
+    {
+        TaskDependency dependency = Dependency(
+            TaskState.Done, RunState.Failed, closedOut: false, PullRequest);
+
+        string death = dependency.DescribeDeath();
+        death.Should().Contain("h9k pr resolve",
+            "a follow-up run rejoins the closeout monitor's watch set, which is what observes the merge");
+        death.Should().NotContain("Land its work",
+            "the monitor only inspects runs still in the watch set, so a merge made on that advice "
+            + "is never observed and the hold never lifts");
+        death.Should().Contain("revise this task's dependencies");
+    }
+
+    [Fact]
+    public void A_done_dependency_with_no_pull_request_offers_only_the_dependent_s_own_edges()
+    {
+        TaskDependency dependency = Dependency(TaskState.Done, RunState.Failed, closedOut: false);
+
+        dependency.DescribeDeath().Should().NotContain("h9k pr resolve",
+            "the reopen refuses a task with no pull request to follow up on - advice must be "
+            + "self-correcting, not self-defeating");
+        dependency.DescribeDeath().Should().Contain("revise this task's dependencies");
     }
 
     [Fact]
@@ -61,6 +90,8 @@ public sealed class TaskDependencyClosureTests
 
         dependency.IsDead.Should().BeTrue();
         dependency.DescribeDeath().Should().Contain("no run left");
+        dependency.DescribeDeath().Should().NotContain("h9k pr resolve",
+            "the reopen refuses a task with no recorded run to follow up on");
     }
 
     [Theory]
@@ -111,6 +142,7 @@ public sealed class TaskDependencyClosureTests
         dependency.IsDead.Should().BeFalse("it has not ended — it simply has not got there yet");
     }
 
-    private static TaskDependency Dependency(TaskState state, RunState? currentRunState, bool closedOut) =>
-        new(DomainId.New(), "A blocker", state, closedOut, currentRunState, []);
+    private static TaskDependency Dependency(
+        TaskState state, RunState? currentRunState, bool closedOut, string? pullRequestUrl = null) =>
+        new(DomainId.New(), "A blocker", state, closedOut, currentRunState, pullRequestUrl, []);
 }

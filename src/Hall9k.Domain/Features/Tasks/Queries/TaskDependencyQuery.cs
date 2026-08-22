@@ -81,6 +81,7 @@ public static class TaskDependencyQuery
         task.State,
         IsClosedOut(task, currentRunState),
         currentRunState,
+        task.PullRequestUrl,
         task.BlockedBy);
 
     /// <summary>

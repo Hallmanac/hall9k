@@ -533,7 +533,8 @@ public sealed class TaskDispatchGuardTests(PostgresFixture postgres) : IClassFix
         TaskDependency[] blockers =
         [
             .. dependencyIds.Select(dependencyId => new TaskDependency(
-                dependencyId, "The blocker", TaskState.Queued, IsClosedOut: false, CurrentRunState: null, [])),
+                dependencyId, "The blocker", TaskState.Queued, IsClosedOut: false, CurrentRunState: null,
+                PullRequestUrl: null, [])),
         ];
         TaskPublished published = TaskDecider.Publish(task, new TaskDependencyGraph(blockers), Now, ownerId);
         task.Apply(published);

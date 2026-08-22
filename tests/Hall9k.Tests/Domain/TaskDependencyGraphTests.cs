@@ -83,7 +83,8 @@ public sealed class TaskDependencyGraphTests
     }
 
     private static TaskDependency Node(Guid id, string objective, params Guid[] blockedBy) =>
-        new(id, objective, TaskState.Queued, IsClosedOut: false, CurrentRunState: null, blockedBy);
+        new(id, objective, TaskState.Queued, IsClosedOut: false, CurrentRunState: null,
+            PullRequestUrl: null, blockedBy);
 
     private static TaskAggregate DraftBlockedBy(Guid id, params Guid[] blockedBy)
     {

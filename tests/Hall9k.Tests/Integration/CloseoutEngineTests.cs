@@ -371,7 +371,8 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
         dependent.Apply(added);
 
         TaskDependency blocker = new(
-            dependencyId, "Close me out", TaskState.Done, IsClosedOut: false, CurrentRunState: null, []);
+            dependencyId, "Close me out", TaskState.Done, IsClosedOut: false, CurrentRunState: null,
+            PullRequestUrl: null, []);
         Hall9k.Domain.Features.Tasks.Events.TaskPublished published =
             TaskDecider.Publish(dependent, new TaskDependencyGraph([blocker]), Now, ownerId);
         dependent.Apply(published);
