@@ -53,6 +53,26 @@ public sealed class JiraProjectKeyTests
             .Which.Message.Should().NotContain("\u001b");
     }
 
+    /// <summary>
+    /// The same rule against the character a blacklist of control characters lets through. A
+    /// bidirectional override is not a control character; it reverses the display of everything
+    /// after it while leaving the stored string alone, so a refusal that echoed one would print
+    /// the sentence explaining the refusal backwards. Origin incident (2026-08-21): the pre-PR
+    /// review of the Jira branch found this quoting comment describing a whitelist over an
+    /// implementation that was a blacklist.
+    /// </summary>
+    [Theory]
+    [InlineData("PROJ\u202Eevil")]
+    [InlineData("PROJ\u2066evil")]
+    [InlineData("PROJ\ufeffevil")]
+    public void A_refused_key_cannot_reverse_the_sentence_that_refuses_it(string input)
+    {
+        Action parse = () => JiraProjectKey.Parse(input);
+
+        string message = parse.Should().Throw<DomainValidationException>().Which.Message;
+        message.Should().NotContain("\u202e").And.NotContain("\u2066").And.NotContain("\ufeff");
+    }
+
     [Fact]
     public void A_card_key_is_not_a_project_key_and_says_so()
     {
@@ -61,6 +81,9 @@ public sealed class JiraProjectKeyTests
         Action parse = () => JiraProjectKey.Parse("PROJ-123");
 
         parse.Should().Throw<DomainValidationException>()
-            .WithMessage("*part before the dash*");
+            .WithMessage("*part before the dash*")
+            // And the key survives the quoting intact: a message that echoed it back as PROJ?123
+            // would be teaching the distinction while hiding the evidence for it.
+            .Which.Message.Should().Contain("PROJ-123");
     }
 }
