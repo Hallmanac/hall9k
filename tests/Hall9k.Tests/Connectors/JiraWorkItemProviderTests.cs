@@ -72,7 +72,7 @@ public sealed class JiraWorkItemProviderTests : IDisposable
     public async Task An_account_is_proven_from_a_token_in_hand_before_anything_stores_it()
     {
         RecordingRequester requester = new(200, """
-        {"displayName": "Brian Hall"}
+        {"accountId": "5b10a2844c20165700ede21g", "displayName": "Brian Hall"}
         """);
         JiraWorkItemProvider provider = new(
             JiraAccount.WithTokenInHand(
@@ -306,6 +306,30 @@ public sealed class JiraWorkItemProviderTests : IDisposable
 
         (await read.Should().ThrowAsync<DomainValidationException>())
             .WithMessage("*not a Jira card*Array*");
+    }
+
+    /// <summary>
+    /// The sign-in gate exists to prove credentials before anything is written down, so a 2xx
+    /// that proves nothing has to be refused as loudly as a 401. Origin incident (2026-08-22):
+    /// the pre-PR review of this branch found the check treating any parseable body as a
+    /// successful sign-in, so an identity-aware proxy answering 200 with its own JSON registered
+    /// a connection, stored the token, and printed a confirmation for an account that had never
+    /// authenticated — with the real failure deferred to the middle of a dispatched session.
+    /// </summary>
+    [Theory]
+    [InlineData("""{"error": "authentication required", "login_url": "https://sso.example.com"}""")]
+    [InlineData("[]")]
+    [InlineData("""{"displayName": "Brian Hall"}""")]
+    public async Task A_two_hundred_that_is_not_a_jira_account_is_refused_rather_than_read_as_a_sign_in(string body)
+    {
+        RecordingRequester jira = new(200, body);
+
+        Func<Task> verify = () => Provider(jira).VerifyAccessAsync(Token);
+
+        (await verify.Should().ThrowAsync<DomainValidationException>())
+            .WithMessage("*not a Jira account*")
+            .WithMessage("*https://your-org.atlassian.net*",
+                "the site URL is the usual cause, so the refusal says what a right one looks like");
     }
 
     [Fact]
