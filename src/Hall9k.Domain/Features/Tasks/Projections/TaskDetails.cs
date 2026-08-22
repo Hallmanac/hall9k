@@ -375,6 +375,16 @@ public sealed class TaskDetailsProjection : SingleStreamProjection<TaskDetails, 
         view.RetryBranch = null;
         view.State = TaskState.Abandoned;
         view.FinishedAt = @event.Data.AbandonedAt;
+
+        // The publication request goes with them when no session has been dispatched, which is
+        // the aggregate's rule and matters most here: this view is what the daemon's sweep
+        // queries, so a marker left standing on an abandoned task is a card filed for work
+        // nobody intends to do. A dispatched one stays for adoption to finish (TaskAggregate).
+        if (!view.PublicationSessionDispatched)
+        {
+            view.PendingPublicationProvider = null;
+            view.PendingPublicationProjectKey = JiraProjectKey.None;
+        }
     }
 
     // Publication is a side errand, so none of these touch State: what they move is the pending
@@ -393,11 +403,18 @@ public sealed class TaskDetailsProjection : SingleStreamProjection<TaskDetails, 
     // daemon ask whether that session is still running rather than assume either way, and a
     // publication left dispatched with nothing watching it is a task stuck saying "a session is
     // writing the card" forever (origin incident: the pre-PR review of this branch, 2026-08-21).
+    // It arrives in two parts because it is observed in two parts — the dispatch is committed
+    // before anything is spawned, so that a crash in between cannot leave a live session with
+    // nothing on the stream to stop the next sweep dispatching a second one.
     public void Apply(IEvent<WorkItemPublicationDispatched> @event, TaskDetails view)
     {
         view.PublicationSessionDispatched = true;
         view.PublicationSessionId = @event.Data.SessionId;
         view.PublicationSessionNodeId = @event.Data.NodeId;
+    }
+
+    public void Apply(IEvent<WorkItemPublicationSessionStarted> @event, TaskDetails view)
+    {
         view.PublicationSessionProcessId = @event.Data.ProcessId;
         view.PublicationSessionStartedAt = @event.Data.ProcessStartedAt;
     }

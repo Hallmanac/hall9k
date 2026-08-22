@@ -355,10 +355,6 @@ public sealed class TaskAggregate
         State = TaskState.Queued;
     }
 
-    // Abandoning consumes the pending-work markers like Complete and Resolve do — a dead
-    // task must not advertise a resumable branch — and clears the pending question so a
-    // late answer cannot flip an Abandoned task back to Claimed (Answer guards on
-    // PendingQuestionId, not on state).
     // Publication is a side errand rather than a lifecycle move: the task's state is untouched
     // by all three of these, because asking for a card, spawning the session, and the session
     // ending say nothing about whether the work is drafted, queued, or done. What they move is
@@ -370,6 +366,11 @@ public sealed class TaskAggregate
         PublicationSessionDispatched = false;
     }
 
+    // Dispatched is the whole of what this aggregate needs: it is the guard that stops a second
+    // session, and it is true from the moment the dispatch is committed — before the process
+    // exists. Which process it turned out to be (WorkItemPublicationSessionStarted) is a question
+    // only the daemon's adoption asks, so it is projected onto TaskDetails and deliberately not
+    // applied here.
     public void Apply(WorkItemPublicationDispatched @event) => PublicationSessionDispatched = true;
 
     public void Apply(WorkItemPublicationCompleted @event)
@@ -391,6 +392,10 @@ public sealed class TaskAggregate
         PublicationSessionDispatched = false;
     }
 
+    // Abandoning consumes the pending-work markers like Complete and Resolve do — a dead
+    // task must not advertise a resumable branch — and clears the pending question so a
+    // late answer cannot flip an Abandoned task back to Claimed (Answer guards on
+    // PendingQuestionId, not on state).
     public void Apply(TaskAbandoned @event)
     {
         PendingQuestionId = null;
@@ -398,5 +403,23 @@ public sealed class TaskAggregate
         FollowUpKind = FollowUpKind.Unknown;
         RetryBranch = null;
         State = TaskState.Abandoned;
+
+        // A publication nobody has started yet is one of those markers, for the reason
+        // TaskDecider.RequestWorkItemPublication refuses to make one: filing a card for abandoned
+        // work puts it on somebody's board when nobody here intends to do it. That rule only held
+        // at the moment of asking — the daemon's sweep reads the marker and never the state, so
+        // abandoning between the request and the sweep still produced a card, and one nothing
+        // could then record either, because linking an abandoned task is refused too. Origin
+        // incident (2026-08-22): the pre-PR review of this branch traced it from push-to-jira with
+        // the daemon stopped, then abandon, then the daemon starting.
+        //
+        // A dispatched publication keeps its markers. A session is already out there writing a
+        // card, and those markers are how adoption finds it, waits for it and ends it honestly;
+        // clearing them here would leave it detached with nothing watching.
+        if (!PublicationSessionDispatched)
+        {
+            PendingPublicationProvider = null;
+            PendingPublicationProjectKey = JiraProjectKey.None;
+        }
     }
 }
