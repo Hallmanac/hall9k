@@ -2,6 +2,7 @@ using Hall9k.Connectors.WorkItems;
 using Hall9k.Daemon.Execution;
 using Hall9k.Daemon.ProcessManagement;
 using Hall9k.Domain.Features.Connection;
+using Hall9k.Domain.Features.Node;
 using Hall9k.Domain.Features.Project.Projections;
 using Hall9k.Domain.Features.Run;
 using Hall9k.Domain.Features.Tasks;
@@ -20,10 +21,11 @@ namespace Hall9k.Daemon.Publication;
 /// <summary>
 /// One sweep's tally: how many publication sessions this node dispatched, how many produced a
 /// verified card, how many sessions it adopted — ones it had dispatched on an earlier run and
-/// never recorded an outcome for — and how many requests it answered without any session running
-/// at all, because a guard refused them at the point where the card would have been written.
+/// never recorded an outcome for — how many requests it answered without any session running at
+/// all, because a guard refused them at the point where the card would have been written, and how
+/// many it ended on the ceiling because they belonged to a node that never came back.
 /// <para>
-/// The four are counted apart because the sweep's log line is read as a record of what happened
+/// The five are counted apart because the sweep's log line is read as a record of what happened
 /// on somebody's board. A refusal folded into <paramref name="Dispatched" /> reads as an agent
 /// session that ran against a real repository, which is the one thing a refusal is not. Origin
 /// incident (2026-08-22): the second cycle of this branch's pre-PR review found every refusal
@@ -31,8 +33,14 @@ namespace Hall9k.Daemon.Publication;
 /// "1 session(s) ran, 0 produced a verified card" — and a sweep that did nothing but adopt a
 /// stranded session logged nothing at all.
 /// </para>
+/// <para>
+/// <paramref name="Expired" /> is apart from <paramref name="Adopted" /> for the same reason:
+/// adoption watched a session end, and this one only watched a clock. Nobody here saw that
+/// session at all.
+/// </para>
 /// </summary>
-public sealed record CardPublicationSweepResult(int Dispatched, int Linked, int Adopted = 0, int Refused = 0);
+public sealed record CardPublicationSweepResult(
+    int Dispatched, int Linked, int Adopted = 0, int Refused = 0, int Expired = 0);
 
 /// <summary>
 /// Turns a publication request into an agent session, and records what came of it (backlog 18).
@@ -95,7 +103,7 @@ public sealed class CardPublicationEngine(
     {
         // Adoption comes first, and for the same reason the dispatch query excludes a dispatched
         // request: what is already running is settled before anything new is started.
-        int adopted = await AdoptStrandedAsync(cancellationToken);
+        (int adopted, int expired) = await AdoptStrandedAsync(cancellationToken);
 
         IReadOnlyList<TaskDetails> pending;
         await using (IQuerySession query = store.QuerySession())
@@ -150,15 +158,17 @@ public sealed class CardPublicationEngine(
                 // log below is what reports it, at a level louder than the sweep's summary rather
                 // than hidden behind it.
                 logger.LogError(exception, "Publication failed for task {TaskId}; recording it and moving on", task.Id);
+                bool? linkedAfterFailure = await TryReadLinkedAsync(task.Id, cancellationToken);
                 await CompleteAsync(
                     task.Id,
-                    linkedNow: false,
-                    $"The daemon could not run the publication session: {exception.Message}. {CheckTheBoard}",
+                    linkedAfterFailure is true,
+                    $"The daemon could not run the publication session: {exception.Message}. "
+                    + WhatTheLinkSays(linkedAfterFailure),
                     cancellationToken);
             }
         }
 
-        return new CardPublicationSweepResult(dispatched, linked, adopted, refused);
+        return new CardPublicationSweepResult(dispatched, linked, adopted, refused, expired);
     }
 
     /// <summary>
@@ -174,29 +184,45 @@ public sealed class CardPublicationEngine(
     /// publication timeout window, which killed the session between the two events.
     /// </para>
     /// <para>
-    /// Scoped to this node because a pid is only meaningful on the machine it belongs to, the same
-    /// rule run adoption follows. A session found alive is waited on rather than assumed dead: the
-    /// daemon can be restarted while a detached session it spawned is still going, and killing that
-    /// one would throw away a card it may be halfway through creating.
+    /// Adoption proper is scoped to this node because a pid is only meaningful on the machine it
+    /// belongs to, the same rule run adoption follows. A session found alive is waited on rather
+    /// than assumed dead: the daemon can be restarted while a detached session it spawned is still
+    /// going, and killing that one would throw away a card it may be halfway through creating.
+    /// </para>
+    /// <para>
+    /// A dispatch recorded against <em>another</em> node is not adopted — nothing here can ask
+    /// that machine anything — but it is not left standing forever either. Past
+    /// <see cref="DaemonOptions.ForeignPublicationCeiling" /> it is ended on the clock alone,
+    /// which is the only way out of the one stranding adoption cannot cover. Origin incident
+    /// (2026-08-22): the pre-PR review of this branch traced it from a machine rename, which gives
+    /// the same install a new node identity — so every publication the old identity dispatched is
+    /// foreign to the daemon that comes back, and nothing else clears it: the dispatch sweep skips
+    /// it, push-to-jira refuses while it is outstanding, link-jira needs a card key that may not
+    /// exist, and abandoning keeps the marker on purpose.
     /// </para>
     /// </summary>
-    private async Task<int> AdoptStrandedAsync(CancellationToken cancellationToken)
+    private async Task<(int Adopted, int Expired)> AdoptStrandedAsync(CancellationToken cancellationToken)
     {
         IReadOnlyList<TaskDetails> stranded;
         await using (IQuerySession query = store.QuerySession())
         {
-            Guid nodeId = node.NodeId;
             stranded = await query.Query<TaskDetails>()
                 .Where(task => task.PendingPublicationProvider != null)
                 .Where(task => task.PublicationSessionDispatched)
-                .Where(task => task.PublicationSessionNodeId == nodeId)
                 .OrderBy(task => task.PublicationRequestedAt)
                 .ToListAsync(cancellationToken);
         }
 
         int adopted = 0;
+        int expired = 0;
         foreach (TaskDetails task in stranded)
         {
+            if (task.PublicationSessionNodeId != node.NodeId)
+            {
+                expired += await ExpireForeignAsync(task, cancellationToken) ? 1 : 0;
+                continue;
+            }
+
             try
             {
                 await AdoptAsync(task, cancellationToken);
@@ -221,17 +247,79 @@ public sealed class CardPublicationEngine(
                     Terminate(task.Id, new SpawnedAgent(processId, startedAt));
                 }
 
+                bool? linked = await TryReadLinkedAsync(task.Id, cancellationToken);
                 await CompleteAsync(
                     task.Id,
-                    linkedNow: false,
+                    linked is true,
                     "The daemon stopped while this publication's session was running, and picking it "
-                    + $"back up failed: {exception.Message}. {CheckTheBoard}",
+                    + $"back up failed: {exception.Message}. {WhatTheLinkSays(linked)}",
                     cancellationToken);
                 adopted++;
             }
         }
 
-        return adopted;
+        return (adopted, expired);
+    }
+
+    /// <summary>
+    /// A publication dispatched by another node, ended once it has stood longer than any live
+    /// session could. Returns whether it was ended.
+    /// <para>
+    /// Nothing is terminated and nothing is waited on: the process identity on the task belongs to
+    /// a machine this one cannot ask, so the only honest act available is to stop the task waiting
+    /// on it. The ceiling is what keeps that from cutting a live session short — a node that is
+    /// running stops its own session at <see cref="DaemonOptions.CardPublicationTimeout" /> and
+    /// records the outcome itself, so anything still dispatched an hour later is a node that is
+    /// not coming back.
+    /// </para>
+    /// </summary>
+    private async Task<bool> ExpireForeignAsync(TaskDetails task, CancellationToken cancellationToken)
+    {
+        // Written by the same event that sets the dispatched flag, so this cannot be null on a
+        // task this method sees. It is read as an option rather than asserted because an age
+        // nobody recorded is not an age to act on, and leaving the request standing is the
+        // recoverable half of that choice.
+        if (task.PublicationSessionDispatchedAt is not { } dispatchedAt
+            || DateTimeOffset.UtcNow - dispatchedAt <= _options.ForeignPublicationCeiling)
+        {
+            return false;
+        }
+
+        string where = await DescribeNodeAsync(task.PublicationSessionNodeId, cancellationToken);
+        logger.LogWarning(
+            "Task {TaskId}: the publication session dispatched by {Node} at {DispatchedAt:u} has stood longer "
+            + "than {Ceiling} with no outcome — ending the request here",
+            task.Id, where, dispatchedAt, _options.ForeignPublicationCeiling);
+
+        bool? linked = await TryReadLinkedAsync(task.Id, cancellationToken);
+        await CompleteAsync(
+            task.Id,
+            linked is true,
+            $"This publication's session was dispatched by {where} at {dispatchedAt:u} and no outcome was ever "
+            + $"recorded for it. Only the node that spawned a session can judge it, and this one has stood for "
+            + $"more than {_options.ForeignPublicationCeiling}, so the request is ended here rather than left "
+            + $"hanging over the task forever. {WhatTheLinkSays(linked)}",
+            cancellationToken);
+        return true;
+    }
+
+    /// <summary>
+    /// The node a stranded dispatch belongs to, named the way somebody could act on it. The
+    /// machine name is the useful half — after a rename it is the previous name of this very
+    /// machine — and a node that is not registered here is said to be that rather than described.
+    /// </summary>
+    private async Task<string> DescribeNodeAsync(Guid? nodeId, CancellationToken cancellationToken)
+    {
+        if (nodeId is not { } id)
+        {
+            return "a node this record does not name";
+        }
+
+        await using IQuerySession query = store.QuerySession();
+        NodeDetails? details = await query.LoadAsync<NodeDetails>(id, cancellationToken);
+        return details is null
+            ? $"node {id}, which is not registered here"
+            : $"{details.MachineName} (node {id})";
     }
 
     private async Task AdoptAsync(TaskDetails task, CancellationToken cancellationToken)
@@ -245,11 +333,13 @@ public sealed class CardPublicationEngine(
             // there is nothing to ask about it. The honest answer is that nobody knows whether a
             // session ever started, let alone how it ended, which is what the outcome says rather
             // than a guess in either direction.
+            bool? linkedWithoutAProcess = await TryReadLinkedAsync(task.Id, cancellationToken);
             await CompleteAsync(
                 task.Id,
-                linkedNow: false,
+                linkedWithoutAProcess is true,
                 "This publication's session was dispatched and no process was ever recorded beside it, "
-                + $"so nothing can say whether it ran. {CheckTheBoard}",
+                + "so nothing can say whether it ran. "
+                + WhatTheLinkSays(linkedWithoutAProcess),
                 cancellationToken);
             return;
         }
@@ -518,12 +608,14 @@ public sealed class CardPublicationEngine(
                 + "outcome; stopping it and recording that",
                 task.Id, agent.ProcessId);
             Terminate(task.Id, agent);
+            bool? linked = await TryReadLinkedAsync(task.Id, cancellationToken);
             await CompleteAsync(
                 task.Id,
-                linkedNow: false,
+                linked is true,
                 $"The session was dispatched and the daemon then lost track of it: {exception.Message}. It was "
-                + $"stopped without a verified card key. Its prompt and transcript are in "
-                + $"{RunPaths.RunDirectory(sessionId)}. {CheckTheBoard}",
+                + $"stopped {(linked is true ? "after it reported its card key" : "without a verified card key")}. "
+                + $"Its prompt and transcript are in {RunPaths.RunDirectory(sessionId)}. "
+                + WhatTheLinkSays(linked),
                 cancellationToken);
 
             // It ran, whatever became of watching it: this is the one place that knows the
@@ -637,6 +729,50 @@ public sealed class CardPublicationEngine(
         TaskDetails? task = await session.LoadAsync<TaskDetails>(taskId, cancellationToken);
         return task?.ExternalReference.IsNotBlank() is true;
     }
+
+    /// <summary>
+    /// The same read, for the paths that record an outcome after something has already gone
+    /// wrong: null is "nobody could read it", because a fact this class failed to observe is not
+    /// a fact it may then state.
+    /// <para>
+    /// Every one of those paths used to record <c>Linked: false</c> outright, and that is a guess
+    /// wherever the session's own <c>h9k task link-jira</c> landed before the failure did. The
+    /// event's contract is that Linked is read off the task's own state rather than assumed, and
+    /// an adopted session is precisely the case where the agent has been running unwatched for a
+    /// daemon restart's worth of time. Origin incident (2026-08-22): the third cycle of this
+    /// branch's pre-PR review found the adoption failure path recording "no card produced", plus
+    /// the caution to go find an unrecorded one, against a task already carrying a verified key.
+    /// </para>
+    /// </summary>
+    private async Task<bool?> TryReadLinkedAsync(Guid taskId, CancellationToken cancellationToken)
+    {
+        try
+        {
+            return await IsLinkedAsync(taskId, cancellationToken);
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            logger.LogWarning(
+                exception,
+                "Task {TaskId}: could not read whether the task is linked while recording a publication "
+                + "outcome; the outcome will say so rather than claim a card either way", taskId);
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// What an outcome says about the link, given what the read said. The caution belongs to the
+    /// outcomes that end with no card recorded; a task that came out of one carrying a verified
+    /// key needs no board check, and telling its reader to go looking would send them hunting for
+    /// a duplicate that is not there. A read nobody managed says both halves.
+    /// </summary>
+    private static string WhatTheLinkSays(bool? linked) => linked switch
+    {
+        true => "The task carries a verified card key, reported by the session through h9k task link-jira "
+            + "before this, so the card exists and is recorded.",
+        false => CheckTheBoard,
+        _ => $"Whether the task ended up carrying a card key could not be read either. {CheckTheBoard}",
+    };
 
     /// <summary>
     /// The session's last words, bounded. It goes onto an event and into a terminal, and it is

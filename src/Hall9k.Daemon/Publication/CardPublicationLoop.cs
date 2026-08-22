@@ -58,13 +58,13 @@ public sealed class CardPublicationLoop(
                 // is. A sweep that adopted a stranded session or refused a request did something
                 // to somebody's task, and reporting either as a session that ran — or as nothing
                 // at all — is the log telling an operator something that did not happen.
-                if (sweep.Dispatched > 0 || sweep.Adopted > 0 || sweep.Refused > 0)
+                if (sweep.Dispatched > 0 || sweep.Adopted > 0 || sweep.Refused > 0 || sweep.Expired > 0)
                 {
                     logger.LogInformation(
                         "Card publication: {Dispatched} session(s) ran and {Linked} produced a verified card, "
                         + "{Adopted} session(s) adopted from an earlier run, {Refused} request(s) answered without "
-                        + "a session",
-                        sweep.Dispatched, sweep.Linked, sweep.Adopted, sweep.Refused);
+                        + "a session, {Expired} request(s) ended on the ceiling for a node that never came back",
+                        sweep.Dispatched, sweep.Linked, sweep.Adopted, sweep.Refused, sweep.Expired);
                 }
             }
             catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
