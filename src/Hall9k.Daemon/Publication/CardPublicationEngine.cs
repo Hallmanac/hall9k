@@ -401,10 +401,22 @@ public sealed class CardPublicationEngine(
             return PublicationAttempt.Refused;
         }
 
+        // The sweep's snapshot names the request; it does not get to describe the work. PollOnceAsync
+        // materialises its pending list once and then works through it one at a time, each publication
+        // blocking on a session for up to CardPublicationTimeout, so a request's document can be many
+        // minutes old by the time its turn comes — and publication is requested from Draft, which is
+        // exactly the state h9k task revise edits, with no rule against doing both. Every guard above
+        // re-reads the aggregate under the fence for that reason, and the card's own text is read from
+        // the same moment. Origin incident (2026-08-22): the pre-PR review of this branch found the
+        // freshly-read aggregate and the sweep's stale document mixed in the call below, so a task
+        // revised while an earlier session ran would have had its card written from an objective and
+        // criteria it no longer carried, and nothing downstream checks a card against its task.
+        TaskDetails current = await session.LoadAsync<TaskDetails>(task.Id, cancellationToken) ?? task;
+
         Guid sessionId = DomainId.New();
         AgentModel model = _options.ResolveModel(AgentRole.Publication, aggregate.Model, project.Model);
         string prompt = AgentPromptBuilder.BuildCardPublication(
-            task,
+            current,
             project,
             project.RepositoryPath,
             site.GetLeftPart(UriPartial.Authority),
