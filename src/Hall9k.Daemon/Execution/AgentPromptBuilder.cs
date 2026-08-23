@@ -879,6 +879,25 @@ public static class AgentPromptBuilder
     }
 
     /// <summary>
+    /// The retry leg of token-budget recovery (Decisions Log #40): the same session resumes
+    /// after the subscription usage window very likely reset, with the full transcript and
+    /// worktree exactly as the exhausted attempt left them. No task or project context is
+    /// restated — a resumed session already has all of it — this is only the nudge to
+    /// continue rather than restart.
+    /// </summary>
+    public static string BuildBudgetRetry()
+    {
+        StringBuilder prompt = new();
+        prompt.AppendLine("Your previous session paused mid-task: the subscription usage window ran out");
+        prompt.AppendLine("while you were working. That window has very likely reset by now. Resume exactly");
+        prompt.AppendLine("where you left off — check `git status` and `git diff` for anything uncommitted —");
+        prompt.AppendLine("and continue toward the acceptance criteria you were already given. Do not restart");
+        prompt.AppendLine("or re-derive work already done.");
+
+        return prompt.ToString();
+    }
+
+    /// <summary>
     /// The fix leg of the review loop (Decisions Log #23): a fresh session resolves the
     /// reviewers' verified findings in the same worktree. One fix session per cycle handles
     /// every track's findings together (log #59) — the findings it is handed are the cycle's

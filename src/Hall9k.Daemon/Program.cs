@@ -50,6 +50,7 @@ builder.Services.AddSingleton<PullRequestOpener>();
 builder.Services.AddSingleton<BlockerContextAssembler>();
 builder.Services.AddSingleton<RunSupervisor>();
 builder.Services.AddSingleton<RunLauncher>();
+builder.Services.AddSingleton<TokenBudgetRetryEngine>();
 builder.Services.AddSingleton<IPullRequestInspector, GitHubPullRequestInspector>();
 // The Jira connector's one seam to the network, registered rather than reached for statically so
 // the closeout comment is testable against recorded responses (the ProcessRunner pattern).
@@ -70,6 +71,7 @@ builder.UseWolverine(opts =>
 builder.Services.AddHostedService<DispatchLoop>();
 builder.Services.AddHostedService<LeaseHeartbeatService>();
 builder.Services.AddHostedService<PullRequestMonitor>();
+builder.Services.AddHostedService<TokenBudgetRetryMonitor>();
 builder.Services.AddHostedService<CardPublicationLoop>();
 builder.Services.AddHostedService<LogRotationService>();
 

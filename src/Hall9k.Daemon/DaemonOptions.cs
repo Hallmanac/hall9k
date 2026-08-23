@@ -61,6 +61,15 @@ public sealed class DaemonOptions
     public int MaxAutomaticCloseoutRuns { get; set; } = 2;
 
     /// <summary>
+    /// How often the daemon retries runs parked on token-budget exhaustion (Decisions Log
+    /// #40). The subscription window resets on a known-ish clock rather than an event the
+    /// platform can watch for, so a patient poll is the whole mechanism — hourly is close
+    /// enough for a window that resets on the order of hours, and a tighter interval would
+    /// only spend process spawns proving the window is still shut.
+    /// </summary>
+    public TimeSpan TokenBudgetRetryInterval { get; set; } = TimeSpan.FromHours(1);
+
+    /// <summary>
     /// Cycles the conformance track may run before the run parks for a human (Decisions Log
     /// #63). Conformance has no severity grades to gate on — a criterion is met or it is not —
     /// so its bound is simply "how many times may a machine be told the same thing". A
