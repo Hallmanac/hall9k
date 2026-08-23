@@ -14,7 +14,8 @@ public static class ProjectDecider
         string repositoryPath,
         Uri? repositoryUrl,
         string? baseBranch,
-        DateTimeOffset registeredAt)
+        DateTimeOffset registeredAt,
+        ProjectHome? homeDirectory = null)
     {
         if (name.IsBlank())
         {
@@ -25,6 +26,8 @@ public static class ProjectDecider
         {
             throw new DomainValidationException("A project requires the local repository path the daemon creates worktrees from.");
         }
+
+        RefuseRelativeRepositoryPath(repositoryPath);
 
         if (connectionId == Guid.Empty)
         {
@@ -39,7 +42,8 @@ public static class ProjectDecider
             repositoryPath,
             repositoryUrl,
             baseBranch.IsBlank() ? "main" : baseBranch,
-            registeredAt);
+            registeredAt,
+            homeDirectory ?? ProjectHome.None);
     }
 
     public static ProjectSettingsChanged ChangeSettings(
@@ -53,8 +57,22 @@ public static class ProjectDecider
         Optional<CommitStyle> commitStyle = default,
         Optional<AgentModel> model = default,
         Optional<ReviewRerequestPolicy> reviewRerequest = default,
-        Optional<JiraProjectKey> jiraProjectKey = default)
+        Optional<JiraProjectKey> jiraProjectKey = default,
+        Optional<ProjectHome> homeDirectory = default,
+        Optional<string> repositoryPath = default)
     {
+        if (repositoryPath.HasValue)
+        {
+            if (repositoryPath.Value.IsBlank())
+            {
+                throw new DomainValidationException(
+                    "A project always has a local repository path the daemon creates worktrees from; "
+                    + "there is no clearing it. Point it somewhere else instead.");
+            }
+
+            RefuseRelativeRepositoryPath(repositoryPath.Value);
+        }
+
         if (maxParallelAgents.HasValue && maxParallelAgents.Value < 1)
         {
             throw new DomainValidationException("MaxParallelAgents must be at least 1.");
@@ -109,6 +127,33 @@ public static class ProjectDecider
             commitStyle,
             model,
             reviewRerequest,
-            jiraProjectKey);
+            jiraProjectKey,
+            homeDirectory,
+            repositoryPath);
+    }
+
+    /// <summary>
+    /// The repository path carries the same rule <see cref="ProjectHome"/> carries, and for the
+    /// same reason: it is recorded once and read back by the daemon, which runs in no particular
+    /// directory, so a relative path names a different repository for every process that resolves
+    /// it. Callers resolve relative input themselves, where the current directory still means
+    /// something; what reaches here unrooted is refused rather than recorded.
+    /// <para>
+    /// Origin incident (2026-08-23): the pre-PR review of the project-home branch found
+    /// <c>h9k project add --no-home --repo-url …</c> composing the path from an empty home and
+    /// recording <c>repo/&lt;name&gt;.git</c>, which the daemon would have resolved against its
+    /// own working directory. The CLI refuses that combination now; this is the rule underneath
+    /// it, so no other caller can reintroduce the same shape.
+    /// </para>
+    /// </summary>
+    private static void RefuseRelativeRepositoryPath(string repositoryPath)
+    {
+        if (!Path.IsPathRooted(repositoryPath))
+        {
+            throw new DomainValidationException(
+                $"'{repositoryPath}' is not an absolute path. A project's repository path is recorded "
+                + "once and read back by the daemon, which runs in no particular directory, so a "
+                + "relative path would name a different repository for every caller. Pass a full path.");
+        }
     }
 }

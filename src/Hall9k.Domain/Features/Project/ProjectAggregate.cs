@@ -24,6 +24,13 @@ public sealed class ProjectAggregate
     public ReviewRerequestPolicy ReviewRerequest { get; private set; } = ReviewRerequestPolicy.Unknown;
     /// <summary>The Jira board this project's cards live on; None when nothing is bound (backlog 18).</summary>
     public JiraProjectKey JiraProjectKey { get; private set; } = JiraProjectKey.None;
+    /// <summary>
+    /// Where this project lives on disk (backlog 47): the directory holding the generated
+    /// AGENTS.md, repo/, ideas/, tasks/ and skills/. None for a project registered before homes
+    /// existed, or one whose home has not been created on this machine — h9k project init is
+    /// what ends that state.
+    /// </summary>
+    public ProjectHome HomeDirectory { get; private set; } = ProjectHome.None;
     public DateTimeOffset RegisteredAt { get; private set; }
 
     private readonly List<VerifyCommand> _verifyCommands = [];
@@ -41,6 +48,7 @@ public sealed class ProjectAggregate
         RepositoryPath = @event.RepositoryPath;
         RepositoryUrl = @event.RepositoryUrl;
         BaseBranch = @event.BaseBranch;
+        HomeDirectory = @event.HomeDirectory ?? ProjectHome.None;
         RegisteredAt = @event.RegisteredAt;
     }
 
@@ -86,6 +94,16 @@ public sealed class ProjectAggregate
         if (@event.JiraProjectKey.HasValue)
         {
             JiraProjectKey = @event.JiraProjectKey.Value ?? JiraProjectKey.None;
+        }
+
+        if (@event.HomeDirectory.HasValue)
+        {
+            HomeDirectory = @event.HomeDirectory.Value ?? ProjectHome.None;
+        }
+
+        if (@event.RepositoryPath.HasValue && @event.RepositoryPath.Value.IsNotBlank())
+        {
+            RepositoryPath = @event.RepositoryPath.Value;
         }
     }
 }
