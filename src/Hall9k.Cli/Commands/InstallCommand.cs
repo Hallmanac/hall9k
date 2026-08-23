@@ -76,6 +76,15 @@ public sealed class InstallCommand : Hall9kAsyncCommand<InstallCommand.Settings>
         AnsiConsole.MarkupLineInterpolated(
             $"[green]Installed[/]: h9k and h9kd release binaries in {DaemonRuntime.BinDirectory}");
 
+        // Ships Hall9k's own Postgres definition into ~/.hall9k (Decisions Log #73), so
+        // h9k daemon start's reachability probe and h9k doctor's start-offer never need a
+        // repo checkout — an installed user has no dev worktree to run compose from. No
+        // prompt and nothing started here: install stays boring (Decisions Log #58).
+        PostgresRuntime.WriteComposeFile();
+        AnsiConsole.MarkupLine(
+            $"[dim]Wrote Hall9k's own Postgres definition to {PostgresRuntime.ComposeFile.EscapeMarkup()} "
+            + "(not started — h9k doctor or h9k daemon start will offer to when it's needed).[/]");
+
         LinkOntoPath(
             Path.Combine(DaemonRuntime.BinDirectory, "h9k"),
             Environment.GetEnvironmentVariable("PATH") ?? string.Empty,
