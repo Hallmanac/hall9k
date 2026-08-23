@@ -6,6 +6,7 @@ using Hall9k.Domain.Features.Project.Projections;
 using Hall9k.Domain.Features.Run;
 using Hall9k.Domain.Features.Tasks.Projections;
 using Hall9k.Domain.Features.Tasks.Queries;
+using Hall9k.Domain.Infrastructure.Storage;
 using Hall9k.Domain.Shared.ValueObjects;
 
 namespace Hall9k.Daemon.Execution;
@@ -15,6 +16,14 @@ namespace Hall9k.Daemon.Execution;
 /// acceptance criteria, agent context, the project's context links, and — when the
 /// worktree ships repo skills — a one-line pointer per skill. Pointers, not pasted
 /// content — the agent pulls context itself and skills load on invocation.
+/// <para>
+/// When the task's project has a home (backlog 47), the home is composed in too: the generated
+/// AGENTS.md and the home's own <c>skills/</c> are named alongside the repo skills. The ruling
+/// behind that is explicit — a dispatched agent never hunts for context, the dispatcher composes
+/// everything into the briefing — and it is what makes the home's skills genuinely
+/// model-agnostic: "read this file first" is the one instruction every runtime understands, so
+/// nothing here depends on any vendor's directory-walking behaviour.
+/// </para>
 /// </summary>
 public static class AgentPromptBuilder
 {
@@ -98,6 +107,8 @@ public static class AgentPromptBuilder
             prompt.AppendLine();
         }
 
+        AppendProjectHome(prompt, project);
+
         prompt.AppendLine("## Working rules");
         prompt.AppendLine();
         prompt.AppendLine($"- You are in an isolated git worktree on branch `{branch}`. Work only here.");
@@ -116,6 +127,8 @@ public static class AgentPromptBuilder
                     : $"  - `{skill.Name}` — {skill.Description}");
             }
         }
+
+        AppendHomeSkillRule(prompt, project, skills);
 
         AppendAdoptedContextRule(prompt, task);
         AppendBlockerContextRule(prompt, blockerContext);
@@ -358,6 +371,8 @@ public static class AgentPromptBuilder
 
             prompt.AppendLine();
         }
+
+        AppendProjectHome(prompt, project);
 
         prompt.AppendLine("## Working rules");
         prompt.AppendLine();
@@ -1131,6 +1146,26 @@ public static class AgentPromptBuilder
             prompt.AppendLine();
         }
 
+        // Card-authoring rules are exactly the kind of thing that lives one tier out from the
+        // repository — a team's conventions for a board, not for a codebase — so the home's
+        // skills are named here as well as the repo's.
+        IReadOnlyList<RepoSkill> homeSkills = [.. DiscoverHomeSkills(project)
+            .Where(skill => !skills.Any(repo => repo.Name == skill.Name))];
+        if (homeSkills.Count > 0)
+        {
+            prompt.AppendLine(
+                $"The project home at {project.HomeDirectory.Value} ships skills too, in its skills/ "
+                + "directory; read the SKILL.md of any that fits and follow it:");
+            foreach (RepoSkill skill in homeSkills)
+            {
+                prompt.AppendLine(skill.Description is null
+                    ? $"- `{skill.Name}`"
+                    : $"- `{skill.Name}` — {skill.Description}");
+            }
+
+            prompt.AppendLine();
+        }
+
         if (project.ContextLinks.Count > 0)
         {
             prompt.AppendLine("Project links (fetch yourself as needed):");
@@ -1178,9 +1213,106 @@ public static class AgentPromptBuilder
         return prompt.ToString();
     }
 
-    private static IReadOnlyList<RepoSkill> DiscoverRepoSkills(string worktreePath)
+    /// <summary>
+    /// Names the project's home and what is in it, so a dispatched session is told where
+    /// everything lives instead of hunting for it. Silent for a project with no home, and for a
+    /// home this node cannot see: an agent sent to a directory that is not there learns nothing
+    /// and wastes a tool call finding out.
+    /// </summary>
+    private static void AppendProjectHome(StringBuilder prompt, ProjectDetails project)
     {
-        string skillsDirectory = Path.Combine(worktreePath, ".claude", "skills");
+        if (!project.HomeDirectory.HasValue || !Directory.Exists(project.HomeDirectory.Value))
+        {
+            return;
+        }
+
+        string home = project.HomeDirectory.Value;
+        prompt.AppendLine("## Where this project lives");
+        prompt.AppendLine();
+        prompt.AppendLine($"The project's home is `{home}`. It has the same shape on every machine:");
+        prompt.AppendLine();
+
+        string agents = ProjectHomePaths.AgentsFile(home);
+        if (File.Exists(agents))
+        {
+            prompt.AppendLine($"- `{agents}` — the project briefing: layout, tool dependencies, commands.");
+            prompt.AppendLine("  Generated from the project's registration, so it is current by construction.");
+        }
+
+        prompt.AppendLine($"- `{ProjectHomePaths.SkillsDirectory(home)}` — this project's skill docs.");
+        prompt.AppendLine($"- `{ProjectHomePaths.TasksDirectory(home)}` and "
+            + $"`{ProjectHomePaths.IdeasDirectory(home)}` — where its tasks and ideas render once that's "
+            + "built (backlog 48); empty today.");
+
+        // Whether repo/ is actually populated is a filesystem fact, not a fact about RepositoryPath
+        // alone (same test ProjectAgentsDocument.Render uses): `h9k project init --keep-repo-path`
+        // materialises the bare clone and dev/ worktree without repointing the project at them, so
+        // repo/ can be populated even while this session's own worktree — cut from wherever dispatch
+        // actually reads project.RepositoryPath from — came from somewhere else.
+        string bare = ProjectHomePaths.BareRepository(home, project.Name);
+        string dev = ProjectHomePaths.DevWorktree(home);
+        bool repoMaterialised = Directory.Exists(dev);
+        bool dispatchesFromHome = ProjectHomePaths.SameDirectory(project.RepositoryPath, bare);
+        prompt.AppendLine(dispatchesFromHome
+            ? $"- `{ProjectHomePaths.RepoDirectory(home)}` — the bare clone and every worktree cut "
+                + "from it, including the one you are in."
+            : repoMaterialised
+                ? $"- `{ProjectHomePaths.RepoDirectory(home)}` — the bare clone and a `dev/` worktree, "
+                    + $"but this session's own worktree was cut from `{project.RepositoryPath}` "
+                    + "elsewhere."
+                : $"- `{ProjectHomePaths.RepoDirectory(home)}` — empty. This project was registered "
+                    + $"against a repository elsewhere, `{project.RepositoryPath}`, and worktrees "
+                    + "(including the one you are in) are cut from there.");
+        prompt.AppendLine();
+        prompt.AppendLine("Read what you need from those paths directly. Everything else about this project is a");
+        prompt.AppendLine("query away: `h9k project show`, `h9k task show <id>`, `h9k status`.");
+        prompt.AppendLine();
+    }
+
+    /// <summary>
+    /// The home's own skills as a working rule, beside the repo's. Ordered from least specific to
+    /// most: the install seeds the home, and the repo's <c>.claude/skills</c> is the tier for
+    /// things genuinely coupled to the code — so a repo skill of the same name is the one that
+    /// wins, and the home's copy of it is not listed twice.
+    /// </summary>
+    private static void AppendHomeSkillRule(
+        StringBuilder prompt, ProjectDetails project, IReadOnlyList<RepoSkill> repoSkills)
+    {
+        IReadOnlyList<RepoSkill> homeSkills = [.. DiscoverHomeSkills(project)
+            .Where(skill => !repoSkills.Any(repo => repo.Name == skill.Name))];
+        if (homeSkills.Count == 0)
+        {
+            return;
+        }
+
+        string directory = ProjectHomePaths.SkillsDirectory(project.HomeDirectory.Value);
+        prompt.AppendLine(
+            $"- The project home ships skills too, at `{directory}`. Read "
+            + "`<skill>/SKILL.md` and follow it rather than improvising the same workflow:");
+        foreach (RepoSkill skill in homeSkills)
+        {
+            prompt.AppendLine(skill.Description is null
+                ? $"  - `{skill.Name}`"
+                : $"  - `{skill.Name}` — {skill.Description}");
+        }
+    }
+
+    private static IReadOnlyList<RepoSkill> DiscoverHomeSkills(ProjectDetails project) =>
+        project.HomeDirectory.HasValue
+            ? ReadSkills(ProjectHomePaths.SkillsDirectory(project.HomeDirectory.Value))
+            : [];
+
+    private static IReadOnlyList<RepoSkill> DiscoverRepoSkills(string worktreePath) =>
+        ReadSkills(Path.Combine(worktreePath, ".claude", "skills"));
+
+    /// <summary>
+    /// One skills directory, read the same way wherever it sits: a subdirectory with a SKILL.md
+    /// in it is a skill, and its frontmatter description is the one line the prompt carries.
+    /// A symlinked skill directory is an ordinary one here — the seeding is symlinks by design,
+    /// and Directory.EnumerateDirectories follows them.
+    /// </summary>
+    private static IReadOnlyList<RepoSkill> ReadSkills(string skillsDirectory)
+    {
         if (!Directory.Exists(skillsDirectory))
         {
             return [];

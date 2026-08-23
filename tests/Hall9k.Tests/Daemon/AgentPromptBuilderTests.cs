@@ -8,6 +8,7 @@ using Hall9k.Domain.Features.Run;
 using Hall9k.Domain.Features.Tasks;
 using Hall9k.Domain.Features.Tasks.Projections;
 using Hall9k.Domain.Features.Tasks.Queries;
+using Hall9k.Domain.Infrastructure.Storage;
 using Hall9k.Domain.Shared.ValueObjects;
 using Xunit;
 
@@ -18,9 +19,18 @@ public sealed class AgentPromptBuilderTests : IDisposable
     private readonly string _worktreePath =
         Path.Combine(Path.GetTempPath(), $"hall9k-prompt-{Guid.NewGuid():N}");
 
+    private readonly List<string> _homes = [];
+
     public AgentPromptBuilderTests() => Directory.CreateDirectory(_worktreePath);
 
-    public void Dispose() => Directory.Delete(_worktreePath, recursive: true);
+    public void Dispose()
+    {
+        Directory.Delete(_worktreePath, recursive: true);
+        foreach (string home in _homes.Where(Directory.Exists))
+        {
+            Directory.Delete(home, recursive: true);
+        }
+    }
 
     [Fact]
     public void Working_rules_name_each_repo_skill_with_its_when_to_use_guidance()
@@ -719,4 +729,124 @@ public sealed class AgentPromptBuilderTests : IDisposable
         Name = "hall9k",
         BaseBranch = "main",
     };
+
+    /// <summary>
+    /// A project home laid out the way the recipe lays one out, with the skills named. The
+    /// dispatcher composes these paths into the briefing so a dispatched agent never hunts for
+    /// them (backlog 47) — which is also why nothing here depends on any runtime's
+    /// directory-walking behaviour.
+    /// </summary>
+    private ProjectDetails ProjectWithAHome(params (string Name, string Description)[] homeSkills)
+    {
+        string home = Path.Combine(_worktreePath, "..", $"home-{Guid.NewGuid():N}");
+        home = Path.GetFullPath(home);
+        foreach (string directory in ProjectHomePaths.Directories(home))
+        {
+            Directory.CreateDirectory(directory);
+        }
+
+        File.WriteAllText(ProjectHomePaths.AgentsFile(home), "# hall9k — project home\n");
+        foreach ((string name, string description) in homeSkills)
+        {
+            string skill = Path.Combine(ProjectHomePaths.SkillsDirectory(home), name);
+            Directory.CreateDirectory(skill);
+            File.WriteAllText(
+                Path.Combine(skill, "SKILL.md"), $"---\nname: {name}\ndescription: {description}\n---\n");
+        }
+
+        _homes.Add(home);
+        ProjectDetails project = SomeProject();
+        project.HomeDirectory = ProjectHome.Parse(home);
+        return project;
+    }
+
+    [Fact]
+    public void The_prompt_names_the_project_home_and_what_is_in_it()
+    {
+        ProjectDetails project = ProjectWithAHome();
+
+        string prompt = AgentPromptBuilder.Build(SomeTask(), project, "task/1-slug", _worktreePath);
+
+        string home = project.HomeDirectory.Value;
+        prompt.Should().Contain("## Where this project lives");
+        prompt.Should().Contain(ProjectHomePaths.AgentsFile(home));
+        prompt.Should().Contain(ProjectHomePaths.SkillsDirectory(home));
+        prompt.Should().Contain(ProjectHomePaths.TasksDirectory(home));
+        prompt.Should().Contain(ProjectHomePaths.RepoDirectory(home));
+        prompt.IndexOf("## Where this project lives", StringComparison.Ordinal).Should().BeLessThan(
+            prompt.IndexOf("## Working rules", StringComparison.Ordinal),
+            "the paths are context, and the working rules stay the last thing the agent reads");
+    }
+
+    [Fact]
+    public void The_home_skills_are_named_beside_the_repo_skills()
+    {
+        WriteSkill("commit-plan", "Organize changes into cohesive commits.");
+        ProjectDetails project = ProjectWithAHome(("board-rules", "How this team files cards."));
+
+        string prompt = AgentPromptBuilder.Build(SomeTask(), project, "task/1-slug", _worktreePath);
+
+        prompt.Should().Contain("  - `commit-plan` — Organize changes into cohesive commits.");
+        prompt.Should().Contain("The project home ships skills too");
+        prompt.Should().Contain("  - `board-rules` — How this team files cards.");
+    }
+
+    [Fact]
+    public void A_repo_skill_wins_over_the_home_skill_of_the_same_name()
+    {
+        WriteSkill("commit-plan", "The repository's own version.");
+        ProjectDetails project = ProjectWithAHome(("commit-plan", "The seeded platform version."));
+
+        string prompt = AgentPromptBuilder.Build(SomeTask(), project, "task/1-slug", _worktreePath);
+
+        prompt.Should().Contain("The repository's own version.");
+        prompt.Should().NotContain("The seeded platform version.",
+            "the repo tier is the most specific one, and listing the same skill twice teaches nothing");
+        prompt.Should().NotContain("The project home ships skills too");
+    }
+
+    /// <summary>
+    /// <c>h9k project init --keep-repo-path</c> materialises repo/ (the recipe always does) without
+    /// repointing the project at it, so a render driven only by RepositoryPath would describe a repo/
+    /// that physically holds a bare clone and a dev/ worktree as empty. Copilot review, PR #35: this
+    /// briefing has to agree with the same filesystem test <c>ProjectAgentsDocument.Render</c> uses
+    /// (44232e3), or it sends the agent hunting past a checkout that is really there.
+    /// </summary>
+    [Fact]
+    public void Repo_materialised_but_not_repointed_is_not_described_as_empty()
+    {
+        ProjectDetails project = ProjectWithAHome();
+        Directory.CreateDirectory(ProjectHomePaths.DevWorktree(project.HomeDirectory.Value));
+        project.RepositoryPath = Path.Combine(_worktreePath, "..", "somewhere-else", "hall9k.git");
+
+        string prompt = AgentPromptBuilder.Build(SomeTask(), project, "task/1-slug", _worktreePath);
+
+        prompt.Should().NotContain(
+            $"{ProjectHomePaths.RepoDirectory(project.HomeDirectory.Value)}` — empty",
+            "the bare clone and dev/ worktree are really there");
+        prompt.Should().Contain("the bare clone and a `dev/` worktree");
+        prompt.Should().Contain(
+            project.RepositoryPath, "this session's own worktree still came from the recorded path");
+    }
+
+    [Fact]
+    public void A_project_with_no_home_is_told_nothing_about_one()
+    {
+        string prompt = AgentPromptBuilder.Build(SomeTask(), SomeProject(), "task/1-slug", _worktreePath);
+
+        prompt.Should().NotContain("## Where this project lives");
+    }
+
+    [Fact]
+    public void A_home_this_node_cannot_see_is_not_pointed_at()
+    {
+        ProjectDetails project = SomeProject();
+        project.HomeDirectory = ProjectHome.Parse(
+            Path.Combine(Path.GetTempPath(), $"hall9k-absent-{Guid.NewGuid():N}"));
+
+        string prompt = AgentPromptBuilder.Build(SomeTask(), project, "task/1-slug", _worktreePath);
+
+        prompt.Should().NotContain("## Where this project lives",
+            "an agent sent to a directory that is not there wastes a tool call finding out");
+    }
 }
