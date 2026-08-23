@@ -26,6 +26,11 @@ public sealed class ProjectDetails
     public ReviewRerequestPolicy ReviewRerequest { get; set; } = ReviewRerequestPolicy.Unknown;
     /// <summary>The Jira board this project's cards live on; None when nothing is bound (backlog 18).</summary>
     public JiraProjectKey JiraProjectKey { get; set; } = JiraProjectKey.None;
+    /// <summary>
+    /// Where this project lives on disk (backlog 47). None for a project registered before homes
+    /// existed, or one whose home has not been created on this machine.
+    /// </summary>
+    public ProjectHome HomeDirectory { get; set; } = ProjectHome.None;
     public List<VerifyCommand> VerifyCommands { get; set; } = [];
     public List<ContextLink> ContextLinks { get; set; } = [];
     public DateTimeOffset RegisteredAt { get; set; }
@@ -43,6 +48,7 @@ public sealed class ProjectDetailsProjection : SingleStreamProjection<ProjectDet
         RepositoryPath = @event.Data.RepositoryPath,
         RepositoryUrl = @event.Data.RepositoryUrl,
         BaseBranch = @event.Data.BaseBranch,
+        HomeDirectory = @event.Data.HomeDirectory ?? ProjectHome.None,
         RegisteredAt = @event.Data.RegisteredAt,
     };
 
@@ -86,6 +92,16 @@ public sealed class ProjectDetailsProjection : SingleStreamProjection<ProjectDet
         if (@event.Data.JiraProjectKey.HasValue)
         {
             view.JiraProjectKey = @event.Data.JiraProjectKey.Value ?? JiraProjectKey.None;
+        }
+
+        if (@event.Data.HomeDirectory.HasValue)
+        {
+            view.HomeDirectory = @event.Data.HomeDirectory.Value ?? ProjectHome.None;
+        }
+
+        if (@event.Data.RepositoryPath.HasValue && @event.Data.RepositoryPath.Value.IsNotBlank())
+        {
+            view.RepositoryPath = @event.Data.RepositoryPath.Value;
         }
 
         view.SettingsChangedAt = @event.Data.ChangedAt;
