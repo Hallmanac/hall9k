@@ -15,7 +15,9 @@ using Hall9k.Domain.Features.Tasks.Handlers;
 using Hall9k.Domain.Features.Tasks.Projections;
 using Hall9k.Domain.Infrastructure.Ids;
 using Hall9k.Domain.Shared.ValueObjects;
+using JasperFx.Events;
 using Marten;
+using Marten.Events;
 using Microsoft.Extensions.Options;
 
 namespace Hall9k.Daemon.Execution;
@@ -47,6 +49,18 @@ public sealed class RunLauncher(
         if (task is null || project is null)
         {
             logger.LogError("Cannot launch run {RunId}: task or project missing", runId);
+            return;
+        }
+
+        // The generation fence, checked before any worktree checkout or spawn rather than
+        // only on the already-merged path below (Copilot review, PR #30): a reclaim during
+        // dispatch — a requeued lease's expiry sweep and a startup adoption both landing in
+        // the same window, the origin incident GenerationFence documents — must stop this
+        // stale generation here, or it checks out a worktree and spawns a second live agent
+        // for a task a fresh generation already owns.
+        if (!await GenerationFence.AllowsAsync(
+            session, logger, taskId, runId, leaseGeneration, "to launch", cancellationToken))
+        {
             return;
         }
 
@@ -136,7 +150,10 @@ public sealed class RunLauncher(
     /// PR #11 merged, the storm-killed generation 5's lease expiry requeued the task and
     /// generation 6 spawned a fresh agent to rebuild the feature already on main.
     /// Inspection failure (the network is often still down right after a wake) falls
-    /// back to a normal dispatch rather than blocking the task.
+    /// back to a normal dispatch rather than blocking the task. True means "do not
+    /// dispatch": either this run closed the task out, or the PR is merged but this run's
+    /// generation is stale, in which case the live generation owns the task and this run
+    /// must not fall through to a fresh dispatch either.
     /// </summary>
     private async Task<bool> TryCloseOutMergedPullRequestAsync(
         TaskDetails task, ProjectDetails project, Guid taskId, Guid runId, Guid nodeId, int leaseGeneration,
@@ -173,18 +190,44 @@ public sealed class RunLauncher(
         if (!await GenerationFence.AllowsAsync(
             session, logger, taskId, runId, leaseGeneration, nameof(TaskCompleted), cancellationToken))
         {
-            return false;
+            // The PR is merged, but this run is no longer its task's current generation —
+            // the live generation owns closing this out (or already has). Reporting this as
+            // "not merged" would send the caller to CheckoutFreshOrRetryAsync and spawn a
+            // fresh agent to rebuild work already on main: the exact origin incident above.
+            // A stale generation must never write task state, but it must also never fall
+            // through to a dispatch it has no right to make.
+            logger.LogInformation(
+                "Task {TaskId}: pull request {Url} already merged but run {RunId} is a stale generation; skipping dispatch without closing out",
+                taskId, pullRequestUrl, runId);
+            return true;
         }
 
-        TaskAggregate? aggregate = await session.Events.AggregateStreamAsync<TaskAggregate>(taskId, token: cancellationToken);
-        if (aggregate is null || aggregate.State != TaskState.Claimed || aggregate.CurrentRunId != runId)
+        (TaskAggregate Task, long Version)? fenced = await GenerationFence.LoadFencedAsync(session, taskId, cancellationToken);
+        if (fenced is not { } current
+            || current.Task.State != TaskState.Claimed || current.Task.CurrentRunId != runId)
         {
             return false;
         }
 
-        session.Events.Append(taskId, TaskDecider.Complete(aggregate, runId, pullRequestUrl, now));
+        session.Events.Append(
+            taskId, expectedVersion: current.Version + 1, TaskDecider.Complete(current.Task, runId, pullRequestUrl, now));
         session.Delete<TaskLease>(taskId);
-        await session.SaveChangesAsync(cancellationToken);
+        try
+        {
+            await session.SaveChangesAsync(cancellationToken);
+        }
+        catch (EventStreamUnexpectedMaxEventIdException)
+        {
+            // A claim landed between the version above and this commit — the live
+            // generation now owns the task, so this run must stop exactly like the
+            // !AllowsAsync branch above: true means "do not dispatch", never fall
+            // through to CheckoutFreshOrRetryAsync and spawn a second agent.
+            logger.LogInformation(
+                "Task {TaskId}: lost the generation race closing out pull request {Url} — a newer claim committed first; skipping dispatch",
+                taskId, pullRequestUrl);
+            return true;
+        }
+
         logger.LogInformation(
             "Task {TaskId}: pull request {Url} already merged — closed out instead of dispatching run {RunId}",
             taskId, pullRequestUrl, runId);
@@ -292,16 +335,27 @@ public sealed class RunLauncher(
                 return;
             }
 
-            TaskAggregate? task =
-                await session.Events.AggregateStreamAsync<TaskAggregate>(taskId, token: cancellationToken);
-            if (task is not null && TaskDecider.CanFail(task))
+            (TaskAggregate Task, long Version)? fenced =
+                await GenerationFence.LoadFencedAsync(session, taskId, cancellationToken);
+            if (fenced is { } current && TaskDecider.CanFail(current.Task))
             {
-                session.Events.Append(taskId, TaskDecider.Fail(
-                    task, runId, $"Launch failed: {reason}", DateTimeOffset.UtcNow));
+                session.Events.Append(taskId, expectedVersion: current.Version + 1, TaskDecider.Fail(
+                    current.Task, runId, $"Launch failed: {reason}", DateTimeOffset.UtcNow));
             }
 
             session.Delete<TaskLease>(taskId);
-            await session.SaveChangesAsync(cancellationToken);
+            try
+            {
+                await session.SaveChangesAsync(cancellationToken);
+            }
+            catch (EventStreamUnexpectedMaxEventIdException)
+            {
+                // A claim landed between LoadFencedAsync and this commit; the live
+                // generation owns the task now and this stale failure must not land.
+                logger.LogInformation(
+                    "Task {TaskId}: lost the generation race recording a launch failure — a newer claim committed first",
+                    taskId);
+            }
         }
         catch (Exception exception)
         {

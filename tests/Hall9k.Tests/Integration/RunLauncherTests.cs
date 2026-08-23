@@ -179,7 +179,11 @@ public sealed class RunLauncherTests(PostgresFixture postgres) : IClassFixture<P
     /// The generation fence (backlog 39): a launch dispatched under a generation the task
     /// has already moved past — the shape a catch-up double-booking or a claim-then-
     /// requeue-then-reclaim race leaves behind — must not close the task out from under
-    /// the live generation, even though its pull request really did merge.
+    /// the live generation, even though its pull request really did merge. Checked before
+    /// any merged-PR inspection, worktree checkout, or spawn now (Copilot review, PR #30):
+    /// the fence used to be reachable only from inside the merged-PR branch, so a stale
+    /// launch with no PR yet, or an unmerged one, fell through to
+    /// CheckoutFreshOrRetryAsync and spawned a second live agent for the task.
     /// </summary>
     [Fact]
     public async Task A_launch_under_a_stale_generation_does_not_close_out_the_live_generations_task()
@@ -241,7 +245,8 @@ public sealed class RunLauncherTests(PostgresFixture postgres) : IClassFixture<P
         // generation 2 under liveRunId.
         await launcher.LaunchAsync(taskId, staleRunId, node.NodeId, node.OwnerId, 1, cts.Token);
 
-        inspector.Inspections.Should().Be(1, "the merged-PR check runs before the fence, so it is still consulted");
+        inspector.Inspections.Should().Be(0,
+            "the fence now runs before the merged-PR check, so a stale generation's launch never reaches the inspector");
 
         await using IQuerySession query = store.QuerySession();
         TaskDetails task = (await query.LoadAsync<TaskDetails>(taskId, cts.Token))!;
@@ -251,7 +256,16 @@ public sealed class RunLauncherTests(PostgresFixture postgres) : IClassFixture<P
             "the stale generation's launch must not release the live generation's lease");
 
         logger.Lines.Should().Contain(line =>
-            line.Contains("run at generation 1") && line.Contains("task is at generation 2 - rejected"));
+            line.Contains("run at generation 1") && line.Contains("at generation 2 - rejected"));
+
+        // The fenced write is only half the guarantee: a stale generation must never fall
+        // through to CheckoutFreshOrRetryAsync either, merged PR or not. If it did,
+        // RefusingWorktreeManager/RefusingExecutor would throw and LaunchAsync's catch-all
+        // would swallow it — so the real guard is that dispatch was never attempted in the
+        // first place, not merely that the exception went unobserved.
+        logger.Lines.Should().NotContain(line => line.Contains("Launch failed for run"));
+        (await query.Events.FetchStreamStateAsync(staleRunId, cts.Token)).Should().BeNull(
+            "a stale generation's launch must never start a run stream, dispatched or failed");
     }
 
     /// <summary>Prepares a workspace without touching git; the launcher only needs a path and a branch.</summary>
