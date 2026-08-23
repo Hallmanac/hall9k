@@ -27,14 +27,17 @@ public static class DatabaseDoctor
     /// <summary>
     /// Run the full check, printing teaching messages as it goes, and — when
     /// <paramref name="offerFixes"/> is set and the session is interactive — offering to
-    /// fix what it can (starting Hall9k's own Postgres, creating the schema). Returns
-    /// whether Postgres is reachable by the time this returns, which is all a caller like
-    /// <c>h9k daemon start</c> needs to decide whether it is safe to proceed.
+    /// fix what it can (starting Hall9k's own Postgres, creating the schema). Returns the
+    /// connection string this process resolved and proved reachable, or <see langword="null"/>
+    /// if it could not. A caller like <c>h9k daemon start</c> needs the string itself, not
+    /// just a yes/no: the process it spawns runs from a different working directory
+    /// (<c>RunPaths.Root</c>), so re-resolving there could walk up for a project override
+    /// file from the wrong place and land on a different answer than the one just checked.
     /// </summary>
-    public static Task<bool> RunAsync(bool offerFixes, CancellationToken cancellationToken) =>
+    public static Task<string?> RunAsync(bool offerFixes, CancellationToken cancellationToken) =>
         RunAsync(offerFixes, ExternalProcess.Runner, cancellationToken);
 
-    internal static async Task<bool> RunAsync(bool offerFixes, ProcessRunner runner, CancellationToken cancellationToken)
+    internal static async Task<string?> RunAsync(bool offerFixes, ProcessRunner runner, CancellationToken cancellationToken)
     {
         ConnectionStringResolution resolution = Hall9kDatabase.Resolve();
         if (resolution.Origin == ConnectionStringOrigin.PlatformConfigFileMalformed)
@@ -44,7 +47,7 @@ public static class DatabaseDoctor
                 + "Fix or delete it, then run h9k doctor again — a broken file is not the same as an unconfigured "
                 + "install, so the project override file underneath it in the precedence chain is never consulted "
                 + "while this one stays broken.");
-            return false;
+            return null;
         }
 
         if (!resolution.IsConfigured)
@@ -52,7 +55,7 @@ public static class DatabaseDoctor
             resolution = await DiagnoseNotConfiguredAsync(offerFixes, runner, cancellationToken);
             if (resolution.Value is not { } configured)
             {
-                return false;
+                return null;
             }
 
             return await CheckReachabilityAndSchemaAsync(configured, resolution, offerFixes, runner, cancellationToken);
@@ -73,24 +76,7 @@ public static class DatabaseDoctor
             + $"{Hall9kDatabase.ProjectOverrideFileName} file walking up from "
             + $"{Directory.GetCurrentDirectory().EscapeMarkup()}.[/]");
 
-        ContainerRuntimeStatus runtime = await ContainerRuntimeProbe.RuntimeStatusAsync(runner, cancellationToken);
-        switch (runtime)
-        {
-            case ContainerRuntimeStatus.Running:
-                AnsiConsole.MarkupLine("[dim]A container runtime (Docker) is running.[/]");
-                break;
-            case ContainerRuntimeStatus.NotRunning:
-                AnsiConsole.MarkupLine(
-                    "[dim]Docker is installed but not running — that is a machine-level action, always yours: "
-                    + "start Docker Desktop, then run h9k doctor again.[/]");
-                break;
-            case ContainerRuntimeStatus.NotInstalled:
-                AnsiConsole.MarkupLine(
-                    "[dim]No container runtime (docker) found — Postgres does not need one: a native install "
-                    + "works just as well (Homebrew: brew install postgresql@18; apt: sudo apt install postgresql), "
-                    + "or point at one you already run elsewhere (Decisions Log #57).[/]");
-                break;
-        }
+        ContainerRuntimeStatus runtime = await ReportContainerRuntimeStatusAsync(runner, cancellationToken);
 
         if (await ContainerRuntimeProbe.PortListeningAsync("localhost", 5432, cancellationToken))
         {
@@ -115,7 +101,7 @@ public static class DatabaseDoctor
     }
 
     /// <summary>Questions 2 and 3: is it reachable, and is the schema there.</summary>
-    private static async Task<bool> CheckReachabilityAndSchemaAsync(
+    private static async Task<string?> CheckReachabilityAndSchemaAsync(
         string connectionString,
         ConnectionStringResolution resolution,
         bool offerFixes,
@@ -134,16 +120,26 @@ public static class DatabaseDoctor
                     + $"{reachability.Host.EscapeMarkup()}:{reachability.Port}[/], but nothing is listening there. "
                     + $"({reachability.Detail.EscapeMarkup()})");
 
-                bool looksLocal = offerFixes && reachability.Host is "localhost" or "127.0.0.1" && reachability.Port == 5432;
-                if (looksLocal && await OfferAndStartAsync(connectionString, runner, cancellationToken))
+                bool looksLocal = reachability.Host is "localhost" or "127.0.0.1" && reachability.Port == 5432;
+                if (looksLocal)
                 {
-                    reachability = await DatabaseReachability.ProbeAsync(connectionString, cancellationToken);
+                    // Question 4's Docker awareness applies here too, not only to the
+                    // never-configured path: the boundary is Docker itself, wherever the
+                    // check finds an unreachable local Postgres (origin incident,
+                    // 2026-08-21 — a machine reboot leaves the connection string configured
+                    // but Docker Desktop, and so hall9k-postgres, not yet back up).
+                    ContainerRuntimeStatus runtime = await ReportContainerRuntimeStatusAsync(runner, cancellationToken);
+                    if (offerFixes && runtime == ContainerRuntimeStatus.Running
+                        && await OfferAndStartAsync(connectionString, runner, cancellationToken))
+                    {
+                        reachability = await DatabaseReachability.ProbeAsync(connectionString, cancellationToken);
+                    }
                 }
 
                 if (reachability.Status != ReachabilityStatus.Reachable)
                 {
                     AnsiConsole.MarkupLine("[dim]Is Postgres running? Start it, then try again.[/]");
-                    return false;
+                    return null;
                 }
 
                 break;
@@ -155,20 +151,20 @@ public static class DatabaseDoctor
                 AnsiConsole.MarkupLine(
                     "[dim]Check the username and password in the connection string, or rotate the credential "
                     + "and reconfigure it there.[/]");
-                return false;
+                return null;
 
             case ReachabilityStatus.DatabaseMissing:
                 AnsiConsole.MarkupLine(
                     $"[red]Reached Postgres at {reachability.Host.EscapeMarkup()}:{reachability.Port}[/], but the "
                     + $"database '{reachability.Database.EscapeMarkup()}' does not exist there yet. Create it, or "
                     + "point the connection string at one that does.");
-                return false;
+                return null;
 
             default:
                 AnsiConsole.MarkupLine(
                     $"[red]Reached Postgres at {reachability.Host.EscapeMarkup()}:{reachability.Port}[/], but it "
                     + $"reported: {reachability.Detail.EscapeMarkup()}");
-                return false;
+                return null;
         }
 
         bool schemaPresent = await DatabaseReachability.SchemaPresentAsync(connectionString, cancellationToken);
@@ -195,7 +191,37 @@ public static class DatabaseDoctor
                 + $"{reachability.Database.EscapeMarkup()}, resolved from {resolution.Description.EscapeMarkup()}.");
         }
 
-        return true;
+        return connectionString;
+    }
+
+    /// <summary>
+    /// Prints question 4's Docker awareness honestly, wherever the check needs it — the
+    /// not-configured path and the configured-but-refused path both reach an unreachable
+    /// local Postgres, and the boundary (Decisions Log #73) is Docker itself either way.
+    /// </summary>
+    private static async Task<ContainerRuntimeStatus> ReportContainerRuntimeStatusAsync(
+        ProcessRunner runner, CancellationToken cancellationToken)
+    {
+        ContainerRuntimeStatus runtime = await ContainerRuntimeProbe.RuntimeStatusAsync(runner, cancellationToken);
+        switch (runtime)
+        {
+            case ContainerRuntimeStatus.Running:
+                AnsiConsole.MarkupLine("[dim]A container runtime (Docker) is running.[/]");
+                break;
+            case ContainerRuntimeStatus.NotRunning:
+                AnsiConsole.MarkupLine(
+                    "[dim]Docker is installed but not running — that is a machine-level action, always yours: "
+                    + "start Docker Desktop, then run h9k doctor again.[/]");
+                break;
+            case ContainerRuntimeStatus.NotInstalled:
+                AnsiConsole.MarkupLine(
+                    "[dim]No container runtime (docker) found — Postgres does not need one: a native install "
+                    + "works just as well (Homebrew: brew install postgresql@18; apt: sudo apt install postgresql), "
+                    + "or point at one you already run elsewhere (Decisions Log #57).[/]");
+                break;
+        }
+
+        return runtime;
     }
 
     /// <summary>

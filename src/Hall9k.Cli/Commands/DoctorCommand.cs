@@ -12,5 +12,5 @@ namespace Hall9k.Cli.Commands;
 public sealed class DoctorCommand : Hall9kAsyncCommand<EmptyCommandSettings>
 {
     protected override async Task<int> ExecuteAsync(EmptyCommandSettings settings, CancellationToken cancellationToken) =>
-        await DatabaseDoctor.RunAsync(offerFixes: true, cancellationToken) ? ExitCodes.Ok : ExitCodes.Error;
+        await DatabaseDoctor.RunAsync(offerFixes: true, cancellationToken) is not null ? ExitCodes.Ok : ExitCodes.Error;
 }
