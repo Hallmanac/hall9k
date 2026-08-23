@@ -27,6 +27,7 @@ docker compose up -d         # Postgres only (installed mode / manual runs)
 ./src/Hall9k.Cli/bin/Debug/net10.0/h9k     # the CLI binary after build
 h9k install                  # publish release binaries to ~/.hall9k/bin (no service registered)
 h9k daemon start|stop|status # the CLI-owned daemon lifecycle (Decisions Log #31)
+h9k doctor                   # diagnose the database situation and what to do about it (Decisions Log #73, #74)
 h9k project list             # every project with its tasks counted by attention bucket
 h9k project show <name>      # one project: registration, settings, rollup, newest tasks
 h9k task list --project <name> --state <state>   # browse tasks, newest first (--all, --limit)

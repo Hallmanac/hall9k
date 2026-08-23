@@ -206,12 +206,14 @@ dotnet test                   # unit and integration tiers; integration needs Do
 
 ### Pointing at a different database
 
-`HALL9K_CONNECTION_STRING` overrides the default
-(`Host=localhost;Port=5432;Database=hall9k;Username=postgres;Password=hall9k`), and `HALL9K_HOME`
-relocates the whole on-disk layout away from `~/.hall9k`. See
-[docs/operations.md](docs/operations.md) for the rest of the knobs, including the one caveat that
-bites: `h9k status` probes this machine's pid file, so it answers "is a daemon alive here" rather
-than "is a daemon serving this database".
+Nothing is configured by default — install stays boring on purpose (Decisions Log #58). If a
+command needs a database and cannot reach one, it runs `h9k doctor` for you instead of failing
+raw; run it yourself any time to see the same diagnosis. `HALL9K_CONNECTION_STRING` is the
+highest-precedence of the three places a connection string can live (see
+[docs/operations.md](docs/operations.md#postgres) for the full precedence and the doctor check),
+and `HALL9K_HOME` relocates the whole on-disk layout away from `~/.hall9k`. One caveat that bites:
+`h9k status` probes this machine's pid file, so it answers "is a daemon alive here" rather than
+"is a daemon serving this database".
 
 ---
 

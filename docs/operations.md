@@ -57,18 +57,71 @@ A launchd-owned daemon restarts after a crash but never after a clean stop, and
 
 ## Postgres
 
-Hall9k requires a Postgres connection string and takes no position on where Postgres runs. Two
-provisioning paths exist and are deliberately separate today:
+Hall9k requires a Postgres connection string and takes no position on where Postgres runs
+(Decisions Log #57). Nothing is configured at install time — no prompt, no provisioning, no
+silent guess — and `h9k doctor` is what teaches the fix, at the moment you can act on it
+(Decisions Log #58).
 
-- **Installed mode**: `docker compose up -d` brings up `postgres:18` on `localhost:5432` with the
-  database, user, and password the default connection string expects.
+### The doctor check
+
+```bash
+h9k doctor
+```
+
+Runs automatically, too: the first command that needs a database and cannot reach one runs this
+check instead of failing raw, and `h9k daemon start` runs it before spawning the daemon process at
+all. Four questions, answered in order, stopping at the first one that fails (Decisions Log #73,
+#74):
+
+1. **Is a connection string configured at all?** If not, that is the entire answer.
+2. **Is it reachable?** "Nothing is listening" and "reached it, credentials rejected" are named
+   separately — completely different fixes.
+3. **Is the schema there?** Marten creates its own tables on first use, so this is mostly an
+   offer: *shall I set that up now?*
+4. **Only if nothing was configured** — what is available: a running container runtime, a native
+   Postgres already on 5432, and, the nicest possible finding, a **stopped** `hall9k-postgres`
+   container from a previous session ("your database exists, it is just not running").
+
+When the check finds Postgres not running but a container runtime available, it offers to start
+it — offer-never-force, the same shape as the auto-assign prompt at publish. A non-interactive
+invocation (a script, a dispatched agent) gets a named fix instead of a prompt nobody is there to
+answer. The boundary is Docker itself: if the container runtime is not running, the check names
+that and stops — starting Docker Desktop is a machine-level action and always yours.
+
+The check runs a raw Npgsql connection attempt, never a Wolverine host or a Marten codegen pass,
+so it survives the thin-CLI rule even run before every database-touching command. It lives in the
+CLI rather than the daemon for exactly that reason — it has to work while the daemon is down.
+
+### Where the connection string lives
+
+Precedence, highest first (Decisions Log #73):
+
+1. `HALL9K_CONNECTION_STRING` — this shell, this invocation.
+2. The platform config file, `~/.hall9k/config.json` (`{"connectionString": "…"}`) — a durable
+   per-machine setting, written by hand or by the doctor's own start-offer.
+3. A per-project override file, `.hall9k-connection` (one line, the connection string alone) —
+   found by walking up from the working directory the same way `h9k install` finds `Hall9k.slnx`.
+   Checked **last**, deliberately: it is the one entry in this chain that can arrive already
+   sitting in a repository checkout, and a file nobody meant to commit should never silently
+   outrank a connection string you configured on purpose. Keep it out of version control the same
+   way you would a `.env` file.
+
+Remote Postgres is supported through any of the three homes above but never suggested — a
+database in someone else's cloud quietly forfeits the local-first, works-offline promise
+(Decisions Log #57).
+
+### Provisioning: two paths, deliberately separate
+
+- **Installed mode**: `h9k install` writes Hall9k's own Postgres definition to
+  `~/.hall9k/postgres/docker-compose.yml` on every publish-and-refresh (a local edit there is lost
+  on the next install — it is not a customization surface). Nothing is started at install time;
+  `h9k doctor` or `h9k daemon start` bring it up the first time it is actually needed, on your
+  confirmation. Run it by hand any time with `docker compose -f ~/.hall9k/postgres/docker-compose.yml up -d`.
 - **The dev loop**: `dotnet run --project src/Hall9k.AppHost` brings up its own Postgres container
-  alongside the daemon and the Aspire dashboard.
+  alongside the daemon and the Aspire dashboard, injecting the connection string directly rather
+  than through any of the three homes above.
 
-They bind the same port, so run one at a time.
-
-If Postgres is unreachable, the CLI says exactly that and names the fix rather than surfacing a
-driver exception.
+They bind the same port (`localhost:5432`), so run one at a time (Decisions Log #74; §15 row 28).
 
 ## What lands on disk
 
@@ -77,10 +130,12 @@ Everything hangs off `~/.hall9k` (or `HALL9K_HOME`):
 ```
 ~/.hall9k/
 ├── bin/                        h9k and h9kd release binaries (h9k install)
+├── config.json                 the platform config file (h9k doctor's connectionString, §Postgres)
 ├── credentials/                file-kind secrets, one file per credential
 ├── h9kd.log                    the daemon log; h9k daemon status tails it
 ├── h9kd.pid, h9kd.lock         the local liveness probe
 ├── ideas/<idea-id>/workspace/  discovery workspaces: research, files, prototypes
+├── postgres/docker-compose.yml Hall9k's own Postgres definition (h9k install writes it, §Postgres)
 └── runs/<run-id>/
     ├── prompt.md               what the session was actually given
     ├── settings.json           the settings override the spawn used
@@ -118,7 +173,7 @@ remote-tracking refs.
 
 | Variable | Effect |
 |---|---|
-| `HALL9K_CONNECTION_STRING` | The Postgres connection string. Default: `Host=localhost;Port=5432;Database=hall9k;Username=postgres;Password=hall9k` |
+| `HALL9K_CONNECTION_STRING` | The Postgres connection string — highest-precedence of the three homes in [§Postgres](#postgres); unset by default, and `h9k doctor` is what teaches the fix rather than a silent guess |
 | `HALL9K_HOME` | Relocates the whole on-disk layout away from `~/.hall9k` |
 | `HALL9K_CLAUDE_PATH` | Pins the `claude` binary instead of resolving it through `PATH` |
 
@@ -271,8 +326,13 @@ Recorded honestly rather than left to be discovered:
   `HALL9K_CONNECTION_STRING` while a daemon runs against the first, and the pane reads healthy
   while nothing will ever claim the queue. Found by the S1-13 verification session, 2026-08-22.
   On a default install there is one database and one daemon, and the line is exact.
-- **Two Postgres provisioning paths coexist** (the Aspire AppHost's and `docker-compose.yml`) and
-  nothing reconciles them. Whether a doctor check unifies them is open (PLAN.md §15, row 28).
+- **Two Postgres provisioning paths coexist by design** (the Aspire AppHost's and the one `h9k
+  install` ships) and nothing reconciles them — resolved as deliberately separate rather than
+  unified (Decisions Log #74; PLAN.md §15, row 28).
+- **The stop-side mirror of the doctor's start-offer is not built.** `h9k daemon start` may start
+  Hall9k's own Postgres container on your confirmation; `h9k daemon stop` does not offer to stop
+  it, because nothing yet records that the offer (rather than something already running) is what
+  started it. Named as a refinement in Decisions Log #73/#74.
 - **Token exhaustion is not yet a distinct failure shape.** When the subscription window runs dry
   mid-flight, sessions die with a generic error and the board shows the text the machinery wrote
   rather than a category nobody observed. `backlog/40-token-exhaustion.md` is the fix.
