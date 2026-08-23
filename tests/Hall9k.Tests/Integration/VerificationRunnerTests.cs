@@ -86,6 +86,95 @@ public sealed class VerificationRunnerTests(PostgresFixture postgres) : IClassFi
             .Should().BeFalse("gates after the failure never run");
     }
 
+    /// <summary>
+    /// The origin incident (2026-08-23): a gate died on a connection-class signature — the
+    /// container, not the agent's work — and was fine on the very next attempt. Backlog 53:
+    /// the retry happens in place, is recorded on the stream, and never fails the run.
+    /// </summary>
+    [Fact]
+    public async Task An_infrastructure_classified_failure_retries_once_and_passes()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        using DocumentStore store = NewStore();
+        string marker = Path.Combine(_worktree, "retry-marker");
+        (Guid taskId, Guid runId) = await SeedAsync(store,
+            [new VerifyCommand("flaky",
+                $"if test -f {marker}; then echo ok; exit 0; " +
+                $"else touch {marker}; echo 'Npgsql.NpgsqlException: Connection refused'; exit 1; fi")],
+            cts.Token);
+
+        bool passed = await NewRunner(store).VerifyAsync(runId, taskId, cts.Token);
+
+        passed.Should().BeTrue("the second attempt is what the flaky gate actually does");
+        await using IQuerySession query = store.QuerySession();
+        RunDetails run = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
+        run.State.Value.Should().Be("Verifying");
+        run.FailedGates.Should().BeEmpty();
+
+        var events = await query.Events.FetchStreamAsync(runId, token: cts.Token);
+        GateRetried retried = events.Select(e => e.Data).OfType<GateRetried>().Single();
+        retried.Gate.Should().Be("flaky");
+        retried.Cause.Should().Contain("Connection refused");
+        events.Select(e => e.Data).OfType<RunFailed>().Should().BeEmpty("a passing retry never fails the run");
+
+        TaskListItem task = (await query.LoadAsync<TaskListItem>(taskId, cts.Token))!;
+        task.State.Value.Should().NotBe("Failed", "a flake the retry absorbed spends no budget on the task");
+    }
+
+    /// <summary>
+    /// A genuinely broken environment surfaces instead of looping: two consecutive
+    /// infrastructure-classified failures fail the run honestly, the classification named in
+    /// the reason (backlog 53).
+    /// </summary>
+    [Fact]
+    public async Task A_second_consecutive_infrastructure_failure_fails_the_run_with_the_classification_named()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        using DocumentStore store = NewStore();
+        (Guid taskId, Guid runId) = await SeedAsync(store,
+            [new VerifyCommand("dead", "echo 'Npgsql.NpgsqlException: Connection refused'; exit 1")], cts.Token);
+
+        bool passed = await NewRunner(store).VerifyAsync(runId, taskId, cts.Token);
+
+        passed.Should().BeFalse("the environment never recovered across the retry");
+        await using IQuerySession query = store.QuerySession();
+        RunDetails run = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
+        run.State.Value.Should().Be("Failed");
+        run.FailureReason.Should().Contain("infrastructure-classified").And.Contain("twice in a row");
+
+        var events = await query.Events.FetchStreamAsync(runId, token: cts.Token);
+        events.Select(e => e.Data).OfType<GateRetried>().Should().ContainSingle(
+            "exactly one retry is spent before the run gives up on it");
+
+        TaskListItem task = (await query.LoadAsync<TaskListItem>(taskId, cts.Token))!;
+        task.State.Value.Should().Be("Failed", "a genuinely broken environment fails the task honestly");
+    }
+
+    /// <summary>
+    /// The retry is a second look, not a second pass: if it surfaces a real failure instead of
+    /// another infrastructure signature, that real failure is what's recorded — unclassified.
+    /// </summary>
+    [Fact]
+    public async Task A_retry_that_surfaces_a_real_failure_is_recorded_as_a_real_failure()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        using DocumentStore store = NewStore();
+        string marker = Path.Combine(_worktree, "retry-marker");
+        (Guid taskId, Guid runId) = await SeedAsync(store,
+            [new VerifyCommand("flaky",
+                $"if test -f {marker}; then echo 'Assert.Equal() Failure: Expected 3, Actual 4'; exit 1; " +
+                $"else touch {marker}; echo 'Npgsql.NpgsqlException: Connection refused'; exit 1; fi")],
+            cts.Token);
+
+        bool passed = await NewRunner(store).VerifyAsync(runId, taskId, cts.Token);
+
+        passed.Should().BeFalse();
+        await using IQuerySession query = store.QuerySession();
+        RunDetails run = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
+        run.State.Value.Should().Be("Failed");
+        run.FailureReason.Should().Contain("Assert.Equal").And.NotContain("infrastructure-classified");
+    }
+
     [Fact]
     public async Task No_gates_passes_with_an_explicit_note()
     {

@@ -84,14 +84,48 @@ public sealed class VerificationRunner(
         foreach (VerifyCommand gate in gates)
         {
             (bool passed, string summary) = await RunGateAsync(runId, run.WorktreePath, gate, cancellationToken);
-            if (!passed)
+            if (passed)
+            {
+                logger.LogInformation("Run {RunId} gate '{Gate}' passed", runId, gate.Name);
+                continue;
+            }
+
+            if (!GateInfrastructureFailureClassifier.IsInfrastructureFailure(summary))
             {
                 await RecordFailureAsync(runId, taskId, gate.Name, summary, cancellationToken);
                 logger.LogWarning("Run {RunId} verification failed at gate '{Gate}': {Summary}", runId, gate.Name, summary);
                 return false;
             }
 
-            logger.LogInformation("Run {RunId} gate '{Gate}' passed", runId, gate.Name);
+            // Infrastructure-classified: retry once, in place, before believing the agent's
+            // work is broken (backlog 53's origin incident — the container, not the diff, was
+            // what failed). Recorded on the stream so the record says the flake happened,
+            // whichever way the retry goes, and never fails the run or spends any budget.
+            await RecordGateRetryAsync(runId, gate.Name, summary, cancellationToken);
+            logger.LogWarning(
+                "Run {RunId} gate '{Gate}' failed with an infrastructure-classified signature; retrying once: {Summary}",
+                runId, gate.Name, summary);
+
+            (bool retryPassed, string retrySummary) = await RunGateAsync(runId, run.WorktreePath, gate, cancellationToken);
+            if (retryPassed)
+            {
+                logger.LogInformation("Run {RunId} gate '{Gate}' passed on retry", runId, gate.Name);
+                continue;
+            }
+
+            // A second consecutive infrastructure failure fails the run honestly with the
+            // classification in the reason, so a genuinely broken environment surfaces instead
+            // of looping. A retry that instead surfaces a real failure is recorded as exactly
+            // that, unclassified — the retry earned it a second look, not a second pass.
+            string reason = GateInfrastructureFailureClassifier.IsInfrastructureFailure(retrySummary)
+                ? $"Gate '{gate.Name}' failed twice in a row with an infrastructure-classified " +
+                  $"signature (connection-class failure, not the agent's work). First attempt: " +
+                  $"{summary} Retry attempt: {retrySummary}"
+                : retrySummary;
+
+            await RecordFailureAsync(runId, taskId, gate.Name, reason, cancellationToken);
+            logger.LogWarning("Run {RunId} verification failed at gate '{Gate}' after retry: {Summary}", runId, gate.Name, reason);
+            return false;
         }
 
         await RecordPassAsync(runId, note: null, cancellationToken);
@@ -236,6 +270,13 @@ public sealed class VerificationRunner(
     {
         await using IDocumentSession session = store.LightweightSession();
         session.Events.Append(runId, new VerificationPassed(runId, DateTimeOffset.UtcNow, note));
+        await session.SaveChangesAsync(cancellationToken);
+    }
+
+    private async Task RecordGateRetryAsync(Guid runId, string gate, string cause, CancellationToken cancellationToken)
+    {
+        await using IDocumentSession session = store.LightweightSession();
+        session.Events.Append(runId, new GateRetried(runId, gate, cause, DateTimeOffset.UtcNow));
         await session.SaveChangesAsync(cancellationToken);
     }
 

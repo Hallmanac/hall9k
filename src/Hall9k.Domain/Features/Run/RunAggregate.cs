@@ -161,6 +161,9 @@ public sealed class RunAggregate
     private readonly List<string> _failedGates = [];
     public IReadOnlyList<string> FailedGates => _failedGates;
 
+    /// <summary>Infrastructure-classified gate retries this run has spent (backlog 53) — a count for the record.</summary>
+    public int GateRetries { get; private set; }
+
     private readonly List<string> _failingChecks = [];
     public IReadOnlyList<string> FailingChecks => _failingChecks;
 
@@ -219,6 +222,8 @@ public sealed class RunAggregate
     {
         _failedGates.Clear();
     }
+
+    public void Apply(GateRetried @event) => GateRetries++;
 
     public void Apply(ReviewDispatched @event)
     {
