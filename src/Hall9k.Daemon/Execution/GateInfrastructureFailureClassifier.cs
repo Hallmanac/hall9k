@@ -16,9 +16,12 @@ public static class GateInfrastructureFailureClassifier
 {
     private static readonly string[] ConnectionFailureMarkers =
     [
-        // Npgsql connection refused / reset / timeout.
+        // Npgsql connection refused / reset / timeout. Npgsql.PostgresException is
+        // deliberately not a marker here: per Npgsql's own docs it is thrown whenever
+        // "the PostgreSQL backend reports errors" — a bad migration or a unique-constraint
+        // violation throws it too, and that is the agent's own work, not the environment
+        // (adversarial review, cycle 1).
         "Npgsql.NpgsqlException",
-        "Npgsql.PostgresException",
         "Connection refused",
         "Connection reset by peer",
         "Exception while reading from stream",
@@ -36,4 +39,34 @@ public static class GateInfrastructureFailureClassifier
     public static bool IsInfrastructureFailure(string? gateOutput) =>
         gateOutput is not null
         && ConnectionFailureMarkers.Any(marker => gateOutput.Contains(marker, StringComparison.OrdinalIgnoreCase));
+
+    /// <summary>
+    /// A bounded excerpt around the first marker that classified this output as infrastructure,
+    /// null when nothing matches. The caller records this alongside the retry it explains: the
+    /// recorded gate summary is truncated to its last 400 characters for size, and a marker
+    /// logged early in a large run's output would otherwise leave the durable retry event with
+    /// no evidence of what triggered the classification (PR #36's Copilot review).
+    /// </summary>
+    public static string? MatchingExcerpt(string? gateOutput)
+    {
+        if (gateOutput is null)
+        {
+            return null;
+        }
+
+        foreach (string marker in ConnectionFailureMarkers)
+        {
+            int index = gateOutput.IndexOf(marker, StringComparison.OrdinalIgnoreCase);
+            if (index < 0)
+            {
+                continue;
+            }
+
+            int start = Math.Max(0, index - 50);
+            int end = Math.Min(gateOutput.Length, index + marker.Length + 250);
+            return gateOutput[start..end].Trim();
+        }
+
+        return null;
+    }
 }
