@@ -1,5 +1,6 @@
 using System.ComponentModel;
 using Hall9k.Cli.Infrastructure;
+using Hall9k.Domain.Features.Run.Events;
 using Hall9k.Domain.Features.Run.Projections;
 using Hall9k.Domain.Features.Tasks;
 using Hall9k.Domain.Features.Tasks.Handlers;
@@ -58,16 +59,22 @@ public sealed class PullRequestResolveCommand : Hall9kAsyncCommand<PullRequestRe
 
         BootstrapContext context = await NodeBootstrap.EnsureAsync(session, cancellationToken);
 
+        DateTimeOffset resolvedAt = DateTimeOffset.UtcNow;
+        string reason = settings.Reason ?? (settings.Checks
+            ? "CI checks failing on the pull request."
+            : "Unresolved review comments on the pull request.");
+
         // A human-initiated reopen (Automatic: false) also resets the closeout monitor's
-        // automatic follow-up budget — the human asking is a fresh grant (log #22).
+        // automatic follow-up budget — the human asking is a fresh grant (log #22). The
+        // grant is recorded twice: the reset itself lands here on the task stream, and
+        // CloseoutBudgetGranted below records the same grant on the run the human
+        // resolved, so the run's own history shows a human touched it (log #75, backlog 45).
         session.Events.Append(taskId, expectedVersion: fence.Version + 1, TaskDecider.Reopen(
-            task, previousRunId, previousRun.Branch,
-            settings.Reason ?? (settings.Checks
-                ? "CI checks failing on the pull request."
-                : "Unresolved review comments on the pull request."),
+            task, previousRunId, previousRun.Branch, reason,
             settings.Checks ? FollowUpKind.FailingChecks : FollowUpKind.ReviewFeedback,
             automatic: false,
-            DateTimeOffset.UtcNow, context.OwnerId));
+            resolvedAt, context.OwnerId));
+        session.Events.Append(previousRunId, new CloseoutBudgetGranted(previousRunId, reason, resolvedAt));
         try
         {
             await session.SaveChangesAsync(cancellationToken);

@@ -186,6 +186,32 @@ public sealed class RunCloseoutProjectionTests
         run.PullRequestMergedAt.Should().Be(mergedAt);
     }
 
+    /// <summary>
+    /// h9k pr resolve's budget reset is recorded twice (Decisions Log #75, backlog 45): the
+    /// reset itself lands on the task stream as TaskReopened(Automatic: false), and this event
+    /// records the same grant on the run the human resolved, so the run's own history shows a
+    /// human touched it.
+    /// </summary>
+    [Fact]
+    public void A_human_grant_is_recorded_on_the_run()
+    {
+        RunDetailsProjection projection = new();
+        Guid id = DomainId.New();
+        RunDetails view = AwaitingReviewRun(projection, id);
+
+        projection.Apply(new FakeEvent<CloseoutBudgetGranted>(
+            new CloseoutBudgetGranted(id, "Unresolved review comments on the pull request.", Now.AddHours(1))), view);
+
+        view.HumanGrantedAt.Should().Be(Now.AddHours(1));
+
+        RunAggregate run = new();
+        run.Apply(new RunDispatched(
+            id, DomainId.New(), DomainId.New(), DomainId.New(), 1, DomainId.New(),
+            "/tmp/wt", "task/abc", ExecutorMode.Subscription, Now));
+        run.Apply(new CloseoutBudgetGranted(id, "CI checks failing on the pull request.", Now.AddHours(1)));
+        run.HumanGrantedAt.Should().Be(Now.AddHours(1));
+    }
+
     private static RunDetails AwaitingReviewRun(RunDetailsProjection projection, Guid id)
     {
         RunDetails view = projection.Create(new FakeEvent<RunDispatched>(new RunDispatched(
