@@ -34,8 +34,22 @@ builder.AddServiceDefaults();
 // part of the lifecycle contract, not a preference (Decisions Log #31).
 DaemonLogging.Configure(builder.Logging);
 
-string connectionString = Hall9kDatabase.ResolveConnectionString(
-    builder.Configuration.GetConnectionString("hall9k"));
+ConnectionStringResolution resolution = Hall9kDatabase.Resolve(builder.Configuration.GetConnectionString("hall9k"));
+if (!resolution.IsConfigured)
+{
+    // h9k daemon start probes reachability before it ever spawns this process (Decisions
+    // Log #73), so reaching here unconfigured means h9kd was started some other way —
+    // launchd autostart, or the binary run by hand. Either way this is the daemon's own
+    // log, not a terminal a human is watching, so the teaching is brief and points at the
+    // command that gives the full diagnosis.
+    Console.Error.WriteLine(
+        "No Hall9k connection string is configured (checked HALL9K_CONNECTION_STRING, then "
+        + $"{Hall9kDatabase.ConfigFile}, then a {Hall9kDatabase.ProjectOverrideFileName} file walking up "
+        + $"from {Directory.GetCurrentDirectory()}). Run h9k doctor for the full diagnosis and the fix.");
+    return 1;
+}
+
+string connectionString = resolution.Value;
 
 builder.Services.AddOptions<DaemonOptions>().Bind(builder.Configuration.GetSection(DaemonOptions.SectionName));
 builder.Services.AddSingleton(new DaemonConnection(connectionString));

@@ -1,3 +1,5 @@
+using Hall9k.Domain.Infrastructure.Persistence;
+
 namespace Hall9k.Cli.DaemonControl;
 
 /// <summary>
@@ -31,7 +33,7 @@ public static class DaemonEnvironment
     [
         "PATH",
         "HALL9K_HOME",
-        "HALL9K_CONNECTION_STRING",
+        Hall9kDatabase.EnvironmentVariableName,
         "HALL9K_CLAUDE_PATH",
     ];
 
