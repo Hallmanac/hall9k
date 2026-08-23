@@ -66,9 +66,9 @@ public sealed class RunSupervisor(
         IReadOnlyList<RunDetails> candidates = await query.Query<RunDetails>()
             .Where(r => r.NodeId == nodeId)
             .Where(r => r.MatchesSql(
-                "d.data ->> 'state' in (?, ?, ?, ?, ?)",
+                "d.data ->> 'state' in (?, ?, ?, ?, ?, ?)",
                 RunState.Dispatched.Value, RunState.Running.Value, RunState.Verifying.Value,
-                RunState.UnderReview.Value, RunState.ReviewParked.Value))
+                RunState.UnderReview.Value, RunState.ReviewParked.Value, RunState.BudgetParked.Value))
             .ToListAsync(cancellationToken);
 
         int adopted = 0;
@@ -103,10 +103,12 @@ public sealed class RunSupervisor(
                 continue;
             }
 
-            if (run.State == RunState.ReviewParked)
+            if (run.State == RunState.ReviewParked || run.State == RunState.BudgetParked)
             {
-                // Parked means waiting on a human, not abandoned: refresh the lease so
-                // the expiry sweep never requeues the task out from under its worktree.
+                // Parked means waiting on a human or waiting on the clock, not abandoned:
+                // refresh the lease so the expiry sweep never requeues the task out from
+                // under its worktree. A budget park is cleared by the hourly retry sweep
+                // (TokenBudgetRetryEngine), never by adoption.
                 await RefreshAdoptedLeaseAsync(run, cancellationToken);
                 adopted++;
                 continue;
@@ -231,7 +233,17 @@ public sealed class RunSupervisor(
         session.Events.Append(runId, new AgentSessionCompleted(runId, now));
         session.Events.Append(runId, result.ToTokensRecorded(runId, now));
 
-        if (result.IsError)
+        if (result.IsError && BudgetExhaustionParser.IsBudgetExhausted(result.Summary))
+        {
+            // External and clock-recoverable, not a machine or code fault (log #40): the run
+            // parks with the task still Claimed — worktree and lease intact — instead of
+            // failing. TokenBudgetRetryEngine's hourly sweep is what clears this.
+            session.Events.Append(runId, new RunBudgetExhausted(runId, result.Summary!, now));
+            logger.LogWarning(
+                "Run {RunId}: token budget exhausted — parked rather than failed; the daemon retries hourly. {Message}",
+                runId, result.Summary);
+        }
+        else if (result.IsError)
         {
             session.Events.Append(runId, new RunFailed(runId, "Agent reported an error result.", now));
             // One transaction with the run-stream events above (Copilot review, PR #30's
