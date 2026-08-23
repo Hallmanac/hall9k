@@ -144,18 +144,20 @@ designed. `Killed` is a reserved run state with no command behind it.
 
 See [`backlog/38-kill-run.md`](../backlog/38-kill-run.md).
 
-### Watching, peeking, and diagnosing
+### Watching and peeking
 
-Three separate absences, each designed:
+Two separate absences, each designed:
 
 - `h9k watch [--notify]`, the blocking watcher that owns desktop notification. Nothing pushes a
   notification today, and no session should promise to.
 - A session peek: "what is the agent doing right now" is a filesystem dig rather than a command
   ([`backlog/21-session-peek.md`](../backlog/21-session-peek.md)).
-- A doctor check that diagnoses the database situation and says what to do about it
-  ([`backlog/24-doctor-check.md`](../backlog/24-doctor-check.md)). It is also the natural home
-  for the daemon-liveness gap described in
-  [operations.md](operations.md#known-operational-gaps).
+
+`h9k doctor` — the database doctor check — is built (Decisions Log #73, #74; see
+[operations.md](operations.md#postgres)). It diagnoses reachability, credentials, and schema; it
+does not diagnose the separate daemon-liveness gap described in
+[operations.md](operations.md#known-operational-gaps) (whether a running daemon is serving *this*
+database), which stays open.
 
 ### The slim agent profile and auxiliary sessions
 
