@@ -1,4 +1,5 @@
 using Hall9k.Cli.Commands;
+using Spectre.Console;
 using Spectre.Console.Cli;
 
 namespace Hall9k.Cli.Infrastructure;
@@ -8,13 +9,35 @@ namespace Hall9k.Cli.Infrastructure;
 /// The whole <c>h9k</c> command tree, in one place and separate from the entry point, because the
 /// <c>--help</c> tree is a first-class interface rather than a by-product of <c>Main</c> (AGENTS.md,
 /// CLI command standards): it is how an agent discovers what the platform can do, so it is something
-/// tests get to walk rather than something only a shipped binary can be asked about.
+/// tests get to walk and something a failing command line gets to quote back.
+/// </para>
+/// <para>
+/// Two callers build the same tree from here. <c>Program</c> builds the app that actually runs, and
+/// <see cref="UsageError"/> builds a second, console-redirected one purely to render the help for a
+/// command line that never reached a command — which is why every example below has to stay a real
+/// invocation: it is the correction an agent reads after it gets the call wrong.
 /// </para>
 /// </summary>
 public static class CliCommandTree
 {
     /// <summary>The application name every usage line and example is written against.</summary>
     public const string ApplicationName = "h9k";
+
+    /// <summary>
+    /// The narrowest the help is ever rendered at, whatever the terminal says.
+    /// </summary>
+    /// <remarks>
+    /// Spectre wraps to the console width, and a wrapped example is not a command: at the default
+    /// 80 columns a redirected <c>h9k task resolve --help</c> prints its example broken after
+    /// <c>--reason "Work merged as PR #7; only the daemon's</c>, with the rest on an unindented
+    /// line of its own, so an agent pasting what it was just handed gets an unterminated quote.
+    /// Eleven of the tree's examples are longer than 80 columns and nine of those are quoted, and
+    /// a redirected stdout is exactly how a dispatched agent reads help. The longest example
+    /// renders at 141 columns including its indent; this leaves room for a longer one, and
+    /// <c>CommandTreeHelpTests</c> walks the tree at exactly this width so an example that outgrows
+    /// it fails there rather than shipping wrapped.
+    /// </remarks>
+    internal const int MinimumHelpWidth = 160;
 
     /// <summary>
     /// Register the application's identity, its exception posture, and every command.
@@ -24,6 +47,25 @@ public static class CliCommandTree
         config.SetApplicationName(ApplicationName);
         config.SetApplicationVersion(CliVersion.Current);
         config.PropagateExceptions();
+
+        // The help is rendered at least MinimumHelpWidth wide, here rather than at either call site,
+        // because the width belongs to the examples registered below rather than to whoever printed
+        // them: an example the renderer hard-breaks is unpasteable on the ordinary --help path as
+        // surely as on the usage-error one, and that path is the one a caller reaches first.
+        // UsageError configures its own console after this and so replaces it, since a refusal is
+        // written to stderr as plain text; both floor the width the same way.
+        config.ConfigureConsole(HelpConsole());
+
+        // Root examples, stated rather than inherited. Left alone, Spectre fills this block with
+        // the first handful of examples it finds walking the tree, which is registration order and
+        // not a story. These five are the orchestrator's loop (AGENTS.md, the orchestrator window):
+        // see what needs you, draft the work, gate it, dispatch it, read one task.
+        config.AddExample("status");
+        config.AddExample("task", "add", "--project", "hall9k", "--objective", "\"Add the project browse surface\"",
+            "--criteria", "\"h9k project list shows one row per project\"");
+        config.AddExample("task", "publish", "28b19893", "--assign");
+        config.AddExample("task", "list", "--state", "needs-you");
+        config.AddExample("task", "show", "28b19893");
 
         config.AddBranch("project", project =>
         {
@@ -129,7 +171,7 @@ public static class CliCommandTree
                     + "--needs-fixes <reason> dispatches a fix session (and, like pr resolve, restores the "
                     + "automatic fix budget). The park reason and findings files name what needs judging.")
                 .WithExample("review", "resolve", "28b19893", "--merge-ready")
-                .WithExample("review", "resolve", "28b19893", "--needs-fixes", "The limiter reset finding is real; fix it as the reviewer described");
+                .WithExample("review", "resolve", "28b19893", "--needs-fixes", "\"The limiter reset finding is real; fix it as the reviewer described\"");
         });
 
         config.AddCommand<StatusCommand>("status")
@@ -139,7 +181,15 @@ public static class CliCommandTree
                 + "(h9k task list, h9k project list); this answers \"what should I look at right now\".")
             .WithExample("status");
         config.AddCommand<LogsCommand>("logs")
-            .WithDescription("A run's transcript, rendered (or --raw for stream-json)");
+            .WithDescription(
+                "A run's transcript, rendered from the stream-json the agent wrote (or --raw for the "
+                + "stream-json itself). Defaults to the task's latest run, which is the one you want "
+                + "after a failure; --run reaches an earlier one, and h9k task show lists their ids. "
+                + "This is the log dive h9k status is meant to save you, so reach for it when the pane "
+                + "has already told you which task to look at.")
+            .WithExample("logs", "28b19893")
+            .WithExample("logs", "28b19893", "--raw")
+            .WithExample("logs", "28b19893", "--run", "01a0248c-87e1-727f-a721-e1635e5ef65f");
 
         config.AddCommand<InstallCommand>("install")
             .WithDescription(
@@ -196,8 +246,8 @@ public static class CliCommandTree
                     + "option and it is optional — an idea may precede its project, or become one. Each "
                     + "idea gets a discovery workspace directory for the research, files, and prototypes "
                     + "that accumulate while you figure out what it is.")
-                .WithExample("idea", "add", "The attention pane should teach the next command")
-                .WithExample("idea", "add", "Stacked PRs for dependency chains", "--project", "hall9k");
+                .WithExample("idea", "add", "\"The attention pane should teach the next command\"")
+                .WithExample("idea", "add", "\"Stacked PRs for dependency chains\"", "--project", "hall9k");
             idea.AddCommand<IdeaListCommand>("list")
                 .WithDescription(
                     "Browse ideas newest-first, with their age and their project (or the honest absence "
@@ -218,7 +268,7 @@ public static class CliCommandTree
                     "Rewrite the note as discovery sharpens it. No ceremony, unlike a task revision: "
                     + "nothing dispatches from an idea, so there is no promise an edit could break. Every "
                     + "earlier version stays on the stream and in h9k idea show.")
-                .WithExample("idea", "revise", "28b19893", "Ideas need their own discovery workspace, not just a note");
+                .WithExample("idea", "revise", "28b19893", "\"Ideas need their own discovery workspace, not just a note\"");
             idea.AddCommand<IdeaAssignCommand>("assign")
                 .WithDescription(
                     "Set or change the project an idea belongs to — for when capture did not know yet, "
@@ -234,12 +284,12 @@ public static class CliCommandTree
                     + "Needs a project, supplied here or already assigned.")
                 .WithExample("idea", "promote", "28b19893")
                 .WithExample("idea", "promote", "28b19893", "--project", "hall9k")
-                .WithExample("idea", "promote", "28b19893", "--objective", "Give every idea a discovery workspace");
+                .WithExample("idea", "promote", "28b19893", "--objective", "\"Give every idea a discovery workspace\"");
             idea.AddCommand<IdeaDiscardCommand>("discard")
                 .WithDescription(
                     "Close an idea with the reason recorded. Nothing is deleted and the workspace stays "
                     + "put: an idea that keeps coming back is a signal, and only a kept record can show it.")
-                .WithExample("idea", "discard", "28b19893", "--reason", "Superseded by the attachments design");
+                .WithExample("idea", "discard", "28b19893", "--reason", "\"Superseded by the attachments design\"");
         });
 
         config.AddBranch("task", task =>
@@ -254,15 +304,15 @@ public static class CliCommandTree
                     + "Creation is identity, not readiness: a project and an objective are all it takes, and "
                     + "the draft is invisible to the dispatcher until you publish and assign it. Acceptance "
                     + "criteria are what h9k task publish demands, and an adopted issue never supplies them.")
-                .WithExample("task", "add", "--project", "hall9k", "--objective", "Add the project browse surface",
-                    "--criteria", "h9k project list shows one row per project")
+                .WithExample("task", "add", "--project", "hall9k", "--objective", "\"Add the project browse surface\"",
+                    "--criteria", "\"h9k project list shows one row per project\"")
                 .WithExample("task", "add", "--file", "backlog/19-model-policy.md", "--model", "claude-opus-5")
                 .WithExample("task", "add", "--project", "hall9k", "--from-issue", "42")
                 .WithExample("task", "add", "--project", "hall9k", "--from-jira", "PROJ-123")
                 .WithExample("task", "add", "--project", "hall9k",
                     "--from-issue", "https://github.com/Hallmanac/hall9k/issues/42",
-                    "--criteria", "The importer refuses a closed issue")
-                .WithExample("task", "add", "--project", "hall9k", "--objective", "Wire the new pane in",
+                    "--criteria", "\"The importer refuses a closed issue\"")
+                .WithExample("task", "add", "--project", "hall9k", "--objective", "\"Wire the new pane in\"",
                     "--blocked-by", "28b19893");
             task.AddCommand<TaskReviseCommand>("revise")
                 .WithDescription(
@@ -270,7 +320,7 @@ public static class CliCommandTree
                     + "Draft-only by design — a published task promises it may be assigned at any moment and a "
                     + "assigned one promises a node may read it at any moment, and editing would break both. "
                     + "Each option passed replaces that part; each one left off is left alone.")
-                .WithExample("task", "revise", "28b19893", "--criteria", "h9k status shows the blocked reason")
+                .WithExample("task", "revise", "28b19893", "--criteria", "\"h9k status shows the blocked reason\"")
                 .WithExample("task", "revise", "28b19893", "--blocked-by", "3f2a91b2", "--blocked-by", "91bd44c0")
                 .WithExample("task", "revise", "28b19893", "--clear-dependencies");
             task.AddCommand<TaskPublishCommand>("publish")
@@ -295,7 +345,7 @@ public static class CliCommandTree
                     "Take a queued or blocked task back to Published, so no node claims it. Refused while a "
                     + "node holds the lease — that is a running agent. This is the first step of the "
                     + "edit-after-the-fact path: unassign → draft → revise → publish → assign.")
-                .WithExample("task", "unassign", "28b19893", "--reason", "The criteria missed the migration case");
+                .WithExample("task", "unassign", "28b19893", "--reason", "\"The criteria missed the migration case\"");
             task.AddCommand<TaskDraftCommand>("draft")
                 .WithDescription(
                     "Return a published task to Draft so it can be revised. Refused from Queued and Blocked "
@@ -315,7 +365,12 @@ public static class CliCommandTree
                 .WithExample("task", "list", "--state", "attention-delivered", "--all")
                 .WithExample("task", "list", "--state", "AwaitingReview");
             task.AddCommand<TaskShowCommand>("show")
-                .WithDescription("Task detail: contract, conversation, runs")
+                .WithDescription(
+                    "One task in full: the readiness contract it was published against, its dependencies "
+                    + "and what they are waiting on, its external reference, the conversation, and every "
+                    + "run with its outcome and pull request. This is the second command of any "
+                    + "investigation — h9k status names the task, this says what happened to it. Takes "
+                    + "the full id or an unambiguous fragment.")
                 .WithExample("task", "show", "28b19893");
             task.AddCommand<TaskPushToJiraCommand>("push-to-jira")
                 .WithDescription(
@@ -341,7 +396,7 @@ public static class CliCommandTree
                     "Abandon a task (terminal; releases any lease). Reaches every non-terminal state, drafts "
                     + "and published tasks included — walking away from an idea you have stopped believing in "
                     + "is the same act as walking away from a run that failed.")
-                .WithExample("task", "abandon", "28b19893", "--reason", "Superseded by the noun-first CLI work");
+                .WithExample("task", "abandon", "28b19893", "--reason", "\"Superseded by the noun-first CLI work\"");
             task.AddCommand<TaskRetryCommand>("retry")
                 .WithDescription(
                     "Requeue a failed task for another run (human-only; Failed tasks only — Abandoned stays terminal). "
@@ -349,15 +404,36 @@ public static class CliCommandTree
                     + "or starts clean from the base branch when the artifacts are gone. "
                     + "Failed's other exits: h9k task resolve (objective already met), h9k task abandon (walk away).")
                 .WithExample("task", "retry", "28b19893")
-                .WithExample("task", "retry", "28b19893", "--reason", "Daemon push bug fixed; the completed work is intact in the worktree");
+                .WithExample("task", "retry", "28b19893", "--reason", "\"Daemon push bug fixed; the completed work is intact in the worktree\"");
             task.AddCommand<TaskResolveCommand>("resolve")
                 .WithDescription(
                     "Resolve a failed task to Done: your attestation that the objective was met even though the run "
                     + "failed (human-only; Failed tasks only). --reason is required — an attestation without a why is "
                     + "a guess. The failure stays on the stream; --pr records where the work landed. "
                     + "Failed's other exits: h9k task retry (run again), h9k task abandon (walk away).")
-                .WithExample("task", "resolve", "28b19893", "--reason", "Work merged as PR #7; only the daemon's push step failed")
-                .WithExample("task", "resolve", "28b19893", "--reason", "Objective met by hand in the worktree", "--pr", "https://github.com/x/y/pull/7");
+                .WithExample("task", "resolve", "28b19893", "--reason", "\"Work merged as PR #7; only the daemon's push step failed\"")
+                .WithExample("task", "resolve", "28b19893", "--reason", "\"Objective met by hand in the worktree\"", "--pr", "https://github.com/x/y/pull/7");
         });
+    }
+
+    /// <summary>
+    /// The console the shipped binary renders <c>--help</c> through: stdout, as the terminal
+    /// would have it, but never narrower than <see cref="MinimumHelpWidth"/>.
+    /// </summary>
+    /// <remarks>
+    /// Colour and ANSI detection are left alone, so help in a terminal reads like the rest of the
+    /// CLI's output. Only the width is floored, and it is widened rather than pinned: a wide
+    /// terminal keeps its own width, and a narrow one gets prose the terminal soft-wraps instead of
+    /// examples the renderer hard-breaks. Soft-wrapped prose is a cosmetic cost; a hard-broken
+    /// example is a command nobody can paste.
+    /// </remarks>
+    private static IAnsiConsole HelpConsole()
+    {
+        IAnsiConsole console = AnsiConsole.Create(new AnsiConsoleSettings
+        {
+            Out = new AnsiConsoleOutput(Console.Out),
+        });
+        console.Profile.Width = Math.Max(console.Profile.Width, MinimumHelpWidth);
+        return console;
     }
 }
