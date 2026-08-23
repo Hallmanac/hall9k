@@ -69,9 +69,19 @@ public static class Hall9kDatabase
                 fromEnvironment, ConnectionStringOrigin.EnvironmentVariable, EnvironmentVariableName);
         }
 
-        if (ReadConfigFile() is { Length: > 0 } fromConfigFile)
+        string? fromConfigFile = ReadConfigFile(out bool configFileMalformed);
+        if (fromConfigFile is { Length: > 0 })
         {
             return new ConnectionStringResolution(fromConfigFile, ConnectionStringOrigin.PlatformConfigFile, ConfigFile);
+        }
+
+        if (configFileMalformed)
+        {
+            // A broken config file is not "nothing configured" — the fix is repairing
+            // config.json, not writing a fresh connection string over the top of it, so this
+            // stops here rather than falling through to the project override tier as though
+            // the platform config file had never been touched.
+            return new ConnectionStringResolution(null, ConnectionStringOrigin.PlatformConfigFileMalformed, ConfigFile);
         }
 
         if (FindProjectOverride(startDirectory ?? Directory.GetCurrentDirectory()) is { } projectOverride)
@@ -91,18 +101,46 @@ public static class Hall9kDatabase
     public static async Task WriteConfiguredConnectionStringAsync(string connectionString, CancellationToken cancellationToken)
     {
         Directory.CreateDirectory(PlatformPaths.Home);
-        PlatformConfigDocument document = File.Exists(ConfigFile)
-            ? JsonSerializer.Deserialize<PlatformConfigDocument>(
-                await File.ReadAllTextAsync(ConfigFile, cancellationToken), SerializerOptions) ?? new()
-            : new();
+        PlatformConfigDocument document = await ReadExistingDocumentAsync(cancellationToken);
         document.ConnectionString = connectionString;
 
         await File.WriteAllTextAsync(
             ConfigFile, JsonSerializer.Serialize(document, SerializerOptions), cancellationToken);
     }
 
-    private static string? ReadConfigFile()
+    /// <summary>
+    /// This is the doctor's own write, run only after an operator has explicitly accepted the
+    /// start-offer — a config file broken beyond parsing is not a reason to crash mid-fix.
+    /// Whatever else was in it is unrecoverable anyway (it could not be parsed), so a
+    /// malformed file starts fresh rather than taking the write down with the read.
+    /// </summary>
+    private static async Task<PlatformConfigDocument> ReadExistingDocumentAsync(CancellationToken cancellationToken)
     {
+        if (!File.Exists(ConfigFile))
+        {
+            return new();
+        }
+
+        try
+        {
+            return JsonSerializer.Deserialize<PlatformConfigDocument>(
+                await File.ReadAllTextAsync(ConfigFile, cancellationToken), SerializerOptions) ?? new();
+        }
+        catch (JsonException)
+        {
+            return new();
+        }
+    }
+
+    /// <summary>
+    /// <paramref name="malformed"/> is true only when the file exists but is not valid JSON —
+    /// distinct from "absent", so a caller can tell "nothing configured" apart from "something
+    /// is configured, but this file is broken", rather than sending an operator whose
+    /// config.json has a typo in it toward "configure a connection string".
+    /// </summary>
+    private static string? ReadConfigFile(out bool malformed)
+    {
+        malformed = false;
         if (!File.Exists(ConfigFile))
         {
             return null;
@@ -116,9 +154,7 @@ public static class Hall9kDatabase
         }
         catch (JsonException)
         {
-            // An unreadable config file is not this method's refusal to compose — the doctor
-            // check surfaces malformed configuration honestly rather than this call silently
-            // falling through to the next precedence tier as though nothing were configured.
+            malformed = true;
             return null;
         }
     }
