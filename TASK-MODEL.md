@@ -179,9 +179,17 @@ public sealed record TaskReopened(       // Done -> Queued for a follow-up run o
     FollowUpKind? Kind = null,           // ReviewFeedback | FailingChecks; the launcher picks the
                                          // follow-up prompt from it. Null (pre-vocabulary events) = Unknown,
                                          // treated as ReviewFeedback (the historic meaning)
-    bool Automatic = false);             // true when the closeout monitor reopened, false for a human
+    bool Automatic = false,              // true when the closeout monitor reopened, false for a human
                                          // (h9k pr resolve). Automatic reopens count against the bounded
                                          // closeout budget; a manual reopen resets it (log #22, §2.2)
+    string? ObstructionKey = null,       // this lap's obstruction identity (log #75, backlog 45): the
+                                         // failing check name, or the exact set of unresolved thread ids.
+                                         // Null on a manual reopen — the progress slate is wiped, not compared
+    string? ObstructionSummary = null,   // the human-readable side, read back in a lifetime-ceiling park's
+                                         // lap history
+    IReadOnlyList<string>? KnownHumanReviewThreadIds = null,     // the three human-engagement comparison
+    IReadOnlyList<string>? KnownHumanCommentIds = null,          // points, carried forward exactly like
+    IReadOnlyList<string>? KnownPendingReviewRequestLogins = null); // ObstructionKey (log #75, §2.2)
 
 public sealed record TaskRetried(        // Failed -> Queued by explicit human decision (log #25):
     Guid Id,                             // infra failure around finished work must not strand it.
@@ -232,7 +240,17 @@ public sealed class TaskAggregate
                                                          // the failed run's branch, resumed if it survives
     public FollowUpKind FollowUpKind { get; private set; } // why the pending follow-up exists (prompt selection)
     public int CloseoutAttempts { get; private set; }    // automatic reopens since the last human touch:
-                                                         // the bounded closeout-retry counter (§2.2)
+                                                         // the lifetime-ceiling counter (§2.2, log #75)
+    public string? LastAutomaticObstructionKey { get; }   // this task's most recent automatic lap's
+                                                         // obstruction identity — the progress-cap counter's
+                                                         // comparison point (§2.2, log #75)
+    public int ConsecutiveObstructionLaps { get; }        // consecutive laps against LastAutomaticObstructionKey
+                                                         // without clearing it (§2.2, log #75)
+    public IReadOnlyList<string> AutomaticLapHistory { get; } // one short description per automatic lap,
+                                                         // read back by a lifetime-ceiling park (§2.2, log #75)
+    public IReadOnlyList<string> KnownHumanReviewThreadIds { get; }      // the three human-engagement
+    public IReadOnlyList<string> KnownHumanCommentIds { get; }           // comparison points as of the
+    public IReadOnlyList<string> KnownPendingReviewRequestLogins { get; } // last automatic decision (§2.2)
     public Guid? AssignedOwnerId { get; private set; }   // set by TaskAssigned; the claim guard's other half (§2.3)
     public IReadOnlyList<Guid> BlockedBy { get; }        // declared dependency edges
     public IReadOnlyList<Guid> UnmetDependencies { get; }// those not yet at true closeout; empty on a Queued task
@@ -344,18 +362,46 @@ in priority order:
   (default 2), its own counter beside the closeout budget rather than part of it. At the cap the
   pull request settles on the internal review, the thread replies, and CI.
 
-**Bounded retries.** `TaskAggregate.CloseoutAttempts` counts automatic reopens since the
-last human-initiated one. Errored-review re-requests spend that same budget: the watched
-run's `ReviewRerequestCount` adds to the task's count when either path checks it.
-Countersign passes do not — `ReviewRerequestsAfterFixes` is counted against
-`MaxReviewRerequestsAfterFixes` instead, so one budget running out never silently spends
-the other. At the budget
-(DaemonOptions.MaxAutomaticCloseoutRuns, default 2) the monitor appends `CloseoutParked`
-on the run instead of reopening: the task **stays
-Done** (deliberately, since parking must not break `h9k pr resolve`, whose guard requires
-Done, and merge detection continues for parked runs), the run parks with the reason, and
-`h9k status` surfaces it as NeedsHuman. A manual `h9k pr resolve` resets the budget; the
-human asking for another attempt is a fresh grant.
+**Bounded retries — two counters, not one** (log #75, backlog 45). `TaskAggregate.CloseoutAttempts`
+is the absolute lifetime ceiling: it counts every automatic reopen since the last
+human-initiated one, exactly as before, checked first and unconditionally against
+`DaemonOptions.MaxAutomaticCloseoutRuns` (default 6 — generous, because "many different real
+obstructions, one after another" on a busy pull request is the legitimate case this ceiling
+exists to allow rather than to punish). Errored-review re-requests still spend the same
+lifetime budget: the watched run's `ReviewRerequestCount` adds to the task's count when either
+path checks it. Countersign passes do not — `ReviewRerequestsAfterFixes` is counted against
+`MaxReviewRerequestsAfterFixes` instead, so one budget running out never silently spends the
+other.
+
+Underneath the ceiling sits the progress cap, the part backlog 45 added: `TaskAggregate`
+tracks `LastAutomaticObstructionKey` and `ConsecutiveObstructionLaps`, recording each automatic
+lap's obstruction identity — mechanical, never judged. A failing-checks obstruction keys on the
+check name(s); a review-feedback obstruction keys on the exact set of unresolved thread ids
+present at dispatch (so a thread resolved, or a new one opened, is a different obstruction by
+definition). A lap whose key matches the task's last one increments the count against
+`DaemonOptions.MaxCloseoutLapsPerObstruction` (default 2); a lap whose key differs resets the
+count to 1 — a different check, or a changed thread set, is progress, so it never counts against
+this cap even while the lifetime ceiling above keeps climbing. Three mechanical
+human-engagement signals grant one lap past the progress cap alone — never the lifetime
+ceiling, which only `h9k pr resolve` can extend: a newly opened human-started review thread, a
+new top-level pull-request comment authored by a person (agents here only ever reply inside
+review threads, so a bare comment is squarely a human's own act), or a login newly holding a
+pending review request. Each is a set diffed against a comparison point (`KnownHumanReviewThreadIds`,
+`KnownHumanCommentIds`, `KnownPendingReviewRequestLogins`) that travels forward on `TaskReopened`
+alongside `ObstructionKey`, so the next decision compares against what the last one actually saw.
+The grant buys exactly one lap through the cap; it does not reset the obstruction's own count,
+so a further automatic-only lap on the same still-open obstruction needs its own grant or parks.
+
+At either cap the monitor appends `CloseoutParked` on the run instead of reopening, naming what a
+human needs before spending their own attention: a lifetime-ceiling park reads back the full lap
+history (`TaskAggregate.AutomaticLapHistory`, one short description per automatic lap); a
+progress-cap park names the specific obstruction and how many laps it survived. The task **stays
+Done** either way (deliberately, since parking must not break `h9k pr resolve`, whose guard
+requires Done, and merge detection continues for parked runs), and `h9k status` surfaces it as
+NeedsHuman. A manual `h9k pr resolve` resets both counters — the human asking for another
+attempt is a fresh grant, exactly as before — and now also appends `CloseoutBudgetGranted` to
+the run's own stream in the same transaction the task-stream reset lands in, so the grant is
+legible from the run's own history too.
 
 **Display composition** (`h9k status`, log #66 and §2.4): everything here reads as
 **Delivered** until a merge is observed, and the current run's state composes the phase line
@@ -744,10 +790,14 @@ public sealed record ReviewRerequested(  // the errored review re-requested via 
     string Reviewer,
     string ErroredReviewUrl,
     DateTimeOffset RequestedAt);
-public sealed record CloseoutParked(     // automatic budget spent; the human owns the PR now, the monitor
-    Guid Id,                             // keeps watching for merge/close only. -> CloseoutParked
-    string Reason,
+public sealed record CloseoutParked(     // a cap was spent (lifetime ceiling or per-obstruction progress
+    Guid Id,                             // cap, log #75); the human owns the PR now, the monitor keeps
+    string Reason,                       // watching for merge/close only. -> CloseoutParked
     DateTimeOffset ParkedAt);
+public sealed record CloseoutBudgetGranted( // h9k pr resolve's grant, recorded on the RUN stream (log #75,
+    Guid Id,                             // backlog 45) — the reset itself lands on the task stream as
+    string? Reason,                      // TaskReopened(Automatic: false); this is the same grant made
+    DateTimeOffset GrantedAt);           // legible from the run's own history. No state change.
 public sealed record PullRequestMerged(  // the merge observed; RunCompleted follows in the same transaction
     Guid Id,
     DateTimeOffset? MergedAt,            // GitHub's timestamp via gh; null when unreported
