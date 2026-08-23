@@ -204,6 +204,9 @@ public sealed class RunDetailsProjection : SingleStreamProjection<RunDetails, Gu
         view.ReviewModel = @event.Data.Model ?? AgentModel.Unknown;
         StartSession(
             view, AgentRole.Review, @event.Data.Lens, @event.Data.ProcessId, @event.Data.ProcessStartedAt);
+        // Mirrors RunResumed and ReviewFixDispatched: a redispatched review pass over a
+        // budget park (backlog 40) is live work again, so the stale park reason must go too.
+        view.ParkedReason = null;
         view.State = RunState.UnderReview;
     }
 

@@ -52,9 +52,9 @@ public sealed class RunBudgetProjectionTests
     }
 
     /// <summary>
-    /// A fix session redispatched to clear a mid-review-loop budget park (backlog 40) is the
-    /// one path where nothing else moves the read models off BudgetParked: ReviewDispatched
-    /// covers a redispatched review pass already, so only ReviewFixDispatched needs this.
+    /// A fix session redispatched to clear a mid-review-loop budget park (backlog 40) is one
+    /// of two paths that move the read models off BudgetParked without a human act: this one
+    /// covers a redispatched fix session, and the next covers a redispatched review pass.
     /// </summary>
     [Fact]
     public void Run_details_clears_the_park_when_a_fix_session_redispatches()
@@ -69,6 +69,22 @@ public sealed class RunBudgetProjectionTests
             new ReviewFixDispatched(id, DomainId.New(), 1, 6002, Now, Now)), view);
 
         view.State.Should().Be(RunState.UnderReview, "the redispatched fix session is live work, not a wait");
+        view.ParkedReason.Should().BeNull("h9k status must stop showing the reason once the retry is live");
+    }
+
+    [Fact]
+    public void Run_details_clears_the_park_when_a_review_pass_redispatches()
+    {
+        RunDetailsProjection projection = new();
+        Guid id = DomainId.New();
+        RunDetails view = LiveRun(projection, id);
+
+        projection.Apply(new FakeEvent<RunBudgetExhausted>(
+            new RunBudgetExhausted(id, "Claude AI usage limit reached|1762952400", Now)), view);
+        projection.Apply(new FakeEvent<ReviewDispatched>(
+            new ReviewDispatched(id, DomainId.New(), 1, 6002, Now, Now)), view);
+
+        view.State.Should().Be(RunState.UnderReview, "the redispatched review pass is live work, not a wait");
         view.ParkedReason.Should().BeNull("h9k status must stop showing the reason once the retry is live");
     }
 
