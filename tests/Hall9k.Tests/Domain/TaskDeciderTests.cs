@@ -251,6 +251,90 @@ public sealed class TaskDeciderTests
         task.Apply(TaskDecider.Complete(task, task.CurrentRunId!.Value, task.PullRequestUrl, Now));
     }
 
+    /// <summary>
+    /// Backlog 45: the progress cap counts consecutive laps against the SAME obstruction, and a
+    /// lap that clears its obstruction — a different check now fails — restarts the count at
+    /// the new obstruction's first lap, even though the lifetime ceiling (CloseoutAttempts)
+    /// keeps climbing across both. A manual reopen wipes the obstruction slate exactly as it
+    /// already wipes the lifetime counter.
+    /// </summary>
+    [Fact]
+    public void The_progress_counter_tracks_the_obstruction_separately_from_the_lifetime_ceiling()
+    {
+        TaskAggregate task = DoneTask("https://github.com/x/y/pull/7");
+
+        task.Apply(TaskDecider.Reopen(
+            task, task.CurrentRunId!.Value, "task/abc", "CI checks failing: build.",
+            FollowUpKind.FailingChecks, automatic: true, Now, DomainId.New(),
+            obstructionKey: "FailingChecks:build", obstructionSummary: "the failing check(s) build",
+            knownHumanReviewThreadIds: [], knownHumanCommentIds: [], knownPendingReviewRequestLogins: []));
+        task.CloseoutAttempts.Should().Be(1);
+        task.LastAutomaticObstructionKey.Should().Be("FailingChecks:build");
+        task.ConsecutiveObstructionLaps.Should().Be(1);
+        task.AutomaticLapHistory.Should().Equal("the failing check(s) build");
+
+        CompleteFollowUp(task);
+        task.Apply(TaskDecider.Reopen(
+            task, task.CurrentRunId!.Value, "task/abc", "CI checks failing: build.",
+            FollowUpKind.FailingChecks, automatic: true, Now, DomainId.New(),
+            obstructionKey: "FailingChecks:build", obstructionSummary: "the failing check(s) build"));
+        task.CloseoutAttempts.Should().Be(2, "the lifetime ceiling counts every automatic lap");
+        task.ConsecutiveObstructionLaps.Should().Be(2, "the same obstruction repeated");
+
+        CompleteFollowUp(task);
+        task.Apply(TaskDecider.Reopen(
+            task, task.CurrentRunId!.Value, "task/abc", "CI checks failing: lint.",
+            FollowUpKind.FailingChecks, automatic: true, Now, DomainId.New(),
+            obstructionKey: "FailingChecks:lint", obstructionSummary: "the failing check(s) lint"));
+        task.CloseoutAttempts.Should().Be(3, "still the lifetime ceiling, unaffected by which obstruction");
+        task.LastAutomaticObstructionKey.Should().Be("FailingChecks:lint");
+        task.ConsecutiveObstructionLaps.Should().Be(
+            1, "a different check is a different obstruction — its own first lap");
+        task.AutomaticLapHistory.Should().Equal(
+            "the failing check(s) build", "the failing check(s) build", "the failing check(s) lint");
+
+        CompleteFollowUp(task);
+        task.Apply(TaskDecider.Reopen(
+            task, task.CurrentRunId!.Value, "task/abc", "Human asked for another attempt.",
+            FollowUpKind.FailingChecks, automatic: false, Now, DomainId.New()));
+        task.CloseoutAttempts.Should().Be(0);
+        task.ConsecutiveObstructionLaps.Should().Be(0, "a manual reopen wipes the obstruction slate too");
+        task.LastAutomaticObstructionKey.Should().BeNull();
+        task.AutomaticLapHistory.Should().BeEmpty();
+    }
+
+    /// <summary>
+    /// The human-engagement comparison points (unresolved human threads, comments, pending
+    /// review requests) travel forward on TaskReopened so the next automatic decision can tell
+    /// a genuinely new one from something already accounted for (Decisions Log #75, backlog 45).
+    /// </summary>
+    [Fact]
+    public void Known_human_engagement_sets_carry_forward_on_automatic_reopens_and_clear_on_manual_ones()
+    {
+        TaskAggregate task = DoneTask("https://github.com/x/y/pull/7");
+
+        task.Apply(TaskDecider.Reopen(
+            task, task.CurrentRunId!.Value, "task/abc", "Unresolved review comments.",
+            FollowUpKind.ReviewFeedback, automatic: true, Now, DomainId.New(),
+            obstructionKey: "ReviewFeedback:thread-1", obstructionSummary: "the same 1 unresolved review thread(s)",
+            knownHumanReviewThreadIds: ["thread-1"],
+            knownHumanCommentIds: ["comment-1"],
+            knownPendingReviewRequestLogins: ["teammate"]));
+
+        task.KnownHumanReviewThreadIds.Should().Equal("thread-1");
+        task.KnownHumanCommentIds.Should().Equal("comment-1");
+        task.KnownPendingReviewRequestLogins.Should().Equal("teammate");
+
+        CompleteFollowUp(task);
+        task.Apply(TaskDecider.Reopen(
+            task, task.CurrentRunId!.Value, "task/abc", "Human asked for another attempt.",
+            FollowUpKind.ReviewFeedback, automatic: false, Now, DomainId.New()));
+
+        task.KnownHumanReviewThreadIds.Should().BeEmpty("a manual reopen wipes the comparison points too");
+        task.KnownHumanCommentIds.Should().BeEmpty();
+        task.KnownPendingReviewRequestLogins.Should().BeEmpty();
+    }
+
     [Fact]
     public void Reopen_of_a_non_done_task_conflicts()
     {

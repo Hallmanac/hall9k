@@ -503,7 +503,12 @@ public static class TaskDecider
         FollowUpKind kind,
         bool automatic,
         DateTimeOffset reopenedAt,
-        Guid reopenedByOwnerId)
+        Guid reopenedByOwnerId,
+        string? obstructionKey = null,
+        string? obstructionSummary = null,
+        IReadOnlyList<string>? knownHumanReviewThreadIds = null,
+        IReadOnlyList<string>? knownHumanCommentIds = null,
+        IReadOnlyList<string>? knownPendingReviewRequestLogins = null)
     {
         if (task.State != TaskState.Done)
         {
@@ -522,7 +527,10 @@ public static class TaskDecider
             throw new DomainValidationException("A follow-up run needs the existing pull-request branch.");
         }
 
-        return new TaskReopened(task.Id, previousRunId, branch, reason, reopenedAt, reopenedByOwnerId, kind, automatic);
+        return new TaskReopened(
+            task.Id, previousRunId, branch, reason, reopenedAt, reopenedByOwnerId, kind, automatic,
+            obstructionKey, obstructionSummary,
+            knownHumanReviewThreadIds, knownHumanCommentIds, knownPendingReviewRequestLogins);
     }
 
     /// <summary>
