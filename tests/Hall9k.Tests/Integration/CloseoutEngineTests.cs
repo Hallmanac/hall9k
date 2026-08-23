@@ -1351,6 +1351,172 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
         }
     }
 
+    /// <summary>
+    /// Backlog 45: the cap counts repetition on the SAME obstruction, not the raw lap count.
+    /// Two prior laps already spent against "the failing check(s) build" (the per-obstruction
+    /// cap), but the lifetime ceiling is wide open — so a third lap on the identical check
+    /// parks for the progress cap alone, never touching the lifetime budget's own message.
+    /// </summary>
+    [Fact]
+    public async Task Repeating_the_same_failing_check_parks_at_the_per_obstruction_cap_with_lifetime_room_to_spare()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        (DocumentStore store, NodeContext node, GitWorktreeManager worktrees, _, string repoPath) =
+            await SetUpAsync(cts.Token);
+        using IDisposable storeLifetime = store;
+
+        (Guid taskId, Guid runId, _) = await SeedAwaitingReviewAsync(
+            store, node, worktrees, repoPath, cts.Token,
+            priorAutomaticReopens: 2, priorObstructionKey: "FailingChecks:build");
+
+        FakeInspector inspector = new()
+        {
+            Snapshot = FakeInspector.Quiet() with { FailingChecks = ["build"] },
+        };
+        await NewEngine(
+            store, node, inspector, worktrees,
+            maxAutomaticCloseoutRuns: 10, maxCloseoutLapsPerObstruction: 2).PollOnceAsync(cts.Token);
+
+        await using IQuerySession query = store.QuerySession();
+        RunDetails run = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
+        run.State.Should().Be(RunState.CloseoutParked);
+        run.ParkedReason.Should().Contain("build")
+            .And.Contain("survived 2 automatic lap(s)")
+            .And.Contain("cap 2 per obstruction")
+            .And.Contain("h9k pr resolve")
+            .And.NotContain("lifetime automatic closeout budget spent",
+                "the lifetime ceiling has plenty of room — this park is the progress cap's own");
+
+        (await query.LoadAsync<TaskListItem>(taskId, cts.Token))!.State.Should().Be(TaskState.Done);
+    }
+
+    /// <summary>
+    /// A lap that clears its obstruction resets the progress counter (backlog 45): a
+    /// different check failing is, mechanically, a different obstruction — even though the
+    /// per-obstruction cap was already fully spent on "build", a fresh check gets its own
+    /// first lap and dispatches normally.
+    /// </summary>
+    [Fact]
+    public async Task A_different_failing_check_is_a_different_obstruction_and_dispatches_normally()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        (DocumentStore store, NodeContext node, GitWorktreeManager worktrees, _, string repoPath) =
+            await SetUpAsync(cts.Token);
+        using IDisposable storeLifetime = store;
+
+        (Guid taskId, Guid runId, Worktree worktree) = await SeedAwaitingReviewAsync(
+            store, node, worktrees, repoPath, cts.Token,
+            priorAutomaticReopens: 2, priorObstructionKey: "FailingChecks:build");
+
+        FakeInspector inspector = new()
+        {
+            Snapshot = FakeInspector.Quiet() with { FailingChecks = ["lint"] },
+        };
+        await NewEngine(
+            store, node, inspector, worktrees,
+            maxAutomaticCloseoutRuns: 10, maxCloseoutLapsPerObstruction: 2).PollOnceAsync(cts.Token);
+
+        await using IQuerySession query = store.QuerySession();
+        (await query.LoadAsync<RunDetails>(runId, cts.Token))!.State.Should().Be(
+            RunState.Superseded, "a different check is a different obstruction — the lap dispatches, it does not park");
+        TaskDetails task = (await query.LoadAsync<TaskDetails>(taskId, cts.Token))!;
+        task.State.Should().Be(TaskState.Queued);
+        task.FollowUpBranch.Should().Be(worktree.Branch);
+
+        TaskAggregate aggregate = (await query.Events.AggregateStreamAsync<TaskAggregate>(taskId, token: cts.Token))!;
+        aggregate.LastAutomaticObstructionKey.Should().Be("FailingChecks:lint");
+        aggregate.ConsecutiveObstructionLaps.Should().Be(
+            1, "the obstruction changed, so this is its first lap regardless of how many the old one survived");
+    }
+
+    /// <summary>
+    /// Backlog 45's origin incident (2026-08-22, PR 26): a human re-engaging with the pull
+    /// request is proof the loop is not running away, so it grants one more automatic lap
+    /// despite the per-obstruction cap already being spent — a newly opened human review
+    /// thread is one of the three mechanical signals. The lap still counts toward the
+    /// obstruction's own running total; the grant buys one exception, not a reset.
+    /// </summary>
+    [Fact]
+    public async Task A_newly_opened_human_thread_grants_a_lap_despite_the_spent_progress_cap()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        (DocumentStore store, NodeContext node, GitWorktreeManager worktrees, _, string repoPath) =
+            await SetUpAsync(cts.Token);
+        using IDisposable storeLifetime = store;
+
+        (Guid taskId, Guid runId, Worktree worktree) = await SeedAwaitingReviewAsync(
+            store, node, worktrees, repoPath, cts.Token,
+            priorAutomaticReopens: 2, priorObstructionKey: "FailingChecks:build");
+
+        FakeInspector inspector = new()
+        {
+            Snapshot = FakeInspector.Quiet() with
+            {
+                FailingChecks = ["build"],
+                UnresolvedReviewThreadCount = 1,
+                UnresolvedHumanThreadCount = 1,
+                UnresolvedReviewThreadIds = ["thread-new"],
+                UnresolvedHumanThreadIds = ["thread-new"],
+            },
+        };
+        await NewEngine(
+            store, node, inspector, worktrees,
+            maxAutomaticCloseoutRuns: 10, maxCloseoutLapsPerObstruction: 2).PollOnceAsync(cts.Token);
+
+        await using IQuerySession query = store.QuerySession();
+        (await query.LoadAsync<RunDetails>(runId, cts.Token))!.State.Should().Be(
+            RunState.Superseded, "the human-opened thread grants the lap instead of parking");
+        TaskDetails task = (await query.LoadAsync<TaskDetails>(taskId, cts.Token))!;
+        task.State.Should().Be(TaskState.Queued);
+        task.FollowUpBranch.Should().Be(worktree.Branch);
+        task.FollowUpReason.Should().Contain("human engaged")
+            .And.Contain("new review thread(s) opened by a human");
+
+        TaskAggregate aggregate = (await query.Events.AggregateStreamAsync<TaskAggregate>(taskId, token: cts.Token))!;
+        aggregate.ConsecutiveObstructionLaps.Should().Be(
+            3, "the grant buys this lap through the cap — it does not reset the obstruction's own count");
+    }
+
+    /// <summary>
+    /// The lifetime ceiling is the absolute backstop (backlog 45): it is checked before any
+    /// human-engagement grant is even consulted, so a human re-engaging cannot buy a lap past
+    /// it. Only h9k pr resolve does.
+    /// </summary>
+    [Fact]
+    public async Task A_human_engagement_never_bypasses_the_lifetime_ceiling()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        (DocumentStore store, NodeContext node, GitWorktreeManager worktrees, _, string repoPath) =
+            await SetUpAsync(cts.Token);
+        using IDisposable storeLifetime = store;
+
+        (Guid taskId, Guid runId, _) = await SeedAwaitingReviewAsync(
+            store, node, worktrees, repoPath, cts.Token,
+            priorAutomaticReopens: 3, priorObstructionKey: "FailingChecks:build");
+
+        FakeInspector inspector = new()
+        {
+            Snapshot = FakeInspector.Quiet() with
+            {
+                FailingChecks = ["build"],
+                UnresolvedReviewThreadCount = 1,
+                UnresolvedHumanThreadCount = 1,
+                UnresolvedReviewThreadIds = ["thread-new"],
+                UnresolvedHumanThreadIds = ["thread-new"],
+            },
+        };
+        await NewEngine(
+            store, node, inspector, worktrees,
+            maxAutomaticCloseoutRuns: 3, maxCloseoutLapsPerObstruction: 2).PollOnceAsync(cts.Token);
+
+        await using IQuerySession query = store.QuerySession();
+        RunDetails run = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
+        run.State.Should().Be(RunState.CloseoutParked, "the lifetime ceiling is spent, and nothing bypasses it");
+        run.ParkedReason.Should().Contain("lifetime automatic closeout budget spent").And.Contain("h9k pr resolve");
+
+        (await query.LoadAsync<TaskListItem>(taskId, cts.Token))!.State.Should().Be(TaskState.Done);
+    }
+
     [Fact]
     public async Task A_closed_pull_request_fails_the_run_removes_the_worktree_and_keeps_the_branch()
     {
@@ -1600,7 +1766,9 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
         CancellationToken cancellationToken,
         int priorAutomaticReopens = 0,
         bool asFollowUp = false,
-        ExternalReference? externalReference = null)
+        ExternalReference? externalReference = null,
+        string? priorObstructionKey = null,
+        string? priorObstructionSummary = null)
     {
         Guid taskId = DomainId.New();
         Guid runId = DomainId.New();
@@ -1640,7 +1808,9 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
             superseded.Add(task.CurrentRunId!.Value);
             Hall9k.Domain.Features.Tasks.Events.TaskReopened reopened = TaskDecider.Reopen(
                 task, task.CurrentRunId!.Value, worktree.Branch,
-                "CI checks failing.", FollowUpKind.FailingChecks, automatic: true, Now, ownerId);
+                "CI checks failing.", FollowUpKind.FailingChecks, automatic: true, Now, ownerId,
+                obstructionKey: priorObstructionKey,
+                obstructionSummary: priorObstructionSummary ?? priorObstructionKey);
             task.Apply(reopened);
             taskEvents.Add(reopened);
             Hall9k.Domain.Features.Tasks.Events.TaskClaimed reclaimed =
@@ -1692,12 +1862,15 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
         IPullRequestInspector inspector,
         GitWorktreeManager worktrees,
         int maxReviewRerequests = 2,
-        RecordingJira? jira = null) =>
+        RecordingJira? jira = null,
+        int maxAutomaticCloseoutRuns = 2,
+        int maxCloseoutLapsPerObstruction = 2) =>
         new(store, node, new DaemonConnection(postgres.ConnectionString), inspector, worktrees,
             (jira ?? new RecordingJira()).Requester,
             Options.Create(new DaemonOptions
             {
-                MaxAutomaticCloseoutRuns = 2,
+                MaxAutomaticCloseoutRuns = maxAutomaticCloseoutRuns,
+                MaxCloseoutLapsPerObstruction = maxCloseoutLapsPerObstruction,
                 MaxReviewRerequestsAfterFixes = maxReviewRerequests,
             }),
             NullLogger<CloseoutEngine>.Instance);

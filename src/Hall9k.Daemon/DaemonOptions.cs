@@ -54,11 +54,32 @@ public sealed class DaemonOptions
     public TimeSpan PullRequestPollInterval { get; set; } = TimeSpan.FromMinutes(3);
 
     /// <summary>
-    /// Automatic follow-up runs the closeout monitor may dispatch per task before it
-    /// parks the pull request for the human (bounded retries, log #11 spirit). A manual
-    /// h9k pr resolve resets the budget.
+    /// The absolute lifetime ceiling of automatic closeout actions (reopen dispatches, plus
+    /// errored-review re-requests) one task's pull request may spend, whatever obstruction
+    /// each one answered — the true runaway backstop (log #11 spirit, backlog 45), separate
+    /// from <see cref="MaxCloseoutLapsPerObstruction"/>. A busy pull request that keeps
+    /// clearing DIFFERENT obstructions never trips the progress cap, so this is what still
+    /// stops it eventually; six is generous next to the per-obstruction cap's default of two
+    /// because "many different real problems, one after another" is the legitimate case this
+    /// ceiling exists to allow. A manual h9k pr resolve resets it.
     /// </summary>
-    public int MaxAutomaticCloseoutRuns { get; set; } = 2;
+    public int MaxAutomaticCloseoutRuns { get; set; } = 6;
+
+    /// <summary>
+    /// Consecutive automatic closeout laps the monitor may spend on the SAME obstruction —
+    /// the same failing check name, or the exact same set of unresolved review-thread ids —
+    /// before it parks (backlog 45, origin incident: task 18's flat budget of 2 was spent on
+    /// two unrelated obstructions, review threads then an unrelated CI flake, leaving no room
+    /// for Brian's own deliberate re-request on PR 26). A lap that clears its obstruction —
+    /// a different check now fails, or the thread set changed — resets this counter, because
+    /// what the cap exists to catch is repetition without progress, not the raw count of
+    /// laps a busy pull request needs. A human-initiated event observed on the pull request
+    /// (a review re-request, a newly opened human thread, a human comment) grants one lap
+    /// regardless of this cap, since a person engaging is itself proof the loop is not
+    /// running away; <see cref="MaxAutomaticCloseoutRuns"/> is the ceiling that still applies
+    /// even then.
+    /// </summary>
+    public int MaxCloseoutLapsPerObstruction { get; set; } = 2;
 
     /// <summary>
     /// How often the daemon retries runs parked on token-budget exhaustion (backlog 40).
