@@ -28,6 +28,7 @@ public sealed class GateInfrastructureFailureClassifierTests
     [InlineData("Gate 'test' exited 1. Output: Xunit.Sdk.EqualException: expected true, was false")]
     [InlineData("Gate 'boom' exited 3. Output: exploding")]
     [InlineData("Gate 'build' exited 1. Output: error CS0246: The type or namespace could not be found")]
+    [InlineData("Gate 'test' exited 1. Output: Npgsql.PostgresException: 23505: duplicate key value violates unique constraint")]
     public void A_test_assertion_or_build_error_stays_a_real_failure(string gateOutput) =>
         GateInfrastructureFailureClassifier.IsInfrastructureFailure(gateOutput).Should().BeFalse();
 
@@ -36,4 +37,15 @@ public sealed class GateInfrastructureFailureClassifierTests
     [InlineData("")]
     public void An_absent_output_is_never_guessed_as_infrastructure(string? gateOutput) =>
         GateInfrastructureFailureClassifier.IsInfrastructureFailure(gateOutput).Should().BeFalse();
+
+    [Fact]
+    public void MatchingExcerpt_carries_the_marker_even_when_it_sits_far_from_either_end() =>
+        GateInfrastructureFailureClassifier.MatchingExcerpt(
+                new string('x', 5000) + "Npgsql.NpgsqlException: Connection refused" + new string('y', 5000))
+            .Should().Contain("Npgsql.NpgsqlException: Connection refused");
+
+    [Fact]
+    public void MatchingExcerpt_is_null_for_a_real_failure() =>
+        GateInfrastructureFailureClassifier.MatchingExcerpt("Xunit.Sdk.EqualException: expected true, was false")
+            .Should().BeNull();
 }
