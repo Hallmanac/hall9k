@@ -191,6 +191,15 @@ public static class CliCommandTree
             .WithExample("logs", "28b19893", "--raw")
             .WithExample("logs", "28b19893", "--run", "01a0248c-87e1-727f-a721-e1635e5ef65f");
 
+        config.AddCommand<DoctorCommand>("doctor")
+            .WithDescription(
+                "Diagnose the database situation: is a connection string configured, is it reachable "
+                + "(nothing listening vs. credentials rejected are named separately), and is the schema "
+                + "there — offering to fix what it can along the way (starting Hall9k's own Postgres, "
+                + "creating the schema). The same check any other command runs automatically the moment "
+                + "it cannot reach a database, available here on demand (Decisions Log #58, #73).")
+            .WithExample("doctor");
+
         config.AddCommand<InstallCommand>("install")
             .WithDescription(
                 "Publish h9k + h9kd release binaries to ~/.hall9k/bin and link h9k onto the PATH. Registers no "

@@ -1,3 +1,4 @@
+using Hall9k.Cli.Diagnostics;
 using Hall9k.Cli.Infrastructure;
 using Hall9k.Domain.Shared.Exceptions;
 using Npgsql;
@@ -38,10 +39,18 @@ catch (DomainBusinessRuleException exception)
     await Console.Error.WriteLineAsync(exception.Message);
     return ExitCodes.BusinessRule;
 }
-catch (NpgsqlException exception)
+catch (DatabaseNotConfiguredException)
 {
-    await Console.Error.WriteLineAsync(
-        $"Cannot reach Postgres: {exception.Message}\n" +
-        "Is it running? Start it with: docker compose up -d  (or the Aspire AppHost)");
+    // The first command that needs a database and cannot reach one runs the doctor check
+    // instead of failing raw (Decisions Log #58, #73) — it re-derives the whole situation
+    // fresh rather than this catch trying to explain it from the exception alone. The
+    // command itself still failed regardless of what the doctor finds, so the exit code
+    // is always Error here.
+    await DatabaseDoctor.RunAsync(offerFixes: false, CancellationToken.None);
+    return ExitCodes.Error;
+}
+catch (NpgsqlException)
+{
+    await DatabaseDoctor.RunAsync(offerFixes: false, CancellationToken.None);
     return ExitCodes.Error;
 }
