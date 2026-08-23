@@ -22,7 +22,9 @@ namespace Hall9k.Daemon.Closeout;
 /// <summary>
 /// One sweep's tally: runs whose pull request was actually inspected, and how many of
 /// those inspections observed the merge. Feeds the monitor's cadence logging and the
-/// startup catch-up report (Decisions Log #31).
+/// startup catch-up report (Decisions Log #31). Counts both the watched runs and the
+/// orphaned ones the sweep also checks (Decisions Log #72) — a reader of this number
+/// does not need to know which pass found a merge, only that one did.
 /// </summary>
 public sealed record CloseoutSweepResult(int RunsInspected, int MergesObserved);
 
@@ -39,6 +41,13 @@ public sealed record CloseoutSweepResult(int RunsInspected, int MergesObserved);
 /// for the human and keeps watching for the merge only. Where the owner or the project
 /// opted in, a quiet pull request whose fixes were just pushed also gets a countersign
 /// re-request, bounded by its own pass cap.
+/// <para>
+/// Every sweep also gives one read to each Delivered row whose run left the watch set by
+/// failing rather than merging (Decisions Log #72) — a crash, a kill, or a stream from
+/// before this monitor existed. A merge found there is recorded exactly as a watched one
+/// is; anything else is left for the row's existing rendering to say, because a dead run
+/// is not a run this engine dispatches follow-ups onto.
+/// </para>
 /// </summary>
 public sealed class CloseoutEngine(
     IDocumentStore store,
@@ -60,10 +69,11 @@ public sealed class CloseoutEngine(
         MergeObserved,
     }
 
-    /// <summary>One sweep over this node's watched pull requests.</summary>
+    /// <summary>One sweep over this node's watched pull requests, plus its orphans (Decisions Log #72).</summary>
     public async Task<CloseoutSweepResult> PollOnceAsync(CancellationToken cancellationToken)
     {
         IReadOnlyList<RunDetails> watched;
+        IReadOnlyList<RunDetails> orphaned;
         await using (IQuerySession query = store.QuerySession())
         {
             Guid nodeId = node.NodeId;
@@ -74,6 +84,20 @@ public sealed class CloseoutEngine(
                 .Where(r => r.MatchesSql(
                     "d.data ->> 'state' in (?, ?, ?)",
                     RunState.AwaitingReview.Value, RunState.ReviewPending.Value, RunState.CloseoutParked.Value))
+                .ToListAsync(cancellationToken);
+
+            // A run this node dispatched can leave the watch above by failing rather than
+            // by merging: a crash before the monitor ever ran, a pre-monitor stream (the
+            // six PR-8-through-12-era rows the orphan sweep exists for), a kill. Its pull
+            // request does not stop existing just because nothing is watching it any more.
+            // PullRequestClosedWithoutMerge is excluded — that Failed run already recorded
+            // the one thing an inspection here could tell it, and asking GitHub again would
+            // spend a read to relearn a fact already on the stream.
+            orphaned = await query.Query<RunDetails>()
+                .Where(r => r.NodeId == nodeId)
+                .Where(r => r.MatchesSql("d.data ->> 'state' = ?", RunState.Failed.Value))
+                .Where(r => r.PullRequestNumber != null)
+                .Where(r => r.FailureReason != RunDetails.PullRequestClosedWithoutMerge)
                 .ToListAsync(cancellationToken);
         }
 
@@ -105,7 +129,99 @@ public sealed class CloseoutEngine(
             }
         }
 
+        foreach (RunDetails run in orphaned)
+        {
+            try
+            {
+                switch (await InspectOrphanAsync(run, cancellationToken))
+                {
+                    case InspectionOutcome.MergeObserved:
+                        inspected++;
+                        merges++;
+                        break;
+                    case InspectionOutcome.Inspected:
+                        inspected++;
+                        break;
+                }
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception exception)
+            {
+                logger.LogWarning(
+                    exception, "Closeout orphan sweep failed for run {RunId} ({Url}); will retry next sweep",
+                    run.Id, run.PullRequestUrl);
+            }
+        }
+
         return new CloseoutSweepResult(inspected, merges);
+    }
+
+    /// <summary>
+    /// One read of a pull request nothing is watching any more, for the sole purpose of
+    /// finding out whether it merged (Decisions Log #72). This is deliberately thinner than
+    /// <see cref="InspectAndActAsync"/>: a Failed run is not a run anyone is driving, so a
+    /// failing check or an unresolved thread here dispatches nothing and parks nothing — the
+    /// row's existing needs-you rendering (<c>AttentionComposer.Delivered</c>'s Failed arm)
+    /// already says the honest thing, and inventing a follow-up onto a dead run's branch is
+    /// not this sweep's job. Only a merge changes anything; every other answer is a no-op.
+    /// </summary>
+    private async Task<InspectionOutcome> InspectOrphanAsync(RunDetails run, CancellationToken cancellationToken)
+    {
+        await using IDocumentSession session = store.LightweightSession();
+
+        StreamState? fence = await session.Events.FetchStreamStateAsync(run.TaskId, cancellationToken);
+        if (fence is null)
+        {
+            return InspectionOutcome.Skipped;
+        }
+
+        TaskAggregate? task = await session.Events.AggregateStreamAsync<TaskAggregate>(
+            run.TaskId, version: fence.Version, token: cancellationToken);
+
+        // A newer run owns this task's pull request now; this Failed run's own history is
+        // no longer the task's current story and there is nothing here to complete.
+        if (task is null || task.CurrentRunId != run.Id)
+        {
+            return InspectionOutcome.Skipped;
+        }
+
+        if (task.State != TaskState.Done || task.PullRequestUrl.IsBlank() || run.PullRequestNumber is not > 0)
+        {
+            return InspectionOutcome.Skipped;
+        }
+
+        ProjectDetails? project = await session.LoadAsync<ProjectDetails>(task.ProjectId, cancellationToken);
+        if (project is null)
+        {
+            return InspectionOutcome.Skipped;
+        }
+
+        PullRequestSnapshot snapshot = await inspector.InspectAsync(
+            project.RepositoryPath, task.PullRequestUrl, run.PullRequestNumber.Value, cancellationToken);
+
+        // The inspection is a slow network call; revalidate before acting; see the identical
+        // guard in InspectAndActAsync.
+        StreamState? current = await session.Events.FetchStreamStateAsync(run.TaskId, cancellationToken);
+        if (current is null || current.Version != fence.Version)
+        {
+            logger.LogDebug(
+                "Task {TaskId} advanced while inspecting the orphaned pull request {Url}; deferring to the next sweep",
+                run.TaskId, run.PullRequestUrl);
+            return InspectionOutcome.Skipped;
+        }
+
+        if (!snapshot.IsMerged)
+        {
+            // Still open, or closed without a merge: the row already renders exactly that —
+            // nothing is invented for either answer.
+            return InspectionOutcome.Inspected;
+        }
+
+        await CompleteCloseoutAsync(session, run, project, task, snapshot, DateTimeOffset.UtcNow, cancellationToken);
+        return InspectionOutcome.MergeObserved;
     }
 
     private async Task<InspectionOutcome> InspectAndActAsync(RunDetails run, CancellationToken cancellationToken)
@@ -504,6 +620,15 @@ public sealed class CloseoutEngine(
     /// lingers (origin incident: five merged task branches accumulated locally because
     /// nothing owned this step).
     /// <para>
+    /// RunCompleted is dated <paramref name="now"/> — when this sweep observed the merge —
+    /// never <c>snapshot.MergedAt</c>, GitHub's own merge timestamp. The two read minutes
+    /// apart on a normally-watched run, but the orphan sweep (Decisions Log #72) can observe
+    /// a merge that happened days ago, and dating the platform's own completion record to a
+    /// fact it did not just witness is exactly the guess the never-guess rule forbids
+    /// (AGENTS.md). PullRequestMerged keeps <c>snapshot.MergedAt</c> honestly — that field
+    /// names what GitHub reported, not when this node noticed.
+    /// </para>
+    /// <para>
     /// This is also the landing half of the handoff's capture-then-land split (Decisions Log
     /// #36). The text was captured from the agents' own session ends long before now, but the
     /// event carrying it is appended here, in the same transaction as PullRequestMerged and
@@ -524,7 +649,7 @@ public sealed class CloseoutEngine(
         RunHandoffRecorded handoff = await ComposeHandoffAsync(session, run, now, cancellationToken);
         session.Events.Append(run.Id, new PullRequestMerged(run.Id, snapshot.MergedAt, now));
         session.Events.Append(run.Id, handoff);
-        session.Events.Append(run.Id, new RunCompleted(run.Id, snapshot.MergedAt ?? now));
+        session.Events.Append(run.Id, new RunCompleted(run.Id, now));
         await session.SaveChangesAsync(cancellationToken);
 
         logger.LogInformation(

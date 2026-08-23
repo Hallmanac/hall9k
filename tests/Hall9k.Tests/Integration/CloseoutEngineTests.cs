@@ -20,6 +20,7 @@ using Hall9k.Domain.Infrastructure.Storage;
 using Hall9k.Domain.Shared.ValueObjects;
 using JasperFx;
 using Marten;
+using Marten.Linq.MatchesSql;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using Xunit;
@@ -402,6 +403,221 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
         session.Events.StartStream<TaskAggregate>(dependentId, added, published, assigned);
         await session.SaveChangesAsync(cancellationToken);
         return dependentId;
+    }
+
+    /// <summary>
+    /// The orphan sweep (Decisions Log #72): a Delivered row whose run left the watch set by
+    /// failing rather than merging — the pre-monitor-era shape (a crash, a stream from before
+    /// the closeout monitor existed) that leaves a pull request nobody will ever watch again
+    /// unless something looks a second time.
+    /// </summary>
+    [Fact]
+    public async Task An_orphaned_failed_runs_actually_merged_pull_request_reaches_true_closeout()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        (DocumentStore store, NodeContext node, GitWorktreeManager worktrees, string originPath, string repoPath) =
+            await SetUpAsync(cts.Token);
+        using IDisposable storeLifetime = store;
+        await DrainPriorSweepStateAsync(store, node, cts.Token);
+
+        (Guid taskId, Guid runId, Worktree worktree) =
+            await SeedOrphanedFailedRunAsync(store, node, worktrees, repoPath, cts.Token);
+        Guid dependentId = await SeedBlockedDependentAsync(store, node.OwnerId, taskId, cts.Token);
+
+        FakeInspector inspector = new()
+        {
+            Snapshot = FakeInspector.Quiet() with { IsMerged = true, MergedAt = Now.AddDays(-3) },
+        };
+        CloseoutEngine engine = NewEngine(store, node, inspector, worktrees);
+        CloseoutSweepResult sweep = await engine.PollOnceAsync(cts.Token);
+        sweep.Should().Be(new CloseoutSweepResult(RunsInspected: 1, MergesObserved: 1),
+            "the orphan pass's own read counts toward the same tally a watched merge does");
+        inspector.Inspections.Should().Be(1, "one API read for the one unwatched row");
+
+        await using IQuerySession query = store.QuerySession();
+        RunDetails run = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
+        run.State.Should().Be(RunState.Completed,
+            "a merge GitHub reports closes the run out exactly as a watched merge does");
+        run.PullRequestMergedAt.Should().Be(Now.AddDays(-3), "GitHub's own merge timestamp is recorded honestly");
+
+        TaskListItem task = (await query.LoadAsync<TaskListItem>(taskId, cts.Token))!;
+        task.State.Should().Be(TaskState.Done);
+
+        TaskListItem dependent = (await query.LoadAsync<TaskListItem>(dependentId, cts.Token))!;
+        dependent.State.Should().Be(TaskState.Queued, "true closeout unblocks dependents exactly as a watched merge does");
+
+        Directory.Exists(worktree.Path).Should().BeFalse("closeout completion removes the retained worktree");
+        TryGit(repoPath, $"rev-parse --verify refs/heads/{worktree.Branch}")
+            .ExitCode.Should().NotBe(0, "the local branch is deleted, exactly as a watched merge's is");
+        TryGit(originPath, $"rev-parse --verify refs/heads/{worktree.Branch}")
+            .ExitCode.Should().NotBe(0, "the remote branch is deleted");
+    }
+
+    /// <summary>
+    /// The other half of the never-guess rule (AGENTS.md): recording GitHub's own merge
+    /// timestamp honestly is not the same as dating the platform's own completion record to
+    /// it. A normally-watched merge is observed minutes after it happens, so the two times
+    /// are indistinguishable; the orphan sweep can observe a merge that happened days ago, and
+    /// that is exactly the case where reusing the historical timestamp would silently backdate
+    /// a record of what this sweep just did.
+    /// </summary>
+    [Fact]
+    public async Task The_orphan_sweeps_completion_is_dated_when_observed_not_backdated_to_the_merge()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        (DocumentStore store, NodeContext node, GitWorktreeManager worktrees, _, string repoPath) =
+            await SetUpAsync(cts.Token);
+        using IDisposable storeLifetime = store;
+
+        (_, Guid runId, _) = await SeedOrphanedFailedRunAsync(store, node, worktrees, repoPath, cts.Token);
+
+        DateTimeOffset historicalMerge = DateTimeOffset.UtcNow.AddDays(-5);
+        DateTimeOffset beforeSweep = DateTimeOffset.UtcNow.AddSeconds(-1);
+        FakeInspector inspector = new()
+        {
+            Snapshot = FakeInspector.Quiet() with { IsMerged = true, MergedAt = historicalMerge },
+        };
+        await NewEngine(store, node, inspector, worktrees).PollOnceAsync(cts.Token);
+
+        await using IQuerySession query = store.QuerySession();
+        RunDetails run = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
+        run.PullRequestMergedAt.Should().Be(historicalMerge, "GitHub's own merge fact is recorded honestly, however old");
+        run.FinishedAt.Should().BeAfter(beforeSweep,
+            "RunCompleted is dated when this sweep observed the merge, never backdated to when GitHub says it merged");
+    }
+
+    /// <summary>
+    /// A pull request GitHub still reports open, or closed without a merge, is left exactly as
+    /// the row already renders it: the run's own recorded failure reason, and the "nothing is
+    /// watching this pull request any more" attention line it already produces. The orphan
+    /// sweep exists to complete an incomplete record, not to invent one — there is no run left
+    /// to dispatch a follow-up onto.
+    /// </summary>
+    [Fact]
+    public async Task An_orphaned_failed_runs_pull_request_that_did_not_merge_is_left_exactly_as_it_was()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        (DocumentStore store, NodeContext node, GitWorktreeManager worktrees, _, string repoPath) =
+            await SetUpAsync(cts.Token);
+        using IDisposable storeLifetime = store;
+        await DrainPriorSweepStateAsync(store, node, cts.Token);
+
+        (_, Guid runId, _) = await SeedOrphanedFailedRunAsync(
+            store, node, worktrees, repoPath, cts.Token, failureReason: "the daemon crashed mid-review");
+
+        FakeInspector inspector = new() { Snapshot = FakeInspector.Quiet() with { IsClosed = true, ClosedAt = Now } };
+        CloseoutEngine engine = NewEngine(store, node, inspector, worktrees);
+        CloseoutSweepResult sweep = await engine.PollOnceAsync(cts.Token);
+        sweep.Should().Be(new CloseoutSweepResult(RunsInspected: 1, MergesObserved: 0),
+            "the read happened, but a non-merge answer records nothing");
+
+        await using IQuerySession query = store.QuerySession();
+        RunDetails run = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
+        run.State.Should().Be(RunState.Failed, "nothing is invented for an answer that is not a merge");
+        run.FailureReason.Should().Be("the daemon crashed mid-review",
+            "the run's own recorded reason stands untouched — the row's existing needs-you rendering is correct already");
+        run.PullRequestMergedAt.Should().BeNull();
+
+        // This run stays Failed with an open-or-unknown PR by design — exactly what makes
+        // the assertion above meaningful — so it would otherwise keep matching every later
+        // test's orphan query on this shared node/database (see RetireWatchAsync's own note).
+        await RetireWatchAsync(store, runId, cts.Token);
+    }
+
+    /// <summary>
+    /// A Failed run the closeout monitor itself already watched close (the ordinary, watched
+    /// path) has nothing left for the orphan sweep to learn — FailureReason already names it —
+    /// so it is never re-inspected. Bounding the sweep to rows that could actually still be
+    /// open or unknown is what keeps "one API read per unwatched row" honest.
+    /// </summary>
+    [Fact]
+    public async Task A_run_already_recorded_closed_without_merge_is_never_reinspected()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        (DocumentStore store, NodeContext node, GitWorktreeManager worktrees, _, string repoPath) =
+            await SetUpAsync(cts.Token);
+        using IDisposable storeLifetime = store;
+        await DrainPriorSweepStateAsync(store, node, cts.Token);
+
+        await SeedOrphanedFailedRunAsync(
+            store, node, worktrees, repoPath, cts.Token, recordAsClosedWithoutMerge: true);
+
+        FakeInspector inspector = new();
+        CloseoutEngine engine = NewEngine(store, node, inspector, worktrees);
+        CloseoutSweepResult sweep = await engine.PollOnceAsync(cts.Token);
+        sweep.Should().Be(new CloseoutSweepResult(RunsInspected: 0, MergesObserved: 0));
+        inspector.Inspections.Should().Be(0, "the run already recorded why it will never merge; asking again spends a read to relearn it");
+    }
+
+    /// <summary>
+    /// A task Done with a pull request whose run crashed before the closeout monitor ever
+    /// watched it — the shape the orphan sweep exists for (Decisions Log #72):
+    /// <see cref="PullRequestOpened"/> landed and the run then failed directly, the same way a
+    /// pre-monitor-era stream or a daemon crash leaves one, rather than being retired by a
+    /// follow-up or observed merged.
+    /// </summary>
+    private static async Task<(Guid TaskId, Guid RunId, Worktree Worktree)> SeedOrphanedFailedRunAsync(
+        DocumentStore store,
+        NodeContext node,
+        GitWorktreeManager worktrees,
+        string repoPath,
+        CancellationToken cancellationToken,
+        string failureReason = "the daemon crashed mid-review",
+        bool recordAsClosedWithoutMerge = false)
+    {
+        Guid taskId = DomainId.New();
+        Guid ownerId = node.OwnerId;
+        Guid projectId = DomainId.New();
+
+        Worktree worktree = await worktrees.CreateAsync(
+            new WorktreeRequest(repoPath, "main", taskId, DomainId.New(), "Close me out"), cancellationToken);
+        File.WriteAllText(Path.Combine(worktree.Path, "WORK.md"), "agent output\n");
+        Git(worktree.Path, "add -A");
+        Git(worktree.Path, "-c user.name=Test -c user.email=t@t commit -qm work");
+        Git(worktree.Path, $"push -q origin {worktree.Branch}");
+
+        await using IDocumentSession session = store.LightweightSession();
+
+        (TaskAggregate task, object[] lifecycle) = TaskSeed.Start(
+            TaskDecider.Add(
+                taskId, projectId, "Close me out", ["merged"], TaskType.Chore, null, null,
+                null, Now, ownerId),
+            ownerId, Now);
+        List<object> taskEvents = [.. lifecycle];
+        Hall9k.Domain.Features.Tasks.Events.TaskClaimed claimed =
+            TaskDecider.Claim(task, node.NodeId, ownerId, DomainId.New(), Now);
+        task.Apply(claimed);
+        taskEvents.Add(claimed);
+        Hall9k.Domain.Features.Tasks.Events.TaskCompleted completed =
+            TaskDecider.Complete(task, task.CurrentRunId!.Value, PullRequestUrl, Now);
+        task.Apply(completed);
+        taskEvents.Add(completed);
+
+        Guid runId = task.CurrentRunId!.Value;
+        session.Events.StartStream<TaskAggregate>(taskId, [.. taskEvents]);
+
+        session.Events.StartStream<RunAggregate>(runId,
+            new RunDispatched(runId, taskId, node.NodeId, ownerId, task.LeaseGeneration, DomainId.New(),
+                worktree.Path, worktree.Branch, ExecutorMode.Subscription, Now),
+            new AgentSessionCompleted(runId, Now),
+            new VerificationPassed(runId, Now),
+            new PullRequestOpened(runId, PullRequestUrl, 7, Now));
+
+        if (recordAsClosedWithoutMerge)
+        {
+            session.Events.Append(runId, new PullRequestClosed(runId, Now, Now));
+        }
+        else
+        {
+            session.Events.Append(runId, new RunFailed(runId, failureReason, Now));
+        }
+
+        var registered = Hall9k.Domain.Features.Project.Handlers.ProjectDecider.Register(
+            projectId, ownerId, DomainId.New(), $"closeout-{taskId:N}", repoPath, null, "main", Now);
+        session.Events.StartStream<Hall9k.Domain.Features.Project.ProjectAggregate>(registered.Id, registered);
+
+        await session.SaveChangesAsync(cancellationToken);
+        return (taskId, runId, worktree);
     }
 
     [Fact]
@@ -1329,6 +1545,46 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
     {
         await using IDocumentSession session = store.LightweightSession();
         session.Events.Append(runId, new RunSuperseded(runId, 99, Now));
+        await session.SaveChangesAsync(cancellationToken);
+    }
+
+    /// <summary>
+    /// Retires whatever is already sitting in the watch set or the orphan set for this node
+    /// before a test seeds its own scenario, for the same reason <see cref="RetireWatchAsync"/>
+    /// exists: this class's tests share one node and one database, so a leftover row from an
+    /// earlier test that runs before it inflates <see cref="CloseoutSweepResult"/>'s exact
+    /// count regardless of which test left it. Called by tests that assert that exact count,
+    /// so their pass/fail cannot depend on execution order.
+    /// </summary>
+    private static async Task DrainPriorSweepStateAsync(
+        DocumentStore store, NodeContext node, CancellationToken cancellationToken)
+    {
+        await using IQuerySession query = store.QuerySession();
+        Guid nodeId = node.NodeId;
+        IReadOnlyList<RunDetails> watched = await query.Query<RunDetails>()
+            .Where(r => r.NodeId == nodeId)
+            .Where(r => r.MatchesSql(
+                "d.data ->> 'state' in (?, ?, ?)",
+                RunState.AwaitingReview.Value, RunState.ReviewPending.Value, RunState.CloseoutParked.Value))
+            .ToListAsync(cancellationToken);
+        IReadOnlyList<RunDetails> orphaned = await query.Query<RunDetails>()
+            .Where(r => r.NodeId == nodeId)
+            .Where(r => r.MatchesSql("d.data ->> 'state' = ?", RunState.Failed.Value))
+            .Where(r => r.PullRequestNumber != null)
+            .Where(r => r.FailureReason != RunDetails.PullRequestClosedWithoutMerge)
+            .ToListAsync(cancellationToken);
+
+        if (watched.Count == 0 && orphaned.Count == 0)
+        {
+            return;
+        }
+
+        await using IDocumentSession session = store.LightweightSession();
+        foreach (Guid runId in watched.Concat(orphaned).Select(r => r.Id))
+        {
+            session.Events.Append(runId, new RunSuperseded(runId, 999, Now));
+        }
+
         await session.SaveChangesAsync(cancellationToken);
     }
 
