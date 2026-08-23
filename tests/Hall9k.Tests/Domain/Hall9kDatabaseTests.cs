@@ -1,0 +1,147 @@
+using FluentAssertions;
+using Hall9k.Domain.Infrastructure.Persistence;
+using Xunit;
+
+namespace Hall9k.Tests.Domain;
+
+/// <summary>
+/// The connection-string precedence Decisions Log #73 resolves (§15 row 29): environment
+/// variable, then the platform config file, then a per-project override file — and, above
+/// all, no plausible-looking default when nothing is configured (Decisions Log #58).
+/// </summary>
+// HALL9K_HOME and HALL9K_CONNECTION_STRING are process-wide state every test here
+// redirects; sharing the collection serializes this file against every other test that
+// does the same (IdeaSurfaceTests and friends), so a concurrent swap can never be read
+// mid-assertion.
+[Collection("Hall9kHome")]
+public sealed class Hall9kDatabaseTests : IDisposable
+{
+    private readonly string home = Path.Combine(Path.GetTempPath(), $"h9k-db-{Path.GetRandomFileName()}");
+    private readonly string? previousHome = Environment.GetEnvironmentVariable("HALL9K_HOME");
+    private readonly string? previousConnectionString =
+        Environment.GetEnvironmentVariable(Hall9kDatabase.EnvironmentVariableName);
+
+    public Hall9kDatabaseTests()
+    {
+        Directory.CreateDirectory(home);
+        Environment.SetEnvironmentVariable("HALL9K_HOME", home);
+        Environment.SetEnvironmentVariable(Hall9kDatabase.EnvironmentVariableName, null);
+    }
+
+    public void Dispose()
+    {
+        Environment.SetEnvironmentVariable("HALL9K_HOME", previousHome);
+        Environment.SetEnvironmentVariable(Hall9kDatabase.EnvironmentVariableName, previousConnectionString);
+        Directory.Delete(home, recursive: true);
+    }
+
+    [Fact]
+    public void Nothing_configured_anywhere_resolves_to_not_configured()
+    {
+        ConnectionStringResolution resolution = Hall9kDatabase.Resolve(startDirectory: home);
+
+        resolution.IsConfigured.Should().BeFalse("a plausible-looking default is exactly what Decisions Log #58 refuses to guess");
+        resolution.Origin.Should().Be(ConnectionStringOrigin.None);
+    }
+
+    [Fact]
+    public void A_malformed_platform_config_file_resolves_as_malformed_not_unconfigured()
+    {
+        File.WriteAllText(Path.Combine(home, "config.json"), "{ not valid json");
+        File.WriteAllText(Path.Combine(home, Hall9kDatabase.ProjectOverrideFileName), "project-value");
+
+        ConnectionStringResolution resolution = Hall9kDatabase.Resolve(startDirectory: home);
+
+        resolution.IsConfigured.Should().BeFalse();
+        resolution.Origin.Should().Be(
+            ConnectionStringOrigin.PlatformConfigFileMalformed,
+            "a broken config file needs repair, not the 'nothing configured' guidance — and it must not silently fall through to the project override behind it");
+        resolution.Source.Should().Be(Path.Combine(home, "config.json"));
+    }
+
+    [Fact]
+    public void An_explicitly_configured_value_outranks_everything()
+    {
+        Environment.SetEnvironmentVariable(Hall9kDatabase.EnvironmentVariableName, "env-value");
+        File.WriteAllText(Path.Combine(home, "config.json"), """{"connectionString": "config-value"}""");
+
+        ConnectionStringResolution resolution = Hall9kDatabase.Resolve(configured: "explicit-value", startDirectory: home);
+
+        resolution.Value.Should().Be("explicit-value");
+        resolution.Origin.Should().Be(ConnectionStringOrigin.Configured);
+    }
+
+    [Fact]
+    public void The_environment_variable_outranks_the_platform_config_file()
+    {
+        Environment.SetEnvironmentVariable(Hall9kDatabase.EnvironmentVariableName, "env-value");
+        File.WriteAllText(Path.Combine(home, "config.json"), """{"connectionString": "config-value"}""");
+
+        ConnectionStringResolution resolution = Hall9kDatabase.Resolve(startDirectory: home);
+
+        resolution.Value.Should().Be("env-value");
+        resolution.Origin.Should().Be(ConnectionStringOrigin.EnvironmentVariable);
+        resolution.Source.Should().Be(Hall9kDatabase.EnvironmentVariableName);
+    }
+
+    [Fact]
+    public void The_platform_config_file_outranks_a_project_override()
+    {
+        File.WriteAllText(Path.Combine(home, "config.json"), """{"connectionString": "config-value"}""");
+        File.WriteAllText(Path.Combine(home, Hall9kDatabase.ProjectOverrideFileName), "project-value");
+
+        ConnectionStringResolution resolution = Hall9kDatabase.Resolve(startDirectory: home);
+
+        resolution.Value.Should().Be("config-value");
+        resolution.Origin.Should().Be(ConnectionStringOrigin.PlatformConfigFile);
+        resolution.Source.Should().Be(Path.Combine(home, "config.json"));
+    }
+
+    [Fact]
+    public void A_project_override_is_found_by_walking_up_from_the_working_directory()
+    {
+        string nested = Path.Combine(home, "repo", "src", "deep");
+        Directory.CreateDirectory(nested);
+        File.WriteAllText(Path.Combine(home, "repo", Hall9kDatabase.ProjectOverrideFileName), "project-value\n");
+
+        ConnectionStringResolution resolution = Hall9kDatabase.Resolve(startDirectory: nested);
+
+        resolution.Value.Should().Be("project-value", "the file's own whitespace is trimmed");
+        resolution.Origin.Should().Be(ConnectionStringOrigin.ProjectOverride);
+        resolution.Source.Should().Be(Path.Combine(home, "repo", Hall9kDatabase.ProjectOverrideFileName));
+    }
+
+    [Fact]
+    public async Task Writing_the_configured_connection_string_makes_it_the_platform_config_file_answer()
+    {
+        await Hall9kDatabase.WriteConfiguredConnectionStringAsync("written-value", CancellationToken.None);
+
+        ConnectionStringResolution resolution = Hall9kDatabase.Resolve(startDirectory: home);
+
+        resolution.Value.Should().Be("written-value");
+        resolution.Origin.Should().Be(ConnectionStringOrigin.PlatformConfigFile);
+    }
+
+    [Fact]
+    public async Task Writing_the_connection_string_preserves_other_keys_already_in_the_config_file()
+    {
+        File.WriteAllText(Path.Combine(home, "config.json"), """{"someOtherSetting": "keep-me"}""");
+
+        await Hall9kDatabase.WriteConfiguredConnectionStringAsync("written-value", CancellationToken.None);
+
+        string written = await File.ReadAllTextAsync(Path.Combine(home, "config.json"));
+        written.Should().Contain("keep-me").And.Contain("written-value");
+    }
+
+    [Fact]
+    public async Task Writing_the_connection_string_recovers_from_a_malformed_existing_config_file()
+    {
+        File.WriteAllText(Path.Combine(home, "config.json"), "{ not valid json");
+
+        await Hall9kDatabase.WriteConfiguredConnectionStringAsync("written-value", CancellationToken.None);
+
+        ConnectionStringResolution resolution = Hall9kDatabase.Resolve(startDirectory: home);
+        resolution.Value.Should().Be("written-value", "the doctor's own write is what fixes a broken file, not a reason to crash mid-fix");
+        resolution.Origin.Should().Be(ConnectionStringOrigin.PlatformConfigFile);
+    }
+}
