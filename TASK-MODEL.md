@@ -373,6 +373,27 @@ human then resolved onto that pull request. `RunState.Failed` carries both, so n
 nor the attention line infers a closure from it. A watched run that is no longer the task's
 current run is retired with `RunSuperseded` (a newer follow-up owns the PR).
 
+**The orphan sweep** (log #72): a run this node dispatched can leave the watch above by
+failing rather than by merging — a crash, a kill, or (the case that motivated this) a stream
+written before the closeout monitor existed at all. Its pull request does not stop existing
+just because nothing is watching it. Every sweep therefore also gives one state-only `gh` read
+(`InspectStateAsync` — merge/close facts only, none of the reviews or checks a watched run's
+full inspection also gathers, since this sweep dispatches no follow-up either way) to each Done
+task whose current run is `Failed` or `Killed`, still names a pull request (`PullRequestNumber`
+is set), and was not already recorded closed (`FailureReason` is not
+`PullRequestClosedWithoutMerge` — that row already knows the one thing an inspection could
+tell it). A merge found there is recorded exactly as a watched one is: `PullRequestMerged` +
+`RunCompleted`, dependents unblocked, the Jira comment where a reference exists. `RunCompleted`
+is dated when this sweep observed the merge, never backdated to `PullRequestMerged.MergedAt` —
+the orphan sweep is the one place those two times can be days apart, and recording the
+platform's own completion under a fact it did not just witness is the never-guess rule applied
+to time. A close without a merge is also recorded, exactly as the watched path records it
+(`PullRequestClosed`, `FailureReason` becomes `PullRequestClosedWithoutMerge`): the row's
+`AttentionComposer` rendering would otherwise keep pointing the human at `h9k pr resolve` for a
+pull request nobody can merge, and the row would keep matching this query's own exclusion
+filter forever. A still-open answer is the only true no-op — nothing is invented, and a dead run
+is not one this engine dispatches a follow-up onto.
+
 ### 2.3 Task development vs task dispatch (log #34)
 
 Two lifecycles used to be one. Discovery produces a rough task and refines it over hours or
