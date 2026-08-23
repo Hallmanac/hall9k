@@ -13,6 +13,9 @@ are in. Then, in order of need:
 - `TASK-MODEL.md` — the domain model: streams, events, aggregates, type discipline
 - `SLICE-1.md` — the current build breakdown and acceptance criteria
 - `HALL9K-P2P-DESIGN.md` — the peer-to-peer layer: identity, discovery, NAT traversal (design only, nothing built; Decisions Log #38-#58)
+- `README.md` + `docs/` — the newcomer's on-ramp (concepts, CLI map, operations, and `docs/scope.md`,
+  which is the honest works-today / designed-but-unbuilt / never-doing inventory). Written from this
+  file and the four above, so when behaviour changes here, `docs/` is downstream and needs the edit too.
 
 ## Build / test / run
 
