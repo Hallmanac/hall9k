@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using Hall9k.Cli.Diagnostics;
 using Hall9k.Cli.Infrastructure;
 using Hall9k.Domain.Infrastructure.Storage;
 using Spectre.Console;
@@ -73,6 +74,18 @@ public static class DaemonLifecycle
             }
 
             binary = resolved;
+        }
+
+        // The reachability probe runs before anything else here, deliberately: the
+        // "started" line below is a claim, and claims wait for the fact (origin incident,
+        // 2026-08-21 — post-restart, daemon start printed started-with-pid and then "exited
+        // during startup" with an Npgsql stack trace, because Postgres was not back up yet).
+        // Interactive and unreachable-because-nothing-is-running offers to start it via
+        // Docker (Decisions Log #73); non-interactive gets today's behavior, a named fix and
+        // a refusal to spawn.
+        if (!await DatabaseDoctor.RunAsync(offerFixes: true, cancellationToken))
+        {
+            return ExitCodes.Error;
         }
 
         Directory.CreateDirectory(RunPaths.Root);
@@ -174,8 +187,10 @@ public static class DaemonLifecycle
                     }
                 }
 
-                await Console.Error.WriteLineAsync(
-                    "Is Postgres running? Start it with: docker compose up -d  (then h9k daemon start again)");
+                // The preflight probe above already found Postgres reachable moments ago, so
+                // reaching this is a race (it went away in between) rather than the ordinary
+                // case — h9k doctor re-diagnoses fresh rather than this guessing why.
+                await Console.Error.WriteLineAsync("Run h9k doctor to diagnose why, then h9k daemon start again.");
                 return ExitCodes.Error;
             }
 
