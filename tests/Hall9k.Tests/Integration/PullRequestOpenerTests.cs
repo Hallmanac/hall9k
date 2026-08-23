@@ -110,6 +110,89 @@ public sealed class PullRequestOpenerTests(PostgresFixture postgres) : IClassFix
             "the worktree is retained through closeout — it IS the follow-up workspace (log #21)");
     }
 
+    /// <summary>
+    /// The generation fence (backlog 39): a requeue-and-reclaim moved the task on to
+    /// generation 2 under a fresh run while this run — still generation 1 — reached the
+    /// push step. The origin incident's exact shape: a stale lane's push must not complete
+    /// the task the live generation still owns, nor take that generation's lease with it.
+    /// </summary>
+    [Fact]
+    public async Task A_stale_generations_push_does_not_complete_the_live_generations_task_or_lease()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        using DocumentStore store = DocumentStore.For(opts =>
+        {
+            opts.Connection(postgres.ConnectionString);
+            opts.ConfigureHall9k(AutoCreate.All);
+        });
+
+        Directory.CreateDirectory(_root);
+        string originPath = Path.Combine(_root, "origin.git");
+        string repoPath = Path.Combine(_root, "repo");
+        Git(_root, $"init --bare -b main \"{originPath}\"");
+        Git(_root, $"clone \"{originPath}\" \"{repoPath}\"");
+        File.WriteAllText(Path.Combine(repoPath, "README.md"), "# fence test\n");
+        Git(repoPath, "add -A");
+        Git(repoPath, "-c user.name=Test -c user.email=t@t commit -qm init");
+        Git(repoPath, "push -q origin main");
+
+        GitWorktreeManager worktrees = new(NullLogger<GitWorktreeManager>.Instance);
+        Guid taskId = DomainId.New();
+        Guid staleRunId = DomainId.New();
+        Worktree worktree = await worktrees.CreateAsync(
+            new WorktreeRequest(repoPath, "main", taskId, staleRunId, "Stale generation push"), cts.Token);
+        File.WriteAllText(Path.Combine(worktree.Path, "WORK.md"), "stale run output\n");
+        Git(worktree.Path, "add -A");
+        Git(worktree.Path, "-c user.name=Test -c user.email=t@t commit -qm \"Add WORK.md\"");
+
+        Guid ownerId = DomainId.New();
+        Guid projectId = DomainId.New();
+        Guid liveNodeId = DomainId.New();
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            TaskAggregate task = new();
+            (task, object[] lifecycle) = TaskSeed.Start(
+                TaskDecider.Add(taskId, projectId, "Stale generation push", ["never completes as generation 1"],
+                    TaskType.Chore, null, null, null, Now, ownerId),
+                ownerId, Now);
+            var staleClaim = TaskDecider.Claim(task, DomainId.New(), ownerId, staleRunId, Now);
+            task.Apply(staleClaim);
+            // A requeue-and-reclaim moved the task on to generation 2 under a different run
+            // while this run's push was already in flight — exactly the double-booking shape.
+            var requeued = TaskDecider.Requeue(task, RequeueReason.LeaseExpired, Now);
+            task.Apply(requeued);
+            var liveClaim = TaskDecider.Claim(task, liveNodeId, ownerId, DomainId.New(), Now);
+            task.Apply(liveClaim);
+            session.Events.StartStream<TaskAggregate>(taskId, [.. lifecycle, staleClaim, requeued, liveClaim]);
+            session.Store(new TaskLease { Id = taskId, NodeId = liveNodeId, LeaseGeneration = 2, HeartbeatAt = Now });
+
+            session.Events.StartStream<RunAggregate>(staleRunId,
+                new RunDispatched(staleRunId, taskId, staleClaim.NodeId, ownerId, 1, DomainId.New(),
+                    worktree.Path, worktree.Branch, ExecutorMode.Subscription, Now),
+                new AgentSessionCompleted(staleRunId, Now),
+                new VerificationPassed(staleRunId, Now));
+
+            var registered = Hall9k.Domain.Features.Project.Handlers.ProjectDecider.Register(
+                projectId, ownerId, DomainId.New(), $"pr-{taskId:N}", repoPath, null, "main", Now);
+            session.Events.StartStream<Hall9k.Domain.Features.Project.ProjectAggregate>(registered.Id, registered);
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        ListLogger<PullRequestOpener> logger = new();
+        PullRequestOpener opener = new(store, logger);
+        await opener.OpenAsync(staleRunId, taskId, cts.Token);
+
+        await using IQuerySession query = store.QuerySession();
+        TaskListItem task2 = (await query.LoadAsync<TaskListItem>(taskId, cts.Token))!;
+        task2.State.Value.Should().Be("Claimed", "the live generation's claim survives the stale run's push");
+        task2.LeaseGeneration.Should().Be(2);
+        (await query.LoadAsync<TaskLease>(taskId, cts.Token)).Should().NotBeNull(
+            "the stale run's push must not release the live generation's lease");
+
+        logger.Lines.Should().Contain(line =>
+            line.Contains("run at generation 1") && line.Contains("at generation 2 - rejected"));
+    }
+
     [Fact]
     public async Task Follow_up_flow_pushes_the_existing_branch_and_updates_the_pull_request_in_place()
     {

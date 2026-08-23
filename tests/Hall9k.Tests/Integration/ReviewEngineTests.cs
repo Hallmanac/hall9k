@@ -1201,6 +1201,52 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
         run.FailureReason.Should().Contain("Review loop failed", "the crash is reported as itself, not as a verdict");
     }
 
+    /// <summary>
+    /// The generation fence (backlog 39): a requeue-and-reclaim moved the task on to
+    /// generation 2 while this run — still generation 1, exactly the shape a catch-up
+    /// double-booking or a lease-expiry-then-retry leaves behind — sat ready to re-enter
+    /// the review loop. The loop must stop at the very first check, before it ever asks
+    /// the executor to spawn a session into a worktree the live generation now owns.
+    /// </summary>
+    [Fact]
+    public async Task A_stale_generations_review_loop_stops_before_dispatching_and_never_touches_the_task()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        using DocumentStore store = NewStore();
+        (Guid taskId, Guid runId, _) = await SeedVerifiedRunAsync(store, cts.Token);
+
+        NodeContext node = new();
+        await node.InitializeAsync(store, cts.Token);
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            TaskAggregate task = (await session.Events.AggregateStreamAsync<TaskAggregate>(taskId, token: cts.Token))!;
+            var requeued = TaskDecider.Requeue(task, RequeueReason.LeaseExpired, Now);
+            task.Apply(requeued);
+            var reclaimed = TaskDecider.Claim(task, node.NodeId, node.OwnerId, DomainId.New(), Now);
+            session.Events.Append(taskId, requeued, reclaimed);
+            session.Store(new TaskLease { Id = taskId, NodeId = node.NodeId, LeaseGeneration = 2, HeartbeatAt = Now });
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        ScriptedExecutor executor = new("Ignored — the fence must stop before this is ever read.");
+        ListLogger<ReviewEngine> logger = new();
+        ReviewEngine engine = new(store, executor, executor.Processes,
+            new VerificationRunner(store, Options.Create(new DaemonOptions()), NullLogger<VerificationRunner>.Instance),
+            Options.Create(new DaemonOptions()), logger);
+
+        bool mergeReady = await engine.ReviewAsync(runId, taskId, cts.Token);
+
+        mergeReady.Should().BeFalse("a stale generation never reports merge-ready");
+        executor.Spawns.Should().BeEmpty(
+            "the fence stops the loop before it dispatches a pass into a superseded worktree");
+        logger.Lines.Should().Contain(line =>
+            line.Contains("run at generation 1") && line.Contains("at generation 2 - rejected"));
+
+        await using IQuerySession query = store.QuerySession();
+        (await query.LoadAsync<TaskListItem>(taskId, cts.Token))!.State.Should().Be(
+            TaskState.Claimed, "the live generation's claim is untouched by the stale lane");
+    }
+
     private DocumentStore NewStore() => DocumentStore.For(opts =>
     {
         opts.Connection(postgres.ConnectionString);

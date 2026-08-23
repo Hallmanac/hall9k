@@ -5,9 +5,12 @@ using Hall9k.Domain.Features.Run.Events;
 using Hall9k.Domain.Features.Run.Projections;
 using Hall9k.Domain.Features.Tasks;
 using Hall9k.Domain.Features.Tasks.Documents;
+using Hall9k.Domain.Features.Tasks.Events;
 using Hall9k.Domain.Features.Tasks.Handlers;
 using Hall9k.Domain.Features.Tasks.Projections;
+using JasperFx.Events;
 using Marten;
+using Marten.Events;
 
 namespace Hall9k.Daemon.Execution;
 
@@ -74,14 +77,46 @@ public sealed class PullRequestOpener(
                     : new PullRequestOpened(runId, pullRequestUrl, pullRequestNumber, now));
             }
 
-            TaskAggregate? aggregate = await session.Events.AggregateStreamAsync<TaskAggregate>(taskId, token: cancellationToken);
-            if (aggregate is not null && aggregate.State == TaskState.Claimed)
+            if (!await GenerationFence.AllowsAsync(
+                session, logger, taskId, runId, run.LeaseGeneration, nameof(TaskCompleted), cancellationToken))
             {
-                session.Events.Append(taskId, TaskDecider.Complete(aggregate, runId, pullRequestUrl, now));
+                // A stale completion: on a GitHub origin the PullRequestOpened/Updated event
+                // above is enough for the closeout monitor's own PR-state read to notice this
+                // run is done and stop watching it, but a non-GitHub origin appended nothing
+                // — without retiring the run here it stays in its pre-PR live RunState, and
+                // the supervisor dropping its monitor just means adoption or resume finds it
+                // "recoverable" and repeats this same stale path (Copilot review, PR #30).
+                // The live generation's lease is untouched: it is not this stale run's to take.
+                if (await session.Events.FetchStreamStateAsync(runId, cancellationToken) is not null)
+                {
+                    TaskDetails? currentTask = await session.LoadAsync<TaskDetails>(taskId, cancellationToken);
+                    session.Events.Append(
+                        runId, new RunSuperseded(runId, currentTask?.LeaseGeneration ?? run.LeaseGeneration, now));
+                }
+
+                await session.SaveChangesAsync(cancellationToken);
+                return;
+            }
+
+            (TaskAggregate Task, long Version)? fenced = await GenerationFence.LoadFencedAsync(session, taskId, cancellationToken);
+            if (fenced is { } current && current.Task.State == TaskState.Claimed)
+            {
+                session.Events.Append(
+                    taskId, expectedVersion: current.Version + 1, TaskDecider.Complete(current.Task, runId, pullRequestUrl, now));
             }
 
             session.Delete<TaskLease>(taskId);
-            await session.SaveChangesAsync(cancellationToken);
+            try
+            {
+                await session.SaveChangesAsync(cancellationToken);
+            }
+            catch (EventStreamUnexpectedMaxEventIdException)
+            {
+                logger.LogInformation(
+                    "Task {TaskId}: lost the generation race completing the task for run {RunId} — a newer claim committed first",
+                    taskId, runId);
+                return;
+            }
 
             logger.LogInformation(
                 (followUp, pullRequestUrl) switch
@@ -230,16 +265,42 @@ public sealed class PullRequestOpener(
 
     private async Task RecordFailureAsync(Guid runId, Guid taskId, string reason, CancellationToken cancellationToken)
     {
+        DateTimeOffset now = DateTimeOffset.UtcNow;
         await using IDocumentSession session = store.LightweightSession();
-        session.Events.Append(runId, new RunFailed(runId, $"PR opening failed: {reason}", DateTimeOffset.UtcNow));
+        session.Events.Append(runId, new RunFailed(runId, $"PR opening failed: {reason}", now));
 
-        TaskAggregate? task = await session.Events.AggregateStreamAsync<TaskAggregate>(taskId, token: cancellationToken);
-        if (task is not null && TaskDecider.CanFail(task))
+        RunDetails? run = await session.LoadAsync<RunDetails>(runId, cancellationToken);
+        if (run is not null
+            && !await GenerationFence.AllowsAsync(
+                session, logger, taskId, runId, run.LeaseGeneration, nameof(TaskFailed), cancellationToken))
         {
-            session.Events.Append(taskId, TaskDecider.Fail(task, runId, $"PR opening failed: {reason}", DateTimeOffset.UtcNow));
+            await session.SaveChangesAsync(cancellationToken);
+            return;
         }
 
-        session.Delete<TaskLease>(taskId);
-        await session.SaveChangesAsync(cancellationToken);
+        (TaskAggregate Task, long Version)? fenced = await GenerationFence.LoadFencedAsync(session, taskId, cancellationToken);
+        if (fenced is { } current && TaskDecider.CanFail(current.Task))
+        {
+            // One transaction with the RunFailed append above (Copilot review, PR #30's
+            // expectedVersion fix, kept atomic with it on purpose — see
+            // RunSupervisor.AppendFencedTaskFailureAsync): a lost race here rolling back
+            // the run's own failure fact too is a smaller cost than a reader observing the
+            // run Failed while its task still reads Claimed.
+            session.Events.Append(
+                taskId, expectedVersion: current.Version + 1,
+                TaskDecider.Fail(current.Task, runId, $"PR opening failed: {reason}", now));
+            session.Delete<TaskLease>(taskId);
+        }
+
+        try
+        {
+            await session.SaveChangesAsync(cancellationToken);
+        }
+        catch (EventStreamUnexpectedMaxEventIdException)
+        {
+            logger.LogInformation(
+                "Task {TaskId}: lost the generation race recording a PR-opening failure for run {RunId} — a newer claim committed first",
+                taskId, runId);
+        }
     }
 }
