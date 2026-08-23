@@ -522,8 +522,14 @@ public sealed class RunAggregateTests
         run.PendingHumanFindings.Should().Be("The limiter finding is real; fix it.");
 
         run.Apply(new ReviewFixDispatched(id, DomainId.New(), 2, 5004, Now, Now));
-        run.PendingHumanFindings.Should().BeNull("the dispatch consumed the human findings");
+        run.PendingHumanFindings.Should().Be(
+            "The limiter finding is real; fix it.",
+            "a budget-exhausted redispatch must see the same human guidance again — only a " +
+            "completed fix session actually consumes it");
         run.ReviewFixRuns.Should().Be(2, "the count keeps counting every fix session the run actually ran");
+
+        run.Apply(new ReviewFixCompleted(id, 2, ReviewFixOutcome.Fixed, Now));
+        run.PendingHumanFindings.Should().BeNull("the fix session finished, so the human findings are consumed");
     }
 
     /// <summary>
@@ -618,6 +624,43 @@ public sealed class RunAggregateTests
         run.Apply(new ReviewFixDispatched(id, DomainId.New(), Cycle: 1, ProcessId: 6002, Now, Now));
         run.State.Should().Be(RunState.UnderReview, "redispatching the fix session is what clears the park");
         run.ReviewPhase.Should().Be(ReviewPhase.AwaitingFix);
+    }
+
+    /// <summary>
+    /// A fix session dispatched over a human's own resolution (h9k review resolve) that then
+    /// hits the recognized usage-limit shape must redispatch over the SAME human guidance, not
+    /// silently fall back to the automated findings file (backlog 40): PendingHumanFindings is
+    /// only truly consumed once a fix session actually finishes, not merely dispatched.
+    /// </summary>
+    [Fact]
+    public void Budget_exhausted_fix_session_over_a_human_resolution_keeps_the_human_findings_for_redispatch()
+    {
+        RunAggregate run = new();
+        Guid id = DomainId.New();
+        run.Apply(new RunDispatched(
+            id, DomainId.New(), DomainId.New(), DomainId.New(), 1, DomainId.New(),
+            "/wt/x", "task/x", ExecutorMode.Subscription, Now));
+        run.Apply(new RunProcessStarted(id, 4482, Now));
+        run.Apply(new AgentSessionCompleted(id, Now));
+        run.Apply(new VerificationPassed(id, Now));
+        run.Apply(new ReviewDispatched(id, DomainId.New(), 1, 5001, Now, Now));
+        run.Apply(new ReviewCompleted(id, 1, ReviewVerdict.NeedsFixes, Now));
+        run.Apply(new ReviewFixDispatched(id, DomainId.New(), Cycle: 1, ProcessId: 5002, Now, Now));
+        run.Apply(new ReviewFixCompleted(id, 1, ReviewFixOutcome.Disputed, Now));
+        run.Apply(new ReviewParked(id, "The fix run disputed a review finding.", Now));
+
+        run.Apply(new ReviewParkResolved(
+            id, ReviewVerdict.NeedsFixes, "The finding is real; fix it as reported.", Now, DomainId.New()));
+        run.PendingHumanFindings.Should().Be("The finding is real; fix it as reported.");
+
+        run.Apply(new ReviewFixDispatched(id, DomainId.New(), Cycle: 1, ProcessId: 6002, Now, Now));
+        run.Apply(new RunBudgetExhausted(id, "Claude AI usage limit reached|1762952400", Now));
+
+        run.State.Should().Be(RunState.BudgetParked);
+        run.ReviewPhase.Should().Be(ReviewPhase.FixNeeded);
+        run.PendingHumanFindings.Should().Be(
+            "The finding is real; fix it as reported.",
+            "the exhausted session never finished, so the human's own instructions must survive for redispatch");
     }
 
     [Fact]
