@@ -1049,15 +1049,35 @@ public sealed class ReviewEngine(
     /// Parks the run for the human, fenced on generation (backlog 39): a stale generation's
     /// park still protects its lease from the expiry sweep (DispatchEngine's parked guard
     /// reads the task's CurrentRunId), so a rejected park is not a formality here — it is
-    /// what stops a superseded lane from pinning the live generation's lease.
+    /// what stops a superseded lane from pinning the live generation's lease. Internal
+    /// rather than private so the fence-rejection branch can be asserted directly (the
+    /// stale generation it must react to is a narrow in-process race with DriveAsync's own
+    /// loop-top check, not one a test can land reliably through the public entry point).
     /// </summary>
-    private async Task ParkAsync(Guid runId, Guid taskId, string reason, CancellationToken cancellationToken)
+    internal async Task ParkAsync(Guid runId, Guid taskId, string reason, CancellationToken cancellationToken)
     {
         await using IDocumentSession session = store.LightweightSession();
         RunAggregate run = await LoadRunAsync(runId, cancellationToken);
         if (!await GenerationFence.AllowsAsync(
             session, logger, taskId, runId, run.LeaseGeneration, nameof(ReviewParked), cancellationToken))
         {
+            // A reclaim can land in the gap between DriveAsync's loop-top fence check and
+            // this one, so the rejection here must retire the run with RunSuperseded like
+            // every other fence rejection in this file — returning bare would leave the
+            // run live in a non-terminal ReviewPhase with no monitor watching it until the
+            // next poll cycle's ResumeResolvedReviewsAsync stumbled onto it (Copilot
+            // review, PR #30).
+            if (await session.Events.FetchStreamStateAsync(runId, cancellationToken) is not null)
+            {
+                TaskDetails? currentTask = await session.LoadAsync<TaskDetails>(taskId, cancellationToken);
+                session.Events.Append(
+                    runId, new RunSuperseded(runId, currentTask?.LeaseGeneration ?? run.LeaseGeneration, DateTimeOffset.UtcNow));
+                await session.SaveChangesAsync(cancellationToken);
+                logger.LogInformation(
+                    "Run {RunId}: retired as superseded — the review loop's park found it was no longer task {TaskId}'s current generation",
+                    runId, taskId);
+            }
+
             return;
         }
 

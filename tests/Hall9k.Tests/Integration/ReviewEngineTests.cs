@@ -1247,6 +1247,80 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
             TaskState.Claimed, "the live generation's claim is untouched by the stale lane");
     }
 
+    /// <summary>
+    /// A stale generation's own park check (backlog 39, Copilot review PR #30's finding):
+    /// DriveAsync's loop-top fence can pass, then a requeue-and-reclaim lands in the gap
+    /// before ParkAsync's own fence check — a race no test can land through the public
+    /// ReviewAsync entry point, since DriveAsync would already have retired the run at the
+    /// very next loop-top check. This drives ParkAsync directly (internal for exactly this)
+    /// against a task already reclaimed onto generation 2, so the rejection must retire the
+    /// run with RunSuperseded itself rather than leaving it live with no monitor.
+    /// </summary>
+    [Fact]
+    public async Task A_stale_generations_own_park_retires_the_run_instead_of_leaving_it_live()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        using DocumentStore store = NewStore();
+
+        Guid ownerId = DomainId.New();
+        Guid projectId = DomainId.New();
+        Guid liveNodeId = DomainId.New();
+        Guid taskId = DomainId.New();
+        Guid staleRunId = DomainId.New();
+        string worktreePath = Path.Combine(_home, $"wt-{staleRunId:N}");
+        Directory.CreateDirectory(worktreePath);
+
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            TaskAggregate task = new();
+            (task, object[] lifecycle) = TaskSeed.Start(
+                TaskDecider.Add(taskId, projectId, "Stale generation park", ["never parks as generation 1"],
+                    TaskType.Chore, null, null, null, Now, ownerId),
+                ownerId, Now);
+            var staleClaim = TaskDecider.Claim(task, DomainId.New(), ownerId, staleRunId, Now);
+            task.Apply(staleClaim);
+            // A requeue-and-reclaim moved the task on to generation 2 under a different run
+            // while this run's review loop was still parking — the exact double-booking shape.
+            var requeued = TaskDecider.Requeue(task, RequeueReason.LeaseExpired, Now);
+            task.Apply(requeued);
+            var liveClaim = TaskDecider.Claim(task, liveNodeId, ownerId, DomainId.New(), Now);
+            task.Apply(liveClaim);
+            session.Events.StartStream<TaskAggregate>(taskId, [.. lifecycle, staleClaim, requeued, liveClaim]);
+            session.Store(new TaskLease { Id = taskId, NodeId = liveNodeId, LeaseGeneration = 2, HeartbeatAt = Now });
+
+            session.Events.StartStream<RunAggregate>(staleRunId,
+                new RunDispatched(staleRunId, taskId, staleClaim.NodeId, ownerId, 1, DomainId.New(),
+                    worktreePath, "task/stale-park", ExecutorMode.Subscription, Now),
+                new AgentSessionCompleted(staleRunId, Now),
+                new VerificationPassed(staleRunId, Now));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        ScriptedExecutor executor = new("Ignored — parking never dispatches.");
+        ListLogger<ReviewEngine> logger = new();
+        ReviewEngine engine = new(store, executor, executor.Processes,
+            new VerificationRunner(store, Options.Create(new DaemonOptions()), NullLogger<VerificationRunner>.Instance),
+            Options.Create(new DaemonOptions()), logger);
+
+        await engine.ParkAsync(staleRunId, taskId, "No parseable verdict.", cts.Token);
+
+        await using IQuerySession query = store.QuerySession();
+        RunDetails run = (await query.LoadAsync<RunDetails>(staleRunId, cts.Token))!;
+        run.State.Should().Be(RunState.Superseded,
+            "the stale generation's own park check must retire the run itself, not leave it live with no monitor");
+
+        TaskListItem task2 = (await query.LoadAsync<TaskListItem>(taskId, cts.Token))!;
+        task2.State.Should().Be(TaskState.Claimed, "the live generation's claim survives the stale run's park");
+        task2.LeaseGeneration.Should().Be(2);
+        (await query.LoadAsync<TaskLease>(taskId, cts.Token)).Should().NotBeNull(
+            "the stale run's park must not release the live generation's lease");
+
+        logger.Lines.Should().Contain(line =>
+            line.Contains("run at generation 1") && line.Contains("at generation 2 - rejected"));
+        logger.Lines.Should().Contain(line =>
+            line.Contains("retired as superseded") && line.Contains("review loop's park"));
+    }
+
     private DocumentStore NewStore() => DocumentStore.For(opts =>
     {
         opts.Connection(postgres.ConnectionString);
