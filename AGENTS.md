@@ -28,8 +28,10 @@ docker compose up -d         # Postgres only (installed mode / manual runs)
 h9k install                  # publish release binaries to ~/.hall9k/bin (no service registered)
 h9k daemon start|stop|status # the CLI-owned daemon lifecycle (Decisions Log #31)
 h9k doctor                   # diagnose the database situation and what to do about it (Decisions Log #73, #74)
+h9k project add --name <n> --repo-url <url>   # register a project and create its home directory
+h9k project init <name>      # create, repair or refresh a project's home; idempotent
 h9k project list             # every project with its tasks counted by attention bucket
-h9k project show <name>      # one project: registration, settings, rollup, newest tasks
+h9k project show <name>      # one project: home, registration, settings, rollup, newest tasks
 h9k task list --project <name> --state <state>   # browse tasks, newest first (--all, --limit)
 h9k status                   # the attention pane: state, phase, and attention on every row
 h9k idea add "<text>"        # capture an idea; discovery starts, a project is optional
@@ -46,6 +48,32 @@ it cannot. **Attention** is needs-you or not, with the one-line cause and the co
 it. The run vocabulary (Running, UnderReview, AwaitingReview, ChecksFailing, …) is the phase
 line's material and never appears in the Status column; `--state` still selects on it (as
 `run-failed` for the one word the lifecycle vocabulary already owns).
+
+**Every project owns a home directory** (Decisions Log #76), `~/.hall9k/projects/<name>` unless
+the project says otherwise, in the same shape on every machine:
+
+```
+<home>/
+├── AGENTS.md   generated from the project's facts; a render, never hand-maintained
+├── repo/       <name>.git (bare clone) · dev/ (a worktree on the primary branch) · wt-*/
+├── ideas/
+├── tasks/
+├── skills/     plain markdown skill docs, seeded from the install's canonical set
+└── .claude/    generated Claude Code plumbing: skills/ symlinked into skills/, never copied
+```
+
+Creating it is a recipe, not an agent: `h9k project add` and `h9k project init` do the
+directories, the bare clone with its fetch refspec corrected, the `dev/` worktree, the skill
+seeding and the render, all in platform code and all idempotent. Re-running it is also how a
+home catches up: `repo/dev` is fetched and fast-forwarded, and the step says whether it moved,
+was already current, or was left alone because local changes blocked it. `h9k install` publishes
+the canonical skill set to `~/.hall9k/skills`, and a project's `skills/` links into it, so updating
+the platform updates every project's platform skills in one move. **The location is a setting;
+the shape is the contract**, which is what lets the dispatcher hand a session paths instead of
+sending it hunting. Two things follow for anyone writing tasks against this: the task and idea
+files that will render into `tasks/` and `ideas/` are backlog 48 and not built, and the hall9k
+project's own move into its default home is the separate cutover chore (backlog 52), so until it
+runs this repository is still worked from `~/Code/Hall9k_Platform`.
 
 Ideas come before tasks (Decisions Log #35). An idea undergoes **discovery** (what is this?);
 a draft task undergoes **refinement** (how does this become executable?). A task is an idea with
@@ -411,6 +439,14 @@ Repo-resident Claude skills live in `.claude/skills/` and are available in every
 
 There is deliberately no create-pr skill: PRs are opened by the daemon (`PullRequestOpener`),
 never by agents.
+
+Skills sit in three tiers, least specific first (Decisions Log #76). The **install** owns the
+canonical set at `~/.hall9k/skills`, published by `h9k install` from this directory. A **project
+home**'s `skills/` is symlinked into that set, with project-specific skills beside the links. A
+**repository**'s own `.claude/skills/`, which is what this section lists, is the tier for things
+genuinely coupled to the code, and it wins over a home skill of the same name. The dispatcher
+names the applicable tiers in the agent's prompt, so a dispatched session is handed the paths
+rather than left to discover them.
 
 ## Working agreements
 
