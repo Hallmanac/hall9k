@@ -175,6 +175,85 @@ public sealed class RunLauncherTests(PostgresFixture postgres) : IClassFixture<P
             "the merged branch is cleaned up like any closeout");
     }
 
+    /// <summary>
+    /// The generation fence (backlog 39): a launch dispatched under a generation the task
+    /// has already moved past — the shape a catch-up double-booking or a claim-then-
+    /// requeue-then-reclaim race leaves behind — must not close the task out from under
+    /// the live generation, even though its pull request really did merge.
+    /// </summary>
+    [Fact]
+    public async Task A_launch_under_a_stale_generation_does_not_close_out_the_live_generations_task()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        using DocumentStore store = DocumentStore.For(opts =>
+        {
+            opts.Connection(postgres.ConnectionString);
+            opts.ConfigureHall9k(AutoCreate.All);
+        });
+        NodeContext node = new();
+        await node.InitializeAsync(store, cts.Token);
+
+        Guid taskId = DomainId.New();
+        Guid staleRunId = DomainId.New();
+        Guid liveRunId = DomainId.New();
+        Guid projectId = DomainId.New();
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            var registered = Hall9k.Domain.Features.Project.Handlers.ProjectDecider.Register(
+                projectId, node.OwnerId, DomainId.New(), $"launcher-fence-{taskId:N}", "/tmp/launcher-fence-repo",
+                null, "main", Now);
+            session.Events.StartStream<Hall9k.Domain.Features.Project.ProjectAggregate>(registered.Id, registered);
+
+            // Generation 1 (staleRunId) already completed and was reopened for a follow-up;
+            // generation 2 (liveRunId) is the live claim. A launch for generation 1 arriving
+            // late — the double-booking shape — must not act under generation 2's name.
+            (TaskAggregate aggregate, object[] lifecycle) = TaskSeed.Start(
+                TaskDecider.Add(
+                    taskId, projectId, "Stale generation launch", ["never closes out as generation 1"],
+                    TaskType.Chore, null, null, null, Now.AddHours(-1), node.OwnerId),
+                node.OwnerId, Now.AddHours(-1));
+            var staleClaim = TaskDecider.Claim(aggregate, node.NodeId, node.OwnerId, staleRunId, Now.AddMinutes(-30));
+            aggregate.Apply(staleClaim);
+            var completed = TaskDecider.Complete(aggregate, staleRunId, PullRequestUrl, Now.AddMinutes(-20));
+            aggregate.Apply(completed);
+            var reopened = TaskDecider.Reopen(
+                aggregate, staleRunId, "task/stale-launch", "Copilot threads.", FollowUpKind.ReviewFeedback,
+                automatic: true, Now.AddMinutes(-15), node.OwnerId);
+            aggregate.Apply(reopened);
+            var liveClaim = TaskDecider.Claim(aggregate, node.NodeId, node.OwnerId, liveRunId, Now);
+            aggregate.Apply(liveClaim);
+            session.Events.StartStream<TaskAggregate>(
+                taskId, [.. lifecycle, staleClaim, completed, reopened, liveClaim]);
+            session.Store(new TaskLease
+            {
+                Id = taskId, NodeId = node.NodeId, LeaseGeneration = aggregate.LeaseGeneration, HeartbeatAt = Now,
+            });
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        ListLogger<RunLauncher> logger = new();
+        MergedInspector inspector = new();
+        RunLauncher launcher = new(store, new RefusingWorktreeManager(), new RefusingExecutor(),
+            NewSupervisor(store, node), NewContextAssembler(store), inspector, Options.Create(new DaemonOptions()),
+            logger);
+
+        // staleRunId, at its own generation (1) — while the task has already moved on to
+        // generation 2 under liveRunId.
+        await launcher.LaunchAsync(taskId, staleRunId, node.NodeId, node.OwnerId, 1, cts.Token);
+
+        inspector.Inspections.Should().Be(1, "the merged-PR check runs before the fence, so it is still consulted");
+
+        await using IQuerySession query = store.QuerySession();
+        TaskDetails task = (await query.LoadAsync<TaskDetails>(taskId, cts.Token))!;
+        task.State.Value.Should().Be("Claimed", "the live generation's claim survives the stale generation's launch");
+        task.LeaseGeneration.Should().Be(2);
+        (await query.LoadAsync<TaskLease>(taskId, cts.Token)).Should().NotBeNull(
+            "the stale generation's launch must not release the live generation's lease");
+
+        logger.Lines.Should().Contain(line =>
+            line.Contains("run at generation 1") && line.Contains("task is at generation 2 - rejected"));
+    }
+
     /// <summary>Prepares a workspace without touching git; the launcher only needs a path and a branch.</summary>
     private sealed class StubWorktreeManager : IWorktreeManager
     {

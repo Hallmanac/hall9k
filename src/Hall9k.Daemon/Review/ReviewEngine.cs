@@ -15,6 +15,7 @@ using Hall9k.Domain.Features.Tasks.Projections;
 using Hall9k.Domain.Infrastructure.Ids;
 using Hall9k.Domain.Infrastructure.Storage;
 using Hall9k.Domain.Shared.ValueObjects;
+using JasperFx.Events;
 using Marten;
 using Microsoft.Extensions.Options;
 
@@ -112,11 +113,27 @@ public sealed class ReviewEngine(
             cancellationToken.ThrowIfCancellationRequested();
             RunAggregate run = await LoadRunAsync(context.RunId, cancellationToken);
 
+            // The stale-generation fence (backlog 39), checked before this iteration does
+            // anything: a requeue-and-reclaim elsewhere in the platform may have moved the
+            // task on to a new generation while this run's sessions were in flight, and a
+            // stale lane must stop at the first check rather than keep spending cycles —
+            // dispatching a review pass or a fix session into a worktree the live
+            // generation now owns. Each dispatch below re-checks immediately before its own
+            // executor.SpawnAsync, so a reclaim mid-iteration stops the next spawn too.
+            if (!await EnsureCurrentGenerationAsync(context, cancellationToken))
+            {
+                return false;
+            }
+
             switch (run.ReviewPhase)
             {
                 case ReviewPhase.None:
-                    await DispatchReviewPassesAsync(
-                        context, run.ReviewCycle + 1, run.ActiveReviewLenses, cancellationToken);
+                    if (!await DispatchReviewPassesAsync(
+                        context, run.ReviewCycle + 1, run.ActiveReviewLenses, cancellationToken))
+                    {
+                        return false;
+                    }
+
                     break;
 
                 case ReviewPhase.AwaitingVerdict:
@@ -148,7 +165,7 @@ public sealed class ReviewEngine(
                 case ReviewPhase.VerdictMissing when run.VerdictRepromptedCycle >= run.ReviewCycle:
                     // The cycle's one re-prompt is spent; guessing what the reviewer meant
                     // would be worse than asking (never guess at unobserved facts).
-                    await ParkAsync(context.RunId,
+                    await ParkAsync(context.RunId, context.TaskId,
                         $"A review pass (cycle {run.ReviewCycle}, {VerdictlessLensList(run)}) returned no parseable " +
                         "verdict, even after this cycle's re-prompt. " +
                         $"Its output: {RunPaths.ReviewFindingsFile(context.RunId, run.ReviewCycle)}. " +
@@ -167,15 +184,19 @@ public sealed class ReviewEngine(
                     break;
 
                 case ReviewPhase.FixNeeded when CappedTrack(run) is { } capped:
-                    await ParkAsync(context.RunId, CapParkReason(context.RunId, run, capped), cancellationToken);
+                    await ParkAsync(context.RunId, context.TaskId, CapParkReason(context.RunId, run, capped), cancellationToken);
                     return false;
 
                 case ReviewPhase.FixNeeded:
-                    await DispatchFixSessionAsync(context, run.ReviewCycle, run.PendingHumanFindings, cancellationToken);
+                    if (!await DispatchFixSessionAsync(context, run.ReviewCycle, run.PendingHumanFindings, cancellationToken))
+                    {
+                        return false;
+                    }
+
                     break;
 
                 case ReviewPhase.Disputed:
-                    await ParkAsync(context.RunId,
+                    await ParkAsync(context.RunId, context.TaskId,
                         "The fix run disputed a review finding — as not-a-defect, as human territory, or as " +
                         $"wrongly graded (cycle {run.ReviewCycle}). " +
                         $"Review position: {RunPaths.ReviewFindingsFile(context.RunId, run.ReviewCycle)}; " +
@@ -200,8 +221,12 @@ public sealed class ReviewEngine(
                         break;
                     }
 
-                    await DispatchReviewPassesAsync(
-                        context, run.ReviewCycle + 1, run.ActiveReviewLenses, cancellationToken);
+                    if (!await DispatchReviewPassesAsync(
+                        context, run.ReviewCycle + 1, run.ActiveReviewLenses, cancellationToken))
+                    {
+                        return false;
+                    }
+
                     break;
 
                 case ReviewPhase.Parked:
@@ -219,11 +244,18 @@ public sealed class ReviewEngine(
     private async Task<bool> AwaitReviewPassAsync(
         ReviewContext context, RunAggregate run, CancellationToken cancellationToken)
     {
-        if (await DispatchMissingPassesAsync(context, run, cancellationToken))
+        switch (await DispatchMissingPassesAsync(context, run, cancellationToken))
         {
-            // A cycle that lost a track (the daemon died between the two spawns) tops itself
-            // up rather than concluding on one; the reloaded run picks them all up.
-            return true;
+            case MissingPassDispatch.Dispatched:
+                // A cycle that lost a track (the daemon died between the two spawns) tops
+                // itself up rather than concluding on one; the reloaded run picks them all up.
+                return true;
+            case MissingPassDispatch.Stale:
+                // The generation check immediately before the spawn rejected it; the run is
+                // already retired (EnsureCurrentGenerationAsync) — stop the loop.
+                return false;
+            case MissingPassDispatch.NothingMissing:
+                break;
         }
 
         if (run.InFlightReviewPasses.Count == 0)
@@ -290,7 +322,9 @@ public sealed class ReviewEngine(
     /// one track recorded, and the missing one is spawned here instead of being lost. A track
     /// that has already concluded is not missing — it is finished, and stays that way.
     /// </summary>
-    private async Task<bool> DispatchMissingPassesAsync(
+    private enum MissingPassDispatch { NothingMissing, Dispatched, Stale }
+
+    private async Task<MissingPassDispatch> DispatchMissingPassesAsync(
         ReviewContext context, RunAggregate run, CancellationToken cancellationToken)
     {
         IReadOnlyList<ReviewLens> missing = ReviewLens.MissingFrom(
@@ -298,33 +332,46 @@ public sealed class ReviewEngine(
             [.. run.InFlightReviewPasses.Select(pass => pass.Lens), .. run.CompletedReviewPasses.Select(pass => pass.Lens)]);
         if (missing.Count == 0)
         {
-            return false;
+            return MissingPassDispatch.NothingMissing;
         }
 
         logger.LogWarning(
             "Run {RunId}: review cycle {Cycle} was missing the {Lenses} pass(es) — dispatching now",
             context.RunId, run.ReviewCycle, string.Join(", ", missing.Select(lens => lens.Slug)));
-        await DispatchReviewPassesAsync(context, run.ReviewCycle, missing, cancellationToken);
-        return true;
+        bool dispatched = await DispatchReviewPassesAsync(context, run.ReviewCycle, missing, cancellationToken);
+        return dispatched ? MissingPassDispatch.Dispatched : MissingPassDispatch.Stale;
     }
 
-    private async Task DispatchReviewPassesAsync(
+    /// <summary>Reports false the moment a spawn is rejected as stale, without dispatching the rest.</summary>
+    private async Task<bool> DispatchReviewPassesAsync(
         ReviewContext context, int cycle, IEnumerable<ReviewLens> lenses, CancellationToken cancellationToken)
     {
         foreach (ReviewLens lens in lenses)
         {
-            await DispatchReviewPassAsync(context, cycle, lens, cancellationToken);
+            if (!await DispatchReviewPassAsync(context, cycle, lens, cancellationToken))
+            {
+                return false;
+            }
         }
+
+        return true;
     }
 
     /// <summary>
     /// Spawns one track's pass and records it before spawning the next: each session exists
     /// the moment it is recorded, and a daemon that dies between the two leaves a stream
-    /// that says exactly which passes were started.
+    /// that says exactly which passes were started. Checks the generation fence immediately
+    /// before the spawn (Copilot review, PR #30) rather than relying on the caller's
+    /// once-per-iteration check, which this same cycle can outlive across several lenses.
     /// </summary>
-    private async Task DispatchReviewPassAsync(
+    private async Task<bool> DispatchReviewPassAsync(
         ReviewContext context, int cycle, ReviewLens lens, CancellationToken cancellationToken)
     {
+        if (!await EnsureCurrentGenerationAsync(context, cancellationToken))
+        {
+            return false;
+        }
+
         Guid sessionId = DomainId.New();
         string prompt = AgentPromptBuilder.BuildReview(
             context.Task, context.Project, context.Run.Branch, cycle, lens);
@@ -346,6 +393,7 @@ public sealed class ReviewEngine(
         logger.LogInformation(
             "Run {RunId}: {Lens} agent dispatched with fresh context (cycle {Cycle}, session {SessionId}, pid {ProcessId}, model {Model})",
             context.RunId, LensLabel(lens), cycle, sessionId, agent.ProcessId, model.Value);
+        return true;
     }
 
     /// <summary>
@@ -376,6 +424,14 @@ public sealed class ReviewEngine(
         // re-resolved here, or the milestone would record a model the session never ran on
         // (log #33). An older stream that recorded no model stays honestly Unknown.
         AgentModel model = verdictless.Model;
+
+        // Checked immediately before the spawn (Copilot review, PR #30), not only by the
+        // caller's once-per-iteration check: the reprompt is its own dispatch decision.
+        if (!await EnsureCurrentGenerationAsync(context, cancellationToken))
+        {
+            return false;
+        }
+
         SpawnedAgent agent = await executor.SpawnAsync(new AgentSpawnRequest(
             context.RunId, artifactId, context.Run.WorktreePath, prompt, context.Run.ExecutorMode, model,
             context.Project.SkipPermissions, ReviewArtifactName(run.ReviewCycle, artifactId, verdictless.Lens),
@@ -399,14 +455,21 @@ public sealed class ReviewEngine(
     /// Dispatches a fix session over the cycle's merged findings — or, after a needs-fixes
     /// h9k review resolve, over the human's stated findings (the event carries them; the
     /// findings file still holds the reviewers' own last words). One fix session per cycle,
-    /// whichever tracks found something.
+    /// whichever tracks found something. Checks the generation fence immediately before the
+    /// spawn (Copilot review, PR #30): the fix session reads the findings file first, which
+    /// is enough of a gap for a reclaim to land in.
     /// </summary>
-    private async Task DispatchFixSessionAsync(
+    private async Task<bool> DispatchFixSessionAsync(
         ReviewContext context, int cycle, string? humanFindings, CancellationToken cancellationToken)
     {
         string findings = humanFindings.IsNotBlank()
             ? $"Human review verdict (h9k review resolve): needs fixes.\n\n{humanFindings}"
             : await File.ReadAllTextAsync(RunPaths.ReviewFindingsFile(context.RunId, cycle), cancellationToken);
+        if (!await EnsureCurrentGenerationAsync(context, cancellationToken))
+        {
+            return false;
+        }
+
         Guid sessionId = DomainId.New();
         string prompt = AgentPromptBuilder.BuildReviewFix(context.Task, context.Run.Branch, findings, cycle);
         ExecutorMode mode = context.Run.ExecutorMode;
@@ -424,6 +487,7 @@ public sealed class ReviewEngine(
         logger.LogInformation(
             "Run {RunId}: fix run dispatched over the cycle-{Cycle} findings (session {SessionId}, pid {ProcessId}, model {Model})",
             context.RunId, cycle, sessionId, agent.ProcessId, model.Value);
+        return true;
     }
 
     /// <summary>
@@ -981,31 +1045,127 @@ public sealed class ReviewEngine(
         }
     }
 
-    private async Task ParkAsync(Guid runId, string reason, CancellationToken cancellationToken)
+    /// <summary>
+    /// Parks the run for the human, fenced on generation (backlog 39): a stale generation's
+    /// park still protects its lease from the expiry sweep (DispatchEngine's parked guard
+    /// reads the task's CurrentRunId), so a rejected park is not a formality here — it is
+    /// what stops a superseded lane from pinning the live generation's lease.
+    /// </summary>
+    private async Task ParkAsync(Guid runId, Guid taskId, string reason, CancellationToken cancellationToken)
     {
+        await using IDocumentSession session = store.LightweightSession();
+        RunAggregate run = await LoadRunAsync(runId, cancellationToken);
+        if (!await GenerationFence.AllowsAsync(
+            session, logger, taskId, runId, run.LeaseGeneration, nameof(ReviewParked), cancellationToken))
+        {
+            return;
+        }
+
         // The task stays Claimed and the lease is retained: the worktree is the human's
         // workspace for resolving the park (the CloseoutParked pattern, pre-PR).
-        await using IDocumentSession session = store.LightweightSession();
         session.Events.Append(runId, new ReviewParked(runId, reason, DateTimeOffset.UtcNow));
         await session.SaveChangesAsync(cancellationToken);
         logger.LogWarning("Run {RunId}: review parked for the human — {Reason}", runId, reason);
     }
 
+    /// <summary>
+    /// Fails the run — an honest fact about this session regardless of generation — and
+    /// fences the task-level half on generation (backlog 39): a stale generation's failure
+    /// must not fail the task a live generation is still working, nor take that
+    /// generation's lease with it.
+    /// </summary>
     private async Task FailAsync(Guid runId, Guid taskId, string reason, CancellationToken cancellationToken)
     {
         DateTimeOffset now = DateTimeOffset.UtcNow;
         await using IDocumentSession session = store.LightweightSession();
         session.Events.Append(runId, new RunFailed(runId, reason, now));
 
-        TaskAggregate? task = await session.Events.AggregateStreamAsync<TaskAggregate>(taskId, token: cancellationToken);
-        if (task is not null && TaskDecider.CanFail(task))
+        RunDetails? run = await session.LoadAsync<RunDetails>(runId, cancellationToken);
+        if (run is not null
+            && !await GenerationFence.AllowsAsync(
+                session, logger, taskId, runId, run.LeaseGeneration, nameof(TaskFailed), cancellationToken))
         {
-            session.Events.Append(taskId, TaskDecider.Fail(task, runId, reason, now));
+            await session.SaveChangesAsync(cancellationToken);
+            logger.LogWarning("Run {RunId} failed in the review loop: {Reason}", runId, reason);
+            return;
         }
 
-        session.Delete<TaskLease>(taskId);
-        await session.SaveChangesAsync(cancellationToken);
+        (TaskAggregate Task, long Version)? fenced = await GenerationFence.LoadFencedAsync(session, taskId, cancellationToken);
+        if (fenced is { } current && TaskDecider.CanFail(current.Task))
+        {
+            // One transaction with the RunFailed append above (Copilot review, PR #30's
+            // expectedVersion fix, kept atomic with it on purpose — see
+            // RunSupervisor.AppendFencedTaskFailureAsync): a lost race here rolling back
+            // the run's own failure fact too is a smaller cost than a reader observing the
+            // run Failed while its task still reads Claimed.
+            session.Events.Append(taskId, expectedVersion: current.Version + 1, TaskDecider.Fail(current.Task, runId, reason, now));
+            session.Delete<TaskLease>(taskId);
+        }
+
+        try
+        {
+            await session.SaveChangesAsync(cancellationToken);
+        }
+        catch (EventStreamUnexpectedMaxEventIdException)
+        {
+            logger.LogInformation(
+                "Task {TaskId}: lost the generation race recording a review-loop failure for run {RunId} — a newer claim committed first",
+                taskId, runId);
+            return;
+        }
+
         logger.LogWarning("Run {RunId} failed in the review loop: {Reason}", runId, reason);
+    }
+
+    /// <summary>
+    /// The dispatch-time half of the generation fence (backlog 39), read fresh through
+    /// <paramref name="context"/> rather than a cached aggregate — and checked immediately
+    /// before every dispatch decision, not once per while-loop iteration: one iteration can
+    /// outlive several spawns (every lens in a cycle, plus the reprompt and fix helpers), and
+    /// a reclaim landing mid-iteration must stop the next spawn, not just the next iteration
+    /// (Copilot review, PR #30). <see cref="RunAggregate.LeaseGeneration"/> is stamped once
+    /// at dispatch and never changes, so <see cref="ReviewContext.Run"/>'s copy is exactly as
+    /// current as one just reloaded.
+    /// <para>
+    /// A rejection here also retires the run with <see cref="RunSuperseded"/> before
+    /// reporting false: returning false alone only unwinds this call stack and lets the
+    /// supervisor drop its monitor, but the run itself stays in a non-terminal
+    /// <see cref="RunState"/> — NodeLoad keeps counting it live, and
+    /// <c>ResumeResolvedReviewsAsync</c> or the next startup adoption sweep would relaunch it
+    /// (Copilot review, PR #30).
+    /// </para>
+    /// </summary>
+    private async Task<bool> EnsureCurrentGenerationAsync(ReviewContext context, CancellationToken cancellationToken)
+    {
+        await using (IQuerySession query = store.QuerySession())
+        {
+            if (await GenerationFence.AllowsAsync(
+                query, logger, context.TaskId, context.RunId, context.Run.LeaseGeneration,
+                "to continue the review loop", cancellationToken))
+            {
+                return true;
+            }
+        }
+
+        await RetireStaleRunAsync(context, cancellationToken);
+        return false;
+    }
+
+    private async Task RetireStaleRunAsync(ReviewContext context, CancellationToken cancellationToken)
+    {
+        await using IDocumentSession session = store.LightweightSession();
+        if (await session.Events.FetchStreamStateAsync(context.RunId, cancellationToken) is null)
+        {
+            return;
+        }
+
+        TaskDetails? task = await session.LoadAsync<TaskDetails>(context.TaskId, cancellationToken);
+        session.Events.Append(context.RunId, new RunSuperseded(
+            context.RunId, task?.LeaseGeneration ?? context.Run.LeaseGeneration, DateTimeOffset.UtcNow));
+        await session.SaveChangesAsync(cancellationToken);
+        logger.LogInformation(
+            "Run {RunId}: retired as superseded — the review loop found it was no longer task {TaskId}'s current generation",
+            context.RunId, context.TaskId);
     }
 
     private async Task<ReviewContext?> LoadContextAsync(Guid runId, Guid taskId, CancellationToken cancellationToken)

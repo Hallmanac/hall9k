@@ -6,9 +6,12 @@ using Hall9k.Domain.Features.Run.Events;
 using Hall9k.Domain.Features.Run.Projections;
 using Hall9k.Domain.Features.Tasks;
 using Hall9k.Domain.Features.Tasks.Documents;
+using Hall9k.Domain.Features.Tasks.Events;
 using Hall9k.Domain.Features.Tasks.Handlers;
 using Hall9k.Domain.Features.Tasks.Projections;
+using JasperFx.Events;
 using Marten;
+using Marten.Events;
 using Microsoft.Extensions.Options;
 
 namespace Hall9k.Daemon.Execution;
@@ -197,14 +200,37 @@ public sealed class VerificationRunner(
         await using IDocumentSession session = store.LightweightSession();
         session.Events.Append(runId, new Domain.Features.Run.Events.RunFailed(runId, reason, now));
 
-        TaskAggregate? task = await session.Events.AggregateStreamAsync<TaskAggregate>(taskId, token: cancellationToken);
-        if (task is not null && !task.State.IsTerminal)
+        RunDetails? run = await session.LoadAsync<RunDetails>(runId, cancellationToken);
+        if (run is not null
+            && !await GenerationFence.AllowsAsync(
+                session, logger, taskId, runId, run.LeaseGeneration, nameof(TaskFailed), cancellationToken))
         {
-            session.Events.Append(taskId, TaskDecider.Fail(task, runId, reason, now));
+            await session.SaveChangesAsync(cancellationToken);
+            return;
         }
 
-        session.Delete<TaskLease>(taskId);
-        await session.SaveChangesAsync(cancellationToken);
+        (TaskAggregate Task, long Version)? fenced = await GenerationFence.LoadFencedAsync(session, taskId, cancellationToken);
+        if (fenced is { } current && !current.Task.State.IsTerminal)
+        {
+            // One transaction with the RunFailed append above (Copilot review, PR #30's
+            // expectedVersion fix, kept atomic with it on purpose — see
+            // RunSupervisor.AppendFencedTaskFailureAsync): a lost race here rolling back
+            // the run's own failure fact too is a smaller cost than a reader observing the
+            // run Failed while its task still reads Claimed.
+            session.Events.Append(taskId, expectedVersion: current.Version + 1, TaskDecider.Fail(current.Task, runId, reason, now));
+            session.Delete<TaskLease>(taskId);
+        }
+
+        try
+        {
+            await session.SaveChangesAsync(cancellationToken);
+        }
+        catch (EventStreamUnexpectedMaxEventIdException)
+        {
+            logger.LogInformation(
+                "Task {TaskId}: lost the generation race recording a pre-gate failure for run {RunId} — a newer claim committed first",
+                taskId, runId);
+        }
     }
 
     private async Task RecordPassAsync(Guid runId, string? note, CancellationToken cancellationToken)
@@ -222,14 +248,39 @@ public sealed class VerificationRunner(
         session.Events.Append(runId, new VerificationFailed(runId, [failedGate], now));
         session.Events.Append(runId, new Domain.Features.Run.Events.RunFailed(runId, reason, now));
 
-        TaskAggregate? task = await session.Events.AggregateStreamAsync<TaskAggregate>(taskId, token: cancellationToken);
-        if (task is not null && TaskDecider.CanFail(task))
+        RunDetails? run = await session.LoadAsync<RunDetails>(runId, cancellationToken);
+        if (run is not null
+            && !await GenerationFence.AllowsAsync(
+                session, logger, taskId, runId, run.LeaseGeneration, nameof(TaskFailed), cancellationToken))
         {
-            session.Events.Append(taskId, TaskDecider.Fail(task, runId, $"Verification failed: {reason}", now));
+            await session.SaveChangesAsync(cancellationToken);
+            return;
         }
 
-        session.Delete<TaskLease>(taskId);
-        await session.SaveChangesAsync(cancellationToken);
+        (TaskAggregate Task, long Version)? fenced = await GenerationFence.LoadFencedAsync(session, taskId, cancellationToken);
+        if (fenced is { } current && TaskDecider.CanFail(current.Task))
+        {
+            // One transaction with the run-stream events above (Copilot review, PR #30's
+            // expectedVersion fix, kept atomic with them on purpose — see
+            // RunSupervisor.AppendFencedTaskFailureAsync): a lost race here rolling back
+            // the run's own failure facts too is a smaller cost than a reader observing
+            // the run Failed while its task still reads Claimed.
+            session.Events.Append(
+                taskId, expectedVersion: current.Version + 1,
+                TaskDecider.Fail(current.Task, runId, $"Verification failed: {reason}", now));
+            session.Delete<TaskLease>(taskId);
+        }
+
+        try
+        {
+            await session.SaveChangesAsync(cancellationToken);
+        }
+        catch (EventStreamUnexpectedMaxEventIdException)
+        {
+            logger.LogInformation(
+                "Task {TaskId}: lost the generation race recording a verification failure for run {RunId} — a newer claim committed first",
+                taskId, runId);
+        }
     }
 
     private static string Sanitize(string name) =>

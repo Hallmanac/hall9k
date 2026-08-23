@@ -9,9 +9,12 @@ using Hall9k.Domain.Features.Run.Events;
 using Hall9k.Domain.Features.Run.Projections;
 using Hall9k.Domain.Features.Tasks;
 using Hall9k.Domain.Features.Tasks.Documents;
+using Hall9k.Domain.Features.Tasks.Events;
 using Hall9k.Domain.Features.Tasks.Handlers;
 using Hall9k.Domain.Features.Tasks.Projections;
+using JasperFx.Events;
 using Marten;
+using Marten.Events;
 using Marten.Linq.MatchesSql;
 
 namespace Hall9k.Daemon.Execution;
@@ -72,6 +75,19 @@ public sealed class RunSupervisor(
         int failed = 0;
         foreach (RunDetails run in candidates)
         {
+            TaskDetails? owningTask = await query.LoadAsync<TaskDetails>(run.TaskId, cancellationToken);
+            if (owningTask is null || owningTask.CurrentRunId != run.Id)
+            {
+                // Every non-terminal candidate for this node, not grouped by task (Copilot
+                // review, PR #30): a requeue-and-reclaim that landed while the daemon was
+                // down can leave one task with two non-terminal runs here, and adopting
+                // both — resuming or restarting an agent for each — double-books the task
+                // exactly like the live-process check above exists to prevent. This run is
+                // not the task's current one, so it is retired rather than adopted.
+                await RetireStaleAdoptionCandidateAsync(run, cancellationToken);
+                continue;
+            }
+
             if (run.State == RunState.Verifying || run.State == RunState.UnderReview)
             {
                 // Daemon died between the agent's result and the PR: the work is done,
@@ -82,6 +98,7 @@ public sealed class RunSupervisor(
                 logger.LogInformation(
                     "Adopting run {RunId} stranded in {State} — resuming the pre-PR pipeline", run.Id, run.State.Value);
                 ResumePipeline(run, cancellationToken);
+                await RefreshAdoptedLeaseAsync(run, cancellationToken);
                 adopted++;
                 continue;
             }
@@ -90,7 +107,7 @@ public sealed class RunSupervisor(
             {
                 // Parked means waiting on a human, not abandoned: refresh the lease so
                 // the expiry sweep never requeues the task out from under its worktree.
-                await RefreshParkedLeaseAsync(run, cancellationToken);
+                await RefreshAdoptedLeaseAsync(run, cancellationToken);
                 adopted++;
                 continue;
             }
@@ -110,6 +127,7 @@ public sealed class RunSupervisor(
                     "Adopting run {RunId} (pid {ProcessId}, alive: {Alive}, result on disk: {Result})",
                     run.Id, run.ProcessId, alive, resultOnDisk);
                 StartMonitoring(run.Id, run.TaskId, run.ProcessId.Value, run.ProcessStartedAt.Value, cancellationToken);
+                await RefreshAdoptedLeaseAsync(run, cancellationToken);
                 adopted++;
             }
             else
@@ -216,10 +234,26 @@ public sealed class RunSupervisor(
         if (result.IsError)
         {
             session.Events.Append(runId, new RunFailed(runId, "Agent reported an error result.", now));
-            await FailTaskInSessionAsync(session, runId, taskId, "Agent reported an error result.", now, cancellationToken);
+            // One transaction with the run-stream events above (Copilot review, PR #30's
+            // expectedVersion fix, kept atomic with them on purpose): splitting the
+            // task-level write into its own session opened a window where a poller could
+            // observe this run Failed while its task still read Claimed. Losing the
+            // run-stream facts too on the rare lost generation race is the smaller cost.
+            await AppendFencedTaskFailureAsync(session, runId, taskId, "Agent reported an error result.", now, cancellationToken);
         }
 
-        await session.SaveChangesAsync(cancellationToken);
+        try
+        {
+            await session.SaveChangesAsync(cancellationToken);
+        }
+        catch (EventStreamUnexpectedMaxEventIdException)
+        {
+            logger.LogInformation(
+                "Task {TaskId}: lost the generation race recording {Transition} for run {RunId} — a newer claim committed first",
+                taskId, nameof(TaskFailed), runId);
+            return;
+        }
+
         logger.LogInformation(
             "Run {RunId} agent session completed ({Input} input tokens = {Fresh} fresh + {CacheRead} cache-read + {CacheWrite} cache-write, {Output} output, error: {IsError})",
             runId,
@@ -230,9 +264,20 @@ public sealed class RunSupervisor(
             result.OutputTokens,
             result.IsError);
 
-        if (!result.IsError && await ParkedOnThreadDisputeAsync(runId, taskId, result, cancellationToken))
+        if (!result.IsError)
         {
-            return;
+            switch (await ParkedOnThreadDisputeAsync(runId, taskId, result, cancellationToken))
+            {
+                case ThreadDisputeOutcome.Parked:
+                    return;
+                case ThreadDisputeOutcome.Stale:
+                    // The fence already rejected this lane (Copilot review, PR #30):
+                    // stopping here instead of falling through saves a verification cycle
+                    // the review loop's own fence would only reject one step later anyway.
+                    return;
+                case ThreadDisputeOutcome.NoDispute:
+                    break;
+            }
         }
 
         // The pre-PR pipeline (log #24): gates, then the independent review loop, and
@@ -269,19 +314,27 @@ public sealed class RunSupervisor(
     /// to re-enter at the gates instead of reporting merge-ready (RunAggregate.ParkedFromState).
     /// </para>
     /// </summary>
-    private async Task<bool> ParkedOnThreadDisputeAsync(
+    /// <summary>
+    /// Distinguishes "nothing to park" from "would have parked, but this generation is
+    /// stale" (Copilot review, PR #30): <see cref="CompleteRunAsync"/> treated both as the
+    /// same false and fell through to a verification cycle a stale lane has no business
+    /// spending — the later review-loop fence would only reject it one step further in.
+    /// </summary>
+    private enum ThreadDisputeOutcome { NoDispute, Parked, Stale }
+
+    private async Task<ThreadDisputeOutcome> ParkedOnThreadDisputeAsync(
         Guid runId, Guid taskId, AgentResult result, CancellationToken cancellationToken)
     {
         if (ReviewResultParser.ParseFixOutcome(result.Summary) != ReviewFixOutcome.Disputed)
         {
-            return false;
+            return ThreadDisputeOutcome.NoDispute;
         }
 
         await using IDocumentSession session = store.LightweightSession();
         RunDetails? run = await session.LoadAsync<RunDetails>(runId, cancellationToken);
         if (run is null || !run.IsFollowUp)
         {
-            return false;
+            return ThreadDisputeOutcome.NoDispute;
         }
 
         TaskDetails? task = await session.LoadAsync<TaskDetails>(taskId, cancellationToken);
@@ -290,7 +343,13 @@ public sealed class RunSupervisor(
             logger.LogInformation(
                 "Run {RunId} carried the dispute marker but was dispatched to fix CI, which never asked "
                 + "the question — reading it as a verdict would park on a narrative about checks", runId);
-            return false;
+            return ThreadDisputeOutcome.NoDispute;
+        }
+
+        if (!await GenerationFence.AllowsAsync(
+            session, logger, taskId, runId, run.LeaseGeneration, nameof(ReviewParked), cancellationToken))
+        {
+            return ThreadDisputeOutcome.Stale;
         }
 
         await WriteDisputePositionAsync(runId, result.Summary, cancellationToken);
@@ -302,7 +361,7 @@ public sealed class RunSupervisor(
         await session.SaveChangesAsync(cancellationToken);
 
         logger.LogWarning("Run {RunId}: review thread disputed — parked for the human. {Reason}", runId, reason);
-        return true;
+        return ThreadDisputeOutcome.Parked;
     }
 
     /// <summary>
@@ -395,12 +454,48 @@ public sealed class RunSupervisor(
     }
 
     /// <summary>
-    /// A review-parked run holds its task Claimed on purpose — the worktree is the
-    /// human's workspace. Refreshing the heartbeat at adoption (before the sweep) keeps
-    /// the lease from expiring over a daemon outage; the heartbeat service carries it
-    /// from here.
+    /// The retirement half of the AdoptOrphansAsync grouping fix: a run this node still has
+    /// non-terminal but its task has moved past — a fresh claim, a requeue, a retry, or a
+    /// reopen already superseded it. Terminates the agent process if the OS still reports it
+    /// alive (a requeue racing dispatch can leave one running even though its lease expired)
+    /// and appends <see cref="RunSuperseded"/> so this run drops out of every later
+    /// non-terminal query — AdoptOrphansAsync's own next sweep included — instead of being
+    /// rediscovered as "recoverable" forever.
     /// </summary>
-    private async Task RefreshParkedLeaseAsync(RunDetails run, CancellationToken cancellationToken)
+    private async Task RetireStaleAdoptionCandidateAsync(RunDetails run, CancellationToken cancellationToken)
+    {
+        if (run.ProcessId is { } processId && run.ProcessStartedAt is { } startedAt
+            && processManager.IsAlive(processId, startedAt))
+        {
+            processManager.Terminate(processId, startedAt);
+        }
+
+        await using IDocumentSession session = store.LightweightSession();
+        if (await session.Events.FetchStreamStateAsync(run.Id, cancellationToken) is null)
+        {
+            return;
+        }
+
+        TaskDetails? task = await session.LoadAsync<TaskDetails>(run.TaskId, cancellationToken);
+        session.Events.Append(run.Id, new RunSuperseded(run.Id, task?.LeaseGeneration ?? run.LeaseGeneration, DateTimeOffset.UtcNow));
+        await session.SaveChangesAsync(cancellationToken);
+        logger.LogInformation(
+            "Run {RunId} left stranded in {State} is not task {TaskId}'s current run — retired instead of adopted",
+            run.Id, run.State.Value, run.TaskId);
+    }
+
+    /// <summary>
+    /// An adopted run — reattached mid-pipeline, resumed in review, or review-parked —
+    /// holds its task Claimed on purpose: the worktree is either a live session's or the
+    /// human's workspace. Refreshing the heartbeat at adoption, before the expiry sweep
+    /// runs one line later in the startup order (Decisions Log #7), is what makes adoption
+    /// win outright: a task the sweep would otherwise see as stale-by-heartbeat is no
+    /// longer stale by the time it looks (backlog 39). Origin incident (2026-08-21
+    /// evening, twice observed): every adopted case except ReviewParked skipped this, so
+    /// the sweep requeued the very tasks adoption had just reattached, and both
+    /// generations ran a full review cycle in parallel.
+    /// </summary>
+    private async Task RefreshAdoptedLeaseAsync(RunDetails run, CancellationToken cancellationToken)
     {
         await using IDocumentSession session = store.LightweightSession();
         TaskAggregate? task = await session.Events.AggregateStreamAsync<TaskAggregate>(run.TaskId, token: cancellationToken);
@@ -418,7 +513,8 @@ public sealed class RunSupervisor(
         });
         await session.SaveChangesAsync(cancellationToken);
         logger.LogInformation(
-            "Run {RunId} is review-parked — lease refreshed so the task stays with its worktree", run.Id);
+            "Run {RunId} adopted in {State} — lease refreshed so catch-up's sweep never requeues it out from under its worktree",
+            run.Id, run.State.Value);
     }
 
     private async Task FailRunAsync(Guid runId, Guid taskId, string reason, CancellationToken cancellationToken)
@@ -426,20 +522,60 @@ public sealed class RunSupervisor(
         DateTimeOffset now = DateTimeOffset.UtcNow;
         await using IDocumentSession session = store.LightweightSession();
         session.Events.Append(runId, new RunFailed(runId, reason, now));
-        await FailTaskInSessionAsync(session, runId, taskId, reason, now, cancellationToken);
-        await session.SaveChangesAsync(cancellationToken);
+        await AppendFencedTaskFailureAsync(session, runId, taskId, reason, now, cancellationToken);
+        try
+        {
+            await session.SaveChangesAsync(cancellationToken);
+        }
+        catch (EventStreamUnexpectedMaxEventIdException)
+        {
+            logger.LogInformation(
+                "Task {TaskId}: lost the generation race recording {Transition} for run {RunId} — a newer claim committed first",
+                taskId, nameof(TaskFailed), runId);
+            return;
+        }
+
         logger.LogWarning("Run {RunId} failed: {Reason}", runId, reason);
     }
 
-    private static async Task FailTaskInSessionAsync(
+    /// <summary>
+    /// The task-level half of a run failure, fenced on generation (backlog 39): a run
+    /// whose generation no longer matches its task's current one is a lane a
+    /// requeue-and-reclaim already superseded, and its failure must not fail the task a
+    /// live generation is still working — nor take that generation's lease with it. Queues
+    /// its append onto the CALLER's session rather than committing its own (Copilot review,
+    /// PR #30): an earlier version ran this in its own transaction so a lost race would
+    /// never roll back the run-stream facts the caller already saved, but that opened a
+    /// window where a reader could observe the run Failed while its task still read
+    /// Claimed — worse than the rare cost of losing this run's own failure record too when
+    /// the generation race is actually lost. The caller's single SaveChangesAsync is what
+    /// reserves the version <see cref="GenerationFence.LoadFencedAsync"/> read: a claim that
+    /// lands in the gap loses the whole commit rather than silently absorbing this write.
+    /// </summary>
+    private async Task AppendFencedTaskFailureAsync(
         IDocumentSession session, Guid runId, Guid taskId, string reason, DateTimeOffset now, CancellationToken cancellationToken)
     {
-        TaskAggregate? task = await session.Events.AggregateStreamAsync<TaskAggregate>(taskId, token: cancellationToken);
-        if (task is not null && TaskDecider.CanFail(task))
+        (TaskAggregate Task, long Version)? fenced = await GenerationFence.LoadFencedAsync(session, taskId, cancellationToken);
+        if (fenced is not { } current)
         {
-            session.Events.Append(taskId, TaskDecider.Fail(task, runId, reason, now));
+            return;
         }
 
+        RunDetails? run = await session.LoadAsync<RunDetails>(runId, cancellationToken);
+        if (run is not null
+            && !await GenerationFence.AllowsAsync(
+                session, logger, taskId, runId, run.LeaseGeneration, nameof(TaskFailed), cancellationToken))
+        {
+            return;
+        }
+
+        if (!TaskDecider.CanFail(current.Task))
+        {
+            session.Delete<TaskLease>(taskId);
+            return;
+        }
+
+        session.Events.Append(taskId, expectedVersion: current.Version + 1, TaskDecider.Fail(current.Task, runId, reason, now));
         session.Delete<TaskLease>(taskId);
     }
 

@@ -10,6 +10,7 @@ using Hall9k.Domain.Features.Run.Events;
 using Hall9k.Domain.Features.Run.Projections;
 using Hall9k.Domain.Features.Tasks;
 using Hall9k.Domain.Features.Tasks.Documents;
+using Hall9k.Domain.Features.Tasks.Events;
 using Hall9k.Domain.Features.Tasks.Handlers;
 using Hall9k.Domain.Features.Tasks.Projections;
 using Hall9k.Domain.Infrastructure.Ids;
@@ -52,7 +53,8 @@ public sealed class RunLauncher(
         try
         {
             if (task.PullRequestUrl.IsNotBlank()
-                && await TryCloseOutMergedPullRequestAsync(task, project, taskId, runId, nodeId, cancellationToken))
+                && await TryCloseOutMergedPullRequestAsync(
+                    task, project, taskId, runId, nodeId, leaseGeneration, cancellationToken))
             {
                 return;
             }
@@ -122,7 +124,7 @@ public sealed class RunLauncher(
         catch (Exception exception) when (exception is not OperationCanceledException)
         {
             logger.LogError(exception, "Launch failed for run {RunId}", runId);
-            await RecordLaunchFailureAsync(taskId, runId, exception.Message, cancellationToken);
+            await RecordLaunchFailureAsync(taskId, runId, leaseGeneration, exception.Message, cancellationToken);
         }
     }
 
@@ -137,7 +139,8 @@ public sealed class RunLauncher(
     /// back to a normal dispatch rather than blocking the task.
     /// </summary>
     private async Task<bool> TryCloseOutMergedPullRequestAsync(
-        TaskDetails task, ProjectDetails project, Guid taskId, Guid runId, Guid nodeId, CancellationToken cancellationToken)
+        TaskDetails task, ProjectDetails project, Guid taskId, Guid runId, Guid nodeId, int leaseGeneration,
+        CancellationToken cancellationToken)
     {
         string pullRequestUrl = task.PullRequestUrl!;
         int pullRequestNumber = PullRequestUrls.ParseNumber(pullRequestUrl);
@@ -167,6 +170,12 @@ public sealed class RunLauncher(
 
         DateTimeOffset now = DateTimeOffset.UtcNow;
         await using IDocumentSession session = store.LightweightSession();
+        if (!await GenerationFence.AllowsAsync(
+            session, logger, taskId, runId, leaseGeneration, nameof(TaskCompleted), cancellationToken))
+        {
+            return false;
+        }
+
         TaskAggregate? aggregate = await session.Events.AggregateStreamAsync<TaskAggregate>(taskId, token: cancellationToken);
         if (aggregate is null || aggregate.State != TaskState.Claimed || aggregate.CurrentRunId != runId)
         {
@@ -265,7 +274,8 @@ public sealed class RunLauncher(
             cancellationToken), false);
     }
 
-    private async Task RecordLaunchFailureAsync(Guid taskId, Guid runId, string reason, CancellationToken cancellationToken)
+    private async Task RecordLaunchFailureAsync(
+        Guid taskId, Guid runId, int leaseGeneration, string reason, CancellationToken cancellationToken)
     {
         try
         {
@@ -273,6 +283,13 @@ public sealed class RunLauncher(
             if (await session.Events.FetchStreamStateAsync(runId, cancellationToken) is not null)
             {
                 session.Events.Append(runId, new RunFailed(runId, reason, DateTimeOffset.UtcNow));
+            }
+
+            if (!await GenerationFence.AllowsAsync(
+                session, logger, taskId, runId, leaseGeneration, nameof(TaskFailed), cancellationToken))
+            {
+                await session.SaveChangesAsync(cancellationToken);
+                return;
             }
 
             TaskAggregate? task =

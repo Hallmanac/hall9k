@@ -4,6 +4,7 @@ using System.Diagnostics;
 using System.Text.Json;
 using FluentAssertions;
 using Hall9k.Daemon;
+using Hall9k.Daemon.Dispatch;
 using Hall9k.Daemon.Execution;
 using Hall9k.Daemon.ProcessManagement;
 using Hall9k.Daemon.Review;
@@ -18,6 +19,7 @@ using Hall9k.Domain.Infrastructure.Ids;
 using Hall9k.Domain.Infrastructure.Persistence;
 using JasperFx;
 using Marten;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using Xunit;
@@ -128,6 +130,123 @@ public sealed class RunSupervisorTests(PostgresFixture postgres) : IClassFixture
         TaskListItem task = (await query.LoadAsync<TaskListItem>(taskId, cts.Token))!;
         task.State.Value.Should().Be("Failed");
         (await query.LoadAsync<TaskLease>(taskId, cts.Token)).Should().BeNull("failure releases the lease");
+    }
+
+    /// <summary>
+    /// Catch-up's defect (backlog 39, origin incident 2026-08-21): every adopted case except
+    /// ReviewParked used to skip the lease refresh, so the expiry sweep that runs one line
+    /// later in startup order requeued the very task adoption had just reattached — two
+    /// generations, one worktree, a full review cycle each. Adoption must win outright: the
+    /// lease is refreshed before the sweep ever looks, so the same task is never both adopted
+    /// and requeued.
+    /// </summary>
+    [Fact]
+    public async Task Catch_up_adoption_of_a_live_process_refreshes_the_lease_so_the_sweep_never_requeues_it()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        using DocumentStore store = NewStore();
+        (NodeContext node, Guid taskId, Guid runId) = await SeedClaimedTaskAsync(store, cts.Token);
+
+        // Long-running agent; by the time the "restarted daemon" adopts it the heartbeat
+        // already reads as expired — exactly the sleep-through-restart shape.
+        int processId = SpawnFakeAgent(runId, "echo '{\"type\":\"assistant\"}'; sleep 30");
+        DateTimeOffset startedAt = await RecordProcessStartedAsync(store, runId, processId, cts.Token);
+
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            session.Store(new TaskLease
+            {
+                Id = taskId, NodeId = node.NodeId, LeaseGeneration = 1,
+                HeartbeatAt = DateTimeOffset.UtcNow.AddMinutes(-10),
+            });
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        RunSupervisor supervisor = NewSupervisor(store, node);
+        OrphanAdoption adoption = await supervisor.AdoptOrphansAsync(cts.Token);
+        adoption.RunsAdopted.Should().BeGreaterThanOrEqualTo(1);
+
+        // The sweep gets a process manager that reports every pid dead (Copilot review, PR
+        // #30): SweepExpiredLeasesAsync has its own local-liveness check
+        // (DispatchEngine.LocalRunProcessIsAlive), and a real UnixProcessManager here would
+        // see the still-sleeping agent alive and refresh the lease on that basis alone — the
+        // assertions below would pass even with AdoptOrphansAsync's own
+        // RefreshAdoptedLeaseAsync deleted. Denying the sweep that signal means the only
+        // thing that can keep the lease fresh by the time it runs is adoption's own refresh.
+        DaemonOptions options = new() { MaxConcurrentAgentSessions = 500, LeaseTimeout = TimeSpan.FromSeconds(60) };
+        DispatchEngine engine = new(
+            store, node, new DaemonConnection(postgres.ConnectionString), new FakeProcessManager(),
+            Options.Create(options), NullLogger<DispatchEngine>.Instance);
+        await engine.SweepExpiredLeasesAsync(cts.Token);
+
+        await using (IQuerySession query = store.QuerySession())
+        {
+            TaskListItem task = (await query.LoadAsync<TaskListItem>(taskId, cts.Token))!;
+            task.State.Value.Should().Be(
+                "Claimed", "adoption already reattached this run — the sweep must not also requeue it");
+
+            TaskLease lease = (await query.LoadAsync<TaskLease>(taskId, cts.Token))!;
+            lease.HeartbeatAt.Should().BeAfter(
+                DateTimeOffset.UtcNow.AddMinutes(-1), "adoption refreshed the heartbeat before the sweep ran");
+        }
+
+        try
+        {
+            Process.GetProcessById(processId).Kill(entireProcessTree: true);
+        }
+        catch (ArgumentException)
+        {
+        }
+    }
+
+    /// <summary>
+    /// The generation fence (backlog 39): a stale generation's run — one a requeue-and-
+    /// reclaim already superseded — must not fail the task the live generation is working,
+    /// nor take that generation's lease with it. Origin incident (2026-08-21 evening): this
+    /// exact path wrote the task Failed while the live generation's fix session was
+    /// mid-flight, and a dependent's crying-wolf hold re-armed off the lie.
+    /// </summary>
+    [Fact]
+    public async Task A_stale_generations_run_dying_does_not_fail_the_live_generations_task_or_lease()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        using DocumentStore store = NewStore();
+        (NodeContext node, Guid taskId, Guid staleRunId) = await SeedClaimedTaskAsync(store, cts.Token);
+
+        // A requeue-and-reclaim moved the task on to generation 2 under a fresh run while
+        // the stale run (generation 1) is still the one this test's fake agent is attached to.
+        Guid liveRunId = DomainId.New();
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            TaskAggregate task = (await session.Events.AggregateStreamAsync<TaskAggregate>(taskId, token: cts.Token))!;
+            var requeued = TaskDecider.Requeue(task, RequeueReason.LeaseExpired, Now);
+            task.Apply(requeued);
+            var reclaimed = TaskDecider.Claim(task, node.NodeId, node.OwnerId, liveRunId, Now);
+            session.Events.Append(taskId, requeued, reclaimed);
+            session.Store(new TaskLease { Id = taskId, NodeId = node.NodeId, LeaseGeneration = 2, HeartbeatAt = Now });
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        int processId = SpawnFakeAgent(staleRunId, "echo '{\"type\":\"assistant\"}'; exit 1");
+        DateTimeOffset startedAt = await RecordProcessStartedAsync(store, staleRunId, processId, cts.Token);
+
+        ListLogger<RunSupervisor> logger = new();
+        RunSupervisor supervisor = NewSupervisor(store, node, logger: logger);
+        supervisor.StartMonitoring(staleRunId, taskId, processId, startedAt, cts.Token);
+
+        RunDetails staleDetails = await WaitForStateAsync(store, staleRunId, "Failed", cts.Token);
+        staleDetails.FailureReason.Should().Contain("without a result");
+
+        await using IQuerySession query = store.QuerySession();
+        TaskListItem task2 = (await query.LoadAsync<TaskListItem>(taskId, cts.Token))!;
+        task2.State.Value.Should().Be("Claimed", "the live generation's claim must survive the stale run's failure");
+        task2.LeaseGeneration.Should().Be(2);
+
+        (await query.LoadAsync<TaskLease>(taskId, cts.Token)).Should().NotBeNull(
+            "the stale run's failure must not release the live generation's lease");
+
+        logger.Lines.Should().Contain(line =>
+            line.Contains("run at generation 1") && line.Contains("at generation 2 - rejected"));
     }
 
     /// <summary>
@@ -331,9 +450,10 @@ public sealed class RunSupervisorTests(PostgresFixture postgres) : IClassFixture
             + $"(failure: {reached?.FailureReason ?? "none"}, park: {reached?.ParkedReason ?? "none"}).");
     }
 
-    private static RunSupervisor NewSupervisor(DocumentStore store, NodeContext node)
+    private static RunSupervisor NewSupervisor(
+        DocumentStore store, NodeContext node, IProcessManager? processManager = null, ILogger<RunSupervisor>? logger = null)
     {
-        UnixProcessManager processManager = new();
+        processManager ??= new UnixProcessManager();
         VerificationRunner verification = new(
             store, Options.Create(new DaemonOptions()), NullLogger<VerificationRunner>.Instance);
         ReviewEngine review = new(
@@ -341,7 +461,7 @@ public sealed class RunSupervisorTests(PostgresFixture postgres) : IClassFixture
             Options.Create(new DaemonOptions()), NullLogger<ReviewEngine>.Instance);
         return new RunSupervisor(store, node, processManager, verification, review,
             new PullRequestOpener(store, NullLogger<PullRequestOpener>.Instance),
-            NullLogger<RunSupervisor>.Instance);
+            logger ?? NullLogger<RunSupervisor>.Instance);
     }
 
     public void Dispose()

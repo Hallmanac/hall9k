@@ -175,6 +175,51 @@ public sealed class VerificationRunnerTests(PostgresFixture postgres) : IClassFi
     }
 
     /// <summary>
+    /// The generation fence (backlog 39): a requeue-and-reclaim moved the task on to
+    /// generation 2 while this run — still generation 1 — was mid-gate. The run's own
+    /// failure is still recorded honestly, but it must not fail the task the live
+    /// generation is working, nor take that generation's lease with it.
+    /// </summary>
+    [Fact]
+    public async Task A_stale_generations_gate_failure_does_not_touch_the_live_generations_task_or_lease()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        using DocumentStore store = NewStore();
+        (Guid taskId, Guid runId) = await SeedAsync(store,
+            [new VerifyCommand("boom", "echo exploding; exit 3")], cts.Token);
+
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            TaskAggregate task = (await session.Events.AggregateStreamAsync<TaskAggregate>(taskId, token: cts.Token))!;
+            Guid ownerId = task.AssignedOwnerId!.Value;
+            Guid nodeId = DomainId.New();
+            var requeued = TaskDecider.Requeue(task, RequeueReason.LeaseExpired, Now);
+            task.Apply(requeued);
+            var reclaimed = TaskDecider.Claim(task, nodeId, ownerId, DomainId.New(), Now);
+            session.Events.Append(taskId, requeued, reclaimed);
+            session.Store(new TaskLease { Id = taskId, NodeId = nodeId, LeaseGeneration = 2, HeartbeatAt = Now });
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        ListLogger<VerificationRunner> logger = new();
+        VerificationRunner runner = new(store, Options.Create(new DaemonOptions()), logger);
+        await runner.VerifyAsync(runId, taskId, cts.Token);
+
+        await using IQuerySession query = store.QuerySession();
+        RunDetails run = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
+        run.State.Value.Should().Be("Failed", "the run's own failure is an honest fact regardless of generation");
+
+        TaskListItem task2 = (await query.LoadAsync<TaskListItem>(taskId, cts.Token))!;
+        task2.State.Value.Should().Be("Claimed", "the live generation's claim survives the stale run's gate failure");
+        task2.LeaseGeneration.Should().Be(2);
+        (await query.LoadAsync<TaskLease>(taskId, cts.Token)).Should().NotBeNull(
+            "the stale run's failure must not release the live generation's lease");
+
+        logger.Lines.Should().Contain(line =>
+            line.Contains("run at generation 1") && line.Contains("at generation 2 - rejected"));
+    }
+
+    /// <summary>
     /// Turns the seeded worktree into a real repo: base branch `main`, task branch
     /// checked out — with or without a commit of its own past the base.
     /// </summary>
