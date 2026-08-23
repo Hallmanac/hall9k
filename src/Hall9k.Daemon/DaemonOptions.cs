@@ -61,8 +61,8 @@ public sealed class DaemonOptions
     public int MaxAutomaticCloseoutRuns { get; set; } = 2;
 
     /// <summary>
-    /// How often the daemon retries runs parked on token-budget exhaustion (Decisions Log
-    /// #40). The subscription window resets on a known-ish clock rather than an event the
+    /// How often the daemon retries runs parked on token-budget exhaustion (backlog 40).
+    /// The subscription window resets on a known-ish clock rather than an event the
     /// platform can watch for, so a patient poll is the whole mechanism — hourly is close
     /// enough for a window that resets on the order of hours, and a tighter interval would
     /// only spend process spawns proving the window is still shut.

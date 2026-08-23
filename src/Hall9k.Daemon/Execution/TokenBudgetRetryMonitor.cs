@@ -3,7 +3,7 @@ using Microsoft.Extensions.Options;
 namespace Hall9k.Daemon.Execution;
 
 /// <summary>
-/// Probes hourly for runs parked on token-budget exhaustion (Decisions Log #40) and retries
+/// Probes hourly for runs parked on token-budget exhaustion (backlog 40) and retries
 /// each. The subscription window resets on a known-ish clock rather than an event the
 /// platform can watch for, so a patient poll is the whole recovery mechanism — there is no
 /// doorbell to ring here, only a clock to wait on.

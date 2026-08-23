@@ -157,7 +157,7 @@ public sealed class RunDetailsProjection : SingleStreamProjection<RunDetails, Gu
     {
         view.ProcessId = @event.Data.ProcessId;
         StartSession(view, AgentRole.Build, ReviewLens.Unknown, @event.Data.ProcessId, startedAt: null);
-        // A budget park is the only park RunResumed currently clears (log #40); a review
+        // A budget park is the only park RunResumed currently clears (backlog 40); a review
         // park's ParkedReason is only ever cleared by ReviewParkResolved, a human's own act.
         view.ParkedReason = null;
         view.State = RunState.Running;

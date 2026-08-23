@@ -25,8 +25,8 @@ internal static class AttentionComposer
     /// is never red however long it has been going.
     /// </summary>
     /// <param name="budgetParkedRuns">
-    /// How many runs the same board is holding on the same exhausted budget window (Decisions
-    /// Log #40). Counted once for the board rather than per row, because that is the whole
+    /// How many runs the same board is holding on the same exhausted budget window (backlog
+    /// 40). Counted once for the board rather than per row, because that is the whole
     /// point: the origin incident was three rows that read as three unrelated failures when
     /// they were one condition.
     /// </param>
@@ -82,7 +82,7 @@ internal static class AttentionComposer
                 $"h9k pr resolve {id} --reason \"…\"");
         }
 
-        // Parked on the clock, not on a person (Decisions Log #40): the subscription usage
+        // Parked on the clock, not on a person (backlog 40): the subscription usage
         // window ran out, the retry sweep clears it hourly without anyone typing anything, and
         // so it is waiting-but-handled rather than an ask. Answered before the lifecycle arms
         // below so a follow-up that pushed reads the same wait its pre-push sibling does — one
@@ -223,7 +223,7 @@ internal static class AttentionComposer
     /// bare word (Decisions Log #66). A category is only named where a distinct record supports
     /// it: failed gates are listed because <c>VerificationFailed</c> names them, a kill is named
     /// because <c>RunKilled</c> records its reason. Token exhaustion no longer arrives here at
-    /// all — it has a record and a park of its own now (Decisions Log #40) — and any other cause
+    /// all — it has a record and a park of its own now (backlog 40) — and any other cause
     /// with no distinct record arrives as whatever text the machinery wrote, shown verbatim
     /// rather than sorted into a category nobody observed.
     /// </summary>
@@ -259,7 +259,7 @@ internal static class AttentionComposer
     };
 
     /// <summary>
-    /// The shared reason every budget-parked row carries (Decisions Log #40): the condition the
+    /// The shared reason every budget-parked row carries (backlog 40): the condition the
     /// run itself recorded, plus how many runs on this board it caught. Named once, with a
     /// count, rather than each row reading as its own unrelated failure the way the origin
     /// incident's three Failed rows did. A board holding exactly one says no count at all — "(1

@@ -12,7 +12,7 @@ using Marten.Linq.MatchesSql;
 namespace Hall9k.Daemon.Execution;
 
 /// <summary>
-/// The other half of budget-exhaustion recovery (Decisions Log #40): <c>RunSupervisor</c>
+/// The other half of budget-exhaustion recovery (backlog 40): <c>RunSupervisor</c>
 /// parks a run whose result carried the usage-limit shape, and this is what un-parks it. The
 /// window resets on the clock, not on an event the platform can watch for, so a patient poll
 /// — driven by <c>TokenBudgetRetryMonitor</c> — is the whole mechanism.

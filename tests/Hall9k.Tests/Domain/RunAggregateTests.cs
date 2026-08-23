@@ -527,7 +527,7 @@ public sealed class RunAggregateTests
     }
 
     /// <summary>
-    /// A budget park is not a human waypoint the way ReviewParked is (Decisions Log #40): it is
+    /// A budget park is not a human waypoint the way ReviewParked is (backlog 40): it is
     /// waiting on a clock, and the retry sweep resumes the same run — process id changes,
     /// identity does not — the moment the window is likely to have reset.
     /// </summary>

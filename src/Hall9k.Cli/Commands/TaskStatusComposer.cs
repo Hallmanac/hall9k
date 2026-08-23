@@ -31,8 +31,8 @@ namespace Hall9k.Cli.Commands;
 /// a slot rather than simply waiting: with no measurement, no surface claims one.
 /// </param>
 /// <param name="BudgetParkedRuns">
-/// How many of the loaded rows are held on the same exhausted subscription window (Decisions Log
-/// #40). Counted once for the whole set rather than recomputed per row, because that is what the
+/// How many of the loaded rows are held on the same exhausted subscription window (backlog 40).
+/// Counted once for the whole set rather than recomputed per row, because that is what the
 /// count is for: several budget parks are one condition, and a row that says so is a row a human
 /// can read once and consciously leave alone.
 /// </param>
@@ -407,7 +407,7 @@ internal static class TaskStatusComposer
         && task.State == TaskState.Claimed
         && run.State != RunState.ReviewParked
         && run.State != RunState.CloseoutParked
-        // A budget park is quiet by design for the same reason (Decisions Log #40): the session
+        // A budget park is quiet by design for the same reason (backlog 40): the session
         // that hit the limit has exited and nothing writes to the stream until the retry sweep
         // resumes it, so measuring it against the stall threshold would rename an automatic wait
         // as a machine failure an hour later.

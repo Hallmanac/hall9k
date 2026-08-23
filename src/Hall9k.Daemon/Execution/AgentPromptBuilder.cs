@@ -879,7 +879,7 @@ public static class AgentPromptBuilder
     }
 
     /// <summary>
-    /// The retry leg of token-budget recovery (Decisions Log #40): the same session resumes
+    /// The retry leg of token-budget recovery (backlog 40): the same session resumes
     /// after the subscription usage window very likely reset, with the full transcript and
     /// worktree exactly as the exhausted attempt left them. No task or project context is
     /// restated — a resumed session already has all of it — this is only the nudge to

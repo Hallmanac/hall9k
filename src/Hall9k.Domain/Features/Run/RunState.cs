@@ -26,7 +26,7 @@ public sealed record RunState
     /// <summary>Closeout: automatic retries exhausted; the human owns the PR, the monitor still watches for the merge.</summary>
     public static readonly RunState CloseoutParked = new("CloseoutParked");
     /// <summary>
-    /// The session's result carried the usage-limit message shape (Decisions Log #40): the
+    /// The session's result carried the usage-limit message shape (backlog 40): the
     /// subscription window ran dry, an external and clock-recoverable cause, not a machine or
     /// code fault. The task stays Claimed and the hourly retry sweep clears this without a
     /// human act — distinct from ReviewParked, which waits on a person.
