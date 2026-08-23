@@ -233,15 +233,15 @@ public sealed class RunSupervisor(
         session.Events.Append(runId, new AgentSessionCompleted(runId, now));
         session.Events.Append(runId, result.ToTokensRecorded(runId, now));
 
-        if (result.IsError && BudgetExhaustionParser.IsBudgetExhausted(result.Summary))
+        if (result.IsError && result.Summary is { } summary && BudgetExhaustionParser.IsBudgetExhausted(summary))
         {
             // External and clock-recoverable, not a machine or code fault (backlog 40): the run
             // parks with the task still Claimed — worktree and lease intact — instead of
             // failing. TokenBudgetRetryEngine's hourly sweep is what clears this.
-            session.Events.Append(runId, new RunBudgetExhausted(runId, result.Summary!, now));
+            session.Events.Append(runId, new RunBudgetExhausted(runId, summary, now));
             logger.LogWarning(
                 "Run {RunId}: token budget exhausted — parked rather than failed; the daemon retries hourly. {Message}",
-                runId, result.Summary);
+                runId, summary);
         }
         else if (result.IsError)
         {
