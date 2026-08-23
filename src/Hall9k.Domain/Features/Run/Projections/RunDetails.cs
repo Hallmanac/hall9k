@@ -72,6 +72,16 @@ public sealed class RunDetails
     /// <summary>As reported by the agent result, never recomputed from the token counts.</summary>
     public decimal? CostUsd { get; set; }
     public List<string> FailedGates { get; set; } = [];
+    /// <summary>
+    /// The gate whose one infrastructure-classified retry is in flight, from the last
+    /// <see cref="GateRetried"/> the stream carries — null once the run's verification
+    /// resolves. Read back on adoption (backlog 53, Copilot review on PR #36): the retry
+    /// budget lives only in <c>VerificationRunner.VerifyAsync</c>'s local state, so a daemon
+    /// that dies between the retry's <see cref="GateRetried"/> commit and the gate's
+    /// resolution would otherwise resume with no memory of the retry already spent, and the
+    /// daemon's startup adoption sweep could grant the same gate a second one.
+    /// </summary>
+    public string? PendingGateRetry { get; set; }
     /// <summary>Pre-PR review loop (log #24): which round of review the run is on, from 1.</summary>
     public int ReviewCycle { get; set; }
     public ReviewVerdict LastReviewVerdict { get; set; } = ReviewVerdict.Unknown;
@@ -186,9 +196,22 @@ public sealed class RunDetailsProjection : SingleStreamProjection<RunDetails, Gu
         }
     }
 
-    public void Apply(IEvent<VerificationFailed> @event, RunDetails view) => view.FailedGates = [.. @event.Data.FailedGates];
+    public void Apply(IEvent<VerificationFailed> @event, RunDetails view)
+    {
+        view.FailedGates = [.. @event.Data.FailedGates];
+        view.PendingGateRetry = null;
+    }
 
-    public void Apply(IEvent<VerificationPassed> @event, RunDetails view) => view.FailedGates = [];
+    public void Apply(IEvent<VerificationPassed> @event, RunDetails view)
+    {
+        view.FailedGates = [];
+        view.PendingGateRetry = null;
+    }
+
+    // The gate's own retry going in, not the run's terminal outcome: cleared only by
+    // VerificationFailed/VerificationPassed above, since a gate that resolves this event's
+    // retry still leaves later gates in the same VerifyAsync call to run.
+    public void Apply(IEvent<GateRetried> @event, RunDetails view) => view.PendingGateRetry = @event.Data.Gate;
 
     public void Apply(IEvent<ReviewDispatched> @event, RunDetails view)
     {
