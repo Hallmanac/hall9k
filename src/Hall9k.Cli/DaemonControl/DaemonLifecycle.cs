@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using Hall9k.Cli.Diagnostics;
 using Hall9k.Cli.Infrastructure;
+using Hall9k.Domain.Infrastructure.Persistence;
 using Hall9k.Domain.Infrastructure.Storage;
 using Spectre.Console;
 
@@ -83,7 +84,12 @@ public static class DaemonLifecycle
         // Interactive and unreachable-because-nothing-is-running offers to start it via
         // Docker (Decisions Log #73); non-interactive gets today's behavior, a named fix and
         // a refusal to spawn.
-        if (!await DatabaseDoctor.RunAsync(offerFixes: true, cancellationToken))
+        //
+        // The resolved string, not just a yes/no, is what SpawnDetached needs: h9kd runs
+        // with its working directory forced to RunPaths.Root, so if it re-resolved on its
+        // own it could walk up for a project override file from the wrong place and land on
+        // a different connection string than the one just proven reachable here.
+        if (await DatabaseDoctor.RunAsync(offerFixes: true, cancellationToken) is not { } connectionString)
         {
             return ExitCodes.Error;
         }
@@ -140,7 +146,7 @@ public static class DaemonLifecycle
         }
         else
         {
-            SpawnDetached(binary);
+            SpawnDetached(binary, connectionString);
         }
 
         DaemonProcessDescriptor? started = await PollAsync(DaemonProcess.Probe, StartTimeout, cancellationToken);
@@ -262,8 +268,13 @@ public static class DaemonLifecycle
     /// with stdin from /dev/null and stdout/stderr appended to the log — the
     /// double-fork pattern, no parent shell or CLI lifetime involved. Origin incident:
     /// the hand-started daemon died three times in one day with its parent shell.
+    /// <paramref name="connectionString"/> is set on the child's environment explicitly,
+    /// rather than left for h9kd to re-resolve: its working directory is forced to
+    /// <see cref="RunPaths.Root"/> below, which is not where this connection string was
+    /// resolved and proven reachable, so a project-override-file tier re-resolution there
+    /// could silently land on a different (or no) connection string.
     /// </summary>
-    private static void SpawnDetached(string binaryPath)
+    private static void SpawnDetached(string binaryPath, string connectionString)
     {
         ProcessStartInfo shell = new()
         {
@@ -271,6 +282,7 @@ public static class DaemonLifecycle
             WorkingDirectory = RunPaths.Root,
             UseShellExecute = false,
         };
+        shell.Environment[Hall9kDatabase.EnvironmentVariableName] = connectionString;
         shell.ArgumentList.Add("-c");
         shell.ArgumentList.Add("\"$0\" </dev/null >>\"$1\" 2>&1 &");
         shell.ArgumentList.Add(binaryPath);

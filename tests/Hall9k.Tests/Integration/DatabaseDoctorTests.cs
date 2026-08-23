@@ -39,9 +39,9 @@ public sealed class DatabaseDoctorTests(PostgresFixture postgres) : IClassFixtur
         {
             RecordingProcessRunner runner = RecordingProcessRunner.Failing("docker not reached in this test");
 
-            bool healthy = await DatabaseDoctor.RunAsync(offerFixes: false, runner.Runner, CancellationToken.None);
+            string? healthyConnectionString = await DatabaseDoctor.RunAsync(offerFixes: false, runner.Runner, CancellationToken.None);
 
-            healthy.Should().BeTrue();
+            healthyConnectionString.Should().Be(postgres.ConnectionString);
             runner.Calls.Should().BeEmpty("a reachable server never needs to probe Docker at all");
         }
         finally
