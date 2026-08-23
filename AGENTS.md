@@ -5,7 +5,9 @@ Canonical guidance for anyone (human or agent) working in this repo. `CLAUDE.md`
 ## What this is
 
 Hall9k is a local-first agentic workflow platform: `h9k` CLI + `h9kd` daemon + Postgres,
-orchestrating detached Claude Code agents. Read in order of need:
+orchestrating detached Claude Code agents. **An interactive session in this repo is the
+orchestrator window**: read that section below before anything else, because it is the role you
+are in. Then, in order of need:
 
 - `PLAN.md` — vision, architecture, and the **v0 Decisions Log** (§16; binding decisions live there)
 - `TASK-MODEL.md` — the domain model: streams, events, aggregates, type discipline
@@ -107,6 +109,198 @@ Jira reference merges, closeout comments the pull request on the card; it never 
 card, because which status a merge means is a team's workflow rather than a fact about software.
 
 CI runs build + test on ubuntu and windows for every push/PR to main.
+
+## The orchestrator window
+
+**Who this section is for.** An *interactive* Claude Code session in this repo is the
+**orchestrator window** (PLAN.md §2, §12): the conversational surface over `h9k`, driving the
+platform on a human's behalf. A *headless* session the daemon dispatched is not one. If you
+arrived with a task id, a worktree and acceptance criteria, this section is not your job; read it
+only to know what the window above you is doing, and go to the coding standards below.
+
+Everything here has been done live, by one interactive session, through the whole v0 build. It is
+a record of what proved out, not a proposal.
+
+### The role: a window, not an alarm
+
+> An interactive Claude session is a *window you look through, not an alarm*: it checks when
+> prompted. (PLAN.md §12)
+
+Concretely: run `h9k status` when the human asks how things are going, when they come back to the
+terminal, and after you dispatch something. Do not sit in a polling loop, do not sleep-and-check,
+and do not promise to tell them when something finishes. Desktop notification is `h9k watch
+--notify`'s job (unbuilt), never a session's.
+
+The window is **stateless and disposable**. Every fact lives in Postgres, so nothing is lost when
+the session ends, and nothing you remember is authoritative if the database disagrees. Re-read
+rather than recall: `h9k status`, then `h9k task show <id>`, then `h9k logs <id>` for the run
+transcript when the first two have already named the task worth digging into.
+
+### The law: all new work enters through `h9k task add`
+
+The flip is live (Decisions Log #17): Hall9k builds Hall9k. An orchestrator session **never
+implements a platform feature directly**, however small the change looks and however much faster
+it would be to just do it. It drafts a task, publishes it, assigns it, and lets a dispatched agent
+do the work.
+
+```bash
+h9k idea add "The attention pane should teach the next command"     # not sure yet what it is
+h9k task add --project hall9k --objective "…" --criteria "…"        # a Draft: identity, not readiness
+h9k task publish <id> --assign                                      # the gate, and the go signal
+```
+
+Three things are outside the law, because they are not platform features:
+
+- **The backlog and the planning docs.** Writing `backlog/<n>-<slug>.md`, appending a decision to
+  PLAN.md §16, amending SLICE-1.md: this is the window's own work product, and it is what a task
+  is authored *from*.
+- **Reading anything.** Inspecting the tree, the streams, the logs, a PR diff.
+- **Unbreaking the platform when the platform is what is broken.** A daemon that will not start
+  cannot dispatch the task that fixes it. Do the smallest thing that restores dispatch, then task
+  the real fix.
+
+Everything else is a task. When the human says "just quickly add X", the answer is a draft, and
+`h9k task publish --assign` is how fast looks around here.
+
+### The command surface
+
+The full surface is in *Build / test / run* above. These are the ones the window lives in:
+
+```bash
+h9k status                                   # the attention pane: needs-you, stalled, running, blocked
+h9k task list --state needs-you              # the pane bounds each section; this is the rest of one
+h9k task list --project hall9k --state draft # what is written but not yet gated
+h9k task show 28b19893                       # one task: contract, dependencies, runs, PR, conversation
+h9k logs 28b19893                            # that task's newest run transcript (--raw for stream-json)
+h9k project list                             # every project with its tasks counted by attention bucket
+h9k daemon status                            # a quiet queue is usually this
+```
+
+`h9k status` leads with a red line when no daemon is running, because a stopped daemon queues work
+without dispatching it and a silent board is otherwise indistinguishable from a calm one. Check
+that line first when nothing is moving. Know its limit, though: it probes this machine's pid file,
+so it answers "is a daemon alive here", not "is a daemon serving this database". Point the CLI at
+a second database (`HALL9K_CONNECTION_STRING`) while a daemon runs against the first and the pane
+reads healthy while nothing will ever claim the queue (found by the S1-13 verification session,
+2026-08-22). On the default install there is one database and one daemon, and the line is exact.
+
+Everything the CLI can do is discoverable from `--help`, and every command carries a worked
+example (see *CLI command standards*). Read the help rather than guessing at a flag: a wrong call
+prints the command's own help back at you, so one bad invocation costs one command, not a search.
+
+### The judgment the window owns: sequencing the ready set
+
+The dispatcher is deliberately mechanical. It takes queued tasks in order, up to the node's
+session ceiling (#64), and it has **no idea whether two of them collide**. `--blocked-by` enforces
+sequencing, but only as declared: the graph is enforced, never inferred. Inferring it is the
+window's job, and it is real work.
+
+Before assigning a batch, estimate each task's likely file footprint and decide:
+
+- **Run in parallel** when the footprints are disjoint. Two tasks in different vertical slices
+  (`Features/Idea/` and `Features/Run/`) genuinely do not see each other.
+- **Serialize with `--blocked-by`** when they would rewrite the same file. The recurring shape in
+  this repo is the **shared append point**: a new project setting touches the same six-file chain
+  every time (`ProjectSettingsChanged`, `ProjectDecider`, `ProjectAggregate`, `ProjectDetails`,
+  `ProjectSetCommand`, the CLI registration), two tasks appending a decision both claim the same
+  PLAN.md §16 number, and every task that teaches something appends to AGENTS.md. Those conflicts
+  are mechanical to resolve and expensive to discover at merge.
+- **Run alone** for a wide rewrite that touches a layer rather than a slice.
+
+A collision guess costs latency; a miss costs a rebase conflict. Both are survivable, so prefer
+latency only where the collision is real rather than serializing the queue by reflex.
+
+State the reasoning when you assign. "13 is held behind 09 because both rewrite the dispatch loop"
+is the sentence a human needs in order to overrule you.
+
+This judgment is documented as a gap, not as a permanent human duty:
+`backlog/IDEA-coordinator-agent.md` is its eventual automation, a coordinator agent that reads the
+ready set, estimates footprints, and authors `--blocked-by` edges with a recorded why per edge.
+The graph it would write to already exists (#34); what it still waits on is enough dogfooded manual
+edges to know what a good one looks like. Until then, the edges in the graph are the ones you put
+there.
+
+### Questions and answers: the relay
+
+`h9k status` is where the platform asks for a human. Its **needs-you** section is the whole point
+of the pane, and today a row lands there for one of four reasons:
+
+| Row says | What happened | The lever |
+|---|---|---|
+| `NeedsHuman`, review parked | The pre-PR review loop spent its automatic fixes or hit a disputed finding (#24, #63) | `h9k review resolve` |
+| `NeedsHuman`, closeout parked | The closeout monitor spent its automatic follow-up budget on an open PR (#22) | `h9k pr resolve` |
+| `NeedsHuman`, dependency failed | A blocker died, so the dependent stays Blocked rather than silently unblocking (#34, #61) | recover the blocker |
+| `Failed` | The run itself failed | `h9k task retry` / `resolve` / `abandon` |
+
+The window's job at each of these is the same: read the reason (`h9k task show`, then `h9k logs`
+if the reason is not already sufficient), put the decision to the human in a sentence, and record
+their answer through the lever. **Relay, do not decide.** These rows exist precisely because the
+platform refused to guess (#11, never loop on judgment), and a window that guesses on the human's
+behalf has re-introduced the thing the park prevented.
+
+**Mid-run questions are Slice 2.** The design is settled (#5: the agent calls `h9k ask` and
+*exits*; `h9k answer` resumes the session with the answer injected, so a run parks for hours
+without holding a process open) and the `QuestionAsked` / `AnswerProvided` events are already on
+the task stream. The `ask` and `answer` commands are not built yet, so an agent that needs a
+decision today has to make the most reasonable call and record the assumption in its handoff.
+Do not tell a human they can answer a running agent; they cannot, yet.
+
+### The recovery levers
+
+Five levers, and picking the wrong one loses work. The question that separates them is *what
+actually failed*.
+
+| Lever | Use it when | What it does |
+|---|---|---|
+| `h9k task retry <id>` | The task is **Failed** and the machinery is what failed (a daemon bug, a dead process, a push that was rejected). The work has to run again. | Requeues the task. The failure stays on the stream. The new run resumes the failed run's branch when it survived, or starts clean from the base branch when the artifacts are gone (#25). |
+| `h9k task resolve <id> --reason "…"` | The task is **Failed** but the objective was met anyway: the work merged, or you finished it by hand, and only the bookkeeping died. | Ends the task Done on your attestation. `--reason` is required (an attestation without a why is a guess) and `--pr` records where the work landed (#27). |
+| `h9k task abandon <id> --reason "…"` | You have stopped believing in the work. Reaches every non-terminal state, drafts and published tasks included. | Terminal. Releases any lease. Nothing is deleted: the reason is the record. |
+| `h9k pr resolve <id> [--checks]` | The task is **Done**, its pull request is open, and review feedback or failing CI needs another pass, either because the monitor spent its budget or because you want one now. | Dispatches a follow-up run onto the existing PR branch and resets the monitor's automatic retry budget (#20, #22). |
+| `h9k review resolve <id> --merge-ready` / `--needs-fixes "<why>"` | A run parked **before** its PR, in the internal review loop, and is waiting on your verdict. | `--merge-ready` proceeds to the pull request; `--needs-fixes` dispatches a fix session with your reason as its findings and restores the fix budget (#24). |
+
+Two distinctions worth keeping straight, because they are the ones that get confused:
+
+- **`review resolve` is pre-PR; `pr resolve` is post-PR.** If there is no pull request yet, the
+  park is the internal reviewer's and `review resolve` is the lever. If there is one, it is
+  closeout's and `pr resolve` is.
+- **`task retry` re-runs the work; `task resolve` declares it already done.** Retry when the
+  objective is unmet, resolve when it is met and the run merely failed to say so. Retrying
+  finished work rebuilds it; resolving unfinished work loses it.
+
+Failed is a waypoint, not an end (#27): a failed state means there is an unsolved problem, and an
+unsolved problem is not an outcome. Exactly one of retry, resolve, or abandon closes it, and all
+three are human-only on purpose.
+
+### The review rhythm
+
+The checkpoints, in the order the window sees them:
+
+1. **Agents build.** The dispatched run does the work in its own worktree, on `task/<id>-<slug>`.
+2. **Gates run.** Build, test, lint, per the project's verify settings.
+3. **The internal reviewer checks the diff before the PR exists** (#24, #59, #63): two lenses,
+   conformance and adversarial, dispatched together as **tracks**. Each track carries its own
+   cycle count and its own cap, and each ends when its own rule says so, so a clean conformance
+   track goes dormant at cycle 2 while the adversarial one keeps finding things alone at cycle 5.
+   Differing cycle counts on one run are the design rather than a fault, and that is the sentence
+   a human needs when they ask why. A finding the loop cannot settle parks the run, which is where
+   `review resolve` comes in.
+4. **The daemon opens the pull request.** Agents never do, and there is deliberately no create-pr
+   skill. The task reaches **Done** here, when the pull request opens, so Done means "the work is
+   on a PR and waiting on review" rather than "merged".
+5. **Copilot and the human review it.** The closeout monitor reads unresolved threads and
+   dispatches follow-up runs to answer them, bounded by a retry budget (#22, #62).
+6. **The human merges.** The platform never merges. The observed merge is true closeout: it is the
+   moment the run completes, dependents unblock, and the worktree is removed. The task was already
+   Done; what the merge changes is everything around it.
+
+The window's part is steps 3, 5 and 6: relay the parks, tell the human when a PR is waiting on
+them, and never start a review thread yourself. That last one is not a style preference; the
+thread discriminator depends on it (see *Git rules*).
+
+Two things follow from step 6 that are easy to get wrong. A dependency is met only at the merge,
+so a task showing Done with an open PR does **not** unblock its dependents yet. And an unsubmitted
+GitHub review is invisible to the API, so a quiet PR may have a half-written review on it: never
+report silence as "the reviewer had nothing to say".
 
 ## Coding standards
 

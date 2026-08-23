@@ -1,4 +1,6 @@
 @AGENTS.md
 
 (All repo guidance lives in AGENTS.md so every agent runtime shares one source of truth.
-The orchestrator-window role documentation arrives with SLICE-1.md task S1-13.)
+If this is an interactive session, start with the "The orchestrator window" section: it is
+the role you are in, and it names the one rule that outranks convenience, which is that all
+new work enters through `h9k task add`.)
