@@ -4,4 +4,5 @@ namespace Hall9k.Domain.Features.Run.Events;
 public sealed record RunResumed(
     Guid Id,
     int ProcessId,
+    DateTimeOffset ProcessStartedAt,
     DateTimeOffset ResumedAt);

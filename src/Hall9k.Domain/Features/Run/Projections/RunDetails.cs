@@ -151,12 +151,17 @@ public sealed class RunDetailsProjection : SingleStreamProjection<RunDetails, Gu
         view.State = RunState.Running;
     }
 
-    // A resume records a new process but no start time (log #5's exit-and-resume), so the
-    // session's identity is half-recorded and liveness stays unobservable rather than guessed.
+    // A resume records the new process whole — pid plus start time (log #2's identity) — since
+    // the budget retry became a real resume path (backlog 40). It used to carry only a pid
+    // (log #5's exit-and-resume), which left the session half-identified and its liveness
+    // unobservable; the spawn already knows when it started, so recording it is the honest
+    // reading rather than a guess.
     public void Apply(IEvent<RunResumed> @event, RunDetails view)
     {
         view.ProcessId = @event.Data.ProcessId;
-        StartSession(view, AgentRole.Build, ReviewLens.Unknown, @event.Data.ProcessId, startedAt: null);
+        view.ProcessStartedAt = @event.Data.ProcessStartedAt;
+        StartSession(
+            view, AgentRole.Build, ReviewLens.Unknown, @event.Data.ProcessId, @event.Data.ProcessStartedAt);
         // A budget park is the only park RunResumed currently clears (backlog 40); a review
         // park's ParkedReason is only ever cleared by ReviewParkResolved, a human's own act.
         view.ParkedReason = null;
@@ -206,6 +211,10 @@ public sealed class RunDetailsProjection : SingleStreamProjection<RunDetails, Gu
     {
         view.ReviewModel = @event.Data.Model ?? AgentModel.Unknown;
         StartSession(view, AgentRole.Fix, ReviewLens.Unknown, @event.Data.ProcessId, @event.Data.ProcessStartedAt);
+        // Mirrors RunAggregate: a fix session redispatched over a budget park (backlog 40)
+        // is the one path that needs this stated, since nothing else moves State off BudgetParked.
+        view.ParkedReason = null;
+        view.State = RunState.UnderReview;
     }
 
     /// <summary>

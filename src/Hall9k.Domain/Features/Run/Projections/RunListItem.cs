@@ -45,6 +45,11 @@ public sealed class RunListItemProjection : SingleStreamProjection<RunListItem, 
 
     public void Apply(IEvent<ReviewParkResolved> @event, RunListItem view) => view.State = RunState.UnderReview;
 
+    // Mirrors RunAggregate/RunDetails: a fix session redispatched over a budget park
+    // (backlog 40) is the one path that needs this stated, since nothing else moves State
+    // off BudgetParked between a review cycle's ReviewDispatched entries.
+    public void Apply(IEvent<ReviewFixDispatched> @event, RunListItem view) => view.State = RunState.UnderReview;
+
     public void Apply(IEvent<RunBudgetExhausted> @event, RunListItem view) => view.State = RunState.BudgetParked;
 
     public void Apply(IEvent<PullRequestOpened> @event, RunListItem view)

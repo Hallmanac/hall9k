@@ -191,6 +191,7 @@ public sealed class RunAggregate
     public void Apply(RunResumed @event)
     {
         ProcessId = @event.ProcessId;
+        ProcessStartedAt = @event.ProcessStartedAt;
         State = RunState.Running;
     }
 
@@ -329,6 +330,10 @@ public sealed class RunAggregate
         ActiveFixProcessStartedAt = @event.ProcessStartedAt;
         ActiveFixSessionModel = @event.Model ?? AgentModel.Unknown;
         ReviewPhase = ReviewPhase.AwaitingFix;
+        // Always true already except the one path that needs it stated: a fix session
+        // dispatched to redispatch over a budget park (backlog 40) left State at BudgetParked,
+        // and nothing else in this event's normal firing would move it off that.
+        State = RunState.UnderReview;
     }
 
     public void Apply(ReviewFixCompleted @event)
@@ -613,7 +618,32 @@ public sealed class RunAggregate
 
     public void Apply(RunCompleted @event) => State = RunState.Completed;
 
-    public void Apply(RunBudgetExhausted @event) => State = RunState.BudgetParked;
+    /// <summary>
+    /// External and clock-recoverable wherever it lands (backlog 40) — the primary session,
+    /// a review pass, or the fix session. The primary-session case needs nothing else: its
+    /// resume is <c>TokenBudgetRetryEngine</c> replaying the same session it always did. A
+    /// review pass or the fix session dies with the run loop mid-cycle, though, and the
+    /// process that carried it is gone by the time this lands — so the exhausted work is
+    /// cleared here rather than left to be "resumed": DispatchMissingPassesAsync tops up a
+    /// cleared review pass exactly as it already does for a daemon that died between two
+    /// spawns, and a cleared fix session re-enters at FixNeeded to redispatch fresh over the
+    /// same findings file. Neither loses the run or the task; only the one session's own
+    /// progress goes with it.
+    /// </summary>
+    public void Apply(RunBudgetExhausted @event)
+    {
+        State = RunState.BudgetParked;
+        switch (ReviewPhase)
+        {
+            case ReviewPhase.AwaitingVerdict:
+                _inFlightReviewPasses.Clear();
+                break;
+            case ReviewPhase.AwaitingFix:
+                ClearActiveFixSession();
+                ReviewPhase = ReviewPhase.FixNeeded;
+                break;
+        }
+    }
 
     public void Apply(RunFailed @event) => State = RunState.Failed;
 

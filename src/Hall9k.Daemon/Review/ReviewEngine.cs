@@ -271,6 +271,17 @@ public sealed class ReviewEngine(
             context.RunId, ReviewArtifactName(run.ReviewCycle, pass.SessionId, pass.Lens));
         AgentResult? result = await WaitForSessionResultAsync(
             context.RunId, streamFile, pass.ProcessId, pass.ProcessStartedAt, cancellationToken);
+        if (result is { IsError: true, Summary: { } summary } && BudgetExhaustionParser.IsBudgetExhausted(summary))
+        {
+            // External and clock-recoverable, same as the primary session (backlog 40): the
+            // sibling pass goes down with it — nobody will read its verdict either while the
+            // whole cycle waits on the clock — and the run parks rather than fails.
+            TerminateSiblingPasses(run, pass);
+            await ParkForBudgetAsync(context.RunId,
+                $"the {LensLabel(pass.Lens)} session (cycle {run.ReviewCycle})", summary, cancellationToken);
+            return false;
+        }
+
         if (result is null || result.IsError)
         {
             // The run is over; a sibling pass still reading the diff would burn tokens on a
@@ -303,6 +314,16 @@ public sealed class ReviewEngine(
             context.RunId, FixArtifactName(run.ReviewCycle, sessionId));
         AgentResult? result = await WaitForSessionResultAsync(
             context.RunId, streamFile, processId, processStartedAt, cancellationToken);
+        if (result is { IsError: true, Summary: { } summary } && BudgetExhaustionParser.IsBudgetExhausted(summary))
+        {
+            // External and clock-recoverable, same as the primary session (backlog 40): the
+            // run parks rather than fails, and the retry sweep redispatches a fresh fix
+            // session over the same cycle's findings once the window resets.
+            await ParkForBudgetAsync(context.RunId,
+                $"the fix session (cycle {run.ReviewCycle})", summary, cancellationToken);
+            return false;
+        }
+
         if (result is null || result.IsError)
         {
             await FailAsync(context.RunId, context.TaskId, result is null
@@ -1086,6 +1107,25 @@ public sealed class ReviewEngine(
         session.Events.Append(runId, new ReviewParked(runId, reason, DateTimeOffset.UtcNow));
         await session.SaveChangesAsync(cancellationToken);
         logger.LogWarning("Run {RunId}: review parked for the human — {Reason}", runId, reason);
+    }
+
+    /// <summary>
+    /// The review loop's side of budget-exhaustion recovery (backlog 40): a review pass or the
+    /// fix session died on the same recognizable usage-limit shape <c>RunSupervisor</c> already
+    /// catches for the primary session. The task stays Claimed and the lease is retained —
+    /// this is a park, not a failure — and <c>RunAggregate.Apply(RunBudgetExhausted)</c> clears
+    /// whichever leg was in flight so the retry sweep redispatches it fresh once the window
+    /// resets, instead of trying to resume a process that already exited.
+    /// </summary>
+    private async Task ParkForBudgetAsync(
+        Guid runId, string source, string observedMessage, CancellationToken cancellationToken)
+    {
+        await using IDocumentSession session = store.LightweightSession();
+        session.Events.Append(runId, new RunBudgetExhausted(runId, observedMessage, DateTimeOffset.UtcNow));
+        await session.SaveChangesAsync(cancellationToken);
+        logger.LogWarning(
+            "Run {RunId}: token budget exhausted — {Source} parked rather than failed; the daemon retries hourly. {Message}",
+            runId, source, observedMessage);
     }
 
     /// <summary>

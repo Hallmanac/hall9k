@@ -42,9 +42,33 @@ public sealed class RunBudgetProjectionTests
 
         projection.Apply(new FakeEvent<RunBudgetExhausted>(
             new RunBudgetExhausted(id, "Claude AI usage limit reached|1762952400", Now)), view);
-        projection.Apply(new FakeEvent<RunResumed>(new RunResumed(id, 4999, Now)), view);
+        DateTimeOffset resumedProcessStartedAt = Now.AddMinutes(1);
+        projection.Apply(new FakeEvent<RunResumed>(new RunResumed(id, 4999, resumedProcessStartedAt, Now)), view);
 
         view.State.Should().Be(RunState.Running, "the retry sweep clears the hold with no human act");
+        view.ParkedReason.Should().BeNull("h9k status must stop showing the reason once the retry is live");
+        view.ProcessStartedAt.Should().Be(resumedProcessStartedAt,
+            "adoption after a daemon restart disambiguates PID reuse against the resumed process's own start time");
+    }
+
+    /// <summary>
+    /// A fix session redispatched to clear a mid-review-loop budget park (backlog 40) is the
+    /// one path where nothing else moves the read models off BudgetParked: ReviewDispatched
+    /// covers a redispatched review pass already, so only ReviewFixDispatched needs this.
+    /// </summary>
+    [Fact]
+    public void Run_details_clears_the_park_when_a_fix_session_redispatches()
+    {
+        RunDetailsProjection projection = new();
+        Guid id = DomainId.New();
+        RunDetails view = LiveRun(projection, id);
+
+        projection.Apply(new FakeEvent<RunBudgetExhausted>(
+            new RunBudgetExhausted(id, "Claude AI usage limit reached|1762952400", Now)), view);
+        projection.Apply(new FakeEvent<ReviewFixDispatched>(
+            new ReviewFixDispatched(id, DomainId.New(), 1, 6002, Now, Now)), view);
+
+        view.State.Should().Be(RunState.UnderReview, "the redispatched fix session is live work, not a wait");
         view.ParkedReason.Should().BeNull("h9k status must stop showing the reason once the retry is live");
     }
 
@@ -62,7 +86,7 @@ public sealed class RunBudgetProjectionTests
             new RunBudgetExhausted(id, "Claude AI usage limit reached|1762952400", Now)), view);
         view.State.Should().Be(RunState.BudgetParked);
 
-        projection.Apply(new FakeEvent<RunResumed>(new RunResumed(id, 4999, Now)), view);
+        projection.Apply(new FakeEvent<RunResumed>(new RunResumed(id, 4999, Now.AddMinutes(1), Now)), view);
         view.State.Should().Be(RunState.Running);
     }
 

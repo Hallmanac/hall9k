@@ -547,9 +547,77 @@ public sealed class RunAggregateTests
         run.State.IsLive.Should().BeFalse("nothing is running while the window is shut");
         run.State.IsTerminal.Should().BeFalse("the work is intact; this is a wait, not an ending");
 
-        run.Apply(new RunResumed(id, ProcessId: 4999, Now));
+        DateTimeOffset resumedProcessStartedAt = Now.AddMinutes(1);
+        run.Apply(new RunResumed(id, ProcessId: 4999, resumedProcessStartedAt, Now));
 
         run.State.Should().Be(RunState.Running, "the retry sweep clears the hold with no human act");
+        run.ProcessStartedAt.Should().Be(resumedProcessStartedAt,
+            "the resumed process is a new one; the liveness check needs its own start time, not the parked process's");
+    }
+
+    /// <summary>
+    /// A budget park mid-review-loop (backlog 40) is not the primary session's --resume: the
+    /// process that carried the exhausted pass is already gone, so the park clears it and the
+    /// retry re-dispatches fresh rather than trying to resume something that exited.
+    /// </summary>
+    [Fact]
+    public void Budget_exhausted_review_pass_parks_and_clears_the_in_flight_passes()
+    {
+        RunAggregate run = new();
+        Guid id = DomainId.New();
+        run.Apply(new RunDispatched(
+            id, DomainId.New(), DomainId.New(), DomainId.New(), 1, DomainId.New(),
+            "/wt/x", "task/x", ExecutorMode.Subscription, Now));
+        run.Apply(new RunProcessStarted(id, 4482, Now));
+        run.Apply(new AgentSessionCompleted(id, Now));
+        run.Apply(new VerificationPassed(id, Now));
+        run.Apply(new ReviewDispatched(
+            id, DomainId.New(), Cycle: 1, ProcessId: 5001, Now, Now, Lens: ReviewLens.Conformance));
+        run.Apply(new ReviewDispatched(
+            id, DomainId.New(), Cycle: 1, ProcessId: 5011, Now, Now, Lens: ReviewLens.Adversarial));
+
+        run.Apply(new RunBudgetExhausted(id, "Claude AI usage limit reached|1762952400", Now));
+
+        run.State.Should().Be(RunState.BudgetParked);
+        run.ReviewPhase.Should().Be(
+            ReviewPhase.AwaitingVerdict, "the loop resumes the same cycle, not a fresh one");
+        run.InFlightReviewPasses.Should().BeEmpty(
+            "the exhausted pass's process is gone and its sibling was terminated with it — both redispatch fresh");
+
+        run.Apply(new ReviewDispatched(
+            id, DomainId.New(), Cycle: 1, ProcessId: 6001, Now, Now, Lens: ReviewLens.Conformance));
+        run.State.Should().Be(RunState.UnderReview, "redispatching a pass is what clears the park");
+    }
+
+    /// <summary>
+    /// The fix-session counterpart (backlog 40): the exhausted fix session cannot be resumed
+    /// either, so the phase drops back to FixNeeded and the next pass through the loop
+    /// redispatches a fresh fix session over the same cycle's findings.
+    /// </summary>
+    [Fact]
+    public void Budget_exhausted_fix_session_parks_and_reopens_fix_needed()
+    {
+        RunAggregate run = new();
+        Guid id = DomainId.New();
+        run.Apply(new RunDispatched(
+            id, DomainId.New(), DomainId.New(), DomainId.New(), 1, DomainId.New(),
+            "/wt/x", "task/x", ExecutorMode.Subscription, Now));
+        run.Apply(new RunProcessStarted(id, 4482, Now));
+        run.Apply(new AgentSessionCompleted(id, Now));
+        run.Apply(new VerificationPassed(id, Now));
+        run.Apply(new ReviewDispatched(id, DomainId.New(), 1, 5001, Now, Now));
+        run.Apply(new ReviewCompleted(id, 1, ReviewVerdict.NeedsFixes, Now));
+        run.Apply(new ReviewFixDispatched(id, DomainId.New(), Cycle: 1, ProcessId: 5002, Now, Now));
+
+        run.Apply(new RunBudgetExhausted(id, "Claude AI usage limit reached|1762952400", Now));
+
+        run.State.Should().Be(RunState.BudgetParked);
+        run.ReviewPhase.Should().Be(ReviewPhase.FixNeeded, "the exhausted fix session redispatches fresh, not resumes");
+        run.ActiveFixSessionId.Should().BeNull();
+
+        run.Apply(new ReviewFixDispatched(id, DomainId.New(), Cycle: 1, ProcessId: 6002, Now, Now));
+        run.State.Should().Be(RunState.UnderReview, "redispatching the fix session is what clears the park");
+        run.ReviewPhase.Should().Be(ReviewPhase.AwaitingFix);
     }
 
     [Fact]

@@ -55,6 +55,17 @@ public sealed class RunSupervisor(
     }
 
     /// <summary>
+    /// Re-enters the review loop for a run whose budget park caught a review pass or the fix
+    /// session rather than the primary agent session (backlog 40). <c>TokenBudgetRetryEngine</c>
+    /// calls this instead of resuming the primary session: <c>RunAggregate.Apply(RunBudgetExhausted)</c>
+    /// already cleared the exhausted leg, so re-entering here is the same "pick the phase back
+    /// up" adoption already uses for a run stranded UnderReview — the loop redispatches
+    /// whatever the park left missing.
+    /// </summary>
+    public void ResumeReviewLoop(RunDetails run, CancellationToken cancellationToken) =>
+        ResumePipeline(run, cancellationToken);
+
+    /// <summary>
     /// Startup adoption: every non-terminal run recorded for this node either gets its
     /// monitor back (process alive, or result already on disk) or is failed honestly.
     /// Returns the tally for the startup catch-up report.
