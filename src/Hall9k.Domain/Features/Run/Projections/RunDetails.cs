@@ -157,6 +157,9 @@ public sealed class RunDetailsProjection : SingleStreamProjection<RunDetails, Gu
     {
         view.ProcessId = @event.Data.ProcessId;
         StartSession(view, AgentRole.Build, ReviewLens.Unknown, @event.Data.ProcessId, startedAt: null);
+        // A budget park is the only park RunResumed currently clears (log #40); a review
+        // park's ParkedReason is only ever cleared by ReviewParkResolved, a human's own act.
+        view.ParkedReason = null;
         view.State = RunState.Running;
     }
 
@@ -361,6 +364,13 @@ public sealed class RunDetailsProjection : SingleStreamProjection<RunDetails, Gu
         EndSessions(view);
         view.State = RunState.Completed;
         view.FinishedAt = @event.Data.CompletedAt;
+    }
+
+    public void Apply(IEvent<RunBudgetExhausted> @event, RunDetails view)
+    {
+        view.ParkedReason =
+            "token budget exhausted - resumes when the subscription window resets";
+        view.State = RunState.BudgetParked;
     }
 
     public void Apply(IEvent<RunFailed> @event, RunDetails view)

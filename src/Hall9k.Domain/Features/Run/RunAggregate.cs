@@ -613,6 +613,8 @@ public sealed class RunAggregate
 
     public void Apply(RunCompleted @event) => State = RunState.Completed;
 
+    public void Apply(RunBudgetExhausted @event) => State = RunState.BudgetParked;
+
     public void Apply(RunFailed @event) => State = RunState.Failed;
 
     public void Apply(RunKilled @event) => State = RunState.Killed;

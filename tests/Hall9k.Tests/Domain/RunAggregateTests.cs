@@ -526,6 +526,32 @@ public sealed class RunAggregateTests
         run.ReviewFixRuns.Should().Be(2, "the count keeps counting every fix session the run actually ran");
     }
 
+    /// <summary>
+    /// A budget park is not a human waypoint the way ReviewParked is (Decisions Log #40): it is
+    /// waiting on a clock, and the retry sweep resumes the same run — process id changes,
+    /// identity does not — the moment the window is likely to have reset.
+    /// </summary>
+    [Fact]
+    public void Budget_exhausted_run_parks_and_a_retry_resumes_it_live()
+    {
+        RunAggregate run = new();
+        Guid id = DomainId.New();
+        run.Apply(new RunDispatched(
+            id, DomainId.New(), DomainId.New(), DomainId.New(), 1, DomainId.New(),
+            "/wt/x", "task/x", ExecutorMode.Subscription, Now));
+        run.Apply(new RunProcessStarted(id, 4482, Now));
+
+        run.Apply(new RunBudgetExhausted(id, "Claude AI usage limit reached|1762952400", Now));
+
+        run.State.Should().Be(RunState.BudgetParked);
+        run.State.IsLive.Should().BeFalse("nothing is running while the window is shut");
+        run.State.IsTerminal.Should().BeFalse("the work is intact; this is a wait, not an ending");
+
+        run.Apply(new RunResumed(id, ProcessId: 4999, Now));
+
+        run.State.Should().Be(RunState.Running, "the retry sweep clears the hold with no human act");
+    }
+
     [Fact]
     public void Superseded_run_is_terminal_with_the_superseding_generation_recorded()
     {
