@@ -105,7 +105,7 @@ public sealed class AttentionSurfaceTests
     }
 
     /// <summary>
-    /// A budget-parked run is waiting on the clock, not on a human (Decisions Log #40): the
+    /// A budget-parked run is waiting on the clock, not on a human (backlog 40): the
     /// three surfaces all have to say that, distinctly from the two parks beside it that do want
     /// a person. The origin incident was three rows that read as three unrelated Failed rows for
     /// what was really one condition, so the cause names the condition once and counts the rows

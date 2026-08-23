@@ -218,7 +218,7 @@ public sealed class DispatchEngineTests(PostgresFixture postgres) : IClassFixtur
 
             // The run exhausts its budget and parks, then the lease heartbeat decays past the
             // timeout — the same daemon-asleep-or-lost-the-race window the review-park guard
-            // exists for (Decisions Log #40): the guarantee is a property of "parked", not of
+            // exists for (backlog 40): the guarantee is a property of "parked", not of
             // one park flavor, so a stale lease here must refresh, not requeue and fail the run
             // the hourly retry sweep is about to pick back up.
             session.Events.StartStream<RunAggregate>(runId,

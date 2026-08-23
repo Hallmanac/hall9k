@@ -113,7 +113,7 @@ public sealed class DispatchEngine(
                 // the guarantee is a property of "parked", not of one park flavor. BudgetParked
                 // is parked on the clock rather than a human, but the same guarantee applies —
                 // a lease that goes stale while the daemon catches up must not requeue (and so
-                // fail) work that is waiting to be retried automatically (Decisions Log #40).
+                // fail) work that is waiting to be retried automatically (backlog 40).
                 lease.HeartbeatAt = now;
                 session.Store(lease);
                 logger.LogInformation(

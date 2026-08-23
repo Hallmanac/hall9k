@@ -5,7 +5,7 @@ using Xunit;
 namespace Hall9k.Tests.Daemon;
 
 /// <summary>
-/// The never-guess rule applied to one error shape (Decisions Log #40): only the recognizable
+/// The never-guess rule applied to one error shape (backlog 40): only the recognizable
 /// usage-limit text says "external and clock-recoverable". Everything else — including a
 /// generic <c>is_error</c> result with no text at all — has to stay the generic failure it is.
 /// </summary>

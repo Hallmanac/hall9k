@@ -235,7 +235,7 @@ public sealed class RunSupervisor(
 
         if (result.IsError && BudgetExhaustionParser.IsBudgetExhausted(result.Summary))
         {
-            // External and clock-recoverable, not a machine or code fault (log #40): the run
+            // External and clock-recoverable, not a machine or code fault (backlog 40): the run
             // parks with the task still Claimed — worktree and lease intact — instead of
             // failing. TokenBudgetRetryEngine's hourly sweep is what clears this.
             session.Events.Append(runId, new RunBudgetExhausted(runId, result.Summary!, now));

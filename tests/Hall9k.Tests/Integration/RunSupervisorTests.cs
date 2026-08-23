@@ -321,7 +321,7 @@ public sealed class RunSupervisorTests(PostgresFixture postgres) : IClassFixture
     }
 
     /// <summary>
-    /// The usage-limit shape parks rather than fails (Decisions Log #40): the run stream
+    /// The usage-limit shape parks rather than fails (backlog 40): the run stream
     /// records what was observed, but the task stays Claimed — worktree and lease intact —
     /// instead of going through TaskDecider.Fail and releasing them.
     /// </summary>

@@ -9,7 +9,7 @@ using Xunit;
 namespace Hall9k.Tests.Domain;
 
 /// <summary>
-/// Token-budget exhaustion through the run read models (Decisions Log #40): a park that
+/// Token-budget exhaustion through the run read models (backlog 40): a park that
 /// carries the window-reset reason without failing the run, and a retry that clears it the
 /// same way a review park resolution clears ReviewParked's — leaving no stale reason behind.
 /// </summary>
