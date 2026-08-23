@@ -12,15 +12,24 @@ using Marten.Linq.MatchesSql;
 namespace Hall9k.Daemon.Execution;
 
 /// <summary>
-/// The other half of budget-exhaustion recovery (backlog 40): <c>RunSupervisor</c>
-/// parks a run whose result carried the usage-limit shape, and this is what un-parks it. The
-/// window resets on the clock, not on an event the platform can watch for, so a patient poll
-/// — driven by <c>TokenBudgetRetryMonitor</c> — is the whole mechanism.
+/// The other half of budget-exhaustion recovery (backlog 40): <c>RunSupervisor</c> and
+/// <c>ReviewEngine</c> park a run whose result carried the usage-limit shape, and this is what
+/// un-parks it. The window resets on the clock, not on an event the platform can watch for, so
+/// a patient poll — driven by <c>TokenBudgetRetryMonitor</c> — is the whole mechanism.
 /// <para>
-/// A retry resumes the same Claude session in the same worktree (<c>--resume</c>, the log #5
-/// pattern) rather than starting a fresh one: the point of parking instead of failing was
-/// that the work — including whatever the agent was mid-thought on — is intact, and a fresh
-/// session would throw that away for no reason the exhaustion itself gives.
+/// A run parked mid-primary-session resumes the same Claude session in the same worktree
+/// (<c>--resume</c>, the log #5 pattern) rather than starting a fresh one: the point of parking
+/// instead of failing was that the work — including whatever the agent was mid-thought on — is
+/// intact, and a fresh session would throw that away for no reason the exhaustion itself gives.
+/// </para>
+/// <para>
+/// A run parked mid-review-loop (a review pass or the fix session hit the limit instead) is
+/// different: <c>RunAggregate.Apply(RunBudgetExhausted)</c> already cleared the exhausted leg
+/// when the park landed, so there is no session left to resume — the retry is
+/// <see cref="RunSupervisor.ResumeReviewLoop"/> re-entering the loop, which redispatches it
+/// fresh over the same cycle. <see cref="ReviewPhase"/> on the reloaded aggregate is what tells
+/// the two cases apart, since it is <see cref="ReviewPhase.None"/> for every run that never
+/// entered the loop.
 /// </para>
 /// </summary>
 public sealed class TokenBudgetRetryEngine(
@@ -66,6 +75,19 @@ public sealed class TokenBudgetRetryEngine(
             return false;
         }
 
+        RunAggregate aggregate = await session.Events.AggregateStreamAsync<RunAggregate>(run.Id, token: cancellationToken)
+            ?? throw new InvalidOperationException($"Run {run.Id} is budget-parked with no stream to resume.");
+        if (aggregate.ReviewPhase != ReviewPhase.None)
+        {
+            // The park caught a review pass or the fix session, not the primary agent: the
+            // exhausted leg was already cleared when RunBudgetExhausted landed, so there is no
+            // process to --resume — re-entering the loop redispatches it fresh (backlog 40).
+            supervisor.ResumeReviewLoop(run, cancellationToken);
+            logger.LogInformation(
+                "Run {RunId}: retried after token-budget exhaustion mid-review — resuming the review loop", run.Id);
+            return true;
+        }
+
         try
         {
             SpawnedAgent agent = await executor.SpawnAsync(new AgentSpawnRequest(
@@ -82,7 +104,7 @@ public sealed class TokenBudgetRetryEngine(
                 LastActivityAt = DateTimeOffset.UtcNow,
                 StreamBytesRead = 0,
             });
-            session.Events.Append(run.Id, new RunResumed(run.Id, agent.ProcessId, DateTimeOffset.UtcNow));
+            session.Events.Append(run.Id, new RunResumed(run.Id, agent.ProcessId, agent.StartedAt, DateTimeOffset.UtcNow));
             await session.SaveChangesAsync(cancellationToken);
 
             supervisor.StartMonitoring(run.Id, run.TaskId, agent.ProcessId, agent.StartedAt, cancellationToken);

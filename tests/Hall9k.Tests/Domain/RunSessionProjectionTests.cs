@@ -43,21 +43,25 @@ public sealed class RunSessionProjectionTests
     }
 
     [Fact]
-    public void A_resumed_session_records_a_pid_with_no_start_time_so_liveness_stays_unobservable()
+    public void A_resumed_session_records_the_whole_identity_so_liveness_is_observable()
     {
-        // RunResumed carries only a pid (log #5's exit-and-resume). Half an identity is not an
-        // identity, and the display says unobserved rather than checking a pid that may have
-        // been reused.
+        // RunResumed used to carry only a pid (log #5's exit-and-resume), and half an identity
+        // is not an identity: the display said unobserved rather than checking a pid that may
+        // have been reused. The budget retry made resume a real path (backlog 40) and the spawn
+        // it drives already knows when the process started, so the event carries it and the
+        // session is identified the same way a fresh one is.
         RunDetailsProjection projection = new();
         Guid id = DomainId.New();
         RunDetails view = Dispatched(projection, id);
+        DateTimeOffset resumedAt = Now.AddHours(1);
 
-        projection.Apply(new FakeEvent<RunResumed>(new RunResumed(id, 5150, Now)), view);
+        projection.Apply(new FakeEvent<RunResumed>(new RunResumed(id, 5150, resumedAt, Now)), view);
 
         ActiveSession resumed = view.ActiveSessions.Should().ContainSingle().Subject;
         resumed.Role.Should().Be(AgentRole.Build);
         resumed.ProcessId.Should().Be(5150);
-        resumed.StartedAt.Should().BeNull();
+        resumed.StartedAt.Should().Be(resumedAt, "pid plus start time is the identity (log #2)");
+        view.ProcessStartedAt.Should().Be(resumedAt, "the run's own record and the session's agree");
     }
 
     [Fact]
