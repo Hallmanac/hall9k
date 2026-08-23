@@ -353,6 +353,62 @@ public sealed class RunSupervisorTests(PostgresFixture postgres) : IClassFixture
             "different projection shape", "the human reads the agent's position, not just the marker");
     }
 
+    /// <summary>
+    /// The generation fence on the thread-dispute park (adversarial review, cycle 3): a
+    /// requeue-and-reclaim moved the task on to generation 2 while this follow-up — still
+    /// generation 1, the exact double-booking shape backlog 39 exists to close — was mid-run.
+    /// Its agent session ends with a disputed verdict, so <c>ParkedOnThreadDisputeAsync</c>'s
+    /// fence check rejects it; the rejection must retire the run with RunSuperseded, the same
+    /// as every other fence rejection in this diff, rather than leaving it live in Verifying
+    /// with no monitor watching it and a NodeLoad slot pinned until the next restart's orphan
+    /// adoption sweep.
+    /// </summary>
+    [Fact]
+    public async Task A_stale_generations_thread_dispute_park_retires_the_run_instead_of_leaving_it_live()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        using DocumentStore store = NewStore();
+        (NodeContext node, Guid taskId, Guid runId) = await SeedClaimedTaskAsync(store, cts.Token, asFollowUp: true);
+
+        // A requeue-and-reclaim moved the task on to generation 2 under a different run while
+        // this follow-up's agent session is still in flight — the same shape as backlog 39's
+        // other stale-generation tests, applied to the thread-dispute park.
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            TaskAggregate task = (await session.Events.AggregateStreamAsync<TaskAggregate>(taskId, token: cts.Token))!;
+            var requeued = TaskDecider.Requeue(task, RequeueReason.LeaseExpired, Now);
+            task.Apply(requeued);
+            var reclaimed = TaskDecider.Claim(task, node.NodeId, node.OwnerId, DomainId.New(), Now);
+            session.Events.Append(taskId, requeued, reclaimed);
+            session.Store(new TaskLease { Id = taskId, NodeId = node.NodeId, LeaseGeneration = 2, HeartbeatAt = Now });
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        const string disputed =
+            "Answered three threads. The fourth asks for a different projection shape.\n"
+            + "RESOLUTION: disputed";
+        int processId = SpawnFakeAgent(runId, $"printf '%s\\n' '{DisputedResultLine(disputed)}'");
+        DateTimeOffset startedAt = await RecordProcessStartedAsync(store, runId, processId, cts.Token);
+
+        ListLogger<RunSupervisor> logger = new();
+        RunSupervisor supervisor = NewSupervisor(store, node, logger: logger);
+        supervisor.StartMonitoring(runId, taskId, processId, startedAt, cts.Token);
+
+        RunDetails details = await WaitForStateAsync(store, runId, "Superseded", cts.Token);
+        details.ParkedReason.Should().BeNull("the stale generation's dispute is never actually parked");
+
+        await using IQuerySession query = store.QuerySession();
+        TaskListItem task2 = (await query.LoadAsync<TaskListItem>(taskId, cts.Token))!;
+        task2.State.Value.Should().Be("Claimed", "the live generation's claim is untouched by the stale run's park");
+        task2.LeaseGeneration.Should().Be(2);
+        (await query.LoadAsync<TaskLease>(taskId, cts.Token)).Should().NotBeNull(
+            "the stale run's retirement must not release the live generation's lease");
+
+        logger.Lines.Should().Contain(line =>
+            line.Contains(runId.ToString()) && line.Contains("retired as superseded"),
+            "the fence rejection must name the run it retired instead of parked");
+    }
+
     /// <summary>The same marker from a first run is text, not an answer: only a follow-up was asked.</summary>
     [Fact]
     public async Task The_dispute_marker_is_read_only_from_follow_up_runs()
