@@ -23,6 +23,7 @@ namespace Hall9k.Cli.Diagnostics;
 public static class DatabaseDoctor
 {
     private static readonly TimeSpan ReadinessTimeout = TimeSpan.FromSeconds(30);
+    private static readonly TimeSpan ReadinessPollInterval = TimeSpan.FromMilliseconds(500);
 
     /// <summary>
     /// Run the full check, printing teaching messages as it goes, and — when
@@ -299,17 +300,34 @@ public static class DatabaseDoctor
         return ready;
     }
 
-    private static async Task<bool> WaitForReadinessAsync(string connectionString, CancellationToken cancellationToken)
+    private static Task<bool> WaitForReadinessAsync(string connectionString, CancellationToken cancellationToken) =>
+        WaitForReadinessAsync(
+            token => DatabaseReachability.ProbeAsync(connectionString, token),
+            ReadinessTimeout,
+            ReadinessPollInterval,
+            cancellationToken);
+
+    /// <summary>
+    /// The polling shape itself, isolated from the real Npgsql probe so it can be exercised
+    /// without Docker or Postgres: a fake <paramref name="probe"/> stands in, and a shrunk
+    /// <paramref name="timeout"/>/<paramref name="pollInterval"/> keeps the timeout and
+    /// eventually-ready cases fast in tests rather than needing the real 30s.
+    /// </summary>
+    internal static async Task<bool> WaitForReadinessAsync(
+        Func<CancellationToken, Task<ReachabilityReport>> probe,
+        TimeSpan timeout,
+        TimeSpan pollInterval,
+        CancellationToken cancellationToken)
     {
-        DateTimeOffset deadline = DateTimeOffset.UtcNow + ReadinessTimeout;
+        DateTimeOffset deadline = DateTimeOffset.UtcNow + timeout;
         while (DateTimeOffset.UtcNow < deadline)
         {
-            if ((await DatabaseReachability.ProbeAsync(connectionString, cancellationToken)).Status == ReachabilityStatus.Reachable)
+            if ((await probe(cancellationToken)).Status == ReachabilityStatus.Reachable)
             {
                 return true;
             }
 
-            await Task.Delay(TimeSpan.FromMilliseconds(500), cancellationToken);
+            await Task.Delay(pollInterval, cancellationToken);
         }
 
         return false;
