@@ -324,7 +324,10 @@ public sealed class RunAggregate
     public void Apply(ReviewFixDispatched @event)
     {
         ReviewFixRuns++;
-        PendingHumanFindings = null;
+        // PendingHumanFindings is NOT cleared here: a budget-exhausted fix session redispatches
+        // at FixNeeded with nothing else fixed, and must see the same human guidance again
+        // rather than falling back to the automated findings file (backlog 40). It is only
+        // truly consumed once a fix session actually finishes — see Apply(ReviewFixCompleted).
         ActiveFixSessionId = @event.SessionId;
         ActiveFixProcessId = @event.ProcessId;
         ActiveFixProcessStartedAt = @event.ProcessStartedAt;
@@ -339,6 +342,7 @@ public sealed class RunAggregate
     public void Apply(ReviewFixCompleted @event)
     {
         ClearActiveFixSession();
+        PendingHumanFindings = null;
         // Every fix session is followed by the gates, including the terminal one the severity
         // gate let through: what a settled ending ships unreviewed is the reviewers' reading of
         // those commits, never the build and the tests (log #63). The reverify step is what
@@ -627,8 +631,10 @@ public sealed class RunAggregate
     /// cleared here rather than left to be "resumed": DispatchMissingPassesAsync tops up a
     /// cleared review pass exactly as it already does for a daemon that died between two
     /// spawns, and a cleared fix session re-enters at FixNeeded to redispatch fresh over the
-    /// same findings file. Neither loses the run or the task; only the one session's own
-    /// progress goes with it.
+    /// same findings — the automated findings file, or a human's PendingHumanFindings, whichever
+    /// the exhausted session was actually working from (PendingHumanFindings survives here
+    /// untouched; it is only cleared once a fix session actually finishes). Neither loses the
+    /// run or the task; only the one session's own progress goes with it.
     /// </summary>
     public void Apply(RunBudgetExhausted @event)
     {
