@@ -30,6 +30,12 @@ namespace Hall9k.Cli.Commands;
 /// null when nothing current was measured. The only thing that can say a queued row is waiting on
 /// a slot rather than simply waiting: with no measurement, no surface claims one.
 /// </param>
+/// <param name="BudgetParkedRuns">
+/// How many of the loaded rows are held on the same exhausted subscription window (Decisions Log
+/// #40). Counted once for the whole set rather than recomputed per row, because that is what the
+/// count is for: several budget parks are one condition, and a row that says so is a row a human
+/// can read once and consciously leave alone.
+/// </param>
 internal sealed record TaskStatusContext(
     IReadOnlyDictionary<Guid, RunDetails> Runs,
     IReadOnlyDictionary<Guid, RunActivity> Activity,
@@ -38,7 +44,8 @@ internal sealed record TaskStatusContext(
     IReadOnlyDictionary<Guid, string> NodeMachines,
     ISessionObserver Sessions,
     string MachineName,
-    DispatchPressure? Pressure = null);
+    DispatchPressure? Pressure = null,
+    int BudgetParkedRuns = 0);
 
 /// <summary>
 /// The one truth about how a task reads. Every surface that shows a task — h9k status,
@@ -153,7 +160,8 @@ internal static class TaskStatusComposer
             nodes,
             ProcessSessionObserver.Instance,
             Environment.MachineName,
-            await DispatchPressure.ReadAsync(session, now, cancellationToken));
+            await DispatchPressure.ReadAsync(session, now, cancellationToken),
+            runs.Values.Count(run => run.State == RunState.BudgetParked));
     }
 
     /// <summary>
@@ -173,7 +181,8 @@ internal static class TaskStatusComposer
 
         TaskPhase phase = TaskPhaseComposer.Compose(task, run, state, session, heldByCeiling);
         (bool stalled, string activity) = Silence(task, run, state, session, context, now);
-        TaskAttention attention = AttentionComposer.Compose(task, run, state, phase, stalled);
+        TaskAttention attention = AttentionComposer.Compose(
+            task, run, state, phase, stalled, context.BudgetParkedRuns);
         AttentionBucket group = Group(task, run, state, attention, stalled);
 
         return new TaskStatusRow(
@@ -397,7 +406,12 @@ internal static class TaskStatusComposer
         (state == LifecycleState.Working || state == LifecycleState.Delivered)
         && task.State == TaskState.Claimed
         && run.State != RunState.ReviewParked
-        && run.State != RunState.CloseoutParked;
+        && run.State != RunState.CloseoutParked
+        // A budget park is quiet by design for the same reason (Decisions Log #40): the session
+        // that hit the limit has exited and nothing writes to the stream until the retry sweep
+        // resumes it, so measuring it against the stall threshold would rename an automatic wait
+        // as a machine failure an hour later.
+        && run.State != RunState.BudgetParked;
 
     /// <summary>
     /// The coarse bucket the rollups count and h9k status groups by. Single assignment on

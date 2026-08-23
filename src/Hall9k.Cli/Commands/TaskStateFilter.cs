@@ -104,13 +104,20 @@ internal static class TaskStateFilter
     /// The run vocabulary, which is the phase line's material. Selectable because "show me
     /// everything under review" is a real question, and unprinted in the Status column because
     /// answering it there is what made the old board unreadable.
+    /// <para>
+    /// <c>BudgetParked</c> belongs here rather than among the attention groups (Decisions Log
+    /// #40): it is a run state like the two parks beside it, so "show me everything waiting on
+    /// the budget window" is answered by the same family that answers "show me everything under
+    /// review", and no new group is added to a board whose groups are the lifecycle's.
+    /// </para>
     /// </summary>
     internal static readonly string[] RunStates =
     [
         RunState.Dispatched.Value, RunState.Running.Value, RunState.Verifying.Value,
-        RunState.UnderReview.Value, RunState.ReviewParked.Value, RunState.AwaitingReview.Value,
-        RunState.ChecksFailing.Value, RunState.ReviewPending.Value, RunState.CloseoutParked.Value,
-        RunState.Completed.Value, RunFailedSpelling, RunState.Killed.Value, RunState.Superseded.Value,
+        RunState.UnderReview.Value, RunState.ReviewParked.Value, RunState.BudgetParked.Value,
+        RunState.AwaitingReview.Value, RunState.ChecksFailing.Value, RunState.ReviewPending.Value,
+        RunState.CloseoutParked.Value, RunState.Completed.Value, RunFailedSpelling,
+        RunState.Killed.Value, RunState.Superseded.Value,
     ];
 
     /// <summary>
