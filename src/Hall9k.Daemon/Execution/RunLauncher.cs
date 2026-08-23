@@ -328,6 +328,12 @@ public sealed class RunLauncher(
                 session.Events.Append(runId, new RunFailed(runId, reason, DateTimeOffset.UtcNow));
             }
 
+            // LoadFencedAsync's read must happen before the AllowsAsync identity check below
+            // — not after — so a reclaim landing between the two is caught by AllowsAsync's
+            // fresh read rather than baked into `current.Task` as an already-stale ownership
+            // fact that AllowsAsync never gets asked about (adversarial review, cycle 2).
+            (TaskAggregate Task, long Version)? fenced =
+                await GenerationFence.LoadFencedAsync(session, taskId, cancellationToken);
             if (!await GenerationFence.AllowsAsync(
                 session, logger, taskId, runId, leaseGeneration, nameof(TaskFailed), cancellationToken))
             {
@@ -335,8 +341,6 @@ public sealed class RunLauncher(
                 return;
             }
 
-            (TaskAggregate Task, long Version)? fenced =
-                await GenerationFence.LoadFencedAsync(session, taskId, cancellationToken);
             if (fenced is { } current && TaskDecider.CanFail(current.Task))
             {
                 session.Events.Append(taskId, expectedVersion: current.Version + 1, TaskDecider.Fail(
