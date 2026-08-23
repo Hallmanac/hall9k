@@ -1,3 +1,5 @@
+> **VERIFIED LIVE 2026-08-23: no ContextAttached/ContextDetached events, no attach command, no dispatch manifest anywhere in src. Backlog 48 pre-places the BYTES (a workspace/ beside every task render); this file now owns only the provenance events and the manifest.**
+
 # Idea: task attachments (context accumulation with provenance)
 
 Captured 2026-08-19 from Brian's workflow walkthrough: an idea gets jotted as a

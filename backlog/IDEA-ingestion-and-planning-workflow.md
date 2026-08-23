@@ -1,3 +1,5 @@
+> **PARTIALLY ABSORBED 2026-08-23: the idea/discovery/promotion half shipped as decision #35, the persona half consolidated into IDEA-skill-layer. STILL LIVE here: idea-side ingestion sources (--from-jira/--from-issue/--from-file/--from-url on idea add) and the async Ingesting state with reachability checks - nothing of that exists in src.**
+
 # IDEA: Ingestion, discovery, and refinement — the day-to-day planning flow
 
 **Status:** Draft — funnel entry, not a decision

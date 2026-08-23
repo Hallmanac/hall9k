@@ -1,3 +1,5 @@
+> **VERIFIED LIVE 2026-08-23: decisions #60/#65 built fetch-by-key adoption only; nothing surveys a tracker before work starts (no similar-item query, no epic placement). Natural first mission of idea discovery runs; schedule with that work.**
+
 # IDEA: External-backlog awareness - discovery surveys the tracker before work duplicates
 
 **Status:** Draft - funnel entry, not a decision

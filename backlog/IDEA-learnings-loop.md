@@ -1,3 +1,5 @@
+> **ARCHIVED 2026-08-23: self-superseded by IDEA-learning-capture (its own header says so). Retains the origin history and the NodeBootstrap Environment.UserName KNOWN VIOLATION note - that violation still needs its own fix task and is flagged in the grooming record.**
+
 # SUPERSEDED (2026-08-20): the learnings-loop design now lives in IDEA-learning-capture.md,
 # which arrived from Brian's beads deep-dive session far more developed (inert-by-default
 # quarantine, scope-based replication, absorb/reinforce/retract). This file is retained for

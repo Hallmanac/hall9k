@@ -1,3 +1,5 @@
+> **ARCHIVED 2026-08-23: the mechanism shipped as decision #34 (assignment as dispatch trigger, claim guard, publish --assign offer). The multi-owner remainder (reassignment authority, anyone-assignment, notification) is carried forward by IDEA-ranking-and-grooming, which cites and revises this file's central rule.**
+
 # Idea: task assignment to owners (multi-owner projects)
 
 Captured 2026-08-17 from a conversation about publish semantics once nodes are

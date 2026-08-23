@@ -1,3 +1,5 @@
+> **RENUMBERED 16 -> 55 (2026-08-23): the number collided with 16-orchestrator-doc, which decision #68 cites as backlog 16. At refinement, reconcile this task's contract with IDEA-learning-capture (the canonical design): the two disagree on event names (Retired/Superseded vs Consolidated/Absorbed), scopes, and the corroboration gate - a merge, not a pick.**
+
 ---
 project: hall9k
 type: feature
