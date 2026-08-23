@@ -78,6 +78,28 @@ public sealed class TaskBrowseTests
     }
 
     /// <summary>
+    /// A budget park is a run state, so it is selectable in the run family and nowhere else
+    /// (backlog 40). "Show me everything waiting on the budget window" is the same question as
+    /// "show me everything under review", answered by the same vocabulary — and the board gains
+    /// no group of its own for it, because its groups are the lifecycle's.
+    /// </summary>
+    [Fact]
+    public void A_budget_parked_run_is_selectable_on_the_run_vocabulary_and_counted_with_its_lifecycle()
+    {
+        Guid runId = DomainId.New();
+        TaskStatusRow parked = StatusFixtures.Compose(
+            StatusFixtures.Task(TaskState.Claimed, runId),
+            StatusFixtures.Run(runId, RunState.BudgetParked, sessionProcessId: null));
+
+        TaskStateFilter.Validate("budget-parked");
+        TaskStateFilter.Matches(parked, "budget-parked").Should().BeTrue();
+        TaskStateFilter.Matches(parked, "BudgetParked").Should().BeTrue("separators and case are noise");
+        TaskStateFilter.Matches(parked, "working").Should().BeTrue("the Status column still says Working");
+        TaskStateFilter.Matches(parked, "needs-you").Should().BeFalse(
+            "the daemon retries this hourly — it is a wait a human can ignore, not an ask");
+    }
+
+    /// <summary>
     /// The ruling (Brian, 2026-08-22): where a word names both a lifecycle state and an attention
     /// group, <b>the column wins</b> — the word a reader types selects the rows whose Status
     /// column shows that word, because that is the word they just read off the screen. A parked

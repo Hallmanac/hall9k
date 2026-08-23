@@ -86,6 +86,11 @@ internal static class TaskPhaseComposer
             "UnderReview" => Review(run, session),
             "ReviewParked" => new TaskPhase("review parked", SessionLiveness.NotApplicable,
                 "the worktree is yours until you resolve it"),
+            // Parked on the clock rather than on a person (Decisions Log #40). The session that
+            // hit the limit has already exited, so the line says nothing about liveness and
+            // names the wait itself: the retry sweep is what ends it, not a human.
+            "BudgetParked" => new TaskPhase("waiting on the budget window", SessionLiveness.NotApplicable,
+                "the daemon retries hourly; nothing is running"),
             // The run ended and the task's own transition has not committed yet: the closing
             // half of the dispatch handoff, and a lane nothing is working in.
             "Completed" or "Failed" or "Killed" or "Superseded" => new TaskPhase(
@@ -211,6 +216,8 @@ internal static class TaskPhaseComposer
                 SessionLiveness.NotApplicable, "nothing is watching it any more"),
             "ReviewParked" => new TaskPhase($"{pullRequest} open — review parked",
                 SessionLiveness.NotApplicable, "the worktree is yours until you resolve it"),
+            "BudgetParked" => new TaskPhase($"{pullRequest} open — waiting on the budget window",
+                SessionLiveness.NotApplicable, "the daemon retries hourly; nothing is running"),
             _ => new TaskPhase($"watching {pullRequest}", SessionLiveness.NotApplicable),
         };
     }

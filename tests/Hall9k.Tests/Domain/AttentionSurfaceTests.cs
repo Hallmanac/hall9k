@@ -104,6 +104,56 @@ public sealed class AttentionSurfaceTests
         row.Group.Should().Be(AttentionBucket.Closed);
     }
 
+    /// <summary>
+    /// A budget-parked run is waiting on the clock, not on a human (Decisions Log #40): the
+    /// three surfaces all have to say that, distinctly from the two parks beside it that do want
+    /// a person. The origin incident was three rows that read as three unrelated Failed rows for
+    /// what was really one condition, so the cause names the condition once and counts the rows
+    /// it caught, and the level is the one a reader is meant to be able to ignore.
+    /// </summary>
+    [Fact]
+    public void A_budget_parked_run_waits_on_the_clock_rather_than_on_a_human()
+    {
+        Guid runId = DomainId.New();
+        RunDetails parked = StatusFixtures.Run(runId, RunState.BudgetParked, sessionProcessId: null);
+        parked.ParkedReason = "token budget exhausted - resumes when the subscription window resets";
+
+        TaskStatusRow row = StatusFixtures.Compose(
+            StatusFixtures.Task(TaskState.Claimed, runId), parked, budgetParkedRuns: 3);
+
+        row.Attention.Level.Should().Be(AttentionLevel.WaitingHandled,
+            "the daemon retries hourly and clears this itself — a human can read it once and leave it be");
+        row.Attention.Cause.Should().Be(
+            "token budget exhausted - resumes when the subscription window resets (3 runs waiting)",
+            "several parked runs read as one shared condition, not N unrelated failures");
+        row.Attention.Lever.Should().BeEmpty("there is nothing for anyone to type");
+        row.Phase.Text.Should().Be("waiting on the budget window");
+        row.Phase.Detail.Should().Be("the daemon retries hourly; nothing is running");
+        row.Phase.Liveness.Should().Be(SessionLiveness.NotApplicable,
+            "the session that hit the limit has already exited");
+        row.State.Should().Be(LifecycleState.Working, "the run still owns the task and has not pushed");
+        row.Group.Should().Be(AttentionBucket.Working,
+            "the wait is the run's, so it is counted with the work it belongs to rather than as a group of its own");
+        row.Stalled.Should().BeFalse("parked is a wait, not a silence the stall threshold should flag");
+    }
+
+    /// <summary>
+    /// One row held on the window is one row, and "(1 run waiting)" beside it is noise: the count
+    /// exists to say "this is one condition, not N failures", which only means something at N > 1.
+    /// </summary>
+    [Fact]
+    public void A_board_holding_one_budget_parked_run_states_the_condition_without_a_count()
+    {
+        Guid runId = DomainId.New();
+        RunDetails parked = StatusFixtures.Run(runId, RunState.BudgetParked, sessionProcessId: null);
+        parked.ParkedReason = "token budget exhausted - resumes when the subscription window resets";
+
+        TaskStatusRow row = StatusFixtures.Compose(
+            StatusFixtures.Task(TaskState.Claimed, runId), parked, budgetParkedRuns: 1);
+
+        row.Attention.Cause.Should().Be("token budget exhausted - resumes when the subscription window resets");
+    }
+
     [Fact]
     public void A_park_that_recorded_no_reason_says_so_rather_than_showing_a_bare_word()
     {

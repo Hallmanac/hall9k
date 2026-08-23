@@ -24,8 +24,19 @@ internal static class AttentionComposer
     /// still live, a dead blocker outranks a live one, and a lane the machinery is still working
     /// is never red however long it has been going.
     /// </summary>
+    /// <param name="budgetParkedRuns">
+    /// How many runs the same board is holding on the same exhausted budget window (Decisions
+    /// Log #40). Counted once for the board rather than per row, because that is the whole
+    /// point: the origin incident was three rows that read as three unrelated failures when
+    /// they were one condition.
+    /// </param>
     public static TaskAttention Compose(
-        TaskListItem task, RunDetails? run, LifecycleState state, TaskPhase phase, bool stalled)
+        TaskListItem task,
+        RunDetails? run,
+        LifecycleState state,
+        TaskPhase phase,
+        bool stalled,
+        int budgetParkedRuns = 0)
     {
         string id = TaskListCommand.ShortId(task.Id);
 
@@ -69,6 +80,16 @@ internal static class AttentionComposer
                 AttentionLevel.NeedsYou,
                 Reason(run.ParkedReason, "closeout parked without recording a reason"),
                 $"h9k pr resolve {id} --reason \"…\"");
+        }
+
+        // Parked on the clock, not on a person (Decisions Log #40): the subscription usage
+        // window ran out, the retry sweep clears it hourly without anyone typing anything, and
+        // so it is waiting-but-handled rather than an ask. Answered before the lifecycle arms
+        // below so a follow-up that pushed reads the same wait its pre-push sibling does — one
+        // condition, said once, whatever lifecycle state the row happens to be in.
+        if (run?.State == Domain.Features.Run.RunState.BudgetParked)
+        {
+            return new TaskAttention(AttentionLevel.WaitingHandled, BudgetHoldCause(run, budgetParkedRuns));
         }
 
         if (state == LifecycleState.Failed)
@@ -201,9 +222,10 @@ internal static class AttentionComposer
     /// Why a Failed row failed, composed from what is actually recorded rather than shown as the
     /// bare word (Decisions Log #66). A category is only named where a distinct record supports
     /// it: failed gates are listed because <c>VerificationFailed</c> names them, a kill is named
-    /// because <c>RunKilled</c> records its reason. Causes with no distinct record yet — token
-    /// exhaustion until backlog 40 lands — arrive here as whatever text the machinery wrote, and
-    /// are shown verbatim rather than sorted into a category nobody observed.
+    /// because <c>RunKilled</c> records its reason. Token exhaustion no longer arrives here at
+    /// all — it has a record and a park of its own now (Decisions Log #40) — and any other cause
+    /// with no distinct record arrives as whatever text the machinery wrote, shown verbatim
+    /// rather than sorted into a category nobody observed.
     /// </summary>
     public static string FailureCause(TaskListItem task, RunDetails? run)
     {
@@ -235,6 +257,20 @@ internal static class AttentionComposer
             "the session is alive but its stream has been silent past the stall threshold",
         _ => "the agent stream has been silent past the stall threshold",
     };
+
+    /// <summary>
+    /// The shared reason every budget-parked row carries (Decisions Log #40): the condition the
+    /// run itself recorded, plus how many runs on this board it caught. Named once, with a
+    /// count, rather than each row reading as its own unrelated failure the way the origin
+    /// incident's three Failed rows did. A board holding exactly one says no count at all — "(1
+    /// run waiting)" beside a single row is noise.
+    /// </summary>
+    private static string BudgetHoldCause(RunDetails run, int budgetParkedRuns)
+    {
+        string recorded = Reason(
+            run.ParkedReason, "token budget exhausted - resumes when the subscription window resets");
+        return budgetParkedRuns > 1 ? $"{recorded} ({budgetParkedRuns} runs waiting)" : recorded;
+    }
 
     private static string Reason(string? recorded, string absent) =>
         recorded.IsNotBlank() ? recorded : absent;

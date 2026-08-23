@@ -95,10 +95,11 @@ internal static class StatusFixtures
         IReadOnlyDictionary<Guid, string>? projects = null,
         DateTimeOffset? now = null,
         IReadOnlyDictionary<int, SessionLiveness>? livenessByProcess = null,
-        DispatchPressure? pressure = null) =>
+        DispatchPressure? pressure = null,
+        int budgetParkedRuns = 0) =>
         TaskStatusComposer.Compose(
             task,
-            Context(run, silentSince, liveness, owners, projects, livenessByProcess, pressure),
+            Context(run, silentSince, liveness, owners, projects, livenessByProcess, pressure, budgetParkedRuns),
             now ?? Now);
 
     public static TaskStatusContext Context(
@@ -108,7 +109,8 @@ internal static class StatusFixtures
         IReadOnlyDictionary<Guid, string>? owners = null,
         IReadOnlyDictionary<Guid, string>? projects = null,
         IReadOnlyDictionary<int, SessionLiveness>? livenessByProcess = null,
-        DispatchPressure? pressure = null)
+        DispatchPressure? pressure = null,
+        int budgetParkedRuns = 0)
     {
         Dictionary<Guid, RunDetails> runs = run is null ? [] : new Dictionary<Guid, RunDetails> { [run.Id] = run };
         Dictionary<Guid, RunActivity> activity = run is null || silentSince is null
@@ -128,6 +130,7 @@ internal static class StatusFixtures
             nodes,
             new StubSessionObserver(liveness, livenessByProcess),
             ThisMachine,
-            pressure);
+            pressure,
+            budgetParkedRuns);
     }
 }
