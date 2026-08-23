@@ -76,7 +76,8 @@ public static class DatabaseDoctor
             + $"{Hall9kDatabase.ProjectOverrideFileName} file walking up from "
             + $"{Directory.GetCurrentDirectory().EscapeMarkup()}.[/]");
 
-        ContainerRuntimeStatus runtime = await ReportContainerRuntimeStatusAsync(runner, cancellationToken);
+        (ContainerRuntimeStatus runtime, PostgresContainerStatus container) =
+            await ReportContainerRuntimeStatusAsync(runner, cancellationToken);
 
         if (await ContainerRuntimeProbe.PortListeningAsync("localhost", 5432, cancellationToken))
         {
@@ -86,7 +87,7 @@ public static class DatabaseDoctor
         }
 
         if (runtime == ContainerRuntimeStatus.Running && offerFixes
-            && await OfferAndStartAsync(Hall9kDatabase.DefaultConnectionString, runner, cancellationToken))
+            && await OfferAndStartAsync(Hall9kDatabase.DefaultConnectionString, container, runner, cancellationToken))
         {
             await Hall9kDatabase.WriteConfiguredConnectionStringAsync(Hall9kDatabase.DefaultConnectionString, cancellationToken);
             AnsiConsole.MarkupLine($"[green]Configured[/]: wrote the connection string to {Hall9kDatabase.ConfigFile.EscapeMarkup()}.");
@@ -128,9 +129,10 @@ public static class DatabaseDoctor
                     // check finds an unreachable local Postgres (origin incident,
                     // 2026-08-21 — a machine reboot leaves the connection string configured
                     // but Docker Desktop, and so hall9k-postgres, not yet back up).
-                    ContainerRuntimeStatus runtime = await ReportContainerRuntimeStatusAsync(runner, cancellationToken);
+                    (ContainerRuntimeStatus runtime, PostgresContainerStatus container) =
+                        await ReportContainerRuntimeStatusAsync(runner, cancellationToken);
                     if (offerFixes && runtime == ContainerRuntimeStatus.Running
-                        && await OfferAndStartAsync(connectionString, runner, cancellationToken))
+                        && await OfferAndStartAsync(connectionString, container, runner, cancellationToken))
                     {
                         reachability = await DatabaseReachability.ProbeAsync(connectionString, cancellationToken);
                     }
@@ -198,15 +200,31 @@ public static class DatabaseDoctor
     /// Prints question 4's Docker awareness honestly, wherever the check needs it — the
     /// not-configured path and the configured-but-refused path both reach an unreachable
     /// local Postgres, and the boundary (Decisions Log #73) is Docker itself either way.
+    /// Reports what it finds unconditionally, independent of <paramref name="runner"/>'s
+    /// caller offering to fix anything: a stopped <c>hall9k-postgres</c> container is the
+    /// single most useful thing this check can say, and it has to say it on every
+    /// invocation — including a non-interactive <c>h9k doctor</c> and every ordinary command
+    /// that falls into this diagnosis — not only when an interactive fix offer happens to
+    /// follow (origin incident 2026-08-23: the report was reachable only from inside the
+    /// interactive start-offer, so scripted and non-interactive runs never saw it).
     /// </summary>
-    private static async Task<ContainerRuntimeStatus> ReportContainerRuntimeStatusAsync(
+    private static async Task<(ContainerRuntimeStatus Runtime, PostgresContainerStatus Container)> ReportContainerRuntimeStatusAsync(
         ProcessRunner runner, CancellationToken cancellationToken)
     {
         ContainerRuntimeStatus runtime = await ContainerRuntimeProbe.RuntimeStatusAsync(runner, cancellationToken);
+        PostgresContainerStatus container = PostgresContainerStatus.Absent;
         switch (runtime)
         {
             case ContainerRuntimeStatus.Running:
                 AnsiConsole.MarkupLine("[dim]A container runtime (Docker) is running.[/]");
+                container = await ContainerRuntimeProbe.Hall9kContainerStatusAsync(runner, cancellationToken);
+                if (container == PostgresContainerStatus.Stopped)
+                {
+                    AnsiConsole.MarkupLine(
+                        $"[yellow]Found a stopped {PostgresRuntime.ContainerName} container from a previous "
+                        + "session[/] — your database exists, it is just not running.");
+                }
+
                 break;
             case ContainerRuntimeStatus.NotRunning:
                 AnsiConsole.MarkupLine(
@@ -221,7 +239,7 @@ public static class DatabaseDoctor
                 break;
         }
 
-        return runtime;
+        return (runtime, container);
     }
 
     /// <summary>
@@ -230,23 +248,19 @@ public static class DatabaseDoctor
     /// stopped hall9k-postgres container to restart, or the shipped compose definition to
     /// bring up for the first time. Waits for readiness before reporting success, so the
     /// caller never proceeds against a database that answered "starting" and nothing more.
+    /// Takes <paramref name="container"/> already resolved by <see cref="ReportContainerRuntimeStatusAsync"/>
+    /// rather than re-probing: the report already ran (and already said so, when stopped)
+    /// before a caller ever reaches this offer, so this method only ever decides whether to
+    /// ask, never what to report.
     /// </summary>
     private static async Task<bool> OfferAndStartAsync(
-        string connectionStringToPoll, ProcessRunner runner, CancellationToken cancellationToken)
+        string connectionStringToPoll, PostgresContainerStatus container, ProcessRunner runner, CancellationToken cancellationToken)
     {
         if (!AnsiConsole.Profile.Capabilities.Interactive)
         {
             return false;
         }
 
-        if (await ContainerRuntimeProbe.RuntimeStatusAsync(runner, cancellationToken) != ContainerRuntimeStatus.Running)
-        {
-            // Not this method's place to explain why — the caller already has, or is about
-            // to (the boundary is Docker itself: not running is always the human's to fix).
-            return false;
-        }
-
-        PostgresContainerStatus container = await ContainerRuntimeProbe.Hall9kContainerStatusAsync(runner, cancellationToken);
         if (container == PostgresContainerStatus.Running)
         {
             // Already running, so whatever is actually wrong, starting it again is not the fix.
@@ -254,8 +268,7 @@ public static class DatabaseDoctor
         }
 
         string prompt = container == PostgresContainerStatus.Stopped
-            ? $"Found a stopped {PostgresRuntime.ContainerName} container from a previous session — your "
-              + "database exists, it is just not running. Start it now via Docker?"
+            ? "Start it now via Docker?"
             : "Postgres isn't running. Start it now via Docker?";
         if (!AnsiConsole.Confirm(prompt, defaultValue: true))
         {
