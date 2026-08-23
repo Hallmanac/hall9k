@@ -16,6 +16,14 @@ public sealed record FollowUpWorktreeRequest(
 
 public sealed record Worktree(string Path, string Branch, string StartPoint);
 
+/// <summary>
+/// What a refresh of a long-lived reading checkout actually managed. <paramref name="Detail"/>
+/// is a sentence for a log line, and it never claims more than was observed: an unreachable
+/// remote or a checkout that could not be fast-forwarded says so, rather than being folded into
+/// silence that reads as "up to date".
+/// </summary>
+public sealed record CheckoutRefresh(bool UpToDate, string Detail);
+
 public sealed class WorktreeException(string message) : Exception(message);
 
 /// <summary>
@@ -51,4 +59,27 @@ public interface IWorktreeManager
 
     /// <summary>Startup sweep: collect worktree records orphaned by crashes.</summary>
     Task PruneAsync(string repositoryPath, CancellationToken cancellationToken);
+
+    /// <summary>
+    /// Best-effort fast-forward of a checkout a session is about to READ, rather than one it is
+    /// about to work in: the home's <c>repo/dev</c>, cut once by <c>h9k project init</c> and
+    /// otherwise never touched. A session is spawned there to read the project's own rules, so a
+    /// checkout months behind the remote answers with rules nobody uses any more.
+    /// <para>
+    /// Fast-forward only, and never throws: a reading session running against slightly old code
+    /// is worth far more than one refused because the remote was unreachable. What it did or
+    /// could not do comes back in the result so the caller can say it out loud, which is the
+    /// half that actually matters — the defect this exists for was a stale checkout that nothing
+    /// reported (Decisions Log #76).
+    /// </para>
+    /// <para>
+    /// The repository to fetch is resolved from the checkout itself rather than taken as an
+    /// argument, because the two can disagree and only one of them is the one the checkout reads:
+    /// <c>repo/dev</c> is a worktree of the home's bare clone, while the project's recorded
+    /// repository path may still name somewhere else entirely (<c>--keep-repo-path</c>,
+    /// <c>h9k project set --repo</c>). A caller cannot pair them wrongly if it never pairs them.
+    /// </para>
+    /// </summary>
+    Task<CheckoutRefresh> RefreshReadingCheckoutAsync(
+        string checkoutPath, string branch, CancellationToken cancellationToken);
 }

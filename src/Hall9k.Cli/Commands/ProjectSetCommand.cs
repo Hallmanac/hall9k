@@ -1,5 +1,6 @@
 using System.ComponentModel;
 using Hall9k.Cli.Infrastructure;
+using Hall9k.Cli.ProjectHomes;
 using Hall9k.Domain.Features.Project;
 using Hall9k.Domain.Features.Project.Events;
 using Hall9k.Domain.Features.Project.Handlers;
@@ -89,6 +90,23 @@ public sealed class ProjectSetCommand : Hall9kAsyncCommand<ProjectSetCommand.Set
             + "publishes, and the agent is left to work out from the project's own skills where the "
             + "card belongs")]
         public string? JiraProjectKey { get; init; }
+
+        [CommandOption("--home <PATH>")]
+        [Description(
+            "Where this project lives on disk — the directory holding the generated AGENTS.md, "
+            + "repo/, ideas/, tasks/ and skills/ (default: ~/.hall9k/projects/<name>). This records "
+            + "the location and re-renders the AGENTS.md there; it never moves anything and never "
+            + "creates the shape. h9k project init is what makes a home real. 'none' (or an empty "
+            + "value) clears the recorded home, which is how you say this project has no directory "
+            + "on this machine.")]
+        public string? Home { get; init; }
+
+        [CommandOption("--repo <PATH>")]
+        [Description(
+            "The local repository the daemon cuts worktrees from. Ordinarily this follows the home "
+            + "(h9k project init points it at <home>/repo/<name>.git); set it by hand when a "
+            + "relocation moved the clone and the recorded path has to catch up.")]
+        public string? RepositoryPath { get; init; }
     }
 
     protected override async Task<int> ExecuteAsync(Settings settings, CancellationToken cancellationToken)
@@ -99,6 +117,40 @@ public sealed class ProjectSetCommand : Hall9kAsyncCommand<ProjectSetCommand.Set
         ProjectDetails details = await ProjectResolver.ResolveAsync(session, settings.Project, cancellationToken);
         ProjectAggregate project = (await session.Events.AggregateStreamAsync<ProjectAggregate>(details.Id, token: cancellationToken))!;
         BootstrapContext context = await NodeBootstrap.EnsureAsync(session, cancellationToken);
+
+        // 'none' clears the home the same way it clears the Jira binding, and for the same
+        // reason it is mapped here: ProjectHome.Parse would take it for a relative path. An
+        // empty value clears it too, which is what ProjectHome already means by blank — and
+        // resolving one against the current directory would instead record wherever the shell
+        // happened to be standing. Path.GetFullPath throws on it outright.
+        Optional<ProjectHome> homeDirectory = settings.Home is { } homePath
+            ? Optional<ProjectHome>.Of(homePath.IsBlank() || ClearingWord(homePath)
+                ? ProjectHome.None
+                : ProjectHome.Parse(Path.GetFullPath(homePath)))
+            : Optional<ProjectHome>.None;
+
+        // Blank goes through untouched so the decider gives its own refusal — there is no
+        // clearing a repository path — rather than Path.GetFullPath throwing ArgumentException
+        // on the way, which is an unhandled stack trace instead of a rule the caller can read.
+        Optional<string> repositoryPath = settings.RepositoryPath is { } repoPath
+            ? Optional<string>.Of(repoPath.IsBlank() ? repoPath : Path.GetFullPath(repoPath))
+            : Optional<string>.None;
+
+        // --home and --repo are the second documented way a home and a repository path get
+        // recorded, so they run the same one-home-one-project check h9k project add and h9k
+        // project init run: without it this command records the collision and then the render
+        // below immediately overwrites the other project's AGENTS.md, which is the exact damage
+        // the check exists to prevent. Only what this invocation is actually changing is checked
+        // — a blank never matches anything (ProjectHomePaths.SameDirectory) — so an option nobody
+        // passed cannot refuse a change to the other one. Origin incident (2026-08-23): the
+        // second cycle of this branch's pre-PR review walked h9k project set beta --home
+        // <alpha's home> straight through, with every line reporting success.
+        await ProjectHomeClaims.EnsureUnclaimedAsync(
+            session,
+            details.Id,
+            homeDirectory is { HasValue: true, Value: { } claimedHome } ? claimedHome.Value : string.Empty,
+            repositoryPath is { HasValue: true, Value: { } claimedRepository } ? claimedRepository : string.Empty,
+            cancellationToken);
 
         ProjectSettingsChanged changed = ProjectDecider.ChangeSettings(
             project,
@@ -130,13 +182,33 @@ public sealed class ProjectSetCommand : Hall9kAsyncCommand<ProjectSetCommand.Set
                 ? Optional<JiraProjectKey>.Of(ClearingWord(jiraKey)
                     ? JiraProjectKey.None
                     : JiraProjectKey.Parse(jiraKey))
-                : Optional<JiraProjectKey>.None);
+                : Optional<JiraProjectKey>.None,
+            homeDirectory: homeDirectory,
+            repositoryPath: repositoryPath);
 
         session.Events.Append(details.Id, changed);
         await session.SaveChangesAsync(cancellationToken);
         await Doorbell.RingAsync($"project-changed:{details.Id}", cancellationToken);
 
         AnsiConsole.MarkupLine($"[green]Project '{details.Name.EscapeMarkup()}' settings updated.[/]");
+
+        // The home's AGENTS.md is a render of exactly the facts this command changes (the Jira
+        // binding and the remote drive its tool list), so it is rewritten here rather than left
+        // to drift until somebody re-runs project init. Best effort by design: a home that is
+        // recorded but not yet materialised has nothing to write into, and that is not a reason
+        // to fail a settings change that already landed.
+        ProjectDetails updated = (await session.LoadAsync<ProjectDetails>(details.Id, cancellationToken))!;
+        if (updated.HomeDirectory.HasValue && Directory.Exists(updated.HomeDirectory.Value))
+        {
+            ProjectHomeRecipe.Report([ProjectAgentsDocument.Write(updated.HomeDirectory.Value, updated)]);
+        }
+        else if (updated.HomeDirectory.HasValue)
+        {
+            AnsiConsole.MarkupLine(
+                $"[yellow]{updated.HomeDirectory.Value.EscapeMarkup()} does not exist yet[/] — create the shape "
+                + $"there with: h9k project init {details.Name.EscapeMarkup()}");
+        }
+
         return ExitCodes.Ok;
     }
 

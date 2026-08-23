@@ -69,10 +69,27 @@ public static class CliCommandTree
 
         config.AddBranch("project", project =>
         {
-            project.SetDescription("Manage projects: register them, browse them, inspect one");
+            project.SetDescription("Manage projects: register them, give them a home on disk, browse them, inspect one");
             project.AddCommand<ProjectAddCommand>("add")
-                .WithDescription("Register a project (repo path, base branch, connection binding)")
-                .WithExample("project", "add", "--name", "hall9k", "--repo", "~/code/hall9k", "--base-branch", "main");
+                .WithDescription(
+                    "Register a project and create its home directory: the generated AGENTS.md, repo/ "
+                    + "bare-cloned from the remote with a dev/ worktree on the primary branch, ideas/, "
+                    + "tasks/, skills/ seeded from the install's canonical set, and the .claude/ adapter. "
+                    + "Platform code end to end — no agent, nothing to review, the same shape on every "
+                    + "machine. The location is yours (--home); the shape is the platform's.")
+                .WithExample("project", "add", "--name", "hall9k", "--repo-url", "https://github.com/Hallmanac/hall9k")
+                .WithExample("project", "add", "--name", "hall9k", "--repo-url", "https://github.com/Hallmanac/hall9k",
+                    "--home", "~/work/hall9k", "--base-branch", "main");
+            project.AddCommand<ProjectInitCommand>("init")
+                .WithDescription(
+                    "Create (or repair) a registered project's home directory. The adopt path for a "
+                    + "project that has none, and the repair path for one that is incomplete: every step "
+                    + "is idempotent, so an existing bare clone is reported and left alone rather than "
+                    + "re-cloned. repo/ always materialises fresh from the recorded remote — git is "
+                    + "distributed, so a clone elsewhere on this machine is inconsequential, and moving "
+                    + "work out of an old location is a separate, deliberate act.")
+                .WithExample("project", "init", "hall9k")
+                .WithExample("project", "init", "hall9k", "--home", "~/work/hall9k");
             project.AddCommand<ProjectListCommand>("list")
                 .WithDescription(
                     "Every registered project, one row each, with its tasks counted by attention bucket "
@@ -91,8 +108,11 @@ public static class CliCommandTree
             project.AddCommand<ProjectSetCommand>("set")
                 .WithDescription(
                     "Change project settings: verify gates, skip-permissions, links, parallelism, "
-                    + "commit style, agent model, review re-requests")
+                    + "commit style, agent model, review re-requests, the Jira board, and where the "
+                    + "project lives on disk. Any change that the home's generated AGENTS.md renders "
+                    + "rewrites that file.")
                 .WithExample("project", "set", "hall9k", "--commit-style", "narrative")
+                .WithExample("project", "set", "hall9k", "--home", "~/.hall9k/projects/hall9k")
                 .WithExample("project", "set", "hall9k", "--model", "claude-opus-5")
                 .WithExample("project", "set", "hall9k", "--rerequest-review", "on")
                 .WithExample("project", "set", "hall9k", "--jira", "PROJ");

@@ -49,6 +49,15 @@ public sealed class ProjectShowCommand : Hall9kAsyncCommand<ProjectShowCommand.S
         table.AddColumns("k", "v");
         table.AddRow("[bold]Project[/]", $"[bold]{project.Name.EscapeMarkup()}[/]");
         table.AddRow("Id", $"[dim]{project.Id}[/]");
+        // The home leads, because it is the answer to "where do I go to work on this" — the
+        // repository path is one thing inside it. A project with none says so and names the
+        // command that ends that state, rather than leaving a blank row to interpret.
+        table.AddRow("Home", project.HomeDirectory.HasValue
+            ? project.HomeDirectory.Value.EscapeMarkup()
+              + (Directory.Exists(project.HomeDirectory.Value)
+                  ? string.Empty
+                  : $" [yellow](not created here — h9k project init {project.Name.EscapeMarkup()})[/]")
+            : $"[dim]none recorded — create one: h9k project init {project.Name.EscapeMarkup()}[/]");
         table.AddRow("Repository", project.RepositoryPath.EscapeMarkup());
         table.AddRow("Remote", project.RepositoryUrl is { } url
             ? url.ToString().EscapeMarkup()

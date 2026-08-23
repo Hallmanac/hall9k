@@ -10,6 +10,8 @@ namespace Hall9k.Tests.Daemon;
 public sealed class GitWorktreeManagerTests : IDisposable
 {
     private readonly string _root;
+    private readonly string _originPath;
+    private readonly string _seedPath;
     private readonly string _repositoryPath;
     private readonly GitWorktreeManager _manager = new(NullLogger<GitWorktreeManager>.Instance);
 
@@ -20,17 +22,17 @@ public sealed class GitWorktreeManagerTests : IDisposable
 
         // A bare "origin" with one commit on main, cloned locally — so origin/main exists,
         // mirroring the real layout (bare repo + sibling worktrees).
-        string originPath = Path.Combine(_root, "origin.git");
-        string seedPath = Path.Combine(_root, "seed");
-        Git(_root, $"init --bare -b main \"{originPath}\"");
-        Git(_root, $"clone \"{originPath}\" \"{seedPath}\"");
-        File.WriteAllText(Path.Combine(seedPath, "README.md"), "# seed\n");
-        Git(seedPath, "add -A");
-        Git(seedPath, "-c user.name=Test -c user.email=test@test commit -m init");
-        Git(seedPath, "push origin main");
+        _originPath = Path.Combine(_root, "origin.git");
+        _seedPath = Path.Combine(_root, "seed");
+        Git(_root, $"init --bare -b main \"{_originPath}\"");
+        Git(_root, $"clone \"{_originPath}\" \"{_seedPath}\"");
+        File.WriteAllText(Path.Combine(_seedPath, "README.md"), "# seed\n");
+        Git(_seedPath, "add -A");
+        Git(_seedPath, "-c user.name=Test -c user.email=test@test commit -m init");
+        Git(_seedPath, "push origin main");
 
         _repositoryPath = Path.Combine(_root, "repo");
-        Git(_root, $"clone \"{originPath}\" \"{_repositoryPath}\"");
+        Git(_root, $"clone \"{_originPath}\" \"{_repositoryPath}\"");
     }
 
     [Fact]
@@ -327,6 +329,83 @@ public sealed class GitWorktreeManagerTests : IDisposable
         await _manager.PruneAsync(_repositoryPath, cts.Token);
         (_, string list) = TryGit(_repositoryPath, "worktree list");
         list.Trim().Split('\n').Should().HaveCount(1, "only the repo itself remains after remove + prune");
+    }
+
+    /// <summary>
+    /// The reading checkout is fetched through the repository it actually resolves refs through,
+    /// which is the home's bare clone for a <c>repo/dev</c> cut from one — never whatever
+    /// repository path the project happens to record, since <c>--keep-repo-path</c> and
+    /// <c>h9k project set --repo</c> both leave those two naming different clones. Origin incident
+    /// (2026-08-23): the third cycle of the project-home branch's pre-PR review found the fetch
+    /// going to the recorded path, so the freshness reported for repo/dev was computed from refs
+    /// nothing had updated and logged as current.
+    /// </summary>
+    [Fact]
+    public async Task Refreshing_a_reading_checkout_fetches_the_repository_that_checkout_reads()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(1));
+        string bare = Path.Combine(_root, "home", "repo", "project.git");
+        Git(_root, $"clone --bare \"{_originPath}\" \"{bare}\"");
+        Git(bare, "config remote.origin.fetch +refs/heads/*:refs/remotes/origin/*");
+        Git(bare, "fetch origin");
+        string dev = Path.Combine(_root, "home", "repo", "dev");
+        Git(bare, $"worktree add \"{dev}\" main");
+
+        PushToOrigin("RULES.md", "# the card rules, as of today\n");
+
+        CheckoutRefresh refresh = await _manager.RefreshReadingCheckoutAsync(dev, "main", cts.Token);
+
+        refresh.UpToDate.Should().BeTrue();
+        refresh.Detail.Should().Contain("fast-forwarded 1 commit(s) to origin/main");
+        File.Exists(Path.Combine(dev, "RULES.md")).Should().BeTrue();
+
+        // The unrelated clone a project may still record as its repository path. Nothing here
+        // touched it, which is the point: fetching there is what left the reading checkout stale.
+        (_, string elsewhere) = TryGit(_repositoryPath, "rev-list --count HEAD..origin/main");
+        elsewhere.Trim().Should().Be("0", "that clone was never fetched, so it still sees the old tip");
+    }
+
+    /// <summary>
+    /// The same, for the ordinary clone a project registered before homes existed points at. Its
+    /// repository is its own root rather than the <c>.git</c> directory inside it, so the lock
+    /// taken here is the one every other method takes for the same repository.
+    /// </summary>
+    [Fact]
+    public async Task Refreshing_an_ordinary_clone_fast_forwards_it_too()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(1));
+        PushToOrigin("RULES.md", "# the card rules, as of today\n");
+
+        CheckoutRefresh refresh = await _manager.RefreshReadingCheckoutAsync(_repositoryPath, "main", cts.Token);
+
+        refresh.UpToDate.Should().BeTrue();
+        File.Exists(Path.Combine(_repositoryPath, "RULES.md")).Should().BeTrue();
+    }
+
+    /// <summary>
+    /// A path that is not a checkout at all is reported as unobserved rather than answered for:
+    /// the caller logs what came back, and "up to date" would be a claim nothing here can make.
+    /// </summary>
+    [Fact]
+    public async Task Refreshing_something_that_is_not_a_checkout_says_so()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(1));
+        string notARepository = Path.Combine(_root, "not-a-repository");
+        Directory.CreateDirectory(notARepository);
+
+        CheckoutRefresh refresh = await _manager.RefreshReadingCheckoutAsync(notARepository, "main", cts.Token);
+
+        refresh.UpToDate.Should().BeFalse();
+        refresh.Detail.Should().Contain("unobserved");
+    }
+
+    /// <summary>Moves the remote's primary branch on, the way anybody else's merge would.</summary>
+    private void PushToOrigin(string fileName, string content)
+    {
+        File.WriteAllText(Path.Combine(_seedPath, fileName), content);
+        Git(_seedPath, "add -A");
+        Git(_seedPath, "-c user.name=Test -c user.email=test@test commit -m \"rules moved on\"");
+        Git(_seedPath, "push origin main");
     }
 
     private WorktreeRequest Request(string objective) =>

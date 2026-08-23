@@ -5,6 +5,7 @@ using Hall9k.Daemon;
 using Hall9k.Daemon.Execution;
 using Hall9k.Daemon.ProcessManagement;
 using Hall9k.Daemon.Publication;
+using Hall9k.Daemon.Worktrees;
 using Hall9k.Domain.Features.Connection;
 using Hall9k.Domain.Features.Node;
 using Hall9k.Domain.Features.Project;
@@ -361,6 +362,103 @@ public sealed class CardPublicationEngineTests(PostgresFixture postgres) : IClas
 
         sweep.Dispatched.Should().Be(0);
         session.Spawns.Should().BeEmpty();
+    }
+
+    /// <summary>
+    /// A project that owns a home records its repository as the bare clone inside <c>repo/</c>,
+    /// which has refs and objects and not one file of the project's code. The session is here to
+    /// read the project's card-authoring skills, so it runs in <c>repo/dev</c>, the worktree the
+    /// home keeps on the primary branch for exactly that. Origin incident (2026-08-23): the
+    /// pre-PR review of the project-home branch found the session spawned inside the bare clone,
+    /// where the prompt's "read them from the repository you are in" cannot be followed.
+    /// </summary>
+    [Fact]
+    public async Task A_project_with_a_home_runs_its_session_in_the_dev_worktree_not_the_bare_clone()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        using DocumentStore store = NewStore();
+        NodeContext node = await NewNodeAsync(store, cts.Token);
+
+        string home = Path.Combine(_repository, "home");
+        string bare = ProjectHomePaths.BareRepository(home, "publication");
+        Directory.CreateDirectory(Path.Combine(bare, "objects"));
+        Directory.CreateDirectory(Path.Combine(bare, "refs"));
+        Directory.CreateDirectory(Path.Combine(ProjectHomePaths.DevWorktree(home), ".git"));
+
+        Guid taskId = await SeedAsync(
+            store, node, cts.Token, repositoryPath: bare, homeDirectory: ProjectHome.Parse(home));
+
+        FakeProcessManager processes = new();
+        ScriptedSession session = new(
+            "Created PROJ-123.", processes, store, taskId, () => LinkAsync(store, taskId, cts.Token));
+
+        StubWorktreeManager worktrees = new();
+        await NewEngine(store, node, session, processes, worktrees: worktrees).PollOnceAsync(cts.Token);
+
+        session.Spawns.Should().ContainSingle().Subject.WorktreePath
+            .Should().Be(ProjectHomePaths.DevWorktree(home));
+
+        // repo/dev is cut once by h9k project init and otherwise never touched, so a session
+        // spawned there to read this project's card rules reads them as of whenever the worktree
+        // was made unless something brings it forward first.
+        worktrees.Refreshed.Should().Equal([ProjectHomePaths.DevWorktree(home)]);
+    }
+
+    /// <summary>
+    /// The other half of that rule. A project registered before homes existed reads from an
+    /// ordinary clone that belongs to whoever made it, and moving somebody's working directory
+    /// under them is not housekeeping the platform gets to do on its own account.
+    /// </summary>
+    [Fact]
+    public async Task A_project_with_no_home_has_its_own_checkout_left_where_it_stands()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        using DocumentStore store = NewStore();
+        NodeContext node = await NewNodeAsync(store, cts.Token);
+
+        Guid taskId = await SeedAsync(store, node, cts.Token);
+
+        FakeProcessManager processes = new();
+        ScriptedSession session = new(
+            "Created PROJ-123.", processes, store, taskId, () => LinkAsync(store, taskId, cts.Token));
+
+        StubWorktreeManager worktrees = new();
+        await NewEngine(store, node, session, processes, worktrees: worktrees).PollOnceAsync(cts.Token);
+
+        session.Spawns.Should().ContainSingle().Subject.WorktreePath.Should().Be(_repository);
+        worktrees.Refreshed.Should().BeEmpty("that clone is somebody's, not the home's own dev/");
+    }
+
+    /// <summary>
+    /// The same project before <c>h9k project init</c> has cut the worktree: the bare clone is
+    /// there and exists, so an existence check alone passes it. There is still nothing to read.
+    /// </summary>
+    [Fact]
+    public async Task A_bare_clone_with_no_worktree_is_refused_rather_than_dispatched_into()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        using DocumentStore store = NewStore();
+        NodeContext node = await NewNodeAsync(store, cts.Token);
+
+        string home = Path.Combine(_repository, "home");
+        string bare = ProjectHomePaths.BareRepository(home, "publication");
+        Directory.CreateDirectory(Path.Combine(bare, "objects"));
+        Directory.CreateDirectory(Path.Combine(bare, "refs"));
+
+        Guid taskId = await SeedAsync(
+            store, node, cts.Token, repositoryPath: bare, homeDirectory: ProjectHome.Parse(home));
+
+        FakeProcessManager processes = new();
+        ScriptedSession session = new("Created PROJ-123.", processes);
+
+        CardPublicationSweepResult sweep = await NewEngine(store, node, session, processes)
+            .PollOnceAsync(cts.Token);
+
+        sweep.Should().Be(new CardPublicationSweepResult(Dispatched: 0, Linked: 0, Adopted: 0, Refused: 1));
+        session.Spawns.Should().BeEmpty();
+        await using IQuerySession query = store.QuerySession();
+        (await query.LoadAsync<TaskDetails>(taskId, cts.Token))!.PublicationOutcome
+            .Should().Contain("h9k project init", "the refusal names the command that makes a checkout");
     }
 
     [Fact]
@@ -1078,7 +1176,8 @@ public sealed class CardPublicationEngineTests(PostgresFixture postgres) : IClas
         CancellationToken cancellationToken,
         Guid? requestedBy = null,
         string? repositoryPath = null,
-        DateTimeOffset? requestedAt = null)
+        DateTimeOffset? requestedAt = null,
+        ProjectHome? homeDirectory = null)
     {
         Directory.CreateDirectory(_repository);
         Environment.SetEnvironmentVariable(TokenVariable, "a-token");
@@ -1097,7 +1196,7 @@ public sealed class CardPublicationEngineTests(PostgresFixture postgres) : IClas
                 new Uri("https://hall9k.atlassian.net")));
         }
 
-        ProjectRegisteredSeed(session, projectId, ownerId, repositoryPath ?? _repository);
+        ProjectRegisteredSeed(session, projectId, ownerId, repositoryPath ?? _repository, homeDirectory);
 
         TaskAdded added = TaskDecider.Add(
             taskId, projectId, "Publish me", ["A criterion"], TaskType.Feature,
@@ -1113,10 +1212,12 @@ public sealed class CardPublicationEngineTests(PostgresFixture postgres) : IClas
     }
 
     private static void ProjectRegisteredSeed(
-        IDocumentSession session, Guid projectId, Guid ownerId, string repositoryPath)
+        IDocumentSession session, Guid projectId, Guid ownerId, string repositoryPath,
+        ProjectHome? homeDirectory = null)
     {
         Hall9k.Domain.Features.Project.Events.ProjectRegistered registered = ProjectDecider.Register(
-            projectId, ownerId, DomainId.New(), $"publication-{projectId:N}", repositoryPath, null, "main", Now);
+            projectId, ownerId, DomainId.New(), $"publication-{projectId:N}", repositoryPath, null, "main", Now,
+            homeDirectory);
         session.Events.StartStream<ProjectAggregate>(projectId, registered);
     }
 
@@ -1138,14 +1239,46 @@ public sealed class CardPublicationEngineTests(PostgresFixture postgres) : IClas
         NodeContext node,
         IExecutor executor,
         IProcessManager processes,
-        TimeSpan? foreignCeiling = null) =>
-        new(store, node, executor, processes,
+        TimeSpan? foreignCeiling = null,
+        StubWorktreeManager? worktrees = null) =>
+        new(store, node, executor, processes, worktrees ?? new StubWorktreeManager(),
             Options.Create(new DaemonOptions
             {
                 CardPublicationTimeout = TimeSpan.FromSeconds(20),
                 ForeignPublicationCeiling = foreignCeiling ?? TimeSpan.FromHours(1),
             }),
             NullLogger<CardPublicationEngine>.Instance);
+
+    /// <summary>
+    /// Records what the engine asked to be refreshed, and touches no git. The refresh itself is
+    /// GitWorktreeManager's, proved against a real repository by RepoMaterialiserTests' sibling
+    /// path; what matters here is which checkout the engine hands it, and that it hands it one.
+    /// </summary>
+    private sealed class StubWorktreeManager : IWorktreeManager
+    {
+        public List<string> Refreshed { get; } = [];
+
+        public Task<CheckoutRefresh> RefreshReadingCheckoutAsync(
+            string checkoutPath, string branch, CancellationToken cancellationToken)
+        {
+            Refreshed.Add(checkoutPath);
+            return Task.FromResult(new CheckoutRefresh(UpToDate: true, $"already at origin/{branch}"));
+        }
+
+        public Task<Worktree> CreateAsync(WorktreeRequest request, CancellationToken cancellationToken) =>
+            throw new InvalidOperationException("A publication session works in an existing checkout.");
+
+        public Task<Worktree> CheckoutExistingAsync(FollowUpWorktreeRequest request, CancellationToken cancellationToken) =>
+            throw new InvalidOperationException("A publication session works in an existing checkout.");
+
+        public Task RemoveAsync(string repositoryPath, string worktreePath, CancellationToken cancellationToken) =>
+            Task.CompletedTask;
+
+        public Task DeleteBranchEverywhereAsync(string repositoryPath, string branch, CancellationToken cancellationToken) =>
+            Task.CompletedTask;
+
+        public Task PruneAsync(string repositoryPath, CancellationToken cancellationToken) => Task.CompletedTask;
+    }
 
     /// <summary>
     /// A node that is not this one, registered so the record can name the machine it belonged to.

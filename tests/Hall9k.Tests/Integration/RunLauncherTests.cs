@@ -88,6 +88,10 @@ public sealed class RunLauncherTests(PostgresFixture postgres) : IClassFixture<P
         }
 
         public Task PruneAsync(string repositoryPath, CancellationToken cancellationToken) => Task.CompletedTask;
+
+        public Task<CheckoutRefresh> RefreshReadingCheckoutAsync(
+            string checkoutPath, string branch, CancellationToken cancellationToken) =>
+            Task.FromResult(new CheckoutRefresh(UpToDate: true, "nothing here is a real repository"));
     }
 
     private sealed class RefusingExecutor : IExecutor
@@ -294,6 +298,10 @@ public sealed class RunLauncherTests(PostgresFixture postgres) : IClassFixture<P
             Task.CompletedTask;
 
         public Task PruneAsync(string repositoryPath, CancellationToken cancellationToken) => Task.CompletedTask;
+
+        public Task<CheckoutRefresh> RefreshReadingCheckoutAsync(
+            string checkoutPath, string branch, CancellationToken cancellationToken) =>
+            Task.FromResult(new CheckoutRefresh(UpToDate: true, "nothing here is a real repository"));
     }
 
     /// <summary>Records the spawn request instead of starting anything.</summary>
