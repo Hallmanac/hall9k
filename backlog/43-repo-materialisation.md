@@ -17,4 +17,10 @@ assumed, long paths proven by CI. The shared-store connection itself is backlog
 24's connection-string precedence; the store ruling (tower hosts) is in the idea
 doc's addendum and becomes a decisions-log entry with this work.
 
-DRAFT - Brian reviews criteria before publish.
+ABSORBED (2026-08-23) into task 98ac05ef / backlog 47 (project home foundations,
+slice 1 of idea 64e4ebd2). The bare-clone recipe, the fetch-refspec correction,
+the Windows long-paths setting, the credential-helper teaching output, and the
+idempotence rule all carried over into that task's contract and shipped as
+`h9k project init` / `h9k project add`, materialising into <home>/repo/ rather
+than a separate ~/.hall9k/repos/ tree. The draft task (d6205058) is closed. This
+file stays as the origin record; nothing new enters through it.

@@ -74,9 +74,24 @@ dispatcher respects, counted in agent sessions rather than runs.
 
 ### Installation
 
-`h9k install` publishes release binaries to `~/.hall9k/bin` and links `h9k` onto the PATH, on
-macOS. The daemon has a CLI-owned lifecycle with a strictly opt-in launchd autostart that
-snapshots the environment it will need and reports any tool it cannot resolve.
+`h9k install` publishes release binaries to `~/.hall9k/bin`, links `h9k` onto the PATH, and
+publishes the canonical skill set to `~/.hall9k/skills`, on macOS. The daemon has a CLI-owned
+lifecycle with a strictly opt-in launchd autostart that snapshots the environment it will need
+and reports any tool it cannot resolve.
+
+### The project home
+
+Every project owns a directory in one shape on every machine: a generated `AGENTS.md`, `repo/`
+(bare clone, `dev/` worktree, task worktrees), `ideas/`, `tasks/`, `skills/` seeded from the
+install's canonical set, and a generated `.claude/` adapter. `h9k project add` creates it and
+`h9k project init` is the adopt-and-repair path; both are platform code end to end, with no agent
+anywhere in the recipe, and both are idempotent. The dispatcher composes the home into every
+agent briefing, so a dispatched session is told where the skills and the docs are rather than
+hunting for them.
+
+What is **not** here yet: the task and idea files that will render into `tasks/` and `ideas/`
+(backlog 48), run directories moving under their owning task (backlog 49), and the one-time
+relocation of the hall9k project itself into its default home (backlog 52).
 
 ### The help tree
 
@@ -118,13 +133,6 @@ built, and it is the tier the distribution ladder calls "interim, likely permane
 
 See [`backlog/42-release-delivery.md`](../backlog/42-release-delivery.md),
 [PLAN.md §13](../PLAN.md).
-
-### Repository materialisation
-
-A node that has never cloned a project cannot work it: the repository has to already be on disk.
-On-demand materialisation (bare clone, corrected refspec, worktree-ready) is designed.
-
-See [`backlog/43-repo-materialisation.md`](../backlog/43-repo-materialisation.md).
 
 ### Token visibility and exhaustion
 

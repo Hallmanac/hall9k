@@ -88,12 +88,71 @@ is the decision table.
 
 ### Projects, owners, connections
 
-`h9k project add | list | show | set` · `h9k owner show | set` · `h9k connection add jira | list`
+`h9k project add | init | list | show | set` · `h9k owner show | set` ·
+`h9k connection add jira | list`
+
+`project add` registers a project **and creates its home directory**; `project init` is the same
+recipe for a project that has none yet, and the repair path for one that is incomplete. See
+[the project home](#the-project-home) below.
 
 `project set` is where the verification gates, the agent model, parallelism, commit style,
-context links, skip-permissions, the Jira board binding, and the review re-request policy live.
+context links, skip-permissions, the Jira board binding, the review re-request policy, and the
+home's location live.
 Settings resolve most-specific-wins, and the exact chain differs per setting;
 [operations.md](operations.md#per-project-and-per-owner) has the two that matter.
+
+### The project home
+
+Every project owns a directory on disk, `~/.hall9k/projects/<name>` unless the project says
+otherwise, in the same shape on every machine:
+
+```
+<home>/
+├── AGENTS.md   generated from the project's facts; never hand-maintained
+├── repo/       <name>.git (bare clone) · dev/ (a worktree on the primary branch) · wt-*/
+├── ideas/
+├── tasks/
+├── skills/     plain markdown skill docs, seeded from the install's canonical set
+└── .claude/    generated Claude Code plumbing: skills/ symlinked, never copied
+```
+
+Creating it is platform code end to end: the directories, the bare clone with its fetch refspec
+corrected, the `dev/` worktree, the skill seeding, and the rendered `AGENTS.md`. There is no agent
+in it, and every step is idempotent, so re-running reports what was already there rather than
+starting over. Point an editor at the home and you browse the code, the worktrees, the tasks and
+the ideas together; start a session there and its `AGENTS.md` tells it the rest.
+
+Going from nothing to a working project directory on a second machine:
+
+```bash
+h9k install                                              # binaries, PATH, canonical skills
+h9k project add --name <name> --repo-url <git-url>       # register and materialise
+h9k project show <name>                                  # the home is the first row
+```
+
+For a project this database already knows about:
+
+```bash
+h9k project init <name>                     # create (or repair) the home at the default location
+h9k project init <name> --home <path>       # …or somewhere you choose
+```
+
+`project init` always materialises `repo/` fresh from the recorded remote. A clone elsewhere on
+the machine is inconsequential (git is distributed, including across one disk), and once the
+clone is in place the project is re-pointed at it so dispatch cuts worktrees there.
+`--keep-repo-path` holds that off while work is still live under the old path.
+
+It is also how `repo/dev` catches up. That worktree is what a person reads code in and what the
+platform spawns a reading session into, so running `project init` again fetches and fast-forwards
+it and reports what it found: up to date, moved forward by so many commits, or left exactly as it
+is because local changes or a diverged branch blocked the fast-forward. It is never a reset;
+whatever is uncommitted there stays, and the step names the commit the checkout is serving so a
+stale one is something you were told about rather than something you find out from a card written
+by last quarter's rules.
+
+The location is a setting (`--home`, or `h9k project set <name> --home <path>`); the shape inside
+it is the contract, which is what lets a dispatched agent be handed paths rather than sent
+hunting for them.
 
 ### Jira
 
@@ -101,7 +160,10 @@ Settings resolve most-specific-wins, and the exact chain differs per setting;
 `h9k project set --jira PROJ`
 
 `push-to-jira` dispatches an agent session that writes the card in the project's own repository,
-because the platform never authors one. `link-jira` reads the key back through the registered
+because the platform never authors one. The session runs in `<home>/repo/dev`, since the recorded
+repository path of a project with a home names the bare clone and a bare clone has no files to
+read; a project registered before homes existed still points at an ordinary checkout, and that is
+where its session runs. `link-jira` reads the key back through the registered
 connection before recording anything, which is what makes it safe for an agent to call.
 
 ### Install and the daemon

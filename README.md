@@ -169,21 +169,30 @@ dotnet build                  # the whole solution
 ./src/Hall9k.Cli/bin/Debug/net10.0/h9k install
 ```
 
-`h9k install` publishes release binaries of `h9k` and `h9kd` into `~/.hall9k/bin` and links `h9k`
-onto your PATH. It registers no background service and no login item, deliberately: the daemon
-has a CLI-owned lifecycle. Re-run it after a merge to refresh the binaries, and it will offer to
-restart a running daemon onto them.
+`h9k install` publishes release binaries of `h9k` and `h9kd` into `~/.hall9k/bin`, links `h9k`
+onto your PATH, and publishes the canonical skill set into `~/.hall9k/skills`. It registers no
+background service and no login item, deliberately: the daemon has a CLI-owned lifecycle. Re-run
+it after a merge to refresh the binaries, and it will offer to restart a running daemon onto them.
 
 ```bash
 h9k daemon start              # detached; survives shell exit; logs to ~/.hall9k/h9kd.log
 h9k daemon status             # running or not, pid, uptime, autostart posture, recent log
 
-h9k project add --name myproject --repo ~/code/myproject --base-branch main
+h9k project add --name myproject --repo-url git@github.com:you/myproject.git
 ```
 
 First use registers your owner record (from `git config user.name` / `user.email`), this machine
 as a node, and a GitHub connection pointing at your `gh` login. Nothing to configure; it is
 idempotent.
+
+`project add` also creates the project's **home directory**, `~/.hall9k/projects/myproject`,
+which is the same shape on every machine: a generated `AGENTS.md`, `repo/` (a bare clone with a
+`dev/` worktree on the primary branch, and the task worktrees dispatch cuts beside it), `ideas/`,
+`tasks/`, `skills/` seeded from the install's set, and a generated `.claude/` adapter. Point an
+editor at it and you browse the code, the worktrees and the work together; start a Claude session
+in it and its `AGENTS.md` tells it the rest. For a project this database already knows about,
+`h9k project init <name>` creates or repairs the same shape. Both are idempotent, both are
+platform code with no agent in them, and `--home <path>` puts the directory wherever you want it.
 
 Then the loop from the section above: `h9k task add`, `h9k task publish --assign`, `h9k status`.
 

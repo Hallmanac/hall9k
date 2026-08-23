@@ -134,6 +134,13 @@ Everything hangs off `~/.hall9k` (or `HALL9K_HOME`):
 ├── credentials/                file-kind secrets, one file per credential
 ├── h9kd.log                    the daemon log; h9k daemon status tails it
 ├── h9kd.pid, h9kd.lock         the local liveness probe
+├── skills/                     the canonical skill set, published by h9k install
+├── projects/<name>/            a project's home, unless the project records another location
+│   ├── AGENTS.md               rendered from the project's facts; never hand-maintained
+│   ├── repo/                   <name>.git (bare) · dev/ (primary branch) · wt-*/ (dispatch)
+│   ├── ideas/, tasks/          the project's work
+│   ├── skills/                 symlinks into ~/.hall9k/skills, plus this project's own
+│   └── .claude/skills/         symlinks into the line above: the Claude Code adapter
 ├── ideas/<idea-id>/workspace/  discovery workspaces: research, files, prototypes
 ├── postgres/docker-compose.yml Hall9k's own Postgres definition (h9k install writes it, §Postgres)
 └── runs/<run-id>/
@@ -161,11 +168,35 @@ Transcripts are artifacts, not events. Event streams carry milestones only, and 
 material lives on disk and is referenced from the stream. When a review parks, the findings and
 the fix session's counter-position are both on disk, and the park points at them.
 
-Worktrees are not under `~/.hall9k`. Each one is created as a **sibling of the project's
-registered repository path**, named `wt-<task>-<run>` from the short forms of the two ids, and it
-lives until the pull request completes, because a parked run's worktree is the human's workspace.
-An observed merge removes it and deletes the branch locally, on the remote, and in
-remote-tracking refs.
+A project's home is created by `h9k project add`, or by `h9k project init` for a project that
+does not have one yet. Both are platform code end to end with no agent in them, and every step is
+idempotent, so re-running either reports what was already there instead of starting over. The
+location is a project setting (`--home`, or `h9k project set <name> --home <path>`); the shape
+inside it is fixed, which is what lets a project look the same on every machine.
+
+`skills/` in a project home is symlinks rather than copies on purpose: re-running `h9k install`
+republishes `~/.hall9k/skills` and every project is already on the new content. A skill that is
+specific to one project is an ordinary directory beside the links, and re-seeding never touches
+it. A skill added to the install after a home was created reaches that home at its next
+`h9k project init`. Republishing retires the skills the previous install published and this one
+no longer ships, naming each one as it goes, and it leaves anything you wrote into
+`~/.hall9k/skills` yourself alone: only what an install published is an install's to remove, and
+only what an install published is an install's to overwrite. Write a skill of your own under a
+name the platform also ships and yours is kept, shadowing the platform's, and the install says so
+by name; delete yours and the next `h9k install` puts the platform's version back.
+
+One home belongs to one project. The default location is derived from the project name through a
+slug that lowercases it and collapses everything non-alphanumeric to dashes, so `My App` and
+`my-app` resolve to the same directory, and registering the second is refused rather than allowed
+to overwrite the first's bare clone and generated `AGENTS.md`. The same refusal covers the other
+way a home gets recorded, `h9k project set <name> --home <path>` and `--repo <path>`. Pass
+`--home <path>` to give it one of its own.
+
+Worktrees are created as a **sibling of the project's registered repository path**, which for a
+project with a home puts them under `<home>/repo/`. Each is named `wt-<task>-<run>` from the short
+forms of the two ids, and it lives until the pull request completes, because a parked run's
+worktree is the human's workspace. An observed merge removes it and deletes the branch locally, on
+the remote, and in remote-tracking refs.
 
 ## Configuration
 
