@@ -180,11 +180,25 @@ public sealed class CloseoutEngine(
 
         TaskAggregate? task = await session.Events.AggregateStreamAsync<TaskAggregate>(
             run.TaskId, version: fence.Version, token: cancellationToken);
+        if (task is null)
+        {
+            return InspectionOutcome.Skipped;
+        }
 
         // A newer run owns this task's pull request now; this Failed run's own history is
-        // no longer the task's current story and there is nothing here to complete.
-        if (task is null || task.CurrentRunId != run.Id)
+        // no longer the task's current story and there is nothing here to complete. Retire
+        // it the same way the watched path does (InspectAndActAsync) so it stops matching
+        // the orphan query on every future sweep — otherwise a Failed run superseded by
+        // `h9k pr resolve` would sit in this candidate set, paying a stream fetch and a full
+        // aggregate replay forever, for a task-state mismatch that will never change.
+        if (task.CurrentRunId != run.Id)
         {
+            if (task.CurrentRunId is not null)
+            {
+                session.Events.Append(run.Id, new RunSuperseded(run.Id, task.LeaseGeneration, DateTimeOffset.UtcNow));
+                await session.SaveChangesAsync(cancellationToken);
+            }
+
             return InspectionOutcome.Skipped;
         }
 

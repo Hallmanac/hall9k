@@ -550,6 +550,67 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
     }
 
     /// <summary>
+    /// A superseded orphan retires the same way the watched path already does (adversarial
+    /// pre-PR review, cycle 1): once <c>h9k pr resolve</c> hands the pull request to a
+    /// successor run, the old Failed run's own predicates (Failed, PullRequestNumber set,
+    /// not recorded closed) never stop matching the orphan query on their own — nothing
+    /// about the run itself changes when a follow-up takes over. Left unretired it would pay
+    /// a stream fetch and a full aggregate replay every sweep forever. Appending
+    /// <see cref="RunSuperseded"/> the moment the mismatch is seen, exactly as
+    /// <c>InspectAndActAsync</c> already does for the watched runs it retires, is what keeps
+    /// the orphan set — like the watched one — bounded.
+    /// </summary>
+    [Fact]
+    public async Task An_orphan_superseded_by_a_follow_up_run_retires_instead_of_being_reinspected_forever()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        (DocumentStore store, NodeContext node, GitWorktreeManager worktrees, _, string repoPath) =
+            await SetUpAsync(cts.Token);
+        using IDisposable storeLifetime = store;
+        await DrainPriorSweepStateAsync(store, node, cts.Token);
+
+        (Guid taskId, Guid runId, _) = await SeedOrphanedFailedRunAsync(store, node, worktrees, repoPath, cts.Token);
+
+        // Model "h9k pr resolve" followed by the daemon claiming the follow-up: the task
+        // stream moves CurrentRunId off the orphaned run without ever touching the orphaned
+        // run's own stream — the exact gap the adversarial finding describes.
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            TaskAggregate task = (await session.Events.AggregateStreamAsync<TaskAggregate>(taskId, token: cts.Token))!;
+            TaskDetails details = (await session.LoadAsync<TaskDetails>(taskId, cts.Token))!;
+            Hall9k.Domain.Features.Tasks.Events.TaskReopened reopened = TaskDecider.Reopen(
+                task, runId, details.FollowUpBranch ?? "task/x", "Unresolved review comments.",
+                FollowUpKind.ReviewFeedback, automatic: false, Now, node.OwnerId);
+            task.Apply(reopened);
+            session.Events.Append(taskId, reopened);
+
+            Guid followUpRunId = DomainId.New();
+            Hall9k.Domain.Features.Tasks.Events.TaskClaimed claimed =
+                TaskDecider.Claim(task, node.NodeId, node.OwnerId, followUpRunId, Now);
+            session.Events.Append(taskId, claimed);
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        FakeInspector inspector = new();
+        CloseoutEngine engine = NewEngine(store, node, inspector, worktrees);
+        CloseoutSweepResult firstSweep = await engine.PollOnceAsync(cts.Token);
+        firstSweep.Should().Be(new CloseoutSweepResult(RunsInspected: 0, MergesObserved: 0),
+            "a superseded orphan is skipped, not inspected — its pull request belongs to a successor now");
+        inspector.Inspections.Should().Be(0, "the successor owns this pull request; the old run's own state has nothing left to learn");
+
+        await using IQuerySession query = store.QuerySession();
+        RunDetails retired = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
+        retired.State.Should().Be(RunState.Superseded,
+            "the orphan sweep retires a run whose task moved on, exactly as the watched path already does");
+
+        // The retirement is what keeps the candidate set bounded: a second sweep does not
+        // even find this row any more, because it no longer matches state = Failed.
+        CloseoutSweepResult secondSweep = await engine.PollOnceAsync(cts.Token);
+        secondSweep.Should().Be(new CloseoutSweepResult(RunsInspected: 0, MergesObserved: 0));
+        inspector.Inspections.Should().Be(0, "a superseded run has left the orphan query's candidate set entirely");
+    }
+
+    /// <summary>
     /// A task Done with a pull request whose run crashed before the closeout monitor ever
     /// watched it — the shape the orphan sweep exists for (Decisions Log #72):
     /// <see cref="PullRequestOpened"/> landed and the run then failed directly, the same way a
