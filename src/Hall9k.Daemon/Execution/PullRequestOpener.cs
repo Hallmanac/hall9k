@@ -77,6 +77,11 @@ public sealed class PullRequestOpener(
                     : new PullRequestOpened(runId, pullRequestUrl, pullRequestNumber, now));
             }
 
+            // LoadFencedAsync's read must happen before the AllowsAsync identity check below —
+            // not after — so a reclaim landing between the two is caught by AllowsAsync's
+            // fresh read rather than baked into `current.Task` as an already-stale ownership
+            // fact that AllowsAsync never gets asked about (adversarial review, cycle 2).
+            (TaskAggregate Task, long Version)? fenced = await GenerationFence.LoadFencedAsync(session, taskId, cancellationToken);
             if (!await GenerationFence.AllowsAsync(
                 session, logger, taskId, runId, run.LeaseGeneration, nameof(TaskCompleted), cancellationToken))
             {
@@ -98,7 +103,6 @@ public sealed class PullRequestOpener(
                 return;
             }
 
-            (TaskAggregate Task, long Version)? fenced = await GenerationFence.LoadFencedAsync(session, taskId, cancellationToken);
             if (fenced is { } current && current.Task.State == TaskState.Claimed)
             {
                 session.Events.Append(
@@ -269,17 +273,16 @@ public sealed class PullRequestOpener(
         await using IDocumentSession session = store.LightweightSession();
         session.Events.Append(runId, new RunFailed(runId, $"PR opening failed: {reason}", now));
 
-        RunDetails? run = await session.LoadAsync<RunDetails>(runId, cancellationToken);
-        if (run is not null
-            && !await GenerationFence.AllowsAsync(
-                session, logger, taskId, runId, run.LeaseGeneration, nameof(TaskFailed), cancellationToken))
-        {
-            await session.SaveChangesAsync(cancellationToken);
-            return;
-        }
-
+        // LoadFencedAsync's read must happen before the AllowsAsync identity check below —
+        // not after — so a reclaim landing between the two is caught by AllowsAsync's fresh
+        // read rather than baked into `current.Task` as an already-stale ownership fact
+        // that AllowsAsync never gets asked about (adversarial review, cycle 2).
         (TaskAggregate Task, long Version)? fenced = await GenerationFence.LoadFencedAsync(session, taskId, cancellationToken);
-        if (fenced is { } current && TaskDecider.CanFail(current.Task))
+        RunDetails? run = await session.LoadAsync<RunDetails>(runId, cancellationToken);
+        if (fenced is { } current
+            && TaskDecider.CanFail(current.Task)
+            && (run is null || await GenerationFence.AllowsAsync(
+                session, logger, taskId, runId, run.LeaseGeneration, nameof(TaskFailed), cancellationToken)))
         {
             // One transaction with the RunFailed append above (Copilot review, PR #30's
             // expectedVersion fix, kept atomic with it on purpose — see
