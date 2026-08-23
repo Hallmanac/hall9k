@@ -3,7 +3,7 @@ project: hall9k
 type: feature
 objective: A tagged commit becomes installable binaries on a bare machine - release CI, a one-line bootstrap, and the existing install path fed by artefacts instead of a local build
 criteria:
-- A tagged commit produces a GitHub release carrying h9k and h9kd binaries for macOS arm64 and Windows x64, built by a release workflow alongside the existing ci.yml
+- A tagged commit produces a GitHub release carrying h9k and h9kd binaries for macOS arm64, Windows x64, and Linux x64, built by a release workflow alongside the existing ci.yml - Linux rides along now because the tower joins the shared-database future and a third matrix line today beats a release-engineering errand later
 - A one-line bootstrap (per platform) fetches the latest release for the current platform, places the binaries in ~/.hall9k/bin, and puts h9k on PATH - with no repo checkout and no dotnet SDK on the machine; gh authentication is the stated prerequisite for a private repo's releases. The script and artefacts are hosted entirely in GitHub (raw script + Releases), no other host
 - The bootstrap verifies the downloaded artefact's checksum against the release before installing, asks consent before changing the machine, publishes the canonical skill set to ~/.hall9k/skills, and finishes by running h9k doctor (backlog 24) so a fresh machine ends setup knowing what still needs attention
 - An agent-installable path exists: a hosted INSTALL doc (fetchable raw from the repo) that an AI agent can follow end to end, so "tell your session to install Hall9k" works on machine zero
