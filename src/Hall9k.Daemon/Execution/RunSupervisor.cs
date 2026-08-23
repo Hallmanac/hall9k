@@ -349,6 +349,19 @@ public sealed class RunSupervisor(
         if (!await GenerationFence.AllowsAsync(
             session, logger, taskId, runId, run.LeaseGeneration, nameof(ReviewParked), cancellationToken))
         {
+            // A reclaim can land between CompleteRunAsync's earlier fenced append and this
+            // check, so the rejection here must retire the run with RunSuperseded like every
+            // other fence rejection in this diff (ReviewEngine.EnsureCurrentGenerationAsync,
+            // ReviewEngine.ParkAsync): returning bare leaves the run live in the non-terminal
+            // Verifying state with no monitor watching it, permanently pinning a NodeLoad
+            // concurrency slot until the next daemon restart's orphan adoption sweep finds it
+            // (adversarial review, cycle 3).
+            session.Events.Append(
+                runId, new RunSuperseded(runId, task?.LeaseGeneration ?? run.LeaseGeneration, DateTimeOffset.UtcNow));
+            await session.SaveChangesAsync(cancellationToken);
+            logger.LogInformation(
+                "Run {RunId}: retired as superseded — the thread-dispute park found it was no longer task {TaskId}'s current generation",
+                runId, taskId);
             return ThreadDisputeOutcome.Stale;
         }
 
