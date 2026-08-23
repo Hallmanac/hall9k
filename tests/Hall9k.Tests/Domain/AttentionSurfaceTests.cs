@@ -154,6 +154,31 @@ public sealed class AttentionSurfaceTests
         row.Attention.Cause.Should().Be("token budget exhausted - resumes when the subscription window resets");
     }
 
+    /// <summary>
+    /// The count is the project's, not the board's (backlog 40). Every browse surface can be
+    /// filtered to one project, so a row that quoted a board-wide total would tell a human that
+    /// runs they cannot see on this screen are waiting — a number with nothing to check it
+    /// against, which is the opposite of what the shared count was added to do.
+    /// </summary>
+    [Fact]
+    public void The_shared_wait_count_never_borrows_runs_from_a_project_this_row_cannot_see()
+    {
+        Guid runId = DomainId.New();
+        Guid otherProject = DomainId.New();
+        RunDetails parked = StatusFixtures.Run(runId, RunState.BudgetParked, sessionProcessId: null);
+        parked.ParkedReason = "token budget exhausted - resumes when the subscription window resets";
+        TaskListItem task = StatusFixtures.Task(TaskState.Claimed, runId);
+
+        TaskStatusRow row = StatusFixtures.Compose(
+            task,
+            parked,
+            budgetParkedByProject: new Dictionary<Guid, int> { [task.ProjectId] = 2, [otherProject] = 5 });
+
+        row.Attention.Cause.Should().Be(
+            "token budget exhausted - resumes when the subscription window resets (2 runs waiting)",
+            "the five parked runs in the other project are not this row's condition to report");
+    }
+
     [Fact]
     public void A_park_that_recorded_no_reason_says_so_rather_than_showing_a_bare_word()
     {

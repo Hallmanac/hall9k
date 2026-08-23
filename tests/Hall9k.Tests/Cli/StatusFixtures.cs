@@ -96,10 +96,15 @@ internal static class StatusFixtures
         DateTimeOffset? now = null,
         IReadOnlyDictionary<int, SessionLiveness>? livenessByProcess = null,
         DispatchPressure? pressure = null,
-        int budgetParkedRuns = 0) =>
+        int budgetParkedRuns = 0,
+        IReadOnlyDictionary<Guid, int>? budgetParkedByProject = null) =>
         TaskStatusComposer.Compose(
             task,
-            Context(run, silentSince, liveness, owners, projects, livenessByProcess, pressure, budgetParkedRuns),
+            Context(
+                run, silentSince, liveness, owners, projects, livenessByProcess, pressure,
+                // The count is per project (backlog 40), and a test that only cares how many runs
+                // this row's own project is holding says the number and lets the fixture key it.
+                budgetParkedByProject ?? new Dictionary<Guid, int> { [task.ProjectId] = budgetParkedRuns }),
             now ?? Now);
 
     public static TaskStatusContext Context(
@@ -110,7 +115,7 @@ internal static class StatusFixtures
         IReadOnlyDictionary<Guid, string>? projects = null,
         IReadOnlyDictionary<int, SessionLiveness>? livenessByProcess = null,
         DispatchPressure? pressure = null,
-        int budgetParkedRuns = 0)
+        IReadOnlyDictionary<Guid, int>? budgetParkedRuns = null)
     {
         Dictionary<Guid, RunDetails> runs = run is null ? [] : new Dictionary<Guid, RunDetails> { [run.Id] = run };
         Dictionary<Guid, RunActivity> activity = run is null || silentSince is null
