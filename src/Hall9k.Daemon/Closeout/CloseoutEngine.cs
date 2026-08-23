@@ -161,12 +161,15 @@ public sealed class CloseoutEngine(
 
     /// <summary>
     /// One read of a pull request nothing is watching any more, for the sole purpose of
-    /// finding out whether it merged (Decisions Log #72). This is deliberately thinner than
-    /// <see cref="InspectAndActAsync"/>: a Failed run is not a run anyone is driving, so a
-    /// failing check or an unresolved thread here dispatches nothing and parks nothing — the
-    /// row's existing needs-you rendering (<c>AttentionComposer.Delivered</c>'s Failed arm)
-    /// already says the honest thing, and inventing a follow-up onto a dead run's branch is
-    /// not this sweep's job. Only a merge changes anything; every other answer is a no-op.
+    /// finding out whether it merged or closed (Decisions Log #72). This is deliberately
+    /// thinner than <see cref="InspectAndActAsync"/>: a Failed run is not a run anyone is
+    /// driving, so a failing check or an unresolved thread here dispatches nothing and parks
+    /// nothing — the row's existing needs-you rendering (<c>AttentionComposer.Delivered</c>'s
+    /// Failed arm) already says the honest thing, and inventing a follow-up onto a dead run's
+    /// branch is not this sweep's job. A merge or a close is recorded exactly as the watched
+    /// path records it, because both are facts the row's rendering and the orphan query's own
+    /// exclusion filter (see <c>PollOnceAsync</c>) depend on; a still-open answer is the only
+    /// true no-op.
     /// </summary>
     private async Task<InspectionOutcome> InspectOrphanAsync(RunDetails run, CancellationToken cancellationToken)
     {
@@ -227,15 +230,25 @@ public sealed class CloseoutEngine(
             return InspectionOutcome.Skipped;
         }
 
-        if (!snapshot.IsMerged)
+        if (snapshot.IsMerged)
         {
-            // Still open, or closed without a merge: the row already renders exactly that —
-            // nothing is invented for either answer.
+            await CompleteCloseoutAsync(session, run, project, task, snapshot, DateTimeOffset.UtcNow, cancellationToken);
+            return InspectionOutcome.MergeObserved;
+        }
+
+        if (snapshot.IsClosed)
+        {
+            // Closed without a merge: record it the same way the watched path does
+            // (RecordClosedAsync), so FailureReason becomes PullRequestClosedWithoutMerge —
+            // otherwise AttentionComposer.UnwatchedRemedy keeps pointing the human at
+            // `h9k pr resolve`, which reopens the task onto a pull request nobody can merge,
+            // and this row would keep matching the orphan query's exclusion filter forever.
+            await RecordClosedAsync(session, run, project, snapshot, DateTimeOffset.UtcNow, cancellationToken);
             return InspectionOutcome.Inspected;
         }
 
-        await CompleteCloseoutAsync(session, run, project, task, snapshot, DateTimeOffset.UtcNow, cancellationToken);
-        return InspectionOutcome.MergeObserved;
+        // Still open: the row already renders exactly that — nothing is invented.
+        return InspectionOutcome.Inspected;
     }
 
     private async Task<InspectionOutcome> InspectAndActAsync(RunDetails run, CancellationToken cancellationToken)
