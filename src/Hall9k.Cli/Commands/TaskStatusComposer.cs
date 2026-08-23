@@ -31,10 +31,15 @@ namespace Hall9k.Cli.Commands;
 /// a slot rather than simply waiting: with no measurement, no surface claims one.
 /// </param>
 /// <param name="BudgetParkedRuns">
-/// How many of the loaded rows are held on the same exhausted subscription window (backlog 40).
-/// Counted once for the whole set rather than recomputed per row, because that is what the
-/// count is for: several budget parks are one condition, and a row that says so is a row a human
-/// can read once and consciously leave alone.
+/// How many rows each project is holding on the same exhausted subscription window (backlog 40),
+/// keyed by project id. Counted once for the set rather than recomputed per row, because that is
+/// what the count is for: several budget parks are one condition, and a row that says so is a row
+/// a human can read once and consciously leave alone.
+/// <para>
+/// Scoped to the project rather than to the whole board, because the count is read on a row and
+/// a reader looking at one project must not be told about waits in another they cannot see —
+/// h9k task list --project and h9k project show compose their rows from exactly this.
+/// </para>
 /// </param>
 internal sealed record TaskStatusContext(
     IReadOnlyDictionary<Guid, RunDetails> Runs,
@@ -45,7 +50,7 @@ internal sealed record TaskStatusContext(
     ISessionObserver Sessions,
     string MachineName,
     DispatchPressure? Pressure = null,
-    int BudgetParkedRuns = 0);
+    IReadOnlyDictionary<Guid, int>? BudgetParkedRuns = null);
 
 /// <summary>
 /// The one truth about how a task reads. Every surface that shows a task — h9k status,
@@ -161,7 +166,7 @@ internal static class TaskStatusComposer
             ProcessSessionObserver.Instance,
             Environment.MachineName,
             await DispatchPressure.ReadAsync(session, now, cancellationToken),
-            runs.Values.Count(run => run.State == RunState.BudgetParked));
+            BudgetParkedByProject(tasks, runs));
     }
 
     /// <summary>
@@ -182,7 +187,8 @@ internal static class TaskStatusComposer
         TaskPhase phase = TaskPhaseComposer.Compose(task, run, state, session, heldByCeiling);
         (bool stalled, string activity) = Silence(task, run, state, session, context, now);
         TaskAttention attention = AttentionComposer.Compose(
-            task, run, state, phase, stalled, context.BudgetParkedRuns);
+            task, run, state, phase, stalled,
+            context.BudgetParkedRuns?.GetValueOrDefault(task.ProjectId) ?? 0);
         AttentionBucket group = Group(task, run, state, attention, stalled);
 
         return new TaskStatusRow(
@@ -221,6 +227,21 @@ internal static class TaskStatusComposer
     /// follow-up the monitor reopened, which the display groups under Delivered.
     /// </para>
     /// </summary>
+    /// <summary>
+    /// How many of the loaded rows each project is holding on the exhausted subscription window
+    /// (backlog 40). Grouped by project rather than totalled for the board, because a row states
+    /// this count and every browse surface can be filtered to one project: a board-wide total
+    /// read on a project-filtered screen tells a human that runs they cannot see are waiting,
+    /// which is a number they have no way to check.
+    /// </summary>
+    private static Dictionary<Guid, int> BudgetParkedByProject(
+        IReadOnlyList<TaskListItem> tasks, IReadOnlyDictionary<Guid, RunDetails> runs) =>
+        tasks
+            .Where(task => task.CurrentRunId is { } runId
+                && runs.GetValueOrDefault(runId)?.State == RunState.BudgetParked)
+            .GroupBy(task => task.ProjectId)
+            .ToDictionary(project => project.Key, project => project.Count());
+
     private static DispatchPressure? HeldByCeiling(TaskListItem task, DispatchPressure? pressure) =>
         task.State == TaskState.Queued && pressure is { AtCeiling: true }
             ? pressure
