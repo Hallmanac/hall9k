@@ -97,6 +97,29 @@ public sealed class GitHubPullRequestInspector : IPullRequestInspector
     }
 
     /// <summary>
+    /// The one-call read behind <see cref="PullRequestStateSnapshot"/>: state, mergedAt and
+    /// closedAt only, no statusCheckRollup and no review GraphQL call — the orphan sweep's
+    /// single caller ignores checks and reviews entirely, so gathering them here would spend
+    /// a remote read this method's only caller has no use for.
+    /// </summary>
+    public async Task<PullRequestStateSnapshot> InspectStateAsync(
+        string repositoryPath, string pullRequestUrl, int pullRequestNumber, CancellationToken cancellationToken)
+    {
+        string viewJson = await RunGhAsync(
+            repositoryPath,
+            ["pr", "view", pullRequestNumber.ToString(), "--json", "state,mergedAt,closedAt"],
+            cancellationToken);
+
+        using JsonDocument view = JsonDocument.Parse(viewJson);
+        string state = view.RootElement.GetProperty("state").GetString() ?? "";
+        return new PullRequestStateSnapshot(
+            IsMerged: state == "MERGED",
+            IsClosed: state == "CLOSED",
+            MergedAt: ReadTimestamp(view.RootElement, "mergedAt"),
+            ClosedAt: ReadTimestamp(view.RootElement, "closedAt"));
+    }
+
+    /// <summary>
     /// Re-requests through the REST review-request endpoint. GraphQL reports the bare
     /// bot login (copilot-pull-request-reviewer); the endpoint addresses app accounts by
     /// the [bot]-suffixed form — docs.github.com: request copilot-pull-request-reviewer[bot]

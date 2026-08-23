@@ -105,6 +105,17 @@ public sealed record PullRequestSnapshot(
     string? HeadCommit = null);
 
 /// <summary>
+/// A merge/close-only read: the same three state facts <see cref="PullRequestSnapshot"/>
+/// carries, without the reviews, checks, or reviewer list a full inspection also gathers.
+/// This is what the orphan sweep (Decisions Log #72) asks for — it dispatches no
+/// follow-up onto a dead run, so it has no use for the second remote call a full
+/// <see cref="IPullRequestInspector.InspectAsync"/> spends on an open pull request's
+/// reviews (TASK-MODEL.md §2.2's "one gh read" per orphan candidate).
+/// </summary>
+public sealed record PullRequestStateSnapshot(
+    bool IsMerged, bool IsClosed, DateTimeOffset? MergedAt, DateTimeOffset? ClosedAt);
+
+/// <summary>
 /// The closeout monitor's seam onto the PR provider (gh in production, a fake in
 /// tests): the read side per poll, plus the one write closeout needs — re-requesting a
 /// review. Both run against the project's shared repository path — the run's worktree may
@@ -113,6 +124,16 @@ public sealed record PullRequestSnapshot(
 public interface IPullRequestInspector
 {
     Task<PullRequestSnapshot> InspectAsync(
+        string repositoryPath, string pullRequestUrl, int pullRequestNumber, CancellationToken cancellationToken);
+
+    /// <summary>
+    /// The lean read behind <see cref="PullRequestStateSnapshot"/> — merge/close facts
+    /// only, one remote call regardless of whether the pull request is still open. The
+    /// orphan sweep is the only caller: it watches for a merge or a close and nothing
+    /// else, so it never needs the reviews and checks <see cref="InspectAsync"/> also
+    /// gathers.
+    /// </summary>
+    Task<PullRequestStateSnapshot> InspectStateAsync(
         string repositoryPath, string pullRequestUrl, int pullRequestNumber, CancellationToken cancellationToken);
 
     /// <summary>

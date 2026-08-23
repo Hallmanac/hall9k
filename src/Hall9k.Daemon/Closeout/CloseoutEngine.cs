@@ -88,14 +88,18 @@ public sealed class CloseoutEngine(
 
             // A run this node dispatched can leave the watch above by failing rather than
             // by merging: a crash before the monitor ever ran, a pre-monitor stream (the
-            // six PR-8-through-12-era rows the orphan sweep exists for), a kill. Its pull
-            // request does not stop existing just because nothing is watching it any more.
-            // PullRequestClosedWithoutMerge is excluded — that Failed run already recorded
-            // the one thing an inspection here could tell it, and asking GitHub again would
-            // spend a read to relearn a fact already on the stream.
+            // six PR-8-through-12-era rows the orphan sweep exists for), a kill. Both Failed
+            // and Killed are candidates — TaskStatusComposer renders a Done task's Delivered
+            // row the same way for either, so a Killed run with no dispatched follow-up would
+            // otherwise sit unwatched exactly like a Failed one. Its pull request does not
+            // stop existing just because nothing is watching it any more. PullRequestClosedWithoutMerge
+            // is excluded — that run already recorded the one thing an inspection here could
+            // tell it, and asking GitHub again would spend a read to relearn a fact already on
+            // the stream.
             orphaned = await query.Query<RunDetails>()
                 .Where(r => r.NodeId == nodeId)
-                .Where(r => r.MatchesSql("d.data ->> 'state' = ?", RunState.Failed.Value))
+                .Where(r => r.MatchesSql(
+                    "d.data ->> 'state' in (?, ?)", RunState.Failed.Value, RunState.Killed.Value))
                 .Where(r => r.PullRequestNumber != null)
                 .Where(r => r.FailureReason != RunDetails.PullRequestClosedWithoutMerge)
                 .ToListAsync(cancellationToken);
@@ -216,7 +220,11 @@ public sealed class CloseoutEngine(
             return InspectionOutcome.Skipped;
         }
 
-        PullRequestSnapshot snapshot = await inspector.InspectAsync(
+        // State-only: this sweep never dispatches a follow-up onto a dead run, so the
+        // reviews-and-checks half of a full InspectAsync (a second remote read while the
+        // PR is still open — GitHubPullRequestInspector.cs's own InspectReviewsAsync
+        // call) would spend a read this method has no use for.
+        PullRequestStateSnapshot snapshot = await inspector.InspectStateAsync(
             project.RepositoryPath, task.PullRequestUrl, run.PullRequestNumber.Value, cancellationToken);
 
         // The inspection is a slow network call; revalidate before acting; see the identical
@@ -232,7 +240,7 @@ public sealed class CloseoutEngine(
 
         if (snapshot.IsMerged)
         {
-            await CompleteCloseoutAsync(session, run, project, task, snapshot, DateTimeOffset.UtcNow, cancellationToken);
+            await CompleteCloseoutAsync(session, run, project, task, snapshot.MergedAt, DateTimeOffset.UtcNow, cancellationToken);
             return InspectionOutcome.MergeObserved;
         }
 
@@ -243,7 +251,7 @@ public sealed class CloseoutEngine(
             // otherwise AttentionComposer.UnwatchedRemedy keeps pointing the human at
             // `h9k pr resolve`, which reopens the task onto a pull request nobody can merge,
             // and this row would keep matching the orphan query's exclusion filter forever.
-            await RecordClosedAsync(session, run, project, snapshot, DateTimeOffset.UtcNow, cancellationToken);
+            await RecordClosedAsync(session, run, project, snapshot.ClosedAt, DateTimeOffset.UtcNow, cancellationToken);
             return InspectionOutcome.Inspected;
         }
 
@@ -317,13 +325,13 @@ public sealed class CloseoutEngine(
 
         if (snapshot.IsMerged)
         {
-            await CompleteCloseoutAsync(session, run, project, task, snapshot, now, cancellationToken);
+            await CompleteCloseoutAsync(session, run, project, task, snapshot.MergedAt, now, cancellationToken);
             return InspectionOutcome.MergeObserved;
         }
 
         if (snapshot.IsClosed)
         {
-            await RecordClosedAsync(session, run, project, snapshot, now, cancellationToken);
+            await RecordClosedAsync(session, run, project, snapshot.ClosedAt, now, cancellationToken);
             return InspectionOutcome.Inspected;
         }
 
@@ -648,11 +656,11 @@ public sealed class CloseoutEngine(
     /// nothing owned this step).
     /// <para>
     /// RunCompleted is dated <paramref name="now"/> — when this sweep observed the merge —
-    /// never <c>snapshot.MergedAt</c>, GitHub's own merge timestamp. The two read minutes
+    /// never <paramref name="mergedAt"/>, GitHub's own merge timestamp. The two read minutes
     /// apart on a normally-watched run, but the orphan sweep (Decisions Log #72) can observe
     /// a merge that happened days ago, and dating the platform's own completion record to a
     /// fact it did not just witness is exactly the guess the never-guess rule forbids
-    /// (AGENTS.md). PullRequestMerged keeps <c>snapshot.MergedAt</c> honestly — that field
+    /// (AGENTS.md). PullRequestMerged keeps <paramref name="mergedAt"/> honestly — that value
     /// names what GitHub reported, not when this node noticed.
     /// </para>
     /// <para>
@@ -669,12 +677,12 @@ public sealed class CloseoutEngine(
         RunDetails run,
         ProjectDetails project,
         TaskAggregate task,
-        PullRequestSnapshot snapshot,
+        DateTimeOffset? mergedAt,
         DateTimeOffset now,
         CancellationToken cancellationToken)
     {
         RunHandoffRecorded handoff = await ComposeHandoffAsync(session, run, now, cancellationToken);
-        session.Events.Append(run.Id, new PullRequestMerged(run.Id, snapshot.MergedAt, now));
+        session.Events.Append(run.Id, new PullRequestMerged(run.Id, mergedAt, now));
         session.Events.Append(run.Id, handoff);
         session.Events.Append(run.Id, new RunCompleted(run.Id, now));
         await session.SaveChangesAsync(cancellationToken);
@@ -932,11 +940,11 @@ public sealed class CloseoutEngine(
         IDocumentSession session,
         RunDetails run,
         ProjectDetails project,
-        PullRequestSnapshot snapshot,
+        DateTimeOffset? closedAt,
         DateTimeOffset now,
         CancellationToken cancellationToken)
     {
-        session.Events.Append(run.Id, new PullRequestClosed(run.Id, snapshot.ClosedAt, now));
+        session.Events.Append(run.Id, new PullRequestClosed(run.Id, closedAt, now));
         await session.SaveChangesAsync(cancellationToken);
 
         logger.LogWarning(

@@ -65,7 +65,15 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
     {
         public PullRequestSnapshot Snapshot { get; set; } = Quiet();
 
+        /// <summary>Full (InspectAsync) reads — the watched path, which needs reviews and checks too.</summary>
         public int Inspections { get; private set; }
+
+        /// <summary>
+        /// State-only (InspectStateAsync) reads — the orphan sweep's own, cheaper path
+        /// (Decisions Log #72's read count). Counted separately so a test can assert that an
+        /// orphan candidate never falls back to the full, reviews-and-checks read.
+        /// </summary>
+        public int StateInspections { get; private set; }
 
         /// <summary>Reviewer logins passed to RerequestReviewAsync, in call order.</summary>
         public List<string> ReviewRerequests { get; } = [];
@@ -84,6 +92,19 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
             }
 
             return Snapshot;
+        }
+
+        public async Task<PullRequestStateSnapshot> InspectStateAsync(
+            string repositoryPath, string pullRequestUrl, int pullRequestNumber, CancellationToken cancellationToken)
+        {
+            StateInspections++;
+            if (OnInspect is { } hook)
+            {
+                OnInspect = null;
+                await hook();
+            }
+
+            return new PullRequestStateSnapshot(Snapshot.IsMerged, Snapshot.IsClosed, Snapshot.MergedAt, Snapshot.ClosedAt);
         }
 
         /// <summary>Logins the provider refuses, as GitHub refuses a non-collaborator.</summary>
@@ -432,7 +453,9 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
         CloseoutSweepResult sweep = await engine.PollOnceAsync(cts.Token);
         sweep.Should().Be(new CloseoutSweepResult(RunsInspected: 1, MergesObserved: 1),
             "the orphan pass's own read counts toward the same tally a watched merge does");
-        inspector.Inspections.Should().Be(1, "one API read for the one unwatched row");
+        inspector.StateInspections.Should().Be(1, "one state-only API read for the one unwatched row");
+        inspector.Inspections.Should().Be(0,
+            "the orphan sweep never spends the reviews-and-checks read; it only asks for merge/close state");
 
         await using IQuerySession query = store.QuerySession();
         RunDetails run = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
@@ -451,6 +474,43 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
             .ExitCode.Should().NotBe(0, "the local branch is deleted, exactly as a watched merge's is");
         TryGit(originPath, $"rev-parse --verify refs/heads/{worktree.Branch}")
             .ExitCode.Should().NotBe(0, "the remote branch is deleted");
+    }
+
+    /// <summary>
+    /// A killed run reaches the identical Delivered row a failed one does — TaskStatusComposer
+    /// renders a Done task's current run as Delivered for either (Copilot review, PR 33): the
+    /// candidate query must admit RunState.Killed alongside RunState.Failed, or a Done task
+    /// whose run was killed rather than failed sits unwatched forever, contrary to the
+    /// acceptance criterion this sweep exists to satisfy.
+    /// </summary>
+    [Fact]
+    public async Task An_orphaned_killed_runs_actually_merged_pull_request_reaches_true_closeout()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        (DocumentStore store, NodeContext node, GitWorktreeManager worktrees, _, string repoPath) =
+            await SetUpAsync(cts.Token);
+        using IDisposable storeLifetime = store;
+        await DrainPriorSweepStateAsync(store, node, cts.Token);
+
+        (Guid taskId, Guid runId, _) =
+            await SeedOrphanedFailedRunAsync(store, node, worktrees, repoPath, cts.Token, killed: true);
+
+        FakeInspector inspector = new()
+        {
+            Snapshot = FakeInspector.Quiet() with { IsMerged = true, MergedAt = Now.AddDays(-3) },
+        };
+        CloseoutEngine engine = NewEngine(store, node, inspector, worktrees);
+        CloseoutSweepResult sweep = await engine.PollOnceAsync(cts.Token);
+        sweep.Should().Be(new CloseoutSweepResult(RunsInspected: 1, MergesObserved: 1),
+            "a killed run is exactly as much an orphan candidate as a failed one");
+
+        await using IQuerySession query = store.QuerySession();
+        RunDetails run = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
+        run.State.Should().Be(RunState.Completed,
+            "a merge GitHub reports closes out a killed run exactly as it does a failed one");
+
+        TaskListItem task = (await query.LoadAsync<TaskListItem>(taskId, cts.Token))!;
+        task.State.Should().Be(TaskState.Done);
     }
 
     /// <summary>
@@ -561,7 +621,7 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
         CloseoutSweepResult secondSweep = await engine.PollOnceAsync(cts.Token);
         secondSweep.Should().Be(new CloseoutSweepResult(RunsInspected: 0, MergesObserved: 0),
             "a run recorded closed without merge leaves the orphan query's candidate set on its own");
-        inspector.Inspections.Should().Be(1,
+        inspector.StateInspections.Should().Be(1,
             "the second sweep never re-reads a pull request whose fate is already recorded");
     }
 
@@ -587,7 +647,7 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
         CloseoutEngine engine = NewEngine(store, node, inspector, worktrees);
         CloseoutSweepResult sweep = await engine.PollOnceAsync(cts.Token);
         sweep.Should().Be(new CloseoutSweepResult(RunsInspected: 0, MergesObserved: 0));
-        inspector.Inspections.Should().Be(0, "the run already recorded why it will never merge; asking again spends a read to relearn it");
+        inspector.StateInspections.Should().Be(0, "the run already recorded why it will never merge; asking again spends a read to relearn it");
     }
 
     /// <summary>
@@ -637,7 +697,7 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
         CloseoutSweepResult firstSweep = await engine.PollOnceAsync(cts.Token);
         firstSweep.Should().Be(new CloseoutSweepResult(RunsInspected: 0, MergesObserved: 0),
             "a superseded orphan is skipped, not inspected — its pull request belongs to a successor now");
-        inspector.Inspections.Should().Be(0, "the successor owns this pull request; the old run's own state has nothing left to learn");
+        inspector.StateInspections.Should().Be(0, "the successor owns this pull request; the old run's own state has nothing left to learn");
 
         await using IQuerySession query = store.QuerySession();
         RunDetails retired = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
@@ -648,7 +708,7 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
         // even find this row any more, because it no longer matches state = Failed.
         CloseoutSweepResult secondSweep = await engine.PollOnceAsync(cts.Token);
         secondSweep.Should().Be(new CloseoutSweepResult(RunsInspected: 0, MergesObserved: 0));
-        inspector.Inspections.Should().Be(0, "a superseded run has left the orphan query's candidate set entirely");
+        inspector.StateInspections.Should().Be(0, "a superseded run has left the orphan query's candidate set entirely");
     }
 
     /// <summary>
@@ -665,7 +725,8 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
         string repoPath,
         CancellationToken cancellationToken,
         string failureReason = "the daemon crashed mid-review",
-        bool recordAsClosedWithoutMerge = false)
+        bool recordAsClosedWithoutMerge = false,
+        bool killed = false)
     {
         Guid taskId = DomainId.New();
         Guid ownerId = node.OwnerId;
@@ -708,6 +769,10 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
         if (recordAsClosedWithoutMerge)
         {
             session.Events.Append(runId, new PullRequestClosed(runId, Now, Now));
+        }
+        else if (killed)
+        {
+            session.Events.Append(runId, new RunKilled(runId, KillReason.HumanRequested, node.OwnerId, Now));
         }
         else
         {
@@ -1671,7 +1736,8 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
             .ToListAsync(cancellationToken);
         IReadOnlyList<RunDetails> orphaned = await query.Query<RunDetails>()
             .Where(r => r.NodeId == nodeId)
-            .Where(r => r.MatchesSql("d.data ->> 'state' = ?", RunState.Failed.Value))
+            .Where(r => r.MatchesSql(
+                "d.data ->> 'state' in (?, ?)", RunState.Failed.Value, RunState.Killed.Value))
             .Where(r => r.PullRequestNumber != null)
             .Where(r => r.FailureReason != RunDetails.PullRequestClosedWithoutMerge)
             .ToListAsync(cancellationToken);
