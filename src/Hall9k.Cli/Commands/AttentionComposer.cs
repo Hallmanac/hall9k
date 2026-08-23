@@ -159,13 +159,17 @@ internal static class AttentionComposer
             // nor out of budget, this is being handled and the reader can leave it alone.
             "ChecksFailing" or "ReviewPending" => new TaskAttention(AttentionLevel.WaitingHandled,
                 "the closeout monitor owns the next move on this pull request"),
-            // The run ended without a merge. RunState.Failed is what every run failure records
+            // The run ended without a merge. RunState.Failed is what most run failures record
             // and a pull request closed without merging (PullRequestClosed) is only one way to
             // reach it — a gate failure on a task a human then resolved onto this pull request
             // is another — so the cause quotes the reason the run recorded instead of naming a
-            // closure nobody observed. Those two want different levers, and the recorded reason
-            // is the fact that tells them apart, so the lever is composed from it.
-            "Failed" => new TaskAttention(AttentionLevel.NeedsYou,
+            // closure nobody observed. RunState.Killed reaches the identical row (a Done task's
+            // pull request nobody is watching any more) by a different door, and the orphan
+            // sweep now reads a killed run's pull request exactly as it reads a failed one's
+            // (Decisions Log #72), so this arm answers for both. Those two want different
+            // levers, and the recorded reason is the fact that tells them apart, so the lever
+            // is composed from it.
+            "Failed" or "Killed" => new TaskAttention(AttentionLevel.NeedsYou,
                 "the run ended without a merge being observed, and nothing is watching this pull "
                 + $"request any more: {Reason(run.FailureReason, "the run recorded no reason")}",
                 UnwatchedRemedy(task, run, id)),
