@@ -63,6 +63,8 @@ public sealed class RunDetails
     public int? UnresolvedHumanReviewThreads { get; set; }
     /// <summary>The last errored review observed — the monitor's dedup key: one re-request per errored review.</summary>
     public string? ErroredReviewUrl { get; set; }
+    /// <summary>When a human last granted this run's task a fresh closeout budget (h9k pr resolve, Decisions Log #75, backlog 45); null until one lands.</summary>
+    public DateTimeOffset? HumanGrantedAt { get; set; }
     /// <summary>Errored-review re-requests issued for this run; adds to the task's CloseoutAttempts against the shared budget.</summary>
     public int ReviewRerequestCount { get; set; }
     /// <summary>
@@ -374,6 +376,9 @@ public sealed class RunDetailsProjection : SingleStreamProjection<RunDetails, Gu
         EndSessions(view);
         view.State = RunState.CloseoutParked;
     }
+
+    public void Apply(IEvent<CloseoutBudgetGranted> @event, RunDetails view) =>
+        view.HumanGrantedAt = @event.Data.GrantedAt;
 
     public void Apply(IEvent<PullRequestMerged> @event, RunDetails view) =>
         view.PullRequestMergedAt = @event.Data.MergedAt;
