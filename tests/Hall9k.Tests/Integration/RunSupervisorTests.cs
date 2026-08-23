@@ -250,6 +250,77 @@ public sealed class RunSupervisorTests(PostgresFixture postgres) : IClassFixture
     }
 
     /// <summary>
+    /// The startup-adoption grouping fix itself (backlog 39, this task's headline acceptance
+    /// criterion): a requeue-and-reclaim that landed while the daemon was down leaves one task
+    /// with two non-terminal runs on this node — the stale generation this daemon was still
+    /// tailing, and the fresh claim the live generation holds. AdoptOrphansAsync must adopt
+    /// only the live one and retire the stale one, never both — adopting both double-books the
+    /// task exactly like the live-process check a few lines above already exists to prevent.
+    /// </summary>
+    [Fact]
+    public async Task Two_non_terminal_runs_on_one_task_adopt_the_live_generation_and_retire_the_stale_one()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        using DocumentStore store = NewStore();
+        (NodeContext node, Guid taskId, Guid staleRunId) = await SeedClaimedTaskAsync(store, cts.Token);
+
+        // A requeue-and-reclaim moved the task on to generation 2 under a fresh run while the
+        // stale run (generation 1) is still recorded non-terminal for this node — exactly the
+        // shape a catch-up running during downtime leaves behind.
+        Guid liveRunId = DomainId.New();
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            TaskAggregate task = (await session.Events.AggregateStreamAsync<TaskAggregate>(taskId, token: cts.Token))!;
+            var requeued = TaskDecider.Requeue(task, RequeueReason.LeaseExpired, Now);
+            task.Apply(requeued);
+            var reclaimed = TaskDecider.Claim(task, node.NodeId, node.OwnerId, liveRunId, Now);
+            session.Events.Append(taskId, requeued, reclaimed);
+            session.Store(new TaskLease { Id = taskId, NodeId = node.NodeId, LeaseGeneration = 2, HeartbeatAt = Now });
+
+            session.Events.StartStream<RunAggregate>(liveRunId, new RunDispatched(
+                liveRunId, taskId, node.NodeId, node.OwnerId, 2, DomainId.New(),
+                "/tmp/wt-test-live", "task/test-live", ExecutorMode.Subscription, Now));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        int staleProcessId = SpawnFakeAgent(staleRunId, "echo '{\"type\":\"assistant\"}'; sleep 30");
+        await RecordProcessStartedAsync(store, staleRunId, staleProcessId, cts.Token);
+        int liveProcessId = SpawnFakeAgent(liveRunId, "echo '{\"type\":\"assistant\"}'; sleep 30");
+        await RecordProcessStartedAsync(store, liveRunId, liveProcessId, cts.Token);
+
+        ListLogger<RunSupervisor> logger = new();
+        RunSupervisor supervisor = NewSupervisor(store, node, logger: logger);
+        try
+        {
+            await supervisor.AdoptOrphansAsync(cts.Token);
+
+            await using IQuerySession query = store.QuerySession();
+            RunDetails staleDetails = (await query.LoadAsync<RunDetails>(staleRunId, cts.Token))!;
+            staleDetails.State.Should().Be(RunState.Superseded,
+                "the stale generation's run must be retired, not adopted alongside the live one");
+
+            RunDetails liveDetails = (await query.LoadAsync<RunDetails>(liveRunId, cts.Token))!;
+            liveDetails.State.IsLive.Should().BeTrue(
+                "the live generation's own run is adopted and left running, not retired alongside its stale sibling");
+
+            TaskListItem task2 = (await query.LoadAsync<TaskListItem>(taskId, cts.Token))!;
+            task2.State.Value.Should().Be("Claimed", "the live generation's claim is untouched");
+            task2.LeaseGeneration.Should().Be(2);
+            (await query.LoadAsync<TaskLease>(taskId, cts.Token)).Should().NotBeNull(
+                "the stale run's retirement must not release the live generation's lease");
+
+            logger.Lines.Should().Contain(line =>
+                line.Contains(staleRunId.ToString()) && line.Contains("retired instead of adopted"),
+                "the grouping check must name the stale run it chose not to adopt");
+        }
+        finally
+        {
+            try { Process.GetProcessById(staleProcessId).Kill(entireProcessTree: true); } catch (ArgumentException) { }
+            try { Process.GetProcessById(liveProcessId).Kill(entireProcessTree: true); } catch (ArgumentException) { }
+        }
+    }
+
+    /// <summary>
     /// A follow-up that met a review thread it could not honestly judge parks for the human
     /// instead of pushing (Decisions Log #62): the never-loop rule the pre-PR fix session runs
     /// on, applied to a reviewer's thread. Both positions land beside the run, and the pipeline
