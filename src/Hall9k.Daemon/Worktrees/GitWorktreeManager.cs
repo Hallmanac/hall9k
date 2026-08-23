@@ -130,6 +130,64 @@ public sealed class GitWorktreeManager(ILogger<GitWorktreeManager> logger) : IWo
         }
     }
 
+    public async Task<CheckoutRefresh> RefreshReadingCheckoutAsync(
+        string checkoutPath, string branch, CancellationToken cancellationToken)
+    {
+        // Fetch into, and lock, the repository this checkout actually resolves refs through, which
+        // is not reliably the project's recorded repository path: repo/dev is a worktree of the
+        // home's bare clone, and both --keep-repo-path and h9k project set --repo leave a project
+        // pointing at some other clone. Fetching there would update refs nothing here reads, and
+        // the behind-count below — taken in the checkout, against the refs its own repository
+        // holds — would then be computed from refs nobody moved and logged as up to date. Asking
+        // git is also the only answer that stays true for a checkout cut some other way.
+        if (await ResolveRepositoryAsync(checkoutPath, cancellationToken) is not { } repositoryPath)
+        {
+            return new CheckoutRefresh(
+                UpToDate: false,
+                "is not a git checkout this node can read, so whether it holds current code is unobserved");
+        }
+
+        SemaphoreSlim mutex = LockFor(repositoryPath);
+        await mutex.WaitAsync(cancellationToken);
+        try
+        {
+            await BestEffortFetchAsync(repositoryPath, cancellationToken);
+
+            (int behindExit, string counted, string countError) = await TryRunGitAsync(
+                checkoutPath, $"rev-list --count HEAD..origin/{branch}", cancellationToken);
+            if (behindExit != 0 || !int.TryParse(counted.Trim(), out int behind))
+            {
+                return new CheckoutRefresh(
+                    UpToDate: false,
+                    $"could not be compared against origin/{branch} ({countError.Trim()}), so whether it "
+                    + "holds current code is unobserved");
+            }
+
+            if (behind == 0)
+            {
+                return new CheckoutRefresh(UpToDate: true, $"already at origin/{branch}");
+            }
+
+            // Fast-forward only. Whatever is uncommitted or committed locally under a reading
+            // checkout is somebody's, and this is not the place that gets to decide it was not
+            // wanted — SyncToOriginBestEffortAsync resets, but that one owns a run's own worktree.
+            (int mergeExit, _, string mergeError) = await TryRunGitAsync(
+                checkoutPath, $"merge --ff-only origin/{branch}", cancellationToken);
+            (_, string head, _) = await TryRunGitAsync(checkoutPath, "rev-parse --short HEAD", cancellationToken);
+
+            return mergeExit == 0
+                ? new CheckoutRefresh(UpToDate: true, $"fast-forwarded {behind} commit(s) to origin/{branch}")
+                : new CheckoutRefresh(
+                    UpToDate: false,
+                    $"is {behind} commit(s) behind origin/{branch} at {head.Trim()} and could not be "
+                    + $"fast-forwarded ({mergeError.Trim()}); it was left exactly as it is");
+        }
+        finally
+        {
+            mutex.Release();
+        }
+    }
+
     public async Task DeleteBranchEverywhereAsync(string repositoryPath, string branch, CancellationToken cancellationToken)
     {
         repositoryPath = Path.GetFullPath(repositoryPath);
@@ -279,6 +337,29 @@ public sealed class GitWorktreeManager(ILogger<GitWorktreeManager> logger) : IWo
 
     private SemaphoreSlim LockFor(string repositoryPath) =>
         _repositoryLocks.GetOrAdd(repositoryPath, _ => new SemaphoreSlim(1, 1));
+
+    /// <summary>
+    /// The repository a working tree resolves its refs through, in the same terms every other
+    /// method here uses: the bare clone for a worktree cut from one, and the clone's own root
+    /// (not its <c>.git</c>) for an ordinary checkout, so a lock taken on it is the same lock
+    /// CreateAsync and the rest take. Null when the path is not a checkout git will answer for.
+    /// </summary>
+    private static async Task<string?> ResolveRepositoryAsync(string checkoutPath, CancellationToken cancellationToken)
+    {
+        (int exitCode, string commonDirectory, _) = await TryRunGitAsync(
+            checkoutPath, "rev-parse --git-common-dir", cancellationToken);
+        if (exitCode != 0 || commonDirectory.Trim() is not { Length: > 0 } answer)
+        {
+            return null;
+        }
+
+        // git answers relative to the directory it ran in for an ordinary checkout (".git") and
+        // absolute for a linked worktree; both resolve against the checkout.
+        string resolved = Path.GetFullPath(answer, Path.GetFullPath(checkoutPath));
+        return Path.GetFileName(Path.TrimEndingDirectorySeparator(resolved)) == ".git"
+            ? Path.GetDirectoryName(Path.TrimEndingDirectorySeparator(resolved)) ?? resolved
+            : resolved;
+    }
 
     private async Task BestEffortFetchAsync(string repositoryPath, CancellationToken cancellationToken)
     {

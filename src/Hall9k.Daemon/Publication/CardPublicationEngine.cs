@@ -1,8 +1,10 @@
 using Hall9k.Connectors.WorkItems;
 using Hall9k.Daemon.Execution;
 using Hall9k.Daemon.ProcessManagement;
+using Hall9k.Daemon.Worktrees;
 using Hall9k.Domain.Features.Connection;
 using Hall9k.Domain.Features.Node;
+using Hall9k.Domain.Features.Project;
 using Hall9k.Domain.Features.Project.Projections;
 using Hall9k.Domain.Features.Run;
 using Hall9k.Domain.Features.Tasks;
@@ -65,6 +67,7 @@ public sealed class CardPublicationEngine(
     NodeContext node,
     IExecutor executor,
     IProcessManager processManager,
+    IWorktreeManager worktrees,
     IOptions<DaemonOptions> options,
     ILogger<CardPublicationEngine> logger)
 {
@@ -475,15 +478,46 @@ public sealed class CardPublicationEngine(
             return PublicationAttempt.Refused;
         }
 
-        if (!Directory.Exists(project.RepositoryPath))
+        // The session reads this project's card-authoring skills, so it needs a working tree, and
+        // a project with a home does not have one at its repository path: that path names the
+        // bare clone inside repo/, which holds refs and objects and no files at all. repo/dev is
+        // the checkout the home keeps for exactly this kind of reading. A project registered
+        // before homes existed still points at an ordinary clone, so that stays the fallback.
+        string checkout = ProjectCheckout.ForReading(project);
+        if (!Directory.Exists(checkout) || ProjectCheckout.IsBare(checkout))
         {
             await CompleteAsync(
                 task.Id,
                 false,
-                $"The project's repository is not at {project.RepositoryPath}, and the session runs there to "
-                + "read this project's card rules. Fix the path and run h9k task push-to-jira again.",
+                $"There is no working checkout of this project at {checkout}, and the session runs in one "
+                + "to read this project's card rules. Create the home's repo/dev worktree with "
+                + $"h9k project init {project.Name}, or point the project at an existing checkout with "
+                + $"h9k project set {project.Name} --repo <path>, then run h9k task push-to-jira again.",
                 cancellationToken);
             return PublicationAttempt.Refused;
+        }
+
+        // repo/dev is cut once by h9k project init and otherwise never touched, and this session
+        // is spawned into it precisely to read the project's own card-authoring rules — so a
+        // checkout months behind the remote answers with rules nobody follows any more. It is
+        // fast-forwarded best-effort here, and the outcome is logged either way, because the
+        // defect this closes was less the staleness than that nothing anywhere said the checkout
+        // was behind. Only the home's own dev/ is moved: a project registered before homes existed
+        // reads from somebody's ordinary clone, and that one is theirs to move. Origin incident
+        // (2026-08-23): the second cycle of this branch's pre-PR review followed a card being
+        // authored by rules as of the commit repo/dev was created at, months earlier, silently,
+        // and the third found the refresh fetching this project's recorded repository path — which
+        // is not the clone repo/dev reads through once --keep-repo-path or project set --repo has
+        // separated them, so the freshness it reported was measured off refs nobody had updated.
+        // The checkout is all that is handed over now; the repository is git's answer, not ours.
+        if (ProjectCheckout.IsHomeDevWorktree(project, checkout))
+        {
+            CheckoutRefresh refresh = await worktrees.RefreshReadingCheckoutAsync(
+                checkout, project.BaseBranch, cancellationToken);
+            logger.Log(
+                refresh.UpToDate ? LogLevel.Information : LogLevel.Warning,
+                "Publication session for task {TaskId} reads {Checkout}, which {Detail}",
+                task.Id, checkout, refresh.Detail);
         }
 
         ConnectionDetails? connection = await WorkItemConnections.FindJiraConnectionAsync(session, cancellationToken);
@@ -515,7 +549,7 @@ public sealed class CardPublicationEngine(
         string prompt = AgentPromptBuilder.BuildCardPublication(
             current,
             project,
-            project.RepositoryPath,
+            checkout,
             site.GetLeftPart(UriPartial.Authority),
             aggregate.PendingPublicationProjectKey,
             $"h9k task link-jira {task.Id}");
@@ -549,7 +583,7 @@ public sealed class CardPublicationEngine(
             // worktree, no branch, and no lease. The session's own id names its directory, which
             // is what WorkItemPublicationDispatched records so the prompt and stream stay findable.
             new AgentSpawnRequest(
-                sessionId, sessionId, project.RepositoryPath, prompt,
+                sessionId, sessionId, checkout, prompt,
                 ExecutorMode.Subscription, model, project.SkipPermissions),
             cancellationToken);
 

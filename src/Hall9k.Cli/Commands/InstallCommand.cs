@@ -1,6 +1,7 @@
 using System.ComponentModel;
 using Hall9k.Cli.DaemonControl;
 using Hall9k.Cli.Infrastructure;
+using Hall9k.Cli.ProjectHomes;
 using Hall9k.Domain.Infrastructure.Storage;
 using Spectre.Console;
 using Spectre.Console.Cli;
@@ -85,6 +86,8 @@ public sealed class InstallCommand : Hall9kAsyncCommand<InstallCommand.Settings>
             $"[dim]Wrote Hall9k's own Postgres definition to {PostgresRuntime.ComposeFile.EscapeMarkup()} "
             + "(not started — h9k doctor or h9k daemon start will offer to when it's needed).[/]");
 
+        PublishSkills(repoRoot);
+
         LinkOntoPath(
             Path.Combine(DaemonRuntime.BinDirectory, "h9k"),
             Environment.GetEnvironmentVariable("PATH") ?? string.Empty,
@@ -128,6 +131,70 @@ public sealed class InstallCommand : Hall9kAsyncCommand<InstallCommand.Settings>
         }
 
         return null;
+    }
+
+    /// <summary>
+    /// The install owns the canonical skill set (IDEA-skill-layer, Tension 8): a skill the
+    /// machinery requires in order to work is part of the machinery, so it ships with the install
+    /// and is as self-contained as the binaries. Today the source is this repository's own
+    /// <c>.claude/skills</c>; once release delivery lands (backlog 42) it is a release artefact,
+    /// and only this method changes — <see cref="SkillLibraryPaths.CanonicalDirectory"/> is the
+    /// seam every project home already points at.
+    /// <para>
+    /// A project home's <c>skills/</c> entries are symlinks into that directory, so republishing
+    /// here updates every project's platform skills in one move. A skill that is <em>new</em>
+    /// still needs a link made for it, which is what <c>h9k project init</c> does — so that is
+    /// said rather than left to be discovered.
+    /// </para>
+    /// </summary>
+    /// <remarks>The copying itself is <see cref="SkillSeeder.PublishCanonical"/>; this is the
+    /// command's half of it, which is finding the source and saying what happened.</remarks>
+    private static void PublishSkills(string repoRoot)
+    {
+        string source = Path.Combine(repoRoot, ".claude", "skills");
+        string canonical = SkillLibraryPaths.CanonicalDirectory;
+        if (!Directory.Exists(source))
+        {
+            AnsiConsole.MarkupLineInterpolated(
+                $"[yellow]No skills to publish[/]: {source} does not exist, so {canonical} was left alone.");
+            return;
+        }
+
+        SkillPublication publication = SkillSeeder.PublishCanonical(source);
+        string names = string.Join(", ", publication.Published);
+
+        AnsiConsole.MarkupLineInterpolated(
+            $"[green]Skills[/]: {publication.Published.Count} published to {canonical} ({names})");
+
+        // Named rather than counted: this is the one thing here that removes content, and a
+        // number tells nobody which skill their project homes just lost a link to.
+        if (publication.Retired.Count > 0)
+        {
+            string retired = string.Join(", ", publication.Retired).EscapeMarkup();
+            AnsiConsole.MarkupLine(
+                $"[yellow]Skills retired[/]: {retired} — this install no longer ships them, so they "
+                + "were removed from the canonical set. Project homes drop their links at the next "
+                + "h9k project init. Anything you wrote into that directory yourself is left alone: "
+                + "only what an install published is an install's to retire.");
+        }
+
+        // The mirror image of the line above: nothing was destroyed, but the platform's version of
+        // these is not what any agent will read, and a shadow nobody is told about is found out
+        // later as the skill that would not update no matter how many times somebody reinstalled.
+        if (publication.LeftAlone.Count > 0)
+        {
+            string shadowed = string.Join(", ", publication.LeftAlone).EscapeMarkup();
+            AnsiConsole.MarkupLine(
+                $"[yellow]Skills left alone[/]: {shadowed} — this install ships a skill of each of "
+                + "those names, and each was already in the canonical directory without an install "
+                + "having put it there, so yours was kept and the platform's was not written. Yours "
+                + "is what every project home links to. Delete the one you want replaced and run "
+                + "h9k install again to take the platform's.");
+        }
+
+        AnsiConsole.MarkupLine(
+            "[dim]Project homes link into that directory, so they already have these. A skill added "
+            + "since a home was created reaches it at the next h9k project init.[/]");
     }
 
     /// <summary>
