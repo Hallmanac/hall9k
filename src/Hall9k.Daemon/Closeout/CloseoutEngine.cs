@@ -355,6 +355,8 @@ public sealed class CloseoutEngine(
             await DispatchFollowUpOrParkAsync(
                 session, task, run, fence.Version,
                 FollowUpKind.FailingChecks,
+                snapshot.FailingChecks,
+                snapshot,
                 $"CI checks failing on the pull request: {string.Join(", ", snapshot.FailingChecks)}.",
                 now, cancellationToken);
             return InspectionOutcome.Inspected;
@@ -367,6 +369,8 @@ public sealed class CloseoutEngine(
             await DispatchFollowUpOrParkAsync(
                 session, task, run, fence.Version,
                 FollowUpKind.ReviewFeedback,
+                snapshot.ThreadIds,
+                snapshot,
                 DescribeUnresolvedThreads(snapshot),
                 now, cancellationToken);
             return InspectionOutcome.Inspected;
@@ -953,31 +957,123 @@ public sealed class CloseoutEngine(
         await RemoveWorktreeBestEffortAsync(project.RepositoryPath, run.WorktreePath, cancellationToken);
     }
 
+    /// <summary>
+    /// An obstruction's mechanical identity (Decisions Log #75, backlog 45): what the next
+    /// automatic decision compares against to tell "still stuck on the same thing" from
+    /// "something changed", by identity alone — never by judging severity or content. Checks
+    /// key on the failing check's own name(s); review feedback keys on the exact set of
+    /// unresolved thread ids present at dispatch, so a thread resolved or a new one opened is,
+    /// mechanically, a different obstruction (the backlog card's own example: two CI failures
+    /// of different checks are different obstructions, and the same rule applies to threads).
+    /// </summary>
+    private static string ObstructionKey(FollowUpKind kind, IReadOnlyList<string> identity) =>
+        $"{kind.Value}:{string.Join('␟', identity.OrderBy(id => id, StringComparer.Ordinal))}";
+
+    /// <summary>The human-readable side of <see cref="ObstructionKey"/> — what a park message reads back as the obstruction that repeated.</summary>
+    private static string DescribeObstruction(FollowUpKind kind, IReadOnlyList<string> identity) =>
+        kind == FollowUpKind.FailingChecks
+            ? $"the failing check(s) {string.Join(", ", identity.OrderBy(id => id, StringComparer.Ordinal))}"
+            : $"the same {identity.Count} unresolved review thread(s)";
+
+    /// <summary>
+    /// Whether something a human did on the pull request since the task's last automatic
+    /// decision is proof this loop is not running away (Decisions Log #75, backlog 45 — origin
+    /// incident: Brian re-requesting a Copilot review on PR 26 while an unrelated flat budget
+    /// was already spent on two other obstructions). Three mechanical signals, each a set
+    /// grown since the comparison point TaskReopened recorded: a review thread neither this nor
+    /// any earlier automatic decision has seen, started by a person; a top-level pull-request
+    /// comment neither has seen, authored by a person; and a pending review request for a
+    /// reviewer this task has not already recorded asking for. Any one grants the lap; none of
+    /// them bypasses the lifetime ceiling, which is checked before this is ever consulted.
+    /// </summary>
+    private static bool HasHumanEngagement(TaskAggregate task, PullRequestSnapshot snapshot, out string reason)
+    {
+        List<string> newHumanThreads = [.. snapshot.HumanThreadIds.Except(task.KnownHumanReviewThreadIds)];
+        if (newHumanThreads.Count > 0)
+        {
+            reason = $"{newHumanThreads.Count} new review thread(s) opened by a human";
+            return true;
+        }
+
+        List<string> newComments = [.. snapshot.CommentIds.Except(task.KnownHumanCommentIds)];
+        if (newComments.Count > 0)
+        {
+            reason = $"{newComments.Count} new human comment(s) on the pull request";
+            return true;
+        }
+
+        List<string> newRequests = [.. snapshot.PendingReviewers.Except(task.KnownPendingReviewRequestLogins)];
+        if (newRequests.Count > 0)
+        {
+            reason = $"a review re-request for {string.Join(", ", newRequests)}";
+            return true;
+        }
+
+        reason = "";
+        return false;
+    }
+
     private async Task DispatchFollowUpOrParkAsync(
         IDocumentSession session,
         TaskAggregate task,
         RunDetails run,
         long fenceVersion,
         FollowUpKind kind,
+        IReadOnlyList<string> obstructionIdentity,
+        PullRequestSnapshot snapshot,
         string reason,
         DateTimeOffset now,
         CancellationToken cancellationToken)
     {
+        // The lifetime ceiling is checked first and absolutely: it is the true runaway
+        // backstop (Decisions Log #75, backlog 45), and no human engagement bypasses it —
+        // only h9k pr resolve does.
         if (AutomaticActionsSpent(task, run) >= _options.MaxAutomaticCloseoutRuns)
         {
-            string parkReason =
-                $"{reason} Automatic closeout budget spent ({AutomaticActionsSpent(task, run)} action(s)). " +
+            string history = task.AutomaticLapHistory.Count > 0
+                ? string.Join("; ", task.AutomaticLapHistory.Select((lap, index) => $"lap {index + 1}: {lap}"))
+                : "no earlier lap recorded an obstruction (a stream older than this budget shape)";
+            string ceilingParkReason =
+                $"{reason} The lifetime automatic closeout budget spent ({AutomaticActionsSpent(task, run)}/{_options.MaxAutomaticCloseoutRuns} action(s)) — {history}. " +
                 "Fix or merge the pull request by hand, close it, or grant another attempt with h9k pr resolve.";
-            session.Events.Append(run.Id, new CloseoutParked(run.Id, parkReason, now));
-            await session.SaveChangesAsync(cancellationToken);
-            logger.LogWarning("Run {RunId}: closeout parked for the human — {Reason}", run.Id, parkReason);
+            await ParkAsync(session, run, ceilingParkReason, now, cancellationToken);
+            return;
+        }
+
+        string obstructionKey = ObstructionKey(kind, obstructionIdentity);
+        string obstructionSummary = DescribeObstruction(kind, obstructionIdentity);
+        bool sameObstruction = obstructionKey == task.LastAutomaticObstructionKey;
+        int lapsIfDispatched = sameObstruction ? task.ConsecutiveObstructionLaps + 1 : 1;
+        bool exceedsProgressCap = lapsIfDispatched > _options.MaxCloseoutLapsPerObstruction;
+
+        bool humanGranted = false;
+        if (exceedsProgressCap && HasHumanEngagement(task, snapshot, out string engagement))
+        {
+            humanGranted = true;
+            reason =
+                $"{reason} A human engaged with the pull request since the last automatic decision " +
+                $"({engagement}) — granting one more automatic lap despite the per-obstruction cap.";
+        }
+
+        if (exceedsProgressCap && !humanGranted)
+        {
+            string parkReason =
+                $"{reason} The same obstruction — {obstructionSummary} — survived {task.ConsecutiveObstructionLaps} " +
+                $"automatic lap(s) without clearing (cap {_options.MaxCloseoutLapsPerObstruction} per obstruction). " +
+                "Fix or merge the pull request by hand, close it, or grant another attempt with h9k pr resolve.";
+            await ParkAsync(session, run, parkReason, now, cancellationToken);
             return;
         }
 
         // The reopen races the CLI's h9k pr resolve on the fence version captured before
         // the aggregate was read; losing just means someone else already dispatched.
         session.Events.Append(task.Id, expectedVersion: fenceVersion + 1, TaskDecider.Reopen(
-            task, run.Id, run.Branch, reason, kind, automatic: true, now, node.OwnerId));
+            task, run.Id, run.Branch, reason, kind, automatic: true, now, node.OwnerId,
+            obstructionKey: obstructionKey,
+            obstructionSummary: obstructionSummary,
+            knownHumanReviewThreadIds: snapshot.HumanThreadIds,
+            knownHumanCommentIds: snapshot.CommentIds,
+            knownPendingReviewRequestLogins: snapshot.PendingReviewers));
 
         // The reopen hands the pull request to a successor, so this run's watch ends
         // with it — retire it in the same transaction (TASK-MODEL.md §2.2). A lost race
@@ -997,8 +1093,18 @@ public sealed class CloseoutEngine(
         }
 
         logger.LogInformation(
-            "Task {TaskId} reopened automatically ({Kind}, attempt {Attempt}/{Max}): {Reason}",
-            task.Id, kind.Value, task.CloseoutAttempts + 1, _options.MaxAutomaticCloseoutRuns, reason);
+            "Task {TaskId} reopened automatically ({Kind}, lifetime {Attempt}/{Max}, obstruction lap {Lap}/{LapMax}{Grant}): {Reason}",
+            task.Id, kind.Value, task.CloseoutAttempts + 1, _options.MaxAutomaticCloseoutRuns,
+            lapsIfDispatched, _options.MaxCloseoutLapsPerObstruction, humanGranted ? " human-granted" : "", reason);
+    }
+
+    /// <summary>Appends CloseoutParked and logs it — shared by both DispatchFollowUpOrParkAsync park branches.</summary>
+    private async Task ParkAsync(
+        IDocumentSession session, RunDetails run, string reason, DateTimeOffset now, CancellationToken cancellationToken)
+    {
+        session.Events.Append(run.Id, new CloseoutParked(run.Id, reason, now));
+        await session.SaveChangesAsync(cancellationToken);
+        logger.LogWarning("Run {RunId}: closeout parked for the human — {Reason}", run.Id, reason);
     }
 
     private async Task RemoveWorktreeBestEffortAsync(
