@@ -1,3 +1,5 @@
+> **ARCHIVED 2026-08-23: shipped as Decisions Log #36 - the dependency graph routes context one hop, handoffs captured at closeout, landed with the context-routing task (PR 20) and refined by blocker synthesis since.**
+
 # IDEA: Context routing via dependency edges
 
 **Status:** Draft — funnel entry, not a decision

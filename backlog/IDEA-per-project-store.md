@@ -1,3 +1,5 @@
+> **ARCHIVED 2026-08-23: superseded by idea 64e4ebd2 (the project-centred structure) - the database-as-room model in its DISCOVERY.md replaces this file's framing entirely.**
+
 # IDEA: The project chooses its store - per-project database pointers
 
 **Status:** Draft - funnel entry, not a decision

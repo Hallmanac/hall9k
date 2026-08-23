@@ -1,3 +1,5 @@
+> **ARCHIVED 2026-08-23: absorbed into tasks 42 (release delivery) and 47 (project home foundations, which took 43's materialisation recipe). The sitting addendum below records the rulings; this file is the origin record.**
+
 # IDEA: Installation, delivery, and repo materialisation
 
 **Status:** Draft — funnel entry

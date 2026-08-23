@@ -1,3 +1,5 @@
+> **ARCHIVED 2026-08-23: absorbed into IDEA-ranking-and-grooming, which cites this file and carries its dependent-count and ordering questions forward as the ranking model.**
+
 # IDEA: Ordering within the ready set
 
 **Status:** Draft — funnel entry, and possibly a decision to *not* build

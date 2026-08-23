@@ -1,3 +1,5 @@
+> **ARCHIVED 2026-08-23: research note that produced its output - the Beads comparison informed Decisions Log #36's routing-over-messaging ruling. Kept as the study record.**
+
 # Beads: a comparative study against the Hall9k design
 
 **Status:** research note, 2026-08-19. Not a task. Produces one drafted task (`16-learnings-loop.md`)
