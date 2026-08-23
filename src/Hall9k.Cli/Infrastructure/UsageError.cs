@@ -25,20 +25,6 @@ namespace Hall9k.Cli.Infrastructure;
 public static class UsageError
 {
     /// <summary>
-    /// The narrowest the help is ever rendered at, whatever the terminal says.
-    /// </summary>
-    /// <remarks>
-    /// Spectre wraps to the console width, and a wrapped example is not a command: at the default
-    /// 80 columns <c>h9k task resolve</c> prints its example broken after
-    /// <c>--reason "Work merged as PR #7; only the daemon's</c>, with the rest on an unindented
-    /// line of its own, so an agent pasting the correction it was just handed gets an unterminated
-    /// quote. The longest example in the tree renders at 141 columns including its indent; this
-    /// leaves room for a longer one, and <c>CommandTreeHelpTests</c> walks the tree at exactly this
-    /// width so an example that outgrows it fails there rather than shipping wrapped.
-    /// </remarks>
-    internal const int MinimumHelpWidth = 160;
-
-    /// <summary>
     /// Explain a Spectre parse or binding failure on <paramref name="error"/> and report the exit
     /// code for it.
     /// </summary>
@@ -81,6 +67,9 @@ public static class UsageError
         help.Configure(config =>
         {
             CliCommandTree.Configure(config);
+            // After the tree, so this replaces the console it installs for the ordinary --help
+            // path: a refusal is written to the caller's stderr as plain text. The width floor is
+            // the same one, applied again below.
             config.ConfigureConsole(ConsoleWriting(error));
         });
 
@@ -108,11 +97,11 @@ public static class UsageError
     /// a redirected stderr with escape sequences in it is help a log file cannot show anyone.
     /// </para>
     /// <para>
-    /// The width is widened to <see cref="MinimumHelpWidth"/> rather than pinned to it: a wide
-    /// terminal keeps its own width and reads naturally, and a narrow one gets prose the terminal
-    /// soft-wraps instead of examples the renderer hard-breaks. Soft-wrapped prose is a cosmetic
-    /// cost; a hard-broken example is a command nobody can paste, which is the one thing this
-    /// output exists to hand back.
+    /// The width is widened to <see cref="CliCommandTree.MinimumHelpWidth"/> rather than pinned to
+    /// it, the same way the run path's console is: a wide terminal keeps its own width and reads
+    /// naturally, and a narrow one gets prose the terminal soft-wraps instead of examples the
+    /// renderer hard-breaks. Soft-wrapped prose is a cosmetic cost; a hard-broken example is a
+    /// command nobody can paste, which is the one thing this output exists to hand back.
     /// </para>
     /// </remarks>
     private static IAnsiConsole ConsoleWriting(TextWriter writer)
@@ -125,7 +114,7 @@ public static class UsageError
             Enrichment = new ProfileEnrichment { UseDefaultEnrichers = false },
             Out = new AnsiConsoleOutput(writer),
         });
-        console.Profile.Width = Math.Max(console.Profile.Width, MinimumHelpWidth);
+        console.Profile.Width = Math.Max(console.Profile.Width, CliCommandTree.MinimumHelpWidth);
         return console;
     }
 }
