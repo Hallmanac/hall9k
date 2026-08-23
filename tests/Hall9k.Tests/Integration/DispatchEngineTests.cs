@@ -185,6 +185,83 @@ public sealed class DispatchEngineTests(PostgresFixture postgres) : IClassFixtur
     }
 
     [Fact]
+    public async Task An_expired_lease_on_a_budget_parked_run_is_refreshed_and_never_requeued()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        using DocumentStore store = DocumentStore.For(opts =>
+        {
+            opts.Connection(postgres.ConnectionString);
+            opts.ConfigureHall9k(AutoCreate.All);
+        });
+
+        NodeContext node = new();
+        await node.InitializeAsync(store, cts.Token);
+
+        DaemonOptions options = new() { MaxConcurrentAgentSessions = 500, LeaseTimeout = TimeSpan.FromSeconds(60) };
+        DispatchEngine engine = new(
+            store, node, new DaemonConnection(postgres.ConnectionString), new FakeProcessManager(),
+            Options.Create(options), NullLogger<DispatchEngine>.Instance);
+
+        // Seeded directly under its own node id, for the same reason the review-park sibling
+        // test above is: this class shares one database, and the sweep is node-blind.
+        Guid taskId = DomainId.New();
+        Guid runId = DomainId.New();
+        Guid parkedNodeId = DomainId.New();
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            (TaskAggregate task, object[] lifecycle) = TaskSeed.Start(
+                TaskDecider.Add(taskId, DomainId.New(), "Budget park walk", ["done"], TaskType.Chore,
+                    null, null, null, Now, node.OwnerId),
+                node.OwnerId, Now);
+            session.Events.StartStream<TaskAggregate>(taskId,
+                [.. lifecycle, TaskDecider.Claim(task, parkedNodeId, node.OwnerId, runId, Now)]);
+
+            // The run exhausts its budget and parks, then the lease heartbeat decays past the
+            // timeout — the same daemon-asleep-or-lost-the-race window the review-park guard
+            // exists for (Decisions Log #40): the guarantee is a property of "parked", not of
+            // one park flavor, so a stale lease here must refresh, not requeue and fail the run
+            // the hourly retry sweep is about to pick back up.
+            session.Events.StartStream<RunAggregate>(runId,
+                new RunDispatched(runId, taskId, parkedNodeId, node.OwnerId, 1,
+                    DomainId.New(), "/wt/budget", "task/budget-walk", ExecutorMode.Subscription, Now),
+                new RunProcessStarted(runId, 4482, Now),
+                new RunBudgetExhausted(runId, "Claude AI usage limit reached|1762952400", Now));
+
+            session.Store(new TaskLease
+            {
+                Id = taskId,
+                NodeId = parkedNodeId,
+                LeaseGeneration = 1,
+                HeartbeatAt = DateTimeOffset.UtcNow.AddMinutes(-10),
+            });
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        // Not asserting the returned count: this class shares one database, and a slow
+        // run could age another test's lease past the timeout. The parked task's own
+        // fate is the guarantee under test.
+        await engine.SweepExpiredLeasesAsync(cts.Token);
+
+        await using (IQuerySession query = store.QuerySession())
+        {
+            TaskListItem task = (await query.LoadAsync<TaskListItem>(taskId, cts.Token))!;
+            task.State.Value.Should().Be("Claimed", "parked means waiting on the clock, not abandoned");
+
+            TaskLease lease = (await query.LoadAsync<TaskLease>(taskId, cts.Token))!;
+            lease.HeartbeatAt.Should().BeAfter(DateTimeOffset.UtcNow.AddMinutes(-1),
+                "the sweep refreshes a parked lease so it cannot expire again next tick");
+        }
+
+        // Leave no residue: the sibling capacity test counts every lease in this
+        // class's shared database.
+        await using (IDocumentSession cleanup = store.LightweightSession())
+        {
+            cleanup.Delete<TaskLease>(taskId);
+            await cleanup.SaveChangesAsync(cts.Token);
+        }
+    }
+
+    [Fact]
     public async Task Retried_failed_task_is_claimed_again_with_the_next_lease_generation()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));

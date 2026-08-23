@@ -321,6 +321,38 @@ public sealed class RunSupervisorTests(PostgresFixture postgres) : IClassFixture
     }
 
     /// <summary>
+    /// The usage-limit shape parks rather than fails (Decisions Log #40): the run stream
+    /// records what was observed, but the task stays Claimed — worktree and lease intact —
+    /// instead of going through TaskDecider.Fail and releasing them.
+    /// </summary>
+    [Fact]
+    public async Task A_budget_exhausted_result_parks_the_run_and_leaves_the_task_claimed()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        using DocumentStore store = NewStore();
+        (NodeContext node, Guid taskId, Guid runId) = await SeedClaimedTaskAsync(store, cts.Token);
+
+        const string budgetResultLine =
+            """{"type":"result","subtype":"error_during_execution","is_error":true,"result":"Claude AI usage limit reached|1762952400"}""";
+        int processId = SpawnFakeAgent(runId,
+            $"echo '{{\"type\":\"assistant\"}}'; echo '{budgetResultLine}'");
+        DateTimeOffset startedAt = await RecordProcessStartedAsync(store, runId, processId, cts.Token);
+
+        RunSupervisor supervisor = NewSupervisor(store, node);
+        supervisor.StartMonitoring(runId, taskId, processId, startedAt, cts.Token);
+
+        RunDetails details = await WaitForStateAsync(store, runId, "BudgetParked", cts.Token);
+        details.ParkedReason.Should().Be("token budget exhausted - resumes when the subscription window resets");
+        details.FailureReason.Should().BeNull("this is a wait, not a failure");
+
+        await using IQuerySession query = store.QuerySession();
+        TaskListItem task = (await query.LoadAsync<TaskListItem>(taskId, cts.Token))!;
+        task.State.Value.Should().Be("Claimed", "the work is intact; nothing here demands a human retry");
+        (await query.LoadAsync<TaskLease>(taskId, cts.Token)).Should().NotBeNull(
+            "a budget park keeps the lease exactly the way a review park does");
+    }
+
+    /// <summary>
     /// A follow-up that met a review thread it could not honestly judge parks for the human
     /// instead of pushing (Decisions Log #62): the never-loop rule the pre-PR fix session runs
     /// on, applied to a reviewer's thread. Both positions land beside the run, and the pipeline
