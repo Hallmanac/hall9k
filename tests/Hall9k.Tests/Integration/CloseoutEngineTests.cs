@@ -487,14 +487,54 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
     }
 
     /// <summary>
-    /// A pull request GitHub still reports open, or closed without a merge, is left exactly as
-    /// the row already renders it: the run's own recorded failure reason, and the "nothing is
-    /// watching this pull request any more" attention line it already produces. The orphan
-    /// sweep exists to complete an incomplete record, not to invent one — there is no run left
-    /// to dispatch a follow-up onto.
+    /// A pull request GitHub still reports open is left exactly as the row already renders
+    /// it: the run's own recorded failure reason, and the "nothing is watching this pull
+    /// request any more" attention line it already produces. The orphan sweep exists to
+    /// complete an incomplete record, not to invent one — there is no run left to dispatch a
+    /// follow-up onto, and a still-open answer settles nothing yet.
     /// </summary>
     [Fact]
-    public async Task An_orphaned_failed_runs_pull_request_that_did_not_merge_is_left_exactly_as_it_was()
+    public async Task An_orphaned_failed_runs_still_open_pull_request_is_left_exactly_as_it_was()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        (DocumentStore store, NodeContext node, GitWorktreeManager worktrees, _, string repoPath) =
+            await SetUpAsync(cts.Token);
+        using IDisposable storeLifetime = store;
+        await DrainPriorSweepStateAsync(store, node, cts.Token);
+
+        (_, Guid runId, _) = await SeedOrphanedFailedRunAsync(
+            store, node, worktrees, repoPath, cts.Token, failureReason: "the daemon crashed mid-review");
+
+        FakeInspector inspector = new() { Snapshot = FakeInspector.Quiet() };
+        CloseoutEngine engine = NewEngine(store, node, inspector, worktrees);
+        CloseoutSweepResult sweep = await engine.PollOnceAsync(cts.Token);
+        sweep.Should().Be(new CloseoutSweepResult(RunsInspected: 1, MergesObserved: 0),
+            "the read happened, but a still-open answer records nothing");
+
+        await using IQuerySession query = store.QuerySession();
+        RunDetails run = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
+        run.State.Should().Be(RunState.Failed, "nothing is invented for an answer that settles nothing");
+        run.FailureReason.Should().Be("the daemon crashed mid-review",
+            "the run's own recorded reason stands untouched — the row's existing needs-you rendering is correct already");
+        run.PullRequestMergedAt.Should().BeNull();
+
+        // This run stays Failed with an open PR by design — exactly what makes the assertion
+        // above meaningful — so it would otherwise keep matching every later test's orphan
+        // query on this shared node/database (see RetireWatchAsync's own note).
+        await RetireWatchAsync(store, runId, cts.Token);
+    }
+
+    /// <summary>
+    /// A pull request GitHub reports closed without a merge is recorded exactly as the
+    /// watched path records it (adversarial pre-PR review, cycle 2): FailureReason becomes
+    /// <see cref="RunDetails.PullRequestClosedWithoutMerge"/>, which is the fact
+    /// <c>AttentionComposer.UnwatchedRemedy</c> reads to stop sending the human to
+    /// <c>h9k pr resolve</c> for a pull request nobody can merge, and it is also the fact the
+    /// orphan query's own exclusion filter watches for, so the row leaves the candidate set on
+    /// its own — no manual retirement needed.
+    /// </summary>
+    [Fact]
+    public async Task An_orphaned_failed_runs_pull_request_closed_without_merge_is_recorded()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
         (DocumentStore store, NodeContext node, GitWorktreeManager worktrees, _, string repoPath) =
@@ -509,19 +549,20 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
         CloseoutEngine engine = NewEngine(store, node, inspector, worktrees);
         CloseoutSweepResult sweep = await engine.PollOnceAsync(cts.Token);
         sweep.Should().Be(new CloseoutSweepResult(RunsInspected: 1, MergesObserved: 0),
-            "the read happened, but a non-merge answer records nothing");
+            "a close is recorded, but it is not a merge");
 
         await using IQuerySession query = store.QuerySession();
         RunDetails run = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
-        run.State.Should().Be(RunState.Failed, "nothing is invented for an answer that is not a merge");
-        run.FailureReason.Should().Be("the daemon crashed mid-review",
-            "the run's own recorded reason stands untouched — the row's existing needs-you rendering is correct already");
+        run.State.Should().Be(RunState.Failed);
+        run.FailureReason.Should().Be(RunDetails.PullRequestClosedWithoutMerge,
+            "the close overwrites the run's original failure reason with the fact that now decides its remedy");
         run.PullRequestMergedAt.Should().BeNull();
 
-        // This run stays Failed with an open-or-unknown PR by design — exactly what makes
-        // the assertion above meaningful — so it would otherwise keep matching every later
-        // test's orphan query on this shared node/database (see RetireWatchAsync's own note).
-        await RetireWatchAsync(store, runId, cts.Token);
+        CloseoutSweepResult secondSweep = await engine.PollOnceAsync(cts.Token);
+        secondSweep.Should().Be(new CloseoutSweepResult(RunsInspected: 0, MergesObserved: 0),
+            "a run recorded closed without merge leaves the orphan query's candidate set on its own");
+        inspector.Inspections.Should().Be(1,
+            "the second sweep never re-reads a pull request whose fate is already recorded");
     }
 
     /// <summary>
