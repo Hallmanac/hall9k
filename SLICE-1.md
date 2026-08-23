@@ -249,7 +249,7 @@ installed mode" objective became the opt-in extra; decision log #31 records the 
 - **Commands:** `h9k install [--restart|--no-restart]` · `h9k daemon start|stop|status` ·
   `h9k daemon autostart enable|disable` — see `h9k daemon --help`.
 
-## S1-13 · Orchestrator CLAUDE.md + repo CLAUDE.md (dispatched via Hall9k)
+## S1-13 · Orchestrator CLAUDE.md + repo CLAUDE.md (dispatched via Hall9k) — **COMPLETE 2026-08-22**
 
 - **Objective:** An interactive Claude Code session in this repo knows how to be the orchestrator
   window, and any contributor session knows how to build/test/run.
@@ -265,6 +265,38 @@ installed mode" objective became the opt-in extra; decision log #31 records the 
      per the CLI command standards section of AGENTS.md (the standard itself is already law;
      this task backfills the examples).
 - **Constraints:** keep it lean — commands and role, not philosophy; PLAN.md remains the vision doc.
+
+Landed as the **The orchestrator window** section of AGENTS.md rather than a repo skill, so one
+file carries it for every agent runtime: the role and the "window, not alarm" rhythm, the law that
+all new work enters through `h9k task add` (with the three things that are not platform features),
+the command surface the window lives in, the collision-sequencing judgment the window owns until
+`backlog/IDEA-coordinator-agent.md` automates it, the needs-you relay, the five recovery levers
+with the two distinctions that get confused, and the review rhythm. `CLAUDE.md` now points a new
+session at it instead of promising it. The help audit found exactly one command with no example
+(`h9k logs`), and `CommandTreeHelpTests` now walks the shipped tree so the standard is enforced
+rather than remembered. Usage failures teach instead of crashing (decision log #66).
+
+**How "verified by use" was performed** (2026-08-22): two scratch Postgres databases were created
+on the local server (`hall9k_s113_smoke`, `hall9k_s113_fresh`) and reached through
+`HALL9K_CONNECTION_STRING`, so nothing touched the live board. A genuinely fresh Claude Code
+session was then opened in the repo with no context beyond the repo's own files (`claude -p`, one
+prompt, no hints about where to look) and asked to register a project, author and dispatch a task,
+report the board, and explain the recovery levers with citations. It read `CLAUDE.md` into
+`AGENTS.md`, ran `project add` / `task add` / `task publish` / `task assign` unaided, stopped at
+Queued for the right reason (assignment is the trigger; claiming is the daemon's), read the pane
+correctly, and named all five levers with both of the distinctions the section calls out. Both
+scratch databases were dropped afterwards.
+
+That session also found a real overclaim in the first draft of this section: `h9k status` probes
+this machine's daemon pid file, so a daemon running against a *different* database reads as
+healthy while nothing serves the queue. The prose now says what the check actually checks. The
+underlying gap (liveness is machine-local, not per-database) is left for the backlog rather than
+fixed here.
+
+**One criterion was dropped, not missed.** The queued task carried "rename the ClosingOut display
+bucket to FollowingUp"; `backlog/16-orchestrator-doc.md` and `backlog/41-status-redesign.md` were
+both amended on 2026-08-22 to supersede it, because 41's phase line dissolves that bucket rather
+than renaming it. The RunSuperseded-to-FollowedUp persisted rename stays parked in 16's note.
 
 ## S1-14 · Windows support (dispatched via Hall9k — first post-flip feature)
 
