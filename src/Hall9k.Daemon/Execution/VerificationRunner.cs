@@ -83,12 +83,30 @@ public sealed class VerificationRunner(
 
         foreach (VerifyCommand gate in gates)
         {
-            (bool passed, string summary, bool isInfrastructureFailure) =
+            (bool passed, string summary, bool isInfrastructureFailure, string? excerpt) =
                 await RunGateAsync(runId, run.WorktreePath, gate, cancellationToken);
             if (passed)
             {
                 logger.LogInformation("Run {RunId} gate '{Gate}' passed", runId, gate.Name);
                 continue;
+            }
+
+            // A gate this run already retried once, in a prior daemon lifetime, never earns a
+            // second one on adoption: the retry budget otherwise lives only in this method's
+            // local state, so a daemon that died between the GateRetried commit below and this
+            // gate's resolution would resume with no memory of the retry already spent
+            // (backlog 53, Copilot review on PR #36 — RunSupervisor.AdoptOrphansAsync calls
+            // VerifyAsync fresh). run.PendingGateRetry is the persisted record of that spend.
+            if (isInfrastructureFailure && run.PendingGateRetry == gate.Name)
+            {
+                string adoptedReason =
+                    $"Gate '{gate.Name}' failed again with an infrastructure-classified signature " +
+                    $"after already spending its one retry before an earlier daemon restart. {summary}";
+                await RecordFailureAsync(runId, taskId, gate.Name, adoptedReason, cancellationToken);
+                logger.LogWarning(
+                    "Run {RunId} verification failed at gate '{Gate}': its one retry was already spent before adoption",
+                    runId, gate.Name);
+                return false;
             }
 
             if (!isInfrastructureFailure)
@@ -101,13 +119,16 @@ public sealed class VerificationRunner(
             // Infrastructure-classified: retry once, in place, before believing the agent's
             // work is broken (backlog 53's origin incident — the container, not the diff, was
             // what failed). Recorded on the stream so the record says the flake happened,
-            // whichever way the retry goes, and never fails the run or spends any budget.
-            await RecordGateRetryAsync(runId, gate.Name, summary, cancellationToken);
+            // whichever way the retry goes, and never fails the run or spends any budget. The
+            // cause carries the matching excerpt, not just the recorded summary's tail: a
+            // large gate's summary is truncated to its last 400 characters and can push the
+            // marker that actually triggered classification out of it (adversarial review).
+            await RecordGateRetryAsync(runId, gate.Name, BuildRetryCause(summary, excerpt), cancellationToken);
             logger.LogWarning(
                 "Run {RunId} gate '{Gate}' failed with an infrastructure-classified signature; retrying once: {Summary}",
                 runId, gate.Name, summary);
 
-            (bool retryPassed, string retrySummary, bool retryIsInfrastructureFailure) =
+            (bool retryPassed, string retrySummary, bool retryIsInfrastructureFailure, _) =
                 await RunGateAsync(runId, run.WorktreePath, gate, cancellationToken);
             if (retryPassed)
             {
@@ -135,7 +156,7 @@ public sealed class VerificationRunner(
         return true;
     }
 
-    private async Task<(bool Passed, string Summary, bool IsInfrastructureFailure)> RunGateAsync(
+    private async Task<(bool Passed, string Summary, bool IsInfrastructureFailure, string? InfrastructureExcerpt)> RunGateAsync(
         Guid runId, string worktreePath, VerifyCommand gate, CancellationToken cancellationToken)
     {
         string logFile = Path.Combine(RunPaths.RunDirectory(runId), $"verify-{Sanitize(gate.Name)}.log");
@@ -158,7 +179,9 @@ public sealed class VerificationRunner(
         catch (Exception exception) when (exception is System.ComponentModel.Win32Exception or InvalidOperationException)
         {
             string startFailure = $"Gate '{gate.Name}' could not start: {exception.Message}";
-            return (false, startFailure, GateInfrastructureFailureClassifier.IsInfrastructureFailure(startFailure));
+            return (false, startFailure,
+                GateInfrastructureFailureClassifier.IsInfrastructureFailure(startFailure),
+                GateInfrastructureFailureClassifier.MatchingExcerpt(startFailure));
         }
 
         using CancellationTokenSource timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
@@ -171,12 +194,20 @@ public sealed class VerificationRunner(
         {
             process.Kill(entireProcessTree: true);
             string timeoutFailure = $"Gate '{gate.Name}' exceeded the {options.Value.VerifyGateTimeout.TotalMinutes:0}-minute timeout.";
-            return (false, timeoutFailure, GateInfrastructureFailureClassifier.IsInfrastructureFailure(timeoutFailure));
+
+            // A hang classifies on what the gate actually wrote before it was killed, not on
+            // this synthetic message — the message never carries a marker, so a container that
+            // never comes up (a startup hang, not a non-zero exit) would otherwise be silently
+            // unclassifiable and blamed on the agent's work (adversarial review, cycle 2).
+            string timeoutOutput = ReadFullOutput(logFile);
+            bool timeoutIsInfrastructureFailure = GateInfrastructureFailureClassifier.IsInfrastructureFailure(timeoutOutput);
+            return (false, timeoutFailure, timeoutIsInfrastructureFailure,
+                GateInfrastructureFailureClassifier.MatchingExcerpt(timeoutOutput));
         }
 
         if (process.ExitCode == 0)
         {
-            return (true, "ok", false);
+            return (true, "ok", false, null);
         }
 
         // Classification reads the gate's whole output, never just the truncated tail kept
@@ -185,7 +216,7 @@ public sealed class VerificationRunner(
         string fullOutput = ReadFullOutput(logFile);
         bool isInfrastructureFailure = GateInfrastructureFailureClassifier.IsInfrastructureFailure(fullOutput);
         string summary = $"Gate '{gate.Name}' exited {process.ExitCode}. Output: {TailOf(fullOutput)}";
-        return (false, summary, isInfrastructureFailure);
+        return (false, summary, isInfrastructureFailure, GateInfrastructureFailureClassifier.MatchingExcerpt(fullOutput));
     }
 
     /// <summary>
@@ -352,4 +383,13 @@ public sealed class VerificationRunner(
 
     private static string TailOf(string content) =>
         content.IsBlank() ? "(empty)" : content.Length <= 400 ? content : content[^400..];
+
+    /// <summary>
+    /// The recorded summary plus the excerpt around the marker that actually classified the
+    /// gate as infrastructure, so the durable <see cref="GateRetried"/> event still explains
+    /// the classification even when that marker sits outside the summary's 400-character tail
+    /// (adversarial review, PR #36's Copilot review).
+    /// </summary>
+    private static string BuildRetryCause(string summary, string? matchingExcerpt) =>
+        matchingExcerpt is null ? summary : $"{summary} Matching signature: {matchingExcerpt}";
 }

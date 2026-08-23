@@ -151,6 +151,43 @@ public sealed class VerificationRunnerTests(PostgresFixture postgres) : IClassFi
     }
 
     /// <summary>
+    /// The retry budget otherwise lives only in <see cref="VerificationRunner.VerifyAsync"/>'s
+    /// local state: a daemon that died after committing <see cref="GateRetried"/> but before the
+    /// gate's resolution would, on adoption, resume with a fresh call and no memory of the retry
+    /// already spent. <see cref="RunDetails.PendingGateRetry"/> is the persisted record that
+    /// closes that gap (backlog 53, Copilot review on PR #36).
+    /// </summary>
+    [Fact]
+    public async Task A_gate_retried_before_an_earlier_daemon_restart_never_earns_a_second_retry_on_adoption()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        using DocumentStore store = NewStore();
+        (Guid taskId, Guid runId) = await SeedAsync(store,
+            [new VerifyCommand("dead", "echo 'Npgsql.NpgsqlException: Connection refused'; exit 1")], cts.Token);
+
+        // The crash window: a prior daemon lifetime committed the retry and then died before
+        // this gate's outcome was ever recorded — no VerificationFailed/VerificationPassed
+        // follows. Adoption's fresh VerifyAsync call is what this simulates re-entering into.
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            session.Events.Append(runId, new GateRetried(runId, "dead", "prior attempt's cause", Now));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        bool passed = await NewRunner(store).VerifyAsync(runId, taskId, cts.Token);
+
+        passed.Should().BeFalse("the gate already spent its one retry before this daemon lifetime began");
+        await using IQuerySession query = store.QuerySession();
+        RunDetails run = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
+        run.State.Value.Should().Be("Failed");
+        run.FailureReason.Should().Contain("already spending its one retry before an earlier daemon restart");
+
+        var events = await query.Events.FetchStreamAsync(runId, token: cts.Token);
+        events.Select(e => e.Data).OfType<GateRetried>().Should().ContainSingle(
+            "the persisted retry from before this call still counts — adoption never grants a second one");
+    }
+
+    /// <summary>
     /// Classification reads the gate's whole output, not just the 400-character tail kept for
     /// the recorded summary: a marker logged early in a large `dotnet test` run must not be
     /// pushed out of that fixed-size window and go unclassified (adversarial review, cycle 1).
@@ -172,8 +209,12 @@ public sealed class VerificationRunnerTests(PostgresFixture postgres) : IClassFi
         passed.Should().BeFalse("the environment never recovered across the retry");
         await using IQuerySession query = store.QuerySession();
         var events = await query.Events.FetchStreamAsync(runId, token: cts.Token);
-        events.Select(e => e.Data).OfType<GateRetried>().Should().ContainSingle(
+        List<GateRetried> retries = [.. events.Select(e => e.Data).OfType<GateRetried>()];
+        retries.Should().ContainSingle(
             "the marker classifies as infrastructure even though the padding pushes it out of the recorded tail");
+        retries[0].Cause.Should().Contain("Npgsql.NpgsqlException: Connection refused",
+            "the durable event must still carry the matching marker even though it falls outside the " +
+            "400-character tail kept for the recorded summary (adversarial review, PR #36's Copilot review)");
 
         RunDetails run = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
         run.FailureReason.Should().Contain("infrastructure-classified");
@@ -237,6 +278,40 @@ public sealed class VerificationRunnerTests(PostgresFixture postgres) : IClassFi
         RunDetails run = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
         run.State.Value.Should().Be("Failed");
         run.FailureReason.Should().Contain("timeout");
+    }
+
+    /// <summary>
+    /// A container that never comes up can manifest as a hang, not a non-zero exit: the gate
+    /// writes the connection-class marker before it gets stuck, then the timeout kills it.
+    /// Classification must read what the gate actually wrote, not the synthetic timeout
+    /// message, or a startup hang is never retried and is blamed on the agent's work
+    /// (adversarial review, cycle 2).
+    /// </summary>
+    [Fact]
+    public async Task A_gate_that_hangs_after_writing_an_infrastructure_marker_still_classifies_and_retries()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        using DocumentStore store = NewStore();
+        string marker = Path.Combine(_worktree, "retry-marker");
+        (Guid taskId, Guid runId) = await SeedAsync(store,
+            [new VerifyCommand("flaky",
+                $"if test -f {marker}; then echo ok; exit 0; " +
+                $"else touch {marker}; echo 'Npgsql.NpgsqlException: Connection refused'; sleep 30; fi")],
+            cts.Token);
+
+        VerificationRunner runner = new(
+            store,
+            Options.Create(new DaemonOptions { VerifyGateTimeout = TimeSpan.FromSeconds(1) }),
+            NullLogger<VerificationRunner>.Instance);
+
+        bool passed = await runner.VerifyAsync(runId, taskId, cts.Token);
+
+        passed.Should().BeTrue("the second attempt exits clean once the hang is behind it");
+        await using IQuerySession query = store.QuerySession();
+        var events = await query.Events.FetchStreamAsync(runId, token: cts.Token);
+        GateRetried retried = events.Select(e => e.Data).OfType<GateRetried>().Single();
+        retried.Cause.Should().Contain("timeout");
+        events.Select(e => e.Data).OfType<RunFailed>().Should().BeEmpty("a passing retry never fails the run");
     }
 
     [Fact]
