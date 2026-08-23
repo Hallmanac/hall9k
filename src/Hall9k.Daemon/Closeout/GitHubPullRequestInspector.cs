@@ -44,7 +44,9 @@ public sealed class GitHubPullRequestInspector : IPullRequestInspector
     // first: 100 is a deliberate cap, not missing pagination: threads past it read as
     // quiet, so a monster PR simply waits for a human instead of dispatching follow-ups
     // from an incomplete picture. A PR carrying 100+ review threads has left the range
-    // this automation is for.
+    // this automation is for. comments and reviewRequests get smaller caps for the same
+    // reason, sized to what a closeout-relevant pull request actually carries rather than
+    // to a theoretical maximum.
     private const string ReviewsQuery =
         """
         query($owner: String!, $name: String!, $number: Int!) {
@@ -53,7 +55,13 @@ public sealed class GitHubPullRequestInspector : IPullRequestInspector
               author { login __typename }
               headRefOid
               reviewThreads(first: 100) {
-                nodes { isResolved comments(first: 1) { nodes { author { login __typename } } } }
+                nodes { id isResolved comments(first: 1) { nodes { author { login __typename } } } }
+              }
+              comments(first: 50) {
+                nodes { id author { login __typename } }
+              }
+              reviewRequests(first: 20) {
+                nodes { requestedReviewer { __typename ... on User { login } ... on Bot { login } } }
               }
               latestReviews(first: 100) {
                 nodes { author { login __typename } body url commit { oid } }
@@ -93,7 +101,11 @@ public sealed class GitHubPullRequestInspector : IPullRequestInspector
             UnresolvedHumanThreadCount: reviews.UnresolvedHumanThreads,
             Reviewers: reviews.Reviewers,
             ErroredReview: reviews.ErroredReview,
-            HeadCommit: reviews.HeadCommit);
+            HeadCommit: reviews.HeadCommit,
+            UnresolvedReviewThreadIds: reviews.UnresolvedThreadIds,
+            UnresolvedHumanThreadIds: reviews.UnresolvedHumanThreadIds,
+            HumanCommentIds: reviews.HumanCommentIds,
+            PendingReviewRequestLogins: reviews.PendingReviewRequestLogins);
     }
 
     /// <summary>
@@ -149,9 +161,13 @@ public sealed class GitHubPullRequestInspector : IPullRequestInspector
         int UnresolvedHumanThreads,
         IReadOnlyList<PullRequestReviewer> Reviewers,
         ErroredReview? ErroredReview,
-        string? HeadCommit)
+        string? HeadCommit,
+        IReadOnlyList<string> UnresolvedThreadIds,
+        IReadOnlyList<string> UnresolvedHumanThreadIds,
+        IReadOnlyList<string> HumanCommentIds,
+        IReadOnlyList<string> PendingReviewRequestLogins)
     {
-        public static readonly ReviewObservation None = new(0, 0, [], null, null);
+        public static readonly ReviewObservation None = new(0, 0, [], null, null, [], [], [], []);
     }
 
     private static async Task<ReviewObservation> InspectReviewsAsync(
@@ -184,9 +200,12 @@ public sealed class GitHubPullRequestInspector : IPullRequestInspector
 
         // Every unresolved thread counts, whoever started it (Decisions Log #62). The
         // starter is read only to tell a human's thread from a bot's, because the two get
-        // different care in the follow-up — never to decide whether feedback exists.
-        int unresolved = 0;
-        int unresolvedHuman = 0;
+        // different care in the follow-up — never to decide whether feedback exists. The id
+        // sets feed two different uses (Decisions Log #75, backlog 45): the full set is the
+        // closeout budget's mechanical obstruction key, and the human subset is what a later
+        // poll diffs to recognize a newly opened human thread.
+        List<string> threadIds = [];
+        List<string> humanThreadIds = [];
         foreach (JsonElement thread in pullRequest.GetProperty("reviewThreads").GetProperty("nodes").EnumerateArray())
         {
             if (thread.GetProperty("isResolved").GetBoolean())
@@ -194,19 +213,81 @@ public sealed class GitHubPullRequestInspector : IPullRequestInspector
                 continue;
             }
 
-            unresolved++;
+            string id = thread.GetProperty("id").GetString() ?? "";
+            threadIds.Add(id);
             if (ThreadStarter(thread) is { IsHuman: true })
             {
-                unresolvedHuman++;
+                humanThreadIds.Add(id);
             }
         }
 
         return new ReviewObservation(
-            unresolved,
-            unresolvedHuman,
+            threadIds.Count,
+            humanThreadIds.Count,
             ReadReviewers(pullRequest),
             FindErroredCopilotReview(pullRequest),
-            ReadHeadCommit(pullRequest));
+            ReadHeadCommit(pullRequest),
+            threadIds,
+            humanThreadIds,
+            ReadHumanCommentIds(pullRequest),
+            ReadPendingReviewRequestLogins(pullRequest));
+    }
+
+    /// <summary>
+    /// Top-level pull-request comments (never a review-thread comment) authored by a human —
+    /// one of the three mechanical human-engagement signals a closeout decision grants a lap
+    /// for (Decisions Log #75, backlog 45). Agents authoring under this platform only ever
+    /// reply inside review threads (AGENTS.md); they never open a top-level comment, so this
+    /// is squarely a human's own act, checked anyway rather than assumed.
+    /// </summary>
+    private static IReadOnlyList<string> ReadHumanCommentIds(JsonElement pullRequest)
+    {
+        if (!pullRequest.TryGetProperty("comments", out JsonElement comments))
+        {
+            return [];
+        }
+
+        List<string> ids = [];
+        foreach (JsonElement comment in comments.GetProperty("nodes").EnumerateArray())
+        {
+            if (ReadActor(comment) is { IsHuman: true })
+            {
+                ids.Add(comment.GetProperty("id").GetString() ?? "");
+            }
+        }
+
+        return ids;
+    }
+
+    /// <summary>
+    /// Who currently has a pending review request — the third human-engagement signal
+    /// (Decisions Log #75, backlog 45): a login that was not pending as of the task's last
+    /// automatic decision but is now is a human re-requesting a review through GitHub's own
+    /// UI. Team requests carry no login the review-request REST endpoint or this comparison
+    /// can use, so they are left out rather than guessed at.
+    /// </summary>
+    private static IReadOnlyList<string> ReadPendingReviewRequestLogins(JsonElement pullRequest)
+    {
+        if (!pullRequest.TryGetProperty("reviewRequests", out JsonElement requests))
+        {
+            return [];
+        }
+
+        List<string> logins = [];
+        foreach (JsonElement request in requests.GetProperty("nodes").EnumerateArray())
+        {
+            if (!request.TryGetProperty("requestedReviewer", out JsonElement reviewer)
+                || reviewer.ValueKind != JsonValueKind.Object
+                || !reviewer.TryGetProperty("login", out JsonElement login)
+                || login.ValueKind != JsonValueKind.String)
+            {
+                continue;
+            }
+
+            logins.Add(login.GetString() ?? "");
+        }
+
+        return logins;
     }
 
     /// <summary>

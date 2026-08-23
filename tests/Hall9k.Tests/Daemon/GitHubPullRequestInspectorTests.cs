@@ -14,21 +14,32 @@ public sealed class GitHubPullRequestInspectorTests
 {
     // The payloads are written with single quotes and converted, which keeps a GraphQL
     // response readable in C# source; JSON has no apostrophes to lose to it.
-    private static string Payload(string author, string headOid, string threads, string reviews) =>
+    private static string Payload(
+        string author, string headOid, string threads, string reviews,
+        string comments = "", string reviewRequests = "") =>
         ("{'data':{'repository':{'pullRequest':{"
             + $"'author':{author},'headRefOid':'{headOid}',"
             + $"'reviewThreads':{{'nodes':[{threads}]}},"
+            + $"'comments':{{'nodes':[{comments}]}},"
+            + $"'reviewRequests':{{'nodes':[{reviewRequests}]}},"
             + $"'latestReviews':{{'nodes':[{reviews}]}}"
             + "}}}}").Replace('\'', '"');
 
-    private static string Thread(bool resolved, string author) =>
-        $"{{'isResolved':{(resolved ? "true" : "false")},'comments':{{'nodes':[{{'author':{author}}}]}}}}";
+    private static string Thread(bool resolved, string author, string id = "thread-1") =>
+        $"{{'id':'{id}',"
+            + $"'isResolved':{(resolved ? "true" : "false")},'comments':{{'nodes':[{{'author':{author}}}]}}}}";
 
     private static string Actor(string login, string typeName) =>
         $"{{'login':'{login}','__typename':'{typeName}'}}";
 
     private static string Review(string author, string oid, string body = "") =>
         $"{{'author':{author},'body':'{body}','url':'https://x/y/pull/7#r1','commit':{{'oid':'{oid}'}}}}";
+
+    private static string Comment(string id, string author) =>
+        $"{{'id':'{id}','author':{author}}}";
+
+    private static string RequestedReviewer(string login, string typeName) =>
+        $"{{'requestedReviewer':{{'__typename':'{typeName}','login':'{login}'}}}}";
 
     /// <summary>
     /// Every unresolved thread is feedback; only the ones a person started say somebody is
@@ -41,9 +52,9 @@ public sealed class GitHubPullRequestInspectorTests
             Actor("hallmanac", "User"),
             "cafe1",
             string.Join(",",
-                Thread(resolved: false, Actor("copilot-pull-request-reviewer", "Bot")),
-                Thread(resolved: false, Actor("hallmanac", "User")),
-                Thread(resolved: true, Actor("teammate", "User"))),
+                Thread(resolved: false, Actor("copilot-pull-request-reviewer", "Bot"), "thread-bot"),
+                Thread(resolved: false, Actor("hallmanac", "User"), "thread-self-note"),
+                Thread(resolved: true, Actor("teammate", "User"), "thread-resolved")),
             "");
 
         GitHubPullRequestInspector.ReviewObservation observation = GitHubPullRequestInspector.ParseReviews(json);
@@ -51,6 +62,8 @@ public sealed class GitHubPullRequestInspectorTests
         observation.UnresolvedThreads.Should().Be(2, "a resolved thread is answered; the rest are feedback");
         observation.UnresolvedHumanThreads.Should().Be(
             1, "the author's own thread is a self-note and counts as a person's (AGENTS.md invariant)");
+        observation.UnresolvedThreadIds.Should().BeEquivalentTo(["thread-bot", "thread-self-note"]);
+        observation.UnresolvedHumanThreadIds.Should().Equal("thread-self-note");
     }
 
     /// <summary>
@@ -118,5 +131,47 @@ public sealed class GitHubPullRequestInspectorTests
         observation.UnresolvedThreads.Should().Be(1);
         observation.UnresolvedHumanThreads.Should().Be(0);
         observation.Reviewers.Should().BeEmpty();
+    }
+
+    /// <summary>
+    /// A top-level pull-request comment is one of the three mechanical human-engagement
+    /// signals the closeout budget grants a lap for (Decisions Log #75, backlog 45). Agents
+    /// here only ever reply inside review threads, never open a bare comment, so only the
+    /// human-authored ones are collected — checked by actor type, not assumed.
+    /// </summary>
+    [Fact]
+    public void Only_human_authored_top_level_comments_are_collected()
+    {
+        string json = Payload(
+            Actor("hallmanac", "User"), "cafe1", "", "",
+            comments: string.Join(",",
+                Comment("comment-human", Actor("hallmanac", "User")),
+                Comment("comment-bot", Actor("some-bot", "Bot")),
+                Comment("comment-ghost", "null")));
+
+        GitHubPullRequestInspector.ReviewObservation observation = GitHubPullRequestInspector.ParseReviews(json);
+
+        observation.HumanCommentIds.Should().Equal("comment-human");
+    }
+
+    /// <summary>
+    /// Pending review requests are read by requestable actor type only (Decisions Log #75,
+    /// backlog 45): a login lets a later poll compare against what was already known to spot
+    /// a human's own re-request, and a team carries no such login to compare, so it is left
+    /// out rather than guessed at.
+    /// </summary>
+    [Fact]
+    public void Pending_review_requests_are_read_by_login_teams_excluded()
+    {
+        string json = Payload(
+            Actor("hallmanac", "User"), "cafe1", "", "",
+            reviewRequests: string.Join(",",
+                RequestedReviewer("teammate", "User"),
+                RequestedReviewer("copilot-pull-request-reviewer", "Bot"),
+                "{'requestedReviewer':{'__typename':'Team'}}"));
+
+        GitHubPullRequestInspector.ReviewObservation observation = GitHubPullRequestInspector.ParseReviews(json);
+
+        observation.PendingReviewRequestLogins.Should().Equal("teammate", "copilot-pull-request-reviewer");
     }
 }

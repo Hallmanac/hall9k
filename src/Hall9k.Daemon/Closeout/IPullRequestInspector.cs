@@ -72,6 +72,11 @@ public sealed record ErroredReview(string Reviewer, string Url);
 /// started count too, and count as human: agents author as the human but only ever REPLY
 /// within threads, so a thread whose first comment is the author's own is a human's
 /// self-note (the self-review discriminator — see the invariant in AGENTS.md).
+/// UnresolvedReviewThreadIds and UnresolvedHumanThreadIds carry the same two counts as
+/// exact id sets (Decisions Log #75, backlog 45): the full set is the closeout budget's
+/// mechanical obstruction key ("the same unresolved findings" the backlog card names), and
+/// the human subset is what a later poll diffs to recognize a newly opened human thread —
+/// one of the three signals that grants a lap regardless of the progress cap.
 /// </para>
 /// <para>
 /// Reviewers holds the accounts whose latest review is on this pull request, excluding its
@@ -83,6 +88,16 @@ public sealed record ErroredReview(string Reviewer, string Url);
 /// review is an error placeholder: an errored review produces zero threads, so without this
 /// signal it would read as a clean pass (origin incident: PR #6, 2026-08-17, GitHub partial
 /// outage).
+/// </para>
+/// <para>
+/// HumanCommentIds and PendingReviewRequestLogins are the other two human-engagement
+/// signals (Decisions Log #75, backlog 45). HumanCommentIds is every top-level pull-request
+/// comment (not a review-thread comment) authored by a person — agents here only ever reply
+/// inside review threads (AGENTS.md), so a top-level comment is squarely a human's own act.
+/// PendingReviewRequestLogins is who currently has a pending review request; a login that
+/// was not pending as of the task's last automatic decision but is now is a human
+/// re-requesting a review — the platform's own re-requests are recorded (and so already
+/// known) the moment they are issued, never inferred from this list.
 /// </para>
 /// <para>
 /// One silence this cannot see: GitHub hides a review's comments while the review is still
@@ -102,7 +117,24 @@ public sealed record PullRequestSnapshot(
     int UnresolvedHumanThreadCount,
     IReadOnlyList<PullRequestReviewer> Reviewers,
     ErroredReview? ErroredReview,
-    string? HeadCommit = null);
+    string? HeadCommit = null,
+    IReadOnlyList<string>? UnresolvedReviewThreadIds = null,
+    IReadOnlyList<string>? UnresolvedHumanThreadIds = null,
+    IReadOnlyList<string>? HumanCommentIds = null,
+    IReadOnlyList<string>? PendingReviewRequestLogins = null)
+{
+    /// <summary>Every unresolved thread's id, or empty when the provider read predates ids being collected.</summary>
+    public IReadOnlyList<string> ThreadIds => UnresolvedReviewThreadIds ?? [];
+
+    /// <summary>The human-started subset of <see cref="ThreadIds"/>.</summary>
+    public IReadOnlyList<string> HumanThreadIds => UnresolvedHumanThreadIds ?? [];
+
+    /// <summary>Top-level pull-request comments authored by a human.</summary>
+    public IReadOnlyList<string> CommentIds => HumanCommentIds ?? [];
+
+    /// <summary>Reviewers with a pending review request right now.</summary>
+    public IReadOnlyList<string> PendingReviewers => PendingReviewRequestLogins ?? [];
+}
 
 /// <summary>
 /// A merge/close-only read: the same three state facts <see cref="PullRequestSnapshot"/>
