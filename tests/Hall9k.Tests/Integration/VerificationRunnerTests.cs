@@ -151,6 +151,35 @@ public sealed class VerificationRunnerTests(PostgresFixture postgres) : IClassFi
     }
 
     /// <summary>
+    /// Classification reads the gate's whole output, not just the 400-character tail kept for
+    /// the recorded summary: a marker logged early in a large `dotnet test` run must not be
+    /// pushed out of that fixed-size window and go unclassified (adversarial review, cycle 1).
+    /// </summary>
+    [Fact]
+    public async Task A_connection_class_signature_pushed_out_of_the_tail_still_classifies_as_infrastructure()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        using DocumentStore store = NewStore();
+        (Guid taskId, Guid runId) = await SeedAsync(store,
+            [new VerifyCommand("flaky",
+                "echo 'Npgsql.NpgsqlException: Connection refused'; " +
+                "for i in $(seq 1 100); do echo 'padding line long enough to push the marker past a 400-character tail'; done; " +
+                "exit 1")],
+            cts.Token);
+
+        bool passed = await NewRunner(store).VerifyAsync(runId, taskId, cts.Token);
+
+        passed.Should().BeFalse("the environment never recovered across the retry");
+        await using IQuerySession query = store.QuerySession();
+        var events = await query.Events.FetchStreamAsync(runId, token: cts.Token);
+        events.Select(e => e.Data).OfType<GateRetried>().Should().ContainSingle(
+            "the marker classifies as infrastructure even though the padding pushes it out of the recorded tail");
+
+        RunDetails run = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
+        run.FailureReason.Should().Contain("infrastructure-classified");
+    }
+
+    /// <summary>
     /// The retry is a second look, not a second pass: if it surfaces a real failure instead of
     /// another infrastructure signature, that real failure is what's recorded — unclassified.
     /// </summary>

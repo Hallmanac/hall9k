@@ -83,14 +83,15 @@ public sealed class VerificationRunner(
 
         foreach (VerifyCommand gate in gates)
         {
-            (bool passed, string summary) = await RunGateAsync(runId, run.WorktreePath, gate, cancellationToken);
+            (bool passed, string summary, bool isInfrastructureFailure) =
+                await RunGateAsync(runId, run.WorktreePath, gate, cancellationToken);
             if (passed)
             {
                 logger.LogInformation("Run {RunId} gate '{Gate}' passed", runId, gate.Name);
                 continue;
             }
 
-            if (!GateInfrastructureFailureClassifier.IsInfrastructureFailure(summary))
+            if (!isInfrastructureFailure)
             {
                 await RecordFailureAsync(runId, taskId, gate.Name, summary, cancellationToken);
                 logger.LogWarning("Run {RunId} verification failed at gate '{Gate}': {Summary}", runId, gate.Name, summary);
@@ -106,7 +107,8 @@ public sealed class VerificationRunner(
                 "Run {RunId} gate '{Gate}' failed with an infrastructure-classified signature; retrying once: {Summary}",
                 runId, gate.Name, summary);
 
-            (bool retryPassed, string retrySummary) = await RunGateAsync(runId, run.WorktreePath, gate, cancellationToken);
+            (bool retryPassed, string retrySummary, bool retryIsInfrastructureFailure) =
+                await RunGateAsync(runId, run.WorktreePath, gate, cancellationToken);
             if (retryPassed)
             {
                 logger.LogInformation("Run {RunId} gate '{Gate}' passed on retry", runId, gate.Name);
@@ -117,7 +119,7 @@ public sealed class VerificationRunner(
             // classification in the reason, so a genuinely broken environment surfaces instead
             // of looping. A retry that instead surfaces a real failure is recorded as exactly
             // that, unclassified — the retry earned it a second look, not a second pass.
-            string reason = GateInfrastructureFailureClassifier.IsInfrastructureFailure(retrySummary)
+            string reason = retryIsInfrastructureFailure
                 ? $"Gate '{gate.Name}' failed twice in a row with an infrastructure-classified " +
                   $"signature (connection-class failure, not the agent's work). First attempt: " +
                   $"{summary} Retry attempt: {retrySummary}"
@@ -133,7 +135,7 @@ public sealed class VerificationRunner(
         return true;
     }
 
-    private async Task<(bool Passed, string Summary)> RunGateAsync(
+    private async Task<(bool Passed, string Summary, bool IsInfrastructureFailure)> RunGateAsync(
         Guid runId, string worktreePath, VerifyCommand gate, CancellationToken cancellationToken)
     {
         string logFile = Path.Combine(RunPaths.RunDirectory(runId), $"verify-{Sanitize(gate.Name)}.log");
@@ -155,7 +157,8 @@ public sealed class VerificationRunner(
         }
         catch (Exception exception) when (exception is System.ComponentModel.Win32Exception or InvalidOperationException)
         {
-            return (false, $"Gate '{gate.Name}' could not start: {exception.Message}");
+            string startFailure = $"Gate '{gate.Name}' could not start: {exception.Message}";
+            return (false, startFailure, GateInfrastructureFailureClassifier.IsInfrastructureFailure(startFailure));
         }
 
         using CancellationTokenSource timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
@@ -167,12 +170,22 @@ public sealed class VerificationRunner(
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
         {
             process.Kill(entireProcessTree: true);
-            return (false, $"Gate '{gate.Name}' exceeded the {options.Value.VerifyGateTimeout.TotalMinutes:0}-minute timeout.");
+            string timeoutFailure = $"Gate '{gate.Name}' exceeded the {options.Value.VerifyGateTimeout.TotalMinutes:0}-minute timeout.";
+            return (false, timeoutFailure, GateInfrastructureFailureClassifier.IsInfrastructureFailure(timeoutFailure));
         }
 
-        return process.ExitCode == 0
-            ? (true, "ok")
-            : (false, $"Gate '{gate.Name}' exited {process.ExitCode}. Output: {TailOf(logFile)}");
+        if (process.ExitCode == 0)
+        {
+            return (true, "ok", false);
+        }
+
+        // Classification reads the gate's whole output, never just the truncated tail kept
+        // for the summary: a marker logged early in a large `dotnet test` run must not be
+        // pushed out of a fixed-size window and go unclassified (adversarial review, cycle 1).
+        string fullOutput = ReadFullOutput(logFile);
+        bool isInfrastructureFailure = GateInfrastructureFailureClassifier.IsInfrastructureFailure(fullOutput);
+        string summary = $"Gate '{gate.Name}' exited {process.ExitCode}. Output: {TailOf(fullOutput)}";
+        return (false, summary, isInfrastructureFailure);
     }
 
     /// <summary>
@@ -325,16 +338,18 @@ public sealed class VerificationRunner(
     private static string Sanitize(string name) =>
         new([.. name.Select(c => char.IsAsciiLetterOrDigit(c) ? c : '-')]);
 
-    private static string TailOf(string logFile)
+    private static string ReadFullOutput(string logFile)
     {
         try
         {
-            string content = File.Exists(logFile) ? File.ReadAllText(logFile).Trim() : string.Empty;
-            return content.IsBlank() ? "(empty)" : content.Length <= 400 ? content : content[^400..];
+            return File.Exists(logFile) ? File.ReadAllText(logFile).Trim() : string.Empty;
         }
         catch (IOException)
         {
             return "(unreadable)";
         }
     }
+
+    private static string TailOf(string content) =>
+        content.IsBlank() ? "(empty)" : content.Length <= 400 ? content : content[^400..];
 }
