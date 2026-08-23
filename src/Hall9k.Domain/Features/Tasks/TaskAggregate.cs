@@ -50,10 +50,58 @@ public sealed class TaskAggregate
     public string? RetryBranch { get; private set; }
     /// <summary>
     /// Automatic (monitor-driven) reopens since the last human-initiated one — the
-    /// bounded-retry counter for PR closeout. A manual reopen resets it: the human asking
-    /// for another attempt restores the automatic budget (Decisions Log #22).
+    /// lifetime-ceiling counter for PR closeout (Decisions Log #22, backlog 45). A manual
+    /// reopen resets it: the human asking for another attempt restores the automatic budget.
     /// </summary>
     public int CloseoutAttempts { get; private set; }
+
+    /// <summary>
+    /// This task's most recent automatic reopen's obstruction identity — the failing check
+    /// name, or the exact set of unresolved review-thread ids, at the moment of dispatch
+    /// (Decisions Log #75, backlog 45). Compared against the NEXT automatic decision's own
+    /// obstruction: the same key means the lap made no progress and counts against
+    /// <see cref="ConsecutiveObstructionLaps"/>; a different key means something cleared, so
+    /// the count restarts at the new obstruction's first lap. Null before any automatic
+    /// reopen, and after a manual one wipes the slate.
+    /// </summary>
+    public string? LastAutomaticObstructionKey { get; private set; }
+
+    /// <summary>A short description of the obstruction LastAutomaticObstructionKey names, for a park message that reads back the lap history.</summary>
+    public string? LastAutomaticObstructionSummary { get; private set; }
+
+    /// <summary>
+    /// Consecutive automatic laps spent on <see cref="LastAutomaticObstructionKey"/> without
+    /// clearing it — the progress-based cap (DaemonOptions.MaxCloseoutLapsPerObstruction),
+    /// deliberately separate from the lifetime ceiling <see cref="CloseoutAttempts"/> already
+    /// tracks (Decisions Log #75, backlog 45).
+    /// </summary>
+    public int ConsecutiveObstructionLaps { get; private set; }
+
+    /// <summary>
+    /// Every lap's obstruction summary, oldest first — the lap history a lifetime-ceiling
+    /// park names, so the human sees what the machine already tried before spending their
+    /// own attention (Decisions Log #75, backlog 45). Cleared on a manual reopen along with
+    /// the counter it explains.
+    /// </summary>
+    private readonly List<string> _automaticLapHistory = [];
+    public IReadOnlyList<string> AutomaticLapHistory => _automaticLapHistory;
+
+    /// <summary>
+    /// Human-started unresolved review-thread ids observed at the most recent automatic
+    /// dispatch decision — what the next decision diffs against to recognize a newly opened
+    /// human thread, one of the three mechanical human-engagement signals that grants a lap
+    /// regardless of the progress cap (Decisions Log #75, backlog 45).
+    /// </summary>
+    private readonly List<string> _knownHumanReviewThreadIds = [];
+    public IReadOnlyList<string> KnownHumanReviewThreadIds => _knownHumanReviewThreadIds;
+
+    /// <summary>Top-level pull-request comments authored by a human, observed at the most recent automatic dispatch decision.</summary>
+    private readonly List<string> _knownHumanCommentIds = [];
+    public IReadOnlyList<string> KnownHumanCommentIds => _knownHumanCommentIds;
+
+    /// <summary>Reviewers with a pending review request, observed at the most recent automatic dispatch decision.</summary>
+    private readonly List<string> _knownPendingReviewRequestLogins = [];
+    public IReadOnlyList<string> KnownPendingReviewRequestLogins => _knownPendingReviewRequestLogins;
     public DateTimeOffset AddedAt { get; private set; }
     public Guid AddedByOwnerId { get; private set; }
 
@@ -326,7 +374,37 @@ public sealed class TaskAggregate
     {
         FollowUpBranch = @event.Branch;
         FollowUpKind = @event.Kind ?? FollowUpKind.Unknown;
-        CloseoutAttempts = @event.Automatic ? CloseoutAttempts + 1 : 0;
+
+        if (@event.Automatic)
+        {
+            CloseoutAttempts++;
+            ConsecutiveObstructionLaps = @event.ObstructionKey is not null
+                    && @event.ObstructionKey == LastAutomaticObstructionKey
+                ? ConsecutiveObstructionLaps + 1
+                : 1;
+            LastAutomaticObstructionKey = @event.ObstructionKey;
+            LastAutomaticObstructionSummary = @event.ObstructionSummary;
+            if (@event.ObstructionSummary is not null)
+            {
+                _automaticLapHistory.Add(@event.ObstructionSummary);
+            }
+        }
+        else
+        {
+            CloseoutAttempts = 0;
+            ConsecutiveObstructionLaps = 0;
+            LastAutomaticObstructionKey = null;
+            LastAutomaticObstructionSummary = null;
+            _automaticLapHistory.Clear();
+        }
+
+        _knownHumanReviewThreadIds.Clear();
+        _knownHumanReviewThreadIds.AddRange(@event.KnownHumanReviewThreadIds ?? []);
+        _knownHumanCommentIds.Clear();
+        _knownHumanCommentIds.AddRange(@event.KnownHumanCommentIds ?? []);
+        _knownPendingReviewRequestLogins.Clear();
+        _knownPendingReviewRequestLogins.AddRange(@event.KnownPendingReviewRequestLogins ?? []);
+
         ClaimedByNodeId = null;
         CurrentRunId = null;
         PendingQuestionId = null;
