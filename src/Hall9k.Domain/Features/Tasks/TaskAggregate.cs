@@ -66,9 +66,6 @@ public sealed class TaskAggregate
     /// </summary>
     public string? LastAutomaticObstructionKey { get; private set; }
 
-    /// <summary>A short description of the obstruction LastAutomaticObstructionKey names, for a park message that reads back the lap history.</summary>
-    public string? LastAutomaticObstructionSummary { get; private set; }
-
     /// <summary>
     /// Consecutive automatic laps spent on <see cref="LastAutomaticObstructionKey"/> without
     /// clearing it — the progress-based cap (DaemonOptions.MaxCloseoutLapsPerObstruction),
@@ -379,7 +376,6 @@ public sealed class TaskAggregate
                 ? ConsecutiveObstructionLaps + 1
                 : 1;
             LastAutomaticObstructionKey = @event.ObstructionKey;
-            LastAutomaticObstructionSummary = @event.ObstructionSummary;
             if (@event.ObstructionSummary is not null)
             {
                 _automaticLapHistory.Add(@event.ObstructionSummary);
@@ -390,7 +386,6 @@ public sealed class TaskAggregate
             CloseoutAttempts = 0;
             ConsecutiveObstructionLaps = 0;
             LastAutomaticObstructionKey = null;
-            LastAutomaticObstructionSummary = null;
             _automaticLapHistory.Clear();
         }
 
