@@ -37,6 +37,12 @@ public static class HomeEntryWriter
     /// the old and the new name (a previous move that could not complete), the existing one is left
     /// alone rather than silently merged into.
     /// </para>
+    /// <para>
+    /// Throws <see cref="IOException"/> when a directory already sits at the target name but its
+    /// identity marker names a different id: two distinct ids sharing a short-id/slug collision,
+    /// which is a rendering failure for this entity rather than something safe to overwrite. The
+    /// caller's existing "one entity's write failure never stops the sweep" handling covers it.
+    /// </para>
     /// </summary>
     public static HomeEntryWriteResult Write(
         string rootDirectory, Guid id, string directoryName, string fileName, string renderedContent,
@@ -46,9 +52,23 @@ public static class HomeEntryWriter
 
         // The correctly-named directory wins outright when it already exists: no need to go
         // looking for a stale one, and no ambiguity about which of two same-prefix directories
-        // (an interrupted move can leave both standing) is "the" existing one.
-        if (!Directory.Exists(targetDirectory)
-            && FindExisting(rootDirectory, id, excludingName: directoryName) is { } stale)
+        // (an interrupted move can leave both standing) is "the" existing one. But "already exists
+        // under the right name" is not by itself proof it is *this* id's directory: the short id is
+        // 32 bits and the slug is free text, so two distinct ids can compute the identical
+        // "<shortid>-<slug>" name. A directory that already carries a marker for a different id is
+        // refused rather than overwritten — the same rule FindExisting enforces for a stale-named
+        // match, applied here to a same-named one.
+        if (Directory.Exists(targetDirectory))
+        {
+            string existingMarkerPath = Path.Combine(targetDirectory, IdentityMarkerFileName);
+            if (File.Exists(existingMarkerPath) && File.ReadAllText(existingMarkerPath).Trim() != id.ToString("N"))
+            {
+                throw new IOException(
+                    $"'{targetDirectory}' already belongs to a different id (a short-id/slug "
+                    + "collision); refusing to overwrite it.");
+            }
+        }
+        else if (FindExisting(rootDirectory, id, excludingName: directoryName) is { } stale)
         {
             Directory.Move(stale, targetDirectory);
         }

@@ -108,6 +108,24 @@ public sealed class HomeEntryWriterTests : IDisposable
     }
 
     [Fact]
+    public void A_short_id_and_slug_collision_at_the_target_name_is_refused_not_overwritten()
+    {
+        // Unlike the stale-name collision above, this is two distinct ids computing the exact same
+        // "<shortid>-<slug>" name up front — the gap the sibling FindExisting fix did not close,
+        // because FindExisting is only ever consulted when the target name does not already exist.
+        Guid otherId = DomainId.New();
+        string collidingName = $"{_shortId}-same-name";
+        HomeEntryWriter.Write(_root, otherId, collidingName, "task.md", "not mine");
+
+        Action write = () => HomeEntryWriter.Write(_root, _id, collidingName, "task.md", "mine");
+
+        write.Should().Throw<IOException>();
+        File.ReadAllText(Path.Combine(_root, collidingName, "task.md")).Should().Be("not mine",
+            "content belonging to a different id sharing this exact directory name must never be "
+            + "silently overwritten");
+    }
+
+    [Fact]
     public void A_directory_already_at_both_the_old_and_new_name_uses_the_target_and_leaves_the_old_one_untouched()
     {
         string oldName = $"{_shortId}-old-objective";
