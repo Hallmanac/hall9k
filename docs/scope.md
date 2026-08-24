@@ -108,9 +108,19 @@ startup (backlog 48). The render is one-way: a human edits the file and applies 
 argument), and the store, never the file, decides what happened. An idea with no project yet has
 nowhere to render into, so it stays in its global discovery workspace until assigned.
 
-What is **not** here yet: run directories moving under their owning task (backlog 49), an idea's
-discovery workspace relocating under the project home once it has one (backlog 48's own slice 3),
-and the one-time relocation of the hall9k project itself into its default home (backlog 52).
+A new run's directory lands under its owning task's directory (`<home>/tasks/<shortid>-<slug>/
+runs/<run-id>/`) once the project has a home, so browsing the task's directory tells its whole
+story — contract, workspace, every attempt — with no top-level `runs/` inside a home (backlog
+49). An idea's discovery workspace follows the same rule, decided once at capture and never
+revisited: an idea captured with a project whose home already exists gets its workspace under
+that home from the start, and everything else keeps it at the platform-global location
+permanently, even once later assigned to a project (backlog 49). Both fall back to the
+platform-global locations they always used — `~/.hall9k/runs/<run-id>/` and
+`~/.hall9k/ideas/<idea-id>/workspace` — when there is no home to put them under, and a stream or
+idea recorded before this shipped keeps reading from exactly where its files have always been.
+
+What is **not** here yet: the one-time relocation of the hall9k project itself into its default
+home (backlog 52).
 
 ### The help tree
 
