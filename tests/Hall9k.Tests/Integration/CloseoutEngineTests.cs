@@ -1237,7 +1237,12 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
         run.State.Should().Be(RunState.CloseoutParked);
         run.ParkedReason.Should().Contain("copilot-pull-request-reviewer")
             .And.Contain("#pullrequestreview-3", "the park reason names the errored review the human should look at")
-            .And.Contain("budget spent").And.Contain("h9k pr resolve");
+            .And.Contain("budget spent (2/2 action(s))").And.Contain("h9k pr resolve")
+            .And.Contain(
+                "no automatic lap recorded an obstruction (2 review re-request action(s) not itemized above)",
+                "the whole spend was review re-requests, never an automatic TaskReopened, so the history says so " +
+                "honestly rather than guessing a cause for the gap")
+            .And.NotContain("stream older than this budget shape", "never assert an unobserved cause for the gap");
         run.ReviewRerequestCount.Should().Be(2, "the budget bounds re-requests exactly like other closeout actions");
         inspector.ReviewRerequests.Should().HaveCount(2);
 
@@ -1513,6 +1518,53 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
         RunDetails run = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
         run.State.Should().Be(RunState.CloseoutParked, "the lifetime ceiling is spent, and nothing bypasses it");
         run.ParkedReason.Should().Contain("lifetime automatic closeout budget spent").And.Contain("h9k pr resolve");
+
+        (await query.LoadAsync<TaskListItem>(taskId, cts.Token))!.State.Should().Be(TaskState.Done);
+    }
+
+    /// <summary>
+    /// The lifetime-ceiling park reads back the full lap history (backlog 45), but
+    /// AutomaticLapHistory only ever grows from an automatic TaskReopened, so budget spent on
+    /// this run's own errored-review re-requests (RunDetails.ReviewRerequestCount) never lands
+    /// an entry there. The park message must say so as a number rather than guess a cause for
+    /// the gap it never observed (AGENTS.md's never-guess rule).
+    /// </summary>
+    [Fact]
+    public async Task A_lifetime_ceiling_park_names_the_unitemized_review_rerequest_actions_honestly()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        (DocumentStore store, NodeContext node, GitWorktreeManager worktrees, _, string repoPath) =
+            await SetUpAsync(cts.Token);
+        using IDisposable storeLifetime = store;
+
+        (Guid taskId, Guid runId, _) = await SeedAwaitingReviewAsync(
+            store, node, worktrees, repoPath, cts.Token,
+            priorAutomaticReopens: 1, priorObstructionKey: "FailingChecks:build");
+
+        // Two more actions are spent on THIS run's own errored-review re-requests — never an
+        // automatic TaskReopened, so they never reach AutomaticLapHistory.
+        await using (IDocumentSession spent = store.LightweightSession())
+        {
+            spent.Events.Append(runId, new ReviewRerequested(runId, "copilot-pull-request-reviewer", $"{PullRequestUrl}#pullrequestreview-1", Now));
+            spent.Events.Append(runId, new ReviewRerequested(runId, "copilot-pull-request-reviewer", $"{PullRequestUrl}#pullrequestreview-2", Now));
+            await spent.SaveChangesAsync(cts.Token);
+        }
+
+        FakeInspector inspector = new() { Snapshot = FakeInspector.Quiet() with { FailingChecks = ["build"] } };
+        await NewEngine(
+            store, node, inspector, worktrees,
+            maxAutomaticCloseoutRuns: 3, maxCloseoutLapsPerObstruction: 10).PollOnceAsync(cts.Token);
+
+        await using IQuerySession query = store.QuerySession();
+        RunDetails run = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
+        run.State.Should().Be(RunState.CloseoutParked);
+        run.ParkedReason.Should()
+            .Contain("lifetime automatic closeout budget spent (3/3 action(s))")
+            .And.Contain("lap 1:", "the one automatic reopen is itemized")
+            .And.Contain(
+                "(2 review re-request action(s) not itemized above)",
+                "the other two actions were this run's own errored-review re-requests, named as a count rather than guessed at")
+            .And.NotContain("stream older than this budget shape", "never assert an unobserved cause for the gap");
 
         (await query.LoadAsync<TaskListItem>(taskId, cts.Token))!.State.Should().Be(TaskState.Done);
     }
