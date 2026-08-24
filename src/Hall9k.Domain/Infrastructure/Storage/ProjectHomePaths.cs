@@ -1,4 +1,5 @@
 using System.Text;
+using Hall9k.Domain.Infrastructure.Ids;
 
 namespace Hall9k.Domain.Infrastructure.Storage;
 
@@ -53,6 +54,58 @@ public static class ProjectHomePaths
     public static string IdeasDirectory(string home) => Path.Combine(home, "ideas");
 
     public static string TasksDirectory(string home) => Path.Combine(home, "tasks");
+
+    /// <summary>
+    /// A task's own directory, named by short id plus a slug from its objective (backlog 48):
+    /// <c>tasks/98ac05ef-project-home/</c>. Holds <c>task.md</c> (the rendered contract) and a
+    /// <c>workspace/</c> for whatever refinement accumulates beside it.
+    /// </summary>
+    public static string TaskDirectory(string home, string directoryName) => Path.Combine(TasksDirectory(home), directoryName);
+
+    public static string TaskFile(string taskDirectory) => Path.Combine(taskDirectory, "task.md");
+
+    public static string TaskWorkspaceDirectory(string taskDirectory) => Path.Combine(taskDirectory, "workspace");
+
+    /// <summary>The same shape as <see cref="TaskDirectory"/>, one lifecycle stage earlier (backlog 48).</summary>
+    public static string IdeaDirectory(string home, string directoryName) => Path.Combine(IdeasDirectory(home), directoryName);
+
+    public static string IdeaFile(string ideaDirectory) => Path.Combine(ideaDirectory, "idea.md");
+
+    /// <summary>
+    /// The <c>&lt;shortid&gt;-&lt;slug&gt;</c> directory name a task or idea renders under: stable
+    /// across a rename of the underlying objective/text only in that it is recomputed from whatever
+    /// the text reads now — a caller that finds an existing directory under the old name is
+    /// expected to move it here rather than leave a stale copy behind.
+    /// </summary>
+    public static string EntryDirectoryName(Guid id, string slugSource) => $"{DomainId.Short(id)}-{Slug(slugSource)}";
+
+    /// <summary>
+    /// Free text reduced to a directory-safe slug: lowercase, ASCII letters and digits, single
+    /// dashes for everything else, cut to <paramref name="maxLength"/> so a long objective does not
+    /// become an unusable path segment. Falls back to "untitled" rather than an empty segment.
+    /// </summary>
+    public static string Slug(string text, int maxLength = 60)
+    {
+        StringBuilder slug = new();
+        foreach (char character in text.ToLowerInvariant())
+        {
+            if (slug.Length >= maxLength)
+            {
+                break;
+            }
+
+            if (char.IsAsciiLetterOrDigit(character))
+            {
+                slug.Append(character);
+            }
+            else if (slug.Length > 0 && slug[^1] != '-')
+            {
+                slug.Append('-');
+            }
+        }
+
+        return slug.ToString().Trim('-') is { Length: > 0 } value ? value : "untitled";
+    }
 
     /// <summary>
     /// Plain markdown skill docs with no vendor framing — the canonical copy, seeded from the
