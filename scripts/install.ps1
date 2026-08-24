@@ -34,6 +34,11 @@ param(
 
 $ErrorActionPreference = "Stop"
 
+# PlatformPaths.Home's own default: HALL9K_HOME when set, ~/.hall9k otherwise — this
+# script has to agree with it, or the consent prompt and the doctor re-resolution below
+# name a directory nothing was actually written to.
+$hall9kHomeDir = if ($env:HALL9K_HOME) { $env:HALL9K_HOME } else { Join-Path $env:USERPROFILE ".hall9k" }
+
 function Fail($message) {
     Write-Error "hall9k install: $message"
     exit 1
@@ -94,7 +99,7 @@ try {
     Write-Host "Checksum verified."
 
     if (-not $Yes) {
-        $reply = Read-Host "This will place h9k and h9kd in ~/.hall9k/bin, add h9k to your PATH, and publish Hall9k's skills to ~/.hall9k/skills. Nothing is started or registered as a background service. Continue? [y/N]"
+        $reply = Read-Host "This will place h9k and h9kd in $hall9kHomeDir\bin, add h9k to your PATH, and publish Hall9k's skills to $hall9kHomeDir\skills. Nothing is started or registered as a background service. Continue? [y/N]"
         if ($reply -notmatch '^(y|yes)$') {
             Fail "Cancelled — nothing was changed. Re-run with -Yes to skip this prompt."
         }
@@ -112,7 +117,7 @@ try {
 
     # Re-resolve h9k for the doctor run: install may have just put it on the PATH for
     # the first time, which this already-running process has not picked up yet.
-    $installedH9k = Join-Path $env:USERPROFILE ".hall9k\bin\h9k.exe"
+    $installedH9k = Join-Path $hall9kHomeDir "bin\h9k.exe"
     $h9k = if (Test-Path $installedH9k) { $installedH9k } else { Join-Path $payload "h9k.exe" }
 
     Write-Host ""
