@@ -1,8 +1,10 @@
 using System.ComponentModel;
+using System.Runtime.Versioning;
 using Hall9k.Cli.DaemonControl;
 using Hall9k.Cli.Infrastructure;
 using Hall9k.Cli.ProjectHomes;
 using Hall9k.Domain.Infrastructure.Storage;
+using Microsoft.Win32;
 using Spectre.Console;
 using Spectre.Console.Cli;
 
@@ -251,10 +253,22 @@ public sealed class InstallCommand : Hall9kAsyncCommand<InstallCommand.Settings>
     /// elevation a bare machine may not have — so instead of the Unix retarget-a-symlink
     /// dance, ~/.hall9k/bin is prepended straight onto the user's PATH environment variable
     /// (HKCU\Environment, no elevation needed), idempotently.
+    /// <para>
+    /// Read and written through the registry directly rather than through
+    /// <see cref="Environment.GetEnvironmentVariable(string, EnvironmentVariableTarget)"/> /
+    /// <see cref="Environment.SetEnvironmentVariable(string, string?, EnvironmentVariableTarget)"/>:
+    /// those expand the value on read and write it back as <c>REG_SZ</c> on write, which
+    /// would permanently flatten any <c>%VAR%</c> reference (<c>%JAVA_HOME%\bin</c> and
+    /// the like) already sitting in the user's PATH the first time this command touches it.
+    /// </para>
     /// </summary>
+    [SupportedOSPlatform("windows")]
     internal static void EnsureOnWindowsPath(string binDirectory)
     {
-        string current = Environment.GetEnvironmentVariable("PATH", EnvironmentVariableTarget.User) ?? string.Empty;
+        using RegistryKey environmentKey = Registry.CurrentUser.OpenSubKey("Environment", writable: true)!;
+
+        string current = environmentKey.GetValue("Path", string.Empty, RegistryValueOptions.DoNotExpandEnvironmentNames)
+            as string ?? string.Empty;
         string updated = ComputeUserPath(current, binDirectory);
         if (updated == current)
         {
@@ -262,7 +276,11 @@ public sealed class InstallCommand : Hall9kAsyncCommand<InstallCommand.Settings>
             return;
         }
 
-        Environment.SetEnvironmentVariable("PATH", updated, EnvironmentVariableTarget.User);
+        // Preserve whatever kind the value already carried (REG_EXPAND_SZ is Windows's own
+        // default for the user PATH) so existing %VAR% references survive the round trip;
+        // only a PATH this account never had before defaults to REG_SZ.
+        RegistryValueKind kind = current.Length == 0 ? RegistryValueKind.String : environmentKey.GetValueKind("Path");
+        environmentKey.SetValue("Path", updated, kind);
         AnsiConsole.MarkupLineInterpolated(
             $"[green]Added to PATH[/]: {binDirectory} (open a new terminal for it to take effect).");
     }
