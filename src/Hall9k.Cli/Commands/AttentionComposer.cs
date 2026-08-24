@@ -178,7 +178,9 @@ internal static class AttentionComposer
                 run.PullRequestUrl ?? string.Empty),
             // The closeout monitor dispatches a follow-up or parks; while it is neither parked
             // nor out of budget, this is being handled and the reader can leave it alone.
-            "ChecksFailing" or "ReviewPending" => new TaskAttention(AttentionLevel.WaitingHandled,
+            // Conflicting joins this arm for the identical reason: a rebase follow-up is
+            // already on the way, exactly like a checks or review-feedback follow-up.
+            "ChecksFailing" or "ReviewPending" or "Conflicting" => new TaskAttention(AttentionLevel.WaitingHandled,
                 "the closeout monitor owns the next move on this pull request"),
             // The run ended without a merge. RunState.Failed is what most run failures record
             // and a pull request closed without merging (PullRequestClosed) is only one way to
