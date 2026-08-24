@@ -368,8 +368,13 @@ human-initiated one, exactly as before, checked first and unconditionally agains
 `DaemonOptions.MaxAutomaticCloseoutRuns` (default 6 — generous, because "many different real
 obstructions, one after another" on a busy pull request is the legitimate case this ceiling
 exists to allow rather than to punish). Errored-review re-requests still spend the same
-lifetime budget: the watched run's `ReviewRerequestCount` adds to the task's count when either
-path checks it. Countersign passes do not — `ReviewRerequestsAfterFixes` is counted against
+lifetime budget: every run that carried the task's current pull request contributes its
+`ReviewRerequestCount`, summed since the most recent `h9k pr resolve` grant (`RunDetails.HumanGrantedAt`)
+and scoped to the current pull request, so a `h9k task retry` onto a second pull request starts
+that PR's closeout unencumbered by the first one's spend, and a grant late in a busy PR's life
+restores the same full budget a grant early in its life would have (independent pre-PR review,
+cycle 4 — an unscoped lifetime sum never shrinks, so `h9k pr resolve` eroded toward a no-op the
+longer a PR ran). Countersign passes do not — `ReviewRerequestsAfterFixes` is counted against
 `MaxReviewRerequestsAfterFixes` instead, so one budget running out never silently spends the
 other.
 

@@ -1250,6 +1250,57 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
             TaskState.Done, "parking lives on the run; h9k pr resolve remains the human's retry lever");
     }
 
+    /// <summary>
+    /// Independent pre-PR review, cycle 4: the lifetime sum of ReviewRerequestCount across
+    /// every run the task ever carried never shrank, so a human grant (h9k pr resolve,
+    /// CloseoutBudgetGranted) restored none of it — only CloseoutAttempts. A re-request spent
+    /// on a run dispatched BEFORE the grant must stop counting once the grant lands; a
+    /// re-request spent on a run dispatched AFTER it still counts, exactly like CloseoutAttempts
+    /// already does for reopens.
+    /// </summary>
+    [Fact]
+    public async Task A_human_grant_stops_counting_review_rerequests_spent_before_it()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        (DocumentStore store, NodeContext node, GitWorktreeManager worktrees, _, string repoPath) =
+            await SetUpAsync(cts.Token);
+        using IDisposable storeLifetime = store;
+
+        (Guid taskId, Guid runId, _) = await SeedAwaitingReviewAsync(
+            store, node, worktrees, repoPath, cts.Token, priorAutomaticReopens: 1);
+
+        await using (IDocumentSession spent = store.LightweightSession())
+        {
+            Guid earlier = (await spent.Query<RunDetails>()
+                .Where(candidate => candidate.TaskId == taskId)
+                .ToListAsync(cts.Token))
+                .First(candidate => candidate.Id != runId).Id;
+
+            // Two re-requests spent on the earlier, now-superseded run, then a human grant
+            // dispatched strictly after that spend but strictly before the run under watch
+            // (SeedAwaitingReviewAsync dispatches the superseded run 10 minutes before Now
+            // and the watched run at Now).
+            spent.Events.Append(earlier, new ReviewRerequested(earlier, "copilot-pull-request-reviewer", $"{PullRequestUrl}#pullrequestreview-1", Now));
+            spent.Events.Append(earlier, new ReviewRerequested(earlier, "copilot-pull-request-reviewer", $"{PullRequestUrl}#pullrequestreview-2", Now));
+            spent.Events.Append(earlier, new CloseoutBudgetGranted(earlier, "Unresolved review comments on the pull request.", Now.AddMinutes(-5)));
+            await spent.SaveChangesAsync(cts.Token);
+        }
+
+        // Budget of 2: CloseoutAttempts already holds 1 from the prior automatic reopen. If
+        // the two pre-grant re-requests still counted, this sweep's own re-request would push
+        // the lifetime spend to 4/2 and park instead of proceeding.
+        ErroredReview errored = new("copilot-pull-request-reviewer", $"{PullRequestUrl}#pullrequestreview-9");
+        FakeInspector inspector = new() { Snapshot = FakeInspector.Quiet() with { ErroredReview = errored } };
+        await NewEngine(store, node, inspector, worktrees, maxAutomaticCloseoutRuns: 2).PollOnceAsync(cts.Token);
+
+        await using IQuerySession query = store.QuerySession();
+        RunDetails run = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
+        run.State.Should().Be(RunState.ReviewPending,
+            "the grant wiped the pre-grant re-request spend, so this run's own first re-request still fits the budget");
+        run.ReviewRerequestCount.Should().Be(1);
+        inspector.ReviewRerequests.Should().Equal("copilot-pull-request-reviewer");
+    }
+
     [Fact]
     public async Task A_spent_reopen_budget_parks_an_errored_review_without_rerequesting()
     {
