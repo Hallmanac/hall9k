@@ -29,6 +29,12 @@ namespace Hall9k.Cli.Commands;
 /// settles the disputed thread, and the run re-enters the pipeline at the gates and the
 /// review loop rather than proceeding straight to the pull request. The message says so.
 /// </para>
+/// <para>
+/// A rebase-conflict dispute (backlog 44) refuses merge-ready outright rather than taking it
+/// the same way: nothing has been rebased, so there is no sense in which the branch is
+/// "ready" — every path forward needs the human's actual resolution, which only
+/// --needs-fixes carries.
+/// </para>
 /// </summary>
 public sealed class ReviewResolveCommand : Hall9kAsyncCommand<ReviewResolveCommand.Settings>
 {
@@ -42,7 +48,9 @@ public sealed class ReviewResolveCommand : Hall9kAsyncCommand<ReviewResolveComma
         [Description(
             "Your verdict: the diff is sound — the run proceeds to open its pull request "
             + "(on a thread-dispute park, which happens before the gates, it re-enters at the "
-            + "gates and the review loop instead: your call settled the thread, not the diff)")]
+            + "gates and the review loop instead: your call settled the thread, not the diff. "
+            + "Refused on a disputed rebase conflict — nothing has been rebased yet, so use "
+            + "--needs-fixes with your resolution instead)")]
         public bool MergeReady { get; init; }
 
         [CommandOption("--needs-fixes <REASON>")]
@@ -85,6 +93,15 @@ public sealed class ReviewResolveCommand : Hall9kAsyncCommand<ReviewResolveComma
                 $"Task {taskId}'s current run is {run.State.Value}, not ReviewParked — only a " +
                 "review-parked run takes a human verdict. (A parked pull request is resolved " +
                 "with h9k pr resolve instead.)");
+        }
+
+        if (settings.MergeReady && task.FollowUpKind == FollowUpKind.Rebase)
+        {
+            throw new DomainConflictException(
+                $"Task {taskId} is parked on a disputed rebase conflict — merge-ready has no meaning " +
+                "here, because nothing has been rebased yet and the branch still conflicts with its " +
+                "base. Resolve with --needs-fixes \"<how to resolve the conflict>\" instead; the " +
+                "follow-up applies your decision and retries the rebase.");
         }
 
         BootstrapContext context = await NodeBootstrap.EnsureAsync(session, cancellationToken);

@@ -409,7 +409,8 @@ public sealed class RunSupervisor(
         string reason = isRebaseDispute
             ? "A follow-up could not honestly resolve a rebase conflict — both sides changed the same "
               + $"behavior, not just the same lines. Conflicting files and both positions: {disputeFilePath}. "
-              + "Decide between them, then resolve with h9k review resolve — nothing has been pushed."
+              + "Decide between them, then resolve with h9k review resolve --needs-fixes \"<your resolution>\" "
+              + "— nothing has been pushed. (--merge-ready is refused here: nothing has been rebased yet.)"
             : "A follow-up disputed a review thread as a design call it cannot honestly make. "
               + $"Both positions: {disputeFilePath}. "
               + "Decide between them, then resolve with h9k review resolve — nothing has been pushed.";
