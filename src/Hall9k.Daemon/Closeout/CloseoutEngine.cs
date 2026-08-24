@@ -648,34 +648,62 @@ public sealed class CloseoutEngine(
 
     /// <summary>
     /// One budget for every automatic closeout action: reopen dispatches count on the
-    /// task (CloseoutAttempts), review re-requests summed over every run that ever
-    /// carried this pull request — a follow-up is always a fresh run with its own
-    /// <see cref="RunDetails.ReviewRerequestCount"/> starting at zero, so a per-run read
-    /// would let each reopen quietly reset the re-request half of the lifetime ceiling
-    /// (independent pre-PR review, cycle 3: the same reasoning <see
+    /// task (CloseoutAttempts), review re-requests summed over every run that carried the
+    /// task's CURRENT pull request since the last human grant — a follow-up is always a
+    /// fresh run with its own <see cref="RunDetails.ReviewRerequestCount"/> starting at
+    /// zero, so a per-run read would let each reopen quietly reset the re-request half of
+    /// the lifetime ceiling (independent pre-PR review, cycle 3: the same reasoning <see
     /// cref="ReviewRerequestPassesAsync"/> already applies to countersign passes).
-    /// h9k pr resolve resets both — the manual reopen zeroes the counter and supersedes
-    /// the run.
+    /// h9k pr resolve resets both — the manual reopen zeroes CloseoutAttempts, and
+    /// <see cref="ReviewRerequestCountAsync"/> stops counting re-requests dispatched
+    /// before the grant it records (independent pre-PR review, cycle 4).
     /// </summary>
     private static async Task<int> AutomaticActionsSpentAsync(
         IQuerySession session, TaskAggregate task, CancellationToken cancellationToken) =>
-        task.CloseoutAttempts + await ReviewRerequestCountAsync(session, task.Id, cancellationToken);
+        task.CloseoutAttempts + await ReviewRerequestCountAsync(session, task, cancellationToken);
 
     /// <summary>
-    /// Errored-review re-requests spent on this task, summed over every run that carried
-    /// its pull request. Task-scoped rather than run-scoped for the same reason as <see
-    /// cref="ReviewRerequestPassesAsync"/>: each follow-up is a new run, so the counter
-    /// has to live where the pull request does.
+    /// Errored-review re-requests spent since the last human grant, summed over every run
+    /// that carried the task's current pull request. Scoped by pull request rather than by
+    /// task (independent pre-PR review, cycle 4) — a <c>h9k task retry</c> onto a second
+    /// pull request must not start that PR's closeout already debited by the first one's
+    /// spend. Scoped by grant time rather than read as a raw sum (same review, same cycle)
+    /// — an ungated lifetime sum never shrinks, so a <c>h9k pr resolve</c> late in a busy
+    /// PR's life would restore less budget than the one before it, down to none at all. A
+    /// run's own re-request count freezes the moment it is superseded or granted (the next
+    /// automatic decision watches a fresh run), so filtering by <see
+    /// cref="RunDetails.DispatchedAt"/> against the latest <see
+    /// cref="RunDetails.HumanGrantedAt"/> this task's runs carry is exactly "since the
+    /// grant", with no separate cursor to keep in sync.
     /// </summary>
     private static async Task<int> ReviewRerequestCountAsync(
-        IQuerySession session, Guid taskId, CancellationToken cancellationToken)
+        IQuerySession session, TaskAggregate task, CancellationToken cancellationToken)
     {
-        IReadOnlyList<RunDetails> runs = await session.Query<RunDetails>()
-            .Where(candidate => candidate.TaskId == taskId)
+        // Runs on every closeout decision, so this projects to only the four scalar fields
+        // read below instead of materializing full RunDetails documents (PR #37 review).
+        IReadOnlyList<ReviewRerequestScalars> runs = await session.Query<RunDetails>()
+            .Where(candidate => candidate.TaskId == task.Id)
+            .Select(candidate => new ReviewRerequestScalars(
+                candidate.PullRequestUrl, candidate.DispatchedAt, candidate.HumanGrantedAt,
+                candidate.ReviewRerequestCount))
             .ToListAsync(cancellationToken);
 
-        return runs.Sum(candidate => candidate.ReviewRerequestCount);
+        DateTimeOffset? lastGrantedAt = runs
+            .Select(candidate => candidate.HumanGrantedAt)
+            .Where(grantedAt => grantedAt is not null)
+            .Max();
+
+        return runs
+            .Where(candidate => candidate.PullRequestUrl == task.PullRequestUrl
+                && (lastGrantedAt is null || candidate.DispatchedAt > lastGrantedAt))
+            .Sum(candidate => candidate.ReviewRerequestCount);
     }
+
+    private sealed record ReviewRerequestScalars(
+        string? PullRequestUrl,
+        DateTimeOffset DispatchedAt,
+        DateTimeOffset? HumanGrantedAt,
+        int ReviewRerequestCount);
 
     /// <summary>
     /// The lap history a park message reads back, honest about the gap between it and the
