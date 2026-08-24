@@ -135,7 +135,9 @@ public sealed class RunLauncher(
                 // the agent what it was told the first time. Its job is the review feedback.
                 prompt = task.FollowUpKind == FollowUpKind.FailingChecks
                     ? AgentPromptBuilder.BuildFixChecks(task, project, worktree.Branch, review.PullRequestUrl, commitStyle)
-                    : AgentPromptBuilder.BuildFollowUp(task, project, worktree.Branch, review.PullRequestUrl, commitStyle);
+                    : task.FollowUpKind == FollowUpKind.Rebase
+                        ? AgentPromptBuilder.BuildRebase(task, project, worktree.Branch, review.PullRequestUrl, commitStyle)
+                        : AgentPromptBuilder.BuildFollowUp(task, project, worktree.Branch, review.PullRequestUrl, commitStyle);
             }
             else
             {

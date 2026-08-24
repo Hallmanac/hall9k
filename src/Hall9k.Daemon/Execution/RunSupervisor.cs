@@ -376,6 +376,13 @@ public sealed class RunSupervisor(
             return ThreadDisputeOutcome.NoDispute;
         }
 
+        // Rebase follow-ups teach the same RESOLUTION vocabulary for a different question
+        // (backlog 44, AgentPromptBuilder.AppendRebaseDisputeRules): a merge conflict neither
+        // side of which is honestly resolvable, rather than a review thread neither side of
+        // which is honestly judgeable. Same marker, same mechanism, different reason text and
+        // artifact so the human reads a park about the actual obstruction.
+        bool isRebaseDispute = task.FollowUpKind == FollowUpKind.Rebase;
+
         if (!await GenerationFence.AllowsAsync(
             session, logger, taskId, runId, run.LeaseGeneration, nameof(ReviewParked), cancellationToken))
         {
@@ -395,15 +402,25 @@ public sealed class RunSupervisor(
             return ThreadDisputeOutcome.Stale;
         }
 
-        await WriteDisputePositionAsync(run.RunDirectory, result.Summary, cancellationToken);
-        string reason =
-            "A follow-up disputed a review thread as a design call it cannot honestly make. "
-            + $"Both positions: {RunPaths.ReviewThreadDisputeFile(run.RunDirectory)}. "
-            + "Decide between them, then resolve with h9k review resolve — nothing has been pushed.";
+        string disputeFilePath = isRebaseDispute
+            ? RunPaths.RebaseConflictDisputeFile(run.RunDirectory)
+            : RunPaths.ReviewThreadDisputeFile(run.RunDirectory);
+        await WriteDisputePositionAsync(disputeFilePath, result.Summary, cancellationToken);
+        string reason = isRebaseDispute
+            ? "A follow-up could not honestly resolve a rebase conflict — both sides changed the same "
+              + $"behavior, not just the same lines. Conflicting files and both positions: {disputeFilePath}. "
+              + "Decide between them, then resolve with h9k review resolve — nothing has been pushed."
+            : "A follow-up disputed a review thread as a design call it cannot honestly make. "
+              + $"Both positions: {disputeFilePath}. "
+              + "Decide between them, then resolve with h9k review resolve — nothing has been pushed.";
         session.Events.Append(runId, new ReviewParked(runId, reason, DateTimeOffset.UtcNow));
         await session.SaveChangesAsync(cancellationToken);
 
-        logger.LogWarning("Run {RunId}: review thread disputed — parked for the human. {Reason}", runId, reason);
+        logger.LogWarning(
+            isRebaseDispute
+                ? "Run {RunId}: rebase conflict disputed — parked for the human. {Reason}"
+                : "Run {RunId}: review thread disputed — parked for the human. {Reason}",
+            runId, reason);
         return ThreadDisputeOutcome.Parked;
     }
 
@@ -412,17 +429,16 @@ public sealed class RunSupervisor(
     /// best-effort for the same reason the handoff artifact is: losing the file must not turn
     /// a park into a failure, and the park reason names the path either way.
     /// </summary>
-    private async Task WriteDisputePositionAsync(string runDirectory, string? summary, CancellationToken cancellationToken)
+    private async Task WriteDisputePositionAsync(string filePath, string? summary, CancellationToken cancellationToken)
     {
         try
         {
-            Directory.CreateDirectory(runDirectory);
-            await File.WriteAllTextAsync(
-                RunPaths.ReviewThreadDisputeFile(runDirectory), summary ?? string.Empty, cancellationToken);
+            Directory.CreateDirectory(Path.GetDirectoryName(filePath) ?? filePath);
+            await File.WriteAllTextAsync(filePath, summary ?? string.Empty, cancellationToken);
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
         {
-            logger.LogWarning(exception, "Could not write the thread-dispute position for {RunDirectory}", runDirectory);
+            logger.LogWarning(exception, "Could not write the dispute position to {FilePath}", filePath);
         }
     }
 
