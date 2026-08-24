@@ -9,20 +9,32 @@ using Spectre.Console.Cli;
 namespace Hall9k.Cli.Commands;
 
 /// <summary>
-/// Publish-and-refresh installation (Decisions Log #31): release binaries into
-/// ~/.hall9k/bin, h9k linked onto the PATH, and — deliberately — no background service,
-/// no login item, no autostart of any kind. Re-running after a merge republishes the
-/// binaries idempotently and offers to restart a running daemon, which is the answer to
-/// installed-binary staleness (origin incident: the hand-made h9k symlink went stale
-/// the moment main advanced).
+/// Publish-and-refresh installation (Decisions Log #31, backlog 42): binaries into
+/// ~/.hall9k/bin, h9k on the PATH, the canonical skill set at ~/.hall9k/skills, and —
+/// deliberately — no background service, no login item, no autostart of any kind.
+/// Re-running after a merge (or a release) republishes idempotently and offers to
+/// restart a running daemon, which is the answer to installed-binary staleness
+/// (origin incident: the hand-made h9k symlink went stale the moment main advanced).
+/// <para>
+/// Two sources feed the same publish-and-refresh: <c>--repo</c> builds locally with
+/// <c>dotnet publish</c> (the dev-loop and hand-run path, needs the .NET SDK), and
+/// <c>--from-release</c> stages an already-downloaded, already-verified release payload
+/// (what the bootstrap scripts and <see cref="UpdateCommand"/> use — no SDK, no repo
+/// checkout, on a bare machine). <see cref="FinishAsync"/> is everything after staging
+/// and is shared by both.
+/// </para>
 /// </summary>
 public sealed class InstallCommand : Hall9kAsyncCommand<InstallCommand.Settings>
 {
     public sealed class Settings : CommandSettings
     {
         [CommandOption("--repo <PATH>")]
-        [Description("The hall9k repository root to publish from — the directory holding Hall9k.slnx, taken as given and never searched upward (default: found by walking up from the current directory)")]
+        [Description("The hall9k repository root to publish from — the directory holding Hall9k.slnx, taken as given and never searched upward (default: found by walking up from the current directory unless --from-release is given)")]
         public string? Repo { get; init; }
+
+        [CommandOption("--from-release <DIR>")]
+        [Description("Install from an already-downloaded, already-extracted release payload (h9k/h9kd binaries, a skills/ directory, a VERSION file) instead of building from --repo — what the bootstrap scripts and h9k update use, so a bare machine needs neither a repo checkout nor the .NET SDK")]
+        public string? FromRelease { get; init; }
 
         [CommandOption("--restart")]
         [Description("Restart a running daemon onto the fresh binaries without asking")]
@@ -35,47 +47,80 @@ public sealed class InstallCommand : Hall9kAsyncCommand<InstallCommand.Settings>
 
     protected override async Task<int> ExecuteAsync(Settings settings, CancellationToken cancellationToken)
     {
-        if (OperatingSystem.IsWindows())
-        {
-            await Console.Error.WriteLineAsync(
-                "h9k install on Windows arrives with S1-14 (Decisions Log #3); macOS (and other Unix) only for now.");
-            return ExitCodes.Error;
-        }
-
-        string? repoRoot = ResolveRepositoryRoot(settings.Repo);
-        if (repoRoot is null)
-        {
-            await Console.Error.WriteLineAsync(DescribeMissingRepository(settings.Repo));
-            return ExitCodes.Error;
-        }
-
-        DaemonProcessDescriptor? runningBefore = DaemonProcess.Probe();
-
         string staging = DaemonRuntime.StagingBinDirectory;
         if (Directory.Exists(staging))
         {
             Directory.Delete(staging, recursive: true);
         }
 
-        foreach (string project in new[] { "Hall9k.Cli", "Hall9k.Daemon" })
+        string version;
+        string? skillsSource;
+        if (settings.FromRelease is not null)
         {
-            AnsiConsole.MarkupLineInterpolated($"[dim]Publishing {project} (Release)…[/]");
-            ExecResult publish = await Exec.RunAsync(
-                "dotnet",
-                ["publish", Path.Combine(repoRoot, "src", project), "-c", "Release", "-o", staging, "--nologo"],
-                cancellationToken);
-            if (!publish.Succeeded)
+            string? problem = ValidateReleasePayload(settings.FromRelease);
+            if (problem is not null)
             {
-                await Console.Error.WriteLineAsync($"dotnet publish failed for {project}:");
-                await Console.Error.WriteLineAsync(publish.StandardOutput);
-                await Console.Error.WriteLineAsync(publish.StandardError);
+                await Console.Error.WriteLineAsync(problem);
                 return ExitCodes.Error;
             }
+
+            StageFromRelease(settings.FromRelease, staging);
+            version = ReadVersionFile(settings.FromRelease) ?? CliVersion.Current;
+            skillsSource = Path.Combine(settings.FromRelease, "skills");
         }
+        else
+        {
+            string? repoRoot = ResolveRepositoryRoot(settings.Repo);
+            if (repoRoot is null)
+            {
+                await Console.Error.WriteLineAsync(DescribeMissingRepository(settings.Repo));
+                return ExitCodes.Error;
+            }
+
+            foreach (string project in new[] { "Hall9k.Cli", "Hall9k.Daemon" })
+            {
+                AnsiConsole.MarkupLineInterpolated($"[dim]Publishing {project} (Release)…[/]");
+                ExecResult publish = await Exec.RunAsync(
+                    "dotnet",
+                    ["publish", Path.Combine(repoRoot, "src", project), "-c", "Release", "-o", staging, "--nologo"],
+                    cancellationToken);
+                if (!publish.Succeeded)
+                {
+                    await Console.Error.WriteLineAsync($"dotnet publish failed for {project}:");
+                    await Console.Error.WriteLineAsync(publish.StandardOutput);
+                    await Console.Error.WriteLineAsync(publish.StandardError);
+                    return ExitCodes.Error;
+                }
+            }
+
+            version = CliVersion.Current;
+            skillsSource = Path.Combine(repoRoot, ".claude", "skills");
+        }
+
+        return await FinishAsync(staging, skillsSource, version, settings.Restart, settings.NoRestart, cancellationToken);
+    }
+
+    /// <summary>
+    /// Everything after staging is ready, shared by <c>h9k install --repo</c>,
+    /// <c>h9k install --from-release</c>, and <see cref="UpdateCommand"/>: swap the
+    /// staged binaries into place, write Hall9k's own Postgres definition, republish the
+    /// canonical skill set, put h9k on the PATH, report the version placed, and — if a
+    /// daemon was already running — offer the restart.
+    /// </summary>
+    internal static async Task<int> FinishAsync(
+        string staging,
+        string? skillsSource,
+        string version,
+        bool restart,
+        bool noRestart,
+        CancellationToken cancellationToken,
+        bool linkOntoPath = true)
+    {
+        DaemonProcessDescriptor? runningBefore = DaemonProcess.Probe();
 
         SwapIntoPlace(staging, DaemonRuntime.BinDirectory);
         AnsiConsole.MarkupLineInterpolated(
-            $"[green]Installed[/]: h9k and h9kd release binaries in {DaemonRuntime.BinDirectory}");
+            $"[green]Installed[/] {version}: h9k and h9kd release binaries in {DaemonRuntime.BinDirectory}");
 
         // Ships Hall9k's own Postgres definition into ~/.hall9k (Decisions Log #73), so
         // h9k daemon start's reachability probe and h9k doctor's start-offer never need a
@@ -86,12 +131,35 @@ public sealed class InstallCommand : Hall9kAsyncCommand<InstallCommand.Settings>
             $"[dim]Wrote Hall9k's own Postgres definition to {PostgresRuntime.ComposeFile.EscapeMarkup()} "
             + "(not started — h9k doctor or h9k daemon start will offer to when it's needed).[/]");
 
-        PublishSkills(repoRoot);
+        if (skillsSource is not null)
+        {
+            PublishSkills(skillsSource);
+        }
 
-        LinkOntoPath(
-            Path.Combine(DaemonRuntime.BinDirectory, "h9k"),
-            Environment.GetEnvironmentVariable("PATH") ?? string.Empty,
-            Environment.GetFolderPath(Environment.SpecialFolder.UserProfile));
+        // linkOntoPath defaults true for both real callers; a test passes false to skip
+        // it, because this step mutates the REAL process PATH and home directory (a
+        // real symlink in a real /opt/homebrew/bin or ~/.local/bin) — there is no safe
+        // way to redirect it without redirecting those two env vars process-wide, which
+        // would race any concurrently running test that shells out to git/gh/docker via
+        // PATH (origin incident: an early version of UpdateCommandTests did exactly
+        // that and broke GitWorktreeManagerTests intermittently by wiping PATH out from
+        // under them). LinkOntoPath and ComputeUserPath already have direct unit
+        // coverage with fake paths in InstallCommandTests, so skipping this step in a
+        // higher-level test loses no coverage.
+        if (linkOntoPath)
+        {
+            if (OperatingSystem.IsWindows())
+            {
+                EnsureOnWindowsPath(DaemonRuntime.BinDirectory);
+            }
+            else
+            {
+                LinkOntoPath(
+                    Path.Combine(DaemonRuntime.BinDirectory, "h9k"),
+                    Environment.GetEnvironmentVariable("PATH") ?? string.Empty,
+                    Environment.GetFolderPath(Environment.SpecialFolder.UserProfile));
+            }
+        }
 
         AnsiConsole.MarkupLine(
             "[dim]No background service was registered — the daemon runs on demand (h9k daemon start / stop). "
@@ -99,7 +167,96 @@ public sealed class InstallCommand : Hall9kAsyncCommand<InstallCommand.Settings>
 
         return runningBefore is null
             ? ExitCodes.Ok
-            : await OfferRestartAsync(settings, runningBefore, cancellationToken);
+            : await OfferRestartAsync(restart, noRestart, runningBefore, cancellationToken);
+    }
+
+    /// <summary>The binary names --from-release must carry for this platform: h9k/h9kd on
+    /// Unix, h9k.exe/h9kd.exe on Windows.</summary>
+    internal static string BinaryFileName(string name) => OperatingSystem.IsWindows() ? name + ".exe" : name;
+
+    internal static string? ValidateReleasePayload(string fromRelease)
+    {
+        if (!Directory.Exists(fromRelease))
+        {
+            return $"No release payload at {Path.GetFullPath(fromRelease)} — --from-release names a directory "
+                + "already extracted from a release archive (h9k/h9kd binaries, a skills/ directory, a VERSION file).";
+        }
+
+        List<string> missing = [];
+        foreach (string binary in new[] { "h9k", "h9kd" })
+        {
+            if (!File.Exists(Path.Combine(fromRelease, BinaryFileName(binary))))
+            {
+                missing.Add(BinaryFileName(binary));
+            }
+        }
+
+        return missing.Count == 0
+            ? null
+            : $"{Path.GetFullPath(fromRelease)} is missing {string.Join(" and ", missing)} — "
+              + "not a complete release payload for this platform.";
+    }
+
+    private static string? ReadVersionFile(string fromRelease)
+    {
+        string versionFile = Path.Combine(fromRelease, "VERSION");
+        return File.Exists(versionFile) ? File.ReadAllText(versionFile).Trim() : null;
+    }
+
+    /// <summary>Copies the platform's binaries (and every other published file — DLLs,
+    /// runtimeconfig, native host — but not the skills/ subdirectory or the VERSION marker,
+    /// neither of which belongs in ~/.hall9k/bin) from an extracted release payload into staging.</summary>
+    internal static void StageFromRelease(string fromRelease, string staging)
+    {
+        Directory.CreateDirectory(staging);
+        foreach (string file in Directory.EnumerateFiles(fromRelease))
+        {
+            if (Path.GetFileName(file) is "VERSION")
+            {
+                continue;
+            }
+
+            File.Copy(file, Path.Combine(staging, Path.GetFileName(file)), overwrite: true);
+        }
+    }
+
+    /// <summary>
+    /// Windows has no PATH-directory convention the way Unix does (no /usr/local/bin every
+    /// shell already searches), and creating a symlink there needs Developer Mode or
+    /// elevation a bare machine may not have — so instead of the Unix retarget-a-symlink
+    /// dance, ~/.hall9k/bin is prepended straight onto the user's PATH environment variable
+    /// (HKCU\Environment, no elevation needed), idempotently.
+    /// </summary>
+    internal static void EnsureOnWindowsPath(string binDirectory)
+    {
+        string current = Environment.GetEnvironmentVariable("PATH", EnvironmentVariableTarget.User) ?? string.Empty;
+        string updated = ComputeUserPath(current, binDirectory);
+        if (updated == current)
+        {
+            AnsiConsole.MarkupLineInterpolated($"[green]Already on PATH[/]: {binDirectory}");
+            return;
+        }
+
+        Environment.SetEnvironmentVariable("PATH", updated, EnvironmentVariableTarget.User);
+        AnsiConsole.MarkupLineInterpolated(
+            $"[green]Added to PATH[/]: {binDirectory} (open a new terminal for it to take effect).");
+    }
+
+    /// <summary>The pure part of <see cref="EnsureOnWindowsPath"/>: prepend
+    /// <paramref name="directory"/> to <paramref name="currentUserPath"/> unless it is
+    /// already there (trailing separators and casing ignored, as Windows path comparison is).</summary>
+    internal static string ComputeUserPath(string currentUserPath, string directory)
+    {
+        string normalized = directory.TrimEnd('\\', '/');
+        bool alreadyPresent = currentUserPath
+            .Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Any(entry => string.Equals(entry.TrimEnd('\\', '/'), normalized, StringComparison.OrdinalIgnoreCase));
+        if (alreadyPresent)
+        {
+            return currentUserPath;
+        }
+
+        return currentUserPath.Length == 0 ? directory : directory + Path.PathSeparator + currentUserPath;
     }
 
     /// <summary>
@@ -136,10 +293,11 @@ public sealed class InstallCommand : Hall9kAsyncCommand<InstallCommand.Settings>
     /// <summary>
     /// The install owns the canonical skill set (IDEA-skill-layer, Tension 8): a skill the
     /// machinery requires in order to work is part of the machinery, so it ships with the install
-    /// and is as self-contained as the binaries. Today the source is this repository's own
-    /// <c>.claude/skills</c>; once release delivery lands (backlog 42) it is a release artefact,
-    /// and only this method changes — <see cref="SkillLibraryPaths.CanonicalDirectory"/> is the
-    /// seam every project home already points at.
+    /// and is as self-contained as the binaries. The source is this repository's own
+    /// <c>.claude/skills</c> for <c>--repo</c>, or a release payload's bundled <c>skills/</c> for
+    /// <c>--from-release</c> and <see cref="UpdateCommand"/> — only <paramref name="source"/>
+    /// changes; <see cref="SkillLibraryPaths.CanonicalDirectory"/> is the seam every project home
+    /// already points at.
     /// <para>
     /// A project home's <c>skills/</c> entries are symlinks into that directory, so republishing
     /// here updates every project's platform skills in one move. A skill that is <em>new</em>
@@ -149,9 +307,8 @@ public sealed class InstallCommand : Hall9kAsyncCommand<InstallCommand.Settings>
     /// </summary>
     /// <remarks>The copying itself is <see cref="SkillSeeder.PublishCanonical"/>; this is the
     /// command's half of it, which is finding the source and saying what happened.</remarks>
-    private static void PublishSkills(string repoRoot)
+    private static void PublishSkills(string source)
     {
-        string source = Path.Combine(repoRoot, ".claude", "skills");
         string canonical = SkillLibraryPaths.CanonicalDirectory;
         if (!Directory.Exists(source))
         {
@@ -392,12 +549,12 @@ public sealed class InstallCommand : Hall9kAsyncCommand<InstallCommand.Settings>
     }
 
     private static async Task<int> OfferRestartAsync(
-        Settings settings, DaemonProcessDescriptor runningBefore, CancellationToken cancellationToken)
+        bool restartRequested, bool noRestartRequested, DaemonProcessDescriptor runningBefore, CancellationToken cancellationToken)
     {
         AnsiConsole.MarkupLineInterpolated(
             $"[yellow]h9kd is running (pid {runningBefore.ProcessId}) on the previous binaries.[/]");
 
-        bool restart = settings switch
+        bool restart = (NoRestart: noRestartRequested, Restart: restartRequested) switch
         {
             { NoRestart: true } => false,
             { Restart: true } => true,
