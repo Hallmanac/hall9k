@@ -356,6 +356,11 @@ public sealed class TaskAggregate
 
     public void Apply(TaskCompleted @event)
     {
+        if (@event.PullRequestUrl is not null && @event.PullRequestUrl != PullRequestUrl)
+        {
+            ResetAutomaticCloseoutState();
+        }
+
         PullRequestUrl = @event.PullRequestUrl;
         FollowUpBranch = null;
         FollowUpKind = FollowUpKind.Unknown;
@@ -383,10 +388,7 @@ public sealed class TaskAggregate
         }
         else
         {
-            CloseoutAttempts = 0;
-            ConsecutiveObstructionLaps = 0;
-            LastAutomaticObstructionKey = null;
-            _automaticLapHistory.Clear();
+            ResetAutomaticCloseoutState();
         }
 
         _knownHumanReviewThreadIds.Clear();
@@ -400,12 +402,39 @@ public sealed class TaskAggregate
         State = TaskState.Queued;
     }
 
+    /// <summary>
+    /// Zeroes every automatic-closeout counter — the progress cap
+    /// (<see cref="ConsecutiveObstructionLaps"/>, <see cref="LastAutomaticObstructionKey"/>,
+    /// <see cref="AutomaticLapHistory"/>) and the lifetime ceiling (<see cref="CloseoutAttempts"/>)
+    /// — along with the human-engagement watermarks, so closeout starts unencumbered whenever a
+    /// human grants a fresh attempt (a manual <c>TaskReopened</c>) or the task lands on a pull
+    /// request its spend was never scoped to (a <c>h9k task retry</c> that opens a second pull
+    /// request; independent pre-PR review, 2026-08-23). Without the latter case, a task retried
+    /// onto PR#2 would start pre-debited and pre-capped by PR#1's spend, and a lifetime-ceiling
+    /// park would misattribute PR#1's lap history to a pull request that no longer exists — the
+    /// unobserved-fact attribution AGENTS.md's never-guess rule forbids.
+    /// </summary>
+    private void ResetAutomaticCloseoutState()
+    {
+        CloseoutAttempts = 0;
+        ConsecutiveObstructionLaps = 0;
+        LastAutomaticObstructionKey = null;
+        _automaticLapHistory.Clear();
+        _knownHumanReviewThreadIds.Clear();
+        _knownPendingReviewRequestLogins.Clear();
+    }
+
     public void Apply(TaskFailed @event) => State = TaskState.Failed;
 
     // The failure stays on the stream; resolve only moves the state and records where the
     // work landed. A resolved task is Done like any other — reopenable when it has a PR.
     public void Apply(TaskResolved @event)
     {
+        if (@event.PullRequestUrl is not null && @event.PullRequestUrl != PullRequestUrl)
+        {
+            ResetAutomaticCloseoutState();
+        }
+
         PullRequestUrl = @event.PullRequestUrl ?? PullRequestUrl;
         FollowUpBranch = null;
         FollowUpKind = FollowUpKind.Unknown;

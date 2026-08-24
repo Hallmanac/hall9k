@@ -304,6 +304,46 @@ public sealed class TaskDeciderTests
     }
 
     /// <summary>
+    /// A `h9k task retry` that lands the work on a second pull request must not carry the
+    /// first PR's closeout spend into the second — otherwise the second PR starts pre-debited
+    /// and pre-capped, and a park message would misattribute the first PR's lap history to a
+    /// pull request that no longer exists (independent pre-PR review, 2026-08-23).
+    /// </summary>
+    [Fact]
+    public void A_retry_onto_a_new_pull_request_resets_the_closeout_counters()
+    {
+        TaskAggregate task = DoneTask("https://github.com/x/y/pull/7");
+
+        task.Apply(TaskDecider.Reopen(
+            task, task.CurrentRunId!.Value, "task/abc", "CI checks failing: build.",
+            FollowUpKind.FailingChecks, automatic: true, Now, DomainId.New(),
+            obstructionKey: "FailingChecks:build", obstructionSummary: "the failing check(s) build",
+            knownHumanReviewThreadIds: ["thread-1"], knownPendingReviewRequestLogins: ["teammate"]));
+        CompleteFollowUp(task);
+        task.Apply(TaskDecider.Reopen(
+            task, task.CurrentRunId!.Value, "task/abc", "CI checks failing: build.",
+            FollowUpKind.FailingChecks, automatic: true, Now, DomainId.New(),
+            obstructionKey: "FailingChecks:build", obstructionSummary: "the failing check(s) build"));
+        task.CloseoutAttempts.Should().Be(2);
+        task.ConsecutiveObstructionLaps.Should().Be(2);
+
+        task.Apply(TaskDecider.Claim(task, DomainId.New(), Owner, DomainId.New(), Now));
+        task.Apply(TaskDecider.Fail(task, task.CurrentRunId!.Value, "Follow-up push rejected.", Now));
+        task.Apply(TaskDecider.Retry(
+            task, task.CurrentRunId, "task/abc-branch", "Rebuilding on a fresh PR.", Now, DomainId.New()));
+        task.Apply(TaskDecider.Claim(task, DomainId.New(), Owner, DomainId.New(), Now));
+        task.Apply(TaskDecider.Complete(task, task.CurrentRunId!.Value, "https://github.com/x/y/pull/9", Now));
+
+        task.PullRequestUrl.Should().Be("https://github.com/x/y/pull/9");
+        task.CloseoutAttempts.Should().Be(0, "PR#9's closeout starts unencumbered by PR#7's spend");
+        task.ConsecutiveObstructionLaps.Should().Be(0);
+        task.LastAutomaticObstructionKey.Should().BeNull();
+        task.AutomaticLapHistory.Should().BeEmpty();
+        task.KnownHumanReviewThreadIds.Should().BeEmpty();
+        task.KnownPendingReviewRequestLogins.Should().BeEmpty();
+    }
+
+    /// <summary>
     /// The human-engagement comparison points (unresolved human threads, pending review
     /// requests) travel forward on TaskReopened so the next automatic decision can tell a
     /// genuinely new one from something already accounted for (Decisions Log #77, backlog 45).
