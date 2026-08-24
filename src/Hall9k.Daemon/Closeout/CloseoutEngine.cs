@@ -1214,7 +1214,7 @@ public sealed class CloseoutEngine(
 
         logger.LogInformation(
             "Task {TaskId} reopened automatically ({Kind}, lifetime {Attempt}/{Max}, obstruction lap {Lap}/{LapMax}{Grant}): {Reason}",
-            task.Id, kind.Value, task.CloseoutAttempts + 1, _options.MaxAutomaticCloseoutRuns,
+            task.Id, kind.Value, automaticActionsSpent + 1, _options.MaxAutomaticCloseoutRuns,
             lapsIfDispatched, _options.MaxCloseoutLapsPerObstruction, humanGranted ? " human-granted" : "", reason);
     }
 
