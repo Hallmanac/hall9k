@@ -60,6 +60,15 @@ public sealed class RunAggregate
     /// </summary>
     public int ReviewRerequestsAfterFixes { get; private set; }
 
+    /// <summary>
+    /// Logins the platform itself has asked to review this run's pull request, either after
+    /// an errored review or as a countersign after fixes (Decisions Log #77, backlog 45) — what
+    /// CloseoutEngine.HasHumanEngagement excludes from "who newly has a pending review
+    /// request" so its own re-request is never read back as a human's.
+    /// </summary>
+    private readonly List<string> _requestedReviewerLogins = [];
+    public IReadOnlyList<string> RequestedReviewerLogins => _requestedReviewerLogins;
+
 
     /// The pre-PR review loop (log #24): which round of review the run is on, from 1. Every
     /// still-active track shares it — tracks only ever advance together, because the only thing
@@ -613,11 +622,19 @@ public sealed class RunAggregate
         State = RunState.ReviewPending;
     }
 
-    public void Apply(ReviewRerequested @event) => ReviewRerequestCount++;
+    public void Apply(ReviewRerequested @event)
+    {
+        ReviewRerequestCount++;
+        _requestedReviewerLogins.Add(@event.Reviewer);
+    }
 
     // No state change: a countersign request is a question asked, not a finding received,
     // so the run stays AwaitingReview while the monitor watches for the answer.
-    public void Apply(ReviewRerequestedAfterFixes @event) => ReviewRerequestsAfterFixes++;
+    public void Apply(ReviewRerequestedAfterFixes @event)
+    {
+        ReviewRerequestsAfterFixes++;
+        _requestedReviewerLogins.AddRange(@event.Reviewers);
+    }
 
     public void Apply(CloseoutParked @event) => State = RunState.CloseoutParked;
 
