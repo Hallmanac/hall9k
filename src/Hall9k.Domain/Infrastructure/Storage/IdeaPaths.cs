@@ -34,10 +34,21 @@ public static class IdeaPaths
     /// (<c>IdeaDetails.WorkspaceHome</c>) and its CURRENT directory name (recompute this fresh
     /// from current state — <c>IdeaDocumentRenderer.DirectoryName</c> — every time; see the type
     /// doc for why).
+    /// <para>
+    /// For a home-resident idea, the freshly computed <paramref name="ideaDirectoryName"/> is only
+    /// a candidate: no CLI command rings the render sweep's doorbell for an idea (backlog 49 cycle
+    /// 2 review), so a revise that changes the slug can land well ahead of the sweep that actually
+    /// renames the directory. Resolving against whatever directory already exists on disk for this
+    /// id — the same read <c>Hall9k.Daemon</c>'s <c>RunLauncher</c> already does via
+    /// <c>HomeEntryWriter.FindExistingDirectory</c> — keeps a caller pointed at the one directory
+    /// that is actually there; falling back to the computed name only when none is found yet
+    /// covers the idea's very first render, before any directory exists to find.
+    /// </para>
     /// </summary>
     public static string ResolveDirectory(ProjectHome workspaceHome, string ideaDirectoryName, Guid ideaId) =>
         workspaceHome.HasValue
-            ? ProjectHomePaths.IdeaDirectory(workspaceHome.Value, ideaDirectoryName)
+            ? HomeEntryLookup.FindExistingDirectory(ProjectHomePaths.IdeasDirectory(workspaceHome.Value), ideaId)
+                ?? ProjectHomePaths.IdeaDirectory(workspaceHome.Value, ideaDirectoryName)
             : GlobalDirectory(ideaId);
 
     public static string WorkspaceDirectory(string ideaDirectory) => Path.Combine(ideaDirectory, "workspace");
