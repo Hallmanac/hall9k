@@ -101,6 +101,51 @@ public sealed class UpdateCommandTests : IDisposable
         exitCode.Should().NotBe(0);
     }
 
+    [Fact]
+    public async Task A_successful_update_leaves_no_scratch_directories_in_temp()
+    {
+        if (ReleasePlatform.CurrentRid() is null)
+        {
+            return;
+        }
+
+        FakeGh gh = FakeGh.ForCurrentPlatform(workspace, version: "1.2.3", skillName: "pr-summary");
+        IReadOnlySet<string> before = TempScratchDirectories();
+
+        int exitCode = await Run(gh.Runner);
+
+        exitCode.Should().Be(0);
+        TempScratchDirectories().Except(before).Should().BeEmpty(
+            "h9k update's download and extract directories are scratch space for one run, not a growing pile in temp");
+    }
+
+    [Fact]
+    public async Task A_refused_update_still_cleans_up_its_scratch_directories()
+    {
+        if (ReleasePlatform.CurrentRid() is null)
+        {
+            return;
+        }
+
+        FakeGh gh = FakeGh.ForCurrentPlatform(workspace, version: "1.2.3", skillName: "pr-summary");
+        gh.CorruptTheDownloadedArchive();
+        IReadOnlySet<string> before = TempScratchDirectories();
+
+        int exitCode = await Run(gh.Runner);
+
+        exitCode.Should().NotBe(0);
+        TempScratchDirectories().Except(before).Should().BeEmpty(
+            "a refused update must not leave its downloaded archive or extracted payload behind in temp");
+    }
+
+    // Pre-existing debris from other processes (or other test runs, before this fix) can
+    // already sit in the shared temp directory, so the assertion is a before/after diff
+    // rather than an assumption that temp starts clean.
+    private static IReadOnlySet<string> TempScratchDirectories() =>
+        Directory.EnumerateDirectories(Path.GetTempPath(), "h9k-update-*")
+            .Where(entry => !Path.GetFileName(entry).StartsWith("h9k-update-workspace-", StringComparison.Ordinal))
+            .ToHashSet();
+
     private static Task<int> Run(ProcessRunner gh) =>
         UpdateCommand.RunAsync(
             gh, ReleasePlatform.DefaultRepository, restart: false, noRestart: true, CancellationToken.None, linkOntoPath: false);
