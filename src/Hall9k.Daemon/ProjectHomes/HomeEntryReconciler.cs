@@ -60,24 +60,29 @@ public static class HomeEntryReconciler
             if (IsOnlyGeneratedContent(directory, generatedFileName))
             {
                 Directory.Delete(directory, recursive: true);
+                handled.Add(directory);
             }
-            else
+            else if (Mark(directory))
             {
-                Mark(directory);
+                handled.Add(directory);
             }
-
-            handled.Add(directory);
         }
 
         return handled;
     }
 
-    private static void Mark(string directory)
+    /// <summary>
+    /// Writes the marker if it is not already there, and reports whether it did — a directory
+    /// marked on a prior sweep and never touched since must not keep counting as "handled" on
+    /// every sweep after, or <see cref="ProjectHomes.ProjectHomeRenderLoop"/>'s activity log
+    /// would repeat forever for a directory nothing new happened to.
+    /// </summary>
+    private static bool Mark(string directory)
     {
         string markerPath = Path.Combine(directory, MarkerFileName);
         if (File.Exists(markerPath))
         {
-            return;
+            return false;
         }
 
         File.WriteAllText(markerPath,
@@ -85,6 +90,7 @@ public static class HomeEntryReconciler
             + "named for was not found on the last reconciliation pass, most likely because it was "
             + "renamed after an objective or note revision. Its contents were left in place rather "
             + "than deleted; move what is worth keeping and remove the directory by hand.\n");
+        return true;
     }
 
     private static string ShortIdPrefix(string directoryName)
