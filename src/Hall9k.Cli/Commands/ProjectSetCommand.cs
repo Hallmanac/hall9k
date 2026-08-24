@@ -256,11 +256,28 @@ public sealed class ProjectSetCommand : Hall9kAsyncCommand<ProjectSetCommand.Set
             return new ContextLink(name, link);
         }
 
-        string suggestion = string.IsNullOrEmpty(url) || url.Contains("://", StringComparison.Ordinal)
-            ? $"--link \"{name}=https://example.com/wiki\""
-            : $"--link \"{name}=https://{url}\"";
         throw new DomainValidationException(
             $"--link '{name}={url}' is not a URL this can record. Pass an absolute URL with a "
-            + $"scheme, e.g. {suggestion}.");
+            + $"scheme, e.g. {SuggestLink(name, url)}.");
+    }
+
+    /// <summary>
+    /// Builds a worked example for the <c>--link</c> refusal message. The candidate is run back
+    /// through the same parser this method's caller just failed, so the suggestion can never tell
+    /// the caller to retry with a value that would fail again (a blank url degenerating to
+    /// <c>https://</c>, or a url with an unparseable authority such as an embedded space).
+    /// </summary>
+    private static string SuggestLink(string name, string url)
+    {
+        if (!string.IsNullOrEmpty(url) && !url.Contains("://", StringComparison.Ordinal))
+        {
+            string candidate = $"https://{url}";
+            if (Uri.TryCreate(candidate, UriKind.Absolute, out _))
+            {
+                return $"--link \"{name}={candidate}\"";
+            }
+        }
+
+        return $"--link \"{name}=https://example.com/wiki\"";
     }
 }
