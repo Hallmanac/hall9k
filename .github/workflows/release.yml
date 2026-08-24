@@ -1,0 +1,116 @@
+name: Release
+
+# A tagged commit becomes installable binaries on a bare machine (backlog 42): build h9k
+# and h9kd self-contained (no .NET SDK or runtime needed on the target machine) for every
+# platform release.yml supports, package each with the canonical skill set, checksum
+# everything, and publish it all as a GitHub release the bootstrap scripts and h9k update
+# fetch from. Runs alongside ci.yml rather than replacing it — ci.yml gates every push and
+# PR; this runs only on a version tag.
+on:
+  push:
+    tags: ["v*"]
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Linux rides along now (backlog 42): the tower joins the shared-database
+          # future, and a third matrix line today beats a release-engineering errand
+          # later.
+          - os: macos-14
+            rid: osx-arm64
+          - os: windows-latest
+            rid: win-x64
+          - os: ubuntu-latest
+            rid: linux-x64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+
+      # Self-contained (no PublishSingleFile — Wolverine/Marten's runtime codegen wants
+      # ordinary assembly loading, and a bare machine needs the runtime bundled either
+      # way): h9k and h9kd publish into the same directory, exactly as h9k install's
+      # local dotnet-publish path already does, so the payload shape backlog 42's
+      # InstallCommand --from-release stages from matches what a developer's own
+      # install produces.
+      - name: Publish h9k
+        run: dotnet publish src/Hall9k.Cli -c Release -r ${{ matrix.rid }} --self-contained true -o dist/${{ matrix.rid }} --nologo
+      - name: Publish h9kd
+        run: dotnet publish src/Hall9k.Daemon -c Release -r ${{ matrix.rid }} --self-contained true -o dist/${{ matrix.rid }} --nologo
+
+      # The canonical skill set (backlog 42, IDEA-skill-layer Tension 8): ships inside
+      # the release payload so the bootstrap scripts and h9k update can publish it to
+      # ~/.hall9k/skills without a repo checkout.
+      - name: Bundle skills
+        shell: bash
+        run: |
+          mkdir -p "dist/${{ matrix.rid }}/skills"
+          cp -R .claude/skills/. "dist/${{ matrix.rid }}/skills/"
+
+      - name: Write VERSION
+        shell: bash
+        run: echo "${GITHUB_REF_NAME}" > "dist/${{ matrix.rid }}/VERSION"
+
+      - name: Archive (tar.gz)
+        if: matrix.rid != 'win-x64'
+        shell: bash
+        run: |
+          tar -czf "hall9k-${{ matrix.rid }}.tar.gz" -C "dist/${{ matrix.rid }}" .
+      - name: Archive (zip)
+        if: matrix.rid == 'win-x64'
+        shell: pwsh
+        run: |
+          Compress-Archive -Path "dist/${{ matrix.rid }}/*" -DestinationPath "hall9k-${{ matrix.rid }}.zip"
+
+      - name: Checksum
+        shell: bash
+        run: |
+          archive=$(ls hall9k-${{ matrix.rid }}.*)
+          if command -v sha256sum >/dev/null 2>&1; then
+            sha256sum "$archive" > "$archive.sha256"
+          else
+            shasum -a 256 "$archive" > "$archive.sha256"
+          fi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ matrix.rid }}
+          path: |
+            hall9k-${{ matrix.rid }}.*
+          if-no-files-found: error
+
+  publish-release:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: release-*
+          path: release-assets
+          merge-multiple: true
+
+      # One checksums.txt in sha256sum's own "<hex>  <filename>" format, covering every
+      # platform's archive — this is what ReleaseArchive.VerifyAsync (h9k update) and
+      # the bootstrap scripts both check a download against.
+      - name: Combine checksums
+        working-directory: release-assets
+        run: |
+          cat hall9k-*.sha256 > checksums.txt
+          rm hall9k-*.sha256
+
+      - name: Create release
+        working-directory: release-assets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "${GITHUB_REF_NAME}" \
+            --title "${GITHUB_REF_NAME}" \
+            --generate-notes \
+            hall9k-*.tar.gz hall9k-*.zip checksums.txt
