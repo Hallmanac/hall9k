@@ -609,13 +609,14 @@ public sealed class CloseoutEngine(
 
         session.Events.Append(run.Id, new ReviewErrored(run.Id, erroredReview.Reviewer, erroredReview.Url, now));
 
-        if (AutomaticActionsSpent(task, run) >= _options.MaxAutomaticCloseoutRuns)
+        int automaticActionsSpent = await AutomaticActionsSpentAsync(session, task, cancellationToken);
+        if (automaticActionsSpent >= _options.MaxAutomaticCloseoutRuns)
         {
             string parkReason =
                 $"Copilot review keeps erroring: {erroredReview.Reviewer}'s latest review ({erroredReview.Url}) " +
                 "says it was unable to review the pull request. " +
-                $"Automatic closeout budget spent ({AutomaticActionsSpent(task, run)}/{_options.MaxAutomaticCloseoutRuns} action(s)) — " +
-                $"{DescribeAutomaticLapHistory(task, run)}. " +
+                $"Automatic closeout budget spent ({automaticActionsSpent}/{_options.MaxAutomaticCloseoutRuns} action(s)) — " +
+                $"{DescribeAutomaticLapHistory(task, automaticActionsSpent)}. " +
                 "Re-request the review by hand, merge without it, or grant another attempt with h9k pr resolve.";
             session.Events.Append(run.Id, new CloseoutParked(run.Id, parkReason, now));
             await session.SaveChangesAsync(cancellationToken);
@@ -642,30 +643,53 @@ public sealed class CloseoutEngine(
         logger.LogInformation(
             "Run {RunId}: Copilot review errored ({Url}); re-requested review from {Reviewer} (action {Action}/{Max})",
             run.Id, erroredReview.Url, erroredReview.Reviewer,
-            AutomaticActionsSpent(task, run) + 1, _options.MaxAutomaticCloseoutRuns);
+            automaticActionsSpent + 1, _options.MaxAutomaticCloseoutRuns);
     }
 
     /// <summary>
     /// One budget for every automatic closeout action: reopen dispatches count on the
-    /// task (CloseoutAttempts), review re-requests on the watched run. h9k pr resolve
-    /// resets both — the manual reopen zeroes the counter and supersedes the run.
+    /// task (CloseoutAttempts), review re-requests summed over every run that ever
+    /// carried this pull request — a follow-up is always a fresh run with its own
+    /// <see cref="RunDetails.ReviewRerequestCount"/> starting at zero, so a per-run read
+    /// would let each reopen quietly reset the re-request half of the lifetime ceiling
+    /// (independent pre-PR review, cycle 3: the same reasoning <see
+    /// cref="ReviewRerequestPassesAsync"/> already applies to countersign passes).
+    /// h9k pr resolve resets both — the manual reopen zeroes the counter and supersedes
+    /// the run.
     /// </summary>
-    private static int AutomaticActionsSpent(TaskAggregate task, RunDetails run) =>
-        task.CloseoutAttempts + run.ReviewRerequestCount;
+    private static async Task<int> AutomaticActionsSpentAsync(
+        IQuerySession session, TaskAggregate task, CancellationToken cancellationToken) =>
+        task.CloseoutAttempts + await ReviewRerequestCountAsync(session, task.Id, cancellationToken);
+
+    /// <summary>
+    /// Errored-review re-requests spent on this task, summed over every run that carried
+    /// its pull request. Task-scoped rather than run-scoped for the same reason as <see
+    /// cref="ReviewRerequestPassesAsync"/>: each follow-up is a new run, so the counter
+    /// has to live where the pull request does.
+    /// </summary>
+    private static async Task<int> ReviewRerequestCountAsync(
+        IQuerySession session, Guid taskId, CancellationToken cancellationToken)
+    {
+        IReadOnlyList<RunDetails> runs = await session.Query<RunDetails>()
+            .Where(candidate => candidate.TaskId == taskId)
+            .ToListAsync(cancellationToken);
+
+        return runs.Sum(candidate => candidate.ReviewRerequestCount);
+    }
 
     /// <summary>
     /// The lap history a park message reads back, honest about the gap between it and the
-    /// lifetime spend <see cref="AutomaticActionsSpent"/> counts: <see
+    /// lifetime spend <paramref name="automaticActionsSpent"/> counts: <see
     /// cref="TaskAggregate.AutomaticLapHistory"/> only ever grows from an automatic
     /// <c>TaskReopened</c> that carried an <c>ObstructionSummary</c>, so the gap can hold budget
-    /// spent re-requesting a review after it errored (<see cref="RunDetails.ReviewRerequestCount"/>)
-    /// as well as an older-shape automatic reopen recorded before this obstruction vocabulary
-    /// existed. Rather than asserting which of those the gap it has not observed is (the
-    /// never-guess rule, AGENTS.md), this states the gap as a bare number.
+    /// spent re-requesting a review after it errored (<see cref="RunDetails.ReviewRerequestCount"/>,
+    /// summed across every run) as well as an older-shape automatic reopen recorded before this
+    /// obstruction vocabulary existed. Rather than asserting which of those the gap it has not
+    /// observed is (the never-guess rule, AGENTS.md), this states the gap as a bare number.
     /// </summary>
-    private static string DescribeAutomaticLapHistory(TaskAggregate task, RunDetails run)
+    private static string DescribeAutomaticLapHistory(TaskAggregate task, int automaticActionsSpent)
     {
-        int unitemized = AutomaticActionsSpent(task, run) - task.AutomaticLapHistory.Count;
+        int unitemized = automaticActionsSpent - task.AutomaticLapHistory.Count;
         string history = task.AutomaticLapHistory.Count > 0
             ? string.Join("; ", task.AutomaticLapHistory.Select((lap, index) => $"lap {index + 1}: {lap}"))
             : "no automatic lap recorded an obstruction";
@@ -1056,11 +1080,12 @@ public sealed class CloseoutEngine(
         // The lifetime ceiling is checked first and absolutely: it is the true runaway
         // backstop (Decisions Log #77, backlog 45), and no human engagement bypasses it —
         // only h9k pr resolve does.
-        if (AutomaticActionsSpent(task, run) >= _options.MaxAutomaticCloseoutRuns)
+        int automaticActionsSpent = await AutomaticActionsSpentAsync(session, task, cancellationToken);
+        if (automaticActionsSpent >= _options.MaxAutomaticCloseoutRuns)
         {
             string ceilingParkReason =
-                $"{reason} The lifetime automatic closeout budget spent ({AutomaticActionsSpent(task, run)}/{_options.MaxAutomaticCloseoutRuns} action(s)) — " +
-                $"{DescribeAutomaticLapHistory(task, run)}. " +
+                $"{reason} The lifetime automatic closeout budget spent ({automaticActionsSpent}/{_options.MaxAutomaticCloseoutRuns} action(s)) — " +
+                $"{DescribeAutomaticLapHistory(task, automaticActionsSpent)}. " +
                 "Fix or merge the pull request by hand, close it, or grant another attempt with h9k pr resolve.";
             await ParkAsync(session, run, ceilingParkReason, now, cancellationToken);
             return;
