@@ -37,6 +37,44 @@ public sealed class AttentionSurfaceTests
     }
 
     [Fact]
+    public void A_review_parked_run_offers_merge_ready_when_the_park_is_not_a_pre_gate_rebase_dispute()
+    {
+        Guid runId = DomainId.New();
+        RunDetails parked = StatusFixtures.Run(runId, RunState.ReviewParked, sessionProcessId: null);
+        parked.ParkedReason = "Automatic fix budget spent at cycle 3; findings in review-3-findings.md.";
+        parked.ReviewCycle = 3;
+
+        TaskListItem task = StatusFixtures.Task(TaskState.Claimed, runId);
+        task.FollowUpKind = FollowUpKind.Rebase;
+
+        TaskStatusRow row = StatusFixtures.Compose(task, parked);
+
+        row.Attention.Lever.Should().Contain("--merge-ready",
+            "a review cycle has already run, so ReviewResolveCommand's refusal does not apply here");
+    }
+
+    [Fact]
+    public void A_rebase_dispute_park_never_advises_the_merge_ready_form_the_platform_refuses()
+    {
+        // Mirrors ReviewResolveCommand's own refusal guard: task.FollowUpKind == Rebase &&
+        // run.ReviewCycle == 0 is exactly the park where --merge-ready throws a
+        // DomainConflictException, because nothing has been rebased yet. The pane must never
+        // advise a lever the platform will refuse.
+        Guid runId = DomainId.New();
+        RunDetails parked = StatusFixtures.Run(runId, RunState.ReviewParked, sessionProcessId: null);
+        parked.ParkedReason = "A follow-up could not honestly resolve a rebase conflict.";
+        parked.ReviewCycle = 0;
+
+        TaskListItem task = StatusFixtures.Task(TaskState.Claimed, runId);
+        task.FollowUpKind = FollowUpKind.Rebase;
+
+        TaskStatusRow row = StatusFixtures.Compose(task, parked);
+
+        row.Attention.Lever.Should().NotContain("--merge-ready");
+        row.Attention.Lever.Should().Contain("--needs-fixes");
+    }
+
+    [Fact]
     public void A_parked_closeout_names_its_reason_and_its_own_lever()
     {
         Guid runId = DomainId.New();

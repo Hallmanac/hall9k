@@ -71,7 +71,7 @@ internal static class AttentionComposer
             return new TaskAttention(
                 AttentionLevel.NeedsYou,
                 Reason(run.ParkedReason, "the pre-PR review loop parked without recording a reason"),
-                $"h9k review resolve {id} --merge-ready (or --needs-fixes \"…\")");
+                ReviewParkLever(task, run, id));
         }
 
         if (run?.State == Domain.Features.Run.RunState.CloseoutParked)
@@ -273,6 +273,18 @@ internal static class AttentionComposer
             run.ParkedReason, "token budget exhausted - resumes when the subscription window resets");
         return budgetParkedRuns > 1 ? $"{recorded} ({budgetParkedRuns} runs waiting)" : recorded;
     }
+
+    /// <summary>
+    /// The review-parked row's lever, honest about the one park where --merge-ready is refused.
+    /// A disputed rebase conflict raised before any review pass ran (<c>ReviewResolveCommand</c>'s
+    /// own guard: <c>task.FollowUpKind == Rebase &amp;&amp; run.ReviewCycle == 0</c>) has nothing to
+    /// call "ready" — nothing has been rebased yet — so advising --merge-ready here would be the
+    /// never-advise-a-refused-lever rule broken on the one row built to demonstrate it.
+    /// </summary>
+    private static string ReviewParkLever(TaskListItem task, RunDetails run, string id) =>
+        task.FollowUpKind == FollowUpKind.Rebase && run.ReviewCycle == 0
+            ? $"h9k review resolve {id} --needs-fixes \"<how to resolve the conflict>\""
+            : $"h9k review resolve {id} --merge-ready (or --needs-fixes \"…\")";
 
     private static string Reason(string? recorded, string absent) =>
         recorded.IsNotBlank() ? recorded : absent;
