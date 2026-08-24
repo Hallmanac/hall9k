@@ -1,5 +1,7 @@
 using System.ComponentModel;
+using System.Runtime.InteropServices;
 using System.Runtime.Versioning;
+using System.Security;
 using Hall9k.Cli.DaemonControl;
 using Hall9k.Cli.Infrastructure;
 using Hall9k.Cli.ProjectHomes;
@@ -270,24 +272,77 @@ public sealed class InstallCommand : Hall9kAsyncCommand<InstallCommand.Settings>
     [SupportedOSPlatform("windows")]
     internal static void EnsureOnWindowsPath(string binDirectory)
     {
-        using RegistryKey environmentKey = Registry.CurrentUser.OpenSubKey("Environment", writable: true)!;
-
-        string current = environmentKey.GetValue("Path", string.Empty, RegistryValueOptions.DoNotExpandEnvironmentNames)
-            as string ?? string.Empty;
-        string updated = ComputeUserPath(current, binDirectory);
-        if (updated == current)
+        RegistryKey? environmentKey;
+        try
         {
-            AnsiConsole.MarkupLineInterpolated($"[green]Already on PATH[/]: {binDirectory}");
+            environmentKey = Registry.CurrentUser.OpenSubKey("Environment", writable: true);
+        }
+        catch (SecurityException)
+        {
+            environmentKey = null;
+        }
+
+        if (environmentKey is null)
+        {
+            AnsiConsole.MarkupLineInterpolated(
+                $"[yellow]Could not open HKCU\\Environment to add h9k to your PATH[/] — add {binDirectory} to your user PATH by hand, or call h9k by its full path.");
             return;
         }
 
-        // Preserve whatever kind the value already carried (REG_EXPAND_SZ is Windows's own
-        // default for the user PATH) so existing %VAR% references survive the round trip;
-        // only a PATH this account never had before defaults to REG_SZ.
-        RegistryValueKind kind = current.Length == 0 ? RegistryValueKind.String : environmentKey.GetValueKind("Path");
-        environmentKey.SetValue("Path", updated, kind);
-        AnsiConsole.MarkupLineInterpolated(
-            $"[green]Added to PATH[/]: {binDirectory} (open a new terminal for it to take effect).");
+        using (environmentKey)
+        {
+            string current = environmentKey.GetValue("Path", string.Empty, RegistryValueOptions.DoNotExpandEnvironmentNames)
+                as string ?? string.Empty;
+            string updated = ComputeUserPath(current, binDirectory);
+            if (updated == current)
+            {
+                AnsiConsole.MarkupLineInterpolated($"[green]Already on PATH[/]: {binDirectory}");
+                return;
+            }
+
+            // Preserve whatever kind the value already carried (REG_EXPAND_SZ is Windows's own
+            // default for the user PATH) so existing %VAR% references survive the round trip;
+            // only a PATH this account never had before defaults to REG_SZ.
+            RegistryValueKind kind = current.Length == 0 ? RegistryValueKind.String : environmentKey.GetValueKind("Path");
+            environmentKey.SetValue("Path", updated, kind);
+
+            // SetValue alone only changes the registry; nothing already running (this
+            // process's own parent shell included) sees the new PATH until it re-reads its
+            // environment block, which happens only on WM_SETTINGCHANGE or a fresh logon —
+            // broadcasting it here is the difference between "a new terminal picks this up"
+            // being true or merely promised (the Unix side's equivalent defect, fixed in
+            // fa01ee6, for the registry instead of a shell rc file).
+            BroadcastEnvironmentChange();
+            AnsiConsole.MarkupLineInterpolated(
+                $"[green]Added to PATH[/]: {binDirectory} (open a new terminal for it to take effect).");
+        }
+    }
+
+    [SupportedOSPlatform("windows")]
+    [DllImport("user32.dll", SetLastError = true, CharSet = CharSet.Auto)]
+    private static extern IntPtr SendMessageTimeout(
+        IntPtr windowHandle,
+        uint message,
+        UIntPtr wParam,
+        string lParam,
+        uint flags,
+        uint timeoutMilliseconds,
+        out UIntPtr result);
+
+    /// <summary>Tells every top-level window — Explorer included — that an environment
+    /// variable changed, the same broadcast <see cref="Environment.SetEnvironmentVariable"/>
+    /// sends and that a direct registry write skips. Best-effort: a process that never
+    /// answers the broadcast (the two-second timeout) does not fail the install over a
+    /// PATH refresh it was always going to need a new terminal for anyway.</summary>
+    [SupportedOSPlatform("windows")]
+    private static void BroadcastEnvironmentChange()
+    {
+        const int HWND_BROADCAST = 0xffff;
+        const uint WM_SETTINGCHANGE = 0x001a;
+        const uint SMTO_ABORTIFHUNG = 0x0002;
+
+        _ = SendMessageTimeout(
+            HWND_BROADCAST, WM_SETTINGCHANGE, UIntPtr.Zero, "Environment", SMTO_ABORTIFHUNG, 2000, out _);
     }
 
     /// <summary>The pure part of <see cref="EnsureOnWindowsPath"/>: prepend
