@@ -12,7 +12,6 @@
   <ItemGroup>
     <PackageReference Include="Spectre.Console.Cli" />
     <PackageReference Include="NJsonSchema" />
-    <PackageReference Include="Microsoft.Win32.Registry" />
   </ItemGroup>
 
   <ItemGroup>
