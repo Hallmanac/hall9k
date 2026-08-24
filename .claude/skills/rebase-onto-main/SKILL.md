@@ -94,8 +94,12 @@ RESOLUTION: disputed
 Above it, name **every conflicting file**, what each side changed and why (read both
 commits' own history, not just the diff), and what you would do instead and why. When this
 skill is running inside a Hall9k follow-up run, that marker parks the run with your text
-saved beside it and nothing is pushed until a human decides (`h9k review resolve`). Park at
-most once: this is one honest attempt, not a negotiation.
+saved beside it and nothing is pushed until a human decides (`h9k review resolve`). One
+honest attempt per conflict, not a negotiation: never park twice over the SAME conflict a
+previous attempt already disputed. If a human resolves that dispute and the resumed attempt
+hits a genuinely undecidable DIFFERENT conflict, park again: that is not a second
+negotiation over the first one, and picking a side instead to avoid a second park would
+silently drop one side's work.
 
 When every conflict is resolved and the gates pass, close your summary with
 
