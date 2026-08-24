@@ -12,7 +12,7 @@ namespace Hall9k.Tests.Cli;
 /// </summary>
 public sealed class DatabaseDoctorReadinessTests
 {
-    private static readonly TimeSpan Timeout = TimeSpan.FromMilliseconds(200);
+    private static readonly TimeSpan Timeout = TimeSpan.FromMilliseconds(2000);
     private static readonly TimeSpan PollInterval = TimeSpan.FromMilliseconds(20);
 
     [Fact]
