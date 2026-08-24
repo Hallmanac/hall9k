@@ -204,8 +204,9 @@ public sealed class InstallCommand : Hall9kAsyncCommand<InstallCommand.Settings>
     }
 
     /// <summary>Copies the platform's binaries (and every other published file — DLLs,
-    /// runtimeconfig, native host — but not the skills/ subdirectory or the VERSION marker,
-    /// neither of which belongs in ~/.hall9k/bin) from an extracted release payload into staging.</summary>
+    /// runtimeconfig, native host, satellite-resource subdirectories — but not the skills/
+    /// subdirectory or the VERSION marker, neither of which belongs in ~/.hall9k/bin) from an
+    /// extracted release payload into staging.</summary>
     internal static void StageFromRelease(string fromRelease, string staging)
     {
         Directory.CreateDirectory(staging);
@@ -217,6 +218,30 @@ public sealed class InstallCommand : Hall9kAsyncCommand<InstallCommand.Settings>
             }
 
             File.Copy(file, Path.Combine(staging, Path.GetFileName(file)), overwrite: true);
+        }
+
+        foreach (string sourceDirectory in Directory.EnumerateDirectories(fromRelease))
+        {
+            if (Path.GetFileName(sourceDirectory) is "skills")
+            {
+                continue;
+            }
+
+            CopyDirectoryRecursively(sourceDirectory, Path.Combine(staging, Path.GetFileName(sourceDirectory)));
+        }
+    }
+
+    private static void CopyDirectoryRecursively(string sourceDirectory, string destinationDirectory)
+    {
+        Directory.CreateDirectory(destinationDirectory);
+        foreach (string file in Directory.EnumerateFiles(sourceDirectory))
+        {
+            File.Copy(file, Path.Combine(destinationDirectory, Path.GetFileName(file)), overwrite: true);
+        }
+
+        foreach (string nested in Directory.EnumerateDirectories(sourceDirectory))
+        {
+            CopyDirectoryRecursively(nested, Path.Combine(destinationDirectory, Path.GetFileName(nested)));
         }
     }
 
@@ -358,14 +383,21 @@ public sealed class InstallCommand : Hall9kAsyncCommand<InstallCommand.Settings>
     /// Publish lands in staging, then a directory swap replaces the live bin. Renames
     /// keep open files (a running daemon, this very h9k) valid on Unix — inodes outlive
     /// the paths — so a re-install under a running system is safe.
+    /// <para>
+    /// On Windows, renaming <paramref name="bin"/> succeeds even while <c>h9k.exe</c> is
+    /// running from it (a rename is a directory-entry change, not a delete), but
+    /// <c>h9k update</c> runs from the installed binary itself, so the retired copy still
+    /// holds the running process's image when this method tries to delete it — and Windows
+    /// refuses to delete an executable that is mapped into a running process. Deleting is
+    /// therefore best-effort: a copy Windows would not let go of is left as <c>bin.old</c>
+    /// and swept up by the next install or update, whose leading cleanup step is this same
+    /// best-effort delete on what is by then a retired copy nothing is running from.
+    /// </para>
     /// </summary>
     private static void SwapIntoPlace(string staging, string bin)
     {
         string retired = bin + ".old";
-        if (Directory.Exists(retired))
-        {
-            Directory.Delete(retired, recursive: true);
-        }
+        TryDelete(retired);
 
         if (Directory.Exists(bin))
         {
@@ -373,9 +405,24 @@ public sealed class InstallCommand : Hall9kAsyncCommand<InstallCommand.Settings>
         }
 
         Directory.Move(staging, bin);
-        if (Directory.Exists(retired))
+        TryDelete(retired);
+    }
+
+    private static void TryDelete(string directory)
+    {
+        if (!Directory.Exists(directory))
         {
-            Directory.Delete(retired, recursive: true);
+            return;
+        }
+
+        try
+        {
+            Directory.Delete(directory, recursive: true);
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            AnsiConsole.MarkupLineInterpolated(
+                $"[dim]Could not remove {directory} yet (still in use) — it will be cleaned up on the next install or update.[/]");
         }
     }
 
