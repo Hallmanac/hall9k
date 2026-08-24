@@ -161,7 +161,7 @@ public sealed class UpdateCommand(ProcessRunner? gh = null) : Hall9kAsyncCommand
                 Directory.Delete(staging, recursive: true);
             }
 
-            InstallCommand.StageFromRelease(extractDirectory, staging);
+            InstallCommand.StageFromRelease(extractDirectory, staging, cancellationToken);
 
             return await InstallCommand.FinishAsync(
                 staging,

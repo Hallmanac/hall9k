@@ -66,7 +66,7 @@ public sealed class InstallCommand : Hall9kAsyncCommand<InstallCommand.Settings>
                 return ExitCodes.Error;
             }
 
-            StageFromRelease(settings.FromRelease, staging);
+            StageFromRelease(settings.FromRelease, staging, cancellationToken);
             version = ReadVersionFile(settings.FromRelease) ?? CliVersion.Current;
             skillsSource = Path.Combine(settings.FromRelease, "skills");
         }
@@ -208,8 +208,11 @@ public sealed class InstallCommand : Hall9kAsyncCommand<InstallCommand.Settings>
     /// <summary>Copies the platform's binaries (and every other published file — DLLs,
     /// runtimeconfig, native host, satellite-resource subdirectories — but not the skills/
     /// subdirectory or the VERSION marker, neither of which belongs in ~/.hall9k/bin) from an
-    /// extracted release payload into staging.</summary>
-    internal static void StageFromRelease(string fromRelease, string staging)
+    /// extracted release payload into staging. Checked per file rather than left to run to
+    /// completion: the payload is a self-contained publish of two apps, tens of megabytes, and
+    /// the zip-extraction step immediately before this one earned its own per-entry
+    /// cancellation check for the same reason (60bc393).</summary>
+    internal static void StageFromRelease(string fromRelease, string staging, CancellationToken cancellationToken = default)
     {
         Directory.CreateDirectory(staging);
         foreach (string file in Directory.EnumerateFiles(fromRelease))
@@ -219,6 +222,7 @@ public sealed class InstallCommand : Hall9kAsyncCommand<InstallCommand.Settings>
                 continue;
             }
 
+            cancellationToken.ThrowIfCancellationRequested();
             File.Copy(file, Path.Combine(staging, Path.GetFileName(file)), overwrite: true);
         }
 
@@ -229,21 +233,22 @@ public sealed class InstallCommand : Hall9kAsyncCommand<InstallCommand.Settings>
                 continue;
             }
 
-            CopyDirectoryRecursively(sourceDirectory, Path.Combine(staging, Path.GetFileName(sourceDirectory)));
+            CopyDirectoryRecursively(sourceDirectory, Path.Combine(staging, Path.GetFileName(sourceDirectory)), cancellationToken);
         }
     }
 
-    private static void CopyDirectoryRecursively(string sourceDirectory, string destinationDirectory)
+    private static void CopyDirectoryRecursively(string sourceDirectory, string destinationDirectory, CancellationToken cancellationToken)
     {
         Directory.CreateDirectory(destinationDirectory);
         foreach (string file in Directory.EnumerateFiles(sourceDirectory))
         {
+            cancellationToken.ThrowIfCancellationRequested();
             File.Copy(file, Path.Combine(destinationDirectory, Path.GetFileName(file)), overwrite: true);
         }
 
         foreach (string nested in Directory.EnumerateDirectories(sourceDirectory))
         {
-            CopyDirectoryRecursively(nested, Path.Combine(destinationDirectory, Path.GetFileName(nested)));
+            CopyDirectoryRecursively(nested, Path.Combine(destinationDirectory, Path.GetFileName(nested)), cancellationToken);
         }
     }
 
