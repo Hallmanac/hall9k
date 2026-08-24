@@ -16,11 +16,12 @@ public sealed class GitHubPullRequestInspectorTests
     // response readable in C# source; JSON has no apostrophes to lose to it.
     private static string Payload(
         string author, string headOid, string threads, string reviews,
-        string reviewRequests = "") =>
+        string reviewRequests = "", string timelineItems = "") =>
         ("{'data':{'repository':{'pullRequest':{"
             + $"'author':{author},'headRefOid':'{headOid}',"
             + $"'reviewThreads':{{'nodes':[{threads}]}},"
             + $"'reviewRequests':{{'nodes':[{reviewRequests}]}},"
+            + $"'timelineItems':{{'nodes':[{timelineItems}]}},"
             + $"'latestReviews':{{'nodes':[{reviews}]}}"
             + "}}}}").Replace('\'', '"');
 
@@ -40,6 +41,10 @@ public sealed class GitHubPullRequestInspectorTests
 
     private static string RequestedReviewer(string login, string typeName) =>
         $"{{'requestedReviewer':{{'__typename':'{typeName}','login':'{login}'}}}}";
+
+    private static string ReviewRequestedEvent(string actorLogin, string actorTypeName, string reviewerLogin, string reviewerTypeName) =>
+        "{'actor':" + Actor(actorLogin, actorTypeName)
+            + $",'requestedReviewer':{{'__typename':'{reviewerTypeName}','login':'{reviewerLogin}'}}}}";
 
     /// <summary>
     /// Every unresolved thread is feedback; only the ones a person started say somebody is
@@ -199,5 +204,65 @@ public sealed class GitHubPullRequestInspectorTests
         GitHubPullRequestInspector.ReviewObservation observation = GitHubPullRequestInspector.ParseReviews(json);
 
         observation.PendingReviewRequestLogins.Should().Equal("teammate");
+    }
+
+    /// <summary>
+    /// The blanket bot exclusion above would also swallow the one event it exists to catch:
+    /// a human clicking "Re-request review" on Copilot through GitHub's own UI (origin
+    /// incident, PR 26, 2026-08-22). <c>reviewRequests</c> alone cannot tell that apart from
+    /// GitHub's automatic recreation, because it reports only who is currently requested,
+    /// never who asked — the review-request timeline's actor is the discriminator
+    /// (adversarial pre-PR review, cycle 2).
+    /// </summary>
+    [Fact]
+    public void A_human_re_requesting_Copilot_through_the_timeline_is_observed()
+    {
+        string json = Payload(
+            Actor("hallmanac", "User"), "cafe1", "", "",
+            reviewRequests: RequestedReviewer("copilot-pull-request-reviewer", "Bot"),
+            timelineItems: ReviewRequestedEvent("hallmanac", "User", "copilot-pull-request-reviewer", "Bot"));
+
+        GitHubPullRequestInspector.ReviewObservation observation = GitHubPullRequestInspector.ParseReviews(json);
+
+        observation.PendingReviewRequestLogins.Should().Equal("copilot-pull-request-reviewer");
+    }
+
+    /// <summary>
+    /// The same request, but the timeline's most recent ask was made by the Bot actor GitHub's
+    /// "review new commits automatically" setting recreates it under — still excluded, the
+    /// conservative default this discriminator falls back to whenever the requester cannot be
+    /// shown to be human.
+    /// </summary>
+    [Fact]
+    public void Copilot_re_requested_by_a_non_human_actor_stays_excluded()
+    {
+        string json = Payload(
+            Actor("hallmanac", "User"), "cafe1", "", "",
+            reviewRequests: RequestedReviewer("copilot-pull-request-reviewer", "Bot"),
+            timelineItems: ReviewRequestedEvent("github-actions", "Bot", "copilot-pull-request-reviewer", "Bot"));
+
+        GitHubPullRequestInspector.ReviewObservation observation = GitHubPullRequestInspector.ParseReviews(json);
+
+        observation.PendingReviewRequestLogins.Should().BeEmpty();
+    }
+
+    /// <summary>
+    /// Only the LAST timeline event per reviewer matters: an earlier human ask superseded by a
+    /// later automatic recreation (a subsequent push) must not read as the human's request
+    /// still standing.
+    /// </summary>
+    [Fact]
+    public void Only_the_most_recent_request_for_a_reviewer_is_consulted()
+    {
+        string json = Payload(
+            Actor("hallmanac", "User"), "cafe1", "", "",
+            reviewRequests: RequestedReviewer("copilot-pull-request-reviewer", "Bot"),
+            timelineItems: string.Join(",",
+                ReviewRequestedEvent("hallmanac", "User", "copilot-pull-request-reviewer", "Bot"),
+                ReviewRequestedEvent("github-actions", "Bot", "copilot-pull-request-reviewer", "Bot")));
+
+        GitHubPullRequestInspector.ReviewObservation observation = GitHubPullRequestInspector.ParseReviews(json);
+
+        observation.PendingReviewRequestLogins.Should().BeEmpty("the automatic re-request is the more recent one");
     }
 }

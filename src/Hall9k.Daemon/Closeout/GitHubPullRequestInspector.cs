@@ -60,6 +60,14 @@ public sealed class GitHubPullRequestInspector : IPullRequestInspector
               reviewRequests(first: 20) {
                 nodes { requestedReviewer { __typename ... on User { login } ... on Bot { login } } }
               }
+              timelineItems(last: 20, itemTypes: [REVIEW_REQUESTED_EVENT]) {
+                nodes {
+                  ... on ReviewRequestedEvent {
+                    actor { login __typename }
+                    requestedReviewer { __typename ... on User { login } ... on Bot { login } }
+                  }
+                }
+              }
               latestReviews(first: 100) {
                 nodes { author { login __typename } body url commit { oid } }
               }
@@ -244,13 +252,20 @@ public sealed class GitHubPullRequestInspector : IPullRequestInspector
     /// (CloseoutEngine.HasHumanEngagement also compares against RunDetails.RequestedReviewerLogins),
     /// is a human re-requesting a review through GitHub's own UI. Team requests carry no
     /// login the review-request REST endpoint or this comparison can use, so they are left
-    /// out rather than guessed at. A request GitHub's own automation recreated — Copilot's
-    /// "review new commits automatically" setting re-requests it on every push nobody asked
-    /// for — is excluded the same way ReadKind excludes it from the human thread count: by
-    /// __typename Bot, with the known-Copilot-login fallback for the cases that surface as
-    /// User (adversarial pre-PR review, 2026-08-24). Without this, a push the monitor's own
-    /// follow-up made recreates Copilot's pending request, and the next poll reads that
-    /// request back as a human re-requesting review.
+    /// out rather than guessed at.
+    /// <para>
+    /// A bot-typed reviewer (Copilot, or the unified app surfacing as User — the known-login
+    /// fallback) is excluded UNLESS <see cref="ReadLastReviewRequesters"/> shows the most
+    /// recent request for that reviewer was made by a human actor. <c>reviewRequests</c>
+    /// alone reports only who is currently requested, never who asked, so a request GitHub's
+    /// own automation recreated — Copilot's "review new commits automatically" setting
+    /// re-requests it on every push nobody asked for — would be indistinguishable from a
+    /// human deliberately re-requesting Copilot (the origin incident this whole signal exists
+    /// for, PR 26, 2026-08-22) without the requester's identity. When the timeline carries no
+    /// matching event — a malformed payload, or the cap on the query truncated it — the bot
+    /// reviewer stays excluded, the same conservative default as before this discriminator
+    /// existed.
+    /// </para>
     /// </summary>
     private static IReadOnlyList<string> ReadPendingReviewRequestLogins(JsonElement pullRequest)
     {
@@ -258,6 +273,8 @@ public sealed class GitHubPullRequestInspector : IPullRequestInspector
         {
             return [];
         }
+
+        Dictionary<string, PullRequestReviewer?> lastRequesterByReviewer = ReadLastReviewRequesters(pullRequest);
 
         List<string> logins = [];
         foreach (JsonElement request in requests.GetProperty("nodes").EnumerateArray())
@@ -272,15 +289,60 @@ public sealed class GitHubPullRequestInspector : IPullRequestInspector
 
             string? reviewerLogin = login.GetString();
             string typeName = reviewer.TryGetProperty("__typename", out JsonElement type) ? type.GetString() ?? "" : "";
-            if (typeName == "Bot" || IsCopilotLogin(reviewerLogin))
+            bool isBotReviewer = typeName == "Bot" || IsCopilotLogin(reviewerLogin);
+            if (isBotReviewer)
             {
-                continue;
+                bool requestedByHuman = reviewerLogin is not null
+                    && lastRequesterByReviewer.TryGetValue(reviewerLogin, out PullRequestReviewer? requester)
+                    && requester is { IsHuman: true };
+                if (!requestedByHuman)
+                {
+                    continue;
+                }
             }
 
             logins.Add(reviewerLogin ?? "");
         }
 
         return logins;
+    }
+
+    /// <summary>
+    /// Who most recently asked for each still-pending reviewer, read from the review-request
+    /// timeline rather than <c>reviewRequests</c> itself, which carries no requester. Keyed by
+    /// the requested reviewer's login; <c>timelineItems(last:)</c> returns events oldest-first,
+    /// so iterating in order and overwriting on each match leaves the most recent ask per
+    /// reviewer, which is all <see cref="ReadPendingReviewRequestLogins"/> needs to tell a
+    /// human's re-request apart from GitHub's own automation recreating the same request.
+    /// </summary>
+    private static Dictionary<string, PullRequestReviewer?> ReadLastReviewRequesters(JsonElement pullRequest)
+    {
+        Dictionary<string, PullRequestReviewer?> lastRequesterByReviewer = new(StringComparer.OrdinalIgnoreCase);
+        if (!pullRequest.TryGetProperty("timelineItems", out JsonElement timeline))
+        {
+            return lastRequesterByReviewer;
+        }
+
+        foreach (JsonElement item in timeline.GetProperty("nodes").EnumerateArray())
+        {
+            if (!item.TryGetProperty("requestedReviewer", out JsonElement reviewer)
+                || reviewer.ValueKind != JsonValueKind.Object
+                || !reviewer.TryGetProperty("login", out JsonElement login)
+                || login.ValueKind != JsonValueKind.String)
+            {
+                continue;
+            }
+
+            string? reviewerLogin = login.GetString();
+            if (reviewerLogin is null)
+            {
+                continue;
+            }
+
+            lastRequesterByReviewer[reviewerLogin] = ReadActor(item, "actor");
+        }
+
+        return lastRequesterByReviewer;
     }
 
     /// <summary>
@@ -406,10 +468,15 @@ public sealed class GitHubPullRequestInspector : IPullRequestInspector
     /// and misreading it as a person would spend the careful-with-humans path on a bot.
     /// A deleted account serializes author as null, and null is nobody: unattributable
     /// authorship is recorded as absent rather than guessed at either way.
+    /// <para>
+    /// <paramref name="propertyName"/> defaults to "author" (comments, reviews, the pull
+    /// request itself); a timeline event's actor field is named "actor" instead, and the
+    /// same actor-typing logic applies to it unchanged.
+    /// </para>
     /// </summary>
-    private static PullRequestReviewer? ReadActor(JsonElement authored)
+    private static PullRequestReviewer? ReadActor(JsonElement authored, string propertyName = "author")
     {
-        if (!authored.TryGetProperty("author", out JsonElement author) || author.ValueKind != JsonValueKind.Object)
+        if (!authored.TryGetProperty(propertyName, out JsonElement author) || author.ValueKind != JsonValueKind.Object)
         {
             return null;
         }
