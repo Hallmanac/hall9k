@@ -7,13 +7,26 @@ public readonly record struct HomeEntryWriteResult(bool Changed, string Director
 
 /// <summary>
 /// The filesystem half of a task or idea render (backlog 48): find the entry's directory (moving
-/// it if the slug changed since the last render), make sure <c>workspace/</c> exists beside it,
-/// and write the rendered file only when it actually differs. Shared by tasks and ideas because
-/// the shape is identical at both lifecycle stages — an id-plus-slug directory holding one
-/// generated file and a workspace for whatever accumulates beside it.
+/// it if the slug changed since the last render), and write the rendered file only when it
+/// actually differs. Shared by tasks and ideas, but the <c>workspace/</c> sibling is a task-only
+/// affordance (<paramref name="includeWorkspace"/> on <see cref="Write"/>): an idea's real
+/// discovery workspace lives at the global <c>~/.hall9k/ideas/&lt;id&gt;/workspace</c>, unrelated
+/// to the project home, and creating a same-looking-but-inert <c>workspace/</c> beside
+/// <c>idea.md</c> would invite a human to drop research material into a folder nothing ever reads
+/// (backlog 48's own DISCOVERY.md slice 3, "Relocations", is where the idea workspace moves here
+/// for real — deliberately not this task's).
 /// </summary>
 public static class HomeEntryWriter
 {
+    /// <summary>
+    /// A hidden per-directory marker carrying the entity's full id (backlog 48 cycle 2 review):
+    /// the short id in a directory name is 32 bits, which two entities in one large project can
+    /// collide on, so a prefix match alone is not enough to know a candidate directory actually
+    /// belongs to the id being rendered. Never shown as part of the mirror's own content and
+    /// excluded from <see cref="HomeEntryReconciler"/>'s "nothing but generated content" check.
+    /// </summary>
+    internal const string IdentityMarkerFileName = ".hall9k-id";
+
     /// <summary>
     /// Writes <paramref name="renderedContent"/> as <paramref name="fileName"/> under the entry's
     /// directory inside <paramref name="rootDirectory"/> (<c>tasks/</c> or <c>ideas/</c>).
@@ -21,12 +34,13 @@ public static class HomeEntryWriter
     /// If a directory already exists for this id under a different name — the slug changed because
     /// the objective or note was revised — it is moved to the current name rather than left behind
     /// as a stale copy, carrying its <c>workspace/</c> with it. If a directory already sits at both
-    /// the old and the new name (a previous move that could not complete, or two ids colliding on
-    /// one short-id prefix), the existing one is left alone rather than silently merged into.
+    /// the old and the new name (a previous move that could not complete), the existing one is left
+    /// alone rather than silently merged into.
     /// </para>
     /// </summary>
     public static HomeEntryWriteResult Write(
-        string rootDirectory, Guid id, string directoryName, string fileName, string renderedContent)
+        string rootDirectory, Guid id, string directoryName, string fileName, string renderedContent,
+        bool includeWorkspace = true)
     {
         string targetDirectory = Path.Combine(rootDirectory, directoryName);
 
@@ -34,13 +48,17 @@ public static class HomeEntryWriter
         // looking for a stale one, and no ambiguity about which of two same-prefix directories
         // (an interrupted move can leave both standing) is "the" existing one.
         if (!Directory.Exists(targetDirectory)
-            && FindExisting(rootDirectory, DomainId.Short(id), excludingName: directoryName) is { } stale)
+            && FindExisting(rootDirectory, id, excludingName: directoryName) is { } stale)
         {
             Directory.Move(stale, targetDirectory);
         }
 
         Directory.CreateDirectory(targetDirectory);
-        Directory.CreateDirectory(Path.Combine(targetDirectory, "workspace"));
+        EnsureIdentityMarker(targetDirectory, id);
+        if (includeWorkspace)
+        {
+            Directory.CreateDirectory(Path.Combine(targetDirectory, "workspace"));
+        }
 
         string filePath = Path.Combine(targetDirectory, fileName);
         string? current = File.Exists(filePath) ? File.ReadAllText(filePath) : null;
@@ -54,24 +72,50 @@ public static class HomeEntryWriter
     }
 
     /// <summary>
-    /// A directory already on disk for this short id under some other name — the slug changed
-    /// since the last render. Excludes <paramref name="excludingName"/> so a caller that already
-    /// confirmed the target does not exist never matches itself.
+    /// A directory already on disk for this id under some other name — the slug changed since the
+    /// last render. Matching is by short-id prefix first (cheap, and right in the overwhelming
+    /// majority of cases) and then confirmed against the full id recorded in
+    /// <see cref="IdentityMarkerFileName"/>, because the prefix alone is a 32-bit value and two
+    /// unrelated entities in a project with enough history can share one — without the
+    /// confirmation, a same-prefix directory belonging to a different task or idea would be
+    /// <c>Directory.Move</c>d into this entry's slot, merging unrelated content silently. A
+    /// same-prefix candidate with no marker, or a mismatched one, is not this entity's directory
+    /// and is left alone; the caller then creates a fresh directory instead of moving into it, and
+    /// reconciliation judges the untouched candidate on its own next sweep. Excludes
+    /// <paramref name="excludingName"/> so a caller that already confirmed the target does not
+    /// exist never matches itself.
     /// </summary>
-    private static string? FindExisting(string rootDirectory, string shortId, string excludingName)
+    private static string? FindExisting(string rootDirectory, Guid id, string excludingName)
     {
         if (!Directory.Exists(rootDirectory))
         {
             return null;
         }
 
-        string prefix = shortId + "-";
+        string prefix = DomainId.Short(id) + "-";
+        string fullId = id.ToString("N");
         return Directory.EnumerateDirectories(rootDirectory)
             .FirstOrDefault(directory =>
             {
                 string name = Path.GetFileName(directory);
-                return name.StartsWith(prefix, StringComparison.Ordinal)
-                    && !string.Equals(name, excludingName, StringComparison.Ordinal);
+                if (!name.StartsWith(prefix, StringComparison.Ordinal)
+                    || string.Equals(name, excludingName, StringComparison.Ordinal))
+                {
+                    return false;
+                }
+
+                string markerPath = Path.Combine(directory, IdentityMarkerFileName);
+                return File.Exists(markerPath) && File.ReadAllText(markerPath).Trim() == fullId;
             });
+    }
+
+    private static void EnsureIdentityMarker(string directoryPath, Guid id)
+    {
+        string markerPath = Path.Combine(directoryPath, IdentityMarkerFileName);
+        string fullId = id.ToString("N");
+        if (!File.Exists(markerPath) || File.ReadAllText(markerPath).Trim() != fullId)
+        {
+            File.WriteAllText(markerPath, fullId);
+        }
     }
 }
