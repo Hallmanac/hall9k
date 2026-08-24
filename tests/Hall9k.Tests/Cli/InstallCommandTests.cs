@@ -341,7 +341,7 @@ public sealed class InstallCommandTests : IDisposable
         File.WriteAllText(Path.Combine(fromRelease, "skills", "pr-summary", "SKILL.md"), "# pr-summary\n");
         string staging = Path.Combine(directory, "staging");
 
-        InstallCommand.StageFromRelease(fromRelease, staging);
+        InstallCommand.StageFromRelease(fromRelease, staging, CancellationToken.None);
 
         File.Exists(Path.Combine(staging, InstallCommand.BinaryFileName("h9k"))).Should().BeTrue();
         File.Exists(Path.Combine(staging, InstallCommand.BinaryFileName("h9kd"))).Should().BeTrue();
@@ -361,7 +361,7 @@ public sealed class InstallCommandTests : IDisposable
         File.WriteAllText(Path.Combine(fromRelease, "de", "h9k.resources.dll"), "resources\n");
         string staging = Path.Combine(directory, "staging");
 
-        InstallCommand.StageFromRelease(fromRelease, staging);
+        InstallCommand.StageFromRelease(fromRelease, staging, CancellationToken.None);
 
         File.Exists(Path.Combine(staging, "de", "h9k.resources.dll")).Should().BeTrue(
             "a satellite-resource subdirectory in the publish output is not the skills/ directory and belongs in ~/.hall9k/bin");
