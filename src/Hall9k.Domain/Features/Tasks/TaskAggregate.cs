@@ -58,7 +58,7 @@ public sealed class TaskAggregate
     /// <summary>
     /// This task's most recent automatic reopen's obstruction identity — the failing check
     /// name, or the exact set of unresolved review-thread ids, at the moment of dispatch
-    /// (Decisions Log #79, backlog 45). Compared against the NEXT automatic decision's own
+    /// (Decisions Log #80, backlog 45). Compared against the NEXT automatic decision's own
     /// obstruction: the same key means the lap made no progress and counts against
     /// <see cref="ConsecutiveObstructionLaps"/>; a different key means something cleared, so
     /// the count restarts at the new obstruction's first lap. Null before any automatic
@@ -70,14 +70,14 @@ public sealed class TaskAggregate
     /// Consecutive automatic laps spent on <see cref="LastAutomaticObstructionKey"/> without
     /// clearing it — the progress-based cap (DaemonOptions.MaxCloseoutLapsPerObstruction),
     /// deliberately separate from the lifetime ceiling <see cref="CloseoutAttempts"/> already
-    /// tracks (Decisions Log #79, backlog 45).
+    /// tracks (Decisions Log #80, backlog 45).
     /// </summary>
     public int ConsecutiveObstructionLaps { get; private set; }
 
     /// <summary>
     /// Every lap's obstruction summary, oldest first — the lap history a lifetime-ceiling
     /// park names, so the human sees what the machine already tried before spending their
-    /// own attention (Decisions Log #79, backlog 45). Cleared on a manual reopen along with
+    /// own attention (Decisions Log #80, backlog 45). Cleared on a manual reopen along with
     /// the counter it explains.
     /// </summary>
     private readonly List<string> _automaticLapHistory = [];
@@ -87,7 +87,7 @@ public sealed class TaskAggregate
     /// Human-started unresolved review-thread ids observed at the most recent automatic
     /// dispatch decision — what the next decision diffs against to recognize a newly opened
     /// human thread, one of the two mechanical human-engagement signals that grants a lap
-    /// regardless of the progress cap (Decisions Log #79, backlog 45).
+    /// regardless of the progress cap (Decisions Log #80, backlog 45).
     /// </summary>
     private readonly List<string> _knownHumanReviewThreadIds = [];
     public IReadOnlyList<string> KnownHumanReviewThreadIds => _knownHumanReviewThreadIds;

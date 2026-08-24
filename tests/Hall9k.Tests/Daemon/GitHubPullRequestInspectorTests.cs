@@ -163,7 +163,7 @@ public sealed class GitHubPullRequestInspectorTests
     }
 
     /// <summary>
-    /// Pending review requests are read by requestable actor type only (Decisions Log #79,
+    /// Pending review requests are read by requestable actor type only (Decisions Log #80,
     /// backlog 45): a login lets a later poll compare against what was already known to spot
     /// a human's own re-request, and a team carries no such login to compare, so it is left
     /// out rather than guessed at.

@@ -48,7 +48,7 @@ public sealed class RunAggregate
     /// <summary>The last errored review observed — the monitor's dedup key: one re-request per errored review.</summary>
     public string? ErroredReviewUrl { get; private set; }
 
-    /// <summary>When a human last granted this run's task a fresh closeout budget (h9k pr resolve, Decisions Log #79, backlog 45); null until one lands.</summary>
+    /// <summary>When a human last granted this run's task a fresh closeout budget (h9k pr resolve, Decisions Log #80, backlog 45); null until one lands.</summary>
     public DateTimeOffset? HumanGrantedAt { get; private set; }
 
     /// <summary>Errored-review re-requests issued for this run; adds to the task's CloseoutAttempts against the shared budget.</summary>
@@ -62,7 +62,7 @@ public sealed class RunAggregate
 
     /// <summary>
     /// Logins the platform itself has asked to review this run's pull request, either after
-    /// an errored review or as a countersign after fixes (Decisions Log #79, backlog 45) — what
+    /// an errored review or as a countersign after fixes (Decisions Log #80, backlog 45) — what
     /// CloseoutEngine.HasHumanEngagement excludes from "who newly has a pending review
     /// request" so its own re-request is never read back as a human's.
     /// </summary>

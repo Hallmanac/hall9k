@@ -204,7 +204,7 @@ public sealed class GitHubPullRequestInspector : IPullRequestInspector
         // Every unresolved thread counts, whoever started it (Decisions Log #62). The
         // starter is read only to tell a human's thread from a bot's, because the two get
         // different care in the follow-up — never to decide whether feedback exists. The id
-        // sets feed two different uses (Decisions Log #79, backlog 45): the full set is the
+        // sets feed two different uses (Decisions Log #80, backlog 45): the full set is the
         // closeout budget's mechanical obstruction key, and the human subset is what a later
         // poll diffs to recognize a newly opened human thread.
         List<string> threadIds = [];
@@ -247,7 +247,7 @@ public sealed class GitHubPullRequestInspector : IPullRequestInspector
 
     /// <summary>
     /// Who currently has a pending review request — the second human-engagement signal
-    /// (Decisions Log #79, backlog 45): a login that was not pending as of the task's last
+    /// (Decisions Log #80, backlog 45): a login that was not pending as of the task's last
     /// automatic decision, and that the platform did not itself just request
     /// (CloseoutEngine.HasHumanEngagement also compares against RunDetails.RequestedReviewerLogins),
     /// is a human re-requesting a review through GitHub's own UI. Team requests carry no

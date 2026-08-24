@@ -1033,7 +1033,7 @@ public sealed class CloseoutEngine(
     }
 
     /// <summary>
-    /// An obstruction's mechanical identity (Decisions Log #79, backlog 45): what the next
+    /// An obstruction's mechanical identity (Decisions Log #80, backlog 45): what the next
     /// automatic decision compares against to tell "still stuck on the same thing" from
     /// "something changed", by identity alone — never by judging severity or content. Checks
     /// key on the failing check's own name(s); review feedback keys on the exact set of
@@ -1052,7 +1052,7 @@ public sealed class CloseoutEngine(
 
     /// <summary>
     /// Whether something a human did on the pull request since the task's last automatic
-    /// decision is proof this loop is not running away (Decisions Log #79, backlog 45 — origin
+    /// decision is proof this loop is not running away (Decisions Log #80, backlog 45 — origin
     /// incident: Brian re-requesting a Copilot review on PR 26 while an unrelated flat budget
     /// was already spent on two other obstructions). Two mechanical signals, each a set grown
     /// since the comparison point TaskReopened recorded: a review thread neither this nor any
@@ -1106,7 +1106,7 @@ public sealed class CloseoutEngine(
         CancellationToken cancellationToken)
     {
         // The lifetime ceiling is checked first and absolutely: it is the true runaway
-        // backstop (Decisions Log #79, backlog 45), and no human engagement bypasses it —
+        // backstop (Decisions Log #80, backlog 45), and no human engagement bypasses it —
         // only h9k pr resolve does.
         int automaticActionsSpent = await AutomaticActionsSpentAsync(session, task, cancellationToken);
         if (automaticActionsSpent >= _options.MaxAutomaticCloseoutRuns)
