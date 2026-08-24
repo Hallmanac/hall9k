@@ -120,7 +120,7 @@ board and the blocker rule agree on the word.
 
 **Phase** is the line under a live row, and it is where the run vocabulary lives: `Dispatched`,
 `Running`, `Verifying`, `UnderReview`, `ReviewParked`, `AwaitingReview`, `ChecksFailing`,
-`ReviewPending`, `CloseoutParked`. It is derived, never stored, and it is composed from the run's
+`ReviewPending`, `Conflicting`, `CloseoutParked`. It is derived, never stored, and it is composed from the run's
 records **plus an observation of the recorded process**. A phase never claims a session is doing
 something without seeing the process: a session on another node reads as "liveness not observed
 here" rather than as either answer.
@@ -278,6 +278,11 @@ Per poll, in priority order:
   branch is deleted locally, remotely, and in remote-tracking refs.
 - **Closed without merge.** The run fails honestly. The worktree goes; the branch stays, because
   it still holds unmerged work.
+- **Conflicting with its base branch.** GitHub's own `mergeable` read, never inferred from how
+  long the branch has sat open. Checked ahead of checks and threads because both readings are
+  moot against a diff about to be superseded by a rebase, and every merge into the base makes
+  every other open pull request staler; nothing else was watching for it (backlog 44). A
+  follow-up run is dispatched onto the branch with the rebase-onto-main prompt.
 - **Checks completed and failing.** Never acted on while any check is still pending. A follow-up
   run is dispatched onto the branch with the fix-the-CI prompt.
 - **Unresolved review threads, from any reviewer.** A follow-up run is dispatched with the
@@ -311,7 +316,7 @@ attempt is a fresh grant.
 
 **The platform never merges.** That is the last human checkpoint and it stays one.
 
-Depth: [TASK-MODEL.md §2.2](../TASK-MODEL.md), Decisions Log #18, #22, #62, #80.
+Depth: [TASK-MODEL.md §2.2](../TASK-MODEL.md), Decisions Log #18, #22, #62, #80, #81.
 
 ## Owners, nodes, and connections
 
