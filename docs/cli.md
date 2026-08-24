@@ -178,9 +178,9 @@ connection before recording anything, which is what makes it safe for an agent t
 
 ### Install and the daemon
 
-`h9k install` · `h9k daemon start | stop | status` · `h9k daemon autostart enable | disable`
+`h9k install` · `h9k update` · `h9k daemon start | stop | status` · `h9k daemon autostart enable | disable`
 
-Covered in [operations.md](operations.md#the-daemon-lifecycle).
+Covered in [operations.md](operations.md#the-daemon-lifecycle) and [INSTALL.md](INSTALL.md).
 
 ## Identifiers
 

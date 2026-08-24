@@ -1,6 +1,6 @@
 # Hall9k documentation
 
-The on-ramp. Four pages, each answering a different question, none of them trying to be the deep
+The on-ramp. Five pages, each answering a different question, none of them trying to be the deep
 reference: where a subject has a deep document already, these pages point into it.
 
 Start at the [repository README](../README.md) for the pitch, a real session, and installation.
@@ -12,6 +12,7 @@ Then:
 | [cli.md](cli.md) | What can `h9k` do, and where is the authoritative list? (The `--help` tree, and this page is the map to it.) |
 | [operations.md](operations.md) | How do I run this? The daemon's lifecycle, configuration, what lands on disk, what `needs you` means, and the five recovery levers. |
 | [scope.md](scope.md) | What actually works, what is designed but unbuilt, and what this project will not do. |
+| [INSTALL.md](INSTALL.md) | How does a bare machine, with no repo checkout and no .NET SDK, get `h9k` installed and kept current? |
 
 ## The documents these point into
 
