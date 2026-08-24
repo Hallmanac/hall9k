@@ -168,7 +168,7 @@ public sealed class ReviewEngine(
                     await ParkAsync(context.RunId, context.TaskId,
                         $"A review pass (cycle {run.ReviewCycle}, {VerdictlessLensList(run)}) returned no parseable " +
                         "verdict, even after this cycle's re-prompt. " +
-                        $"Its output: {RunPaths.ReviewFindingsFile(context.RunId, run.ReviewCycle)}. " +
+                        $"Its output: {RunPaths.ReviewFindingsFile(run.RunDirectory, run.ReviewCycle)}. " +
                         "Judge the diff yourself, then resolve with h9k review resolve or abandon the task.",
                         cancellationToken);
                     return false;
@@ -184,7 +184,7 @@ public sealed class ReviewEngine(
                     break;
 
                 case ReviewPhase.FixNeeded when CappedTrack(run) is { } capped:
-                    await ParkAsync(context.RunId, context.TaskId, CapParkReason(context.RunId, run, capped), cancellationToken);
+                    await ParkAsync(context.RunId, context.TaskId, CapParkReason(run, capped), cancellationToken);
                     return false;
 
                 case ReviewPhase.FixNeeded:
@@ -199,8 +199,8 @@ public sealed class ReviewEngine(
                     await ParkAsync(context.RunId, context.TaskId,
                         "The fix run disputed a review finding — as not-a-defect, as human territory, or as " +
                         $"wrongly graded (cycle {run.ReviewCycle}). " +
-                        $"Review position: {RunPaths.ReviewFindingsFile(context.RunId, run.ReviewCycle)}; " +
-                        $"fix position: {RunPaths.ReviewFixPositionFile(context.RunId, run.ReviewCycle)}. " +
+                        $"Review position: {RunPaths.ReviewFindingsFile(run.RunDirectory, run.ReviewCycle)}; " +
+                        $"fix position: {RunPaths.ReviewFixPositionFile(run.RunDirectory, run.ReviewCycle)}. " +
                         "Decide between them, then resolve with h9k review resolve.", cancellationToken);
                     return false;
 
@@ -268,7 +268,7 @@ public sealed class ReviewEngine(
 
         ReviewPassSession pass = run.InFlightReviewPasses[0];
         string streamFile = RunPaths.SessionStreamFile(
-            context.RunId, ReviewArtifactName(run.ReviewCycle, pass.SessionId, pass.Lens));
+            run.RunDirectory, ReviewArtifactName(run.ReviewCycle, pass.SessionId, pass.Lens));
         AgentResult? result = await WaitForSessionResultAsync(
             context.RunId, streamFile, pass.ProcessId, pass.ProcessStartedAt, cancellationToken);
         if (result is { IsError: true, Summary: { } summary } && BudgetExhaustionParser.IsBudgetExhausted(summary))
@@ -311,7 +311,7 @@ public sealed class ReviewEngine(
         }
 
         string streamFile = RunPaths.SessionStreamFile(
-            context.RunId, FixArtifactName(run.ReviewCycle, sessionId));
+            run.RunDirectory, FixArtifactName(run.ReviewCycle, sessionId));
         AgentResult? result = await WaitForSessionResultAsync(
             context.RunId, streamFile, processId, processStartedAt, cancellationToken);
         if (result is { IsError: true, Summary: { } summary } && BudgetExhaustionParser.IsBudgetExhausted(summary))
@@ -332,7 +332,7 @@ public sealed class ReviewEngine(
             return false;
         }
 
-        await RecordFixResultAsync(context.RunId, run.ReviewCycle, result, cancellationToken);
+        await RecordFixResultAsync(context.RunId, run.RunDirectory, run.ReviewCycle, result, cancellationToken);
         return true;
     }
 
@@ -401,7 +401,7 @@ public sealed class ReviewEngine(
         // and each dispatch records the model it actually got, per pass.
         AgentModel model = _options.ResolveModel(AgentRole.Review, context.Task.Model, context.Project.Model);
         SpawnedAgent agent = await executor.SpawnAsync(new AgentSpawnRequest(
-            context.RunId, sessionId, context.Run.WorktreePath, prompt, mode, model,
+            context.RunId, sessionId, context.Run.WorktreePath, context.Run.RunDirectory, prompt, mode, model,
             context.Project.SkipPermissions, ReviewArtifactName(cycle, sessionId, lens))
         {
             Environment = ReviewSessionEnvironment,
@@ -454,7 +454,8 @@ public sealed class ReviewEngine(
         }
 
         SpawnedAgent agent = await executor.SpawnAsync(new AgentSpawnRequest(
-            context.RunId, artifactId, context.Run.WorktreePath, prompt, context.Run.ExecutorMode, model,
+            context.RunId, artifactId, context.Run.WorktreePath, context.Run.RunDirectory, prompt,
+            context.Run.ExecutorMode, model,
             context.Project.SkipPermissions, ReviewArtifactName(run.ReviewCycle, artifactId, verdictless.Lens),
             ResumeSessionId: resumeSessionId)
         {
@@ -485,7 +486,7 @@ public sealed class ReviewEngine(
     {
         string findings = humanFindings.IsNotBlank()
             ? $"Human review verdict (h9k review resolve): needs fixes.\n\n{humanFindings}"
-            : await File.ReadAllTextAsync(RunPaths.ReviewFindingsFile(context.RunId, cycle), cancellationToken);
+            : await File.ReadAllTextAsync(RunPaths.ReviewFindingsFile(context.Run.RunDirectory, cycle), cancellationToken);
         if (!await EnsureCurrentGenerationAsync(context, cancellationToken))
         {
             return false;
@@ -498,7 +499,7 @@ public sealed class ReviewEngine(
         // shape of work from producing them, so it resolves separately (log #33).
         AgentModel model = _options.ResolveModel(AgentRole.Fix, context.Task.Model, context.Project.Model);
         SpawnedAgent agent = await executor.SpawnAsync(new AgentSpawnRequest(
-            context.RunId, sessionId, context.Run.WorktreePath, prompt, mode, model,
+            context.RunId, sessionId, context.Run.WorktreePath, context.Run.RunDirectory, prompt, mode, model,
             context.Project.SkipPermissions, FixArtifactName(cycle, sessionId)), cancellationToken);
 
         await using IDocumentSession session = store.LightweightSession();
@@ -522,9 +523,10 @@ public sealed class ReviewEngine(
         CancellationToken cancellationToken)
     {
         Guid runId = context.RunId;
+        string runDirectory = run.RunDirectory;
         int cycle = run.ReviewCycle;
         string output = result.Summary ?? string.Empty;
-        await File.WriteAllTextAsync(LensFindingsFile(runId, cycle, pass.Lens), output, cancellationToken);
+        await File.WriteAllTextAsync(LensFindingsFile(runDirectory, cycle, pass.Lens), output, cancellationToken);
 
         ReviewVerdict verdict = ReviewResultParser.ParseVerdict(output);
         // A merge-ready pass reports no findings by contract; anything it listed anyway is not
@@ -549,7 +551,7 @@ public sealed class ReviewEngine(
         // next, and grading tracks against a pass nobody could read would be the guess the
         // re-prompt exists to avoid.
         IReadOnlyList<ReviewTrackPlan> plans = cycleConcluded && cycleVerdict != ReviewVerdict.Unknown
-            ? await PlanCycleAsync(runId, run, completed, cancellationToken)
+            ? await PlanCycleAsync(runDirectory, run, completed, cancellationToken)
             : [];
         IReadOnlyList<RoutedFinding> routed = await RouteFindingsAsync(context, run, cycle, plans, cancellationToken);
 
@@ -560,7 +562,7 @@ public sealed class ReviewEngine(
             runId, cycle, pass.Lens, verdict, now, [.. findings.Select(finding => finding.ToRecord())]));
         if (cycleConcluded)
         {
-            await WriteMergedFindingsAsync(runId, cycle, completed, plans, routed, cancellationToken);
+            await WriteMergedFindingsAsync(runDirectory, cycle, completed, plans, routed, cancellationToken);
             session.Events.Append(runId, new ReviewCompleted(runId, cycle, cycleVerdict, now));
             foreach (ReviewTrackPlan plan in plans.Where(plan => !plan.Continues))
             {
@@ -587,7 +589,7 @@ public sealed class ReviewEngine(
     /// policy over them is pure.
     /// </summary>
     private async Task<IReadOnlyList<ReviewTrackPlan>> PlanCycleAsync(
-        Guid runId, RunAggregate run, IReadOnlyList<ReviewPassResult> completed, CancellationToken cancellationToken)
+        string runDirectory, RunAggregate run, IReadOnlyList<ReviewPassResult> completed, CancellationToken cancellationToken)
     {
         List<ReviewTrackPlan> plans = [];
         foreach (ReviewPassResult finished in completed.Where(
@@ -595,7 +597,7 @@ public sealed class ReviewEngine(
         {
             plans.Add(ReviewTrackPolicy.Decide(
                 finished.Lens, run.ReviewCycle, finished.Verdict,
-                await ReadFindingsAsync(runId, run.ReviewCycle, finished, cancellationToken),
+                await ReadFindingsAsync(runDirectory, run.ReviewCycle, finished, cancellationToken),
                 _options));
         }
 
@@ -603,9 +605,9 @@ public sealed class ReviewEngine(
     }
 
     private static async Task<IReadOnlyList<ReviewFinding>> ReadFindingsAsync(
-        Guid runId, int cycle, ReviewPassResult pass, CancellationToken cancellationToken)
+        string runDirectory, int cycle, ReviewPassResult pass, CancellationToken cancellationToken)
     {
-        string path = LensFindingsFile(runId, cycle, pass.Lens);
+        string path = LensFindingsFile(runDirectory, cycle, pass.Lens);
         return pass.Verdict == ReviewVerdict.NeedsFixes && File.Exists(path)
             ? ReviewResultParser.ParseFindings(await File.ReadAllTextAsync(path, cancellationToken))
             : [];
@@ -830,10 +832,11 @@ public sealed class ReviewEngine(
             residuals.FixedUnreviewed, residuals.Routed, residuals.RoutingFailed);
     }
 
-    private async Task RecordFixResultAsync(Guid runId, int cycle, AgentResult result, CancellationToken cancellationToken)
+    private async Task RecordFixResultAsync(
+        Guid runId, string runDirectory, int cycle, AgentResult result, CancellationToken cancellationToken)
     {
         string summary = result.Summary ?? string.Empty;
-        await File.WriteAllTextAsync(RunPaths.ReviewFixPositionFile(runId, cycle), summary, cancellationToken);
+        await File.WriteAllTextAsync(RunPaths.ReviewFixPositionFile(runDirectory, cycle), summary, cancellationToken);
 
         ReviewFixOutcome outcome = ReviewResultParser.ParseFixOutcome(summary);
         DateTimeOffset now = DateTimeOffset.UtcNow;
@@ -876,7 +879,7 @@ public sealed class ReviewEngine(
     /// </para>
     /// </summary>
     private static async Task WriteMergedFindingsAsync(
-        Guid runId, int cycle, IReadOnlyList<ReviewPassResult> passes, IReadOnlyList<ReviewTrackPlan> plans,
+        string runDirectory, int cycle, IReadOnlyList<ReviewPassResult> passes, IReadOnlyList<ReviewTrackPlan> plans,
         IReadOnlyList<RoutedFinding> routed, CancellationToken cancellationToken)
     {
         StringBuilder merged = new();
@@ -886,7 +889,7 @@ public sealed class ReviewEngine(
         merged.AppendLine("context. A finding belongs to the lens whose section it appears under.");
         foreach (ReviewPassResult pass in passes)
         {
-            string path = LensFindingsFile(runId, cycle, pass.Lens);
+            string path = LensFindingsFile(runDirectory, cycle, pass.Lens);
             string text = File.Exists(path)
                 ? await File.ReadAllTextAsync(path, cancellationToken)
                 : string.Empty;
@@ -898,7 +901,7 @@ public sealed class ReviewEngine(
 
         AppendDispositions(merged, cycle, plans, routed);
         await File.WriteAllTextAsync(
-            RunPaths.ReviewFindingsFile(runId, cycle), merged.ToString(), cancellationToken);
+            RunPaths.ReviewFindingsFile(runDirectory, cycle), merged.ToString(), cancellationToken);
     }
 
     /// <summary>
@@ -1259,9 +1262,9 @@ public sealed class ReviewEngine(
     /// try", while adversarial running out is "the machine kept finding real problems, and
     /// somebody should look at why" — not a failure, and not a budget quietly spent.
     /// </summary>
-    private string CapParkReason(Guid runId, RunAggregate run, ReviewLens capped)
+    private string CapParkReason(RunAggregate run, ReviewLens capped)
     {
-        string findings = RunPaths.ReviewFindingsFile(runId, run.ReviewCycle);
+        string findings = RunPaths.ReviewFindingsFile(run.RunDirectory, run.ReviewCycle);
         string levers =
             $"Unresolved findings: {findings}. Fix in the worktree and resolve with " +
             "h9k review resolve --merge-ready, grant a fresh round with --needs-fixes, or abandon the task.";
@@ -1344,8 +1347,8 @@ public sealed class ReviewEngine(
     /// the "something must be fixed" placeholder a needs-fixes verdict implies, which can
     /// settle a track that in fact found something.
     /// </summary>
-    private static string LensFindingsFile(Guid runId, int cycle, ReviewLens lens) =>
-        RunPaths.ReviewLensFindingsFile(runId, cycle, lens.Slug.IsBlank() ? UnlensedSlug : lens.Slug);
+    private static string LensFindingsFile(string runDirectory, int cycle, ReviewLens lens) =>
+        RunPaths.ReviewLensFindingsFile(runDirectory, cycle, lens.Slug.IsBlank() ? UnlensedSlug : lens.Slug);
 
     private static string LensLabel(ReviewLens lens) =>
         lens.Slug.IsBlank() ? "review" : $"{lens.Slug} review";

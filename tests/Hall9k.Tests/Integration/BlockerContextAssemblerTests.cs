@@ -61,9 +61,9 @@ public sealed class BlockerContextAssemblerTests(PostgresFixture postgres) : ICl
             Spawns.Add(request);
             int pid = _nextPid++;
             string streamFile = request.SessionArtifactName is { } name
-                ? RunPaths.SessionStreamFile(request.RunId, name)
-                : RunPaths.StreamFile(request.RunId);
-            Directory.CreateDirectory(RunPaths.RunDirectory(request.RunId));
+                ? RunPaths.SessionStreamFile(request.RunDirectory, name)
+                : RunPaths.StreamFile(request.RunDirectory);
+            Directory.CreateDirectory(request.RunDirectory);
 
             if (summary is null)
             {
@@ -97,7 +97,7 @@ public sealed class BlockerContextAssemblerTests(PostgresFixture postgres) : ICl
         FakeProcessManager processes = new();
         ScriptedExecutor executor = new("condensed", processes);
         string? context = await NewAssembler(store, executor, processes, threshold: 3)
-            .AssembleAsync(runId, dependent, SomeProject(), "/tmp/worktree", ExecutorMode.Subscription, cts.Token);
+            .AssembleAsync(runId, RunPaths.GlobalDirectory(runId), dependent, SomeProject(), "/tmp/worktree", ExecutorMode.Subscription, cts.Token);
 
         executor.Spawns.Should().BeEmpty("three blockers is not above a threshold of three");
         context.Should().Contain("Handoff from blocker 1");
@@ -118,7 +118,7 @@ public sealed class BlockerContextAssemblerTests(PostgresFixture postgres) : ICl
         FakeProcessManager processes = new();
         ScriptedExecutor executor = new("## What your blockers handed down\n\nAll four agreed on one convention.", processes);
         string? context = await NewAssembler(store, executor, processes, threshold: 3)
-            .AssembleAsync(runId, dependent, SomeProject(), "/tmp/worktree", ExecutorMode.Subscription, cts.Token);
+            .AssembleAsync(runId, RunPaths.GlobalDirectory(runId), dependent, SomeProject(), "/tmp/worktree", ExecutorMode.Subscription, cts.Token);
 
         executor.Spawns.Should().ContainSingle("four blockers is above a threshold of three");
         executor.Spawns[0].Prompt.Should().Contain("Handoff from blocker 1",
@@ -130,7 +130,7 @@ public sealed class BlockerContextAssemblerTests(PostgresFixture postgres) : ICl
         run.ContextSynthesisSessions.Should().Be(1, "the pass is recorded on the run that paid for it");
         run.OutputTokens.Should().Be(20, "a platform-dispatched session records its tokens (log #30)");
 
-        string artifact = await File.ReadAllTextAsync(RunPaths.BlockerContextFile(runId), cts.Token);
+        string artifact = await File.ReadAllTextAsync(RunPaths.BlockerContextFile(RunPaths.GlobalDirectory(runId)), cts.Token);
         artifact.Should().Contain("All four agreed",
             "what the agent was actually handed is inspectable beside the run's other artifacts");
     }
@@ -147,7 +147,7 @@ public sealed class BlockerContextAssemblerTests(PostgresFixture postgres) : ICl
         FakeProcessManager processes = new();
         ScriptedExecutor executor = new(null, processes);
         string? context = await NewAssembler(store, executor, processes, threshold: 3)
-            .AssembleAsync(runId, dependent, SomeProject(), "/tmp/worktree", ExecutorMode.Subscription, cts.Token);
+            .AssembleAsync(runId, RunPaths.GlobalDirectory(runId), dependent, SomeProject(), "/tmp/worktree", ExecutorMode.Subscription, cts.Token);
 
         context.Should().Contain("Handoff from blocker 1",
             "a dead condenser costs the run its condensing, never its context");
@@ -175,7 +175,7 @@ public sealed class BlockerContextAssemblerTests(PostgresFixture postgres) : ICl
         ScriptedExecutor executor = new(
             "Sure — here is a summary of what the four blockers said.", processes);
         string? context = await NewAssembler(store, executor, processes, threshold: 3)
-            .AssembleAsync(runId, dependent, SomeProject(), "/tmp/worktree", ExecutorMode.Subscription, cts.Token);
+            .AssembleAsync(runId, RunPaths.GlobalDirectory(runId), dependent, SomeProject(), "/tmp/worktree", ExecutorMode.Subscription, cts.Token);
 
         context.Should().Contain("Handoff from blocker 1",
             "a document the prompt cannot label is no more usable than an empty one");
@@ -212,7 +212,7 @@ public sealed class BlockerContextAssemblerTests(PostgresFixture postgres) : ICl
             NullLogger<BlockerContextAssembler>.Instance);
 
         string? context = await assembler.AssembleAsync(
-            runId, dependent, SomeProject(), "/tmp/worktree", ExecutorMode.Subscription, cts.Token);
+            runId, RunPaths.GlobalDirectory(runId), dependent, SomeProject(), "/tmp/worktree", ExecutorMode.Subscription, cts.Token);
 
         context.Should().Contain("Handoff from blocker 1",
             "the wait ends, but the context the run already had does not");
@@ -267,7 +267,7 @@ public sealed class BlockerContextAssemblerTests(PostgresFixture postgres) : ICl
             NullLogger<BlockerContextAssembler>.Instance);
 
         Func<Task> assemble = () => assembler.AssembleAsync(
-            runId, dependent, SomeProject(), "/tmp/worktree", ExecutorMode.Subscription, shutdown.Token);
+            runId, RunPaths.GlobalDirectory(runId), dependent, SomeProject(), "/tmp/worktree", ExecutorMode.Subscription, shutdown.Token);
 
         await assemble.Should().ThrowAsync<OperationCanceledException>(
             "cancellation of the daemon itself propagates as it should, and is not a timeout");
@@ -304,7 +304,7 @@ public sealed class BlockerContextAssemblerTests(PostgresFixture postgres) : ICl
         FakeProcessManager processes = new();
         ScriptedExecutor executor = new("condensed", processes);
         string? context = await NewAssembler(store, executor, processes, threshold: 3)
-            .AssembleAsync(runId, dependent, SomeProject(), "/tmp/worktree", ExecutorMode.Subscription, cts.Token);
+            .AssembleAsync(runId, RunPaths.GlobalDirectory(runId), dependent, SomeProject(), "/tmp/worktree", ExecutorMode.Subscription, cts.Token);
 
         context.Should().BeNull("historical tasks declared no edges and dispatch exactly as they always did");
         executor.Spawns.Should().BeEmpty();

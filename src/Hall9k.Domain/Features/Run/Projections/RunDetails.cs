@@ -1,4 +1,5 @@
 using Hall9k.Domain.Features.Run.Events;
+using Hall9k.Domain.Infrastructure.Storage;
 using Hall9k.Domain.Shared.ValueObjects;
 using JasperFx.Events;
 using Marten.Events.Aggregation;
@@ -15,6 +16,13 @@ public sealed class RunDetails
     public Guid SessionId { get; set; }
     public string WorktreePath { get; set; } = string.Empty;
     public string Branch { get; set; } = string.Empty;
+    /// <summary>
+    /// Where this run's artifacts live, as recorded on <see cref="RunDispatched"/>. A stream
+    /// written before the field existed falls back to <see cref="RunPaths.GlobalDirectory"/> —
+    /// the same place its files have always actually been — so every reader can use this
+    /// property directly with no fallback of its own to remember.
+    /// </summary>
+    public string RunDirectory { get; set; } = string.Empty;
     public string ExecutorMode { get; set; } = string.Empty;
     /// <summary>The model the build session was spawned on (Decisions Log #33); Unknown for runs dispatched before the chain existed.</summary>
     public AgentModel Model { get; set; } = AgentModel.Unknown;
@@ -146,6 +154,9 @@ public sealed class RunDetailsProjection : SingleStreamProjection<RunDetails, Gu
         SessionId = @event.Data.SessionId,
         WorktreePath = @event.Data.WorktreePath,
         Branch = @event.Data.Branch,
+        RunDirectory = @event.Data.RunDirectory.IsNotBlank()
+            ? @event.Data.RunDirectory
+            : RunPaths.GlobalDirectory(@event.Data.Id),
         ExecutorMode = @event.Data.ExecutorMode,
         Model = @event.Data.Model ?? AgentModel.Unknown,
         State = RunState.Dispatched,

@@ -47,7 +47,7 @@ public sealed class LogsCommand : Hall9kAsyncCommand<LogsCommand.Settings>
             : runs.FirstOrDefault(r => r.Id.ToString("N").EndsWith(settings.Run.Replace("-", ""), StringComparison.OrdinalIgnoreCase))
                 ?? throw new DomainNotFoundException($"No run matching '{settings.Run}' on task {taskId}.");
 
-        string streamFile = RunPaths.StreamFile(run.Id);
+        string streamFile = RunPaths.StreamFile(run.RunDirectory);
         if (!File.Exists(streamFile))
         {
             throw new DomainNotFoundException(

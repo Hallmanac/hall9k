@@ -257,8 +257,8 @@ public sealed class DispatchCeilingTests(PostgresFixture postgres) : IClassFixtu
 
         // The agent's terminal result landed on disk while nothing was tailing it; 4242 is never
         // marked alive, so the sweep's liveness check finds the process gone.
-        Directory.CreateDirectory(RunPaths.RunDirectory(claimed.RunId));
-        await File.WriteAllTextAsync(RunPaths.StreamFile(claimed.RunId),
+        Directory.CreateDirectory(RunPaths.GlobalDirectory(claimed.RunId));
+        await File.WriteAllTextAsync(RunPaths.StreamFile(RunPaths.GlobalDirectory(claimed.RunId)),
             $"{{\"type\":\"assistant\"}}\n{ResultLine}\n", cts.Token);
 
         (await engine.SweepExpiredLeasesAsync(cts.Token)).Should().Be(1,

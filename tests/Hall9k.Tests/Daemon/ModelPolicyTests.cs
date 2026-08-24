@@ -85,7 +85,7 @@ public sealed class ModelPolicyTests
     {
         Guid runId = DomainId.New();
         AgentSpawnRequest request = new(
-            runId, DomainId.New(), "/tmp/worktree", "prompt", ExecutorMode.Subscription,
+            runId, DomainId.New(), "/tmp/worktree", "/tmp/run", "prompt", ExecutorMode.Subscription,
             AgentModel.FromInput("claude-opus-5[1m]"), SkipPermissions: true);
 
         string[] arguments = [.. ClaudeExecutor.Arguments(request)];
@@ -100,7 +100,7 @@ public sealed class ModelPolicyTests
     {
         Guid resumed = DomainId.New();
         AgentSpawnRequest request = new(
-            DomainId.New(), DomainId.New(), "/tmp/worktree", "conclude", ExecutorMode.Subscription,
+            DomainId.New(), DomainId.New(), "/tmp/worktree", "/tmp/run", "conclude", ExecutorMode.Subscription,
             AgentModel.Sonnet, SkipPermissions: false, SessionArtifactName: "review-1-abc",
             ResumeSessionId: resumed);
 
@@ -117,7 +117,7 @@ public sealed class ModelPolicyTests
         using CancellationTokenSource cts = new(TimeSpan.FromSeconds(30));
         ClaudeExecutor executor = new(NullLogger<ClaudeExecutor>.Instance);
         AgentSpawnRequest request = new(
-            DomainId.New(), DomainId.New(), "/tmp/worktree", "prompt", ExecutorMode.Subscription,
+            DomainId.New(), DomainId.New(), "/tmp/worktree", "/tmp/run", "prompt", ExecutorMode.Subscription,
             AgentModel.Unknown, SkipPermissions: false);
 
         Func<Task> spawn = () => executor.SpawnAsync(request, cts.Token);

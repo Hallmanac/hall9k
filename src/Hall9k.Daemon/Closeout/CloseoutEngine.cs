@@ -802,12 +802,12 @@ public sealed class CloseoutEngine(
     {
         List<HandoffParser.RunHandoff> authored = [];
         HandoffOutcome absence = HandoffOutcome.NotCaptured;
-        foreach (Guid runId in await MergedRunsAsync(session, completing, cancellationToken))
+        foreach (RunDetails run in await MergedRunsAsync(session, completing, cancellationToken))
         {
-            (HandoffOutcome outcome, string? text) = await ReadHandoffAsync(runId, cancellationToken);
+            (HandoffOutcome outcome, string? text) = await ReadHandoffAsync(run.Id, run.RunDirectory, cancellationToken);
             if (text.IsNotBlank())
             {
-                authored.Add(new HandoffParser.RunHandoff(runId, text));
+                authored.Add(new HandoffParser.RunHandoff(run.Id, run.RunDirectory, text));
                 continue;
             }
 
@@ -820,7 +820,7 @@ public sealed class CloseoutEngine(
                 completing.Id,
                 HandoffOutcome.Captured,
                 HandoffParser.BoundForEvent(
-                    HandoffParser.Compose(authored), [.. authored.Select(handoff => handoff.RunId)]),
+                    HandoffParser.Compose(authored), [.. authored.Select(handoff => handoff.RunDirectory)]),
                 now);
     }
 
@@ -829,7 +829,7 @@ public sealed class CloseoutEngine(
     /// work leads the composed handoff. The completing run is appended if the projection did
     /// not return it, because the run being closed out is a fact this method already holds.
     /// </summary>
-    private static async Task<IReadOnlyList<Guid>> MergedRunsAsync(
+    private static async Task<IReadOnlyList<RunDetails>> MergedRunsAsync(
         IQuerySession session, RunDetails completing, CancellationToken cancellationToken)
     {
         Guid taskId = completing.TaskId;
@@ -837,16 +837,15 @@ public sealed class CloseoutEngine(
             .Where(run => run.TaskId == taskId)
             .ToListAsync(cancellationToken);
 
-        List<Guid> merged =
+        List<RunDetails> merged =
         [
             .. runs
                 .Where(run => run.State != RunState.Failed && run.State != RunState.Killed)
                 .OrderBy(run => run.DispatchedAt)
-                .ThenBy(run => run.Id)
-                .Select(run => run.Id),
+                .ThenBy(run => run.Id),
         ];
 
-        return merged.Contains(completing.Id) ? merged : [.. merged, completing.Id];
+        return merged.Any(run => run.Id == completing.Id) ? merged : [.. merged, completing];
     }
 
     /// <summary>
@@ -876,9 +875,9 @@ public sealed class CloseoutEngine(
     /// <see cref="HandoffOutcome.Unknown"/> rather than any of the three.
     /// </summary>
     private async Task<(HandoffOutcome Outcome, string? Handoff)> ReadHandoffAsync(
-        Guid runId, CancellationToken cancellationToken)
+        Guid runId, string runDirectory, CancellationToken cancellationToken)
     {
-        string path = RunPaths.HandoffFile(runId);
+        string path = RunPaths.HandoffFile(runDirectory);
         try
         {
             if (!File.Exists(path))

@@ -69,23 +69,23 @@ public static class HandoffParser
     /// truncation stated and the whole copy named, because a silently clipped handoff reads
     /// exactly like a complete one (the AGENTS.md never-guess rule, applied to omission).
     /// </summary>
-    public static string BoundForEvent(string handoff, Guid runId) => BoundForEvent(handoff, [runId]);
+    public static string BoundForEvent(string handoff, string runDirectory) => BoundForEvent(handoff, [runDirectory]);
 
     /// <summary>
     /// The same bound over a composed handoff, naming every run directory the text was drawn
     /// from. Composition is why the plural matters: truncation can cut a later run's section
     /// away entirely, so the note has to say where each whole copy still lives.
     /// </summary>
-    public static string BoundForEvent(string handoff, IReadOnlyList<Guid> runIds) =>
+    public static string BoundForEvent(string handoff, IReadOnlyList<string> runDirectories) =>
         handoff.Length <= MaxEventLength
             ? handoff
             : handoff[..MaxEventLength].TrimEnd()
                 + $"\n\n[Truncated at {MaxEventLength} characters. The whole handoff"
-                + (runIds.Count == 1 ? " is at " : "s are at ")
-                + string.Join(", ", runIds.Select(RunPaths.HandoffFile)) + ".]";
+                + (runDirectories.Count == 1 ? " is at " : "s are at ")
+                + string.Join(", ", runDirectories.Select(RunPaths.HandoffFile)) + ".]";
 
     /// <summary>One run's authored handoff, on its way into the task's composed one.</summary>
-    public sealed record RunHandoff(Guid RunId, string Text);
+    public sealed record RunHandoff(Guid RunId, string RunDirectory, string Text);
 
     /// <summary>
     /// The handoff the task hands down, composed from every run that carried its pull request

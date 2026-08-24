@@ -1,4 +1,5 @@
 using Hall9k.Domain.Features.Run.Events;
+using Hall9k.Domain.Infrastructure.Storage;
 using Hall9k.Domain.Shared.ValueObjects;
 
 namespace Hall9k.Domain.Features.Run;
@@ -13,6 +14,13 @@ public sealed class RunAggregate
     public Guid SessionId { get; private set; }
     public string WorktreePath { get; private set; } = string.Empty;
     public string Branch { get; private set; } = string.Empty;
+    /// <summary>
+    /// Where this run's artifacts live, as recorded on <see cref="RunDispatched"/>. A stream
+    /// written before the field existed falls back to <see cref="RunPaths.GlobalDirectory"/> —
+    /// the same place its files have always actually been — so every reader can use this
+    /// property directly with no fallback of its own to remember.
+    /// </summary>
+    public string RunDirectory { get; private set; } = string.Empty;
     public ExecutorMode ExecutorMode { get; private set; } = ExecutorMode.Unknown;
     /// <summary>The model the build session was spawned on, as resolved at dispatch (log #33). Unknown on streams written before the chain existed.</summary>
     public AgentModel Model { get; private set; } = AgentModel.Unknown;
@@ -177,6 +185,7 @@ public sealed class RunAggregate
         SessionId = @event.SessionId;
         WorktreePath = @event.WorktreePath;
         Branch = @event.Branch;
+        RunDirectory = @event.RunDirectory.IsNotBlank() ? @event.RunDirectory : RunPaths.GlobalDirectory(@event.Id);
         ExecutorMode = @event.ExecutorMode;
         Model = @event.Model ?? AgentModel.Unknown;
         DispatchedAt = @event.DispatchedAt;

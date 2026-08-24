@@ -115,7 +115,7 @@ public sealed class CardPublicationEngineTests(PostgresFixture postgres) : IClas
         {
             Spawns.Add(request);
             int pid = _nextPid++;
-            Directory.CreateDirectory(RunPaths.RunDirectory(request.RunId));
+            Directory.CreateDirectory(request.RunDirectory);
 
             if (summary is null)
             {
@@ -151,7 +151,7 @@ public sealed class CardPublicationEngineTests(PostgresFixture postgres) : IClas
                     ["usage"] = new Dictionary<string, long> { ["input_tokens"] = 10, ["output_tokens"] = 20 },
                     ["result"] = summary,
                 });
-                await File.WriteAllTextAsync(RunPaths.StreamFile(request.RunId), line + "\n", cancellationToken);
+                await File.WriteAllTextAsync(RunPaths.StreamFile(request.RunDirectory), line + "\n", cancellationToken);
             }, cancellationToken);
 
             return Task.FromResult(new SpawnedAgent(pid, Now));
@@ -770,7 +770,7 @@ public sealed class CardPublicationEngineTests(PostgresFixture postgres) : IClas
 
         public Task<SpawnedAgent> SpawnAsync(AgentSpawnRequest request, CancellationToken cancellationToken)
         {
-            Directory.CreateDirectory(RunPaths.RunDirectory(request.RunId));
+            Directory.CreateDirectory(request.RunDirectory);
             processes.MarkAlive(ProcessId);
             stopping.Cancel();
             return Task.FromResult(new SpawnedAgent(ProcessId, Now));
@@ -1141,7 +1141,7 @@ public sealed class CardPublicationEngineTests(PostgresFixture postgres) : IClas
     /// <summary>The terminal result line a session leaves behind in its own stream file.</summary>
     private static async Task WriteResultAsync(Guid sessionId, string summary, CancellationToken cancellationToken)
     {
-        Directory.CreateDirectory(RunPaths.RunDirectory(sessionId));
+        Directory.CreateDirectory(RunPaths.GlobalDirectory(sessionId));
         string line = JsonSerializer.Serialize(new Dictionary<string, object?>
         {
             ["type"] = "result",
@@ -1150,7 +1150,7 @@ public sealed class CardPublicationEngineTests(PostgresFixture postgres) : IClas
             ["usage"] = new Dictionary<string, long> { ["input_tokens"] = 10, ["output_tokens"] = 20 },
             ["result"] = summary,
         });
-        await File.WriteAllTextAsync(RunPaths.StreamFile(sessionId), line + "\n", cancellationToken);
+        await File.WriteAllTextAsync(RunPaths.StreamFile(RunPaths.GlobalDirectory(sessionId)), line + "\n", cancellationToken);
     }
 
     /// <summary>What h9k task link-jira appends once it has read the card back from Jira.</summary>

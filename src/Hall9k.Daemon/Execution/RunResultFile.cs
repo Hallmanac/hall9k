@@ -16,9 +16,9 @@ public static class RunResultFile
     /// share-everything because the agent may still be appending to it, and a missing file
     /// simply means nothing was written yet.
     /// </summary>
-    public static async Task<bool> AlreadyWrittenAsync(Guid runId, CancellationToken cancellationToken)
+    public static async Task<bool> AlreadyWrittenAsync(string runDirectory, CancellationToken cancellationToken)
     {
-        string streamFile = RunPaths.StreamFile(runId);
+        string streamFile = RunPaths.StreamFile(runDirectory);
         if (!File.Exists(streamFile))
         {
             return false;

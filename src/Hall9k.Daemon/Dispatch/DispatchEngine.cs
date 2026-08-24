@@ -169,7 +169,7 @@ public sealed class DispatchEngine(
                 && run is not null
                 && run.NodeId == node.NodeId
                 && (run.State == RunState.Dispatched || run.State == RunState.Running)
-                && !await RunResultFile.AlreadyWrittenAsync(run.Id, cancellationToken))
+                && !await RunResultFile.AlreadyWrittenAsync(run.RunDirectory, cancellationToken))
             {
                 session.Events.Append(run.Id, new RunFailed(run.Id, LeaseExpiryFailure(lease, run), now));
             }

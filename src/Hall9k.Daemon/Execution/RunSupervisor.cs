@@ -47,10 +47,12 @@ public sealed class RunSupervisor(
 
     public int ActiveCount => _monitors.Count;
 
-    public void StartMonitoring(Guid runId, Guid taskId, int processId, DateTimeOffset processStartedAt, CancellationToken cancellationToken)
+    public void StartMonitoring(
+        Guid runId, string runDirectory, Guid taskId, int processId, DateTimeOffset processStartedAt,
+        CancellationToken cancellationToken)
     {
         _monitors.TryAdd(runId, Task.Run(
-            () => MonitorAsync(runId, taskId, processId, processStartedAt, cancellationToken),
+            () => MonitorAsync(runId, runDirectory, taskId, processId, processStartedAt, cancellationToken),
             cancellationToken));
     }
 
@@ -133,13 +135,15 @@ public sealed class RunSupervisor(
             }
 
             bool alive = processManager.IsAlive(run.ProcessId.Value, run.ProcessStartedAt.Value);
-            bool resultOnDisk = await RunResultFile.AlreadyWrittenAsync(run.Id, cancellationToken);
+            bool resultOnDisk = await RunResultFile.AlreadyWrittenAsync(run.RunDirectory, cancellationToken);
             if (alive || resultOnDisk)
             {
                 logger.LogInformation(
                     "Adopting run {RunId} (pid {ProcessId}, alive: {Alive}, result on disk: {Result})",
                     run.Id, run.ProcessId, alive, resultOnDisk);
-                StartMonitoring(run.Id, run.TaskId, run.ProcessId.Value, run.ProcessStartedAt.Value, cancellationToken);
+                StartMonitoring(
+                    run.Id, run.RunDirectory, run.TaskId, run.ProcessId.Value, run.ProcessStartedAt.Value,
+                    cancellationToken);
                 await RefreshAdoptedLeaseAsync(run, cancellationToken);
                 adopted++;
             }
@@ -176,11 +180,13 @@ public sealed class RunSupervisor(
         }
     }
 
-    private async Task MonitorAsync(Guid runId, Guid taskId, int processId, DateTimeOffset processStartedAt, CancellationToken cancellationToken)
+    private async Task MonitorAsync(
+        Guid runId, string runDirectory, Guid taskId, int processId, DateTimeOffset processStartedAt,
+        CancellationToken cancellationToken)
     {
         try
         {
-            string streamFile = RunPaths.StreamFile(runId);
+            string streamFile = RunPaths.StreamFile(runDirectory);
             long cursor = await LoadCursorAsync(runId, cancellationToken);
             DateTimeOffset? deadSince = null;
             StringBuilder partialLine = new();
@@ -198,7 +204,7 @@ public sealed class RunSupervisor(
 
                 if (sawResult)
                 {
-                    await CompleteRunAsync(runId, taskId, result!, cancellationToken);
+                    await CompleteRunAsync(runId, runDirectory, taskId, result!, cancellationToken);
                     return;
                 }
 
@@ -208,7 +214,7 @@ public sealed class RunSupervisor(
                     deadSince ??= DateTimeOffset.UtcNow;
                     if (DateTimeOffset.UtcNow - deadSince > DeadProcessGrace)
                     {
-                        await FailRunAsync(runId, taskId, ReadStandardErrorTail(runId), cancellationToken);
+                        await FailRunAsync(runId, taskId, ReadStandardErrorTail(runDirectory), cancellationToken);
                         return;
                     }
                 }
@@ -234,10 +240,11 @@ public sealed class RunSupervisor(
         }
     }
 
-    private async Task CompleteRunAsync(Guid runId, Guid taskId, AgentResult result, CancellationToken cancellationToken)
+    private async Task CompleteRunAsync(
+        Guid runId, string runDirectory, Guid taskId, AgentResult result, CancellationToken cancellationToken)
     {
         DateTimeOffset now = DateTimeOffset.UtcNow;
-        await CaptureHandoffAsync(runId, result, cancellationToken);
+        await CaptureHandoffAsync(runId, runDirectory, result, cancellationToken);
 
         await using IDocumentSession session = store.LightweightSession();
 
@@ -388,10 +395,10 @@ public sealed class RunSupervisor(
             return ThreadDisputeOutcome.Stale;
         }
 
-        await WriteDisputePositionAsync(runId, result.Summary, cancellationToken);
+        await WriteDisputePositionAsync(run.RunDirectory, result.Summary, cancellationToken);
         string reason =
             "A follow-up disputed a review thread as a design call it cannot honestly make. "
-            + $"Both positions: {RunPaths.ReviewThreadDisputeFile(runId)}. "
+            + $"Both positions: {RunPaths.ReviewThreadDisputeFile(run.RunDirectory)}. "
             + "Decide between them, then resolve with h9k review resolve — nothing has been pushed.";
         session.Events.Append(runId, new ReviewParked(runId, reason, DateTimeOffset.UtcNow));
         await session.SaveChangesAsync(cancellationToken);
@@ -405,17 +412,17 @@ public sealed class RunSupervisor(
     /// best-effort for the same reason the handoff artifact is: losing the file must not turn
     /// a park into a failure, and the park reason names the path either way.
     /// </summary>
-    private async Task WriteDisputePositionAsync(Guid runId, string? summary, CancellationToken cancellationToken)
+    private async Task WriteDisputePositionAsync(string runDirectory, string? summary, CancellationToken cancellationToken)
     {
         try
         {
-            Directory.CreateDirectory(RunPaths.RunDirectory(runId));
+            Directory.CreateDirectory(runDirectory);
             await File.WriteAllTextAsync(
-                RunPaths.ReviewThreadDisputeFile(runId), summary ?? string.Empty, cancellationToken);
+                RunPaths.ReviewThreadDisputeFile(runDirectory), summary ?? string.Empty, cancellationToken);
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
         {
-            logger.LogWarning(exception, "Could not write the thread-dispute position for run {RunId}", runId);
+            logger.LogWarning(exception, "Could not write the thread-dispute position for {RunDirectory}", runDirectory);
         }
     }
 
@@ -433,13 +440,14 @@ public sealed class RunSupervisor(
     /// case into the last and lose a fact the platform actually observed.
     /// </para>
     /// </summary>
-    private async Task CaptureHandoffAsync(Guid runId, AgentResult result, CancellationToken cancellationToken)
+    private async Task CaptureHandoffAsync(
+        Guid runId, string runDirectory, AgentResult result, CancellationToken cancellationToken)
     {
         try
         {
             string? handoff = HandoffParser.Parse(result.Summary);
-            Directory.CreateDirectory(RunPaths.RunDirectory(runId));
-            await File.WriteAllTextAsync(RunPaths.HandoffFile(runId), handoff ?? string.Empty, cancellationToken);
+            Directory.CreateDirectory(runDirectory);
+            await File.WriteAllTextAsync(RunPaths.HandoffFile(runDirectory), handoff ?? string.Empty, cancellationToken);
             if (handoff is null)
             {
                 logger.LogInformation(
@@ -634,11 +642,11 @@ public sealed class RunSupervisor(
         await session.SaveChangesAsync(cancellationToken);
     }
 
-    private static string ReadStandardErrorTail(Guid runId)
+    private static string ReadStandardErrorTail(string runDirectory)
     {
         try
         {
-            string stderrFile = RunPaths.StandardErrorFile(runId);
+            string stderrFile = RunPaths.StandardErrorFile(runDirectory);
             if (File.Exists(stderrFile))
             {
                 string content = File.ReadAllText(stderrFile).Trim();

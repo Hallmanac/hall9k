@@ -84,7 +84,7 @@ public sealed class VerificationRunner(
         foreach (VerifyCommand gate in gates)
         {
             (bool passed, string summary, bool isInfrastructureFailure, string? excerpt) =
-                await RunGateAsync(runId, run.WorktreePath, gate, cancellationToken);
+                await RunGateAsync(run.RunDirectory, run.WorktreePath, gate, cancellationToken);
             if (passed)
             {
                 logger.LogInformation("Run {RunId} gate '{Gate}' passed", runId, gate.Name);
@@ -129,7 +129,7 @@ public sealed class VerificationRunner(
                 runId, gate.Name, summary);
 
             (bool retryPassed, string retrySummary, bool retryIsInfrastructureFailure, _) =
-                await RunGateAsync(runId, run.WorktreePath, gate, cancellationToken);
+                await RunGateAsync(run.RunDirectory, run.WorktreePath, gate, cancellationToken);
             if (retryPassed)
             {
                 logger.LogInformation("Run {RunId} gate '{Gate}' passed on retry", runId, gate.Name);
@@ -157,10 +157,10 @@ public sealed class VerificationRunner(
     }
 
     private async Task<(bool Passed, string Summary, bool IsInfrastructureFailure, string? InfrastructureExcerpt)> RunGateAsync(
-        Guid runId, string worktreePath, VerifyCommand gate, CancellationToken cancellationToken)
+        string runDirectory, string worktreePath, VerifyCommand gate, CancellationToken cancellationToken)
     {
-        string logFile = Path.Combine(RunPaths.RunDirectory(runId), $"verify-{Sanitize(gate.Name)}.log");
-        Directory.CreateDirectory(RunPaths.RunDirectory(runId));
+        string logFile = Path.Combine(runDirectory, $"verify-{Sanitize(gate.Name)}.log");
+        Directory.CreateDirectory(runDirectory);
 
         using Process process = new();
         process.StartInfo = new ProcessStartInfo

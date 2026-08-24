@@ -15,11 +15,14 @@ namespace Hall9k.Daemon.Execution;
 /// #33) and states the answer, so no spawn can quietly fall back to the human's personal
 /// Claude Code setting. On a resumed session it is the model that session already runs
 /// on, carried so the milestone can record it and never re-applied to the process.
+/// RunDirectory is the run's own directory (backlog 49) — resolved once at dispatch and
+/// carried here rather than rederived, exactly like WorktreePath.
 /// </summary>
 public sealed record AgentSpawnRequest(
     Guid RunId,
     Guid SessionId,
     string WorktreePath,
+    string RunDirectory,
     string Prompt,
     ExecutorMode Mode,
     AgentModel Model,
