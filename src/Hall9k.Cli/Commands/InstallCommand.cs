@@ -213,7 +213,7 @@ public sealed class InstallCommand : Hall9kAsyncCommand<InstallCommand.Settings>
               + "not a complete release payload for this platform.";
     }
 
-    private static string? ReadVersionFile(string fromRelease)
+    internal static string? ReadVersionFile(string fromRelease)
     {
         string versionFile = Path.Combine(fromRelease, "VERSION");
         if (!File.Exists(versionFile))
