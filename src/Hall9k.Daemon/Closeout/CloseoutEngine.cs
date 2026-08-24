@@ -1062,7 +1062,14 @@ public sealed class CloseoutEngine(
     /// every rebase attempt pushes a new head, so a conflict against the commit a prior lap
     /// already failed to clear is the same obstruction, and a conflict discovered again after
     /// that push landed (main having moved again in the meantime, backlog 44's own scenario)
-    /// is mechanically a new one, exactly as a resolved-then-reopened thread is.
+    /// is mechanically a new one, exactly as a resolved-then-reopened thread is. This is the
+    /// honest application of #80's progress-based counting, not a special case for conflicts: a
+    /// rebase lap that moves the head made progress, so a re-conflict on that new head is main
+    /// moving again — a fresh obstruction with its own lap count — while the lifetime ceiling
+    /// (never the progress cap) is what backstops a branch that keeps re-conflicting lap after
+    /// lap. A fixed, binary identity (e.g. a literal "conflict") would instead park a busy
+    /// repository for the crime of staying alive, exactly what #80's two-counter split exists to
+    /// prevent.
     /// </summary>
     private static string ObstructionKey(FollowUpKind kind, IReadOnlyList<string> identity) =>
         $"{kind.Value}:{string.Join('␟', identity.OrderBy(id => id, StringComparer.Ordinal))}";
