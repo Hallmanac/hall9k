@@ -378,6 +378,25 @@ public sealed class AttentionSurfaceTests
         row.Phase.Detail.Should().Contain("build (ubuntu)", "the phase names what was observed failing");
     }
 
+    /// <summary>
+    /// A conflicting pull request is being handled by the closeout monitor's rebase follow-up
+    /// exactly like a failing check or an unresolved thread, so it wants the same marker as
+    /// those two — not the silent <see cref="AttentionLevel.None"/> a missing switch arm falls
+    /// through to (adversarial pre-PR review, cycle 2).
+    /// </summary>
+    [Fact]
+    public void A_pull_request_conflicting_with_its_base_is_not_an_ask()
+    {
+        Guid runId = DomainId.New();
+        RunDetails conflicting = StatusFixtures.Run(runId, RunState.Conflicting, sessionProcessId: null, pullRequestNumber: 24);
+
+        TaskStatusRow row = StatusFixtures.Compose(
+            StatusFixtures.Task(TaskState.Done, runId, "https://github.com/x/y/pull/24"), conflicting);
+
+        row.Attention.Level.Should().Be(AttentionLevel.WaitingHandled);
+        row.Attention.Cause.Should().Contain("closeout monitor owns the next move");
+    }
+
     [Fact]
     public void A_pull_request_closed_without_merging_is_never_reported_as_done()
     {
