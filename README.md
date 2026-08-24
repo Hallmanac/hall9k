@@ -140,11 +140,11 @@ iwr https://raw.githubusercontent.com/Hallmanac/hall9k/main/scripts/install.ps1 
 Once installed, `h9k update` is the one-command path to stay current — no repo checkout needed
 there either.
 
-**Working on Hall9k itself:** clone the repo and build locally (below). The daemon's full
-lifecycle (`h9k daemon start` / `stop` / `autostart enable`) runs on macOS and Linux; Windows
-builds and tests in CI and `h9k install`/`h9k update` place the binaries there, but running
-`h9kd` on Windows is future work (`SLICE-1.md`'s S1-14). Start-at-login (`autostart enable`) is
-macOS-only even on Linux, where the daemon otherwise runs fine started by hand.
+**Working on Hall9k itself:** clone the repo and build locally (below). The daemon's lifecycle
+(`h9k daemon start` / `stop` / `autostart enable`) runs on macOS and Linux, but start-at-login
+(`autostart enable`) is macOS-only even there — Linux otherwise runs the daemon fine started by
+hand. Windows builds and tests in CI and `h9k install`/`h9k update` place the binaries there, but
+running `h9kd` on Windows is future work (`SLICE-1.md`'s S1-14).
 
 ### Prerequisites
 

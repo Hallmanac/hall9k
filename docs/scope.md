@@ -85,7 +85,7 @@ links `h9k` onto the PATH, and publishes the skill set to `~/.hall9k/skills`, ei
 `h9k update` is the same `--from-release` path wired to `gh release download`, for a machine that
 already has `h9k`. The daemon has a CLI-owned lifecycle with a strictly opt-in autostart (launchd
 on macOS, a Windows startup task once S1-14 lands) that snapshots the environment it will need and
-reports any tool it cannot resolve, daemon start/stop run on macOS and Linux today; Windows has
+reports any tool it cannot resolve. Daemon start/stop run on macOS and Linux today; Windows has
 binaries but no daemon lifecycle yet (see Windows support, below).
 
 See [PLAN.md Decisions Log #77](../PLAN.md).
