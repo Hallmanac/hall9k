@@ -189,7 +189,8 @@ public sealed class ReviewEngine(
                     return false;
 
                 case ReviewPhase.FixNeeded:
-                    if (!await DispatchFixSessionAsync(context, run.ReviewCycle, run.PendingHumanFindings, cancellationToken))
+                    if (!await DispatchFixSessionAsync(
+                        context, run.ReviewCycle, run.PendingHumanFindings, run.ParkedFromState, cancellationToken))
                     {
                         return false;
                     }
@@ -489,9 +490,22 @@ public sealed class ReviewEngine(
     /// <c>git rebase --abort</c> before it exited). It gets the rebase prompt instead, with the
     /// human's stated resolution carried in as the conflict's answer.
     /// </para>
+    /// <para>
+    /// That resume is the ONLY case that wants the rebase prompt here: a rebase follow-up whose
+    /// branch rebased cleanly and pushed also reaches FixNeeded, through its own ordinary review
+    /// cycle, with nothing disputed and nothing left un-rebased — that one wants
+    /// <see cref="AgentPromptBuilder.BuildReviewFix"/> like any other follow-up's review loop. The
+    /// discriminator is <paramref name="parkedFromState"/> — <see cref="RunAggregate.ParkedFromState"/>
+    /// reads <see cref="RunState.Verifying"/> only for a park raised before the gates ever ran, which
+    /// is exactly and only the pre-gate dispute park (a plain review-thread dispute on a
+    /// non-rebase follow-up parks from the same state, so <c>FollowUpKind.Rebase</c> is checked
+    /// alongside it) — never the task-scoped <c>FollowUpKind</c> alone, which stays
+    /// <c>Rebase</c> for the whole rest of the run including its ordinary review cycles.
+    /// </para>
     /// </summary>
     private async Task<bool> DispatchFixSessionAsync(
-        ReviewContext context, int cycle, string? humanFindings, CancellationToken cancellationToken)
+        ReviewContext context, int cycle, string? humanFindings, RunState parkedFromState,
+        CancellationToken cancellationToken)
     {
         string findings = humanFindings.IsNotBlank()
             ? $"Human review verdict (h9k review resolve): needs fixes.\n\n{humanFindings}"
@@ -503,7 +517,9 @@ public sealed class ReviewEngine(
 
         Guid sessionId = DomainId.New();
         CommitStyle commitStyle = CommitStyle.Resolve(context.Project.CommitStyle, _options.DefaultCommitStyle);
-        string prompt = context.Task.FollowUpKind == FollowUpKind.Rebase
+        bool resumesRebaseDispute =
+            context.Task.FollowUpKind == FollowUpKind.Rebase && parkedFromState == RunState.Verifying;
+        string prompt = resumesRebaseDispute
             ? AgentPromptBuilder.BuildRebase(
                 context.Task, context.Project, context.Run.Branch, context.Task.PullRequestUrl!, commitStyle, findings)
             : AgentPromptBuilder.BuildReviewFix(context.Task, context.Run.Branch, findings, cycle);

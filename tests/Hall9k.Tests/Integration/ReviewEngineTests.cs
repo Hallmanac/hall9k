@@ -1057,20 +1057,22 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
 
     /// <summary>
     /// A rebase-conflict dispute parks through the same mechanism a review-thread dispute does
-    /// (<c>RunSupervisor.ParkedOnThreadDisputeAsync</c>), so it resumes through this same
-    /// FixNeeded phase — but the branch is still un-rebased (the parked attempt ran
-    /// `git rebase --abort`) and a generic review-fix prompt knows nothing about the base branch
-    /// or the conflict. The resumed session must get the rebase prompt, carrying the human's
-    /// resolution, not <see cref="AgentPromptBuilder.BuildReviewFix"/> (adversarial review,
-    /// cycle 1, on this feature's own diff).
+    /// (<c>RunSupervisor.ParkedOnThreadDisputeAsync</c>), from <c>RunState.Verifying</c>
+    /// (<c>RunAggregate.ParkedFromState</c>) before any gate or review pass ran, so it resumes
+    /// through this same FixNeeded phase — but the branch is still un-rebased (the parked
+    /// attempt ran `git rebase --abort`) and a generic review-fix prompt knows nothing about the
+    /// base branch or the conflict. The resumed session must get the rebase prompt, carrying the
+    /// human's resolution, not <see cref="AgentPromptBuilder.BuildReviewFix"/> (adversarial
+    /// review, cycle 1, on this feature's own diff). See the next test for the sibling case this
+    /// one must NOT cover — an ordinary review cycle on the same rebase-kind task (independent
+    /// pre-PR review, cycle 2).
     /// </summary>
     [Fact]
     public async Task A_park_resolved_needs_fixes_on_a_rebase_dispute_resumes_the_rebase_prompt()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
         using DocumentStore store = NewStore();
-        (Guid taskId, Guid runId, _) = await SeedVerifiedRebaseFollowUpRunAsync(store, cts.Token);
-        await SeedParkedReviewAsync(store, runId, cts.Token);
+        (Guid taskId, Guid runId, _) = await SeedRebaseDisputeParkedRunAsync(store, cts.Token);
 
         const string humanResolution =
             "Keep the daemon side's retry policy; the CLI side's version predates the incident fix.";
@@ -1094,6 +1096,44 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
             "the fix session must resume the rebase, not the generic review-fix prompt");
         executor.Spawns[0].Prompt.Should().Contain("The human's decision on the disputed conflict");
         executor.Spawns[0].Prompt.Should().Contain(humanResolution);
+    }
+
+    /// <summary>
+    /// The sibling case the fix-session prompt selection must NOT route to the rebase prompt: a
+    /// rebase follow-up whose branch already rebased cleanly and pushed (verification already
+    /// passed, so <c>RunAggregate.ParkedFromState</c> never became Verifying) reaches FixNeeded
+    /// through its own ordinary review cycle, with nothing disputed and nothing left un-rebased.
+    /// Keying the fix-session prompt on <c>task.FollowUpKind == Rebase</c> alone — instead of
+    /// pairing it with the dispute-park marker — sent every such cycle the rebase prompt instead
+    /// of the reviewers' findings, so the loop never actually applied them (independent pre-PR
+    /// review, cycle 2).
+    /// </summary>
+    [Fact]
+    public async Task A_needs_fixes_verdict_on_an_ordinary_rebase_follow_up_cycle_gets_the_review_fix_prompt()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        using DocumentStore store = NewStore();
+        (Guid taskId, Guid runId, _) = await SeedVerifiedRebaseFollowUpRunAsync(store, cts.Token);
+
+        const string conformanceFinding = "1. `Auth.cs:42` — the limiter never resets.";
+        ScriptedExecutor executor = new(
+            $"{conformanceFinding}\n\nVERDICT: needs-fixes",
+            "Nothing of my own.\n\nVERDICT: merge-ready",
+            "Reset the limiter.\n\nRESOLUTION: fixed",
+            "Criteria met.\n\nVERDICT: merge-ready");
+        bool mergeReady = await NewEngine(store, executor).ReviewAsync(runId, taskId, cts.Token);
+
+        mergeReady.Should().BeTrue();
+        executor.Spawns.Should().HaveCount(
+            4, "two passes → one fix → the one track still active, since the adversarial track went dormant");
+        executor.Spawns[2].Prompt.Should().Contain(
+            "Fix the verified findings from an independent pre-PR review",
+            "an ordinary needs-fixes cycle on a rebase follow-up must still get the review-fix prompt");
+        executor.Spawns[2].Prompt.Should().Contain(conformanceFinding);
+        executor.Spawns[2].Prompt.Should().NotContain(
+            "rebase an existing pull request onto its base branch",
+            "the branch is already rebased — resuming the rebase prompt here would ask for a no-op");
+        executor.Spawns[2].Prompt.Should().NotContain("The human's decision on the disputed conflict");
     }
 
     /// <summary>
@@ -1485,6 +1525,63 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
                 worktreePath, "task/review-me", ExecutorMode.Subscription, Now, IsFollowUp: true),
             new AgentSessionCompleted(runId, Now),
             new VerificationPassed(runId, Now));
+        await session.SaveChangesAsync(cancellationToken);
+
+        return (taskId, runId, mainSessionId);
+    }
+
+    /// <summary>
+    /// Like <see cref="SeedVerifiedRebaseFollowUpRunAsync"/>, but the run stops at
+    /// <c>AgentSessionCompleted</c> and parks straight from there — the exact shape
+    /// <c>RunSupervisor.ParkedOnThreadDisputeAsync</c> leaves behind for a rebase-conflict
+    /// dispute (RunAggregate.ParkedFromState reads Verifying, and no review cycle has ever run).
+    /// This is the ONLY shape that should resume through the rebase prompt; a FixNeeded reached
+    /// through an ordinary review cycle on this same rebase-kind task — verification already
+    /// passed, a cycle already ran — must not (independent pre-PR review, cycle 2).
+    /// </summary>
+    private async Task<(Guid TaskId, Guid RunId, Guid MainSessionId)> SeedRebaseDisputeParkedRunAsync(
+        DocumentStore store, CancellationToken cancellationToken)
+    {
+        NodeContext node = new();
+        await node.InitializeAsync(store, cancellationToken);
+
+        Guid taskId = DomainId.New();
+        Guid runId = DomainId.New();
+        Guid projectId = DomainId.New();
+        Guid mainSessionId = DomainId.New();
+        string worktreePath = Path.Combine(_home, $"wt-{runId:N}");
+        Directory.CreateDirectory(worktreePath);
+
+        await using IDocumentSession session = store.LightweightSession();
+
+        var registered = Hall9k.Domain.Features.Project.Handlers.ProjectDecider.Register(
+            projectId, node.OwnerId, DomainId.New(), $"review-{taskId:N}", worktreePath, null, "main", Now);
+        session.Events.StartStream<Hall9k.Domain.Features.Project.ProjectAggregate>(registered.Id, registered);
+
+        TaskAggregate task = new();
+        (task, object[] lifecycle) = TaskSeed.Start(
+            TaskDecider.Add(taskId, projectId, "Review me before the PR", ["reviewed"],
+                TaskType.Chore, null, null, null, Now, node.OwnerId),
+            node.OwnerId, Now);
+        var firstClaim = TaskDecider.Claim(task, node.NodeId, node.OwnerId, DomainId.New(), Now);
+        task.Apply(firstClaim);
+        var completed = TaskDecider.Complete(task, DomainId.New(), "https://github.com/x/y/pull/7", Now);
+        task.Apply(completed);
+        var reopened = TaskDecider.Reopen(
+            task, DomainId.New(), "task/review-me", "The pull request's branch conflicts with its base branch.",
+            FollowUpKind.Rebase, automatic: true, Now, node.OwnerId);
+        task.Apply(reopened);
+        var claimed = TaskDecider.Claim(task, node.NodeId, node.OwnerId, runId, Now);
+        session.Events.StartStream<TaskAggregate>(taskId, [.. lifecycle, firstClaim, completed, reopened, claimed]);
+        session.Store(new TaskLease { Id = taskId, NodeId = node.NodeId, LeaseGeneration = 1, HeartbeatAt = Now });
+
+        session.Events.StartStream<RunAggregate>(runId,
+            new RunDispatched(runId, taskId, node.NodeId, node.OwnerId, 1, mainSessionId,
+                worktreePath, "task/review-me", ExecutorMode.Subscription, Now, IsFollowUp: true),
+            new AgentSessionCompleted(runId, Now),
+            new ReviewParked(runId,
+                "A follow-up could not honestly resolve a rebase conflict — both sides changed the same "
+                + "behavior, not just the same lines.", Now));
         await session.SaveChangesAsync(cancellationToken);
 
         return (taskId, runId, mainSessionId);

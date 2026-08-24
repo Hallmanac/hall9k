@@ -333,9 +333,10 @@ public sealed class RunSupervisor(
     /// prompt teaches this vocabulary, so a CI-fix session quoting the skill file's marker
     /// line would otherwise park a run with a dispute reason pointing at a CI narrative. The
     /// gate is <c>RunLauncher</c>'s own prompt-selection condition read back — FailingChecks
-    /// got BuildFixChecks, everything else (including the Unknown of reopens recorded before
-    /// the vocabulary existed) got BuildFollowUp — so the runs that may park are exactly the
-    /// runs that were taught how, off the same field that chose the prompt.
+    /// got BuildFixChecks, Rebase got BuildRebase, and everything else (including the Unknown
+    /// of reopens recorded before the vocabulary existed) got BuildFollowUp — so the runs that
+    /// may park are exactly the runs that were taught how, off the same field that chose the
+    /// prompt.
     /// </para>
     /// <para>
     /// The park reuses <see cref="ReviewParked"/> whole: it already surfaces as NeedsHuman,
