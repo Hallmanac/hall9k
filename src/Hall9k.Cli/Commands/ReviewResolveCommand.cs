@@ -33,7 +33,11 @@ namespace Hall9k.Cli.Commands;
 /// A rebase-conflict dispute (backlog 44) refuses merge-ready outright rather than taking it
 /// the same way: nothing has been rebased, so there is no sense in which the branch is
 /// "ready" — every path forward needs the human's actual resolution, which only
-/// --needs-fixes carries.
+/// --needs-fixes carries. The refusal is scoped to that specific park (the task's follow-up
+/// is a rebase AND the park landed before the gates ever ran, <see cref="RunAggregate.ParkedFromState"/>)
+/// rather than to the task's FollowUpKind alone, which stays Rebase for the rest of the run: an
+/// ordinary review park later in that same rebase follow-up — the branch already rebased, the
+/// gates already green — is exactly the park --merge-ready exists for.
 /// </para>
 /// </summary>
 public sealed class ReviewResolveCommand : Hall9kAsyncCommand<ReviewResolveCommand.Settings>
@@ -95,7 +99,8 @@ public sealed class ReviewResolveCommand : Hall9kAsyncCommand<ReviewResolveComma
                 "with h9k pr resolve instead.)");
         }
 
-        if (settings.MergeReady && task.FollowUpKind == FollowUpKind.Rebase)
+        if (settings.MergeReady && task.FollowUpKind == FollowUpKind.Rebase
+            && run.ParkedFromState == RunState.Verifying)
         {
             throw new DomainConflictException(
                 $"Task {taskId} is parked on a disputed rebase conflict — merge-ready has no meaning " +
