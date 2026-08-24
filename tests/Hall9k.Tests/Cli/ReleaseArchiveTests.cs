@@ -34,6 +34,21 @@ public sealed class ReleaseArchiveTests : IDisposable
     }
 
     [Fact]
+    public async Task A_binary_mode_checksum_verifies()
+    {
+        // sha256sum --binary's format: "<hex> *<filename>" — one space, then an asterisk.
+        // release.yml's Windows leg writes this mode; losing the leading-asterisk trim would
+        // fail every Windows h9k update while a text-mode-only test suite stayed green.
+        string archive = WriteZip("hall9k-win-x64.zip", "payload");
+        string checksums = Path.Combine(directory, "checksums.txt");
+        File.WriteAllLines(checksums, [$"{Sha256Of(archive)} *hall9k-win-x64.zip"]);
+
+        string? problem = await ReleaseArchive.VerifyAsync(archive, checksums, CancellationToken.None);
+
+        problem.Should().BeNull();
+    }
+
+    [Fact]
     public async Task A_tampered_archive_is_refused_by_name()
     {
         string archive = WriteZip("hall9k-osx-arm64.tar.gz", "payload");

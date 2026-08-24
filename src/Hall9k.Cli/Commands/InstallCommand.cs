@@ -494,15 +494,15 @@ public sealed class InstallCommand : Hall9kAsyncCommand<InstallCommand.Settings>
     /// indexer holding one of the freshly written executables is the same kind of lock that
     /// stops the leading cleanup — so the retire step below falls back to a uniquely named
     /// directory rather than let <see cref="Directory.Move(string, string)"/> throw into an
-    /// install that has already fully staged its new binaries. That leaves two abandoned
-    /// copies for a human to clear by hand instead of one, which is the honest cost of a
-    /// double lock, not a defect this method can close on its own.
+    /// install that has already fully staged its new binaries. The fallback name is announced
+    /// on the way out and swept alongside <c>bin.old</c> on every later run, so a double lock
+    /// costs an extra cycle to reclaim rather than a permanently stranded copy.
     /// </para>
     /// </summary>
     private static void SwapIntoPlace(string staging, string bin)
     {
         string retired = bin + ".old";
-        TryDelete(retired);
+        SweepRetiredDirectories(bin, retired);
 
         if (Directory.Exists(bin))
         {
@@ -510,7 +510,26 @@ public sealed class InstallCommand : Hall9kAsyncCommand<InstallCommand.Settings>
         }
 
         Directory.Move(staging, bin);
+        SweepRetiredDirectories(bin, retired);
+    }
+
+    /// <summary>Deletes <paramref name="retired"/> (<c>bin.old</c>) and any uniquely suffixed
+    /// fallback left behind by an earlier double lock (<c>bin.old.&lt;random&gt;</c>), so a
+    /// stray fallback is reclaimed the next time nothing holds it rather than left forever.</summary>
+    private static void SweepRetiredDirectories(string bin, string retired)
+    {
         TryDelete(retired);
+
+        string? parent = Path.GetDirectoryName(bin);
+        if (parent is null || !Directory.Exists(parent))
+        {
+            return;
+        }
+
+        foreach (string fallback in Directory.EnumerateDirectories(parent, $"{Path.GetFileName(retired)}.*"))
+        {
+            TryDelete(fallback);
+        }
     }
 
     /// <summary>Moves <paramref name="bin"/> to <paramref name="retired"/>, falling back to a
@@ -524,10 +543,16 @@ public sealed class InstallCommand : Hall9kAsyncCommand<InstallCommand.Settings>
             return;
         }
 
-        Directory.Move(bin, $"{retired}.{Path.GetRandomFileName()}");
+        string fallback = $"{retired}.{Path.GetRandomFileName()}";
+        Directory.Move(bin, fallback);
+        AnsiConsole.MarkupLineInterpolated(
+            $"[dim]{retired} is still in use, so the previous install was retired to {fallback} instead — it will be cleaned up on a future install or update once nothing holds it.[/]");
     }
 
-    private static void TryDelete(string directory)
+    /// <summary>Best-effort delete: a lock held by an antivirus scanner, an indexer, or a
+    /// running process must not turn a command into an unhandled exception — the directory is
+    /// left for the next install or update's own leading cleanup to retry.</summary>
+    internal static void TryDelete(string directory)
     {
         if (!Directory.Exists(directory))
         {
