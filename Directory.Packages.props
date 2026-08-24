@@ -10,8 +10,6 @@
     <!-- Referenced (unshipped) by Spectre.Console.Cli; present so JasperFx runtime codegen can resolve it -->
     <PackageVersion Include="NJsonSchema" Version="11.4.0" />
     <PackageVersion Include="Spectre.Console.Cli" Version="0.55.0" />
-    <!-- Raw (unexpanded) HKCU\Environment\Path access on Windows, guarded behind OperatingSystem.IsWindows() -->
-    <PackageVersion Include="Microsoft.Win32.Registry" Version="5.0.0" />
 
     <!-- Daemon -->
     <PackageVersion Include="Microsoft.Extensions.Hosting" Version="10.0.11" />
