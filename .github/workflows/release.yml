@@ -60,9 +60,13 @@ jobs:
           mkdir -p "dist/${{ matrix.rid }}/skills"
           cp -R .claude/skills/. "dist/${{ matrix.rid }}/skills/"
 
+      # The same stripped VERSION the binaries were stamped with above (env.VERSION), not
+      # the tag's own v-prefixed GITHUB_REF_NAME — h9k install --from-release and h9k
+      # update print this back verbatim, and it has to match what `h9k --version` reports
+      # on the binaries actually placed.
       - name: Write VERSION
         shell: bash
-        run: echo "${GITHUB_REF_NAME}" > "dist/${{ matrix.rid }}/VERSION"
+        run: echo "${VERSION}" > "dist/${{ matrix.rid }}/VERSION"
 
       - name: Archive (tar.gz)
         if: matrix.rid != 'win-x64'
