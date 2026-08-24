@@ -73,13 +73,59 @@ public static class ReleaseArchive
         string canonicalDestination = Canonicalize(destinationDirectory);
         if (archivePath.EndsWith(".zip", StringComparison.OrdinalIgnoreCase))
         {
-            ZipFile.ExtractToDirectory(archivePath, canonicalDestination, overwriteFiles: true);
+            await ExtractZipAsync(archivePath, canonicalDestination, cancellationToken);
             return;
         }
 
         await using FileStream fileStream = File.OpenRead(archivePath);
         await using GZipStream gzip = new(fileStream, CompressionMode.Decompress);
         await TarFile.ExtractToDirectoryAsync(gzip, canonicalDestination, overwriteFiles: true, cancellationToken);
+    }
+
+    /// <summary>
+    /// <see cref="ZipFile.ExtractToDirectory(string, string, bool)"/> is synchronous and
+    /// uninterruptible for the whole archive, which on the self-contained payload's ~100 MB
+    /// Windows build turns a Ctrl-C during extraction into a silent no-op until the call
+    /// finishes on its own. Walking entries one at a time reproduces the same
+    /// escape-the-destination guard .NET's own extractor applies, while checking
+    /// <paramref name="cancellationToken"/> between entries so it can actually stop.
+    /// </summary>
+    private static Task ExtractZipAsync(string archivePath, string destinationDirectory, CancellationToken cancellationToken)
+    {
+        using ZipArchive archive = ZipFile.OpenRead(archivePath);
+        string destinationRoot = destinationDirectory.EndsWith(Path.DirectorySeparatorChar)
+            ? destinationDirectory
+            : destinationDirectory + Path.DirectorySeparatorChar;
+        // Windows (and macOS's default HFS+/APFS configuration) resolve paths
+        // case-insensitively, so a crafted entry differing from destinationRoot only in
+        // casing would still land inside it at runtime even though an Ordinal comparison
+        // here sees it as an escape.
+        StringComparison pathComparison = OperatingSystem.IsWindows()
+            ? StringComparison.OrdinalIgnoreCase
+            : StringComparison.Ordinal;
+
+        foreach (ZipArchiveEntry entry in archive.Entries)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            string entryDestination = Path.GetFullPath(Path.Combine(destinationDirectory, entry.FullName));
+            if (!entryDestination.StartsWith(destinationRoot, pathComparison))
+            {
+                throw new IOException(
+                    $"{entry.FullName} in {archivePath} extracts to {entryDestination}, outside {destinationDirectory}.");
+            }
+
+            if (entry.Name.Length == 0)
+            {
+                Directory.CreateDirectory(entryDestination);
+                continue;
+            }
+
+            Directory.CreateDirectory(Path.GetDirectoryName(entryDestination)!);
+            entry.ExtractToFile(entryDestination, overwrite: true);
+        }
+
+        return Task.CompletedTask;
     }
 
     /// <summary>Resolves every symlinked ancestor of <paramref name="path"/> to its real
