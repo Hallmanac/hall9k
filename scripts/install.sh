@@ -67,7 +67,10 @@ fi
 [ -f "$WORKDIR/checksums.txt" ] || fail "checksums.txt was not among the downloaded release assets — cannot verify $ARCHIVE."
 
 echo "Verifying checksum…"
-EXPECTED="$(grep -F "  ${ARCHIVE}" "$WORKDIR/checksums.txt" | awk '{print $1}' | head -n1 || true)"
+# sha256sum's own two grammars: "<hex>  <file>" (text mode) and "<hex> *<file>" (binary
+# mode). Splitting on whitespace and trimming a leading '*' off the file field accepts
+# both, matching install.ps1 and ReleaseArchive.VerifyAsync (h9k update) on the .NET side.
+EXPECTED="$(awk -v name="$ARCHIVE" '{ file = $2; sub(/^\*/, "", file); if (file == name) { print $1; exit } }' "$WORKDIR/checksums.txt")"
 [ -n "$EXPECTED" ] || fail "$ARCHIVE has no entry in checksums.txt."
 if command -v sha256sum >/dev/null 2>&1; then
   ACTUAL="$(sha256sum "$WORKDIR/$ARCHIVE" | awk '{print $1}')"
