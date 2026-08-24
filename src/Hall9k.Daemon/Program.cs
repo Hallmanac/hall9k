@@ -4,6 +4,7 @@ using Hall9k.Daemon.Closeout;
 using Hall9k.Daemon.Dispatch;
 using Hall9k.Daemon.Execution;
 using Hall9k.Daemon.ProcessManagement;
+using Hall9k.Daemon.ProjectHomes;
 using Hall9k.Daemon.Publication;
 using Hall9k.Daemon.Review;
 using Hall9k.Daemon.Worktrees;
@@ -71,6 +72,7 @@ builder.Services.AddSingleton<IPullRequestInspector, GitHubPullRequestInspector>
 builder.Services.AddSingleton<JiraRequester>(_ => JiraHttp.Requester);
 builder.Services.AddSingleton<CloseoutEngine>();
 builder.Services.AddSingleton<CardPublicationEngine>();
+builder.Services.AddSingleton<ProjectHomeRenderEngine>();
 
 builder.Services.AddMartenEventStore(connectionString, AutoCreate.CreateOnly)
     .IntegrateWithWolverine();
@@ -87,6 +89,7 @@ builder.Services.AddHostedService<LeaseHeartbeatService>();
 builder.Services.AddHostedService<PullRequestMonitor>();
 builder.Services.AddHostedService<TokenBudgetRetryMonitor>();
 builder.Services.AddHostedService<CardPublicationLoop>();
+builder.Services.AddHostedService<ProjectHomeRenderLoop>();
 builder.Services.AddHostedService<LogRotationService>();
 
 // h9k daemon stop sends SIGTERM; graceful shutdown means in-flight event appends get

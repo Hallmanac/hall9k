@@ -154,6 +154,14 @@ public sealed class DaemonOptions
     public TimeSpan CardPublicationPollInterval { get; set; } = TimeSpan.FromSeconds(30);
 
     /// <summary>
+    /// How often the daemon sweeps every project home and re-renders task.md/idea.md for whatever
+    /// changed (backlog 48). The doorbell usually gets there first — most task and idea commands
+    /// ring it — so this is the backstop for the ones that do not (a draft revise, since nothing
+    /// dispatches from it) and for the daemon-start reconciliation pass.
+    /// </summary>
+    public TimeSpan ProjectHomeRenderPollInterval { get; set; } = TimeSpan.FromSeconds(20);
+
+    /// <summary>
     /// How long a publication session dispatched by <em>another</em> node may stand before this
     /// node ends the request rather than waiting on a machine it cannot ask.
     /// <para>
