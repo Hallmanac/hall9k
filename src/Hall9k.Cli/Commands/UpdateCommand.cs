@@ -155,9 +155,7 @@ public sealed class UpdateCommand(ProcessRunner? gh = null) : Hall9kAsyncCommand
                 return ExitCodes.Error;
             }
 
-            string version = File.Exists(Path.Combine(extractDirectory, "VERSION"))
-                ? (await File.ReadAllTextAsync(Path.Combine(extractDirectory, "VERSION"), cancellationToken)).Trim()
-                : "unknown";
+            string version = InstallCommand.ReadVersionFile(extractDirectory) ?? "unknown";
             string skillsSource = Path.Combine(extractDirectory, "skills");
 
             string staging = DaemonRuntime.StagingBinDirectory;
