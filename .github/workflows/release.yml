@@ -68,9 +68,15 @@ jobs:
         shell: bash
         run: echo "${VERSION}" > "dist/${{ matrix.rid }}/VERSION"
 
+      # COPYFILE_DISABLE stops macOS's bsdtar from shadowing every file with an AppleDouble
+      # ._ entry (extended-attribute/resource-fork sidecars) — without it, the osx-arm64
+      # payload doubles its entry count with files no consumer (h9k install --from-release,
+      # h9k update, the bootstrap scripts) expects or reads.
       - name: Archive (tar.gz)
         if: matrix.rid != 'win-x64'
         shell: bash
+        env:
+          COPYFILE_DISABLE: "1"
         run: |
           tar -czf "hall9k-${{ matrix.rid }}.tar.gz" -C "dist/${{ matrix.rid }}" .
       - name: Archive (zip)
