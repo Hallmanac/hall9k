@@ -45,7 +45,12 @@ public sealed class UpdateCommand(ProcessRunner? gh = null) : Hall9kAsyncCommand
     private readonly ProcessRunner gh = gh ?? ExternalProcess.RunnerWithDeadline(DownloadDeadline);
 
     protected override Task<int> ExecuteAsync(Settings settings, CancellationToken cancellationToken) =>
-        RunAsync(gh, settings.Repository ?? ReleasePlatform.DefaultRepository, settings.Restart, settings.NoRestart, cancellationToken);
+        RunAsync(
+            gh,
+            settings.Repository ?? ReleasePlatform.DefaultRepository,
+            settings.Restart,
+            settings.NoRestart,
+            cancellationToken: cancellationToken);
 
     /// <summary>The whole command, independent of Spectre: the thin wrapper above unpacks
     /// settings and calls this, and tests call it directly with a fake <paramref name="gh"/>.
@@ -57,8 +62,8 @@ public sealed class UpdateCommand(ProcessRunner? gh = null) : Hall9kAsyncCommand
         string repository,
         bool restart,
         bool noRestart,
-        CancellationToken cancellationToken,
-        bool linkOntoPath = true)
+        bool linkOntoPath = true,
+        CancellationToken cancellationToken = default)
     {
         string? rid = ReleasePlatform.CurrentRid();
         if (rid is null)
@@ -169,8 +174,8 @@ public sealed class UpdateCommand(ProcessRunner? gh = null) : Hall9kAsyncCommand
                 version,
                 restart,
                 noRestart,
-                cancellationToken,
-                linkOntoPath);
+                linkOntoPath,
+                cancellationToken);
         }
         finally
         {
