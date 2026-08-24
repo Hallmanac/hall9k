@@ -72,9 +72,21 @@ try {
     if (-not (Test-Path $checksumsPath)) { Fail "checksums.txt was not among the downloaded release assets — cannot verify $archiveName." }
 
     Write-Host "Verifying checksum…"
-    $expectedLine = Select-String -Path $checksumsPath -Pattern ([regex]::Escape("  $archiveName") + '$') | Select-Object -First 1
-    if (-not $expectedLine) { Fail "$archiveName has no entry in checksums.txt." }
-    $expected = ($expectedLine.Line -split '\s+')[0]
+    # sha256sum's own two grammars: "<hex>  <file>" (text mode) and "<hex> *<file>" (binary
+    # mode, which is what Git Bash's coreutils emits by default on Windows — the Checksum
+    # step in release.yml runs under `shell: bash` even on windows-latest). Splitting on
+    # whitespace and trimming a leading '*' off the file field accepts both, matching
+    # ReleaseArchive.VerifyAsync (h9k update) on the .NET side.
+    $expected = $null
+    foreach ($line in Get-Content -Path $checksumsPath) {
+        $parts = $line -split '\s+', 3
+        if ($parts.Length -ge 2 -and $parts[1].TrimStart('*') -eq $archiveName) {
+            $expected = $parts[0]
+            break
+        }
+    }
+
+    if (-not $expected) { Fail "$archiveName has no entry in checksums.txt." }
     $actual = (Get-FileHash -Path $archivePath -Algorithm SHA256).Hash.ToLowerInvariant()
     if ($expected.ToLowerInvariant() -ne $actual) {
         Fail "checksum mismatch for $archiveName (expected $expected, got $actual) — refusing to install a payload that does not match what was published."
