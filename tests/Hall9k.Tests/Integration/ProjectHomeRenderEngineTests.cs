@@ -208,6 +208,97 @@ public sealed class ProjectHomeRenderEngineTests(PostgresFixture postgres) : ICl
     }
 
     [Fact]
+    public async Task Re_recording_a_projects_home_with_different_case_does_not_orphan_an_anchored_idea()
+    {
+        // Adversarial review, cycle 6: idea.WorkspaceHome == project.HomeDirectory used ProjectHome's
+        // raw record equality (ordinal string comparison) instead of ProjectHomePaths.SameDirectory,
+        // the one helper this codebase built for "do these two recorded paths name the same
+        // directory". `h9k project init` lets a project's HomeDirectory be re-recorded at any time
+        // (ProjectSettingsChanged), and nothing normalises case, so the same physical directory
+        // retyped differently rewrites the recorded string. An idea anchored there under a project it
+        // has since moved away from must still be recognised as "known" by the raw equality's
+        // case-insensitive-filesystem replacement, or its real workspace gets deleted or marked
+        // ORPHANED.md by the very next sweep.
+        if (OperatingSystem.IsLinux())
+        {
+            // SameDirectory is deliberately ordinal on Linux, which does not fold case by default —
+            // a recased path there names a genuinely different directory, so this scenario cannot
+            // arise on that platform.
+            return;
+        }
+
+        using DocumentStore store = NewStore();
+        Guid ownerId = DomainId.New();
+        Guid originalProjectId = DomainId.New();
+        Guid otherProjectId = DomainId.New();
+        string otherHome = Directory.CreateTempSubdirectory("hall9k-render-engine-other-home-").FullName;
+        Guid ideaId = DomainId.New();
+
+        try
+        {
+            await using (IDocumentSession session = store.LightweightSession())
+            {
+                RegisterProject(session, originalProjectId, ownerId, "original");
+                ProjectRegistered otherRegistered = ProjectDecider.Register(
+                    otherProjectId, ownerId, DomainId.New(), "other", "/tmp/other", null, "main", Now,
+                    ProjectHome.Parse(otherHome));
+                session.Events.StartStream<ProjectAggregate>(otherProjectId, otherRegistered);
+
+                ProjectHome workspaceHome = ProjectHome.Parse(_home);
+                IdeaCaptured captured = IdeaDecider.Capture(
+                    ideaId, ownerId, "Idea anchored under a home later re-recorded with different case",
+                    originalProjectId, Now, workspaceHome);
+                session.Events.StartStream<IdeaAggregate>(ideaId, captured);
+                await session.SaveChangesAsync();
+            }
+
+            await NewEngine(store).PollOnceAsync(CancellationToken.None);
+
+            string originalIdeasRoot = ProjectHomePaths.IdeasDirectory(_home);
+            string originalIdeaDirectory = Directory.EnumerateDirectories(originalIdeasRoot).Should().ContainSingle().Subject;
+            string originalWorkspace = Path.Combine(originalIdeaDirectory, "workspace");
+            File.WriteAllText(Path.Combine(originalWorkspace, "notes.md"), "real research, keep me");
+
+            await using (IDocumentSession session = store.LightweightSession())
+            {
+                IdeaAggregate idea = await session.Events.AggregateStreamAsync<IdeaAggregate>(ideaId)
+                    ?? throw new InvalidOperationException("idea not found");
+                IdeaAssignedToProject assigned = IdeaDecider.AssignToProject(idea, otherProjectId, Now, ownerId);
+                session.Events.Append(ideaId, assigned);
+
+                // The same physical directory as _home, retyped with different case — what
+                // "h9k project init" re-run against the same path in a differently-cased shell
+                // invocation would record. Nothing moves on disk.
+                ProjectAggregate original = await session.Events.AggregateStreamAsync<ProjectAggregate>(originalProjectId)
+                    ?? throw new InvalidOperationException("project not found");
+                ProjectSettingsChanged recased = ProjectDecider.ChangeSettings(
+                    original, Optional<IReadOnlyList<VerifyCommand>>.None, Optional<bool>.None,
+                    Optional<int>.None, Optional<IReadOnlyList<ContextLink>>.None, Now, ownerId,
+                    homeDirectory: ProjectHome.Parse(Recase(_home)));
+                session.Events.Append(originalProjectId, recased);
+
+                await session.SaveChangesAsync();
+            }
+
+            await NewEngine(store).PollOnceAsync(CancellationToken.None);
+
+            Directory.Exists(originalIdeaDirectory).Should().BeTrue(
+                "a home re-recorded with different case must not orphan the idea's permanent, capture-time home directory");
+            File.Exists(Path.Combine(originalWorkspace, "notes.md")).Should().BeTrue(
+                "real research in the idea's one true workspace must survive a case-only re-recording of its home");
+            File.Exists(Path.Combine(originalIdeaDirectory, "ORPHANED.md")).Should().BeFalse(
+                "the directory is still the idea's real home, not an orphan, so it must not be marked as one");
+        }
+        finally
+        {
+            Directory.Delete(otherHome, recursive: true);
+        }
+    }
+
+    private static string Recase(string path) =>
+        string.Concat(path.Select((c, i) => i % 2 == 0 ? char.ToUpperInvariant(c) : char.ToLowerInvariant(c)));
+
+    [Fact]
     public async Task Revising_an_idea_after_reassignment_does_not_orphan_its_anchored_workspace()
     {
         // The other half of Reassigning_an_idea_to_a_project_with_its_own_home_does_not_create_a_decoy_workspace

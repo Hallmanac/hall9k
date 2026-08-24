@@ -81,7 +81,8 @@ public sealed class ProjectHomeRenderEngine(IDocumentStore store, ILogger<Projec
                 // ideas list, does not find it, and treats the one true copy of that idea's
                 // research as an orphan to delete or mark (adversarial review, cycle 4).
                 IReadOnlyList<IdeaDetails> ideasAnchoredHereButOwnedElsewhere = [.. allIdeas.Where(idea =>
-                    idea.ProjectId != project.Id && idea.WorkspaceHome == project.HomeDirectory)];
+                    idea.ProjectId != project.Id
+                    && ProjectHomePaths.SameDirectory(idea.WorkspaceHome.Value, project.HomeDirectory.Value))];
 
                 projectsInspected++;
 
@@ -171,7 +172,8 @@ public sealed class ProjectHomeRenderEngine(IDocumentStore store, ILogger<Projec
             // material into a folder nothing ever reads.
             bool changed = HomeEntryWriter.Write(
                 ideasRoot, idea.Id, directoryName, "idea.md", rendered,
-                includeWorkspace: idea.WorkspaceHome == project.HomeDirectory).Changed;
+                includeWorkspace: ProjectHomePaths.SameDirectory(
+                    idea.WorkspaceHome.Value, project.HomeDirectory.Value)).Changed;
             return changed ? RenderOutcome.Written : RenderOutcome.Unchanged;
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
