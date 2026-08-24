@@ -159,10 +159,7 @@ public sealed class UpdateCommand(ProcessRunner? gh = null) : Hall9kAsyncCommand
             string skillsSource = Path.Combine(extractDirectory, "skills");
 
             string staging = DaemonRuntime.StagingBinDirectory;
-            if (Directory.Exists(staging))
-            {
-                Directory.Delete(staging, recursive: true);
-            }
+            InstallCommand.TryDelete(staging);
 
             InstallCommand.StageFromRelease(extractDirectory, staging, cancellationToken);
 
