@@ -16,11 +16,10 @@ public sealed class GitHubPullRequestInspectorTests
     // response readable in C# source; JSON has no apostrophes to lose to it.
     private static string Payload(
         string author, string headOid, string threads, string reviews,
-        string comments = "", string reviewRequests = "") =>
+        string reviewRequests = "") =>
         ("{'data':{'repository':{'pullRequest':{"
             + $"'author':{author},'headRefOid':'{headOid}',"
             + $"'reviewThreads':{{'nodes':[{threads}]}},"
-            + $"'comments':{{'nodes':[{comments}]}},"
             + $"'reviewRequests':{{'nodes':[{reviewRequests}]}},"
             + $"'latestReviews':{{'nodes':[{reviews}]}}"
             + "}}}}").Replace('\'', '"');
@@ -29,14 +28,15 @@ public sealed class GitHubPullRequestInspectorTests
         $"{{'id':'{id}',"
             + $"'isResolved':{(resolved ? "true" : "false")},'comments':{{'nodes':[{{'author':{author}}}]}}}}";
 
+    private static string ThreadWithNullId(bool resolved, string author) =>
+        "{'id':null,"
+            + $"'isResolved':{(resolved ? "true" : "false")},'comments':{{'nodes':[{{'author':{author}}}]}}}}";
+
     private static string Actor(string login, string typeName) =>
         $"{{'login':'{login}','__typename':'{typeName}'}}";
 
     private static string Review(string author, string oid, string body = "") =>
         $"{{'author':{author},'body':'{body}','url':'https://x/y/pull/7#r1','commit':{{'oid':'{oid}'}}}}";
-
-    private static string Comment(string id, string author) =>
-        $"{{'id':'{id}','author':{author}}}";
 
     private static string RequestedReviewer(string login, string typeName) =>
         $"{{'requestedReviewer':{{'__typename':'{typeName}','login':'{login}'}}}}";
@@ -64,6 +64,30 @@ public sealed class GitHubPullRequestInspectorTests
             1, "the author's own thread is a self-note and counts as a person's (AGENTS.md invariant)");
         observation.UnresolvedThreadIds.Should().BeEquivalentTo(["thread-bot", "thread-self-note"]);
         observation.UnresolvedHumanThreadIds.Should().Equal("thread-self-note");
+    }
+
+    /// <summary>
+    /// GitHub types a review thread's id as a non-null ID; a null here is a malformed payload.
+    /// Skipping it rather than coalescing to "" keeps a genuinely missing id from fabricating a
+    /// key that would collapse every such thread onto the same obstruction identity and
+    /// human-engagement diff (PR #37 review).
+    /// </summary>
+    [Fact]
+    public void A_thread_with_no_id_is_skipped_rather_than_given_a_fabricated_key()
+    {
+        string json = Payload(
+            Actor("hallmanac", "User"),
+            "cafe1",
+            string.Join(",",
+                ThreadWithNullId(resolved: false, Actor("teammate", "User")),
+                Thread(resolved: false, Actor("teammate", "User"), "thread-real")),
+            "");
+
+        GitHubPullRequestInspector.ReviewObservation observation = GitHubPullRequestInspector.ParseReviews(json);
+
+        observation.UnresolvedThreads.Should().Be(
+            1, "the malformed thread is skipped rather than counted under a fabricated key");
+        observation.UnresolvedThreadIds.Should().Equal("thread-real");
     }
 
     /// <summary>
@@ -131,27 +155,6 @@ public sealed class GitHubPullRequestInspectorTests
         observation.UnresolvedThreads.Should().Be(1);
         observation.UnresolvedHumanThreads.Should().Be(0);
         observation.Reviewers.Should().BeEmpty();
-    }
-
-    /// <summary>
-    /// A top-level pull-request comment is one of the three mechanical human-engagement
-    /// signals the closeout budget grants a lap for (Decisions Log #77, backlog 45). Agents
-    /// here only ever reply inside review threads, never open a bare comment, so only the
-    /// human-authored ones are collected — checked by actor type, not assumed.
-    /// </summary>
-    [Fact]
-    public void Only_human_authored_top_level_comments_are_collected()
-    {
-        string json = Payload(
-            Actor("hallmanac", "User"), "cafe1", "", "",
-            comments: string.Join(",",
-                Comment("comment-human", Actor("hallmanac", "User")),
-                Comment("comment-bot", Actor("some-bot", "Bot")),
-                Comment("comment-ghost", "null")));
-
-        GitHubPullRequestInspector.ReviewObservation observation = GitHubPullRequestInspector.ParseReviews(json);
-
-        observation.HumanCommentIds.Should().Equal("comment-human");
     }
 
     /// <summary>

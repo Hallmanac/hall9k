@@ -90,14 +90,14 @@ public sealed record ErroredReview(string Reviewer, string Url);
 /// outage).
 /// </para>
 /// <para>
-/// HumanCommentIds and PendingReviewRequestLogins are the other two human-engagement
-/// signals (Decisions Log #77, backlog 45). HumanCommentIds is every top-level pull-request
-/// comment (not a review-thread comment) authored by a person — agents here only ever reply
-/// inside review threads (AGENTS.md), so a top-level comment is squarely a human's own act.
-/// PendingReviewRequestLogins is who currently has a pending review request; a login that
-/// was not pending as of the task's last automatic decision but is now is a human
-/// re-requesting a review — the platform's own re-requests are recorded (and so already
-/// known) the moment they are issued, never inferred from this list.
+/// PendingReviewRequestLogins is the other human-engagement signal (Decisions Log #77,
+/// backlog 45): who currently has a pending review request. A login that was not pending as
+/// of the task's last automatic decision but is now is a human re-requesting a review — the
+/// platform's own re-requests are compared away separately (RunAggregate.RequestedReviewerLogins),
+/// never inferred from this list alone. A candidate third signal, a new top-level pull-request
+/// comment, was cut before merge: agents here post top-level comments too (answering a review
+/// body with `gh pr comment`), authored under the same login as a human's, so the provider's
+/// actor type cannot tell the two apart the way it can for a review thread's starter.
 /// </para>
 /// <para>
 /// One silence this cannot see: GitHub hides a review's comments while the review is still
@@ -120,7 +120,6 @@ public sealed record PullRequestSnapshot(
     string? HeadCommit = null,
     IReadOnlyList<string>? UnresolvedReviewThreadIds = null,
     IReadOnlyList<string>? UnresolvedHumanThreadIds = null,
-    IReadOnlyList<string>? HumanCommentIds = null,
     IReadOnlyList<string>? PendingReviewRequestLogins = null)
 {
     /// <summary>Every unresolved thread's id, or empty when the provider read predates ids being collected.</summary>
@@ -128,9 +127,6 @@ public sealed record PullRequestSnapshot(
 
     /// <summary>The human-started subset of <see cref="ThreadIds"/>.</summary>
     public IReadOnlyList<string> HumanThreadIds => UnresolvedHumanThreadIds ?? [];
-
-    /// <summary>Top-level pull-request comments authored by a human.</summary>
-    public IReadOnlyList<string> CommentIds => HumanCommentIds ?? [];
 
     /// <summary>Reviewers with a pending review request right now.</summary>
     public IReadOnlyList<string> PendingReviewers => PendingReviewRequestLogins ?? [];

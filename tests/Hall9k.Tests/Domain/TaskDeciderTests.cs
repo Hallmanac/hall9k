@@ -267,7 +267,7 @@ public sealed class TaskDeciderTests
             task, task.CurrentRunId!.Value, "task/abc", "CI checks failing: build.",
             FollowUpKind.FailingChecks, automatic: true, Now, DomainId.New(),
             obstructionKey: "FailingChecks:build", obstructionSummary: "the failing check(s) build",
-            knownHumanReviewThreadIds: [], knownHumanCommentIds: [], knownPendingReviewRequestLogins: []));
+            knownHumanReviewThreadIds: [], knownPendingReviewRequestLogins: []));
         task.CloseoutAttempts.Should().Be(1);
         task.LastAutomaticObstructionKey.Should().Be("FailingChecks:build");
         task.ConsecutiveObstructionLaps.Should().Be(1);
@@ -304,9 +304,9 @@ public sealed class TaskDeciderTests
     }
 
     /// <summary>
-    /// The human-engagement comparison points (unresolved human threads, comments, pending
-    /// review requests) travel forward on TaskReopened so the next automatic decision can tell
-    /// a genuinely new one from something already accounted for (Decisions Log #77, backlog 45).
+    /// The human-engagement comparison points (unresolved human threads, pending review
+    /// requests) travel forward on TaskReopened so the next automatic decision can tell a
+    /// genuinely new one from something already accounted for (Decisions Log #77, backlog 45).
     /// </summary>
     [Fact]
     public void Known_human_engagement_sets_carry_forward_on_automatic_reopens_and_clear_on_manual_ones()
@@ -318,11 +318,9 @@ public sealed class TaskDeciderTests
             FollowUpKind.ReviewFeedback, automatic: true, Now, DomainId.New(),
             obstructionKey: "ReviewFeedback:thread-1", obstructionSummary: "the same 1 unresolved review thread(s)",
             knownHumanReviewThreadIds: ["thread-1"],
-            knownHumanCommentIds: ["comment-1"],
             knownPendingReviewRequestLogins: ["teammate"]));
 
         task.KnownHumanReviewThreadIds.Should().Equal("thread-1");
-        task.KnownHumanCommentIds.Should().Equal("comment-1");
         task.KnownPendingReviewRequestLogins.Should().Equal("teammate");
 
         CompleteFollowUp(task);
@@ -331,7 +329,6 @@ public sealed class TaskDeciderTests
             FollowUpKind.ReviewFeedback, automatic: false, Now, DomainId.New()));
 
         task.KnownHumanReviewThreadIds.Should().BeEmpty("a manual reopen wipes the comparison points too");
-        task.KnownHumanCommentIds.Should().BeEmpty();
         task.KnownPendingReviewRequestLogins.Should().BeEmpty();
     }
 

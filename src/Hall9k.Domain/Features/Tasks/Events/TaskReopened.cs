@@ -27,7 +27,6 @@ namespace Hall9k.Domain.Features.Tasks.Events;
 /// thread (a human-grant signal, Decisions Log #77). Null/empty on a manual reopen — the
 /// slate is wiped rather than carried forward.
 /// </param>
-/// <param name="KnownHumanCommentIds">Top-level pull-request comments authored by a human, observed at this dispatch — the same comparison point for a human-grant signal.</param>
 /// <param name="KnownPendingReviewRequestLogins">Reviewers with a pending review request observed at this dispatch — the comparison point for detecting a human's own re-request.</param>
 public sealed record TaskReopened(
     Guid Id,
@@ -41,5 +40,4 @@ public sealed record TaskReopened(
     string? ObstructionKey = null,
     string? ObstructionSummary = null,
     IReadOnlyList<string>? KnownHumanReviewThreadIds = null,
-    IReadOnlyList<string>? KnownHumanCommentIds = null,
     IReadOnlyList<string>? KnownPendingReviewRequestLogins = null);
