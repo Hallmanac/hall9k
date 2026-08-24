@@ -2,6 +2,7 @@ using System.Collections.ObjectModel;
 using System.Text;
 using Hall9k.Daemon.Execution;
 using Hall9k.Daemon.ProcessManagement;
+using Hall9k.Domain.Features.Project;
 using Hall9k.Domain.Features.Project.Projections;
 using Hall9k.Domain.Features.Run;
 using Hall9k.Domain.Features.Run.Documents;
@@ -480,6 +481,14 @@ public sealed class ReviewEngine(
     /// whichever tracks found something. Checks the generation fence immediately before the
     /// spawn (Copilot review, PR #30): the fix session reads the findings file first, which
     /// is enough of a gap for a reclaim to land in.
+    /// <para>
+    /// A rebase-conflict dispute (Decisions Log #62, backlog 44) resumes through this same
+    /// FixNeeded phase — <c>ParkedOnThreadDisputeAsync</c> reuses the plain review-thread park
+    /// mechanism for it — but a generic review-fix prompt knows nothing about the base branch
+    /// or the conflict, and the branch is still un-rebased (the parked session ran
+    /// <c>git rebase --abort</c> before it exited). It gets the rebase prompt instead, with the
+    /// human's stated resolution carried in as the conflict's answer.
+    /// </para>
     /// </summary>
     private async Task<bool> DispatchFixSessionAsync(
         ReviewContext context, int cycle, string? humanFindings, CancellationToken cancellationToken)
@@ -493,7 +502,11 @@ public sealed class ReviewEngine(
         }
 
         Guid sessionId = DomainId.New();
-        string prompt = AgentPromptBuilder.BuildReviewFix(context.Task, context.Run.Branch, findings, cycle);
+        CommitStyle commitStyle = CommitStyle.Resolve(context.Project.CommitStyle, _options.DefaultCommitStyle);
+        string prompt = context.Task.FollowUpKind == FollowUpKind.Rebase
+            ? AgentPromptBuilder.BuildRebase(
+                context.Task, context.Project, context.Run.Branch, context.Task.PullRequestUrl!, commitStyle, findings)
+            : AgentPromptBuilder.BuildReviewFix(context.Task, context.Run.Branch, findings, cycle);
         ExecutorMode mode = context.Run.ExecutorMode;
         // Fix is its own role: applying findings someone else reasoned out is a different
         // shape of work from producing them, so it resolves separately (log #33).

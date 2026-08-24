@@ -406,8 +406,15 @@ public static class AgentPromptBuilder
     /// behavior once combined.
     /// </para>
     /// </summary>
+    /// <param name="humanResolution">
+    /// Set when this session resumes a rebase whose previous attempt disputed a conflict and a
+    /// human decided it (<c>h9k review resolve --needs-fixes</c>, <see cref="ReviewEngine"/>'s
+    /// fix-session dispatch): their decision, inserted so the agent applies it rather than
+    /// re-litigating the same conflict.
+    /// </param>
     public static string BuildRebase(
-        TaskDetails task, ProjectDetails project, string branch, string pullRequestUrl, CommitStyle commitStyle)
+        TaskDetails task, ProjectDetails project, string branch, string pullRequestUrl, CommitStyle commitStyle,
+        string? humanResolution = null)
     {
         StringBuilder prompt = new();
         prompt.AppendLine("# Follow-up task: rebase an existing pull request onto its base branch");
@@ -423,6 +430,19 @@ public static class AgentPromptBuilder
         if (task.FollowUpReason.IsNotBlank())
         {
             prompt.AppendLine($"Why this follow-up was dispatched: {task.FollowUpReason}");
+            prompt.AppendLine();
+        }
+
+        if (humanResolution.IsNotBlank())
+        {
+            prompt.AppendLine("## The human's decision on the disputed conflict");
+            prompt.AppendLine();
+            prompt.AppendLine("A previous attempt at this rebase hit a conflict it could not honestly resolve");
+            prompt.AppendLine("and parked for a human. Apply their decision below instead of re-litigating it;");
+            prompt.AppendLine("only raise a new dispute if you hit a DIFFERENT conflict that is genuinely");
+            prompt.AppendLine("undecidable.");
+            prompt.AppendLine();
+            prompt.AppendLine(humanResolution);
             prompt.AppendLine();
         }
 
@@ -465,7 +485,7 @@ public static class AgentPromptBuilder
         prompt.AppendLine("  - **Never leave a conflict marker (`<<<<<<<`, `=======`, `>>>>>>>`) in a commit.**");
         prompt.AppendLine("    Before continuing past any conflicted commit, grep the resolved files for those");
         prompt.AppendLine("    markers and confirm none remain.");
-        AppendRebaseVerificationRule(prompt, project);
+        AppendRebaseVerificationRule(prompt, project, commitStyle);
         prompt.AppendLine("  - Do NOT push (the platform pushes the rebased branch with");
         prompt.AppendLine("    `git push --force-with-lease` after re-verifying), and do NOT open a new pull");
         prompt.AppendLine("    request — the existing PR updates in place.");
@@ -488,7 +508,7 @@ public static class AgentPromptBuilder
     /// agent has to see the failure itself to fix its actual cause instead of a resubmitted
     /// flake theory.
     /// </summary>
-    private static void AppendRebaseVerificationRule(StringBuilder prompt, ProjectDetails project)
+    private static void AppendRebaseVerificationRule(StringBuilder prompt, ProjectDetails project, CommitStyle commitStyle)
     {
         if (project.VerifyCommands.Count == 0)
         {
@@ -503,6 +523,24 @@ public static class AgentPromptBuilder
         foreach (VerifyCommand gate in project.VerifyCommands)
         {
             prompt.AppendLine($"    - `{gate.Command}`");
+        }
+
+        prompt.AppendLine("  - **Commit any such fix — never leave it uncommitted.** The platform pushes only");
+        prompt.AppendLine("    what is committed, so a gate fix left in the working tree ships neither committed");
+        prompt.AppendLine("    nor pushed, and the pull request goes out still broken.");
+        if (commitStyle == CommitStyle.Append)
+        {
+            prompt.AppendLine("    This project uses the append commit style: land the fix as its own commit on");
+            prompt.AppendLine("    top, with a clear message naming what the rebase's combination broke.");
+        }
+        else
+        {
+            prompt.AppendLine("    This project uses the narrative commit style, so the fix belongs inside the");
+            prompt.AppendLine("    commit whose replay produced the failure, not a new \"fix tests\" commit: if");
+            prompt.AppendLine("    you are still mid-rebase, `git add` it and continue; if the rebase already");
+            prompt.AppendLine($"    finished, `git rebase -i origin/{project.BaseBranch}`, mark that commit");
+            prompt.AppendLine("    `edit`, apply the fix, `git commit --amend --no-edit`, then");
+            prompt.AppendLine("    `git rebase --continue`.");
         }
     }
 
@@ -525,9 +563,15 @@ public static class AgentPromptBuilder
         prompt.AppendLine("  summary, above the HANDOFF block). Above that line, name every conflicting file,");
         prompt.AppendLine("  what each side changed and why, and what you would do instead and why.");
         prompt.AppendLine("  The platform parks the run for a human with that text saved beside the run, and");
-        prompt.AppendLine("  nothing is pushed until they decide. They resume it with `h9k review resolve`.");
+        prompt.AppendLine("  nothing is pushed until they decide. They resume it with");
+        prompt.AppendLine("  `h9k review resolve --needs-fixes \"<their resolution>\"`, which dispatches a fresh");
+        prompt.AppendLine("  rebase attempt carrying their decision.");
         prompt.AppendLine($"  When you resolved everything, close the summary with `{ResolvedMarker}` instead.");
-        prompt.AppendLine("  Park at most once: this is one honest attempt, not a negotiation.");
+        prompt.AppendLine("  One honest attempt per conflict, not a negotiation: never park twice over the SAME");
+        prompt.AppendLine("  conflict a previous attempt already disputed. Parking again over a DIFFERENT");
+        prompt.AppendLine("  conflict this attempt hit is not a second negotiation over the first one — it is");
+        prompt.AppendLine("  honest, and picking a side instead to avoid a second park would silently drop one");
+        prompt.AppendLine("  side's work.");
     }
 
     /// <summary>

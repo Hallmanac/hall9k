@@ -386,6 +386,42 @@ public sealed class RunSupervisorTests(PostgresFixture postgres) : IClassFixture
     }
 
     /// <summary>
+    /// The rebase counterpart of the review-thread dispute above (backlog 44,
+    /// AgentPromptBuilder.AppendRebaseDisputeRules): a rebase follow-up that hits a conflict it
+    /// cannot honestly resolve parks the same way, but with its own artifact and reason text —
+    /// pointing the human at <c>--needs-fixes</c> rather than the generic message, since a
+    /// rebase dispute has no diff to sign off as merge-ready.
+    /// </summary>
+    [Fact]
+    public async Task A_follow_up_that_disputes_a_rebase_conflict_parks_with_its_own_artifact_and_reason()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        using DocumentStore store = NewStore();
+        (NodeContext node, Guid taskId, Guid runId) = await SeedClaimedTaskAsync(
+            store, cts.Token, asFollowUp: true, followUpKind: FollowUpKind.Rebase);
+
+        const string disputed =
+            "Rebased cleanly except one file: both branches rewrote the same retry policy.\n"
+            + "RESOLUTION: disputed";
+        int processId = SpawnFakeAgent(runId, $"printf '%s\\n' '{DisputedResultLine(disputed)}'");
+        DateTimeOffset startedAt = await RecordProcessStartedAsync(store, runId, processId, cts.Token);
+
+        RunSupervisor supervisor = NewSupervisor(store, node);
+        supervisor.StartMonitoring(runId, RunPaths.GlobalDirectory(runId), taskId, processId, startedAt, cts.Token);
+
+        RunDetails details = await WaitForStateAsync(store, runId, "ReviewParked", cts.Token);
+        details.ParkedReason.Should().Contain("rebase conflict");
+        details.ParkedReason.Should().Contain(
+            "--needs-fixes", "merge-ready has no meaning here — nothing has been rebased yet");
+        details.FailureReason.Should().BeNull("a park is a waiting state, not a failure");
+
+        File.ReadAllText(RunPaths.RebaseConflictDisputeFile(RunPaths.GlobalDirectory(runId))).Should().Contain(
+            "retry policy", "the human reads the agent's position, not just the marker");
+        File.Exists(RunPaths.ReviewThreadDisputeFile(RunPaths.GlobalDirectory(runId))).Should().BeFalse(
+            "a rebase dispute writes its own artifact, not the review-thread one");
+    }
+
+    /// <summary>
     /// The generation fence on the thread-dispute park (adversarial review, cycle 3): a
     /// requeue-and-reclaim moved the task on to generation 2 while this follow-up — still
     /// generation 1, the exact double-booking shape backlog 39 exists to close — was mid-run.

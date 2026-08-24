@@ -205,6 +205,62 @@ public sealed class AgentPromptBuilderTests : IDisposable
         prompt.Should().Contain("Do NOT push");
     }
 
+    /// <summary>
+    /// The gate-fix commit guidance the rebase prompt must give and previously did not
+    /// (independent pre-PR review, cycle 1): a verification failure surfaced by the rebase has
+    /// to land in a commit, and this project's append style says which shape that commit takes.
+    /// </summary>
+    [Fact]
+    public void Append_rebase_prompt_tells_the_agent_to_commit_gate_fixes_as_their_own_commit()
+    {
+        ProjectDetails project = SomeProject();
+        project.VerifyCommands = [new VerifyCommand("test", "dotnet test")];
+
+        string prompt = AgentPromptBuilder.BuildRebase(
+            SomeTask(), project, "task/1-slug", "https://github.com/x/y/pull/7", CommitStyle.Append);
+
+        prompt.Should().Contain("Commit any such fix — never leave it uncommitted");
+        prompt.Should().Contain("append commit style: land the fix as its own commit");
+        prompt.Should().NotContain("git rebase -i origin/main");
+    }
+
+    /// <summary>
+    /// The narrative counterpart: a gate fix belongs inside the commit whose replay produced
+    /// the failure, not a new "fix tests" commit — the same rule <c>AppendCommitStyleRules</c>
+    /// already teaches <see cref="AgentPromptBuilder.BuildFixChecks"/>, applied here.
+    /// </summary>
+    [Fact]
+    public void Narrative_rebase_prompt_folds_gate_fixes_into_the_owning_commit()
+    {
+        ProjectDetails project = SomeProject();
+        project.VerifyCommands = [new VerifyCommand("test", "dotnet test")];
+
+        string prompt = AgentPromptBuilder.BuildRebase(
+            SomeTask(), project, "task/1-slug", "https://github.com/x/y/pull/7", CommitStyle.Narrative);
+
+        prompt.Should().Contain("narrative commit style, so the fix belongs inside the");
+        prompt.Should().Contain("not a new \"fix tests\" commit");
+        prompt.Should().Contain("git rebase -i origin/main");
+        prompt.Should().Contain("git commit --amend --no-edit");
+    }
+
+    /// <summary>
+    /// A resumed rebase attempt (after <c>h9k review resolve --needs-fixes</c> on a disputed
+    /// conflict) carries the human's decision so the agent applies it instead of disputing the
+    /// same conflict again.
+    /// </summary>
+    [Fact]
+    public void Rebase_prompt_carries_the_humans_resolution_when_resuming_a_disputed_conflict()
+    {
+        string prompt = AgentPromptBuilder.BuildRebase(
+            SomeTask(), SomeProject(), "task/1-slug", "https://github.com/x/y/pull/7", CommitStyle.Append,
+            humanResolution: "Keep the daemon side's retry policy; the CLI side's version predates the incident fix.");
+
+        prompt.Should().Contain("The human's decision on the disputed conflict");
+        prompt.Should().Contain("Keep the daemon side's retry policy");
+        prompt.Should().Contain("only raise a new dispute if you hit a DIFFERENT conflict");
+    }
+
     [Fact]
     public void Append_follow_up_keeps_the_stack_on_top_instructions_without_rebase_mechanics()
     {
