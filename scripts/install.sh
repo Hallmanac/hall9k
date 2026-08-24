@@ -112,4 +112,8 @@ echo "Running h9k doctor…"
 "$H9K" doctor || true
 
 echo
-echo "Done. Open a new terminal (or re-source your shell profile) so h9k resolves on your PATH."
+if command -v h9k >/dev/null 2>&1; then
+  echo "Done. h9k is on your PATH."
+else
+  echo "Done. h9k did not land on a directory already on your PATH — see the warning above, or run it directly at $H9K."
+fi
