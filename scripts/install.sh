@@ -23,6 +23,11 @@ REPO="${HALL9K_REPO:-Hallmanac/hall9k}"
 TAG="${HALL9K_RELEASE_TAG:-}"
 ASSUME_YES=0
 
+# PlatformPaths.Home's own default: HALL9K_HOME when set, ~/.hall9k otherwise — this
+# script has to agree with it, or the consent prompt and the doctor re-resolution below
+# name a directory nothing was actually written to.
+HALL9K_HOME_DIR="${HALL9K_HOME:-$HOME/.hall9k}"
+
 for arg in "$@"; do
   case "$arg" in
     -y|--yes) ASSUME_YES=1 ;;
@@ -81,7 +86,7 @@ fi
 echo "Checksum verified."
 
 if [ "$ASSUME_YES" -ne 1 ]; then
-  PROMPT="This will place h9k and h9kd in ~/.hall9k/bin, add h9k to your PATH, and publish Hall9k's skills to ~/.hall9k/skills. Nothing is started or registered as a background service. Continue? [y/N] "
+  PROMPT="This will place h9k and h9kd in $HALL9K_HOME_DIR/bin, add h9k to your PATH, and publish Hall9k's skills to $HALL9K_HOME_DIR/skills. Nothing is started or registered as a background service. Continue? [y/N] "
   # A curl-pipe leaves stdin consumed by the pipe, so the prompt is read from the
   # controlling terminal directly when one exists, the same trick well-behaved
   # curl-to-shell installers use.
@@ -107,7 +112,7 @@ echo "Installing…"
 
 # Re-resolve h9k for the doctor run: install may have just put it on the PATH for the
 # first time, which this already-running shell has not picked up yet.
-H9K="$HOME/.hall9k/bin/h9k"
+H9K="$HALL9K_HOME_DIR/bin/h9k"
 [ -x "$H9K" ] || H9K="$PAYLOAD/h9k"
 
 echo
