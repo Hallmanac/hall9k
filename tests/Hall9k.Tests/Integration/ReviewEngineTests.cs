@@ -1099,6 +1099,53 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
     }
 
     /// <summary>
+    /// The resumed rebase session's own prompt explicitly invites a second dispute
+    /// (<c>AgentPromptBuilder.AppendRebaseDisputeRules</c>: "raise a new dispute if you hit a
+    /// DIFFERENT conflict that is genuinely undecidable"), and no review pass has ever run at
+    /// this point (<c>RunAggregate.ReviewCycle</c> is still 0 — cycle numbers start at 1, at
+    /// the first review pass), so the generic disputed-cycle park — built to point at a
+    /// review-findings file and a review-fix-position file — would name a review-findings file
+    /// nothing ever wrote and describe a review-thread dispute that never happened. This second
+    /// park must get the same rebase-specific treatment the first one did: its own reason text
+    /// naming the conflict, and its own <c>rebase-conflict-dispute.md</c> artifact (independent
+    /// pre-PR review, cycle 3).
+    /// </summary>
+    [Fact]
+    public async Task A_rebase_dispute_that_disputes_again_after_resuming_parks_with_its_own_rebase_reason()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        using DocumentStore store = NewStore();
+        (Guid taskId, Guid runId, _) = await SeedRebaseDisputeParkedRunAsync(store, cts.Token);
+
+        const string humanResolution = "Keep the daemon side's retry policy.";
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            session.Events.Append(runId, new ReviewParkResolved(
+                runId, ReviewVerdict.NeedsFixes, humanResolution, Now, DomainId.New()));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        ScriptedExecutor executor = new(
+            "Resolved the first conflict, but `Billing.cs` conflicts again and both sides changed "
+            + "pricing rounding.\n\nRESOLUTION: disputed");
+        bool mergeReady = await NewEngine(store, executor).ReviewAsync(runId, taskId, cts.Token);
+
+        mergeReady.Should().BeFalse();
+        executor.Spawns.Should().HaveCount(1, "only the resumed rebase session runs before parking again");
+
+        await using IQuerySession query = store.QuerySession();
+        RunDetails run = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
+        run.State.Should().Be(RunState.ReviewParked);
+        string disputeFile = RunPaths.RebaseConflictDisputeFile(RunPaths.GlobalDirectory(runId));
+        run.ParkedReason.Should().Contain(disputeFile, "the second dispute gets its own rebase artifact")
+            .And.Contain("Decide the conflict yourself")
+            .And.NotContain(RunPaths.ReviewFindingsFile(RunPaths.GlobalDirectory(runId), 0),
+                "no review pass ever ran at cycle 0, so pointing at a review-findings file would name a file nothing wrote");
+
+        File.ReadAllText(disputeFile).Should().Contain("Billing.cs");
+    }
+
+    /// <summary>
     /// The sibling case the fix-session prompt selection must NOT route to the rebase prompt: a
     /// rebase follow-up whose branch already rebased cleanly and pushed (verification already
     /// passed, so <c>RunAggregate.ParkedFromState</c> never became Verifying) reaches FixNeeded
@@ -1134,6 +1181,58 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
             "rebase an existing pull request onto its base branch",
             "the branch is already rebased — resuming the rebase prompt here would ask for a no-op");
         executor.Spawns[2].Prompt.Should().NotContain("The human's decision on the disputed conflict");
+    }
+
+    /// <summary>
+    /// The parked-then-resumed shape the sibling tests above only cover half of: a rebase
+    /// dispute that actually parked and was resumed (unlike
+    /// <see cref="SeedVerifiedRebaseFollowUpRunAsync"/>, whose run never parked, so
+    /// <c>RunAggregate.ParkedFromState</c> stayed <c>Unknown</c> and could never exercise the
+    /// staleness this guards against), whose resumed fix session then succeeds and reaches an
+    /// ORDINARY review cycle later in the same run. <c>ParkedFromState</c> is read off the
+    /// stream rather than reset once consumed (<c>RunAggregate.Apply(ReviewParked)</c> is its
+    /// only writer), so it is still <c>Verifying</c> at this later cycle's fix dispatch even
+    /// though the dispute is long resolved — pairing the rebase-prompt check with
+    /// <c>PendingHumanFindings</c> being present (cleared the moment the resumed fix session
+    /// completes) is what keeps this automated cycle's needs-fixes verdict from being routed
+    /// back to the rebase prompt for a conflict that no longer exists (independent pre-PR
+    /// review, cycle 3).
+    /// </summary>
+    [Fact]
+    public async Task An_ordinary_cycle_after_a_resumed_rebase_dispute_still_gets_the_review_fix_prompt()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        using DocumentStore store = NewStore();
+        (Guid taskId, Guid runId, _) = await SeedRebaseDisputeParkedRunAsync(store, cts.Token);
+
+        const string humanResolution = "Keep the daemon side's retry policy.";
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            session.Events.Append(runId, new ReviewParkResolved(
+                runId, ReviewVerdict.NeedsFixes, humanResolution, Now, DomainId.New()));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        const string conformanceFinding = "1. `Auth.cs:42` — the limiter never resets.";
+        ScriptedExecutor executor = new(
+            "Applied the human's decision and rebased cleanly.\n\nRESOLUTION: fixed",
+            $"{conformanceFinding}\n\nVERDICT: needs-fixes",
+            "Nothing of my own.\n\nVERDICT: merge-ready",
+            "Reset the limiter.\n\nRESOLUTION: fixed",
+            "Criteria met.\n\nVERDICT: merge-ready");
+        bool mergeReady = await NewEngine(store, executor).ReviewAsync(runId, taskId, cts.Token);
+
+        mergeReady.Should().BeTrue();
+        executor.Spawns.Should().HaveCount(
+            5, "the resumed rebase, two passes → one ordinary fix → the surviving track's final pass");
+        executor.Spawns[3].Prompt.Should().Contain(
+            "Fix the verified findings from an independent pre-PR review",
+            "an ordinary needs-fixes cycle reached after a resumed rebase dispute must still get the review-fix prompt");
+        executor.Spawns[3].Prompt.Should().Contain(conformanceFinding);
+        executor.Spawns[3].Prompt.Should().NotContain(
+            "rebase an existing pull request onto its base branch",
+            "ParkedFromState is stale Verifying here, but the dispute was already resolved — resuming the rebase prompt would ask for a no-op");
+        executor.Spawns[3].Prompt.Should().NotContain("The human's decision on the disputed conflict");
     }
 
     /// <summary>
