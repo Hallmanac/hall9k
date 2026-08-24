@@ -1,6 +1,7 @@
 using Hall9k.Connectors.WorkItems;
 using Hall9k.Daemon.Closeout;
 using Hall9k.Daemon.Dispatch;
+using Hall9k.Daemon.ProjectHomes;
 using Hall9k.Daemon.Worktrees;
 using Hall9k.Domain.Features.Project;
 using Hall9k.Domain.Features.Project.Projections;
@@ -98,8 +99,23 @@ public sealed class RunLauncher(
             // Resolved once, here, exactly like the worktree above: this run's directory is
             // under the task's own directory when the project has a home (backlog 49), and
             // every consumer reads the recorded value from here on rather than rederiving it.
-            string runDirectory = RunPaths.ResolveDirectory(
-                project.HomeDirectory, TaskDocumentRenderer.DirectoryName(task), runId);
+            //
+            // The task's directory NAME, though, is read from disk rather than freshly computed
+            // from the task's live objective (adversarial review, cycle 1): the doorbell-woken
+            // render sweep owns renaming that directory when a revision changes its slug, and it
+            // runs on its own schedule, not synchronously with dispatch. Trusting the freshly
+            // computed name here would, on a revise-then-redispatch landing ahead of that sweep,
+            // create the not-yet-renamed directory itself — stranding the true, already-populated
+            // one under its old name as an orphan the next reconciliation pass only marks, never
+            // merges. Resolving against whatever directory already exists for this task keeps the
+            // run pointed at the one directory that is actually there; the eventual sweep still
+            // renames it, runs/ and all, exactly as it always has.
+            string taskDirectoryName = project.HomeDirectory.HasValue
+                && HomeEntryWriter.FindExistingDirectory(
+                    ProjectHomePaths.TasksDirectory(project.HomeDirectory.Value), task.Id) is { } existingTaskDirectory
+                    ? Path.GetFileName(existingTaskDirectory)
+                    : TaskDocumentRenderer.DirectoryName(task);
+            string runDirectory = RunPaths.ResolveDirectory(project.HomeDirectory, taskDirectoryName, runId);
 
             session.Events.StartStream<RunAggregate>(runId, new RunDispatched(
                 runId, taskId, nodeId, ownerId, leaseGeneration, sessionId,

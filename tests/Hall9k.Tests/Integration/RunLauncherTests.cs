@@ -3,6 +3,7 @@ using Hall9k.Daemon;
 using Hall9k.Daemon.Closeout;
 using Hall9k.Daemon.Dispatch;
 using Hall9k.Daemon.Execution;
+using Hall9k.Daemon.ProjectHomes;
 using Hall9k.Daemon.Review;
 using Hall9k.Daemon.Worktrees;
 using Hall9k.Domain.Features.Project;
@@ -17,6 +18,7 @@ using Hall9k.Domain.Features.Tasks.Handlers;
 using Hall9k.Domain.Features.Tasks.Projections;
 using Hall9k.Domain.Infrastructure.Ids;
 using Hall9k.Domain.Infrastructure.Persistence;
+using Hall9k.Domain.Infrastructure.Storage;
 using Hall9k.Domain.Shared.ValueObjects;
 using Hall9k.Tests.Fakes;
 using JasperFx;
@@ -383,6 +385,105 @@ public sealed class RunLauncherTests(PostgresFixture postgres) : IClassFixture<P
         RunDetails run = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
         run.Model.Value.Should().Be("claude-opus-5[1m]", "the run records what it was actually dispatched on");
         (await query.LoadAsync<RunListItem>(runId, cts.Token))!.Model.Value.Should().Be("claude-opus-5[1m]");
+    }
+
+    /// <summary>
+    /// The doorbell-woken render sweep, not dispatch, owns renaming a task's on-disk directory
+    /// when a revision changes its slug — and it runs on its own schedule, never synchronously
+    /// with an assign (adversarial review, backlog 49 cycle 1). A run dispatched between a
+    /// revision and the sweep catching up must not invent the not-yet-renamed directory itself:
+    /// doing so would create a fresh, empty directory under the new name while the task's real,
+    /// already-populated one sat under its old name — an orphan the next reconciliation pass
+    /// only marks, never merges, undermining "the task directory is the whole story."
+    /// </summary>
+    [Fact]
+    public async Task A_run_dispatched_ahead_of_the_render_sweep_lands_under_the_tasks_existing_directory()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        using DocumentStore store = DocumentStore.For(opts =>
+        {
+            opts.Connection(postgres.ConnectionString);
+            opts.ConfigureHall9k(AutoCreate.All);
+        });
+        NodeContext node = new();
+        await node.InitializeAsync(store, cts.Token);
+
+        Guid taskId = DomainId.New();
+        Guid runId = DomainId.New();
+        Guid projectId = DomainId.New();
+        string home = Path.Combine(Path.GetTempPath(), $"hall9k-race-{DomainId.Short(taskId)}");
+        string oldDirectoryName = ProjectHomePaths.EntryDirectoryName(taskId, "Old objective text");
+        string newDirectoryName = ProjectHomePaths.EntryDirectoryName(taskId, "New objective text");
+        newDirectoryName.Should().NotBe(oldDirectoryName, "the revision below must actually change the slug");
+
+        try
+        {
+            // The sweep's own prior render, before the revision below runs — the task's real
+            // directory, exactly as HomeEntryWriter always leaves one.
+            HomeEntryWriter.Write(
+                ProjectHomePaths.TasksDirectory(home), taskId, oldDirectoryName, "task.md", "old contract");
+
+            await using (IDocumentSession session = store.LightweightSession())
+            {
+                var registered = ProjectDecider.Register(
+                    projectId, node.OwnerId, DomainId.New(), $"race-{taskId:N}", "/tmp/race-repo",
+                    null, "main", Now, ProjectHome.Parse(home));
+                session.Events.StartStream<ProjectAggregate>(registered.Id, registered);
+
+                TaskAggregate aggregate = new();
+                Hall9k.Domain.Features.Tasks.Events.TaskAdded added = TaskDecider.Add(
+                    taskId, projectId, "Old objective text", ["criteria"], TaskType.Chore,
+                    null, null, null, Now.AddHours(-1), node.OwnerId);
+                aggregate.Apply(added);
+
+                // The revision the render sweep has not caught up to yet when Assign below
+                // dispatches — the sweep's own doorbell wakeup has not run in this test at all.
+                Hall9k.Domain.Features.Tasks.Events.TaskRevised revised = TaskDecider.Revise(
+                    aggregate, Optional<string>.Of("New objective text"), Optional<IReadOnlyList<string>>.None,
+                    Optional<string>.None, Optional<IReadOnlyList<Guid>>.None, Optional<TaskType>.None,
+                    Optional<AgentModel>.None, Now.AddMinutes(-50), node.OwnerId);
+                aggregate.Apply(revised);
+
+                Hall9k.Domain.Features.Tasks.Events.TaskPublished published =
+                    TaskDecider.Publish(aggregate, TaskDependencyGraph.Empty, Now.AddMinutes(-40), node.OwnerId);
+                aggregate.Apply(published);
+
+                Hall9k.Domain.Features.Tasks.Events.TaskAssigned assigned =
+                    TaskDecider.Assign(aggregate, node.OwnerId, [], Now.AddMinutes(-30), node.OwnerId);
+                aggregate.Apply(assigned);
+
+                Hall9k.Domain.Features.Tasks.Events.TaskClaimed claimed =
+                    TaskDecider.Claim(aggregate, node.NodeId, node.OwnerId, runId, Now);
+                aggregate.Apply(claimed);
+
+                session.Events.StartStream<TaskAggregate>(taskId, [added, revised, published, assigned, claimed]);
+                session.Store(new TaskLease { Id = taskId, NodeId = node.NodeId, LeaseGeneration = 1, HeartbeatAt = Now });
+                await session.SaveChangesAsync(cts.Token);
+            }
+
+            CapturingExecutor executor = new();
+            RunLauncher launcher = new(store, new StubWorktreeManager(), executor,
+                NewSupervisor(store, node), NewContextAssembler(store), new MergedInspector(), Options.Create(new DaemonOptions()),
+                NullLogger<RunLauncher>.Instance);
+
+            await launcher.LaunchAsync(taskId, runId, node.NodeId, node.OwnerId, 1, cts.Token);
+
+            string expectedDirectory = Path.Combine(
+                ProjectHomePaths.TasksDirectory(home), oldDirectoryName, "runs", runId.ToString());
+            executor.Request!.RunDirectory.Should().Be(expectedDirectory,
+                "the run belongs under whatever directory the task actually has on disk, " +
+                "not a name the render sweep has not moved to yet");
+
+            Directory.Exists(Path.Combine(ProjectHomePaths.TasksDirectory(home), newDirectoryName)).Should().BeFalse(
+                "dispatch must never invent the not-yet-renamed directory and orphan the real one");
+        }
+        finally
+        {
+            if (Directory.Exists(home))
+            {
+                Directory.Delete(home, recursive: true);
+            }
+        }
     }
 
     /// <summary>
