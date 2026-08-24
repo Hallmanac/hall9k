@@ -1136,10 +1136,19 @@ public sealed class CloseoutEngine(
 
         if (exceedsProgressCap && !humanGranted)
         {
-            string parkReason =
-                $"{reason} The same obstruction — {obstructionSummary} — survived {task.ConsecutiveObstructionLaps} " +
-                $"automatic lap(s) without clearing (cap {_options.MaxCloseoutLapsPerObstruction} per obstruction). " +
-                "Fix or merge the pull request by hand, close it, or grant another attempt with h9k pr resolve.";
+            // sameObstruction is false only when the cap itself is below 1: lapsIfDispatched
+            // is always at least 1, so a brand-new obstruction only ever exceeds the cap when
+            // there is no room for even a first lap. task.ConsecutiveObstructionLaps counts a
+            // DIFFERENT, earlier obstruction in that case, so asserting it "survived" that many
+            // laps would report an unobserved fact about an obstruction this park never saw
+            // (AGENTS.md: never guess at unobserved facts).
+            string parkReason = sameObstruction
+                ? $"{reason} The same obstruction — {obstructionSummary} — survived {task.ConsecutiveObstructionLaps} " +
+                  $"automatic lap(s) without clearing (cap {_options.MaxCloseoutLapsPerObstruction} per obstruction). " +
+                  "Fix or merge the pull request by hand, close it, or grant another attempt with h9k pr resolve."
+                : $"{reason} This is a new obstruction — {obstructionSummary} — but the cap " +
+                  $"{_options.MaxCloseoutLapsPerObstruction} per obstruction leaves no room for even one automatic lap on it. " +
+                  "Fix or merge the pull request by hand, close it, or grant another attempt with h9k pr resolve.";
             await ParkAsync(session, run, parkReason, now, cancellationToken);
             return;
         }

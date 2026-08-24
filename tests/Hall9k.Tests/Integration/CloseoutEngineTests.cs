@@ -1447,6 +1447,45 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
     }
 
     /// <summary>
+    /// A per-obstruction cap of 0 leaves no room for even a first lap, so the very first
+    /// obstruction a task ever hits exceeds it (lapsIfDispatched is always at least 1). That
+    /// obstruction is not the same one <see cref="TaskAggregate.ConsecutiveObstructionLaps"/>
+    /// counts — there is no prior obstruction at all here — so the park message must not
+    /// claim this new obstruction "survived" laps it never ran (AGENTS.md: never guess at
+    /// unobserved facts; adversarial pre-PR review, cycle 2).
+    /// </summary>
+    [Fact]
+    public async Task A_zero_lap_cap_parks_a_brand_new_obstruction_without_asserting_unobserved_history()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        (DocumentStore store, NodeContext node, GitWorktreeManager worktrees, _, string repoPath) =
+            await SetUpAsync(cts.Token);
+        using IDisposable storeLifetime = store;
+
+        (Guid taskId, Guid runId, _) = await SeedAwaitingReviewAsync(
+            store, node, worktrees, repoPath, cts.Token);
+
+        FakeInspector inspector = new()
+        {
+            Snapshot = FakeInspector.Quiet() with { FailingChecks = ["build"] },
+        };
+        await NewEngine(
+            store, node, inspector, worktrees,
+            maxAutomaticCloseoutRuns: 10, maxCloseoutLapsPerObstruction: 0).PollOnceAsync(cts.Token);
+
+        await using IQuerySession query = store.QuerySession();
+        RunDetails run = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
+        run.State.Should().Be(RunState.CloseoutParked);
+        run.ParkedReason.Should().Contain("build")
+            .And.Contain("cap 0 per obstruction")
+            .And.NotContain("survived", "this obstruction has never been dispatched before — there is no history to report");
+
+        (await query.LoadAsync<TaskListItem>(taskId, cts.Token))!.State.Should().Be(TaskState.Done);
+
+        await RetireWatchAsync(store, runId, cts.Token);
+    }
+
+    /// <summary>
     /// A lap that clears its obstruction resets the progress counter (backlog 45): a
     /// different check failing is, mechanically, a different obstruction — even though the
     /// per-obstruction cap was already fully spent on "build", a fresh check gets its own
