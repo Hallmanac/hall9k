@@ -146,7 +146,10 @@ there either.
 hand. Windows builds and tests in CI and `h9k install`/`h9k update` place the binaries there, but
 running `h9kd` on Windows is future work (`SLICE-1.md`'s S1-14).
 
-### Prerequisites
+### Prerequisites for building from source
+
+These apply only to the clone-and-build path above — the bootstrap script needs none of them
+(see [docs/INSTALL.md](docs/INSTALL.md)).
 
 | What | Why |
 |---|---|
