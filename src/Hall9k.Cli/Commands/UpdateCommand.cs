@@ -168,7 +168,7 @@ public sealed class UpdateCommand(ProcessRunner? gh = null) : Hall9kAsyncCommand
 
             return await InstallCommand.FinishAsync(
                 staging,
-                Directory.Exists(skillsSource) ? skillsSource : null,
+                skillsSource,
                 version,
                 restart,
                 noRestart,
