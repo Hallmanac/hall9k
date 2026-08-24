@@ -20,7 +20,7 @@ The comment called this "a pre-existing defect tracked separately, not this
 command's to fix" - it was not tracked anywhere, which is what filed this
 card. ReviewResolveCommand.cs already independently arrived at the correct
 discriminator (ReviewCycle == 0) for its own merge-ready refusal on a
-disputed rebase; this card is applying that same, already-proven signal to
+disputed rebase; backlog 64 is applying that same, already-proven signal to
 the aggregate's branch and the CLI's outcome message so both agree.
 
 This was deliberately NOT fixed inline during the branch-freshness follow-up
