@@ -222,11 +222,26 @@ public static class CliCommandTree
 
         config.AddCommand<InstallCommand>("install")
             .WithDescription(
-                "Publish h9k + h9kd release binaries to ~/.hall9k/bin and link h9k onto the PATH. Registers no "
-                + "background service and no login item — the daemon is started on demand (h9k daemon start). "
-                + "Re-run after a merge to refresh the binaries; a running daemon is offered a restart (Decisions Log #31).")
+                "Publish h9k + h9kd binaries to ~/.hall9k/bin, publish the canonical skill set to "
+                + "~/.hall9k/skills, and put h9k on the PATH. Registers no background service and no login "
+                + "item — the daemon is started on demand (h9k daemon start). --repo builds locally with the "
+                + ".NET SDK (the default); --from-release stages an already-downloaded, checksum-verified "
+                + "release payload instead, which is what the bootstrap scripts and h9k update use on a bare "
+                + "machine. Re-run after a merge or a release to refresh; a running daemon is offered a "
+                + "restart (Decisions Log #31, backlog 42).")
             .WithExample("install")
-            .WithExample("install", "--restart");
+            .WithExample("install", "--restart")
+            .WithExample("install", "--from-release", "/tmp/hall9k-osx-arm64");
+
+        config.AddCommand<UpdateCommand>("update")
+            .WithDescription(
+                "The one-command path for a machine already installed: fetch the latest GitHub release for "
+                + "this platform via gh, verify its checksum, republish binaries and the canonical skill set "
+                + "through the same idempotent path as h9k install --from-release, and offer the daemon "
+                + "restart — no repo checkout, no .NET SDK. gh must be authenticated against the release's "
+                + "repository (backlog 42).")
+            .WithExample("update")
+            .WithExample("update", "--restart");
 
         config.AddBranch("daemon", daemon =>
         {
