@@ -1059,7 +1059,7 @@ public sealed class CloseoutEngine(
     /// earlier automatic decision has seen, started by a person; and a pending review request
     /// for a reviewer neither this task nor this run has already recorded asking for — the
     /// second exclusion is what keeps the platform's own errored-review or countersign
-    /// re-requests (RunAggregate.RequestedReviewerLogins) from reading back as a human's. Any
+    /// re-requests (RunDetails.RequestedReviewerLogins) from reading back as a human's. Any
     /// one grants the lap; none of them bypasses the lifetime ceiling, which is checked before
     /// this is ever consulted.
     /// <para>

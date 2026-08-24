@@ -208,7 +208,17 @@ public sealed class GitHubPullRequestInspector : IPullRequestInspector
                 continue;
             }
 
-            string id = thread.GetProperty("id").GetString() ?? "";
+            // GitHub types a review thread's id as a non-null ID; a null here means a
+            // malformed payload. Skipping it rather than coalescing to "" keeps a genuinely
+            // missing id from fabricating a key that collapses every such thread onto the
+            // same obstruction identity and human-engagement diff — a malformed payload
+            // should undercount, never corrupt the mechanical key.
+            string? id = thread.GetProperty("id").GetString();
+            if (id is null)
+            {
+                continue;
+            }
+
             threadIds.Add(id);
             if (ThreadStarter(thread) is { IsHuman: true })
             {
@@ -231,7 +241,7 @@ public sealed class GitHubPullRequestInspector : IPullRequestInspector
     /// Who currently has a pending review request — the second human-engagement signal
     /// (Decisions Log #77, backlog 45): a login that was not pending as of the task's last
     /// automatic decision, and that the platform did not itself just request
-    /// (CloseoutEngine.HasHumanEngagement also compares against RunAggregate.RequestedReviewerLogins),
+    /// (CloseoutEngine.HasHumanEngagement also compares against RunDetails.RequestedReviewerLogins),
     /// is a human re-requesting a review through GitHub's own UI. Team requests carry no
     /// login the review-request REST endpoint or this comparison can use, so they are left
     /// out rather than guessed at.

@@ -93,7 +93,7 @@ public sealed record ErroredReview(string Reviewer, string Url);
 /// PendingReviewRequestLogins is the other human-engagement signal (Decisions Log #77,
 /// backlog 45): who currently has a pending review request. A login that was not pending as
 /// of the task's last automatic decision but is now is a human re-requesting a review — the
-/// platform's own re-requests are compared away separately (RunAggregate.RequestedReviewerLogins),
+/// platform's own re-requests are compared away separately (RunDetails.RequestedReviewerLogins),
 /// never inferred from this list alone. A candidate third signal, a new top-level pull-request
 /// comment, was cut before merge: agents here post top-level comments too (answering a review
 /// body with `gh pr comment`), authored under the same login as a human's, so the provider's
