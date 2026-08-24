@@ -507,7 +507,6 @@ public static class TaskDecider
         string? obstructionKey = null,
         string? obstructionSummary = null,
         IReadOnlyList<string>? knownHumanReviewThreadIds = null,
-        IReadOnlyList<string>? knownHumanCommentIds = null,
         IReadOnlyList<string>? knownPendingReviewRequestLogins = null)
     {
         if (task.State != TaskState.Done)
@@ -530,7 +529,7 @@ public static class TaskDecider
         return new TaskReopened(
             task.Id, previousRunId, branch, reason, reopenedAt, reopenedByOwnerId, kind, automatic,
             obstructionKey, obstructionSummary,
-            knownHumanReviewThreadIds, knownHumanCommentIds, knownPendingReviewRequestLogins);
+            knownHumanReviewThreadIds, knownPendingReviewRequestLogins);
     }
 
     /// <summary>

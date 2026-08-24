@@ -979,12 +979,20 @@ public sealed class CloseoutEngine(
     /// Whether something a human did on the pull request since the task's last automatic
     /// decision is proof this loop is not running away (Decisions Log #77, backlog 45 — origin
     /// incident: Brian re-requesting a Copilot review on PR 26 while an unrelated flat budget
-    /// was already spent on two other obstructions). Three mechanical signals, each a set
-    /// grown since the comparison point TaskReopened recorded: a review thread neither this nor
-    /// any earlier automatic decision has seen, started by a person; a top-level pull-request
-    /// comment neither has seen, authored by a person; and a pending review request for a
-    /// reviewer this task has not already recorded asking for. Any one grants the lap; none of
-    /// them bypasses the lifetime ceiling, which is checked before this is ever consulted.
+    /// was already spent on two other obstructions). Two mechanical signals, each a set grown
+    /// since the comparison point TaskReopened recorded: a review thread neither this nor any
+    /// earlier automatic decision has seen, started by a person; and a pending review request
+    /// for a reviewer this task has not already recorded asking for. Any one grants the lap;
+    /// none of them bypasses the lifetime ceiling, which is checked before this is ever
+    /// consulted.
+    /// <para>
+    /// A third candidate signal, a new top-level pull-request comment, was cut before merge
+    /// (independent pre-PR review, 2026-08-23): agents here post top-level comments too
+    /// (answering a review body with `gh pr comment`), authored under the same login as a
+    /// human's, so a follow-up's own comment was granting the very lap the cap exists to
+    /// refuse — there is no discriminator for a top-level comment the way a review thread's
+    /// starter has one (AGENTS.md).
+    /// </para>
     /// </summary>
     private static bool HasHumanEngagement(TaskAggregate task, PullRequestSnapshot snapshot, out string reason)
     {
@@ -992,13 +1000,6 @@ public sealed class CloseoutEngine(
         if (newHumanThreads.Count > 0)
         {
             reason = $"{newHumanThreads.Count} new review thread(s) opened by a human";
-            return true;
-        }
-
-        List<string> newComments = [.. snapshot.CommentIds.Except(task.KnownHumanCommentIds)];
-        if (newComments.Count > 0)
-        {
-            reason = $"{newComments.Count} new human comment(s) on the pull request";
             return true;
         }
 
@@ -1072,7 +1073,6 @@ public sealed class CloseoutEngine(
             obstructionKey: obstructionKey,
             obstructionSummary: obstructionSummary,
             knownHumanReviewThreadIds: snapshot.HumanThreadIds,
-            knownHumanCommentIds: snapshot.CommentIds,
             knownPendingReviewRequestLogins: snapshot.PendingReviewers));
 
         // The reopen hands the pull request to a successor, so this run's watch ends

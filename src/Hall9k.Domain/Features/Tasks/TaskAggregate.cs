@@ -89,15 +89,11 @@ public sealed class TaskAggregate
     /// <summary>
     /// Human-started unresolved review-thread ids observed at the most recent automatic
     /// dispatch decision — what the next decision diffs against to recognize a newly opened
-    /// human thread, one of the three mechanical human-engagement signals that grants a lap
+    /// human thread, one of the two mechanical human-engagement signals that grants a lap
     /// regardless of the progress cap (Decisions Log #77, backlog 45).
     /// </summary>
     private readonly List<string> _knownHumanReviewThreadIds = [];
     public IReadOnlyList<string> KnownHumanReviewThreadIds => _knownHumanReviewThreadIds;
-
-    /// <summary>Top-level pull-request comments authored by a human, observed at the most recent automatic dispatch decision.</summary>
-    private readonly List<string> _knownHumanCommentIds = [];
-    public IReadOnlyList<string> KnownHumanCommentIds => _knownHumanCommentIds;
 
     /// <summary>Reviewers with a pending review request, observed at the most recent automatic dispatch decision.</summary>
     private readonly List<string> _knownPendingReviewRequestLogins = [];
@@ -400,8 +396,6 @@ public sealed class TaskAggregate
 
         _knownHumanReviewThreadIds.Clear();
         _knownHumanReviewThreadIds.AddRange(@event.KnownHumanReviewThreadIds ?? []);
-        _knownHumanCommentIds.Clear();
-        _knownHumanCommentIds.AddRange(@event.KnownHumanCommentIds ?? []);
         _knownPendingReviewRequestLogins.Clear();
         _knownPendingReviewRequestLogins.AddRange(@event.KnownPendingReviewRequestLogins ?? []);
 
