@@ -116,6 +116,7 @@ internal static class TaskStateFilter
         RunState.Dispatched.Value, RunState.Running.Value, RunState.Verifying.Value,
         RunState.UnderReview.Value, RunState.ReviewParked.Value, RunState.BudgetParked.Value,
         RunState.AwaitingReview.Value, RunState.ChecksFailing.Value, RunState.ReviewPending.Value,
+        RunState.Conflicting.Value,
         RunState.CloseoutParked.Value, RunState.Completed.Value, RunFailedSpelling,
         RunState.Killed.Value, RunState.Superseded.Value,
     ];
