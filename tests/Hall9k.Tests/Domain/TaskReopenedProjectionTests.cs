@@ -70,9 +70,11 @@ public sealed class TaskReopenedProjectionTests
         projection.Apply(new FakeEvent<TaskCompleted>(new TaskCompleted(id, runId, PullRequestUrl, Now)), view);
 
         projection.Apply(new FakeEvent<TaskReopened>(new TaskReopened(
-            id, runId, Branch, null, Now, DomainId.New())), view);
+            id, runId, Branch, null, Now, DomainId.New(), FollowUpKind.Rebase)), view);
 
         view.State.Should().Be(TaskState.Queued, "the dispatch loop claims reopened tasks like any queued work");
         view.PullRequestUrl.Should().Be(PullRequestUrl);
+        view.FollowUpKind.Should().Be(FollowUpKind.Rebase,
+            "AttentionComposer reads this to tell a rebase-dispute park apart from an ordinary review park");
     }
 }

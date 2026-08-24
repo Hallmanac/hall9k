@@ -66,6 +66,12 @@ public sealed class TaskListItem
     /// </summary>
     public Dictionary<Guid, string> DeadDependencyReasons { get; set; } = [];
     public DateTimeOffset AddedAt { get; set; }
+    /// <summary>
+    /// Why the pending follow-up exists, mirrored from <see cref="TaskAggregate.FollowUpKind"/>
+    /// (Decisions Log #81): the attention line reads it to tell a rebase-dispute park, which
+    /// refuses --merge-ready, apart from an ordinary review park, which takes it.
+    /// </summary>
+    public FollowUpKind FollowUpKind { get; set; } = FollowUpKind.Unknown;
 }
 
 public sealed class TaskListItemProjection : SingleStreamProjection<TaskListItem, Guid>
@@ -228,6 +234,7 @@ public sealed class TaskListItemProjection : SingleStreamProjection<TaskListItem
     public void Apply(IEvent<TaskCompleted> @event, TaskListItem view)
     {
         view.PullRequestUrl = @event.Data.PullRequestUrl;
+        view.FollowUpKind = FollowUpKind.Unknown;
         view.State = TaskState.Done;
     }
 
@@ -235,6 +242,7 @@ public sealed class TaskListItemProjection : SingleStreamProjection<TaskListItem
     {
         view.ClaimedByNodeId = null;
         view.CurrentRunId = null;
+        view.FollowUpKind = @event.Data.Kind ?? FollowUpKind.Unknown;
         view.State = TaskState.Queued;
     }
 
@@ -257,10 +265,15 @@ public sealed class TaskListItemProjection : SingleStreamProjection<TaskListItem
     public void Apply(IEvent<TaskResolved> @event, TaskListItem view)
     {
         view.PullRequestUrl = @event.Data.PullRequestUrl ?? view.PullRequestUrl;
+        view.FollowUpKind = FollowUpKind.Unknown;
         view.State = TaskState.Done;
     }
 
-    public void Apply(IEvent<TaskAbandoned> @event, TaskListItem view) => view.State = TaskState.Abandoned;
+    public void Apply(IEvent<TaskAbandoned> @event, TaskListItem view)
+    {
+        view.FollowUpKind = FollowUpKind.Unknown;
+        view.State = TaskState.Abandoned;
+    }
 
     // The row carries the reference wherever it came from. This projection is what the
     // one-item-one-live-task check reads (TaskAddCommand.RefuseSecondAdoptionAsync), so a task
