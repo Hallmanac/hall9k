@@ -26,6 +26,7 @@ dotnet run --project src/Hall9k.AppHost    # dev loop: Postgres + daemon + Aspir
 docker compose up -d         # Postgres only (installed mode / manual runs)
 ./src/Hall9k.Cli/bin/Debug/net10.0/h9k     # the CLI binary after build
 h9k install                  # publish release binaries to ~/.hall9k/bin (no service registered)
+h9k update                   # refresh an already-installed machine from the latest GitHub release, no repo/SDK needed
 h9k daemon start|stop|status # the CLI-owned daemon lifecycle (Decisions Log #31)
 h9k doctor                   # diagnose the database situation and what to do about it (Decisions Log #73, #74)
 h9k project add --name <n> --repo-url <url>   # register a project and create its home directory
@@ -455,8 +456,10 @@ There is deliberately no create-pr skill: PRs are opened by the daemon (`PullReq
 never by agents.
 
 Skills sit in three tiers, least specific first (Decisions Log #76). The **install** owns the
-canonical set at `~/.hall9k/skills`, published by `h9k install` from this directory. A **project
-home**'s `skills/` is symlinked into that set, with project-specific skills beside the links. A
+canonical set at `~/.hall9k/skills`, published from this directory by `h9k install --repo`, or from
+a release payload's bundled `skills/` by `h9k install --from-release` and `h9k update` — the same
+publish step, fed by whichever source ran. A **project home**'s `skills/` is symlinked into that
+set, with project-specific skills beside the links. A
 **repository**'s own `.claude/skills/`, which is what this section lists, is the tier for things
 genuinely coupled to the code, and it wins over a home skill of the same name. The dispatcher
 names the applicable tiers in the agent's prompt, so a dispatched session is handed the paths
