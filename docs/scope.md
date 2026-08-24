@@ -144,7 +144,7 @@ yet: `h9k daemon start` / `stop` / `autostart enable` all refuse with a named no
 the process manager still needs spawn, kill-tree, and reattach parity. The daemon form is decided:
 a Task Scheduler logon task, so it runs as the user and credentials work.
 
-See `SLICE-1.md` S1-14, Decisions Log #3, #75.
+See `SLICE-1.md` S1-14, Decisions Log #3, #77.
 
 ### Token visibility and exhaustion
 
