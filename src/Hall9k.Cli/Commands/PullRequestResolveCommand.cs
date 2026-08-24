@@ -68,7 +68,7 @@ public sealed class PullRequestResolveCommand : Hall9kAsyncCommand<PullRequestRe
         // automatic follow-up budget — the human asking is a fresh grant (log #22). The
         // grant is recorded twice: the reset itself lands here on the task stream, and
         // CloseoutBudgetGranted below records the same grant on the run the human
-        // resolved, so the run's own history shows a human touched it (log #75, backlog 45).
+        // resolved, so the run's own history shows a human touched it (log #77, backlog 45).
         session.Events.Append(taskId, expectedVersion: fence.Version + 1, TaskDecider.Reopen(
             task, previousRunId, previousRun.Branch, reason,
             settings.Checks ? FollowUpKind.FailingChecks : FollowUpKind.ReviewFeedback,

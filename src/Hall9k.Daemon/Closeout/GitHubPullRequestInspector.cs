@@ -201,7 +201,7 @@ public sealed class GitHubPullRequestInspector : IPullRequestInspector
         // Every unresolved thread counts, whoever started it (Decisions Log #62). The
         // starter is read only to tell a human's thread from a bot's, because the two get
         // different care in the follow-up — never to decide whether feedback exists. The id
-        // sets feed two different uses (Decisions Log #75, backlog 45): the full set is the
+        // sets feed two different uses (Decisions Log #77, backlog 45): the full set is the
         // closeout budget's mechanical obstruction key, and the human subset is what a later
         // poll diffs to recognize a newly opened human thread.
         List<string> threadIds = [];
@@ -236,7 +236,7 @@ public sealed class GitHubPullRequestInspector : IPullRequestInspector
     /// <summary>
     /// Top-level pull-request comments (never a review-thread comment) authored by a human —
     /// one of the three mechanical human-engagement signals a closeout decision grants a lap
-    /// for (Decisions Log #75, backlog 45). Agents authoring under this platform only ever
+    /// for (Decisions Log #77, backlog 45). Agents authoring under this platform only ever
     /// reply inside review threads (AGENTS.md); they never open a top-level comment, so this
     /// is squarely a human's own act, checked anyway rather than assumed.
     /// </summary>
@@ -261,7 +261,7 @@ public sealed class GitHubPullRequestInspector : IPullRequestInspector
 
     /// <summary>
     /// Who currently has a pending review request — the third human-engagement signal
-    /// (Decisions Log #75, backlog 45): a login that was not pending as of the task's last
+    /// (Decisions Log #77, backlog 45): a login that was not pending as of the task's last
     /// automatic decision but is now is a human re-requesting a review through GitHub's own
     /// UI. Team requests carry no login the review-request REST endpoint or this comparison
     /// can use, so they are left out rather than guessed at.
