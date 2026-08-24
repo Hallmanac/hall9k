@@ -122,6 +122,16 @@ in it, and every step is idempotent, so re-running reports what was already ther
 starting over. Point an editor at the home and you browse the code, the worktrees, the tasks and
 the ideas together; start a session there and its `AGENTS.md` tells it the rest.
 
+Every task gets its own directory under `tasks/` (`<shortid>-<slug>/`, named from the objective),
+holding `task.md` — the same frontmatter-plus-context format `h9k task add/revise --file` reads —
+and a `workspace/` for whatever refinement material accumulates. An idea with a project renders
+the same way under `ideas/`. Drafts render exactly like published tasks: the file is where the
+thinking lives, from the first keystroke. The daemon keeps every file in sync with the store on
+its own sweep — nothing needs to be told to re-render — and the render is one-way: edit the file,
+then apply the edit with `h9k task revise <id> --file <path>` (`h9k idea revise <id> "<text>"` for
+an idea, which has no `--file` form). A direct edit that is never applied is silently overwritten
+the next time the daemon sweeps, which the file's own header line says.
+
 Going from nothing to a working project directory on a second machine:
 
 ```bash

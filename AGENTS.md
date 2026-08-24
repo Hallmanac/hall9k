@@ -70,10 +70,24 @@ was already current, or was left alone because local changes blocked it. `h9k in
 the canonical skill set to `~/.hall9k/skills`, and a project's `skills/` links into it, so updating
 the platform updates every project's platform skills in one move. **The location is a setting;
 the shape is the contract**, which is what lets the dispatcher hand a session paths instead of
-sending it hunting. Two things follow for anyone writing tasks against this: the task and idea
-files that will render into `tasks/` and `ideas/` are backlog 48 and not built, and the hall9k
-project's own move into its default home is the separate cutover chore (backlog 52), so until it
-runs this repository is still worked from `~/Code/Hall9k_Platform`.
+sending it hunting.
+
+Every task owns a directory under `tasks/` named `<shortid>-<slug>` from its objective, holding
+`task.md` (the readiness contract — frontmatter plus the agent context as prose, the same format
+`h9k task add/revise --file` reads) and a `workspace/` for whatever refinement accumulates beside
+it; an idea with a project renders the same shape under `ideas/` (backlog 48). Drafts render
+exactly like published tasks — the browsing surface is where the thinking lives. **The render is
+one-way and daemon-driven**, a sweep over the store's current state rather than a per-event
+handler (the same shape `DispatchLoop` and `CardPublicationLoop` already use): the daemon rewrites
+a file only when its rendered content actually changed, and the first sweep after start is the
+same reconciliation pass that backfills a home created after tasks existed. A human edits the file
+and applies it back through the existing gate — `h9k task revise <id> --file <path>`, or
+`h9k idea revise <id> "<text>"` (ideas have no `--file` form) — the store decides what happened,
+never the file. An idea with no project yet has nowhere to render into, so it stays in its global
+discovery workspace until assigned; relocating that workspace under the project home is its own
+later slice, not this one. The hall9k project's own move into its default home is the separate
+cutover chore (backlog 52), so until it runs this repository is still worked from
+`~/Code/Hall9k_Platform`.
 
 Ideas come before tasks (Decisions Log #35). An idea undergoes **discovery** (what is this?);
 a draft task undergoes **refinement** (how does this become executable?). A task is an idea with
