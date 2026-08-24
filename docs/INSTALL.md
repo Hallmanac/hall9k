@@ -55,10 +55,16 @@ Both scripts do the same five things, in order:
    attention (usually: a Postgres connection string) rather than declaring victory silently.
 
 Pass `--yes` (bash) or `-Yes` (PowerShell) to skip the consent prompt — the shape an agent
-driving this file end to end should use:
+driving this file end to end should use. `iwr | iex` runs the downloaded script with no way
+to pass it a parameter, so the non-interactive Windows form downloads the script into a
+scriptblock first and invokes that with `-Yes` instead:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/Hallmanac/hall9k/main/scripts/install.sh | bash -s -- --yes
+```
+
+```powershell
+& ([scriptblock]::Create((iwr https://raw.githubusercontent.com/Hallmanac/hall9k/main/scripts/install.ps1).Content)) -Yes
 ```
 
 ## What an agent should do differently from a human
@@ -67,7 +73,8 @@ Nothing, mechanically — the bootstrap script is the same either way. The two d
 
 - **Use `--yes` / `-Yes`.** There is no human at a `curl | bash` pipe's terminal to answer a
   prompt, and the scripts read from `/dev/tty` when one exists but fall back to failing
-  closed otherwise (they never guess consent).
+  closed otherwise (they never guess consent). On Windows, `-Yes` cannot reach a script run
+  with `iwr | iex` — use the scriptblock form shown above instead.
 - **Read what `h9k doctor` says at the end, and act on it or report it.** A fresh machine
   almost always ends bootstrap with "no connection string configured" — that is expected,
   not a failure of install. Setting up Postgres is a separate, deliberate step (see below);
