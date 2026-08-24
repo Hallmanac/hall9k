@@ -35,7 +35,14 @@ public sealed class UpdateCommand(ProcessRunner? gh = null) : Hall9kAsyncCommand
         public bool NoRestart { get; init; }
     }
 
-    private readonly ProcessRunner gh = gh ?? ExternalProcess.Runner;
+    /// <summary>The release archive is a self-contained, untrimmed publish of two apps —
+    /// multiple tens of megabytes — where <see cref="ExternalProcess.Deadline"/>'s two
+    /// minutes (sized for a single-issue metadata read) kills a healthy download on an
+    /// ordinary connection. Ten minutes is generous for the payload without hanging
+    /// indefinitely on a truly wedged <c>gh</c>.</summary>
+    private static readonly TimeSpan DownloadDeadline = TimeSpan.FromMinutes(10);
+
+    private readonly ProcessRunner gh = gh ?? ExternalProcess.RunnerWithDeadline(DownloadDeadline);
 
     protected override Task<int> ExecuteAsync(Settings settings, CancellationToken cancellationToken) =>
         RunAsync(gh, settings.Repository ?? ReleasePlatform.DefaultRepository, settings.Restart, settings.NoRestart, cancellationToken);

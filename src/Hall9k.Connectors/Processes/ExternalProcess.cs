@@ -21,8 +21,21 @@ public delegate Task<ProcessResult> ProcessRunner(
 
 public static class ExternalProcess
 {
-    /// <summary>The real one: spawn the tool and read both streams to exhaustion.</summary>
-    public static readonly ProcessRunner Runner = RunAsync;
+    /// <summary>The real one: spawn the tool and read both streams to exhaustion, giving it
+    /// <see cref="Deadline"/> to answer.</summary>
+    public static readonly ProcessRunner Runner = (fileName, arguments, workingDirectory, cancellationToken) =>
+        RunAsync(fileName, arguments, workingDirectory, Deadline, cancellationToken);
+
+    /// <summary>
+    /// A <see cref="ProcessRunner"/> bound to a caller-supplied deadline instead of
+    /// <see cref="Deadline"/>, for the rare tool call that is not the short metadata read
+    /// <see cref="Deadline"/> was sized for — a multi-tens-of-megabyte release archive
+    /// download, for one, which a two-minute limit kills mid-transfer on an ordinary
+    /// connection.
+    /// </summary>
+    public static ProcessRunner RunnerWithDeadline(TimeSpan deadline) =>
+        (fileName, arguments, workingDirectory, cancellationToken) =>
+            RunAsync(fileName, arguments, workingDirectory, deadline, cancellationToken);
 
     /// <summary>
     /// How long a tool gets before Hall9k stops waiting for it. The caller's token is not enough
@@ -93,11 +106,12 @@ public static class ExternalProcess
         string fileName,
         IReadOnlyList<string> arguments,
         string workingDirectory,
+        TimeSpan deadline,
         CancellationToken cancellationToken)
     {
-        using CancellationTokenSource deadline = new(Deadline);
+        using CancellationTokenSource deadlineSource = new(deadline);
         using CancellationTokenSource attempt =
-            CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, deadline.Token);
+            CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, deadlineSource.Token);
 
         using Process process = new();
         process.StartInfo = StartInfoFor(fileName, arguments, workingDirectory);
@@ -151,12 +165,12 @@ public static class ExternalProcess
         // checked first so a Ctrl-C during the last moments of the deadline still reads as a
         // Ctrl-C.
         catch (OperationCanceledException)
-            when (!cancellationToken.IsCancellationRequested && deadline.IsCancellationRequested)
+            when (!cancellationToken.IsCancellationRequested && deadlineSource.IsCancellationRequested)
         {
             await TerminateAsync(process);
             throw new TimeoutException(string.Create(
                 CultureInfo.InvariantCulture,
-                $"{fileName} did not answer within {Deadline.TotalSeconds:F0} seconds, so Hall9k stopped waiting and ended it."));
+                $"{fileName} did not answer within {deadline.TotalSeconds:F0} seconds, so Hall9k stopped waiting and ended it."));
         }
         catch
         {
