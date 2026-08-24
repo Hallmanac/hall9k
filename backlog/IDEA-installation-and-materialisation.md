@@ -34,6 +34,12 @@ deferred to S1-14 with a not-yet message; it has since been implemented. `autost
 registers a Windows startup task on Windows and a launchd LaunchAgent on macOS. Whoever
 picks this up should not re-litigate it, and the S1-12 file should be corrected.
 
+> **Correction (2026-08-23, backlog 42):** this claim did not hold up against the code.
+> `DaemonAutostart.ForCurrentPlatform()` still returns a deferred, not-yet implementation on
+> Windows, and `SLICE-1.md`'s S1-14 still lists a Windows daemon lifecycle as unbuilt,
+> dispatched-later work. Backlog 42 left `backlog/12-daemon-install.md`'s deferral text as
+> written rather than rewrite it to match this paragraph. See PLAN.md Decisions Log #75.
+
 ## Gap 1: delivery
 
 What S1-12 assumes is that you are **building from source on the machine**. Correct for the

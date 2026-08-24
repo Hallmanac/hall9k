@@ -14,6 +14,16 @@ criteria:
 - SLICE-1.md marks S1-12 complete with a pointer to the commands
 - dotnet build and dotnet test pass
 ---
+**Note (2026-08-23, backlog 42):** a later design session's IDEA doc claimed the Windows
+autostart deferral below was stale and asked for it to be corrected here. Checked against
+the code while building backlog 42 (release delivery): it is not stale — `DaemonAutostart`
+still returns a deferred, not-yet implementation on Windows, and `SLICE-1.md`'s S1-14 still
+carries the real Windows daemon lifecycle (including autostart) as unbuilt, dispatched-later
+work. This file's criteria below are left as written. What backlog 42 actually added for
+Windows is delivery only — release binaries exist for `win-x64`, and `h9k install`/`h9k
+update` place them there — never daemon start/stop/autostart, which still name S1-14 and
+refuse. See PLAN.md Decisions Log #75 for the full account.
+
 This is SLICE-1 task S1-12, redesigned 2026-08-19 after colleague feedback on the
 first demo: nobody evaluating a local-first tool wants it to install a permanently
 resident background process as a side effect. The daemon is started on demand from
