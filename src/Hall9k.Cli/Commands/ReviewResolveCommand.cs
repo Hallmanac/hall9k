@@ -49,7 +49,7 @@ namespace Hall9k.Cli.Commands;
 /// itself will do, and that method's own branch is still keyed on ParkedFromState, stale reads and
 /// all. Keying the message on ReviewCycle would make it lie about a second pre-gate dispute's
 /// outcome instead of the refusal preventing one; that mismatch inside RunAggregate is a real,
-/// recorded gap (backlog 61), not this command's to fix.
+/// recorded gap (backlog 64), not this command's to fix.
 /// </para>
 /// </summary>
 public sealed class ReviewResolveCommand : Hall9kAsyncCommand<ReviewResolveCommand.Settings>
@@ -153,7 +153,7 @@ public sealed class ReviewResolveCommand : Hall9kAsyncCommand<ReviewResolveComma
         // ParkedFromState == RunState.Verifying (RunAggregate.cs), so a message keyed on
         // ReviewCycle would describe a re-enter-at-the-gates outcome on a second pre-gate
         // dispute that the aggregate actually settles straight to the pull request. That
-        // mismatch between the aggregate's two conditions is a real, recorded gap (backlog 61);
+        // mismatch between the aggregate's two conditions is a real, recorded gap (backlog 64);
         // until it's fixed, the honest message is the one that matches what
         // Apply(ReviewParkResolved) will actually do.
         FormattableString outcome = (settings.MergeReady, run.ParkedFromState == RunState.Verifying) switch
