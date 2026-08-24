@@ -60,4 +60,30 @@ public sealed class ProjectSetCommandTests
             "https://\".", "the suggested correction must not be the same value this call just rejected");
         message.Should().MatchRegex(@"--link ""wiki=https://\S+""");
     }
+
+    /// <summary>
+    /// Origin: the pre-PR review of this branch found that the blank-url guard above only
+    /// covered that one degeneration; a rejected value whose url half is non-blank but still
+    /// unparseable once prefixed with <c>https://</c> (an embedded space is the common case)
+    /// produced a suggestion this same function would reject on the very next call.
+    /// </summary>
+    [Fact]
+    public void A_link_whose_prefixed_suggestion_would_itself_fail_falls_back_to_the_worked_example()
+    {
+        Action act = () => ProjectSetCommand.ParseLink("design=Design Doc in Notion");
+
+        string message = act.Should().Throw<DomainValidationException>().Which.Message;
+
+        message.Should().Contain("--link \"design=https://example.com/wiki\"");
+    }
+
+    [Fact]
+    public void A_link_with_a_working_prefix_correction_suggests_the_prefixed_value()
+    {
+        Action act = () => ProjectSetCommand.ParseLink("wiki=github.com/you/proj/wiki");
+
+        string message = act.Should().Throw<DomainValidationException>().Which.Message;
+
+        message.Should().Contain("--link \"wiki=https://github.com/you/proj/wiki\"");
+    }
 }
