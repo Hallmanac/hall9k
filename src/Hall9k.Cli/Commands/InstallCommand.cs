@@ -1,4 +1,5 @@
 using System.ComponentModel;
+using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Runtime.Versioning;
 using System.Security;
@@ -97,7 +98,12 @@ public sealed class InstallCommand : Hall9kAsyncCommand<InstallCommand.Settings>
                 }
             }
 
-            version = CliVersion.Current;
+            // Not CliVersion.Current — that's the version of the *running* CLI, which has
+            // no relationship to what dotnet publish just built (the checkout's csproj
+            // carries the placeholder 0.1.0 outside of release.yml's -p:Version). Read
+            // it back off the binary actually staged, the same refusal-to-guess as the
+            // --from-release branch's own "unknown" fallback above.
+            version = ReadPublishedVersion(staging);
             skillsSource = Path.Combine(repoRoot, ".claude", "skills");
         }
 
@@ -208,6 +214,29 @@ public sealed class InstallCommand : Hall9kAsyncCommand<InstallCommand.Settings>
             ? null
             : $"{Path.GetFullPath(fromRelease)} is missing {string.Join(" and ", missing)} — "
               + "not a complete release payload for this platform.";
+    }
+
+    /// <summary>The version actually embedded in the binary <c>--repo</c> just published to
+    /// <paramref name="staging"/>, read from the managed assembly's own PE version resource
+    /// (present on every platform .NET publishes to, since a managed assembly is always a
+    /// PE file) rather than assumed from the running CLI — the same "read what was actually
+    /// produced" discipline <see cref="ReadVersionFile"/> applies to a release payload.</summary>
+    internal static string ReadPublishedVersion(string staging)
+    {
+        string assemblyPath = Path.Combine(staging, "h9k.dll");
+        if (!File.Exists(assemblyPath))
+        {
+            return "unknown";
+        }
+
+        string? productVersion = FileVersionInfo.GetVersionInfo(assemblyPath).ProductVersion;
+        if (string.IsNullOrEmpty(productVersion))
+        {
+            return "unknown";
+        }
+
+        int metadataStart = productVersion.IndexOf('+');
+        return metadataStart < 0 ? productVersion : productVersion[..metadataStart];
     }
 
     internal static string? ReadVersionFile(string fromRelease)
@@ -523,8 +552,17 @@ public sealed class InstallCommand : Hall9kAsyncCommand<InstallCommand.Settings>
             return;
         }
 
+        // FileSystemName's Win32-expression translation rewrites a trailing ".*" into
+        // DOS_DOT, which also matches zero characters — so "bin.old.*" matches "bin.old"
+        // itself, which TryDelete(retired) just above already attempted. Skip it rather
+        // than let a still-locked bin.old print its "still in use" warning twice.
         foreach (string fallback in Directory.EnumerateDirectories(parent, $"{Path.GetFileName(retired)}.*"))
         {
+            if (string.Equals(fallback, retired, StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
             TryDelete(fallback);
         }
     }
