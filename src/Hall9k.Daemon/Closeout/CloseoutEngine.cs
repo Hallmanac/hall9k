@@ -657,10 +657,11 @@ public sealed class CloseoutEngine(
     /// The lap history a park message reads back, honest about the gap between it and the
     /// lifetime spend <see cref="AutomaticActionsSpent"/> counts: <see
     /// cref="TaskAggregate.AutomaticLapHistory"/> only ever grows from an automatic
-    /// <c>TaskReopened</c>, so budget spent re-requesting a review after it errored
-    /// (<see cref="RunDetails.ReviewRerequestCount"/>) never lands an entry there. Rather than
-    /// asserting a cause for that gap it has not observed (the never-guess rule, AGENTS.md),
-    /// this states the gap as a number.
+    /// <c>TaskReopened</c> that carried an <c>ObstructionSummary</c>, so the gap can hold budget
+    /// spent re-requesting a review after it errored (<see cref="RunDetails.ReviewRerequestCount"/>)
+    /// as well as an older-shape automatic reopen recorded before this obstruction vocabulary
+    /// existed. Rather than asserting which of those the gap it has not observed is (the
+    /// never-guess rule, AGENTS.md), this states the gap as a bare number.
     /// </summary>
     private static string DescribeAutomaticLapHistory(TaskAggregate task, RunDetails run)
     {
@@ -670,7 +671,7 @@ public sealed class CloseoutEngine(
             : "no automatic lap recorded an obstruction";
 
         return unitemized > 0
-            ? $"{history} ({unitemized} review re-request action(s) not itemized above)"
+            ? $"{history} ({unitemized} further automatic action(s) not itemized above)"
             : history;
     }
 

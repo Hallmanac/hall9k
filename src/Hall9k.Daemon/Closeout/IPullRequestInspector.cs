@@ -76,7 +76,7 @@ public sealed record ErroredReview(string Reviewer, string Url);
 /// exact id sets (Decisions Log #77, backlog 45): the full set is the closeout budget's
 /// mechanical obstruction key ("the same unresolved findings" the backlog card names), and
 /// the human subset is what a later poll diffs to recognize a newly opened human thread —
-/// one of the three signals that grants a lap regardless of the progress cap.
+/// one of the two signals that grants a lap regardless of the progress cap.
 /// </para>
 /// <para>
 /// Reviewers holds the accounts whose latest review is on this pull request, excluding its

@@ -74,10 +74,12 @@ public sealed class DaemonOptions
     /// a different check now fails, or the thread set changed — resets this counter, because
     /// what the cap exists to catch is repetition without progress, not the raw count of
     /// laps a busy pull request needs. A human-initiated event observed on the pull request
-    /// (a review re-request, a newly opened human thread, a human comment) grants one lap
-    /// regardless of this cap, since a person engaging is itself proof the loop is not
-    /// running away; <see cref="MaxAutomaticCloseoutRuns"/> is the ceiling that still applies
-    /// even then.
+    /// (a review re-request, a newly opened human thread) grants one lap regardless of this
+    /// cap, since a person engaging is itself proof the loop is not running away; <see
+    /// cref="MaxAutomaticCloseoutRuns"/> is the ceiling that still applies even then. A third
+    /// candidate signal, a new top-level pull-request comment, was cut before merge: agents
+    /// here post top-level comments too, authored under the same login as a human's, so there
+    /// is no discriminator for one the way a review thread's starter has one (AGENTS.md).
     /// </summary>
     public int MaxCloseoutLapsPerObstruction { get; set; } = 2;
 

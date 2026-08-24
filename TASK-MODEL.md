@@ -187,9 +187,9 @@ public sealed record TaskReopened(       // Done -> Queued for a follow-up run o
                                          // Null on a manual reopen — the progress slate is wiped, not compared
     string? ObstructionSummary = null,   // the human-readable side, read back in a lifetime-ceiling park's
                                          // lap history
-    IReadOnlyList<string>? KnownHumanReviewThreadIds = null,     // the three human-engagement comparison
-    IReadOnlyList<string>? KnownHumanCommentIds = null,          // points, carried forward exactly like
-    IReadOnlyList<string>? KnownPendingReviewRequestLogins = null); // ObstructionKey (log #77, §2.2)
+    IReadOnlyList<string>? KnownHumanReviewThreadIds = null,     // the two human-engagement comparison
+    IReadOnlyList<string>? KnownPendingReviewRequestLogins = null); // points, carried forward exactly
+                                                                     // like ObstructionKey (log #77, §2.2)
 
 public sealed record TaskRetried(        // Failed -> Queued by explicit human decision (log #25):
     Guid Id,                             // infra failure around finished work must not strand it.
@@ -248,9 +248,9 @@ public sealed class TaskAggregate
                                                          // without clearing it (§2.2, log #77)
     public IReadOnlyList<string> AutomaticLapHistory { get; } // one short description per automatic lap,
                                                          // read back by a lifetime-ceiling park (§2.2, log #77)
-    public IReadOnlyList<string> KnownHumanReviewThreadIds { get; }      // the three human-engagement
-    public IReadOnlyList<string> KnownHumanCommentIds { get; }           // comparison points as of the
-    public IReadOnlyList<string> KnownPendingReviewRequestLogins { get; } // last automatic decision (§2.2)
+    public IReadOnlyList<string> KnownHumanReviewThreadIds { get; }      // the two human-engagement
+    public IReadOnlyList<string> KnownPendingReviewRequestLogins { get; } // comparison points as of the
+                                                                          // last automatic decision (§2.2)
     public Guid? AssignedOwnerId { get; private set; }   // set by TaskAssigned; the claim guard's other half (§2.3)
     public IReadOnlyList<Guid> BlockedBy { get; }        // declared dependency edges
     public IReadOnlyList<Guid> UnmetDependencies { get; }// those not yet at true closeout; empty on a Queued task
@@ -381,14 +381,16 @@ present at dispatch (so a thread resolved, or a new one opened, is a different o
 definition). A lap whose key matches the task's last one increments the count against
 `DaemonOptions.MaxCloseoutLapsPerObstruction` (default 2); a lap whose key differs resets the
 count to 1 — a different check, or a changed thread set, is progress, so it never counts against
-this cap even while the lifetime ceiling above keeps climbing. Three mechanical
+this cap even while the lifetime ceiling above keeps climbing. Two mechanical
 human-engagement signals grant one lap past the progress cap alone — never the lifetime
-ceiling, which only `h9k pr resolve` can extend: a newly opened human-started review thread, a
-new top-level pull-request comment authored by a person (agents here only ever reply inside
-review threads, so a bare comment is squarely a human's own act), or a login newly holding a
-pending review request. Each is a set diffed against a comparison point (`KnownHumanReviewThreadIds`,
-`KnownHumanCommentIds`, `KnownPendingReviewRequestLogins`) that travels forward on `TaskReopened`
-alongside `ObstructionKey`, so the next decision compares against what the last one actually saw.
+ceiling, which only `h9k pr resolve` can extend: a newly opened human-started review thread, or
+a login newly holding a pending review request. A third candidate signal, a new top-level
+pull-request comment, was cut before merge: agents here post top-level comments too (answering a
+review body with `gh pr comment`), authored under the same login as a human's, so there is no
+discriminator for one the way a review thread's starter has one. Each surviving signal is a set
+diffed against a comparison point (`KnownHumanReviewThreadIds`, `KnownPendingReviewRequestLogins`)
+that travels forward on `TaskReopened` alongside `ObstructionKey`, so the next decision compares
+against what the last one actually saw.
 The grant buys exactly one lap through the cap; it does not reset the obstruction's own count,
 so a further automatic-only lap on the same still-open obstruction needs its own grant or parks.
 

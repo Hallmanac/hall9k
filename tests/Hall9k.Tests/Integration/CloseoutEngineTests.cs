@@ -1239,7 +1239,7 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
             .And.Contain("#pullrequestreview-3", "the park reason names the errored review the human should look at")
             .And.Contain("budget spent (2/2 action(s))").And.Contain("h9k pr resolve")
             .And.Contain(
-                "no automatic lap recorded an obstruction (2 review re-request action(s) not itemized above)",
+                "no automatic lap recorded an obstruction (2 further automatic action(s) not itemized above)",
                 "the whole spend was review re-requests, never an automatic TaskReopened, so the history says so " +
                 "honestly rather than guessing a cause for the gap")
             .And.NotContain("stream older than this budget shape", "never assert an unobserved cause for the gap");
@@ -1438,7 +1438,7 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
     /// Backlog 45's origin incident (2026-08-22, PR 26): a human re-engaging with the pull
     /// request is proof the loop is not running away, so it grants one more automatic lap
     /// despite the per-obstruction cap already being spent — a newly opened human review
-    /// thread is one of the three mechanical signals. The lap still counts toward the
+    /// thread is one of the two mechanical signals. The lap still counts toward the
     /// obstruction's own running total; the grant buys one exception, not a reset.
     /// </summary>
     [Fact]
@@ -1524,13 +1524,15 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
 
     /// <summary>
     /// The lifetime-ceiling park reads back the full lap history (backlog 45), but
-    /// AutomaticLapHistory only ever grows from an automatic TaskReopened, so budget spent on
-    /// this run's own errored-review re-requests (RunDetails.ReviewRerequestCount) never lands
-    /// an entry there. The park message must say so as a number rather than guess a cause for
-    /// the gap it never observed (AGENTS.md's never-guess rule).
+    /// AutomaticLapHistory only ever grows from an automatic TaskReopened that carried an
+    /// ObstructionSummary, so budget spent on this run's own errored-review re-requests
+    /// (RunDetails.ReviewRerequestCount) never lands an entry there — and neither would an
+    /// older-shape automatic reopen recorded before this obstruction vocabulary existed. The
+    /// park message must say so as a bare number rather than guess which one it never
+    /// observed (AGENTS.md's never-guess rule).
     /// </summary>
     [Fact]
-    public async Task A_lifetime_ceiling_park_names_the_unitemized_review_rerequest_actions_honestly()
+    public async Task A_lifetime_ceiling_park_names_the_unitemized_actions_honestly()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
         (DocumentStore store, NodeContext node, GitWorktreeManager worktrees, _, string repoPath) =
@@ -1562,7 +1564,7 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
             .Contain("lifetime automatic closeout budget spent (3/3 action(s))")
             .And.Contain("lap 1:", "the one automatic reopen is itemized")
             .And.Contain(
-                "(2 review re-request action(s) not itemized above)",
+                "(2 further automatic action(s) not itemized above)",
                 "the other two actions were this run's own errored-review re-requests, named as a count rather than guessed at")
             .And.NotContain("stream older than this budget shape", "never assert an unobserved cause for the gap");
 
