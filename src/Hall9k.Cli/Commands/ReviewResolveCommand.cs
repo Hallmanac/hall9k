@@ -34,10 +34,22 @@ namespace Hall9k.Cli.Commands;
 /// the same way: nothing has been rebased, so there is no sense in which the branch is
 /// "ready" — every path forward needs the human's actual resolution, which only
 /// --needs-fixes carries. The refusal is scoped to that specific park (the task's follow-up
-/// is a rebase AND the park landed before the gates ever ran, <see cref="RunAggregate.ParkedFromState"/>)
+/// is a rebase AND no review pass has ever run, <see cref="RunAggregate.ReviewCycle"/> still 0)
 /// rather than to the task's FollowUpKind alone, which stays Rebase for the rest of the run: an
 /// ordinary review park later in that same rebase follow-up — the branch already rebased, the
-/// gates already green — is exactly the park --merge-ready exists for.
+/// gates already green, at least one review cycle behind it — is exactly the park --merge-ready
+/// exists for. ReviewCycle, not <see cref="RunAggregate.ParkedFromState"/>, is what the refusal
+/// keys on: ParkedFromState is captured from the run's State at park time, and a resumed dispute
+/// that disputes again parks from UnderReview rather than Verifying (the fix session that resumed
+/// it already moved State on), so it stops reading as "before the gates" the moment the dispute
+/// resumes even though nothing has actually been rebased yet. ReviewCycle carries no such state
+/// to go stale — it is untouched by the whole dispute-and-resolve round trip. The outcome message
+/// printed below the append, by contrast, still reads <see cref="RunAggregate.ParkedFromState"/>
+/// rather than ReviewCycle: it describes what <see cref="RunAggregate.Apply(Hall9k.Domain.Features.Run.Events.ReviewParkResolved)"/>
+/// itself will do, and that method's own branch is still keyed on ParkedFromState, stale reads and
+/// all. Keying the message on ReviewCycle would make it lie about a second pre-gate dispute's
+/// outcome instead of the refusal preventing one; that mismatch inside RunAggregate is a
+/// pre-existing defect tracked separately, not this command's to fix.
 /// </para>
 /// </summary>
 public sealed class ReviewResolveCommand : Hall9kAsyncCommand<ReviewResolveCommand.Settings>
@@ -100,7 +112,7 @@ public sealed class ReviewResolveCommand : Hall9kAsyncCommand<ReviewResolveComma
         }
 
         if (settings.MergeReady && task.FollowUpKind == FollowUpKind.Rebase
-            && run.ParkedFromState == RunState.Verifying)
+            && run.ReviewCycle == 0)
         {
             throw new DomainConflictException(
                 $"Task {taskId} is parked on a disputed rebase conflict — merge-ready has no meaning " +
@@ -135,9 +147,15 @@ public sealed class ReviewResolveCommand : Hall9kAsyncCommand<ReviewResolveComma
         }
         await Doorbell.RingAsync($"review-resolve:{taskId}", cancellationToken);
 
-        // What happens next differs by where the park caught the run, so say which: a
-        // thread-dispute park (log #62) is raised before the gates, and a merge-ready
-        // verdict there re-enters the pipeline rather than skipping to the pull request.
+        // What happens next differs by where the park caught the run, so say which — and this
+        // has to read RunAggregate.ParkedFromState, not ReviewCycle, even though the refusal
+        // guard above reads ReviewCycle: Apply(ReviewParkResolved) itself still branches on
+        // ParkedFromState == RunState.Verifying (RunAggregate.cs), so a message keyed on
+        // ReviewCycle would describe a re-enter-at-the-gates outcome on a second pre-gate
+        // dispute that the aggregate actually settles straight to the pull request. That
+        // mismatch between the aggregate's two conditions is itself a pre-existing defect
+        // (tracked separately); until it's fixed, the honest message is the one that matches
+        // what Apply(ReviewParkResolved) will actually do.
         FormattableString outcome = (settings.MergeReady, run.ParkedFromState == RunState.Verifying) switch
         {
             (true, true) =>
