@@ -52,10 +52,7 @@ public sealed class InstallCommand : Hall9kAsyncCommand<InstallCommand.Settings>
     protected override async Task<int> ExecuteAsync(Settings settings, CancellationToken cancellationToken)
     {
         string staging = DaemonRuntime.StagingBinDirectory;
-        if (Directory.Exists(staging))
-        {
-            Directory.Delete(staging, recursive: true);
-        }
+        TryDelete(staging);
 
         string version;
         string? skillsSource;
