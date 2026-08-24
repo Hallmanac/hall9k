@@ -69,7 +69,10 @@ public sealed class InstallCommand : Hall9kAsyncCommand<InstallCommand.Settings>
             }
 
             StageFromRelease(settings.FromRelease, staging, cancellationToken);
-            version = ReadVersionFile(settings.FromRelease) ?? CliVersion.Current;
+            // No relationship to the binaries being placed — a payload with no VERSION
+            // marker gets the same honest "unknown" UpdateCommand.RunAsync uses for the
+            // identical gap, not the running CLI's own version.
+            version = ReadVersionFile(settings.FromRelease) ?? "unknown";
             skillsSource = Path.Combine(settings.FromRelease, "skills");
         }
         else
@@ -204,7 +207,13 @@ public sealed class InstallCommand : Hall9kAsyncCommand<InstallCommand.Settings>
     private static string? ReadVersionFile(string fromRelease)
     {
         string versionFile = Path.Combine(fromRelease, "VERSION");
-        return File.Exists(versionFile) ? File.ReadAllText(versionFile).Trim() : null;
+        if (!File.Exists(versionFile))
+        {
+            return null;
+        }
+
+        string content = File.ReadAllText(versionFile).Trim();
+        return content.Length == 0 ? null : content;
     }
 
     /// <summary>Copies the platform's binaries (and every other published file — DLLs,
