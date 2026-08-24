@@ -982,9 +982,11 @@ public sealed class CloseoutEngine(
     /// was already spent on two other obstructions). Two mechanical signals, each a set grown
     /// since the comparison point TaskReopened recorded: a review thread neither this nor any
     /// earlier automatic decision has seen, started by a person; and a pending review request
-    /// for a reviewer this task has not already recorded asking for. Any one grants the lap;
-    /// none of them bypasses the lifetime ceiling, which is checked before this is ever
-    /// consulted.
+    /// for a reviewer neither this task nor this run has already recorded asking for — the
+    /// second exclusion is what keeps the platform's own errored-review or countersign
+    /// re-requests (RunAggregate.RequestedReviewerLogins) from reading back as a human's. Any
+    /// one grants the lap; none of them bypasses the lifetime ceiling, which is checked before
+    /// this is ever consulted.
     /// <para>
     /// A third candidate signal, a new top-level pull-request comment, was cut before merge
     /// (independent pre-PR review, 2026-08-23): agents here post top-level comments too
@@ -994,7 +996,7 @@ public sealed class CloseoutEngine(
     /// starter has one (AGENTS.md).
     /// </para>
     /// </summary>
-    private static bool HasHumanEngagement(TaskAggregate task, PullRequestSnapshot snapshot, out string reason)
+    private static bool HasHumanEngagement(TaskAggregate task, RunDetails run, PullRequestSnapshot snapshot, out string reason)
     {
         List<string> newHumanThreads = [.. snapshot.HumanThreadIds.Except(task.KnownHumanReviewThreadIds)];
         if (newHumanThreads.Count > 0)
@@ -1003,7 +1005,9 @@ public sealed class CloseoutEngine(
             return true;
         }
 
-        List<string> newRequests = [.. snapshot.PendingReviewers.Except(task.KnownPendingReviewRequestLogins)];
+        List<string> newRequests = [.. snapshot.PendingReviewers
+            .Except(task.KnownPendingReviewRequestLogins)
+            .Except(run.RequestedReviewerLogins)];
         if (newRequests.Count > 0)
         {
             reason = $"a review re-request for {string.Join(", ", newRequests)}";
@@ -1048,7 +1052,7 @@ public sealed class CloseoutEngine(
         bool exceedsProgressCap = lapsIfDispatched > _options.MaxCloseoutLapsPerObstruction;
 
         bool humanGranted = false;
-        if (exceedsProgressCap && HasHumanEngagement(task, snapshot, out string engagement))
+        if (exceedsProgressCap && HasHumanEngagement(task, run, snapshot, out string engagement))
         {
             humanGranted = true;
             reason =

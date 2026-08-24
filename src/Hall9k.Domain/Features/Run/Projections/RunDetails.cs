@@ -73,6 +73,12 @@ public sealed class RunDetails
     /// cap is summed across the task's runs, and at most one is ever issued per run.
     /// </summary>
     public int ReviewRerequestsAfterFixes { get; set; }
+    /// <summary>
+    /// Logins the platform itself has asked to review this run's pull request (Decisions Log
+    /// #77, backlog 45) — excluded from CloseoutEngine.HasHumanEngagement's pending-review-
+    /// request signal so the platform's own re-request is never read back as a human's.
+    /// </summary>
+    public List<string> RequestedReviewerLogins { get; set; } = [];
     public long InputTokens { get; set; }
     /// <summary>Input served from the prompt cache — priced apart from fresh input, so counted apart.</summary>
     public long CacheReadInputTokens { get; set; }
@@ -363,12 +369,19 @@ public sealed class RunDetailsProjection : SingleStreamProjection<RunDetails, Gu
         view.State = RunState.ReviewPending;
     }
 
-    public void Apply(IEvent<ReviewRerequested> @event, RunDetails view) => view.ReviewRerequestCount++;
+    public void Apply(IEvent<ReviewRerequested> @event, RunDetails view)
+    {
+        view.ReviewRerequestCount++;
+        view.RequestedReviewerLogins.Add(@event.Data.Reviewer);
+    }
 
     // The run stays AwaitingReview: a countersign request is a question asked, not a
     // finding received, and the monitor must keep watching this pull request for the answer.
-    public void Apply(IEvent<ReviewRerequestedAfterFixes> @event, RunDetails view) =>
+    public void Apply(IEvent<ReviewRerequestedAfterFixes> @event, RunDetails view)
+    {
         view.ReviewRerequestsAfterFixes++;
+        view.RequestedReviewerLogins.AddRange(@event.Data.Reviewers);
+    }
 
     public void Apply(IEvent<CloseoutParked> @event, RunDetails view)
     {
