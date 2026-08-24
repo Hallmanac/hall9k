@@ -1750,6 +1750,59 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
         (await query.LoadAsync<TaskListItem>(taskId, cts.Token))!.State.Should().Be(TaskState.Done);
     }
 
+    /// <summary>
+    /// A reviewer the platform once asked for stops being read as "still ours" once they have
+    /// actually answered that request (a review sitting on the current head): a LATER pending
+    /// request for the same login is then free to read as a human's own re-request, the same as
+    /// any other newly pending login (independent pre-PR review, cycle 4: RequestedReviewerLogins
+    /// only ever grew, so a reviewer this run asked for once stayed excluded for the run's whole
+    /// life even after they answered and a human separately re-requested them).
+    /// </summary>
+    [Fact]
+    public async Task A_human_re_request_for_a_reviewer_this_run_already_asked_still_grants_a_lap_once_that_ask_was_answered()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        (DocumentStore store, NodeContext node, GitWorktreeManager worktrees, _, string repoPath) =
+            await SetUpAsync(cts.Token);
+        using IDisposable storeLifetime = store;
+
+        (Guid taskId, Guid runId, Worktree worktree) = await SeedAwaitingReviewAsync(
+            store, node, worktrees, repoPath, cts.Token,
+            priorAutomaticReopens: 2, priorObstructionKey: "FailingChecks:build");
+
+        // This run already asked "copilot-pull-request-reviewer" for a review, and that
+        // specific ask has since been answered — its latest review already sits on the current
+        // head, so nothing about it is still outstanding.
+        await using (IDocumentSession spent = store.LightweightSession())
+        {
+            spent.Events.Append(
+                runId, new ReviewRerequested(runId, "copilot-pull-request-reviewer", $"{PullRequestUrl}#pullrequestreview-1", Now));
+            await spent.SaveChangesAsync(cts.Token);
+        }
+
+        FakeInspector inspector = new()
+        {
+            Snapshot = FakeInspector.Quiet() with
+            {
+                FailingChecks = ["build"],
+                HeadCommit = "cafe1",
+                Reviewers = [new PullRequestReviewer("copilot-pull-request-reviewer", ReviewerKind.Bot, LastReviewedCommit: "cafe1")],
+                PendingReviewRequestLogins = ["copilot-pull-request-reviewer"],
+            },
+        };
+        await NewEngine(
+            store, node, inspector, worktrees,
+            maxAutomaticCloseoutRuns: 10, maxCloseoutLapsPerObstruction: 2).PollOnceAsync(cts.Token);
+
+        await using IQuerySession query = store.QuerySession();
+        (await query.LoadAsync<RunDetails>(runId, cts.Token))!.State.Should().Be(
+            RunState.Superseded, "the reviewer's earlier automatic ask was already answered, so this pending request reads as a human's");
+        TaskDetails task = (await query.LoadAsync<TaskDetails>(taskId, cts.Token))!;
+        task.State.Should().Be(TaskState.Queued);
+        task.FollowUpBranch.Should().Be(worktree.Branch);
+        task.FollowUpReason.Should().Contain("human engaged").And.Contain("a review re-request for copilot-pull-request-reviewer");
+    }
+
     [Fact]
     public async Task A_closed_pull_request_fails_the_run_removes_the_worktree_and_keeps_the_branch()
     {
