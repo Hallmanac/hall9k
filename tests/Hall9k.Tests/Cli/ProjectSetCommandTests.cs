@@ -42,4 +42,22 @@ public sealed class ProjectSetCommandTests
         act.Should().Throw<DomainValidationException>()
             .WithMessage("*name=url*");
     }
+
+    /// <summary>
+    /// Origin: the pre-PR review of this branch found that prefixing the rejected value with
+    /// <c>https://</c> degenerates to <c>https://</c> when the url half is blank, which
+    /// <see cref="Uri.TryCreate(string?, UriKind, out Uri?)"/> also rejects, so the worked
+    /// example told the caller to retry with a value this same function refuses.
+    /// </summary>
+    [Fact]
+    public void A_link_with_a_blank_url_suggests_a_correction_that_is_itself_valid()
+    {
+        Action act = () => ProjectSetCommand.ParseLink("wiki=");
+
+        string message = act.Should().Throw<DomainValidationException>().Which.Message;
+
+        message.Should().NotContain(
+            "https://\".", "the suggested correction must not be the same value this call just rejected");
+        message.Should().MatchRegex(@"--link ""wiki=https://\S+""");
+    }
 }
