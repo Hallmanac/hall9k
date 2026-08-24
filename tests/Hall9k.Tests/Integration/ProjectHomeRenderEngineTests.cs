@@ -137,6 +137,60 @@ public sealed class ProjectHomeRenderEngineTests(PostgresFixture postgres) : ICl
     }
 
     [Fact]
+    public async Task Reassigning_an_idea_to_a_project_with_its_own_home_does_not_create_a_decoy_workspace()
+    {
+        using DocumentStore store = NewStore();
+        Guid ownerId = DomainId.New();
+        Guid originalProjectId = DomainId.New();
+        Guid otherProjectId = DomainId.New();
+        string otherHome = Directory.CreateTempSubdirectory("hall9k-render-engine-other-home-").FullName;
+        Guid ideaId = DomainId.New();
+
+        try
+        {
+            await using (IDocumentSession session = store.LightweightSession())
+            {
+                RegisterProject(session, originalProjectId, ownerId, "original");
+                ProjectRegistered otherRegistered = ProjectDecider.Register(
+                    otherProjectId, ownerId, DomainId.New(), "other", "/tmp/other", null, "main", Now,
+                    ProjectHome.Parse(otherHome));
+                session.Events.StartStream<ProjectAggregate>(otherProjectId, otherRegistered);
+
+                // Captured while bound to the original project, whose home is already
+                // materialised — the workspace decision (backlog 49) is made here and never
+                // moves, even once the idea is reassigned below.
+                ProjectHome workspaceHome = ProjectHome.Parse(_home);
+                IdeaCaptured captured = IdeaDecider.Capture(
+                    ideaId, ownerId, "Idea that moves projects", originalProjectId, Now, workspaceHome);
+                session.Events.StartStream<IdeaAggregate>(ideaId, captured);
+                await session.SaveChangesAsync();
+            }
+
+            await NewEngine(store).PollOnceAsync(CancellationToken.None);
+
+            await using (IDocumentSession session = store.LightweightSession())
+            {
+                IdeaAggregate idea = await session.Events.AggregateStreamAsync<IdeaAggregate>(ideaId)
+                    ?? throw new InvalidOperationException("idea not found");
+                IdeaAssignedToProject assigned = IdeaDecider.AssignToProject(idea, otherProjectId, Now, ownerId);
+                session.Events.Append(ideaId, assigned);
+                await session.SaveChangesAsync();
+            }
+
+            await NewEngine(store).PollOnceAsync(CancellationToken.None);
+
+            string otherIdeasRoot = ProjectHomePaths.IdeasDirectory(otherHome);
+            string ideaDirectory = Directory.EnumerateDirectories(otherIdeasRoot).Should().ContainSingle().Subject;
+            Directory.Exists(Path.Combine(ideaDirectory, "workspace")).Should().BeFalse(
+                "the idea's real workspace stays at its capture-time home; the project it moved to must not get a decoy");
+        }
+        finally
+        {
+            Directory.Delete(otherHome, recursive: true);
+        }
+    }
+
+    [Fact]
     public async Task A_stray_directory_matching_no_task_or_idea_is_reconciled_away_on_the_next_sweep()
     {
         using DocumentStore store = NewStore();

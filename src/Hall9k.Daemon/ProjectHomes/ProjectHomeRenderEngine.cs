@@ -89,7 +89,7 @@ public sealed class ProjectHomeRenderEngine(IDocumentStore store, ILogger<Projec
                 HashSet<string> failedIdeaShortIds = [];
                 foreach (IdeaDetails idea in ideas)
                 {
-                    switch (RenderIdea(ideasRoot, idea, project.Name))
+                    switch (RenderIdea(ideasRoot, idea, project))
                     {
                         case RenderOutcome.Written:
                             ideasRendered++;
@@ -143,27 +143,28 @@ public sealed class ProjectHomeRenderEngine(IDocumentStore store, ILogger<Projec
         }
     }
 
-    private RenderOutcome RenderIdea(string ideasRoot, IdeaDetails idea, string projectName)
+    private RenderOutcome RenderIdea(string ideasRoot, IdeaDetails idea, ProjectDetails project)
     {
         try
         {
             string directoryName = IdeaDocumentRenderer.DirectoryName(idea);
-            string rendered = IdeaDocumentRenderer.Render(idea, projectName);
-            // Only true for an idea whose real discovery workspace lives under this render
-            // directory (captured with a home already materialised, backlog 49) — everything
-            // else keeps its workspace at the platform-global location, and creating a
-            // same-looking-but-inert workspace/ here would invite a human to drop research
+            string rendered = IdeaDocumentRenderer.Render(idea, project.Name);
+            // Only true for an idea whose real discovery workspace lives under THIS project's
+            // home (captured with this home already materialised, backlog 49) — an idea later
+            // reassigned to a different project keeps its workspace at its original capture-time
+            // home, so rendering it under the new project must not also create a
+            // same-looking-but-inert workspace/ here, which would invite a human to drop research
             // material into a folder nothing ever reads.
             bool changed = HomeEntryWriter.Write(
                 ideasRoot, idea.Id, directoryName, "idea.md", rendered,
-                includeWorkspace: idea.WorkspaceHome.HasValue).Changed;
+                includeWorkspace: idea.WorkspaceHome == project.HomeDirectory).Changed;
             return changed ? RenderOutcome.Written : RenderOutcome.Unchanged;
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
         {
             logger.LogWarning(exception,
                 "idea.md render failed for idea {IdeaId} in project {Project}; a future sweep retries it",
-                DomainId.Short(idea.Id), projectName);
+                DomainId.Short(idea.Id), project.Name);
             return RenderOutcome.Failed;
         }
     }
