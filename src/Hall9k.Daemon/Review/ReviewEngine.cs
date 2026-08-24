@@ -198,12 +198,7 @@ public sealed class ReviewEngine(
                     break;
 
                 case ReviewPhase.Disputed:
-                    await ParkAsync(context.RunId, context.TaskId,
-                        "The fix run disputed a review finding — as not-a-defect, as human territory, or as " +
-                        $"wrongly graded (cycle {run.ReviewCycle}). " +
-                        $"Review position: {RunPaths.ReviewFindingsFile(run.RunDirectory, run.ReviewCycle)}; " +
-                        $"fix position: {RunPaths.ReviewFixPositionFile(run.RunDirectory, run.ReviewCycle)}. " +
-                        "Decide between them, then resolve with h9k review resolve.", cancellationToken);
+                    await ParkAsync(context.RunId, context.TaskId, DisputedParkReason(context, run), cancellationToken);
                     return false;
 
                 case ReviewPhase.Reverify:
@@ -334,7 +329,8 @@ public sealed class ReviewEngine(
             return false;
         }
 
-        await RecordFixResultAsync(context.RunId, run.RunDirectory, run.ReviewCycle, result, cancellationToken);
+        await RecordFixResultAsync(
+            context.RunId, run.RunDirectory, run.ReviewCycle, context.Task.FollowUpKind, result, cancellationToken);
         return true;
     }
 
@@ -495,12 +491,21 @@ public sealed class ReviewEngine(
     /// branch rebased cleanly and pushed also reaches FixNeeded, through its own ordinary review
     /// cycle, with nothing disputed and nothing left un-rebased — that one wants
     /// <see cref="AgentPromptBuilder.BuildReviewFix"/> like any other follow-up's review loop. The
-    /// discriminator is <paramref name="parkedFromState"/> — <see cref="RunAggregate.ParkedFromState"/>
+    /// primary discriminator is <paramref name="parkedFromState"/> — <see cref="RunAggregate.ParkedFromState"/>
     /// reads <see cref="RunState.Verifying"/> only for a park raised before the gates ever ran, which
     /// is exactly and only the pre-gate dispute park (a plain review-thread dispute on a
     /// non-rebase follow-up parks from the same state, so <c>FollowUpKind.Rebase</c> is checked
     /// alongside it) — never the task-scoped <c>FollowUpKind</c> alone, which stays
-    /// <c>Rebase</c> for the whole rest of the run including its ordinary review cycles.
+    /// <c>Rebase</c> for the whole rest of the run including its ordinary review cycles. But
+    /// <c>ParkedFromState</c> is read off the stream rather than reset once consumed, so it stays
+    /// Verifying for the rest of the run after the dispute resumes — an ordinary needs-fixes
+    /// verdict from a later automated cycle on the same run would misread as the dispute resuming
+    /// again. <paramref name="humanFindings"/> is what actually distinguishes them: it is non-null
+    /// only for the one dispatch that directly consumes a needs-fixes <c>ReviewParkResolved</c>
+    /// (<see cref="RunAggregate.PendingHumanFindings"/> is cleared the moment that fix session
+    /// completes), so pairing it in is what keeps a later automated cycle's needs-fixes verdict —
+    /// null <c>humanFindings</c>, stale Verifying <c>parkedFromState</c> — from being sent the
+    /// rebase prompt for a conflict that was already resolved.
     /// </para>
     /// </summary>
     private async Task<bool> DispatchFixSessionAsync(
@@ -518,7 +523,9 @@ public sealed class ReviewEngine(
         Guid sessionId = DomainId.New();
         CommitStyle commitStyle = CommitStyle.Resolve(context.Project.CommitStyle, _options.DefaultCommitStyle);
         bool resumesRebaseDispute =
-            context.Task.FollowUpKind == FollowUpKind.Rebase && parkedFromState == RunState.Verifying;
+            context.Task.FollowUpKind == FollowUpKind.Rebase
+            && parkedFromState == RunState.Verifying
+            && humanFindings.IsNotBlank();
         string prompt = resumesRebaseDispute
             ? AgentPromptBuilder.BuildRebase(
                 context.Task, context.Project, context.Run.Branch, context.Task.PullRequestUrl!, commitStyle, findings)
@@ -540,6 +547,34 @@ public sealed class ReviewEngine(
             context.RunId, cycle, sessionId, agent.ProcessId, model.Value);
         return true;
     }
+
+    /// <summary>
+    /// The park message for a disputed fix session. A rebase-dispute resume that disputes
+    /// again gets the same rebase-specific treatment its first park got
+    /// (<c>RunSupervisor.ParkedOnThreadDisputeAsync</c>): no review pass ever ran ahead of it
+    /// (<see cref="RunAggregate.ReviewCycle"/> is still 0 — cycle numbers start at 1, at the
+    /// first <c>ReviewDispatched</c>), so pointing at <see cref="RunPaths.ReviewFindingsFile"/>
+    /// like an ordinary disputed cycle would name a file nothing ever wrote; <see
+    /// cref="RecordFixResultAsync"/> saves this dispute's own closing summary under the same
+    /// <see cref="RunPaths.RebaseConflictDisputeFile"/> name the first park used, so a human
+    /// checks one well-known path for a rebase-kind dispute regardless of which attempt it came
+    /// from. <c>ReviewCycle == 0</c> is also what tells this apart from a later, ordinary
+    /// review-cycle dispute on the same rebase-kind task — that one has already run at least one
+    /// review pass, so its cycle is never 0.
+    /// </summary>
+    private static string DisputedParkReason(ReviewContext context, RunAggregate run) =>
+        context.Task.FollowUpKind == FollowUpKind.Rebase && run.ReviewCycle == 0
+            ? "A resumed rebase follow-up still could not honestly resolve the conflict — both sides " +
+              "change the same behavior, not just the same lines. " +
+              $"Conflicting files and its position: {RunPaths.RebaseConflictDisputeFile(run.RunDirectory)}. " +
+              "Decide the conflict yourself, then resolve with h9k review resolve --needs-fixes " +
+              "\"<your resolution>\" — nothing has been pushed. (--merge-ready is refused here: " +
+              "nothing has been rebased yet.)"
+            : "The fix run disputed a review finding — as not-a-defect, as human territory, or as " +
+              $"wrongly graded (cycle {run.ReviewCycle}). " +
+              $"Review position: {RunPaths.ReviewFindingsFile(run.RunDirectory, run.ReviewCycle)}; " +
+              $"fix position: {RunPaths.ReviewFixPositionFile(run.RunDirectory, run.ReviewCycle)}. " +
+              "Decide between them, then resolve with h9k review resolve.";
 
     /// <summary>
     /// Records one track's findings and verdict, and — when it was the cycle's last pass —
@@ -862,12 +897,23 @@ public sealed class ReviewEngine(
     }
 
     private async Task RecordFixResultAsync(
-        Guid runId, string runDirectory, int cycle, AgentResult result, CancellationToken cancellationToken)
+        Guid runId, string runDirectory, int cycle, FollowUpKind followUpKind, AgentResult result,
+        CancellationToken cancellationToken)
     {
         string summary = result.Summary ?? string.Empty;
         await File.WriteAllTextAsync(RunPaths.ReviewFixPositionFile(runDirectory, cycle), summary, cancellationToken);
 
         ReviewFixOutcome outcome = ReviewResultParser.ParseFixOutcome(summary);
+        if (outcome == ReviewFixOutcome.Disputed && followUpKind == FollowUpKind.Rebase && cycle == 0)
+        {
+            // The resumed rebase disputing again (backlog 44's own prompt invites exactly this:
+            // "raise a new dispute if you hit a DIFFERENT conflict"). No review pass has run at
+            // cycle 0, so this is the only position there is to read — write it under the same
+            // name the first park used, so a human dealing with a rebase-kind dispute always
+            // finds it at the one path regardless of which attempt it came from.
+            await File.WriteAllTextAsync(RunPaths.RebaseConflictDisputeFile(runDirectory), summary, cancellationToken);
+        }
+
         DateTimeOffset now = DateTimeOffset.UtcNow;
         await using IDocumentSession session = store.LightweightSession();
         session.Events.Append(runId, result.ToTokensRecorded(runId, now));
