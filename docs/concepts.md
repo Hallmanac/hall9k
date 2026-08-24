@@ -292,15 +292,26 @@ read silence as "the reviewer had nothing to say". And the monitor writes nothin
 is still reporting, which is why the quiet phase line says "no finding recorded; its checks may
 still be reporting" rather than claiming a clean pull request.
 
-Automatic follow-ups are bounded. At the budget the monitor parks the run instead of reopening,
-so the task keeps the closed state it reached when its pull request opened and the board goes on
-showing it as `Delivered`. Merge detection continues, and the row reads needs-you with `h9k pr
-resolve` as the lever. A manual resolve resets the budget, because a human asking for another
+Automatic follow-ups are bounded by two counters, not one. A **progress cap**
+(`MaxCloseoutLapsPerObstruction`, default 2) counts consecutive laps spent on the *same*
+obstruction — the same failing check, the same set of unresolved thread ids — and resets the
+moment a lap actually clears something, so a busy pull request grinding through different real
+problems never trips it. A **lifetime ceiling** (`MaxAutomaticCloseoutRuns`, default 6) is the
+true runaway backstop: every automatic lap spends it regardless of which obstruction it answered,
+and nothing bypasses it but `h9k pr resolve`. A human engaging with the pull request since the
+last automatic decision — a newly opened review thread, a fresh pending review request — grants
+one lap past the progress cap alone, because a person showing up is itself proof the loop isn't
+running away; the lifetime ceiling still applies underneath that grant. At either cap the monitor
+parks the run instead of reopening, so the task keeps the closed state it reached when its pull
+request opened and the board goes on showing it as `Delivered`. Merge detection continues, and the
+row reads needs-you with `h9k pr resolve` as the lever, naming the specific obstruction (a
+progress-cap park) or the full lap history (a lifetime-ceiling park) so the human knows what the
+machine already tried. A manual resolve resets both counters, because a human asking for another
 attempt is a fresh grant.
 
 **The platform never merges.** That is the last human checkpoint and it stays one.
 
-Depth: [TASK-MODEL.md §2.2](../TASK-MODEL.md), Decisions Log #18, #22, #62.
+Depth: [TASK-MODEL.md §2.2](../TASK-MODEL.md), Decisions Log #18, #22, #62, #80.
 
 ## Owners, nodes, and connections
 
