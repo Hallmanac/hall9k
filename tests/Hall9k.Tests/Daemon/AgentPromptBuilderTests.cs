@@ -240,8 +240,9 @@ public sealed class AgentPromptBuilderTests : IDisposable
 
         prompt.Should().Contain("narrative commit style, so the fix belongs inside the");
         prompt.Should().Contain("not a new \"fix tests\" commit");
-        prompt.Should().Contain("git rebase -i origin/main");
-        prompt.Should().Contain("git commit --amend --no-edit");
+        prompt.Should().Contain("git commit --fixup=<owning-commit>");
+        prompt.Should().Contain("GIT_SEQUENCE_EDITOR=: git rebase -i --autosquash origin/main",
+            "there is no TTY in a dispatched session, so a bare `git rebase -i` cannot open an editor");
     }
 
     /// <summary>

@@ -472,6 +472,10 @@ public static class AgentPromptBuilder
         AppendRetainedWorktreeNote(prompt);
         prompt.AppendLine("- If the repo ships a rebase-onto-main skill (or an absorb-review-fixes skill that");
         prompt.AppendLine("  covers rebasing), invoke it — it walks these exact mechanics. Either way:");
+        prompt.AppendLine($"  - `git fetch origin` first — a resumed dispute is dispatched straight into this");
+        prompt.AppendLine("    worktree, so this session cannot assume anything already fetched for it, and");
+        prompt.AppendLine($"    rebasing onto a stale `origin/{project.BaseBranch}` can leave the pull request");
+        prompt.AppendLine("    still conflicting after the rebase reports success.");
         prompt.AppendLine($"  - `git rebase origin/{project.BaseBranch}`, resolving each conflict by reading");
         prompt.AppendLine("    both sides' intent, not by mechanically picking one. Keep both changes when both");
         prompt.AppendLine("    are still wanted, take the side that is still correct when one supersedes the");
@@ -538,9 +542,11 @@ public static class AgentPromptBuilder
             prompt.AppendLine("    This project uses the narrative commit style, so the fix belongs inside the");
             prompt.AppendLine("    commit whose replay produced the failure, not a new \"fix tests\" commit: if");
             prompt.AppendLine("    you are still mid-rebase, `git add` it and continue; if the rebase already");
-            prompt.AppendLine($"    finished, `git rebase -i origin/{project.BaseBranch}`, mark that commit");
-            prompt.AppendLine("    `edit`, apply the fix, `git commit --amend --no-edit`, then");
-            prompt.AppendLine("    `git rebase --continue`.");
+            prompt.AppendLine("    finished, commit the fix with `git commit --fixup=<owning-commit>` against");
+            prompt.AppendLine("    the commit whose replay produced the failure, then fold it in with");
+            prompt.AppendLine($"    `GIT_SEQUENCE_EDITOR=: git rebase -i --autosquash origin/{project.BaseBranch}`");
+            prompt.AppendLine("    (there is no terminal in this session, so a bare `git rebase -i` cannot open");
+            prompt.AppendLine("    an editor).");
         }
     }
 
