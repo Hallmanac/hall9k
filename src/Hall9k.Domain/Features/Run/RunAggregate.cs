@@ -48,7 +48,7 @@ public sealed class RunAggregate
     /// <summary>The last errored review observed — the monitor's dedup key: one re-request per errored review.</summary>
     public string? ErroredReviewUrl { get; private set; }
 
-    /// <summary>When a human last granted this run's task a fresh closeout budget (h9k pr resolve, Decisions Log #75, backlog 45); null until one lands.</summary>
+    /// <summary>When a human last granted this run's task a fresh closeout budget (h9k pr resolve, Decisions Log #77, backlog 45); null until one lands.</summary>
     public DateTimeOffset? HumanGrantedAt { get; private set; }
 
     /// <summary>Errored-review re-requests issued for this run; adds to the task's CloseoutAttempts against the shared budget.</summary>

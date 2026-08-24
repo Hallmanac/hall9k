@@ -306,7 +306,7 @@ public sealed class TaskDeciderTests
     /// <summary>
     /// The human-engagement comparison points (unresolved human threads, comments, pending
     /// review requests) travel forward on TaskReopened so the next automatic decision can tell
-    /// a genuinely new one from something already accounted for (Decisions Log #75, backlog 45).
+    /// a genuinely new one from something already accounted for (Decisions Log #77, backlog 45).
     /// </summary>
     [Fact]
     public void Known_human_engagement_sets_carry_forward_on_automatic_reopens_and_clear_on_manual_ones()

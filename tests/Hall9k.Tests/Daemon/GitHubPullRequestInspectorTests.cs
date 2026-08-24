@@ -135,7 +135,7 @@ public sealed class GitHubPullRequestInspectorTests
 
     /// <summary>
     /// A top-level pull-request comment is one of the three mechanical human-engagement
-    /// signals the closeout budget grants a lap for (Decisions Log #75, backlog 45). Agents
+    /// signals the closeout budget grants a lap for (Decisions Log #77, backlog 45). Agents
     /// here only ever reply inside review threads, never open a bare comment, so only the
     /// human-authored ones are collected — checked by actor type, not assumed.
     /// </summary>
@@ -155,7 +155,7 @@ public sealed class GitHubPullRequestInspectorTests
     }
 
     /// <summary>
-    /// Pending review requests are read by requestable actor type only (Decisions Log #75,
+    /// Pending review requests are read by requestable actor type only (Decisions Log #77,
     /// backlog 45): a login lets a later poll compare against what was already known to spot
     /// a human's own re-request, and a team carries no such login to compare, so it is left
     /// out rather than guessed at.
