@@ -55,85 +55,135 @@ public sealed class ProjectHomeRenderEngine(IDocumentStore store, ILogger<Projec
                 continue;
             }
 
-            projectsInspected++;
-            string home = project.HomeDirectory.Value;
-            string tasksRoot = ProjectHomePaths.TasksDirectory(home);
-            string ideasRoot = ProjectHomePaths.IdeasDirectory(home);
-            Directory.CreateDirectory(tasksRoot);
-            Directory.CreateDirectory(ideasRoot);
-
-            IReadOnlyList<TaskDetails> tasks = await query.Query<TaskDetails>()
-                .Where(task => task.ProjectId == project.Id)
-                .ToListAsync(cancellationToken);
-            IReadOnlyList<IdeaDetails> ideas = await query.Query<IdeaDetails>()
-                .Where(idea => idea.ProjectId == project.Id)
-                .ToListAsync(cancellationToken);
-
-            foreach (TaskDetails task in tasks)
+            try
             {
-                if (RenderTask(tasksRoot, task, project.Name))
-                {
-                    tasksRendered++;
-                }
-            }
+                string home = project.HomeDirectory.Value;
+                string tasksRoot = ProjectHomePaths.TasksDirectory(home);
+                string ideasRoot = ProjectHomePaths.IdeasDirectory(home);
+                Directory.CreateDirectory(tasksRoot);
+                Directory.CreateDirectory(ideasRoot);
 
-            foreach (IdeaDetails idea in ideas)
+                IReadOnlyList<TaskDetails> tasks = await query.Query<TaskDetails>()
+                    .Where(task => task.ProjectId == project.Id)
+                    .ToListAsync(cancellationToken);
+                IReadOnlyList<IdeaDetails> ideas = await query.Query<IdeaDetails>()
+                    .Where(idea => idea.ProjectId == project.Id)
+                    .ToListAsync(cancellationToken);
+
+                projectsInspected++;
+
+                HashSet<string> failedTaskShortIds = [];
+                foreach (TaskDetails task in tasks)
+                {
+                    switch (RenderTask(tasksRoot, task, project.Name))
+                    {
+                        case RenderOutcome.Written:
+                            tasksRendered++;
+                            break;
+                        case RenderOutcome.Failed:
+                            failedTaskShortIds.Add(DomainId.Short(task.Id));
+                            break;
+                    }
+                }
+
+                HashSet<string> failedIdeaShortIds = [];
+                foreach (IdeaDetails idea in ideas)
+                {
+                    switch (RenderIdea(ideasRoot, idea, project.Name))
+                    {
+                        case RenderOutcome.Written:
+                            ideasRendered++;
+                            break;
+                        case RenderOutcome.Failed:
+                            failedIdeaShortIds.Add(DomainId.Short(idea.Id));
+                            break;
+                    }
+                }
+
+                orphansHandled += ReconcileOrphans(
+                    tasksRoot, ideasRoot, tasks, ideas, project.Name, failedTaskShortIds, failedIdeaShortIds);
+            }
+            catch (Exception exception) when (exception is not OperationCanceledException)
             {
-                if (RenderIdea(ideasRoot, idea, project.Name))
-                {
-                    ideasRendered++;
-                }
+                // One project's failure (an unwritable tasks/ideas directory, a stray non-directory
+                // file at that path, a transient query error) must never stop the sweep from
+                // reaching every other project — the doc comment above promises "a write failure
+                // for one task or one project is logged and skipped, never thrown past the sweep."
+                logger.LogWarning(exception,
+                    "Project home sweep failed for project {Project}; a future sweep retries it", project.Name);
             }
-
-            orphansHandled += ReconcileOrphans(tasksRoot, ideasRoot, tasks, ideas, project.Name);
         }
 
         return new ProjectHomeRenderSweepResult(projectsInspected, tasksRendered, ideasRendered, orphansHandled);
     }
 
-    private bool RenderTask(string tasksRoot, TaskDetails task, string projectName)
+    /// <summary>
+    /// A render's disposition, distinguishing a genuine failure from "nothing changed" — both of
+    /// which are "not rendered" from the caller's old boolean, but only one of them means the
+    /// directory on disk may not match this entity's current desired name (see
+    /// <see cref="ReconcileOrphans"/>).
+    /// </summary>
+    private enum RenderOutcome { Written, Unchanged, Failed }
+
+    private RenderOutcome RenderTask(string tasksRoot, TaskDetails task, string projectName)
     {
         try
         {
             string directoryName = TaskDocumentRenderer.DirectoryName(task);
             string rendered = TaskDocumentRenderer.Render(task, projectName);
-            return HomeEntryWriter.Write(tasksRoot, task.Id, directoryName, "task.md", rendered).Changed;
+            bool changed = HomeEntryWriter.Write(tasksRoot, task.Id, directoryName, "task.md", rendered).Changed;
+            return changed ? RenderOutcome.Written : RenderOutcome.Unchanged;
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
         {
             logger.LogWarning(exception,
                 "task.md render failed for task {TaskId} in project {Project}; a future sweep retries it",
                 DomainId.Short(task.Id), projectName);
-            return false;
+            return RenderOutcome.Failed;
         }
     }
 
-    private bool RenderIdea(string ideasRoot, IdeaDetails idea, string projectName)
+    private RenderOutcome RenderIdea(string ideasRoot, IdeaDetails idea, string projectName)
     {
         try
         {
             string directoryName = IdeaDocumentRenderer.DirectoryName(idea);
             string rendered = IdeaDocumentRenderer.Render(idea, projectName);
-            return HomeEntryWriter.Write(ideasRoot, idea.Id, directoryName, "idea.md", rendered).Changed;
+            bool changed = HomeEntryWriter.Write(
+                ideasRoot, idea.Id, directoryName, "idea.md", rendered, includeWorkspace: false).Changed;
+            return changed ? RenderOutcome.Written : RenderOutcome.Unchanged;
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
         {
             logger.LogWarning(exception,
                 "idea.md render failed for idea {IdeaId} in project {Project}; a future sweep retries it",
                 DomainId.Short(idea.Id), projectName);
-            return false;
+            return RenderOutcome.Failed;
         }
     }
 
     private int ReconcileOrphans(
-        string tasksRoot, string ideasRoot, IReadOnlyList<TaskDetails> tasks, IReadOnlyList<IdeaDetails> ideas, string projectName)
+        string tasksRoot, string ideasRoot, IReadOnlyList<TaskDetails> tasks, IReadOnlyList<IdeaDetails> ideas,
+        string projectName, IReadOnlySet<string> failedTaskShortIds, IReadOnlySet<string> failedIdeaShortIds)
     {
         try
         {
-            HashSet<string> knownTaskIds = [.. tasks.Select(task => DomainId.Short(task.Id))];
-            HashSet<string> knownIdeaIds = [.. ideas.Select(idea => DomainId.Short(idea.Id))];
-            return HomeEntryReconciler.RemoveOrMarkOrphans(tasksRoot, knownTaskIds, "task.md").Count
-                + HomeEntryReconciler.RemoveOrMarkOrphans(ideasRoot, knownIdeaIds, "idea.md").Count;
+            // Matched by the entry's *current* directory name, not just its short-id prefix: a
+            // slug rename that could not complete (HomeEntryWriter leaves the old name standing
+            // when a directory already sits at both) must still be caught here, and a prefix match
+            // would wrongly treat that stale duplicate as live because it shares an id with the one
+            // directory that is actually current. That current name is only trustworthy for an
+            // entity whose render succeeded *this* sweep, though: RenderTask/RenderIdea failing
+            // (a transient IOException mid-Directory.Move) can leave the old-named directory
+            // standing while this set only knows the new name, so failedTaskShortIds/
+            // failedIdeaShortIds tell the reconciler which short ids to leave alone regardless of
+            // name — the same entity, the same sweep, not yet safe to judge.
+            HashSet<string> knownTaskDirectoryNames = [.. tasks.Select(TaskDocumentRenderer.DirectoryName)];
+            HashSet<string> knownIdeaDirectoryNames = [.. ideas.Select(IdeaDocumentRenderer.DirectoryName)];
+            return HomeEntryReconciler.RemoveOrMarkOrphans(
+                    tasksRoot, knownTaskDirectoryNames, "task.md", failedTaskShortIds).Count
+                + HomeEntryReconciler.RemoveOrMarkOrphans(
+                    ideasRoot, knownIdeaDirectoryNames, "idea.md", failedIdeaShortIds).Count;
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
         {

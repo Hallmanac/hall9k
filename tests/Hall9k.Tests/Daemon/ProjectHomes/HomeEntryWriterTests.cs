@@ -57,6 +57,18 @@ public sealed class HomeEntryWriterTests : IDisposable
     }
 
     [Fact]
+    public void IncludeWorkspace_false_creates_no_workspace_directory()
+    {
+        string directoryName = $"{_shortId}-an-idea";
+        HomeEntryWriteResult result = HomeEntryWriter.Write(
+            _root, _id, directoryName, "idea.md", "hello", includeWorkspace: false);
+
+        Directory.Exists(Path.Combine(result.DirectoryPath, "workspace")).Should().BeFalse(
+            "an idea's real discovery workspace lives at the global path, not beside idea.md, and a "
+            + "same-looking sibling here would invite material nothing ever reads");
+    }
+
+    [Fact]
     public void A_slug_change_moves_the_existing_directory_rather_than_leaving_a_stale_copy()
     {
         string oldName = $"{_shortId}-old-objective";
@@ -71,6 +83,28 @@ public sealed class HomeEntryWriterTests : IDisposable
         File.ReadAllText(Path.Combine(second.DirectoryPath, "task.md")).Should().Be("hello v2");
         File.ReadAllText(Path.Combine(second.DirectoryPath, "workspace", "notes.md")).Should().Be("keep me",
             "the workspace is where refinement material accumulates; a rename must carry it along");
+    }
+
+    [Fact]
+    public void A_short_id_collision_with_an_unrelated_entry_is_not_moved_into()
+    {
+        // The short id is 32 bits (DomainId.Short), so two unrelated entities in a large project can
+        // share one. A prefix-only match would Directory.Move the unrelated entry's directory into
+        // this one's slot, merging its content in silently — the collision this test guards against.
+        Guid otherId = DomainId.New();
+        string collidingName = $"{_shortId}-someone-elses-task";
+        HomeEntryWriter.Write(_root, otherId, collidingName, "task.md", "not mine");
+        File.WriteAllText(Path.Combine(_root, collidingName, "workspace", "notes.md"), "not mine either");
+
+        string myName = $"{_shortId}-my-task";
+        HomeEntryWriteResult result = HomeEntryWriter.Write(_root, _id, myName, "task.md", "mine");
+
+        result.DirectoryPath.Should().Be(Path.Combine(_root, myName));
+        File.ReadAllText(Path.Combine(_root, myName, "task.md")).Should().Be("mine");
+        Directory.Exists(Path.Combine(_root, collidingName)).Should().BeTrue(
+            "the colliding directory belongs to a different id and must be left untouched, not merged into");
+        File.ReadAllText(Path.Combine(_root, collidingName, "task.md")).Should().Be("not mine",
+            "content from an unrelated entity sharing only a short-id prefix must never be overwritten");
     }
 
     [Fact]

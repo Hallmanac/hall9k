@@ -2,9 +2,14 @@ namespace Hall9k.Daemon.ProjectHomes;
 
 /// <summary>
 /// The other half of the daemon-start reconciliation pass (backlog 48): a directory under
-/// <c>tasks/</c> or <c>ideas/</c> whose short-id prefix names nothing in the store any more —
+/// <c>tasks/</c> or <c>ideas/</c> whose exact name matches no task or idea currently rendering —
 /// the most likely cause is a partial move left behind by an interrupted rename, since every
-/// live task and idea is rendered every sweep and therefore always has a current directory.
+/// live task and idea is rendered every sweep and therefore always has a directory at its current
+/// name. Matching is by the whole <c>&lt;shortid&gt;-&lt;slug&gt;</c> name rather than just the
+/// short-id prefix on purpose: when a slug rename cannot complete because a directory already
+/// sits at both the old and the new name, <c>HomeEntryWriter</c> deliberately leaves the old one
+/// standing (never silently merged), and a prefix match would treat that stale duplicate as live
+/// because it shares an id with the one directory that is actually current.
 /// <para>
 /// An empty shell (nothing but the generated file and an empty <c>workspace/</c>) is simply
 /// removed: there was never anything here a human made. A directory that holds real material —
@@ -17,8 +22,21 @@ public static class HomeEntryReconciler
 {
     private const string MarkerFileName = "ORPHANED.md";
 
+    /// <summary>
+    /// Reconciles orphans in <paramref name="rootDirectory"/>. <paramref name="failedShortIds"/>
+    /// names the entities whose render threw earlier in *this same sweep* (backlog 48 cycle 2
+    /// review): a failed <c>Directory.Move</c> can leave a live entry's directory standing under
+    /// its old name while <paramref name="knownDirectoryNames"/> only knows the new one, and
+    /// without this exclusion the very sweep that failed to rename the directory would then judge
+    /// it orphaned and delete or mark it — a live entry, mistaken for dead, in the same pass that
+    /// caused the mistake. Any directory whose short-id prefix is in this set is left untouched
+    /// regardless of its full name, on the same reasoning <c>HomeEntryWriter</c> uses when it finds
+    /// a directory already sitting at both an old and a new name: when disk state cannot be trusted
+    /// this cycle, the safe move is to leave it for the next sweep to judge honestly.
+    /// </summary>
     public static IReadOnlyList<string> RemoveOrMarkOrphans(
-        string rootDirectory, IReadOnlySet<string> knownShortIds, string generatedFileName)
+        string rootDirectory, IReadOnlySet<string> knownDirectoryNames, string generatedFileName,
+        IReadOnlySet<string>? failedShortIds = null)
     {
         if (!Directory.Exists(rootDirectory))
         {
@@ -29,9 +47,12 @@ public static class HomeEntryReconciler
         foreach (string directory in Directory.EnumerateDirectories(rootDirectory))
         {
             string name = Path.GetFileName(directory);
-            int dash = name.IndexOf('-');
-            string prefix = dash > 0 ? name[..dash] : name;
-            if (knownShortIds.Contains(prefix))
+            if (knownDirectoryNames.Contains(name))
+            {
+                continue;
+            }
+
+            if (failedShortIds is { Count: > 0 } && failedShortIds.Contains(ShortIdPrefix(name)))
             {
                 continue;
             }
@@ -66,12 +87,19 @@ public static class HomeEntryReconciler
             + "than deleted; move what is worth keeping and remove the directory by hand.\n");
     }
 
+    private static string ShortIdPrefix(string directoryName)
+    {
+        int separator = directoryName.IndexOf('-');
+        return separator < 0 ? directoryName : directoryName[..separator];
+    }
+
     private static bool IsOnlyGeneratedContent(string directory, string generatedFileName)
     {
         foreach (string entry in Directory.EnumerateFileSystemEntries(directory))
         {
             string name = Path.GetFileName(entry);
-            if (string.Equals(name, generatedFileName, StringComparison.OrdinalIgnoreCase))
+            if (string.Equals(name, generatedFileName, StringComparison.OrdinalIgnoreCase)
+                || string.Equals(name, HomeEntryWriter.IdentityMarkerFileName, StringComparison.OrdinalIgnoreCase))
             {
                 continue;
             }
