@@ -54,8 +54,8 @@ The §3.3 lifecycle mixes two concerns. Here they separate cleanly:
   (`AgentSessionCompleted` enters Verifying — the agent process finishing is not the run finishing.
   `UnderReview` is the pre-PR review loop, with `ReviewParked` when it hands the diff to a
   human (§3.1). During PR closeout, AwaitingReview refines further: `ChecksFailing`,
-  `ReviewPending`, and `CloseoutParked` record what the closeout monitor observed (see §2.2).
-  `Completed` arrives only when the monitor observes the merge.)
+  `ReviewPending`, `Conflicting`, and `CloseoutParked` record what the closeout monitor observed
+  (see §2.2). `Completed` arrives only when the monitor observes the merge.)
 
 Neither vocabulary is what a human reads. The display is three separate surfaces composed from
 these two (log #66, §2.4): a **lifecycle state** in seven words, a **phase line** for whatever is
@@ -176,8 +176,8 @@ public sealed record TaskReopened(       // Done -> Queued for a follow-up run o
     string? Reason,
     DateTimeOffset ReopenedAt,
     Guid ReopenedByOwnerId,
-    FollowUpKind? Kind = null,           // ReviewFeedback | FailingChecks; the launcher picks the
-                                         // follow-up prompt from it. Null (pre-vocabulary events) = Unknown,
+    FollowUpKind? Kind = null,           // ReviewFeedback | FailingChecks | Rebase; the launcher picks
+                                         // the follow-up prompt from it. Null (pre-vocabulary events) = Unknown,
                                          // treated as ReviewFeedback (the historic meaning)
     bool Automatic = false,              // true when the closeout monitor reopened, false for a human
                                          // (h9k pr resolve). Automatic reopens count against the bounded
@@ -498,7 +498,8 @@ is more than one door out of the closeout pipeline:
 - it reads `Done` with no run on it at all, so there is nothing left to observe.
 
 A `Done` dependency whose run is still *in* the pipeline (`AwaitingReview`, `ChecksFailing`,
-`ReviewPending`, `CloseoutParked`) is not dead — it simply has not got there yet, and blocks.
+`ReviewPending`, `Conflicting`, `CloseoutParked`) is not dead — it simply has not got there yet,
+and blocks.
 Whichever door it went through, the dependent stays `Blocked` with `TaskDependencyFailed`
 recording what was observed, and `h9k status` reads it as NeedsHuman — the same shape the §2.2
 closeout park uses, and for the same reason: silently unblocking would dispatch work whose
@@ -563,7 +564,7 @@ pending merge for a task that never pushed anything. A run that ended without an
 `Delivered` and says what it recorded, because closeout ended but not the way `Done` claims.
 
 **Phase** is the run vocabulary's new home. `Dispatched`, `Running`, `Verifying`, `UnderReview`,
-`AwaitingReview`, `ChecksFailing`, `ReviewPending`, `CloseoutParked` compose the line under a
+`AwaitingReview`, `ChecksFailing`, `ReviewPending`, `Conflicting`, `CloseoutParked` compose the line under a
 `Working` or `Delivered` row and never appear in the Status column. It is **derived only** - no new
 events - and it is composed from the run's records **plus one observation of the recorded process**.
 `RunDetails` therefore records every session a run has in flight (each one's role, its lens when it
@@ -613,7 +614,7 @@ public sealed record TaskState          // Draft, Published, Queued, Blocked, Cl
 public sealed record TaskDependency     // one dependency as the lifecycle rules see it: id, objective, state,
                                         //   and whether it reached TRUE closeout (§2.3)
 public sealed record RequeueReason      // LeaseExpired, RunFailedRetryable, HumanRequested, Unknown
-public sealed record FollowUpKind       // ReviewFeedback, FailingChecks, Unknown (§2.2 — prompt selection)
+public sealed record FollowUpKind       // ReviewFeedback, FailingChecks, Rebase, Unknown (§2.2 — prompt selection)
 public sealed record AgentModel         // fable | opus | sonnet | haiku aliases, or any exact model id;
                                         // Unknown = "not set at this level" (Shared/ValueObjects, log #33)
 public sealed record AgentRole          // Build, Review, Fix, Refinement, Unknown (log #33 per-role defaults)
@@ -773,6 +774,10 @@ public sealed record ReviewParkResolved( // the human's verdict via h9k review r
 
 // Closeout observations (§2.2) — appended by the closeout monitor, never by agents.
 // Provider timestamps are nullable: unreported is recorded as unknown, never guessed.
+public sealed record PullRequestConflictObserved( // the branch conflicts with its base (backlog 44);
+    Guid Id,                             // GitHub's own mergeable read, checked ahead of checks and
+    DateTimeOffset ObservedAt);          // review threads because both are moot once a rebase is coming.
+                                         // -> Conflicting, then an automatic TaskReopened (Kind = Rebase)
 public sealed record PullRequestChecksFailed( // CI completed and failed; recorded only once nothing is
     Guid Id,                             // pending, so FailedChecks is the full picture. -> ChecksFailing
     IReadOnlyList<string> FailedChecks,
@@ -849,8 +854,8 @@ public sealed record ExecutorMode       // Subscription, ApiKey, Unknown
 
 public sealed record KillReason         // BudgetExceeded, HumanRequested, Superseded, Unknown
 public sealed record RunState           // Dispatched, Running, Verifying, UnderReview, ReviewParked (§3.1),
-                                        //   AwaitingReview, ChecksFailing, ReviewPending, CloseoutParked (§2.2),
-                                        //   Completed, Failed, Killed, Superseded, Unknown
+                                        //   AwaitingReview, ChecksFailing, ReviewPending, Conflicting,
+                                        //   CloseoutParked (§2.2), Completed, Failed, Killed, Superseded, Unknown
 public sealed record ReviewVerdict      // MergeReady, NeedsFixes, Unknown (§3.1)
 public sealed record ReviewFixOutcome   // Fixed, Disputed, Unknown (§3.1)
 public sealed record ReviewLens         // Conformance, Adversarial (§3.1); Unknown = a pass recorded
