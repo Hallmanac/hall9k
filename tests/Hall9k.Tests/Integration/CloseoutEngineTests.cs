@@ -823,6 +823,75 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
         Directory.Exists(worktree.Path).Should().BeTrue("the worktree is the follow-up workspace — never removed here");
     }
 
+    /// <summary>
+    /// Backlog 44's whole point: GitHub's own CONFLICTING read dispatches a rebase follow-up
+    /// through the same reopen pipeline as a failing check or unresolved thread, spending the
+    /// same budget.
+    /// </summary>
+    [Fact]
+    public async Task A_conflicting_pull_request_dispatches_an_automatic_rebase_follow_up_through_the_reopen_pipeline()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        (DocumentStore store, NodeContext node, GitWorktreeManager worktrees, _, string repoPath) =
+            await SetUpAsync(cts.Token);
+        using IDisposable storeLifetime = store;
+
+        (Guid taskId, Guid runId, Worktree worktree) =
+            await SeedAwaitingReviewAsync(store, node, worktrees, repoPath, cts.Token);
+
+        FakeInspector inspector = new()
+        {
+            Snapshot = FakeInspector.Quiet() with { IsConflicting = true },
+        };
+        await NewEngine(store, node, inspector, worktrees).PollOnceAsync(cts.Token);
+
+        await using IQuerySession query = store.QuerySession();
+        RunDetails run = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
+        run.State.Should().Be(RunState.Superseded,
+            "the reopen hands the PR to a successor, so the observed run retires in the same transaction");
+
+        TaskDetails task = (await query.LoadAsync<TaskDetails>(taskId, cts.Token))!;
+        task.State.Should().Be(TaskState.Queued, "the follow-up flows through the standard dispatch pipeline");
+        task.FollowUpBranch.Should().Be(worktree.Branch);
+        task.FollowUpKind.Should().Be(FollowUpKind.Rebase, "the launcher picks the rebase-onto-main prompt from it");
+        task.FollowUpReason.Should().Contain("conflicts with its base branch");
+
+        TaskAggregate aggregate = (await query.Events.AggregateStreamAsync<TaskAggregate>(taskId, token: cts.Token))!;
+        aggregate.CloseoutAttempts.Should().Be(1, "automatic reopens spend the bounded budget");
+
+        Directory.Exists(worktree.Path).Should().BeTrue("the worktree is the follow-up workspace — never removed here");
+    }
+
+    /// <summary>
+    /// A conflict is checked ahead of checks and threads: both readings are moot against a
+    /// diff about to be superseded by a rebase (backlog 44).
+    /// </summary>
+    [Fact]
+    public async Task A_conflicting_pull_request_is_dispatched_ahead_of_failing_checks_and_unresolved_threads()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        (DocumentStore store, NodeContext node, GitWorktreeManager worktrees, _, string repoPath) =
+            await SetUpAsync(cts.Token);
+        using IDisposable storeLifetime = store;
+
+        (Guid taskId, _, _) = await SeedAwaitingReviewAsync(store, node, worktrees, repoPath, cts.Token);
+
+        FakeInspector inspector = new()
+        {
+            Snapshot = FakeInspector.Quiet() with
+            {
+                IsConflicting = true,
+                FailingChecks = ["build"],
+                UnresolvedReviewThreadCount = 2,
+            },
+        };
+        await NewEngine(store, node, inspector, worktrees).PollOnceAsync(cts.Token);
+
+        await using IQuerySession query = store.QuerySession();
+        TaskDetails task = (await query.LoadAsync<TaskDetails>(taskId, cts.Token))!;
+        task.FollowUpKind.Should().Be(FollowUpKind.Rebase, "the conflict wins priority over checks and threads");
+    }
+
     [Fact]
     public async Task Unresolved_copilot_threads_dispatch_a_review_follow_up()
     {
@@ -1483,6 +1552,41 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
         (await query.LoadAsync<TaskListItem>(taskId, cts.Token))!.State.Should().Be(TaskState.Done);
 
         await RetireWatchAsync(store, runId, cts.Token);
+    }
+
+    /// <summary>
+    /// Backlog 44's stated goal: a branch that keeps re-conflicting parks for a human instead
+    /// of looping, on the same progress cap every other obstruction already uses.
+    /// </summary>
+    [Fact]
+    public async Task A_pull_request_that_keeps_re_conflicting_parks_at_the_per_obstruction_cap()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        (DocumentStore store, NodeContext node, GitWorktreeManager worktrees, _, string repoPath) =
+            await SetUpAsync(cts.Token);
+        using IDisposable storeLifetime = store;
+
+        (Guid taskId, Guid runId, _) = await SeedAwaitingReviewAsync(
+            store, node, worktrees, repoPath, cts.Token,
+            priorAutomaticReopens: 2, priorObstructionKey: "Rebase:conflict");
+
+        FakeInspector inspector = new()
+        {
+            Snapshot = FakeInspector.Quiet() with { IsConflicting = true },
+        };
+        await NewEngine(
+            store, node, inspector, worktrees,
+            maxAutomaticCloseoutRuns: 10, maxCloseoutLapsPerObstruction: 2).PollOnceAsync(cts.Token);
+
+        await using IQuerySession query = store.QuerySession();
+        RunDetails run = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
+        run.State.Should().Be(RunState.CloseoutParked);
+        run.ParkedReason.Should().Contain("conflicting with its base branch")
+            .And.Contain("survived 2 automatic lap(s)")
+            .And.Contain("cap 2 per obstruction")
+            .And.Contain("h9k pr resolve");
+
+        (await query.LoadAsync<TaskListItem>(taskId, cts.Token))!.State.Should().Be(TaskState.Done);
     }
 
     /// <summary>
