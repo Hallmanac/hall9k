@@ -2,6 +2,7 @@ using System.ComponentModel;
 using Hall9k.Cli.Infrastructure;
 using Hall9k.Connectors.Text;
 using Hall9k.Domain.Features.Project.Projections;
+using Hall9k.Domain.Infrastructure.Ids;
 using Hall9k.Domain.Shared.Exceptions;
 using Marten;
 using Spectre.Console;
@@ -181,7 +182,7 @@ public sealed class TaskListCommand : Hall9kAsyncCommand<TaskListCommand.Setting
 
     // UUIDv7 front-loads the timestamp, so same-batch ids share their first chars;
     // the random tail is what tells them apart.
-    internal static string ShortId(Guid id) => id.ToString("N")[^8..];
+    internal static string ShortId(Guid id) => DomainId.Short(id);
 
     /// <summary>
     /// A value cut to fit a column, on a text-element boundary rather than at a raw char index.
