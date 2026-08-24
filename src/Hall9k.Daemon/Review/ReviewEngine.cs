@@ -922,14 +922,14 @@ public sealed class ReviewEngine(
             // A resumed pre-gate dispute disputing again (backlog 44's own rebase prompt invites
             // exactly this: "raise a new dispute if you hit a DIFFERENT conflict"; the review-thread
             // prompt invites the same for a thread neither side can honestly judge). No review pass
-            // has run at cycle 0, so this new summary is the only position there is to read — write
-            // it under the same well-known name the first park used, so a human dealing with a
-            // cycle-0 dispute always finds it at the one path regardless of which attempt it came
-            // from.
+            // has run at cycle 0, so this new summary is another position under the same well-known
+            // name the first park used, so a human dealing with a cycle-0 dispute always finds every
+            // attempt at the one path — appended, per RunPaths.AppendDisputePositionAsync, so the
+            // earlier attempt's position survives instead of being overwritten by this one.
             string disputeFile = followUpKind == FollowUpKind.Rebase
                 ? RunPaths.RebaseConflictDisputeFile(runDirectory)
                 : RunPaths.ReviewThreadDisputeFile(runDirectory);
-            await File.WriteAllTextAsync(disputeFile, summary, cancellationToken);
+            await RunPaths.AppendDisputePositionAsync(disputeFile, summary, cancellationToken);
         }
 
         DateTimeOffset now = DateTimeOffset.UtcNow;
