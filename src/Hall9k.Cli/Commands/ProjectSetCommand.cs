@@ -251,10 +251,16 @@ public sealed class ProjectSetCommand : Hall9kAsyncCommand<ProjectSetCommand.Set
 
         string name = value[..separator].Trim();
         string url = value[(separator + 1)..].Trim();
-        return Uri.TryCreate(url, UriKind.Absolute, out Uri? link)
-            ? new ContextLink(name, link)
-            : throw new DomainValidationException(
-                $"--link '{name}={url}' is not a URL this can record. Pass an absolute URL with a "
-                + $"scheme, e.g. --link \"{name}=https://{url}\".");
+        if (Uri.TryCreate(url, UriKind.Absolute, out Uri? link))
+        {
+            return new ContextLink(name, link);
+        }
+
+        string suggestion = string.IsNullOrEmpty(url) || url.Contains("://", StringComparison.Ordinal)
+            ? $"--link \"{name}=https://example.com/wiki\""
+            : $"--link \"{name}=https://{url}\"";
+        throw new DomainValidationException(
+            $"--link '{name}={url}' is not a URL this can record. Pass an absolute URL with a "
+            + $"scheme, e.g. {suggestion}.");
     }
 }
