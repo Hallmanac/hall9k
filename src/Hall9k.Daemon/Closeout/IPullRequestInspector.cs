@@ -110,6 +110,14 @@ public sealed record ErroredReview(string Reviewer, string Url);
 /// review, so a reviewer typing comments into a draft is invisible here — correctly, since
 /// nothing has been said yet, but worth knowing when a PR looks quiet.
 /// </para>
+/// <para>
+/// IsConflicting is GitHub's own <c>mergeable == CONFLICTING</c> read (backlog 44), observed
+/// alongside the reviews call rather than inferred from how long the branch has sat open —
+/// the never-guess rule applies to staleness exactly as it does to everything else this
+/// snapshot carries. Read only while the pull request is open, the same scope every other
+/// review field here has; a merely-behind-but-mergeable branch is deliberately not this
+/// field's concern (GitHub merges those fine on its own).
+/// </para>
 /// </summary>
 public sealed record PullRequestSnapshot(
     bool IsMerged,
@@ -125,7 +133,8 @@ public sealed record PullRequestSnapshot(
     string? HeadCommit = null,
     IReadOnlyList<string>? UnresolvedReviewThreadIds = null,
     IReadOnlyList<string>? UnresolvedHumanThreadIds = null,
-    IReadOnlyList<string>? PendingReviewRequestLogins = null)
+    IReadOnlyList<string>? PendingReviewRequestLogins = null,
+    bool IsConflicting = false)
 {
     /// <summary>Every unresolved thread's id, or empty when the provider read predates ids being collected.</summary>
     public IReadOnlyList<string> ThreadIds => UnresolvedReviewThreadIds ?? [];

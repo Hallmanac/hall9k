@@ -54,6 +54,7 @@ public sealed class GitHubPullRequestInspector : IPullRequestInspector
             pullRequest(number: $number) {
               author { login __typename }
               headRefOid
+              mergeable
               reviewThreads(first: 100) {
                 nodes { id isResolved comments(first: 1) { nodes { author { login __typename } } } }
               }
@@ -109,7 +110,8 @@ public sealed class GitHubPullRequestInspector : IPullRequestInspector
             HeadCommit: reviews.HeadCommit,
             UnresolvedReviewThreadIds: reviews.UnresolvedThreadIds,
             UnresolvedHumanThreadIds: reviews.UnresolvedHumanThreadIds,
-            PendingReviewRequestLogins: reviews.PendingReviewRequestLogins);
+            PendingReviewRequestLogins: reviews.PendingReviewRequestLogins,
+            IsConflicting: reviews.IsConflicting);
     }
 
     /// <summary>
@@ -168,7 +170,8 @@ public sealed class GitHubPullRequestInspector : IPullRequestInspector
         string? HeadCommit,
         IReadOnlyList<string> UnresolvedThreadIds,
         IReadOnlyList<string> UnresolvedHumanThreadIds,
-        IReadOnlyList<string> PendingReviewRequestLogins)
+        IReadOnlyList<string> PendingReviewRequestLogins,
+        bool IsConflicting = false)
     {
         public static readonly ReviewObservation None = new(0, 0, [], null, null, [], [], []);
     }
@@ -242,8 +245,20 @@ public sealed class GitHubPullRequestInspector : IPullRequestInspector
             ReadHeadCommit(pullRequest),
             threadIds,
             humanThreadIds,
-            ReadPendingReviewRequestLogins(pullRequest));
+            ReadPendingReviewRequestLogins(pullRequest),
+            IsConflicting: ReadMergeable(pullRequest) == "CONFLICTING");
     }
+
+    /// <summary>
+    /// GitHub's own three-state read of whether this pull request can be merged as-is
+    /// (<c>MERGEABLE | CONFLICTING | UNKNOWN</c>) — <c>UNKNOWN</c> means the provider has not
+    /// finished computing it yet (a very recent push), and is read here as "not observed as
+    /// conflicting", never as a guess either way; the next sweep asks again.
+    /// </summary>
+    private static string? ReadMergeable(JsonElement pullRequest) =>
+        pullRequest.TryGetProperty("mergeable", out JsonElement mergeable) && mergeable.ValueKind == JsonValueKind.String
+            ? mergeable.GetString()
+            : null;
 
     /// <summary>
     /// Who currently has a pending review request — the second human-engagement signal

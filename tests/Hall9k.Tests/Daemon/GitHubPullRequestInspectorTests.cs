@@ -16,9 +16,10 @@ public sealed class GitHubPullRequestInspectorTests
     // response readable in C# source; JSON has no apostrophes to lose to it.
     private static string Payload(
         string author, string headOid, string threads, string reviews,
-        string reviewRequests = "", string timelineItems = "") =>
+        string reviewRequests = "", string timelineItems = "", string? mergeable = null) =>
         ("{'data':{'repository':{'pullRequest':{"
             + $"'author':{author},'headRefOid':'{headOid}',"
+            + (mergeable is null ? "" : $"'mergeable':'{mergeable}',")
             + $"'reviewThreads':{{'nodes':[{threads}]}},"
             + $"'reviewRequests':{{'nodes':[{reviewRequests}]}},"
             + $"'timelineItems':{{'nodes':[{timelineItems}]}},"
@@ -264,5 +265,44 @@ public sealed class GitHubPullRequestInspectorTests
         GitHubPullRequestInspector.ReviewObservation observation = GitHubPullRequestInspector.ParseReviews(json);
 
         observation.PendingReviewRequestLogins.Should().BeEmpty("the automatic re-request is the more recent one");
+    }
+
+    /// <summary>
+    /// GitHub's own mergeable read, observed exactly as reported (backlog 44) — never inferred
+    /// from anything else the payload carries.
+    /// </summary>
+    [Fact]
+    public void A_conflicting_mergeable_state_is_observed()
+    {
+        string json = Payload(Actor("hallmanac", "User"), "cafe1", "", "", mergeable: "CONFLICTING");
+
+        GitHubPullRequestInspector.ReviewObservation observation = GitHubPullRequestInspector.ParseReviews(json);
+
+        observation.IsConflicting.Should().BeTrue();
+    }
+
+    [Fact]
+    public void A_mergeable_state_is_not_read_as_conflicting()
+    {
+        string json = Payload(Actor("hallmanac", "User"), "cafe1", "", "", mergeable: "MERGEABLE");
+
+        GitHubPullRequestInspector.ReviewObservation observation = GitHubPullRequestInspector.ParseReviews(json);
+
+        observation.IsConflicting.Should().BeFalse();
+    }
+
+    /// <summary>
+    /// UNKNOWN means the provider has not finished computing it yet (a very recent push) — read
+    /// as "not observed as conflicting" rather than guessed either way; the next sweep asks
+    /// again. A payload predating this field (mergeable absent entirely) reads the same way.
+    /// </summary>
+    [Fact]
+    public void An_unresolved_or_absent_mergeable_state_is_not_read_as_conflicting()
+    {
+        string unknown = Payload(Actor("hallmanac", "User"), "cafe1", "", "", mergeable: "UNKNOWN");
+        string absent = Payload(Actor("hallmanac", "User"), "cafe1", "", "");
+
+        GitHubPullRequestInspector.ParseReviews(unknown).IsConflicting.Should().BeFalse();
+        GitHubPullRequestInspector.ParseReviews(absent).IsConflicting.Should().BeFalse();
     }
 }

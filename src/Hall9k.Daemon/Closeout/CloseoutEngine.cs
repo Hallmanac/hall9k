@@ -342,6 +342,24 @@ public sealed class CloseoutEngine(
             return InspectionOutcome.Inspected;
         }
 
+        // Checked ahead of checks and review threads, deliberately (backlog 44, origin PR
+        // 26): a conflicting branch makes both of those readings moot — CI ran against a
+        // diff that is about to be superseded by a rebase, and a review thread answers a
+        // version of the code the merge will discard. The observation is GitHub's own
+        // mergeable read, never inferred from how long the branch has sat open.
+        if (snapshot.IsConflicting)
+        {
+            session.Events.Append(run.Id, new PullRequestConflictObserved(run.Id, now));
+            await DispatchFollowUpOrParkAsync(
+                session, task, run, fence.Version,
+                FollowUpKind.Rebase,
+                ["conflict"],
+                snapshot,
+                "The pull request's branch conflicts with its base branch.",
+                now, cancellationToken);
+            return InspectionOutcome.Inspected;
+        }
+
         if (snapshot.HasPendingChecks)
         {
             // The CI picture is incomplete; acting now would hand a follow-up run a
@@ -1048,7 +1066,9 @@ public sealed class CloseoutEngine(
     private static string DescribeObstruction(FollowUpKind kind, IReadOnlyList<string> identity) =>
         kind == FollowUpKind.FailingChecks
             ? $"the failing check(s) {string.Join(", ", identity.OrderBy(id => id, StringComparer.Ordinal))}"
-            : $"the same {identity.Count} unresolved review thread(s)";
+            : kind == FollowUpKind.Rebase
+                ? "the pull request conflicting with its base branch"
+                : $"the same {identity.Count} unresolved review thread(s)";
 
     /// <summary>
     /// Whether something a human did on the pull request since the task's last automatic
