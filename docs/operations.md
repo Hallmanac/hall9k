@@ -177,14 +177,17 @@ Everything hangs off `~/.hall9k` (or `HALL9K_HOME`):
 ├── projects/<name>/            a project's home, unless the project records another location
 │   ├── AGENTS.md               rendered from the project's facts; never hand-maintained
 │   ├── repo/                   <name>.git (bare) · dev/ (primary branch) · wt-*/ (dispatch)
-│   ├── ideas/<id>-<slug>/      idea.md (rendered); the discovery workspace stays global, below
-│   ├── tasks/<id>-<slug>/      task.md (rendered) + workspace/ for refinement material
+│   ├── ideas/<id>-<slug>/      idea.md (rendered) + workspace/, when captured with this home (below)
+│   ├── tasks/<id>-<slug>/      task.md (rendered) + workspace/ for refinement material, plus:
+│   │   └── runs/<run-id>/      every run this task ever dispatched — see the run shape below
 │   ├── skills/                 symlinks into ~/.hall9k/skills, plus this project's own
 │   └── .claude/skills/         symlinks into the line above: the Claude Code adapter
-├── ideas/<idea-id>/workspace/  discovery workspaces: research, files, prototypes
+├── ideas/<idea-id>/workspace/  the fallback for an idea captured with no project, or a project
+│                               with no home yet: permanent, never relocated after capture
 ├── postgres/docker-compose.yml Hall9k's own Postgres definition (h9k install writes it, §Postgres)
 ├── skills/<skill-name>/        the canonical skill set (h9k install / h9k update publish it)
-└── runs/<run-id>/
+└── runs/<run-id>/              the fallback for a run dispatched when its task's project had no
+                                 home, and where every run's artifacts lived before backlog 49:
     ├── prompt.md               what the session was actually given
     ├── settings.json           the settings override the spawn used
     ├── stream.jsonl            the agent's stream-json, as written
@@ -197,6 +200,13 @@ Everything hangs off `~/.hall9k` (or `HALL9K_HOME`):
     ├── blocker-context.md      what the immediate blockers handed down
     └── handoff.md              what this run hands down in turn
 ```
+
+A run's directory is resolved once, at dispatch, from its owning task's directory name at that
+moment, and recorded on the run rather than rederived later — the same discipline as the
+worktree path. An idea's workspace location is resolved once too, but at capture instead: a
+project gaining a home after an idea already exists there does not retroactively move that
+idea's workspace, so two ideas under the same project can legitimately have their workspaces in
+different places depending on when each was captured.
 
 `credentials/` is the one directory here that holds a secret. A registered connection records a
 *reference* rather than a value, and a `file:` reference names a file in that directory, which is

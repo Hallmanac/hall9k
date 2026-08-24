@@ -85,10 +85,13 @@ same reconciliation pass that backfills a home created after tasks existed. A hu
 and applies it back through the existing gate — `h9k task revise <id> --file <path>`, or
 `h9k idea revise <id> "<text>"` (ideas have no `--file` form) — the store decides what happened,
 never the file. An idea with no project yet has nowhere to render into, so it stays in its global
-discovery workspace until assigned; relocating that workspace under the project home is its own
-later slice, not this one. The hall9k project's own move into its default home is the separate
-cutover chore (backlog 52), so until it runs this repository is still worked from
-`~/Code/Hall9k_Platform`.
+discovery workspace until assigned. Where that workspace lives is decided once, at capture, and
+never changes after (backlog 49): an idea captured with a project whose home already exists gets
+its workspace under that home from the start; an idea captured with no project, or with a project
+that has no home yet, keeps its workspace at the global location permanently, even once it is
+later assigned to a project — assignment never retroactively relocates an already-materialised
+workspace. The hall9k project's own move into its default home is the separate cutover chore
+(backlog 52), so until it runs this repository is still worked from `~/Code/Hall9k_Platform`.
 
 Ideas come before tasks (Decisions Log #35). An idea undergoes **discovery** (what is this?);
 a draft task undergoes **refinement** (how does this become executable?). A task is an idea with
@@ -105,9 +108,11 @@ h9k idea promote <id> [--project <name>]          # becomes a draft task; needs 
 h9k idea discard <id> --reason "<why>"            # closed honestly, never deleted
 ```
 
-Every idea owns a discovery workspace, `~/.hall9k/ideas/<idea-id>/workspace`, where research
-notes, gathered files, and prototypes accumulate. The stream records milestones only, never file
-contents, and promotion carries the workspace path forward as the draft's agent context.
+Every idea owns a discovery workspace, where research notes, gathered files, and prototypes
+accumulate: `~/.hall9k/ideas/<idea-id>/workspace` for an idea whose capture-time project had no
+home yet (or had none at all), or `<home>/ideas/<shortid>-<slug>/workspace` when it did (backlog
+49). The stream records milestones only, never file contents, and promotion carries the current
+workspace path forward as the draft's agent context.
 
 Task development and task dispatch are separate lifecycles (Decisions Log #34): `h9k task add`
 creates a **draft**, and nothing dispatches until a human publishes and assigns it.
