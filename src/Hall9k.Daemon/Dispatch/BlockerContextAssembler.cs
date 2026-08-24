@@ -42,6 +42,7 @@ public sealed class BlockerContextAssembler(
     /// </summary>
     public async Task<string?> AssembleAsync(
         Guid runId,
+        string runDirectory,
         TaskDetails task,
         ProjectDetails project,
         string worktreePath,
@@ -61,10 +62,10 @@ public sealed class BlockerContextAssembler(
 
         string context = blockers.Count > _options.BlockerSynthesisThreshold
             ? await SynthesizeOrFallBackAsync(
-                runId, task, project, worktreePath, mode, blockers.Count, raw, cancellationToken)
+                runId, runDirectory, task, project, worktreePath, mode, blockers.Count, raw, cancellationToken)
             : raw;
 
-        await WriteArtifactAsync(runId, context, cancellationToken);
+        await WriteArtifactAsync(runDirectory, context, cancellationToken);
         logger.LogInformation(
             "Run {RunId}: starting context assembled from {Count} immediate blocker(s), depth one",
             runId, blockers.Count);
@@ -87,6 +88,7 @@ public sealed class BlockerContextAssembler(
     /// </summary>
     private async Task<string> SynthesizeOrFallBackAsync(
         Guid runId,
+        string runDirectory,
         TaskDetails task,
         ProjectDetails project,
         string worktreePath,
@@ -102,7 +104,7 @@ public sealed class BlockerContextAssembler(
             string artifactName = $"context-synthesis-{sessionId.ToString("N")[..8]}";
             AgentModel model = _options.ResolveModel(AgentRole.Synthesis, task.Model, project.Model);
             SpawnedAgent agent = await executor.SpawnAsync(new AgentSpawnRequest(
-                runId, sessionId, worktreePath,
+                runId, sessionId, worktreePath, runDirectory,
                 AgentPromptBuilder.BuildContextSynthesis(task, blockerCount, raw),
                 mode, model, project.SkipPermissions, artifactName), cancellationToken);
             unfinished = agent;
@@ -118,7 +120,7 @@ public sealed class BlockerContextAssembler(
                 "Run {RunId}: {Count} blockers exceed the synthesis threshold of {Threshold} — condensing session {SessionId} dispatched (pid {ProcessId}, model {Model})",
                 runId, blockerCount, _options.BlockerSynthesisThreshold, sessionId, agent.ProcessId, model.Value);
 
-            AgentResult? result = await WaitWithinBudgetAsync(runId, artifactName, agent, cancellationToken);
+            AgentResult? result = await WaitWithinBudgetAsync(runId, runDirectory, artifactName, agent, cancellationToken);
 
             // The wait either read the session's own result or terminated it on expiry, so
             // from here on there is nothing of ours still running to abandon.
@@ -209,14 +211,14 @@ public sealed class BlockerContextAssembler(
     /// caller terminates the session on that path before letting it through.
     /// </summary>
     private async Task<AgentResult?> WaitWithinBudgetAsync(
-        Guid runId, string artifactName, SpawnedAgent agent, CancellationToken cancellationToken)
+        Guid runId, string runDirectory, string artifactName, SpawnedAgent agent, CancellationToken cancellationToken)
     {
         using CancellationTokenSource budget = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         budget.CancelAfter(_options.BlockerSynthesisTimeout);
         try
         {
             return await SessionResultWaiter.WaitAsync(
-                RunPaths.SessionStreamFile(runId, artifactName), agent.ProcessId, agent.StartedAt,
+                RunPaths.SessionStreamFile(runDirectory, artifactName), agent.ProcessId, agent.StartedAt,
                 processManager, onOutput: null, budget.Token);
         }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
@@ -248,16 +250,16 @@ public sealed class BlockerContextAssembler(
     /// copy must not cost the dispatch the context itself, so a write failure is logged and
     /// the prompt goes out regardless.
     /// </summary>
-    private async Task WriteArtifactAsync(Guid runId, string context, CancellationToken cancellationToken)
+    private async Task WriteArtifactAsync(string runDirectory, string context, CancellationToken cancellationToken)
     {
         try
         {
-            Directory.CreateDirectory(RunPaths.RunDirectory(runId));
-            await File.WriteAllTextAsync(RunPaths.BlockerContextFile(runId), context, cancellationToken);
+            Directory.CreateDirectory(runDirectory);
+            await File.WriteAllTextAsync(RunPaths.BlockerContextFile(runDirectory), context, cancellationToken);
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
         {
-            logger.LogWarning(exception, "Could not write the blocker-context artifact for run {RunId}", runId);
+            logger.LogWarning(exception, "Could not write the blocker-context artifact for {RunDirectory}", runDirectory);
         }
     }
 }

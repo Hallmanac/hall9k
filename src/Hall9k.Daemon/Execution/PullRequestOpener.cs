@@ -174,10 +174,10 @@ public sealed class PullRequestOpener(
     private async Task<(string Url, int Number)> CreatePullRequestAsync(
         RunDetails run, TaskDetails task, string baseBranch, CancellationToken cancellationToken)
     {
-        string bodyFile = Path.Combine(RunPaths.RunDirectory(run.Id), "pr-body.md");
+        string bodyFile = Path.Combine(run.RunDirectory, "pr-body.md");
         await File.WriteAllTextAsync(
             bodyFile,
-            PullRequestBody.Build(run, task, TryReadAgentSummary(run.Id), await SourceUrlAsync(task, cancellationToken)),
+            PullRequestBody.Build(run, task, TryReadAgentSummary(run), await SourceUrlAsync(task, cancellationToken)),
             cancellationToken);
 
         // The title goes through PullRequestBody too, not straight from the projection: on a
@@ -200,11 +200,11 @@ public sealed class PullRequestOpener(
         return (url, PullRequestUrls.ParseNumber(url));
     }
 
-    private string? TryReadAgentSummary(Guid runId)
+    private string? TryReadAgentSummary(RunDetails run)
     {
         try
         {
-            string streamFile = RunPaths.StreamFile(runId);
+            string streamFile = RunPaths.StreamFile(run.RunDirectory);
             if (!File.Exists(streamFile))
             {
                 return null;
@@ -220,7 +220,7 @@ public sealed class PullRequestOpener(
         }
         catch (IOException exception)
         {
-            logger.LogWarning(exception, "Could not read agent summary for run {RunId}", runId);
+            logger.LogWarning(exception, "Could not read agent summary for run {RunId}", run.Id);
         }
 
         return null;

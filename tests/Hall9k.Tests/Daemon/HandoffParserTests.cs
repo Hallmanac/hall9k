@@ -1,6 +1,7 @@
 using FluentAssertions;
 using Hall9k.Daemon.Execution;
 using Hall9k.Domain.Infrastructure.Ids;
+using Hall9k.Domain.Infrastructure.Storage;
 using Xunit;
 
 namespace Hall9k.Tests.Daemon;
@@ -70,7 +71,8 @@ public sealed class HandoffParserTests
     public void An_over_long_handoff_is_truncated_with_the_truncation_stated()
     {
         Guid runId = DomainId.New();
-        string bounded = HandoffParser.BoundForEvent(new string('x', HandoffParser.MaxEventLength + 500), runId);
+        string runDirectory = RunPaths.GlobalDirectory(runId);
+        string bounded = HandoffParser.BoundForEvent(new string('x', HandoffParser.MaxEventLength + 500), runDirectory);
 
         bounded.Should().Contain("Truncated at", "a silently clipped handoff reads exactly like a complete one");
         bounded.Should().Contain(runId.ToString(), "the truncation names where the whole copy lives");
@@ -80,7 +82,7 @@ public sealed class HandoffParserTests
     public void A_handoff_within_budget_travels_verbatim()
     {
         const string handoff = "Short, which is what the prompt asks for.";
-        HandoffParser.BoundForEvent(handoff, DomainId.New()).Should().Be(handoff);
+        HandoffParser.BoundForEvent(handoff, RunPaths.GlobalDirectory(DomainId.New())).Should().Be(handoff);
     }
 
     /// <summary>
@@ -91,7 +93,9 @@ public sealed class HandoffParserTests
     public void One_runs_handoff_composes_to_itself()
     {
         const string handoff = "The rename is deliberate.";
-        HandoffParser.Compose([new HandoffParser.RunHandoff(DomainId.New(), handoff)]).Should().Be(handoff);
+        Guid runId = DomainId.New();
+        HandoffParser.Compose(
+            [new HandoffParser.RunHandoff(runId, RunPaths.GlobalDirectory(runId), handoff)]).Should().Be(handoff);
     }
 
     /// <summary>
@@ -107,8 +111,8 @@ public sealed class HandoffParserTests
 
         string composed = HandoffParser.Compose(
         [
-            new HandoffParser.RunHandoff(original, "The column is named Canonical."),
-            new HandoffParser.RunHandoff(followUp, "Resolved three review threads."),
+            new HandoffParser.RunHandoff(original, RunPaths.GlobalDirectory(original), "The column is named Canonical."),
+            new HandoffParser.RunHandoff(followUp, RunPaths.GlobalDirectory(followUp), "Resolved three review threads."),
         ]);
 
         composed.Should().Contain("carried by 2 runs");
@@ -128,7 +132,8 @@ public sealed class HandoffParserTests
         Guid followUp = DomainId.New();
 
         string bounded = HandoffParser.BoundForEvent(
-            new string('x', HandoffParser.MaxEventLength + 500), [original, followUp]);
+            new string('x', HandoffParser.MaxEventLength + 500),
+            [RunPaths.GlobalDirectory(original), RunPaths.GlobalDirectory(followUp)]);
 
         bounded.Should().Contain("The whole handoffs are at");
         bounded.Should().Contain(original.ToString()).And.Contain(followUp.ToString());

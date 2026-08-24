@@ -61,7 +61,7 @@ public sealed class RunSupervisorTests(PostgresFixture postgres) : IClassFixture
             $"sleep 0.3; echo '{{\"type\":\"assistant\"}}'; sleep 0.3; echo '{ResultLine}'");
         DateTimeOffset startedAt = await RecordProcessStartedAsync(store, runId, processId, cts.Token);
 
-        supervisor.StartMonitoring(runId, taskId, processId, startedAt, cts.Token);
+        supervisor.StartMonitoring(runId, RunPaths.GlobalDirectory(runId), taskId, processId, startedAt, cts.Token);
         RunDetails details = await WaitForStateAsync(store, runId, "Verifying", cts.Token);
 
         details.InputTokens.Should().Be(1200);
@@ -90,7 +90,7 @@ public sealed class RunSupervisorTests(PostgresFixture postgres) : IClassFixture
         using (CancellationTokenSource firstDaemon = new())
         {
             RunSupervisor doomed = NewSupervisor(store, node);
-            doomed.StartMonitoring(runId, taskId, processId, startedAt, firstDaemon.Token);
+            doomed.StartMonitoring(runId, RunPaths.GlobalDirectory(runId), taskId, processId, startedAt, firstDaemon.Token);
             await Task.Delay(TimeSpan.FromSeconds(1), cts.Token);
             firstDaemon.Cancel();
         }
@@ -121,7 +121,7 @@ public sealed class RunSupervisorTests(PostgresFixture postgres) : IClassFixture
         DateTimeOffset startedAt = await RecordProcessStartedAsync(store, runId, processId, cts.Token);
 
         RunSupervisor supervisor = NewSupervisor(store, node);
-        supervisor.StartMonitoring(runId, taskId, processId, startedAt, cts.Token);
+        supervisor.StartMonitoring(runId, RunPaths.GlobalDirectory(runId), taskId, processId, startedAt, cts.Token);
 
         RunDetails details = await WaitForStateAsync(store, runId, "Failed", cts.Token);
         details.FailureReason.Should().Contain("without a result");
@@ -232,7 +232,7 @@ public sealed class RunSupervisorTests(PostgresFixture postgres) : IClassFixture
 
         ListLogger<RunSupervisor> logger = new();
         RunSupervisor supervisor = NewSupervisor(store, node, logger: logger);
-        supervisor.StartMonitoring(staleRunId, taskId, processId, startedAt, cts.Token);
+        supervisor.StartMonitoring(staleRunId, RunPaths.GlobalDirectory(staleRunId), taskId, processId, startedAt, cts.Token);
 
         RunDetails staleDetails = await WaitForStateAsync(store, staleRunId, "Failed", cts.Token);
         staleDetails.FailureReason.Should().Contain("without a result");
@@ -339,7 +339,7 @@ public sealed class RunSupervisorTests(PostgresFixture postgres) : IClassFixture
         DateTimeOffset startedAt = await RecordProcessStartedAsync(store, runId, processId, cts.Token);
 
         RunSupervisor supervisor = NewSupervisor(store, node);
-        supervisor.StartMonitoring(runId, taskId, processId, startedAt, cts.Token);
+        supervisor.StartMonitoring(runId, RunPaths.GlobalDirectory(runId), taskId, processId, startedAt, cts.Token);
 
         RunDetails details = await WaitForStateAsync(store, runId, "BudgetParked", cts.Token);
         details.ParkedReason.Should().Be("token budget exhausted - resumes when the subscription window resets");
@@ -374,14 +374,14 @@ public sealed class RunSupervisorTests(PostgresFixture postgres) : IClassFixture
         DateTimeOffset startedAt = await RecordProcessStartedAsync(store, runId, processId, cts.Token);
 
         RunSupervisor supervisor = NewSupervisor(store, node);
-        supervisor.StartMonitoring(runId, taskId, processId, startedAt, cts.Token);
+        supervisor.StartMonitoring(runId, RunPaths.GlobalDirectory(runId), taskId, processId, startedAt, cts.Token);
 
         RunDetails details = await WaitForStateAsync(store, runId, "ReviewParked", cts.Token);
         details.ParkedReason.Should().Contain("disputed a review thread");
         details.ParkedReason.Should().Contain("h9k review resolve", "a park names the human's way back in");
         details.FailureReason.Should().BeNull("a park is a waiting state, not a failure");
 
-        File.ReadAllText(RunPaths.ReviewThreadDisputeFile(runId)).Should().Contain(
+        File.ReadAllText(RunPaths.ReviewThreadDisputeFile(RunPaths.GlobalDirectory(runId))).Should().Contain(
             "different projection shape", "the human reads the agent's position, not just the marker");
     }
 
@@ -424,7 +424,7 @@ public sealed class RunSupervisorTests(PostgresFixture postgres) : IClassFixture
 
         ListLogger<RunSupervisor> logger = new();
         RunSupervisor supervisor = NewSupervisor(store, node, logger: logger);
-        supervisor.StartMonitoring(runId, taskId, processId, startedAt, cts.Token);
+        supervisor.StartMonitoring(runId, RunPaths.GlobalDirectory(runId), taskId, processId, startedAt, cts.Token);
 
         RunDetails details = await WaitForStateAsync(store, runId, "Superseded", cts.Token);
         details.ParkedReason.Should().BeNull("the stale generation's dispute is never actually parked");
@@ -453,7 +453,7 @@ public sealed class RunSupervisorTests(PostgresFixture postgres) : IClassFixture
             $"printf '%s\\n' '{DisputedResultLine("Quoting the rules: RESOLUTION: disputed is how a follow-up parks.")}'");
         DateTimeOffset startedAt = await RecordProcessStartedAsync(store, runId, processId, cts.Token);
 
-        NewSupervisor(store, node).StartMonitoring(runId, taskId, processId, startedAt, cts.Token);
+        NewSupervisor(store, node).StartMonitoring(runId, RunPaths.GlobalDirectory(runId), taskId, processId, startedAt, cts.Token);
 
         // Verifying is where a build run goes next; the gates then fail it on the missing
         // worktree, which is fine — what matters is that it was never parked.
@@ -480,14 +480,14 @@ public sealed class RunSupervisorTests(PostgresFixture postgres) : IClassFixture
             "Fixed the flaky test. The skill file's park line reads RESOLUTION: disputed.")}'");
         DateTimeOffset startedAt = await RecordProcessStartedAsync(store, runId, processId, cts.Token);
 
-        NewSupervisor(store, node).StartMonitoring(runId, taskId, processId, startedAt, cts.Token);
+        NewSupervisor(store, node).StartMonitoring(runId, RunPaths.GlobalDirectory(runId), taskId, processId, startedAt, cts.Token);
 
         // Verifying is where the run goes instead; the gates then fail it on the missing
         // worktree, which is fine — what matters is that it was never parked.
         await WaitForStateAsync(store, runId, "Verifying", cts.Token);
         await using IQuerySession query = store.QuerySession();
         (await query.LoadAsync<RunDetails>(runId, cts.Token))!.ParkedReason.Should().BeNull();
-        File.Exists(RunPaths.ReviewThreadDisputeFile(runId)).Should().BeFalse(
+        File.Exists(RunPaths.ReviewThreadDisputeFile(RunPaths.GlobalDirectory(runId))).Should().BeFalse(
             "nothing was disputed, so no position was written");
     }
 
@@ -553,11 +553,11 @@ public sealed class RunSupervisorTests(PostgresFixture postgres) : IClassFixture
 
     private int SpawnFakeAgent(Guid runId, string script)
     {
-        Directory.CreateDirectory(RunPaths.RunDirectory(runId));
+        Directory.CreateDirectory(RunPaths.GlobalDirectory(runId));
         Process process = new();
         process.StartInfo = new ProcessStartInfo { FileName = "/bin/sh", UseShellExecute = false };
         process.StartInfo.ArgumentList.Add("-c");
-        process.StartInfo.ArgumentList.Add($"({script}) > \"{RunPaths.StreamFile(runId)}\" 2> \"{RunPaths.StandardErrorFile(runId)}\"");
+        process.StartInfo.ArgumentList.Add($"({script}) > \"{RunPaths.StreamFile(RunPaths.GlobalDirectory(runId))}\" 2> \"{RunPaths.StandardErrorFile(RunPaths.GlobalDirectory(runId))}\"");
         process.Start();
         return process.Id;
     }

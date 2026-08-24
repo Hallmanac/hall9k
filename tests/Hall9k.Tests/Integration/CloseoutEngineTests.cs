@@ -187,7 +187,7 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
         run.State.Should().Be(RunState.Failed);
         run.HandoffOutcome.Should().Be(HandoffOutcome.Unknown, "nothing was handed down, so nothing was recorded");
         run.HandoffSummary.Should().BeNull();
-        File.Exists(RunPaths.HandoffFile(runId)).Should().BeTrue(
+        File.Exists(RunPaths.HandoffFile(RunPaths.GlobalDirectory(runId))).Should().BeTrue(
             "the capture happened at session end; only the landing is withheld");
     }
 
@@ -318,8 +318,9 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
 
     private static void WriteHandoffArtifact(Guid runId, string handoff)
     {
-        Directory.CreateDirectory(RunPaths.RunDirectory(runId));
-        File.WriteAllText(RunPaths.HandoffFile(runId), handoff);
+        string runDirectory = RunPaths.GlobalDirectory(runId);
+        Directory.CreateDirectory(runDirectory);
+        File.WriteAllText(RunPaths.HandoffFile(runDirectory), handoff);
     }
 
     [Fact]

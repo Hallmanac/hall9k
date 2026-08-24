@@ -580,10 +580,12 @@ public sealed class CardPublicationEngine(
 
         SpawnedAgent agent = await executor.SpawnAsync(
             // RunId doubles as the artifact key and there is no run here: a publication has no
-            // worktree, no branch, and no lease. The session's own id names its directory, which
-            // is what WorkItemPublicationDispatched records so the prompt and stream stay findable.
+            // worktree, no branch, and no lease. The session's own id names its directory (the
+            // platform-global location — a publication session belongs to no task directory,
+            // never having a RunDispatched of its own), which is what
+            // WorkItemPublicationDispatched records so the prompt and stream stay findable.
             new AgentSpawnRequest(
-                sessionId, sessionId, checkout, prompt,
+                sessionId, sessionId, checkout, RunPaths.GlobalDirectory(sessionId), prompt,
                 ExecutorMode.Subscription, model, project.SkipPermissions),
             cancellationToken);
 
@@ -607,7 +609,7 @@ public sealed class CardPublicationEngine(
 
             logger.LogInformation(
                 "Task {TaskId}: card publication session {SessionId} dispatched (pid {ProcessId}, model {Model}, artifacts in {Directory})",
-                task.Id, sessionId, agent.ProcessId, model.Value, RunPaths.RunDirectory(sessionId));
+                task.Id, sessionId, agent.ProcessId, model.Value, RunPaths.GlobalDirectory(sessionId));
 
             waiting = true;
             (bool linked, string outcome) = await WaitAsync(task.Id, sessionId, agent, cancellationToken);
@@ -655,7 +657,7 @@ public sealed class CardPublicationEngine(
                 linked is true,
                 $"The session was dispatched and the daemon then lost track of it: {exception.Message}. It was "
                 + $"stopped {(linked is true ? "after it reported its card key" : "without a verified card key")}. "
-                + $"Its prompt and transcript are in {RunPaths.RunDirectory(sessionId)}. "
+                + $"Its prompt and transcript are in {RunPaths.GlobalDirectory(sessionId)}. "
                 + WhatTheLinkSays(linked),
                 cancellationToken);
 
@@ -718,7 +720,7 @@ public sealed class CardPublicationEngine(
         try
         {
             result = await SessionResultWaiter.WaitAsync(
-                RunPaths.StreamFile(sessionId), agent.ProcessId, agent.StartedAt,
+                RunPaths.StreamFile(RunPaths.GlobalDirectory(sessionId)), agent.ProcessId, agent.StartedAt,
                 processManager, onOutput: null, budget.Token);
         }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
@@ -750,11 +752,11 @@ public sealed class CardPublicationEngine(
         // have left one behind.
         string what = timedOut
             ? $"The session was still running after {_options.CardPublicationTimeout} and was stopped "
-              + $"without a verified card key. Its prompt and transcript are in {RunPaths.RunDirectory(sessionId)}."
+              + $"without a verified card key. Its prompt and transcript are in {RunPaths.GlobalDirectory(sessionId)}."
             : Summarize(result) is { } said
                 ? $"The session ended without a verified card key. It said: {said}"
                 : "The session ended without a verified card key and left no result to read. Its prompt and "
-                  + $"transcript are in {RunPaths.RunDirectory(sessionId)}.";
+                  + $"transcript are in {RunPaths.GlobalDirectory(sessionId)}.";
 
         return (false, $"{what} {CheckTheBoard}");
     }

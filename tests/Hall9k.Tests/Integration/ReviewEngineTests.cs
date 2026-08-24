@@ -94,9 +94,9 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
                 ["total_cost_usd"] = 0.01,
                 ["result"] = summary,
             });
-            Directory.CreateDirectory(RunPaths.RunDirectory(request.RunId));
+            Directory.CreateDirectory(request.RunDirectory);
             await File.WriteAllTextAsync(
-                RunPaths.SessionStreamFile(request.RunId, request.SessionArtifactName!),
+                RunPaths.SessionStreamFile(request.RunDirectory, request.SessionArtifactName!),
                 line + "\n", cancellationToken);
 
             Processes.MarkAlive(processId);
@@ -138,12 +138,12 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
         run.ReviewResidualsRouted.Should().Be(0);
         run.InputTokens.Should().Be(2_000, "both passes record tokens on the run — the cost is visible, not hidden");
 
-        File.ReadAllText(RunPaths.ReviewLensFindingsFile(runId, 1, ReviewLens.Conformance.Slug))
+        File.ReadAllText(RunPaths.ReviewLensFindingsFile(RunPaths.GlobalDirectory(runId), 1, ReviewLens.Conformance.Slug))
             .Should().Contain("Every acceptance criterion is met");
-        File.ReadAllText(RunPaths.ReviewLensFindingsFile(runId, 1, ReviewLens.Adversarial.Slug))
+        File.ReadAllText(RunPaths.ReviewLensFindingsFile(RunPaths.GlobalDirectory(runId), 1, ReviewLens.Adversarial.Slug))
             .Should().Contain("Hunted the trust boundaries");
 
-        string merged = File.ReadAllText(RunPaths.ReviewFindingsFile(runId, 1));
+        string merged = File.ReadAllText(RunPaths.ReviewFindingsFile(RunPaths.GlobalDirectory(runId), 1));
         merged.Should().Contain("Conformance lens").And.Contain("Adversarial lens",
             "the merged document says which lens produced what");
         merged.Should().Contain("VERDICT: merge-ready");
@@ -451,10 +451,10 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
 
         mergeReady.Should().BeTrue();
 
-        File.ReadAllText(RunPaths.ReviewLensFindingsFile(runId, 1, "unlensed"))
+        File.ReadAllText(RunPaths.ReviewLensFindingsFile(RunPaths.GlobalDirectory(runId), 1, "unlensed"))
             .Should().Contain(prose).And.NotContain("FINDING:",
                 "the merge writes its own file, so the lens-less pass still has its own words");
-        string merged = File.ReadAllText(RunPaths.ReviewFindingsFile(runId, 1));
+        string merged = File.ReadAllText(RunPaths.ReviewFindingsFile(RunPaths.GlobalDirectory(runId), 1));
         merged.Should().Contain(prose, "the merged document quotes the lens-less pass");
         Regex.Matches(merged, "^# Independent pre-PR review", RegexOptions.Multiline)
             .Should().ContainSingle("a cycle recorded twice re-derives the merge rather than nesting its previous self");
@@ -565,7 +565,7 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
             .And.Contain("Pull request: none", "no pull request existed yet, and the draft says so")
             .And.Contain("charges twice", "the reviewer's own words travel verbatim");
 
-        string merged = File.ReadAllText(RunPaths.ReviewFindingsFile(runId, 1));
+        string merged = File.ReadAllText(RunPaths.ReviewFindingsFile(RunPaths.GlobalDirectory(runId), 1));
         merged.Should().Contain("routed to draft bug tasks").And.Contain(routed.DraftTaskId!.Value.ToString());
         executor.Spawns[2].Prompt.Should().Contain("Do NOT fix here",
             "the fix session is told which findings are not its work");
@@ -709,7 +709,7 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
         RunDetails run = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
         run.ReviewResidualsRouted.Should().Be(1, "one exported defect is one residual, however often it is reported");
 
-        string merged = File.ReadAllText(RunPaths.ReviewFindingsFile(runId, 2));
+        string merged = File.ReadAllText(RunPaths.ReviewFindingsFile(RunPaths.GlobalDirectory(runId), 2));
         merged.Should().Contain("already routed to a draft bug task by cycle 1 of this run",
             "the fix session is still told the defect is not its work, and by which cycle it was observed to leave");
     }
@@ -814,7 +814,7 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
         events.OfType<ReviewFindingRouted>().Should().ContainSingle(
             "one place two tracks named in one cycle is one exported defect");
 
-        string merged = File.ReadAllText(RunPaths.ReviewFindingsFile(runId, 1));
+        string merged = File.ReadAllText(RunPaths.ReviewFindingsFile(RunPaths.GlobalDirectory(runId), 1));
         merged.Should().Contain("already routed to a draft bug task earlier in this cycle")
             .And.NotContain("by an earlier cycle",
                 "there is no earlier cycle here, and the disposition may not claim one");
@@ -919,7 +919,7 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
         run.ReviewCycle.Should().Be(3, "the adversarial track went dormant at cycle 1 and never held the run up");
         run.ParkedReason.Should().Contain("conformance review is still returning findings")
             .And.Contain("nothing automated is left to try")
-            .And.Contain(RunPaths.ReviewFindingsFile(runId, 3));
+            .And.Contain(RunPaths.ReviewFindingsFile(RunPaths.GlobalDirectory(runId), 3));
 
         (await query.LoadAsync<TaskListItem>(taskId, cts.Token))!.State.Should().Be(
             TaskState.Claimed, "parking is a waiting state — the task is not failed");
@@ -944,10 +944,10 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
         await using IQuerySession query = store.QuerySession();
         RunDetails run = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
         run.State.Should().Be(RunState.ReviewParked);
-        run.ParkedReason.Should().Contain(RunPaths.ReviewFindingsFile(runId, 1), "the review position is attached")
-            .And.Contain(RunPaths.ReviewFixPositionFile(runId, 1), "and so is the fix run's position");
+        run.ParkedReason.Should().Contain(RunPaths.ReviewFindingsFile(RunPaths.GlobalDirectory(runId), 1), "the review position is attached")
+            .And.Contain(RunPaths.ReviewFixPositionFile(RunPaths.GlobalDirectory(runId), 1), "and so is the fix run's position");
 
-        File.ReadAllText(RunPaths.ReviewFixPositionFile(runId, 1)).Should().Contain("scope decision");
+        File.ReadAllText(RunPaths.ReviewFixPositionFile(RunPaths.GlobalDirectory(runId), 1)).Should().Contain("scope decision");
         (await query.LoadAsync<TaskListItem>(taskId, cts.Token))!.State.Should().Be(TaskState.Claimed);
     }
 
@@ -1181,7 +1181,7 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
 
         // Recording the fix outcome writes this file first, so the loop throws while the
         // stream still shows the fix session in flight and its completion unrecorded.
-        Directory.CreateDirectory(RunPaths.ReviewFixPositionFile(runId, 1));
+        Directory.CreateDirectory(RunPaths.ReviewFixPositionFile(RunPaths.GlobalDirectory(runId), 1));
 
         ScriptedExecutor executor = new(
             "Criteria met.\n\nVERDICT: merge-ready",
@@ -1348,9 +1348,9 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
             ["usage"] = new Dictionary<string, long> { ["input_tokens"] = 1_000, ["output_tokens"] = 200 },
             ["result"] = summary,
         });
-        Directory.CreateDirectory(RunPaths.RunDirectory(runId));
+        Directory.CreateDirectory(RunPaths.GlobalDirectory(runId));
         await File.WriteAllTextAsync(
-            RunPaths.SessionStreamFile(runId, artifactName), line + "\n", cancellationToken);
+            RunPaths.SessionStreamFile(RunPaths.GlobalDirectory(runId), artifactName), line + "\n", cancellationToken);
     }
 
     /// <summary>

@@ -677,4 +677,40 @@ public sealed class RunAggregateTests
         run.State.Should().Be(RunState.Superseded);
         run.State.IsTerminal.Should().BeTrue();
     }
+
+    /// <summary>
+    /// A stream written before RunDirectory existed carries no recorded value, and replaying it
+    /// falls back to the platform-global location — the same place its files have always
+    /// actually been (backlog 49) — rather than leaving the property blank for every consumer
+    /// to guess about.
+    /// </summary>
+    [Fact]
+    public void A_stream_with_no_recorded_run_directory_falls_back_to_the_global_location()
+    {
+        RunAggregate run = new();
+        Guid id = DomainId.New();
+
+        run.Apply(new RunDispatched(
+            id, DomainId.New(), DomainId.New(), DomainId.New(), 1, DomainId.New(),
+            "/wt/x", "task/x", ExecutorMode.Subscription, Now));
+
+        run.RunDirectory.Should().Be(
+            Hall9k.Domain.Infrastructure.Storage.RunPaths.GlobalDirectory(id),
+            "an unrecorded directory is the honest absence of a home, not an empty string every reader re-derives");
+    }
+
+    /// <summary>A run dispatched under a project home carries the recorded directory verbatim.</summary>
+    [Fact]
+    public void A_recorded_run_directory_is_carried_exactly_as_dispatched()
+    {
+        RunAggregate run = new();
+        Guid id = DomainId.New();
+        string runDirectory = $"/home/hall9k/projects/demo/tasks/abc12345-task/runs/{id}";
+
+        run.Apply(new RunDispatched(
+            id, DomainId.New(), DomainId.New(), DomainId.New(), 1, DomainId.New(),
+            "/wt/x", "task/x", ExecutorMode.Subscription, Now, RunDirectory: runDirectory));
+
+        run.RunDirectory.Should().Be(runDirectory);
+    }
 }

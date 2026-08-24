@@ -13,7 +13,9 @@ using Hall9k.Domain.Features.Tasks.Documents;
 using Hall9k.Domain.Features.Tasks.Events;
 using Hall9k.Domain.Features.Tasks.Handlers;
 using Hall9k.Domain.Features.Tasks.Projections;
+using Hall9k.Domain.Features.Tasks.Rendering;
 using Hall9k.Domain.Infrastructure.Ids;
+using Hall9k.Domain.Infrastructure.Storage;
 using Hall9k.Domain.Shared.ValueObjects;
 using JasperFx.Events;
 using Marten;
@@ -93,10 +95,16 @@ public sealed class RunLauncher(
             // (Decisions Log #33), so they can never disagree.
             AgentModel model = options.Value.ResolveModel(AgentRole.Build, task.Model, project.Model);
 
+            // Resolved once, here, exactly like the worktree above: this run's directory is
+            // under the task's own directory when the project has a home (backlog 49), and
+            // every consumer reads the recorded value from here on rather than rederiving it.
+            string runDirectory = RunPaths.ResolveDirectory(
+                project.HomeDirectory, TaskDocumentRenderer.DirectoryName(task), runId);
+
             session.Events.StartStream<RunAggregate>(runId, new RunDispatched(
                 runId, taskId, nodeId, ownerId, leaseGeneration, sessionId,
                 worktree.Path, worktree.Branch, mode, DateTimeOffset.UtcNow,
-                IsFollowUp: followUp is not null, Model: model));
+                IsFollowUp: followUp is not null, Model: model, RunDirectory: runDirectory));
             await session.SaveChangesAsync(cancellationToken);
 
             // The reopen's kind picks the follow-up prompt; Unknown (reopens recorded
@@ -119,13 +127,14 @@ public sealed class RunLauncher(
                 // synthesis pass has somewhere to record itself, and the build session has not
                 // spawned yet — the whole point is that the dependent starts already knowing.
                 string? handoffs = await blockerContext.AssembleAsync(
-                    runId, task, project, worktree.Path, mode, cancellationToken);
+                    runId, runDirectory, task, project, worktree.Path, mode, cancellationToken);
                 prompt = AgentPromptBuilder.Build(
                     task, project, worktree.Branch, worktree.Path, resumesPreviousWork, handoffs);
             }
 
             SpawnedAgent agent = await executor.SpawnAsync(
-                new AgentSpawnRequest(runId, sessionId, worktree.Path, prompt, mode, model, project.SkipPermissions),
+                new AgentSpawnRequest(
+                    runId, sessionId, worktree.Path, runDirectory, prompt, mode, model, project.SkipPermissions),
                 cancellationToken);
 
             await using IDocumentSession startSession = store.LightweightSession();
@@ -133,7 +142,7 @@ public sealed class RunLauncher(
             startSession.Store(new RunActivity { Id = runId, LastActivityAt = DateTimeOffset.UtcNow, StreamBytesRead = 0 });
             await startSession.SaveChangesAsync(cancellationToken);
 
-            supervisor.StartMonitoring(runId, taskId, agent.ProcessId, agent.StartedAt, cancellationToken);
+            supervisor.StartMonitoring(runId, runDirectory, taskId, agent.ProcessId, agent.StartedAt, cancellationToken);
         }
         catch (Exception exception) when (exception is not OperationCanceledException)
         {

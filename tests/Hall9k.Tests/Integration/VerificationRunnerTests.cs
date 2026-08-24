@@ -58,7 +58,7 @@ public sealed class VerificationRunnerTests(PostgresFixture postgres) : IClassFi
         run.State.Value.Should().Be("Verifying", "VerificationPassed does not transition; the PR step does");
         run.FailedGates.Should().BeEmpty();
 
-        File.ReadAllText(Path.Combine(RunPaths.RunDirectory(runId), "verify-hello.log"))
+        File.ReadAllText(Path.Combine(RunPaths.GlobalDirectory(runId), "verify-hello.log"))
             .Should().Contain("hello-from-gate");
     }
 
@@ -82,7 +82,7 @@ public sealed class VerificationRunnerTests(PostgresFixture postgres) : IClassFi
         task.State.Value.Should().Be("Failed");
         (await query.LoadAsync<TaskLease>(taskId, cts.Token)).Should().BeNull("verification failure releases the lease");
 
-        File.Exists(Path.Combine(RunPaths.RunDirectory(runId), "verify-never.log"))
+        File.Exists(Path.Combine(RunPaths.GlobalDirectory(runId), "verify-never.log"))
             .Should().BeFalse("gates after the failure never run");
     }
 
@@ -334,7 +334,7 @@ public sealed class VerificationRunnerTests(PostgresFixture postgres) : IClassFi
 
         (await query.LoadAsync<TaskListItem>(taskId, cts.Token))!.State.Value.Should().Be("Failed");
         (await query.LoadAsync<TaskLease>(taskId, cts.Token)).Should().BeNull("the failure releases the lease");
-        File.Exists(Path.Combine(RunPaths.RunDirectory(runId), "verify-never.log"))
+        File.Exists(Path.Combine(RunPaths.GlobalDirectory(runId), "verify-never.log"))
             .Should().BeFalse("the failure lands before the gates, not after");
     }
 

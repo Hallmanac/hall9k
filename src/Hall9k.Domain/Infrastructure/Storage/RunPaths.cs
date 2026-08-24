@@ -1,41 +1,77 @@
+using Hall9k.Domain.Features.Project;
+
 namespace Hall9k.Domain.Infrastructure.Storage;
 
-/// <summary>Filesystem layout for a run's artifacts: ~/.hall9k/runs/&lt;run-id&gt;/ (log #2).</summary>
+/// <summary>
+/// Filesystem layout for a run's artifacts (log #2), keyed off the run's own directory rather
+/// than its id: prompt, stream, verify logs and review files all live beside one another, and
+/// every method here just names a file within whatever directory the caller passes.
+/// <para>
+/// Where that directory IS is resolved once, at dispatch (<see cref="ResolveDirectory"/>), and
+/// recorded on <c>RunDispatched</c> exactly as <c>WorktreePath</c> is — never rederived from the
+/// run id later. A run belongs to exactly one task, so a new run's directory lands under that
+/// task's own directory when the project has a home
+/// (<c>&lt;home&gt;/tasks/&lt;shortid&gt;-&lt;slug&gt;/runs/&lt;run-id&gt;/</c>, ruled 2026-08-23,
+/// backlog 49) and falls back to the platform-global location otherwise. A stream written before
+/// this existed carries no recorded directory, and replaying it falls back to
+/// <see cref="GlobalDirectory"/> — the same place its files have always actually been — so an old
+/// run's paths stay exactly as readable as they always were without this type pretending to know
+/// where a home did not yet exist to put them.
+/// </para>
+/// </summary>
 public static class RunPaths
 {
     /// <summary>The platform home, shared with every other on-disk layout (<see cref="PlatformPaths"/>).</summary>
     public static string Root => PlatformPaths.Home;
 
-    public static string RunDirectory(Guid runId) => Path.Combine(Root, "runs", runId.ToString());
+    /// <summary>
+    /// The location every run used before homes existed, and still the fallback for a project
+    /// with none: ~/.hall9k/runs/&lt;run-id&gt;/.
+    /// </summary>
+    public static string GlobalDirectory(Guid runId) => Path.Combine(Root, "runs", runId.ToString());
 
-    public static string StreamFile(Guid runId) => Path.Combine(RunDirectory(runId), "stream.jsonl");
+    /// <summary>
+    /// Where a NEW run's directory goes: under its owning task's directory when the project has
+    /// a home, so the task directory is the whole story of the task — contract, workspace, every
+    /// attempt — and there is no top-level runs/ in the home. Falls back to
+    /// <see cref="GlobalDirectory"/> when the project has none. Resolved once, at dispatch, by
+    /// the caller that already knows the task's current directory name; never called again for
+    /// the same run.
+    /// </summary>
+    public static string ResolveDirectory(ProjectHome home, string taskDirectoryName, Guid runId) =>
+        home.HasValue
+            ? Path.Combine(
+                ProjectHomePaths.TaskDirectory(home.Value, taskDirectoryName), "runs", runId.ToString())
+            : GlobalDirectory(runId);
 
-    public static string PromptFile(Guid runId) => Path.Combine(RunDirectory(runId), "prompt.md");
+    public static string StreamFile(string runDirectory) => Path.Combine(runDirectory, "stream.jsonl");
 
-    public static string SettingsFile(Guid runId) => Path.Combine(RunDirectory(runId), "settings.json");
+    public static string PromptFile(string runDirectory) => Path.Combine(runDirectory, "prompt.md");
 
-    public static string StandardErrorFile(Guid runId) => Path.Combine(RunDirectory(runId), "stderr.log");
+    public static string SettingsFile(string runDirectory) => Path.Combine(runDirectory, "settings.json");
+
+    public static string StandardErrorFile(string runDirectory) => Path.Combine(runDirectory, "stderr.log");
 
     // Pre-PR review and fix sessions (log #24) share the run's directory; each session's
     // files are prefixed with a per-session name so cycles never collide.
-    public static string SessionStreamFile(Guid runId, string sessionName) =>
-        Path.Combine(RunDirectory(runId), $"{sessionName}.stream.jsonl");
+    public static string SessionStreamFile(string runDirectory, string sessionName) =>
+        Path.Combine(runDirectory, $"{sessionName}.stream.jsonl");
 
-    public static string SessionPromptFile(Guid runId, string sessionName) =>
-        Path.Combine(RunDirectory(runId), $"{sessionName}.prompt.md");
+    public static string SessionPromptFile(string runDirectory, string sessionName) =>
+        Path.Combine(runDirectory, $"{sessionName}.prompt.md");
 
     /// <summary>
     /// One session's own settings file. The run-level <see cref="SettingsFile"/> was written
     /// afresh by every spawn, which was safe only while a run's sessions were strictly
     /// sequential; a review cycle now spawns its lenses together (log #59), and the second
-    /// spawn's truncate-and-rewrite would land inside the first child's config-loading window.
-    /// A session that owns its file has no writer but itself.
+    /// spawn's truncate-and-rewrite would land inside the first child's config-loading
+    /// window. A session that owns its file has no writer but itself.
     /// </summary>
-    public static string SessionSettingsFile(Guid runId, string sessionName) =>
-        Path.Combine(RunDirectory(runId), $"{sessionName}.settings.json");
+    public static string SessionSettingsFile(string runDirectory, string sessionName) =>
+        Path.Combine(runDirectory, $"{sessionName}.settings.json");
 
-    public static string SessionStandardErrorFile(Guid runId, string sessionName) =>
-        Path.Combine(RunDirectory(runId), $"{sessionName}.stderr.log");
+    public static string SessionStandardErrorFile(string runDirectory, string sessionName) =>
+        Path.Combine(runDirectory, $"{sessionName}.stderr.log");
 
     /// <summary>
     /// One review cycle's merged findings: every lens's verified findings under its own
@@ -43,27 +79,27 @@ public static class RunPaths
     /// document the fix session is handed and the one a park points a human at, so the name
     /// is unchanged from the single-lens loop it replaces.
     /// </summary>
-    public static string ReviewFindingsFile(Guid runId, int cycle) =>
-        Path.Combine(RunDirectory(runId), $"review-{cycle}-findings.md");
+    public static string ReviewFindingsFile(string runDirectory, int cycle) =>
+        Path.Combine(runDirectory, $"review-{cycle}-findings.md");
 
     /// <summary>
     /// One lens's own findings for a cycle, exactly as that pass wrote them (log #59) — the
     /// unmerged record behind each section of <see cref="ReviewFindingsFile"/>.
     /// </summary>
-    public static string ReviewLensFindingsFile(Guid runId, int cycle, string lensSlug) =>
-        Path.Combine(RunDirectory(runId), $"review-{cycle}-{lensSlug}-findings.md");
+    public static string ReviewLensFindingsFile(string runDirectory, int cycle, string lensSlug) =>
+        Path.Combine(runDirectory, $"review-{cycle}-{lensSlug}-findings.md");
 
     /// <summary>The fix session's closing summary — on a dispute, the second position the human reads.</summary>
-    public static string ReviewFixPositionFile(Guid runId, int cycle) =>
-        Path.Combine(RunDirectory(runId), $"review-{cycle}-fix-position.md");
+    public static string ReviewFixPositionFile(string runDirectory, int cycle) =>
+        Path.Combine(runDirectory, $"review-{cycle}-fix-position.md");
 
     /// <summary>
     /// A follow-up's closing position when it disputed a review thread rather than settling it
     /// (Decisions Log #62) — the text a park points the human at, holding both the reviewer's
     /// position and the agent's. One per run, because a run parks at most once.
     /// </summary>
-    public static string ReviewThreadDisputeFile(Guid runId) =>
-        Path.Combine(RunDirectory(runId), "review-thread-dispute.md");
+    public static string ReviewThreadDisputeFile(string runDirectory) =>
+        Path.Combine(runDirectory, "review-thread-dispute.md");
 
     /// <summary>
     /// The run's handoff to whatever depends on it (Decisions Log #36), written at session end
@@ -73,8 +109,8 @@ public static class RunPaths
     /// handoff, present and empty means the session's result was read and carried none, and
     /// absent means there was no session-end capture at all.
     /// </summary>
-    public static string HandoffFile(Guid runId) => Path.Combine(RunDirectory(runId), "handoff.md");
+    public static string HandoffFile(string runDirectory) => Path.Combine(runDirectory, "handoff.md");
 
     /// <summary>The condensed blocker context a synthesis session produced for this run (log #36).</summary>
-    public static string BlockerContextFile(Guid runId) => Path.Combine(RunDirectory(runId), "blocker-context.md");
+    public static string BlockerContextFile(string runDirectory) => Path.Combine(runDirectory, "blocker-context.md");
 }

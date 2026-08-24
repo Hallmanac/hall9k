@@ -31,14 +31,14 @@ public sealed class ClaudeExecutor(ILogger<ClaudeExecutor> logger) : IExecutor
                 + "(Decisions Log #33); the platform never inherits the owner's personal default.");
         }
 
-        Directory.CreateDirectory(RunPaths.RunDirectory(request.RunId));
+        Directory.CreateDirectory(request.RunDirectory);
         (string promptFile, string streamFile, string standardErrorFile) = request.SessionArtifactName is { } session
-            ? (RunPaths.SessionPromptFile(request.RunId, session),
-                RunPaths.SessionStreamFile(request.RunId, session),
-                RunPaths.SessionStandardErrorFile(request.RunId, session))
-            : (RunPaths.PromptFile(request.RunId),
-                RunPaths.StreamFile(request.RunId),
-                RunPaths.StandardErrorFile(request.RunId));
+            ? (RunPaths.SessionPromptFile(request.RunDirectory, session),
+                RunPaths.SessionStreamFile(request.RunDirectory, session),
+                RunPaths.SessionStandardErrorFile(request.RunDirectory, session))
+            : (RunPaths.PromptFile(request.RunDirectory),
+                RunPaths.StreamFile(request.RunDirectory),
+                RunPaths.StandardErrorFile(request.RunDirectory));
 
         await File.WriteAllTextAsync(promptFile, request.Prompt, cancellationToken);
         await File.WriteAllTextAsync(SettingsFile(request), SettingsContent, cancellationToken);
@@ -98,8 +98,8 @@ public sealed class ClaudeExecutor(ILogger<ClaudeExecutor> logger) : IExecutor
     /// </summary>
     private static string SettingsFile(AgentSpawnRequest request) =>
         request.SessionArtifactName is { } session
-            ? RunPaths.SessionSettingsFile(request.RunId, session)
-            : RunPaths.SettingsFile(request.RunId);
+            ? RunPaths.SessionSettingsFile(request.RunDirectory, session)
+            : RunPaths.SettingsFile(request.RunDirectory);
 
     /// <summary>
     /// Internal for the argument-policy tests: the flag set IS the policy (logs #1, #5, #33),

@@ -91,7 +91,7 @@ public sealed class TokenBudgetRetryEngine(
         try
         {
             SpawnedAgent agent = await executor.SpawnAsync(new AgentSpawnRequest(
-                run.Id, DomainId.New(), run.WorktreePath, AgentPromptBuilder.BuildBudgetRetry(),
+                run.Id, DomainId.New(), run.WorktreePath, run.RunDirectory, AgentPromptBuilder.BuildBudgetRetry(),
                 run.ExecutorMode, run.Model, project.SkipPermissions,
                 ResumeSessionId: run.SessionId), cancellationToken);
 
@@ -107,7 +107,8 @@ public sealed class TokenBudgetRetryEngine(
             session.Events.Append(run.Id, new RunResumed(run.Id, agent.ProcessId, agent.StartedAt, DateTimeOffset.UtcNow));
             await session.SaveChangesAsync(cancellationToken);
 
-            supervisor.StartMonitoring(run.Id, run.TaskId, agent.ProcessId, agent.StartedAt, cancellationToken);
+            supervisor.StartMonitoring(
+                run.Id, run.RunDirectory, run.TaskId, agent.ProcessId, agent.StartedAt, cancellationToken);
             logger.LogInformation(
                 "Run {RunId}: retried after token-budget exhaustion (pid {ProcessId})", run.Id, agent.ProcessId);
             return true;

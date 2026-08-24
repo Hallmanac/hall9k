@@ -1,4 +1,5 @@
 using Hall9k.Domain.Features.Run.Events;
+using Hall9k.Domain.Infrastructure.Storage;
 using Hall9k.Domain.Shared.ValueObjects;
 using JasperFx.Events;
 using Marten.Events.Aggregation;
@@ -18,6 +19,13 @@ public sealed class RunListItem
     public string? PullRequestUrl { get; set; }
     public DateTimeOffset DispatchedAt { get; set; }
     public DateTimeOffset? FinishedAt { get; set; }
+    /// <summary>
+    /// Where this run's artifacts live, as recorded on <see cref="RunDispatched"/>. A stream
+    /// written before the field existed falls back to <see cref="RunPaths.GlobalDirectory"/> —
+    /// the same place its files have always actually been — so every reader can use this
+    /// property directly with no fallback of its own to remember.
+    /// </summary>
+    public string RunDirectory { get; set; } = string.Empty;
 }
 
 public sealed class RunListItemProjection : SingleStreamProjection<RunListItem, Guid>
@@ -31,6 +39,9 @@ public sealed class RunListItemProjection : SingleStreamProjection<RunListItem, 
         Model = @event.Data.Model ?? AgentModel.Unknown,
         State = RunState.Dispatched,
         DispatchedAt = @event.Data.DispatchedAt,
+        RunDirectory = @event.Data.RunDirectory.IsNotBlank()
+            ? @event.Data.RunDirectory
+            : RunPaths.GlobalDirectory(@event.Data.Id),
     };
 
     public void Apply(IEvent<RunProcessStarted> @event, RunListItem view) => view.State = RunState.Running;
