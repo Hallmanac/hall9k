@@ -125,10 +125,6 @@ public sealed class InstallCommand : Hall9kAsyncCommand<InstallCommand.Settings>
     {
         DaemonProcessDescriptor? runningBefore = DaemonProcess.Probe();
 
-        SwapIntoPlace(staging, DaemonRuntime.BinDirectory);
-        AnsiConsole.MarkupLineInterpolated(
-            $"[green]Installed[/] {version}: h9k and h9kd release binaries in {DaemonRuntime.BinDirectory}");
-
         // Ships Hall9k's own Postgres definition into ~/.hall9k (Decisions Log #73), so
         // h9k daemon start's reachability probe and h9k doctor's start-offer never need a
         // repo checkout — an installed user has no dev worktree to run compose from. No
@@ -167,6 +163,18 @@ public sealed class InstallCommand : Hall9kAsyncCommand<InstallCommand.Settings>
                     Environment.GetFolderPath(Environment.SpecialFolder.UserProfile));
             }
         }
+
+        // Deliberately last: h9k update runs from the very binaries this call is about to
+        // replace, and the runtime resolves an assembly's first load lazily by absolute
+        // path — so anything this process still had to load after an earlier swap would
+        // load from the new build instead of the one it actually started under. Nothing
+        // above touches an assembly this process has not already loaded (the compose
+        // file, the skills directory, and the PATH are all just files and environment
+        // state), so swapping last means everything that can crash on a version mismatch
+        // already ran under the version that is still valid to run it.
+        SwapIntoPlace(staging, DaemonRuntime.BinDirectory);
+        AnsiConsole.MarkupLineInterpolated(
+            $"[green]Installed[/] {version}: h9k and h9kd release binaries in {DaemonRuntime.BinDirectory}");
 
         AnsiConsole.MarkupLine(
             "[dim]No background service was registered — the daemon runs on demand (h9k daemon start / stop). "
