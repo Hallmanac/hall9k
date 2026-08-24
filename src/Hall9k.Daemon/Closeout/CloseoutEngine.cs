@@ -1057,11 +1057,20 @@ public sealed class CloseoutEngine(
     /// was already spent on two other obstructions). Two mechanical signals, each a set grown
     /// since the comparison point TaskReopened recorded: a review thread neither this nor any
     /// earlier automatic decision has seen, started by a person; and a pending review request
-    /// for a reviewer neither this task nor this run has already recorded asking for — the
-    /// second exclusion is what keeps the platform's own errored-review or countersign
-    /// re-requests (RunDetails.RequestedReviewerLogins) from reading back as a human's. Any
-    /// one grants the lap; none of them bypasses the lifetime ceiling, which is checked before
-    /// this is ever consulted.
+    /// for a reviewer neither this task nor this run's own STILL-OUTSTANDING requests already
+    /// account for — the second exclusion is what keeps the platform's own errored-review or
+    /// countersign re-requests (RunDetails.RequestedReviewerLogins) from reading back as a
+    /// human's. Any one grants the lap; none of them bypasses the lifetime ceiling, which is
+    /// checked before this is ever consulted.
+    /// <para>
+    /// "Still outstanding" is judged fresh every call, via <see cref="StillAwaitingOwnRequest"/>,
+    /// rather than by the login ever having appeared in RequestedReviewerLogins: a reviewer the
+    /// platform itself asked for answers eventually, and once they have (a fresh review at the
+    /// current head, or an errored review that is no longer the active one), that request is
+    /// spent. Reading the login as permanently ours would let a LATER, genuinely human
+    /// re-request for the same reviewer go unrecognized for the rest of the run's life
+    /// (independent pre-PR review, 2026-08-24).
+    /// </para>
     /// <para>
     /// A third candidate signal, a new top-level pull-request comment, was cut before merge
     /// (independent pre-PR review, 2026-08-23): agents here post top-level comments too
@@ -1080,9 +1089,11 @@ public sealed class CloseoutEngine(
             return true;
         }
 
+        List<string> stillOwnRequests = [.. run.RequestedReviewerLogins
+            .Where(login => StillAwaitingOwnRequest(login, snapshot))];
         List<string> newRequests = [.. snapshot.PendingReviewers
             .Except(task.KnownPendingReviewRequestLogins)
-            .Except(run.RequestedReviewerLogins)];
+            .Except(stillOwnRequests)];
         if (newRequests.Count > 0)
         {
             reason = $"a review re-request for {string.Join(", ", newRequests)}";
@@ -1091,6 +1102,28 @@ public sealed class CloseoutEngine(
 
         reason = "";
         return false;
+    }
+
+    /// <summary>
+    /// Whether a reviewer the platform itself asked for a review has not yet answered that
+    /// specific request — the condition under which their pending-request login is still ours
+    /// to explain rather than a signal a human could have produced. Erroring is unanswered by
+    /// definition: they are excluded only while they are the pull request's CURRENT errored
+    /// review, since a later, different error is itself a fresh answer that needs its own
+    /// re-request (RerequestReviewOrParkAsync). Anyone else is judged the same way the
+    /// countersign already decides who still owes an answer (<see cref="ReviewersBehindTheHead"/>):
+    /// no recorded review at all, or a recorded review that predates the current head, is still
+    /// outstanding; a review sitting on the head is this reviewer answering.
+    /// </summary>
+    private static bool StillAwaitingOwnRequest(string login, PullRequestSnapshot snapshot)
+    {
+        if (snapshot.ErroredReview is { } erroredReview && erroredReview.Reviewer == login)
+        {
+            return true;
+        }
+
+        PullRequestReviewer? reviewer = snapshot.Reviewers.FirstOrDefault(candidate => candidate.Login == login);
+        return reviewer is null || ReviewersBehindTheHead(snapshot).Any(candidate => candidate.Login == login);
     }
 
     private async Task DispatchFollowUpOrParkAsync(
