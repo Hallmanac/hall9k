@@ -123,6 +123,10 @@ try {
     Write-Host ""
     Write-Host "Running h9k doctor…"
     & $h9k doctor
+    # doctor's own exit code is informational here (a fresh machine with no database
+    # configured is expected, not a failed install) — matching install.sh's `|| true`,
+    # reset $LASTEXITCODE so it doesn't leak into the caller's session as a false failure.
+    $global:LASTEXITCODE = 0
 }
 finally {
     Remove-Item -Path $workDir -Recurse -Force -ErrorAction SilentlyContinue
