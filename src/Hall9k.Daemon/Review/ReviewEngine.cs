@@ -929,7 +929,11 @@ public sealed class ReviewEngine(
             string disputeFile = followUpKind == FollowUpKind.Rebase
                 ? RunPaths.RebaseConflictDisputeFile(runDirectory)
                 : RunPaths.ReviewThreadDisputeFile(runDirectory);
-            await RunPaths.AppendDisputePositionAsync(disputeFile, summary, cancellationToken);
+            Exception? failure = await RunPaths.AppendDisputePositionAsync(disputeFile, summary, cancellationToken);
+            if (failure is not null)
+            {
+                logger.LogWarning(failure, "Could not write the dispute position to {FilePath}", disputeFile);
+            }
         }
 
         DateTimeOffset now = DateTimeOffset.UtcNow;

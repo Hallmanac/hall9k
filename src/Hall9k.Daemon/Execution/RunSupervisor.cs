@@ -436,9 +436,10 @@ public sealed class RunSupervisor(
     /// </summary>
     private async Task WriteDisputePositionAsync(string filePath, string? summary, CancellationToken cancellationToken)
     {
-        if (!await RunPaths.AppendDisputePositionAsync(filePath, summary, cancellationToken))
+        Exception? failure = await RunPaths.AppendDisputePositionAsync(filePath, summary, cancellationToken);
+        if (failure is not null)
         {
-            logger.LogWarning("Could not write the dispute position to {FilePath}", filePath);
+            logger.LogWarning(failure, "Could not write the dispute position to {FilePath}", filePath);
         }
     }
 
