@@ -39,6 +39,12 @@ public sealed class ProjectHomeRenderEngine(IDocumentStore store, ILogger<Projec
     {
         await using IQuerySession query = store.QuerySession();
         IReadOnlyList<ProjectDetails> projects = await query.Query<ProjectDetails>().ToListAsync(cancellationToken);
+        // Fetched once, in memory, rather than per project with a WorkspaceHome filter in the
+        // query itself: WorkspaceHome is a value object behind a JsonConverter (backlog 49), and
+        // an equality filter on that shape is safest evaluated in C# rather than trusted to
+        // Marten's LINQ-to-JSON translation. Ideas are few and small (IdeaDetails' own doc
+        // comment), so one unfiltered fetch here costs nothing a per-project query would have saved.
+        IReadOnlyList<IdeaDetails> allIdeas = await query.Query<IdeaDetails>().ToListAsync(cancellationToken);
 
         int projectsInspected = 0;
         int tasksRendered = 0;
@@ -66,9 +72,16 @@ public sealed class ProjectHomeRenderEngine(IDocumentStore store, ILogger<Projec
                 IReadOnlyList<TaskDetails> tasks = await query.Query<TaskDetails>()
                     .Where(task => task.ProjectId == project.Id)
                     .ToListAsync(cancellationToken);
-                IReadOnlyList<IdeaDetails> ideas = await query.Query<IdeaDetails>()
-                    .Where(idea => idea.ProjectId == project.Id)
-                    .ToListAsync(cancellationToken);
+                IReadOnlyList<IdeaDetails> ideas = [.. allIdeas.Where(idea => idea.ProjectId == project.Id)];
+                // An idea reassigned away from this project keeps its real, capture-time
+                // workspace here permanently (backlog 49: assignment never retroactively
+                // relocates an already-materialised workspace) even though it no longer renders
+                // idea.md under this home. Its directory name still has to reach
+                // ReconcileOrphans as "known", or the very next sweep reads this project's
+                // ideas list, does not find it, and treats the one true copy of that idea's
+                // research as an orphan to delete or mark (adversarial review, cycle 4).
+                IReadOnlyList<IdeaDetails> ideasAnchoredHereButOwnedElsewhere = [.. allIdeas.Where(idea =>
+                    idea.ProjectId != project.Id && idea.WorkspaceHome == project.HomeDirectory)];
 
                 projectsInspected++;
 
@@ -101,7 +114,8 @@ public sealed class ProjectHomeRenderEngine(IDocumentStore store, ILogger<Projec
                 }
 
                 orphansHandled += ReconcileOrphans(
-                    tasksRoot, ideasRoot, tasks, ideas, project.Name, failedTaskShortIds, failedIdeaShortIds);
+                    tasksRoot, ideasRoot, tasks, ideas, ideasAnchoredHereButOwnedElsewhere, project.Name,
+                    failedTaskShortIds, failedIdeaShortIds);
             }
             catch (Exception exception) when (exception is not OperationCanceledException)
             {
@@ -171,7 +185,8 @@ public sealed class ProjectHomeRenderEngine(IDocumentStore store, ILogger<Projec
 
     private int ReconcileOrphans(
         string tasksRoot, string ideasRoot, IReadOnlyList<TaskDetails> tasks, IReadOnlyList<IdeaDetails> ideas,
-        string projectName, IReadOnlySet<string> failedTaskShortIds, IReadOnlySet<string> failedIdeaShortIds)
+        IReadOnlyList<IdeaDetails> ideasAnchoredHereButOwnedElsewhere, string projectName,
+        IReadOnlySet<string> failedTaskShortIds, IReadOnlySet<string> failedIdeaShortIds)
     {
         try
         {
@@ -186,7 +201,13 @@ public sealed class ProjectHomeRenderEngine(IDocumentStore store, ILogger<Projec
             // failedIdeaShortIds tell the reconciler which short ids to leave alone regardless of
             // name — the same entity, the same sweep, not yet safe to judge.
             HashSet<string> knownTaskDirectoryNames = [.. tasks.Select(TaskDocumentRenderer.DirectoryName)];
-            HashSet<string> knownIdeaDirectoryNames = [.. ideas.Select(IdeaDocumentRenderer.DirectoryName)];
+            // Also known: ideas reassigned away from this project whose real workspace still
+            // lives here (ideasAnchoredHereButOwnedElsewhere) — not rendered under this project
+            // any more, but their on-disk directory is the idea's one true home and must survive
+            // orphan reconciliation exactly like a currently-owned idea's does.
+            HashSet<string> knownIdeaDirectoryNames = [
+                .. ideas.Select(IdeaDocumentRenderer.DirectoryName),
+                .. ideasAnchoredHereButOwnedElsewhere.Select(IdeaDocumentRenderer.DirectoryName)];
             return HomeEntryReconciler.RemoveOrMarkOrphans(
                     tasksRoot, knownTaskDirectoryNames, "task.md", failedTaskShortIds).Count
                 + HomeEntryReconciler.RemoveOrMarkOrphans(

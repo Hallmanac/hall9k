@@ -168,6 +168,11 @@ public sealed class ProjectHomeRenderEngineTests(PostgresFixture postgres) : ICl
 
             await NewEngine(store).PollOnceAsync(CancellationToken.None);
 
+            string originalIdeasRoot = ProjectHomePaths.IdeasDirectory(_home);
+            string originalIdeaDirectory = Directory.EnumerateDirectories(originalIdeasRoot).Should().ContainSingle().Subject;
+            string originalWorkspace = Path.Combine(originalIdeaDirectory, "workspace");
+            File.WriteAllText(Path.Combine(originalWorkspace, "notes.md"), "real research, keep me");
+
             await using (IDocumentSession session = store.LightweightSession())
             {
                 IdeaAggregate idea = await session.Events.AggregateStreamAsync<IdeaAggregate>(ideaId)
@@ -183,6 +188,18 @@ public sealed class ProjectHomeRenderEngineTests(PostgresFixture postgres) : ICl
             string ideaDirectory = Directory.EnumerateDirectories(otherIdeasRoot).Should().ContainSingle().Subject;
             Directory.Exists(Path.Combine(ideaDirectory, "workspace")).Should().BeFalse(
                 "the idea's real workspace stays at its capture-time home; the project it moved to must not get a decoy");
+
+            // The other half of the same invariant (adversarial review, backlog 48 cycle 4): the
+            // idea's ORIGINAL project no longer owns it, so the sweep that just ran no longer
+            // renders idea.md there — but the directory it already rendered, carrying the idea's
+            // one true workspace, must survive the same sweep's orphan reconciliation rather than
+            // being mistaken for a stray no task or idea claims any more.
+            Directory.Exists(originalIdeaDirectory).Should().BeTrue(
+                "reassignment must not orphan the idea's permanent, capture-time home directory");
+            File.Exists(Path.Combine(originalWorkspace, "notes.md")).Should().BeTrue(
+                "real research dropped in the idea's one true workspace must never be swept away by a reassignment");
+            File.Exists(Path.Combine(originalIdeaDirectory, "ORPHANED.md")).Should().BeFalse(
+                "the directory is still the idea's real home, not an orphan, so it must not be marked as one");
         }
         finally
         {
