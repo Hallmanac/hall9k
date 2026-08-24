@@ -6,14 +6,17 @@ namespace Hall9k.Domain.Features.Tasks;
 /// <summary>
 /// Why a done task was reopened for a follow-up run (PR closeout, Decisions Log #18/#22).
 /// The launcher selects the agent prompt from it: ReviewFeedback gets the
-/// resolve-review-threads prompt, FailingChecks gets the fix-the-CI prompt. Unknown
-/// (including reopens recorded before this vocabulary existed) is treated as ReviewFeedback.
+/// resolve-review-threads prompt, FailingChecks gets the fix-the-CI prompt, Rebase gets the
+/// rebase-onto-main prompt (backlog 44). Unknown (including reopens recorded before this
+/// vocabulary existed) is treated as ReviewFeedback.
 /// </summary>
 [JsonConverter(typeof(FollowUpKindJsonConverter))]
 public sealed record FollowUpKind
 {
     public static readonly FollowUpKind ReviewFeedback = new("ReviewFeedback");
     public static readonly FollowUpKind FailingChecks = new("FailingChecks");
+    /// <summary>The pull request's branch conflicts with its base; the follow-up rebases it (backlog 44).</summary>
+    public static readonly FollowUpKind Rebase = new("Rebase");
     /// <summary>Not recognized or not yet set. Serializes as an empty string.</summary>
     public static readonly FollowUpKind Unknown = new("");
 

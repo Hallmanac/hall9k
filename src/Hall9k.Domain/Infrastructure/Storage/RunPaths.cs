@@ -102,6 +102,14 @@ public static class RunPaths
         Path.Combine(runDirectory, "review-thread-dispute.md");
 
     /// <summary>
+    /// A rebase follow-up's closing position when it disputed a merge conflict rather than
+    /// resolving it (backlog 44) — the conflicting files and both positions, which is what a
+    /// park points the human at. The rebase counterpart of <see cref="ReviewThreadDisputeFile"/>.
+    /// </summary>
+    public static string RebaseConflictDisputeFile(string runDirectory) =>
+        Path.Combine(runDirectory, "rebase-conflict-dispute.md");
+
+    /// <summary>
     /// The run's handoff to whatever depends on it (Decisions Log #36), written at session end
     /// beside the review findings so it is inspectable outside the ledger. The file's three
     /// states are three observations, which is what lets the closeout append record an honest

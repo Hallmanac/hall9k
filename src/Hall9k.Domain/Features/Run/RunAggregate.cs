@@ -622,6 +622,11 @@ public sealed class RunAggregate
         State = RunState.ReviewPending;
     }
 
+    public void Apply(PullRequestConflictObserved @event)
+    {
+        State = RunState.Conflicting;
+    }
+
     public void Apply(ReviewRerequested @event)
     {
         ReviewRerequestCount++;

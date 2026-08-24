@@ -26,6 +26,10 @@ public sealed class RunCloseoutProjectionTests
         Guid id = DomainId.New();
         RunDetails view = AwaitingReviewRun(projection, id);
 
+        projection.Apply(new FakeEvent<PullRequestConflictObserved>(
+            new PullRequestConflictObserved(id, Now.AddMinutes(-5))), view);
+        view.State.Should().Be(RunState.Conflicting, "a conflicting branch is its own obstruction, distinct from checks and threads (backlog 44)");
+
         projection.Apply(new FakeEvent<PullRequestChecksFailed>(
             new PullRequestChecksFailed(id, ["build (ubuntu-latest)", "test (windows-latest)"], Now)), view);
         view.State.Should().Be(RunState.ChecksFailing);
