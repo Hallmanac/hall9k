@@ -104,7 +104,8 @@ public sealed class InstallCommand : Hall9kAsyncCommand<InstallCommand.Settings>
             skillsSource = Path.Combine(repoRoot, ".claude", "skills");
         }
 
-        return await FinishAsync(staging, skillsSource, version, settings.Restart, settings.NoRestart, cancellationToken);
+        return await FinishAsync(
+            staging, skillsSource, version, settings.Restart, settings.NoRestart, cancellationToken: cancellationToken);
     }
 
     /// <summary>
@@ -120,8 +121,8 @@ public sealed class InstallCommand : Hall9kAsyncCommand<InstallCommand.Settings>
         string version,
         bool restart,
         bool noRestart,
-        CancellationToken cancellationToken,
-        bool linkOntoPath = true)
+        bool linkOntoPath = true,
+        CancellationToken cancellationToken = default)
     {
         DaemonProcessDescriptor? runningBefore = DaemonProcess.Probe();
 

@@ -148,7 +148,7 @@ public sealed class UpdateCommandTests : IDisposable
 
     private static Task<int> Run(ProcessRunner gh) =>
         UpdateCommand.RunAsync(
-            gh, ReleasePlatform.DefaultRepository, restart: false, noRestart: true, CancellationToken.None, linkOntoPath: false);
+            gh, ReleasePlatform.DefaultRepository, restart: false, noRestart: true, linkOntoPath: false, cancellationToken: CancellationToken.None);
 
     /// <summary>
     /// A fake `gh release download`: on the expected arguments, it writes the same shape
