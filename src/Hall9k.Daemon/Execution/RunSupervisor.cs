@@ -427,20 +427,18 @@ public sealed class RunSupervisor(
     }
 
     /// <summary>
-    /// The agent's closing summary, saved as the second position a human reads. Written
-    /// best-effort for the same reason the handoff artifact is: losing the file must not turn
-    /// a park into a failure, and the park reason names the path either way.
+    /// The agent's closing summary, saved as the second position a human reads. Appended rather
+    /// than overwritten (<see cref="RunPaths.AppendDisputePositionAsync"/>): a resumed dispute
+    /// parks on this same well-known path again, and a plain overwrite would erase the first
+    /// position the moment the second one lands. Written best-effort for the same reason the
+    /// handoff artifact is: losing the file must not turn a park into a failure, and the park
+    /// reason names the path either way.
     /// </summary>
     private async Task WriteDisputePositionAsync(string filePath, string? summary, CancellationToken cancellationToken)
     {
-        try
+        if (!await RunPaths.AppendDisputePositionAsync(filePath, summary, cancellationToken))
         {
-            Directory.CreateDirectory(Path.GetDirectoryName(filePath) ?? filePath);
-            await File.WriteAllTextAsync(filePath, summary ?? string.Empty, cancellationToken);
-        }
-        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
-        {
-            logger.LogWarning(exception, "Could not write the dispute position to {FilePath}", filePath);
+            logger.LogWarning("Could not write the dispute position to {FilePath}", filePath);
         }
     }
 

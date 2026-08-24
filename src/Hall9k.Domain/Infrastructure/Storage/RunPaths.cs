@@ -96,7 +96,10 @@ public static class RunPaths
     /// <summary>
     /// A follow-up's closing position when it disputed a review thread rather than settling it
     /// (Decisions Log #62) — the text a park points the human at, holding both the reviewer's
-    /// position and the agent's. One per run, because a run parks at most once.
+    /// position and the agent's. One well-known path per run — a resumed dispute (backlog 44)
+    /// can park here again, so <see cref="AppendDisputePositionAsync"/> is what writes it: each
+    /// attempt's position is appended, never overwritten, so a human deciding between two
+    /// disputed rounds can still read the earlier one.
     /// </summary>
     public static string ReviewThreadDisputeFile(string runDirectory) =>
         Path.Combine(runDirectory, "review-thread-dispute.md");
@@ -104,10 +107,36 @@ public static class RunPaths
     /// <summary>
     /// A rebase follow-up's closing position when it disputed a merge conflict rather than
     /// resolving it (backlog 44) — the conflicting files and both positions, which is what a
-    /// park points the human at. The rebase counterpart of <see cref="ReviewThreadDisputeFile"/>.
+    /// park points the human at. The rebase counterpart of <see cref="ReviewThreadDisputeFile"/>,
+    /// appended the same way across repeated disputes on the same run.
     /// </summary>
     public static string RebaseConflictDisputeFile(string runDirectory) =>
         Path.Combine(runDirectory, "rebase-conflict-dispute.md");
+
+    /// <summary>
+    /// Appends one dispute's closing position to the well-known path
+    /// (<see cref="RebaseConflictDisputeFile"/> or <see cref="ReviewThreadDisputeFile"/>) rather
+    /// than overwriting it. A resumed pre-gate dispute can dispute again on that same path
+    /// (backlog 44), and the human resolving is pointed at it to decide between the positions —
+    /// a plain overwrite would erase the first the moment the second landed, leaving only the
+    /// newest attempt to read. Best-effort, like every other run artifact write: losing it must
+    /// not turn a park into a failure, and the caller's own park reason names the path either way.
+    /// </summary>
+    public static async Task<bool> AppendDisputePositionAsync(
+        string filePath, string? summary, CancellationToken cancellationToken)
+    {
+        try
+        {
+            Directory.CreateDirectory(Path.GetDirectoryName(filePath) ?? filePath);
+            await File.AppendAllTextAsync(
+                filePath, $"## Dispute position, {DateTimeOffset.UtcNow:u}\n\n{summary}\n\n", cancellationToken);
+            return true;
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            return false;
+        }
+    }
 
     /// <summary>
     /// The run's handoff to whatever depends on it (Decisions Log #36), written at session end
