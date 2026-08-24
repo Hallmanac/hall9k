@@ -10,7 +10,7 @@ namespace Hall9k.Domain.Features.Tasks.Events;
 /// counter counts only these, and a human-initiated reopen resets it (Decisions Log #22).
 /// </summary>
 /// <param name="ObstructionKey">
-/// This lap's obstruction identity, mechanically recorded (Decisions Log #77, backlog 45):
+/// This lap's obstruction identity, mechanically recorded (Decisions Log #79, backlog 45):
 /// the failing check name, or the exact set of unresolved review-thread ids, at the moment
 /// of dispatch. Null on a manual reopen (no obstruction to compare against — the human
 /// grant wipes the progress counter regardless) and on events recorded before this
@@ -24,7 +24,7 @@ namespace Hall9k.Domain.Features.Tasks.Events;
 /// <param name="KnownHumanReviewThreadIds">
 /// Human-started unresolved review-thread ids observed at this dispatch, the comparison
 /// point the next automatic decision diffs against to recognize a newly opened human
-/// thread (a human-grant signal, Decisions Log #77). Null/empty on a manual reopen — the
+/// thread (a human-grant signal, Decisions Log #79). Null/empty on a manual reopen — the
 /// slate is wiped rather than carried forward.
 /// </param>
 /// <param name="KnownPendingReviewRequestLogins">Reviewers with a pending review request observed at this dispatch — the comparison point for detecting a human's own re-request.</param>
