@@ -204,10 +204,19 @@ public sealed class ProjectHomeRenderEngine(IDocumentStore store, ILogger<Projec
             // Also known: ideas reassigned away from this project whose real workspace still
             // lives here (ideasAnchoredHereButOwnedElsewhere) — not rendered under this project
             // any more, but their on-disk directory is the idea's one true home and must survive
-            // orphan reconciliation exactly like a currently-owned idea's does.
+            // orphan reconciliation exactly like a currently-owned idea's does. Resolved through
+            // HomeEntryLookup rather than IdeaDocumentRenderer.DirectoryName: nothing renames this
+            // directory once the idea is reassigned away, so a later revise changes the idea's slug
+            // without ever touching the directory's actual name, and recomputing the "known" name
+            // from the idea's current text would then name a directory that does not exist while
+            // the real one — still sitting at its last-rendered-while-owned name — reads as an
+            // orphan (adversarial review, cycle 5). The id-marker lookup finds the directory that
+            // is actually there, however it is actually named.
             HashSet<string> knownIdeaDirectoryNames = [
                 .. ideas.Select(IdeaDocumentRenderer.DirectoryName),
-                .. ideasAnchoredHereButOwnedElsewhere.Select(IdeaDocumentRenderer.DirectoryName)];
+                .. ideasAnchoredHereButOwnedElsewhere
+                    .Select(idea => Path.GetFileName(HomeEntryLookup.FindExistingDirectory(ideasRoot, idea.Id)))
+                    .OfType<string>()];
             return HomeEntryReconciler.RemoveOrMarkOrphans(
                     tasksRoot, knownTaskDirectoryNames, "task.md", failedTaskShortIds).Count
                 + HomeEntryReconciler.RemoveOrMarkOrphans(

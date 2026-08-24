@@ -208,6 +208,85 @@ public sealed class ProjectHomeRenderEngineTests(PostgresFixture postgres) : ICl
     }
 
     [Fact]
+    public async Task Revising_an_idea_after_reassignment_does_not_orphan_its_anchored_workspace()
+    {
+        // The other half of Reassigning_an_idea_to_a_project_with_its_own_home_does_not_create_a_decoy_workspace
+        // (adversarial review, backlog 49 cycle 5): once reassigned, nothing under the ORIGINAL
+        // project ever renders idea.md again, so nothing renames its directory there. A later
+        // revise still changes the idea's text and therefore the slug ReconcileOrphans would
+        // recompute for it — that recomputed name must not be trusted as "the" on-disk name, or
+        // the sweep looks for a directory that was never created and reads the real one, still
+        // sitting at its original slug, as an orphan.
+        using DocumentStore store = NewStore();
+        Guid ownerId = DomainId.New();
+        Guid originalProjectId = DomainId.New();
+        Guid otherProjectId = DomainId.New();
+        string otherHome = Directory.CreateTempSubdirectory("hall9k-render-engine-other-home-").FullName;
+        Guid ideaId = DomainId.New();
+
+        try
+        {
+            await using (IDocumentSession session = store.LightweightSession())
+            {
+                RegisterProject(session, originalProjectId, ownerId, "original");
+                ProjectRegistered otherRegistered = ProjectDecider.Register(
+                    otherProjectId, ownerId, DomainId.New(), "other", "/tmp/other", null, "main", Now,
+                    ProjectHome.Parse(otherHome));
+                session.Events.StartStream<ProjectAggregate>(otherProjectId, otherRegistered);
+
+                ProjectHome workspaceHome = ProjectHome.Parse(_home);
+                IdeaCaptured captured = IdeaDecider.Capture(
+                    ideaId, ownerId, "Idea that moves projects", originalProjectId, Now, workspaceHome);
+                session.Events.StartStream<IdeaAggregate>(ideaId, captured);
+                await session.SaveChangesAsync();
+            }
+
+            await NewEngine(store).PollOnceAsync(CancellationToken.None);
+
+            string originalIdeasRoot = ProjectHomePaths.IdeasDirectory(_home);
+            string originalIdeaDirectory = Directory.EnumerateDirectories(originalIdeasRoot).Should().ContainSingle().Subject;
+            string originalWorkspace = Path.Combine(originalIdeaDirectory, "workspace");
+            File.WriteAllText(Path.Combine(originalWorkspace, "notes.md"), "real research, keep me");
+
+            await using (IDocumentSession session = store.LightweightSession())
+            {
+                IdeaAggregate idea = await session.Events.AggregateStreamAsync<IdeaAggregate>(ideaId)
+                    ?? throw new InvalidOperationException("idea not found");
+                IdeaAssignedToProject assigned = IdeaDecider.AssignToProject(idea, otherProjectId, Now, ownerId);
+                session.Events.Append(ideaId, assigned);
+                await session.SaveChangesAsync();
+            }
+
+            await NewEngine(store).PollOnceAsync(CancellationToken.None);
+
+            // Revise the idea's text after it has already moved projects — its slug changes, but
+            // its anchored directory under the ORIGINAL home is never rendered (and so never
+            // renamed) again.
+            await using (IDocumentSession session = store.LightweightSession())
+            {
+                IdeaAggregate idea = await session.Events.AggregateStreamAsync<IdeaAggregate>(ideaId)
+                    ?? throw new InvalidOperationException("idea not found");
+                IdeaRevised revised = IdeaDecider.Revise(idea, "Renamed after the move", Now, ownerId);
+                session.Events.Append(ideaId, revised);
+                await session.SaveChangesAsync();
+            }
+
+            await NewEngine(store).PollOnceAsync(CancellationToken.None);
+
+            Directory.Exists(originalIdeaDirectory).Should().BeTrue(
+                "a revise after reassignment must not orphan the idea's permanent, capture-time home directory");
+            File.Exists(Path.Combine(originalWorkspace, "notes.md")).Should().BeTrue(
+                "real research in the idea's one true workspace must survive a post-reassignment revise");
+            File.Exists(Path.Combine(originalIdeaDirectory, "ORPHANED.md")).Should().BeFalse(
+                "the directory is still the idea's real home, not an orphan, so it must not be marked as one");
+        }
+        finally
+        {
+            Directory.Delete(otherHome, recursive: true);
+        }
+    }
+
+    [Fact]
     public async Task A_slug_changing_revise_before_the_first_sweep_still_finds_the_directory_capture_created()
     {
         // Mirrors what h9k idea add actually does (IdeaAddCommand): it creates the idea's
