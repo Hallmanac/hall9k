@@ -241,11 +241,20 @@ public sealed class ProjectSetCommand : Hall9kAsyncCommand<ProjectSetCommand.Set
             + "default clears the project override so the platform default applies."),
     };
 
-    private static ContextLink ParseLink(string value)
+    internal static ContextLink ParseLink(string value)
     {
         int separator = value.IndexOf('=');
-        return separator <= 0
-            ? throw new DomainValidationException($"--link expects name=url, got '{value}'.")
-            : new ContextLink(value[..separator].Trim(), new Uri(value[(separator + 1)..].Trim()));
+        if (separator <= 0)
+        {
+            throw new DomainValidationException($"--link expects name=url, got '{value}'.");
+        }
+
+        string name = value[..separator].Trim();
+        string url = value[(separator + 1)..].Trim();
+        return Uri.TryCreate(url, UriKind.Absolute, out Uri? link)
+            ? new ContextLink(name, link)
+            : throw new DomainValidationException(
+                $"--link '{name}={url}' is not a URL this can record. Pass an absolute URL with a "
+                + $"scheme, e.g. --link \"{name}=https://{url}\".");
     }
 }
