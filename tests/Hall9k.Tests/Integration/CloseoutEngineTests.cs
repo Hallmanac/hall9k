@@ -1556,7 +1556,10 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
 
     /// <summary>
     /// Backlog 44's stated goal: a branch that keeps re-conflicting parks for a human instead
-    /// of looping, on the same progress cap every other obstruction already uses.
+    /// of looping, on the same progress cap every other obstruction already uses. The identity
+    /// keys on the branch's head commit (adversarial pre-PR review, cycle 2): the seeded prior
+    /// obstruction and this poll's snapshot share the same un-pushed head, so this is genuinely
+    /// the same conflict surviving another lap, not a fresh one against a moved main.
     /// </summary>
     [Fact]
     public async Task A_pull_request_that_keeps_re_conflicting_parks_at_the_per_obstruction_cap()
@@ -1568,11 +1571,11 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
 
         (Guid taskId, Guid runId, _) = await SeedAwaitingReviewAsync(
             store, node, worktrees, repoPath, cts.Token,
-            priorAutomaticReopens: 2, priorObstructionKey: "Rebase:conflict");
+            priorAutomaticReopens: 2, priorObstructionKey: "Rebase:deadbeef");
 
         FakeInspector inspector = new()
         {
-            Snapshot = FakeInspector.Quiet() with { IsConflicting = true },
+            Snapshot = FakeInspector.Quiet() with { IsConflicting = true, HeadCommit = "deadbeef" },
         };
         await NewEngine(
             store, node, inspector, worktrees,
@@ -1587,6 +1590,48 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
             .And.Contain("h9k pr resolve");
 
         (await query.LoadAsync<TaskListItem>(taskId, cts.Token))!.State.Should().Be(TaskState.Done);
+    }
+
+    /// <summary>
+    /// A conflict against a head commit no prior lap ever saw is, mechanically, a new
+    /// obstruction — even though the per-obstruction cap was already fully spent on an earlier
+    /// conflict, a conflict discovered after that lap's own rebase pushed a new head gets its
+    /// own first lap and dispatches normally, exactly as a different failing check does below.
+    /// A fixed identity that never varied with the head commit would instead read this as the
+    /// same conflict "surviving" a lap that actually cleared it (adversarial pre-PR review,
+    /// cycle 2, backlog 44).
+    /// </summary>
+    [Fact]
+    public async Task A_conflict_against_a_new_head_commit_is_a_different_obstruction_and_dispatches_normally()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        (DocumentStore store, NodeContext node, GitWorktreeManager worktrees, _, string repoPath) =
+            await SetUpAsync(cts.Token);
+        using IDisposable storeLifetime = store;
+
+        (Guid taskId, Guid runId, Worktree worktree) = await SeedAwaitingReviewAsync(
+            store, node, worktrees, repoPath, cts.Token,
+            priorAutomaticReopens: 2, priorObstructionKey: "Rebase:deadbeef");
+
+        FakeInspector inspector = new()
+        {
+            Snapshot = FakeInspector.Quiet() with { IsConflicting = true, HeadCommit = "cafef00d" },
+        };
+        await NewEngine(
+            store, node, inspector, worktrees,
+            maxAutomaticCloseoutRuns: 10, maxCloseoutLapsPerObstruction: 2).PollOnceAsync(cts.Token);
+
+        await using IQuerySession query = store.QuerySession();
+        (await query.LoadAsync<RunDetails>(runId, cts.Token))!.State.Should().Be(
+            RunState.Superseded, "a conflict against a different head is a different obstruction — the lap dispatches, it does not park");
+        TaskDetails task = (await query.LoadAsync<TaskDetails>(taskId, cts.Token))!;
+        task.State.Should().Be(TaskState.Queued);
+        task.FollowUpBranch.Should().Be(worktree.Branch);
+
+        TaskAggregate aggregate = (await query.Events.AggregateStreamAsync<TaskAggregate>(taskId, token: cts.Token))!;
+        aggregate.LastAutomaticObstructionKey.Should().Be("Rebase:cafef00d");
+        aggregate.ConsecutiveObstructionLaps.Should().Be(
+            1, "the head commit changed, so this is its first lap regardless of how many the old one survived");
     }
 
     /// <summary>

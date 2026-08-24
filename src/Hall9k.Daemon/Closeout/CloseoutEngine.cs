@@ -353,7 +353,7 @@ public sealed class CloseoutEngine(
             await DispatchFollowUpOrParkAsync(
                 session, task, run, fence.Version,
                 FollowUpKind.Rebase,
-                ["conflict"],
+                [snapshot.HeadCommit ?? "unknown-head"],
                 snapshot,
                 "The pull request's branch conflicts with its base branch.",
                 now, cancellationToken);
@@ -1058,6 +1058,11 @@ public sealed class CloseoutEngine(
     /// unresolved thread ids present at dispatch, so a thread resolved or a new one opened is,
     /// mechanically, a different obstruction (the backlog card's own example: two CI failures
     /// of different checks are different obstructions, and the same rule applies to threads).
+    /// A conflict keys on the branch's head commit at the moment it was observed conflicting:
+    /// every rebase attempt pushes a new head, so a conflict against the commit a prior lap
+    /// already failed to clear is the same obstruction, and a conflict discovered again after
+    /// that push landed (main having moved again in the meantime, backlog 44's own scenario)
+    /// is mechanically a new one, exactly as a resolved-then-reopened thread is.
     /// </summary>
     private static string ObstructionKey(FollowUpKind kind, IReadOnlyList<string> identity) =>
         $"{kind.Value}:{string.Join('␟', identity.OrderBy(id => id, StringComparer.Ordinal))}";
