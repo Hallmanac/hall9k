@@ -1,3 +1,5 @@
+using Hall9k.Domain.Features.Project;
+
 namespace Hall9k.Domain.Features.Idea;
 
 /// <summary>
@@ -20,6 +22,8 @@ public sealed class IdeaAggregate
     public Guid? PromotedTaskId { get; private set; }
     public string? DiscardReason { get; private set; }
     public DateTimeOffset CapturedAt { get; private set; }
+    /// <summary>The home the discovery workspace was captured under, or <see cref="ProjectHome.None"/> — see <see cref="IdeaCaptured"/>.</summary>
+    public ProjectHome WorkspaceHome { get; private set; } = ProjectHome.None;
 
     public void Apply(IdeaCaptured @event)
     {
@@ -28,6 +32,7 @@ public sealed class IdeaAggregate
         Text = @event.Text;
         ProjectId = @event.ProjectId;
         CapturedAt = @event.CapturedAt;
+        WorkspaceHome = ProjectHome.Parse(@event.WorkspaceHomeDirectory);
         State = IdeaState.Captured;
     }
 

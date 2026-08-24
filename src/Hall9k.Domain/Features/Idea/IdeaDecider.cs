@@ -1,3 +1,4 @@
+using Hall9k.Domain.Features.Project;
 using Hall9k.Domain.Shared.Exceptions;
 
 namespace Hall9k.Domain.Features.Idea;
@@ -14,9 +15,16 @@ public static class IdeaDecider
     /// The sacred path: text, and optionally a project when it already knows one. Anything
     /// else demanded here would turn capture into a commitment to think, which is the thing
     /// capture exists to avoid.
+    /// <para>
+    /// <paramref name="workspaceHome"/> is passed through verbatim rather than derived here: it
+    /// is an observation about the filesystem (did the project's home already exist on this
+    /// machine at this instant), and a decider has no filesystem to observe it from — the
+    /// caller checks and hands the answer in, exactly as it would any other externally-observed
+    /// fact.
+    /// </para>
     /// </summary>
     public static IdeaCaptured Capture(
-        Guid id, Guid ownerId, string text, Guid? projectId, DateTimeOffset capturedAt)
+        Guid id, Guid ownerId, string text, Guid? projectId, DateTimeOffset capturedAt, ProjectHome workspaceHome)
     {
         if (ownerId == Guid.Empty)
         {
@@ -30,7 +38,7 @@ public static class IdeaDecider
                 + "Nothing else is required — a project is optional, and everything else is discovery's job.");
         }
 
-        return new IdeaCaptured(id, ownerId, text.Trim(), Vet(projectId), capturedAt);
+        return new IdeaCaptured(id, ownerId, text.Trim(), Vet(projectId), capturedAt, workspaceHome.Value);
     }
 
     /// <summary>

@@ -1,5 +1,6 @@
 using FluentAssertions;
 using Hall9k.Domain.Features.Idea;
+using Hall9k.Domain.Features.Project;
 using Hall9k.Domain.Infrastructure.Ids;
 using Hall9k.Domain.Shared.Exceptions;
 using Xunit;
@@ -21,7 +22,7 @@ public sealed class IdeaLifecycleTests
     public void Capture_asks_for_the_thought_and_nothing_else()
     {
         IdeaCaptured captured = IdeaDecider.Capture(
-            DomainId.New(), Owner, "Ideas should have a discovery workspace", projectId: null, Now);
+            DomainId.New(), Owner, "Ideas should have a discovery workspace", projectId: null, Now, ProjectHome.None);
 
         IdeaAggregate idea = new();
         idea.Apply(captured);
@@ -34,7 +35,7 @@ public sealed class IdeaLifecycleTests
     [Fact]
     public void Capture_refuses_an_empty_thought_and_says_what_capture_costs()
     {
-        Action act = () => IdeaDecider.Capture(DomainId.New(), Owner, "   ", projectId: null, Now);
+        Action act = () => IdeaDecider.Capture(DomainId.New(), Owner, "   ", projectId: null, Now, ProjectHome.None);
 
         act.Should().Throw<DomainValidationException>()
             .WithMessage("*h9k idea add*")
@@ -46,8 +47,8 @@ public sealed class IdeaLifecycleTests
     {
         Guid projectId = DomainId.New();
 
-        IdeaDecider.Capture(DomainId.New(), Owner, "note", projectId, Now).ProjectId.Should().Be(projectId);
-        IdeaDecider.Capture(DomainId.New(), Owner, "note", Guid.Empty, Now).ProjectId.Should().BeNull();
+        IdeaDecider.Capture(DomainId.New(), Owner, "note", projectId, Now, ProjectHome.None).ProjectId.Should().Be(projectId);
+        IdeaDecider.Capture(DomainId.New(), Owner, "note", Guid.Empty, Now, ProjectHome.None).ProjectId.Should().BeNull();
     }
 
     [Fact]
@@ -198,10 +199,32 @@ public sealed class IdeaLifecycleTests
             .WithMessage("*h9k idea add*", "a returning thought is a fresh idea, not a resurrection");
     }
 
+    /// <summary>
+    /// Whether the workspace started life under a project's home is a fact captured once,
+    /// never re-derived from current state (backlog 49): a home gained after capture must not
+    /// silently redirect the read path away from a workspace a human may already have used.
+    /// </summary>
+    [Fact]
+    public void Capture_records_whether_the_workspace_started_under_a_home()
+    {
+        Guid ideaId = DomainId.New();
+        ProjectHome home = ProjectHome.Parse(Path.Combine(Path.GetTempPath(), "hall9k-idea-home"));
+
+        IdeaCaptured withHome = IdeaDecider.Capture(ideaId, Owner, "note", projectId: null, Now, home);
+        IdeaAggregate captured = new();
+        captured.Apply(withHome);
+        captured.WorkspaceHome.Should().Be(home);
+
+        IdeaCaptured withoutHome = IdeaDecider.Capture(DomainId.New(), Owner, "note", projectId: null, Now, ProjectHome.None);
+        IdeaAggregate captureless = new();
+        captureless.Apply(withoutHome);
+        captureless.WorkspaceHome.Should().Be(ProjectHome.None);
+    }
+
     private static IdeaAggregate Captured(string text, Guid? projectId = null)
     {
         IdeaAggregate idea = new();
-        idea.Apply(IdeaDecider.Capture(DomainId.New(), Owner, text, projectId, Now));
+        idea.Apply(IdeaDecider.Capture(DomainId.New(), Owner, text, projectId, Now, ProjectHome.None));
         return idea;
     }
 }

@@ -1,5 +1,6 @@
 using FluentAssertions;
 using Hall9k.Domain.Features.Idea;
+using Hall9k.Domain.Features.Project;
 using Hall9k.Domain.Features.Tasks;
 using Hall9k.Domain.Features.Tasks.Events;
 using Hall9k.Domain.Features.Tasks.Handlers;
@@ -45,7 +46,7 @@ public sealed class IdeaPromotionTests(PostgresFixture postgres) : IClassFixture
             session.Events.StartStream<IdeaAggregate>(ideaId, IdeaDecider.Capture(
                 ideaId, ownerId,
                 "Ideas deserve their own discovery phase. The workspace is where research lands.",
-                projectId: null, Now));
+                projectId: null, Now, ProjectHome.None));
             await session.SaveChangesAsync(cts.Token);
         }
 
@@ -116,7 +117,7 @@ public sealed class IdeaPromotionTests(PostgresFixture postgres) : IClassFixture
         await using (IDocumentSession setup = store.LightweightSession())
         {
             setup.Events.StartStream<IdeaAggregate>(ideaId, IdeaDecider.Capture(
-                ideaId, ownerId, "Two promotions race. Exactly one may win.", projectId, Now));
+                ideaId, ownerId, "Two promotions race. Exactly one may win.", projectId, Now, ProjectHome.None));
             await setup.SaveChangesAsync(cts.Token);
         }
 

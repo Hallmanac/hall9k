@@ -1,6 +1,7 @@
 using System.ComponentModel;
 using Hall9k.Cli.Infrastructure;
 using Hall9k.Domain.Features.Idea;
+using Hall9k.Domain.Features.Project;
 using Hall9k.Domain.Features.Project.Projections;
 using Hall9k.Domain.Infrastructure.Bootstrap;
 using Hall9k.Domain.Infrastructure.Ids;
@@ -45,16 +46,28 @@ public sealed class IdeaAddCommand : Hall9kAsyncCommand<IdeaAddCommand.Settings>
             : null;
         BootstrapContext context = await NodeBootstrap.EnsureAsync(session, cancellationToken);
 
+        // Whether the workspace starts life under the project's home is decided right here,
+        // once, from what is actually on disk at this instant — never re-derived later, so a
+        // home gained after capture cannot silently redirect the read path away from a
+        // workspace a human may already have dropped files into (IdeaPaths).
+        ProjectHome workspaceHome = project is not null
+            && project.HomeDirectory.HasValue
+            && Directory.Exists(project.HomeDirectory.Value)
+                ? project.HomeDirectory
+                : ProjectHome.None;
+
         Guid ideaId = DomainId.New();
         IdeaCaptured captured = IdeaDecider.Capture(
-            ideaId, context.OwnerId, settings.Text, project?.Id, DateTimeOffset.UtcNow);
+            ideaId, context.OwnerId, settings.Text, project?.Id, DateTimeOffset.UtcNow, workspaceHome);
         session.Events.StartStream<IdeaAggregate>(ideaId, captured);
         await session.SaveChangesAsync(cancellationToken);
 
         // The workspace is made real the moment the idea exists: a directory you have to create
         // before you can use it is a directory nobody drops a file into. No doorbell — nothing
         // dispatches from an idea, by design.
-        string workspace = IdeaPaths.EnsureWorkspace(ideaId);
+        string ideaDirectory = IdeaPaths.ResolveDirectory(
+            workspaceHome, ProjectHomePaths.EntryDirectoryName(ideaId, captured.Text), ideaId);
+        string workspace = IdeaPaths.EnsureWorkspace(ideaDirectory);
 
         string shortId = TaskListCommand.ShortId(ideaId);
         AnsiConsole.MarkupLine(

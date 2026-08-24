@@ -236,24 +236,36 @@ public sealed class IdeaSurfaceTests
     [Fact]
     public void The_draft_carries_the_workspace_pointer_rather_than_the_files()
     {
-        Guid ideaId = DomainId.New();
+        IdeaAggregate idea = CapturedIdea(out Guid ideaId);
 
-        string context = IdeaPromoteCommand.AgentContext(ideaId, "The rest of what the note said.");
+        string context = IdeaPromoteCommand.AgentContext(idea, "The rest of what the note said.");
 
         context.Should().Contain("The rest of what the note said.");
-        context.Should().Contain(IdeaPaths.WorkspaceDirectory(ideaId), "the pointer is what promotion carries");
+        context.Should().Contain(
+            IdeaPaths.WorkspaceDirectory(IdeaPaths.GlobalDirectory(ideaId)), "the pointer is what promotion carries");
         context.Should().Contain("Discovery workspace");
     }
 
     [Fact]
     public void A_note_with_nothing_left_over_still_hands_the_workspace_to_the_agent()
     {
-        Guid ideaId = DomainId.New();
+        IdeaAggregate idea = CapturedIdea(out Guid ideaId);
 
-        string context = IdeaPromoteCommand.AgentContext(ideaId, context: null);
+        string context = IdeaPromoteCommand.AgentContext(idea, context: null);
 
         context.Should().StartWith("Discovery workspace");
-        context.Should().Contain(IdeaPaths.WorkspaceDirectory(ideaId));
+        context.Should().Contain(IdeaPaths.WorkspaceDirectory(IdeaPaths.GlobalDirectory(ideaId)));
+    }
+
+    /// <summary>An idea with no recorded home, so its workspace resolves to the platform-global location.</summary>
+    private static IdeaAggregate CapturedIdea(out Guid ideaId)
+    {
+        ideaId = DomainId.New();
+        IdeaAggregate idea = new();
+        idea.Apply(IdeaDecider.Capture(
+            ideaId, DomainId.New(), "Give ideas a discovery workspace", projectId: null, Now,
+            Hall9k.Domain.Features.Project.ProjectHome.None));
+        return idea;
     }
 
     private static IReadOnlyList<IdeaRow> Rows() =>

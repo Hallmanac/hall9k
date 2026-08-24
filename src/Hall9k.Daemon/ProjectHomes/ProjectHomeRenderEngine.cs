@@ -149,8 +149,14 @@ public sealed class ProjectHomeRenderEngine(IDocumentStore store, ILogger<Projec
         {
             string directoryName = IdeaDocumentRenderer.DirectoryName(idea);
             string rendered = IdeaDocumentRenderer.Render(idea, projectName);
+            // Only true for an idea whose real discovery workspace lives under this render
+            // directory (captured with a home already materialised, backlog 49) — everything
+            // else keeps its workspace at the platform-global location, and creating a
+            // same-looking-but-inert workspace/ here would invite a human to drop research
+            // material into a folder nothing ever reads.
             bool changed = HomeEntryWriter.Write(
-                ideasRoot, idea.Id, directoryName, "idea.md", rendered, includeWorkspace: false).Changed;
+                ideasRoot, idea.Id, directoryName, "idea.md", rendered,
+                includeWorkspace: idea.WorkspaceHome.HasValue).Changed;
             return changed ? RenderOutcome.Written : RenderOutcome.Unchanged;
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)

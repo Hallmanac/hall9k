@@ -43,10 +43,12 @@ public sealed class IdeaDiscardCommand : Hall9kAsyncCommand<IdeaDiscardCommand.S
         await session.SaveChangesAsync(cancellationToken);
 
         string shortId = TaskListCommand.ShortId(idea.Id);
+        string ideaDirectory = IdeaPaths.ResolveDirectory(
+            idea.WorkspaceHome, ProjectHomePaths.EntryDirectoryName(idea.Id, idea.Text), idea.Id);
         AnsiConsole.MarkupLine($"[dim]Idea {shortId} discarded:[/] {discarded.Reason.EscapeMarkup()}");
         AnsiConsole.MarkupLine(
             "[dim]Kept on the record, workspace and all:[/] "
-            + $"{IdeaPaths.WorkspaceDirectory(idea.Id).EscapeMarkup()}");
+            + $"{IdeaPaths.WorkspaceDirectory(ideaDirectory).EscapeMarkup()}");
         AnsiConsole.MarkupLine($"[dim]Read it back any time:[/] h9k idea show {shortId}");
         return ExitCodes.Ok;
     }
