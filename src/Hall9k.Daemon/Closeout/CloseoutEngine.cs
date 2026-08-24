@@ -614,7 +614,8 @@ public sealed class CloseoutEngine(
             string parkReason =
                 $"Copilot review keeps erroring: {erroredReview.Reviewer}'s latest review ({erroredReview.Url}) " +
                 "says it was unable to review the pull request. " +
-                $"Automatic closeout budget spent ({AutomaticActionsSpent(task, run)} action(s)). " +
+                $"Automatic closeout budget spent ({AutomaticActionsSpent(task, run)}/{_options.MaxAutomaticCloseoutRuns} action(s)) — " +
+                $"{DescribeAutomaticLapHistory(task, run)}. " +
                 "Re-request the review by hand, merge without it, or grant another attempt with h9k pr resolve.";
             session.Events.Append(run.Id, new CloseoutParked(run.Id, parkReason, now));
             await session.SaveChangesAsync(cancellationToken);
@@ -651,6 +652,27 @@ public sealed class CloseoutEngine(
     /// </summary>
     private static int AutomaticActionsSpent(TaskAggregate task, RunDetails run) =>
         task.CloseoutAttempts + run.ReviewRerequestCount;
+
+    /// <summary>
+    /// The lap history a park message reads back, honest about the gap between it and the
+    /// lifetime spend <see cref="AutomaticActionsSpent"/> counts: <see
+    /// cref="TaskAggregate.AutomaticLapHistory"/> only ever grows from an automatic
+    /// <c>TaskReopened</c>, so budget spent re-requesting a review after it errored
+    /// (<see cref="RunDetails.ReviewRerequestCount"/>) never lands an entry there. Rather than
+    /// asserting a cause for that gap it has not observed (the never-guess rule, AGENTS.md),
+    /// this states the gap as a number.
+    /// </summary>
+    private static string DescribeAutomaticLapHistory(TaskAggregate task, RunDetails run)
+    {
+        int unitemized = AutomaticActionsSpent(task, run) - task.AutomaticLapHistory.Count;
+        string history = task.AutomaticLapHistory.Count > 0
+            ? string.Join("; ", task.AutomaticLapHistory.Select((lap, index) => $"lap {index + 1}: {lap}"))
+            : "no automatic lap recorded an obstruction";
+
+        return unitemized > 0
+            ? $"{history} ({unitemized} review re-request action(s) not itemized above)"
+            : history;
+    }
 
     /// <summary>
     /// The merge is the end of the story: RunCompleted finally lands (the event
@@ -1035,11 +1057,9 @@ public sealed class CloseoutEngine(
         // only h9k pr resolve does.
         if (AutomaticActionsSpent(task, run) >= _options.MaxAutomaticCloseoutRuns)
         {
-            string history = task.AutomaticLapHistory.Count > 0
-                ? string.Join("; ", task.AutomaticLapHistory.Select((lap, index) => $"lap {index + 1}: {lap}"))
-                : "no earlier lap recorded an obstruction (a stream older than this budget shape)";
             string ceilingParkReason =
-                $"{reason} The lifetime automatic closeout budget spent ({AutomaticActionsSpent(task, run)}/{_options.MaxAutomaticCloseoutRuns} action(s)) — {history}. " +
+                $"{reason} The lifetime automatic closeout budget spent ({AutomaticActionsSpent(task, run)}/{_options.MaxAutomaticCloseoutRuns} action(s)) — " +
+                $"{DescribeAutomaticLapHistory(task, run)}. " +
                 "Fix or merge the pull request by hand, close it, or grant another attempt with h9k pr resolve.";
             await ParkAsync(session, run, ceilingParkReason, now, cancellationToken);
             return;
