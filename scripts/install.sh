@@ -67,7 +67,7 @@ fi
 [ -f "$WORKDIR/checksums.txt" ] || fail "checksums.txt was not among the downloaded release assets — cannot verify $ARCHIVE."
 
 echo "Verifying checksum…"
-EXPECTED="$(grep -F "  ${ARCHIVE}" "$WORKDIR/checksums.txt" | awk '{print $1}' | head -n1)"
+EXPECTED="$(grep -F "  ${ARCHIVE}" "$WORKDIR/checksums.txt" | awk '{print $1}' | head -n1 || true)"
 [ -n "$EXPECTED" ] || fail "$ARCHIVE has no entry in checksums.txt."
 if command -v sha256sum >/dev/null 2>&1; then
   ACTUAL="$(sha256sum "$WORKDIR/$ARCHIVE" | awk '{print $1}')"
@@ -83,7 +83,7 @@ if [ "$ASSUME_YES" -ne 1 ]; then
   # controlling terminal directly when one exists, the same trick well-behaved
   # curl-to-shell installers use.
   if [ -r /dev/tty ]; then
-    read -r -p "$PROMPT" REPLY </dev/tty
+    read -r -p "$PROMPT" REPLY </dev/tty || REPLY=""
   else
     read -r -p "$PROMPT" REPLY || REPLY=""
   fi
