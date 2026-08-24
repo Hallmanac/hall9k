@@ -22,7 +22,7 @@ carries the real Windows daemon lifecycle (including autostart) as unbuilt, disp
 work. This file's criteria below are left as written. What backlog 42 actually added for
 Windows is delivery only — release binaries exist for `win-x64`, and `h9k install`/`h9k
 update` place them there — never daemon start/stop/autostart, which still name S1-14 and
-refuse. See PLAN.md Decisions Log #77 for the full account.
+refuse. See PLAN.md Decisions Log #78 for the full account.
 
 This is SLICE-1 task S1-12, redesigned 2026-08-19 after colleague feedback on the
 first demo: nobody evaluating a local-first tool wants it to install a permanently

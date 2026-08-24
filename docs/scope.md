@@ -88,7 +88,7 @@ on macOS, a Windows startup task once S1-14 lands) that snapshots the environmen
 reports any tool it cannot resolve. Daemon start/stop run on macOS and Linux today; Windows has
 binaries but no daemon lifecycle yet (see Windows support, below).
 
-See [PLAN.md Decisions Log #77](../PLAN.md).
+See [PLAN.md Decisions Log #78](../PLAN.md).
 
 ### The project home
 
@@ -144,7 +144,7 @@ yet: `h9k daemon start` / `stop` / `autostart enable` all refuse with a named no
 the process manager still needs spawn, kill-tree, and reattach parity. The daemon form is decided:
 a Task Scheduler logon task, so it runs as the user and credentials work.
 
-See `SLICE-1.md` S1-14, Decisions Log #3, #77.
+See `SLICE-1.md` S1-14, Decisions Log #3, #78.
 
 ### Token visibility and exhaustion
 

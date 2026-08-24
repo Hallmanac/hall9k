@@ -38,7 +38,7 @@ picks this up should not re-litigate it, and the S1-12 file should be corrected.
 > `DaemonAutostart.ForCurrentPlatform()` still returns a deferred, not-yet implementation on
 > Windows, and `SLICE-1.md`'s S1-14 still lists a Windows daemon lifecycle as unbuilt,
 > dispatched-later work. Backlog 42 left `backlog/12-daemon-install.md`'s deferral text as
-> written rather than rewrite it to match this paragraph. See PLAN.md Decisions Log #77.
+> written rather than rewrite it to match this paragraph. See PLAN.md Decisions Log #78.
 
 ## Gap 1: delivery
 
