@@ -9,7 +9,9 @@ Bring a pull-request branch current with its base branch after other work merged
 it (AGENTS.md Git rules; PLAN.md Decisions Log #26 and backlog 44). This is the inverse of
 `absorb-review-fixes`: that skill folds *new* fixes into existing commits, this one replays
 *existing* commits onto a *new* base. Both share the same doctrine: authored history stays
-intact, tree identity is verified before anything is pushed, and the agent never pushes.
+intact and the agent never pushes. What differs is how each verifies before that: a fixup
+rebase diffs against its own pre-rebase tip, but a rebase onto a moved base has no such tip
+to diff against — see step 5 for how this one verifies instead.
 
 Precondition: the working tree is an existing PR branch that GitHub reports as
 `CONFLICTING` against its base (`gh pr view --json mergeStateStatus,mergeable`, or the

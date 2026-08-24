@@ -19,8 +19,9 @@ Draft a task, publish it through the readiness gate, assign it, and a daemon cla
 lease, cuts a worktree and a branch from the base branch, spawns a detached Claude Code session
 with an assembled prompt, runs the project's verification gates, puts the diff through a two-lens
 independent review loop, and opens a pull request. Then it watches that pull request until the
-merge is observed, dispatching bounded follow-up runs for failing checks and unresolved review
-threads along the way, and removing the worktree and the branch at true closeout.
+merge is observed, dispatching bounded follow-up runs for failing checks, unresolved review
+threads, and a branch that has fallen behind and now conflicts with its base along the way, and
+removing the worktree and the branch at true closeout.
 
 Two things about that loop have been hardened by incident rather than by design review: leases
 survive a laptop lid closing without spawning duplicate agents, and daemon catch-up after a

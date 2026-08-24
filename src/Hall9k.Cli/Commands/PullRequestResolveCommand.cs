@@ -28,7 +28,7 @@ public sealed class PullRequestResolveCommand : Hall9kAsyncCommand<PullRequestRe
         public string Task { get; init; } = string.Empty;
 
         [CommandOption("--reason <REASON>")]
-        [Description("Why the follow-up is needed (defaults to a message matching the prompt: review comments, or failing checks with --checks)")]
+        [Description("Why the follow-up is needed (defaults to a message matching the prompt: review comments, failing checks with --checks, or a base-branch conflict with --rebase)")]
         public string? Reason { get; init; }
 
         [CommandOption("--checks")]
