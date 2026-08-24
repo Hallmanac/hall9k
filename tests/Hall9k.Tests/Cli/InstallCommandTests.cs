@@ -270,4 +270,82 @@ public sealed class InstallCommandTests : IDisposable
         File.WriteAllText(binary, "the installed binary\n");
         return binary;
     }
+
+    [Fact]
+    public void An_absent_directory_not_present_on_the_path_is_prepended()
+    {
+        InstallCommand.ComputeUserPath(currentUserPath: string.Empty, directory: "/opt/hall9k/bin")
+            .Should().Be("/opt/hall9k/bin");
+
+        string withOthers = $"/usr/bin{Path.PathSeparator}/bin";
+        InstallCommand.ComputeUserPath(withOthers, "/opt/hall9k/bin")
+            .Should().Be($"/opt/hall9k/bin{Path.PathSeparator}{withOthers}");
+    }
+
+    [Fact]
+    public void A_directory_already_on_the_path_is_left_alone()
+    {
+        string current = $"/usr/bin{Path.PathSeparator}/opt/hall9k/bin{Path.PathSeparator}/bin";
+
+        InstallCommand.ComputeUserPath(current, "/opt/hall9k/bin").Should().Be(current);
+    }
+
+    [Fact]
+    public void The_path_check_ignores_trailing_separators_and_casing()
+    {
+        // Path.PathSeparator is ':' on Unix, which collides with a Windows drive letter
+        // (C:\…), so this deliberately avoids one — the function itself is pure string
+        // logic exercised the same way on whichever OS runs the test.
+        string current = Path.Combine("Users", "me", ".hall9k", "bin") + Path.DirectorySeparatorChar;
+
+        InstallCommand.ComputeUserPath(current, Path.Combine("Users", "me", ".hall9k", "BIN")).Should().Be(current);
+    }
+
+    [Fact]
+    public void A_release_payload_missing_a_binary_is_named_in_the_refusal()
+    {
+        Directory.CreateDirectory(directory);
+        File.WriteAllText(Path.Combine(directory, InstallCommand.BinaryFileName("h9k")), "cli\n");
+
+        string? problem = InstallCommand.ValidateReleasePayload(directory);
+
+        problem.Should().Contain(InstallCommand.BinaryFileName("h9kd"));
+    }
+
+    [Fact]
+    public void A_complete_release_payload_validates()
+    {
+        Directory.CreateDirectory(directory);
+        File.WriteAllText(Path.Combine(directory, InstallCommand.BinaryFileName("h9k")), "cli\n");
+        File.WriteAllText(Path.Combine(directory, InstallCommand.BinaryFileName("h9kd")), "daemon\n");
+
+        InstallCommand.ValidateReleasePayload(directory).Should().BeNull();
+    }
+
+    [Fact]
+    public void An_absent_release_directory_is_refused_by_path()
+    {
+        string missing = Path.Combine(directory, "nowhere");
+
+        InstallCommand.ValidateReleasePayload(missing).Should().Contain(Path.GetFullPath(missing));
+    }
+
+    [Fact]
+    public void Staging_from_a_release_payload_copies_binaries_but_not_skills_or_the_version_marker()
+    {
+        string fromRelease = Path.Combine(directory, "release");
+        Directory.CreateDirectory(Path.Combine(fromRelease, "skills", "pr-summary"));
+        File.WriteAllText(Path.Combine(fromRelease, InstallCommand.BinaryFileName("h9k")), "cli\n");
+        File.WriteAllText(Path.Combine(fromRelease, InstallCommand.BinaryFileName("h9kd")), "daemon\n");
+        File.WriteAllText(Path.Combine(fromRelease, "VERSION"), "0.5.0\n");
+        File.WriteAllText(Path.Combine(fromRelease, "skills", "pr-summary", "SKILL.md"), "# pr-summary\n");
+        string staging = Path.Combine(directory, "staging");
+
+        InstallCommand.StageFromRelease(fromRelease, staging);
+
+        File.Exists(Path.Combine(staging, InstallCommand.BinaryFileName("h9k"))).Should().BeTrue();
+        File.Exists(Path.Combine(staging, InstallCommand.BinaryFileName("h9kd"))).Should().BeTrue();
+        File.Exists(Path.Combine(staging, "VERSION")).Should().BeFalse("the version marker is not a runtime file");
+        Directory.Exists(Path.Combine(staging, "skills")).Should().BeFalse("skills are published separately, not staged into ~/.hall9k/bin");
+    }
 }
