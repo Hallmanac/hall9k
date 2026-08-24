@@ -15,9 +15,14 @@ namespace Hall9k.Domain.Features.Tasks.Rendering;
 /// hand) — so what a human types back through <c>h9k task revise &lt;id&gt; --file</c> is what
 /// they read here. The body carries only the agent context, on purpose: anything else placed in
 /// it would round-trip into <c>AgentContext</c> on the next revise, silently corrupting the field
-/// with rendered status noise. Everything else that is worth showing (state, model, external
-/// reference) is frontmatter that the file parser already ignores as an unrecognized key, so it
-/// is safe to add without touching what a revision reads back.
+/// with rendered status noise. Some of what is worth showing (state, id, external reference) is
+/// frontmatter that the file parser already ignores as an unrecognized key, so it is safe to add
+/// without touching what a revision reads back. <c>model</c> and <c>type</c> are not in that
+/// category: the parser recognizes both keys and <c>TaskReviseCommand</c> applies them back
+/// (<c>model ??= file.Model</c>, <c>type ??= file.Type</c>) on a plain <c>--file</c> revise with
+/// no explicit override; that is harmless here only because this render always writes the task's
+/// own current value, so reading it back changes nothing unless a human edits it by hand, which
+/// is exactly the contract this file exists to support.
 /// </summary>
 public static class TaskDocumentRenderer
 {
