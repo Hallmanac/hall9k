@@ -196,7 +196,7 @@ public sealed class GitHubPullRequestInspector : IPullRequestInspector
         // Every unresolved thread counts, whoever started it (Decisions Log #62). The
         // starter is read only to tell a human's thread from a bot's, because the two get
         // different care in the follow-up — never to decide whether feedback exists. The id
-        // sets feed two different uses (Decisions Log #77, backlog 45): the full set is the
+        // sets feed two different uses (Decisions Log #79, backlog 45): the full set is the
         // closeout budget's mechanical obstruction key, and the human subset is what a later
         // poll diffs to recognize a newly opened human thread.
         List<string> threadIds = [];
@@ -239,12 +239,18 @@ public sealed class GitHubPullRequestInspector : IPullRequestInspector
 
     /// <summary>
     /// Who currently has a pending review request — the second human-engagement signal
-    /// (Decisions Log #77, backlog 45): a login that was not pending as of the task's last
+    /// (Decisions Log #79, backlog 45): a login that was not pending as of the task's last
     /// automatic decision, and that the platform did not itself just request
     /// (CloseoutEngine.HasHumanEngagement also compares against RunDetails.RequestedReviewerLogins),
     /// is a human re-requesting a review through GitHub's own UI. Team requests carry no
     /// login the review-request REST endpoint or this comparison can use, so they are left
-    /// out rather than guessed at.
+    /// out rather than guessed at. A request GitHub's own automation recreated — Copilot's
+    /// "review new commits automatically" setting re-requests it on every push nobody asked
+    /// for — is excluded the same way ReadKind excludes it from the human thread count: by
+    /// __typename Bot, with the known-Copilot-login fallback for the cases that surface as
+    /// User (adversarial pre-PR review, 2026-08-24). Without this, a push the monitor's own
+    /// follow-up made recreates Copilot's pending request, and the next poll reads that
+    /// request back as a human re-requesting review.
     /// </summary>
     private static IReadOnlyList<string> ReadPendingReviewRequestLogins(JsonElement pullRequest)
     {
@@ -264,7 +270,14 @@ public sealed class GitHubPullRequestInspector : IPullRequestInspector
                 continue;
             }
 
-            logins.Add(login.GetString() ?? "");
+            string? reviewerLogin = login.GetString();
+            string typeName = reviewer.TryGetProperty("__typename", out JsonElement type) ? type.GetString() ?? "" : "";
+            if (typeName == "Bot" || IsCopilotLogin(reviewerLogin))
+            {
+                continue;
+            }
+
+            logins.Add(reviewerLogin ?? "");
         }
 
         return logins;

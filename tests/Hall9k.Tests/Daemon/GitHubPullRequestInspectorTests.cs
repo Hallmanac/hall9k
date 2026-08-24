@@ -158,7 +158,7 @@ public sealed class GitHubPullRequestInspectorTests
     }
 
     /// <summary>
-    /// Pending review requests are read by requestable actor type only (Decisions Log #77,
+    /// Pending review requests are read by requestable actor type only (Decisions Log #79,
     /// backlog 45): a login lets a later poll compare against what was already known to spot
     /// a human's own re-request, and a team carries no such login to compare, so it is left
     /// out rather than guessed at.
@@ -170,11 +170,34 @@ public sealed class GitHubPullRequestInspectorTests
             Actor("hallmanac", "User"), "cafe1", "", "",
             reviewRequests: string.Join(",",
                 RequestedReviewer("teammate", "User"),
-                RequestedReviewer("copilot-pull-request-reviewer", "Bot"),
                 "{'requestedReviewer':{'__typename':'Team'}}"));
 
         GitHubPullRequestInspector.ReviewObservation observation = GitHubPullRequestInspector.ParseReviews(json);
 
-        observation.PendingReviewRequestLogins.Should().Equal("teammate", "copilot-pull-request-reviewer");
+        observation.PendingReviewRequestLogins.Should().Equal("teammate");
+    }
+
+    /// <summary>
+    /// A bot's own pending review request is not a human's re-request, whatever surfaced it —
+    /// GitHub's "review new commits automatically" setting recreates Copilot's request on
+    /// every push with nobody touching the UI. Excluded by __typename Bot, with the known
+    /// Copilot logins as a fallback for the cases the unified Copilot app has surfaced under
+    /// User instead (adversarial pre-PR review, 2026-08-24): granting a closeout lap for
+    /// either would let the monitor's own follow-up push manufacture the human-engagement
+    /// signal that grants its next lap past the per-obstruction cap.
+    /// </summary>
+    [Fact]
+    public void Bot_pending_review_requests_are_excluded_even_when_typed_as_user()
+    {
+        string json = Payload(
+            Actor("hallmanac", "User"), "cafe1", "", "",
+            reviewRequests: string.Join(",",
+                RequestedReviewer("copilot-pull-request-reviewer", "Bot"),
+                RequestedReviewer("copilot-pull-request-reviewer", "User"),
+                RequestedReviewer("teammate", "User")));
+
+        GitHubPullRequestInspector.ReviewObservation observation = GitHubPullRequestInspector.ParseReviews(json);
+
+        observation.PendingReviewRequestLogins.Should().Equal("teammate");
     }
 }
