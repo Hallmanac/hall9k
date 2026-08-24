@@ -23,6 +23,8 @@ public sealed record RunState
     /// while the monitor's re-requested review is answered).
     /// </summary>
     public static readonly RunState ReviewPending = new("ReviewPending");
+    /// <summary>Closeout: the PR's branch conflicts with its base branch; a rebase follow-up (or a park) is on the way (backlog 44).</summary>
+    public static readonly RunState Conflicting = new("Conflicting");
     /// <summary>Closeout: automatic retries exhausted; the human owns the PR, the monitor still watches for the merge.</summary>
     public static readonly RunState CloseoutParked = new("CloseoutParked");
     /// <summary>

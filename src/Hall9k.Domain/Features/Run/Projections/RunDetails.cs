@@ -369,6 +369,11 @@ public sealed class RunDetailsProjection : SingleStreamProjection<RunDetails, Gu
         view.State = RunState.ReviewPending;
     }
 
+    public void Apply(IEvent<PullRequestConflictObserved> @event, RunDetails view)
+    {
+        view.State = RunState.Conflicting;
+    }
+
     public void Apply(IEvent<ReviewRerequested> @event, RunDetails view)
     {
         view.ReviewRerequestCount++;
