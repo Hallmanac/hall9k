@@ -251,6 +251,11 @@ public sealed class ProjectSetCommand : Hall9kAsyncCommand<ProjectSetCommand.Set
 
         string name = value[..separator].Trim();
         string url = value[(separator + 1)..].Trim();
+        if (name.Length == 0)
+        {
+            throw new DomainValidationException($"--link expects name=url, got '{value}'.");
+        }
+
         if (Uri.TryCreate(url, UriKind.Absolute, out Uri? link))
         {
             return new ContextLink(name, link);

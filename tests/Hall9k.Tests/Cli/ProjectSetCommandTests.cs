@@ -86,4 +86,20 @@ public sealed class ProjectSetCommandTests
 
         message.Should().Contain("--link \"wiki=https://github.com/you/proj/wiki\"");
     }
+
+    /// <summary>
+    /// Origin: the pre-PR review of this branch found that a blank name half (e.g. a leading
+    /// space before the separator) was never validated, so the refusal for the unparseable url
+    /// built a suggestion of the form <c>--link "=https://..."</c> that this same function
+    /// rejects on the very next call. If the url half happened to parse, the blank name was
+    /// accepted and recorded as a nameless <see cref="ContextLink"/>.
+    /// </summary>
+    [Fact]
+    public void A_link_with_a_blank_name_is_a_refusal_naming_the_expected_shape()
+    {
+        Action act = () => ProjectSetCommand.ParseLink(" =github.com/you/proj/wiki");
+
+        act.Should().Throw<DomainValidationException>()
+            .WithMessage("*name=url*");
+    }
 }
