@@ -89,9 +89,17 @@ anywhere in the recipe, and both are idempotent. The dispatcher composes the hom
 agent briefing, so a dispatched session is told where the skills and the docs are rather than
 hunting for them.
 
-What is **not** here yet: the task and idea files that will render into `tasks/` and `ideas/`
-(backlog 48), run directories moving under their owning task (backlog 49), and the one-time
-relocation of the hall9k project itself into its default home (backlog 52).
+Every task owns a directory under `tasks/` (`<shortid>-<slug>/task.md` plus a `workspace/`), and
+every idea with a project renders the same shape under `ideas/`; the daemon keeps them rewritten
+by sweeping the store, not by watching individual events, and reconciles the directory on its own
+startup (backlog 48). The render is one-way: a human edits the file and applies it back with
+`h9k task revise <id> --file` (there is no `--file` form for ideas — paste the note back as the
+argument), and the store, never the file, decides what happened. An idea with no project yet has
+nowhere to render into, so it stays in its global discovery workspace until assigned.
+
+What is **not** here yet: run directories moving under their owning task (backlog 49), an idea's
+discovery workspace relocating under the project home once it has one (backlog 48's own slice 3),
+and the one-time relocation of the hall9k project itself into its default home (backlog 52).
 
 ### The help tree
 

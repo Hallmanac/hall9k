@@ -138,7 +138,8 @@ Everything hangs off `~/.hall9k` (or `HALL9K_HOME`):
 ├── projects/<name>/            a project's home, unless the project records another location
 │   ├── AGENTS.md               rendered from the project's facts; never hand-maintained
 │   ├── repo/                   <name>.git (bare) · dev/ (primary branch) · wt-*/ (dispatch)
-│   ├── ideas/, tasks/          the project's work
+│   ├── ideas/<id>-<slug>/      idea.md (rendered); the discovery workspace stays global, below
+│   ├── tasks/<id>-<slug>/      task.md (rendered) + workspace/ for refinement material
 │   ├── skills/                 symlinks into ~/.hall9k/skills, plus this project's own
 │   └── .claude/skills/         symlinks into the line above: the Claude Code adapter
 ├── ideas/<idea-id>/workspace/  discovery workspaces: research, files, prototypes
