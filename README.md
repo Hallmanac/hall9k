@@ -141,10 +141,10 @@ Once installed, `h9k update` is the one-command path to stay current — no repo
 there either.
 
 **Working on Hall9k itself:** clone the repo and build locally (below). The daemon's lifecycle
-(`h9k daemon start` / `stop` / `autostart enable`) runs on macOS and Linux, but start-at-login
-(`autostart enable`) is macOS-only even there — Linux otherwise runs the daemon fine started by
-hand. Windows builds and tests in CI and `h9k install`/`h9k update` place the binaries there, but
-running `h9kd` on Windows is future work (`SLICE-1.md`'s S1-14).
+(`h9k daemon start` / `stop`) runs on macOS and Linux, but start-at-login (`autostart enable`) is
+macOS-only — Linux otherwise runs the daemon fine started by hand. Windows builds and tests in CI
+and `h9k install`/`h9k update` place the binaries there, but running `h9kd` on Windows is future
+work (`SLICE-1.md`'s S1-14).
 
 ### Prerequisites for building from source
 
