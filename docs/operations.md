@@ -3,6 +3,7 @@
 Running Hall9k: the daemon's lifecycle, where things live, what to configure, what `needs you`
 means, and how to get out of trouble.
 
+- [Installing on a bare machine](#installing-on-a-bare-machine)
 - [The daemon lifecycle](#the-daemon-lifecycle)
 - [Postgres](#postgres)
 - [What lands on disk](#what-lands-on-disk)
@@ -14,10 +15,48 @@ means, and how to get out of trouble.
 
 ---
 
+## Installing on a bare machine
+
+A tagged commit on `main` becomes a GitHub release carrying `h9k` and `h9kd` binaries for macOS
+arm64, Windows x64, and Linux x64 (`.github/workflows/release.yml`, backlog 42) — built alongside
+`ci.yml` rather than replacing it, and only on a version tag. A machine with no repo checkout and
+no .NET SDK bootstraps from that release directly; see [docs/INSTALL.md](INSTALL.md) for the full
+walkthrough (it is written to be followed by an AI agent as much as by a human) and the
+[README's Install section](../README.md#install) for the one-liners.
+
+The mechanism, in short:
+
+- The bootstrap scripts (`scripts/install.sh`, `scripts/install.ps1`) fetch the latest release
+  for the current platform via `gh`, **verify its checksum** against the release's own
+  `checksums.txt`, **ask consent**, unpack it, and run the release's own
+  `h9k install --from-release <payload>` — the same idempotent publish-and-refresh
+  `h9k install` has always done (Decisions Log #31), just fed from a downloaded, checksum-verified
+  archive instead of a local `dotnet publish`. `--from-release` also carries the canonical skill
+  set bundled into the release payload, published to `~/.hall9k/skills` the same way `--repo`
+  publishes from a checkout's `.claude/skills`.
+- The scripts finish by running `h9k doctor`, so a fresh machine ends setup knowing what still
+  needs attention (almost always: a Postgres connection string — see [Postgres](#postgres) below)
+  rather than declaring victory silently.
+- **`h9k update`** is the one-command path for a machine that already has `h9k`: it fetches the
+  latest release for the platform via `gh`, verifies the checksum, republishes binaries and the
+  skill set through the same `--from-release` finish, and offers to restart a running daemon —
+  no repo checkout, no .NET SDK, on the machine that runs it.
+- Installing this way registers no background service and no autostart, exactly as a local
+  `h9k install` does (Decisions Log #31, S1-12).
+
+**Platform note.** Release binaries are self-contained (no .NET runtime needed on the target
+machine) for all three platforms, but the *daemon lifecycle* is not yet uniform: `h9k daemon
+start` / `stop` run on macOS and Linux, and `h9k daemon autostart enable` only on macOS today (a
+Linux systemd unit is unbuilt). Windows has none of the three yet — `h9k install` / `h9k update`
+place the binaries there, but running `h9kd` on Windows is future work tracked as `SLICE-1.md`'s
+S1-14, not something this release mechanism changes.
+
 ## The daemon lifecycle
 
-The daemon's lifecycle belongs to the CLI. `h9k install` registers no background service and no
-login item; start-at-login is a separate opt-in that nothing else implies.
+The daemon's lifecycle belongs to the CLI. `h9k install` (or, on a machine fed by a release
+instead of a repo checkout, `h9k update` — see [Installing on a bare machine](#installing-on-a-bare-machine))
+registers no background service and no login item; start-at-login is a separate opt-in that
+nothing else implies.
 
 ```bash
 h9k daemon start      # launches h9kd detached from this terminal; survives shell exit
@@ -144,6 +183,7 @@ Everything hangs off `~/.hall9k` (or `HALL9K_HOME`):
 │   └── .claude/skills/         symlinks into the line above: the Claude Code adapter
 ├── ideas/<idea-id>/workspace/  discovery workspaces: research, files, prototypes
 ├── postgres/docker-compose.yml Hall9k's own Postgres definition (h9k install writes it, §Postgres)
+├── skills/<skill-name>/        the canonical skill set (h9k install / h9k update publish it)
 └── runs/<run-id>/
     ├── prompt.md               what the session was actually given
     ├── settings.json           the settings override the spawn used

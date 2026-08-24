@@ -124,9 +124,27 @@ completes, dependents unblock, and the worktree is removed.
 
 ## Install
 
-Hall9k runs on macOS today. Linux is untested but nothing in the install path is macOS-specific
-except the autostart registration. Windows builds and tests in CI, but `h9k install` refuses to
-run there: the process manager and installer land with S1-14.
+**A machine with no repo checkout and no .NET SDK:** run the bootstrap script — it fetches the
+latest release for your platform (macOS arm64, Windows x64, Linux x64), verifies its checksum,
+asks consent, and finishes with `h9k doctor`. See [docs/INSTALL.md](docs/INSTALL.md) for the full
+walkthrough, including the agent-driven, non-interactive form.
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Hallmanac/hall9k/main/scripts/install.sh | bash   # macOS / Linux
+```
+
+```powershell
+iwr https://raw.githubusercontent.com/Hallmanac/hall9k/main/scripts/install.ps1 | iex           # Windows
+```
+
+Once installed, `h9k update` is the one-command path to stay current — no repo checkout needed
+there either.
+
+**Working on Hall9k itself:** clone the repo and build locally (below). The daemon's full
+lifecycle (`h9k daemon start` / `stop` / `autostart enable`) runs on macOS and Linux; Windows
+builds and tests in CI and `h9k install`/`h9k update` place the binaries there, but running
+`h9kd` on Windows is future work (`SLICE-1.md`'s S1-14). Start-at-login (`autostart enable`) is
+macOS-only even on Linux, where the daemon otherwise runs fine started by hand.
 
 ### Prerequisites
 
@@ -173,6 +191,8 @@ dotnet build                  # the whole solution
 onto your PATH, and publishes the canonical skill set into `~/.hall9k/skills`. It registers no
 background service and no login item, deliberately: the daemon has a CLI-owned lifecycle. Re-run
 it after a merge to refresh the binaries, and it will offer to restart a running daemon onto them.
+On a machine that already has `h9k` installed (from source or from a release), `h9k update` does
+the same idempotent refresh from the latest GitHub release instead, no repo checkout needed.
 
 ```bash
 h9k daemon start              # detached; survives shell exit; logs to ~/.hall9k/h9kd.log

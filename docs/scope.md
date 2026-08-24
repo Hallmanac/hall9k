@@ -72,12 +72,23 @@ gates, agent model per role, parallelism, commit style, context links, skip-perm
 board binding, and the post-fix review re-request policy. The node has a session ceiling the
 dispatcher respects, counted in agent sessions rather than runs.
 
-### Installation
+### Installation and release delivery
 
-`h9k install` publishes release binaries to `~/.hall9k/bin`, links `h9k` onto the PATH, and
-publishes the canonical skill set to `~/.hall9k/skills`, on macOS. The daemon has a CLI-owned
-lifecycle with a strictly opt-in launchd autostart that snapshots the environment it will need
-and reports any tool it cannot resolve.
+A tagged commit on `main` becomes a GitHub release carrying self-contained `h9k` and `h9kd`
+binaries for macOS arm64, Windows x64, and Linux x64 (`.github/workflows/release.yml`), each
+bundled with the canonical skill set and a `checksums.txt`. A bare machine with no repo checkout
+and no .NET SDK bootstraps from that release directly (`scripts/install.sh` / `scripts/install.ps1`,
+or the agent-followable [`docs/INSTALL.md`](INSTALL.md)): fetch via `gh`, verify the checksum, ask
+consent, install, and finish with `h9k doctor`. `h9k install` publishes binaries to `~/.hall9k/bin`,
+links `h9k` onto the PATH, and publishes the skill set to `~/.hall9k/skills`, either from a local
+`dotnet publish` (`--repo`) or from an already-downloaded release payload (`--from-release`).
+`h9k update` is the same `--from-release` path wired to `gh release download`, for a machine that
+already has `h9k`. The daemon has a CLI-owned lifecycle with a strictly opt-in autostart (launchd
+on macOS, a Windows startup task once S1-14 lands) that snapshots the environment it will need and
+reports any tool it cannot resolve, daemon start/stop run on macOS and Linux today; Windows has
+binaries but no daemon lifecycle yet (see Windows support, below).
+
+See [PLAN.md Decisions Log #77](../PLAN.md).
 
 ### The project home
 
@@ -127,20 +138,13 @@ See [PLAN.md §13](../PLAN.md), Decisions Log #5.
 ### Windows support
 
 Windows builds and tests in CI (with the Docker-dependent integration tier excluded, since
-Windows runners cannot run Linux containers). `h9k install` refuses to run on Windows, and the
-process manager needs spawn, kill-tree, and reattach parity. The daemon form is decided: a Task
-Scheduler logon task, so it runs as the user and credentials work.
+Windows runners cannot run Linux containers). `h9k install` and `h9k update` place release
+binaries on Windows and put `h9k` on the PATH, but the *daemon* lifecycle does not exist there
+yet: `h9k daemon start` / `stop` / `autostart enable` all refuse with a named not-yet message, and
+the process manager still needs spawn, kill-tree, and reattach parity. The daemon form is decided:
+a Task Scheduler logon task, so it runs as the user and credentials work.
 
-See `SLICE-1.md` S1-14, Decisions Log #3.
-
-### Release delivery
-
-Today's install is clone-and-build. A tagged commit becoming installable binaries on a bare
-machine (release CI, per-OS self-contained artifacts, a one-line bootstrap) is designed and not
-built, and it is the tier the distribution ladder calls "interim, likely permanent".
-
-See [`backlog/42-release-delivery.md`](../backlog/42-release-delivery.md),
-[PLAN.md §13](../PLAN.md).
+See `SLICE-1.md` S1-14, Decisions Log #3, #75.
 
 ### Token visibility and exhaustion
 
