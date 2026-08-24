@@ -411,6 +411,15 @@ public sealed class InstallCommand : Hall9kAsyncCommand<InstallCommand.Settings>
     /// and swept up by the next install or update, whose leading cleanup step is this same
     /// best-effort delete on what is by then a retired copy nothing is running from.
     /// </para>
+    /// <para>
+    /// That best-effort delete can itself fail twice in a row — an antivirus scanner or
+    /// indexer holding one of the freshly written executables is the same kind of lock that
+    /// stops the leading cleanup — so the retire step below falls back to a uniquely named
+    /// directory rather than let <see cref="Directory.Move(string, string)"/> throw into an
+    /// install that has already fully staged its new binaries. That leaves two abandoned
+    /// copies for a human to clear by hand instead of one, which is the honest cost of a
+    /// double lock, not a defect this method can close on its own.
+    /// </para>
     /// </summary>
     private static void SwapIntoPlace(string staging, string bin)
     {
@@ -419,11 +428,25 @@ public sealed class InstallCommand : Hall9kAsyncCommand<InstallCommand.Settings>
 
         if (Directory.Exists(bin))
         {
-            Directory.Move(bin, retired);
+            RetireDirectory(bin, retired);
         }
 
         Directory.Move(staging, bin);
         TryDelete(retired);
+    }
+
+    /// <summary>Moves <paramref name="bin"/> to <paramref name="retired"/>, falling back to a
+    /// uniquely suffixed name when a still-locked copy from an earlier run already occupies
+    /// it — the one case <see cref="TryDelete"/> could not clear a moment ago.</summary>
+    private static void RetireDirectory(string bin, string retired)
+    {
+        if (!Directory.Exists(retired))
+        {
+            Directory.Move(bin, retired);
+            return;
+        }
+
+        Directory.Move(bin, $"{retired}.{Path.GetRandomFileName()}");
     }
 
     private static void TryDelete(string directory)
