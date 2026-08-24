@@ -73,7 +73,7 @@ public sealed record ErroredReview(string Reviewer, string Url);
 /// within threads, so a thread whose first comment is the author's own is a human's
 /// self-note (the self-review discriminator — see the invariant in AGENTS.md).
 /// UnresolvedReviewThreadIds and UnresolvedHumanThreadIds carry the same two counts as
-/// exact id sets (Decisions Log #79, backlog 45): the full set is the closeout budget's
+/// exact id sets (Decisions Log #80, backlog 45): the full set is the closeout budget's
 /// mechanical obstruction key ("the same unresolved findings" the backlog card names), and
 /// the human subset is what a later poll diffs to recognize a newly opened human thread —
 /// one of the two signals that grants a lap regardless of the progress cap.
@@ -90,7 +90,7 @@ public sealed record ErroredReview(string Reviewer, string Url);
 /// outage).
 /// </para>
 /// <para>
-/// PendingReviewRequestLogins is the other human-engagement signal (Decisions Log #79,
+/// PendingReviewRequestLogins is the other human-engagement signal (Decisions Log #80,
 /// backlog 45): who currently has a pending review request. A login that was not pending as
 /// of the task's last automatic decision but is now is a human re-requesting a review — the
 /// platform's own re-requests are compared away separately (RunDetails.RequestedReviewerLogins),

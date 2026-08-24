@@ -187,7 +187,7 @@ public sealed class RunCloseoutProjectionTests
     }
 
     /// <summary>
-    /// h9k pr resolve's budget reset is recorded twice (Decisions Log #79, backlog 45): the
+    /// h9k pr resolve's budget reset is recorded twice (Decisions Log #80, backlog 45): the
     /// reset itself lands on the task stream as TaskReopened(Automatic: false), and this event
     /// records the same grant on the run the human resolved, so the run's own history shows a
     /// human touched it.

@@ -280,7 +280,7 @@ of the pane, and today a row lands there for one of four reasons:
 | Row says | What happened | The lever |
 |---|---|---|
 | `NeedsHuman`, review parked | The pre-PR review loop spent its automatic fixes or hit a disputed finding (#24, #63) | `h9k review resolve` |
-| `NeedsHuman`, closeout parked | The same obstruction survived its automatic-lap cap without clearing, or the pull request's lifetime automatic-closeout budget is spent (#22, #79) | `h9k pr resolve` |
+| `NeedsHuman`, closeout parked | The same obstruction survived its automatic-lap cap without clearing, or the pull request's lifetime automatic-closeout budget is spent (#22, #80) | `h9k pr resolve` |
 | `NeedsHuman`, dependency failed | A blocker died, so the dependent stays Blocked rather than silently unblocking (#34, #61) | recover the blocker |
 | `Failed` | The run itself failed | `h9k task retry` / `resolve` / `abandon` |
 
