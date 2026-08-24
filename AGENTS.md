@@ -307,7 +307,7 @@ actually failed*.
 | `h9k task retry <id>` | The task is **Failed** and the machinery is what failed (a daemon bug, a dead process, a push that was rejected). The work has to run again. | Requeues the task. The failure stays on the stream. The new run resumes the failed run's branch when it survived, or starts clean from the base branch when the artifacts are gone (#25). |
 | `h9k task resolve <id> --reason "…"` | The task is **Failed** but the objective was met anyway: the work merged, or you finished it by hand, and only the bookkeeping died. | Ends the task Done on your attestation. `--reason` is required (an attestation without a why is a guess) and `--pr` records where the work landed (#27). |
 | `h9k task abandon <id> --reason "…"` | You have stopped believing in the work. Reaches every non-terminal state, drafts and published tasks included. | Terminal. Releases any lease. Nothing is deleted: the reason is the record. |
-| `h9k pr resolve <id> [--checks]` | The task is **Done**, its pull request is open, and review feedback or failing CI needs another pass, either because the monitor spent its budget or because you want one now. | Dispatches a follow-up run onto the existing PR branch and resets the monitor's automatic retry budget (#20, #22). |
+| `h9k pr resolve <id> [--checks \| --rebase]` | The task is **Done**, its pull request is open, and review feedback, failing CI, or a conflict with its base branch needs another pass, either because the monitor spent its budget or because you want one now (`--rebase` is for when you spot the conflict before the monitor's next inspection does, backlog 44). | Dispatches a follow-up run onto the existing PR branch and resets the monitor's automatic retry budget (#20, #22). |
 | `h9k review resolve <id> --merge-ready` / `--needs-fixes "<why>"` | A run parked **before** its PR, in the internal review loop, and is waiting on your verdict. | `--merge-ready` proceeds to the pull request; `--needs-fixes` dispatches a fix session with your reason as its findings and restores the fix budget (#24). |
 
 Two distinctions worth keeping straight, because they are the ones that get confused:
@@ -454,6 +454,11 @@ Repo-resident Claude skills live in `.claude/skills/` and are available in every
 - **resolve-review-threads** - triage every unresolved review thread on an existing PR,
   whoever opened it (Copilot, a teammate, or the author's own self-review): fix, reply
   in-thread, resolve. Supersedes the Copilot-only `resolve-copilot-reviews` skill (§16 #62)
+- **rebase-onto-main** — bring a PR branch conflicting with its base current: replay its own
+  commits onto the moved base, resolve conflicts with judgment, never leave a conflict
+  marker, re-run the verification gates against the rebased tree. The inverse of
+  absorb-review-fixes (that one folds new fixes in, this one replays existing commits
+  forward) (backlog 44)
 - **pr-summary** — generate a PR title/description from the branch's commits (text only — the
   daemon opens PRs; agents never do)
 
