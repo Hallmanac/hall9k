@@ -31,6 +31,27 @@ public static class HomeEntryLookup
     public static string? FindExistingDirectory(string rootDirectory, Guid id) => FindExisting(rootDirectory, id);
 
     /// <summary>
+    /// Writes <see cref="IdentityMarkerFileName"/> into <paramref name="directoryPath"/> so a later
+    /// sweep can find this directory by id even after a slug rename changes its name (adversarial
+    /// review, backlog 49 cycle 3): a directory this lookup's own caller creates directly — an
+    /// idea's workspace at capture, before any daemon-side render has ever run for it — is
+    /// otherwise invisible to <see cref="FindExisting"/>'s marker check, so a slug-changing revise
+    /// landing before the first render sweep would make the sweep treat the CLI-created directory
+    /// as unrelated and build a fresh, empty one at the new name instead of moving it — the same
+    /// decoy-workspace failure this type exists to prevent, reappearing at the one directory this
+    /// lookup does not itself create.
+    /// </summary>
+    public static void EnsureIdentityMarker(string directoryPath, Guid id)
+    {
+        string markerPath = Path.Combine(directoryPath, IdentityMarkerFileName);
+        string fullId = id.ToString("N");
+        if (!File.Exists(markerPath) || File.ReadAllText(markerPath).Trim() != fullId)
+        {
+            File.WriteAllText(markerPath, fullId);
+        }
+    }
+
+    /// <summary>
     /// A directory already on disk for this id, optionally excluding one already-checked name.
     /// Matching is by short-id prefix first (cheap, and right in the overwhelming majority of
     /// cases) and then confirmed against the full id recorded in <see cref="IdentityMarkerFileName"/>,

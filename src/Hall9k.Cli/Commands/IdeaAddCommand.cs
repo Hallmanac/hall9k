@@ -69,6 +69,16 @@ public sealed class IdeaAddCommand : Hall9kAsyncCommand<IdeaAddCommand.Settings>
             workspaceHome, ProjectHomePaths.EntryDirectoryName(ideaId, captured.Text), ideaId);
         string workspace = IdeaPaths.EnsureWorkspace(ideaDirectory);
 
+        // A home-resident idea's directory has to carry its identity marker from the moment this
+        // command creates it, not just from the first render sweep: a revise that changes the
+        // slug before that first sweep ever runs would otherwise leave the sweep unable to
+        // recognise this directory as the idea's own, and it would build a fresh, empty one at the
+        // new name instead of moving this one (HomeEntryLookup.FindExisting requires the marker).
+        if (workspaceHome.HasValue)
+        {
+            HomeEntryLookup.EnsureIdentityMarker(ideaDirectory, ideaId);
+        }
+
         string shortId = TaskListCommand.ShortId(ideaId);
         AnsiConsole.MarkupLine(
             $"[blue]Idea captured[/] {TaskListCommand.Truncate(captured.Text, 72).EscapeMarkup()} [dim]({shortId})[/]");

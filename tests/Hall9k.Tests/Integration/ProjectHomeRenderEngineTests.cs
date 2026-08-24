@@ -191,6 +191,56 @@ public sealed class ProjectHomeRenderEngineTests(PostgresFixture postgres) : ICl
     }
 
     [Fact]
+    public async Task A_slug_changing_revise_before_the_first_sweep_still_finds_the_directory_capture_created()
+    {
+        // Mirrors what h9k idea add actually does (IdeaAddCommand): it creates the idea's
+        // home-resident directory and workspace itself, synchronously, because no doorbell
+        // ever wakes the render sweep for an idea. That directory has to carry the identity
+        // marker from the moment it is created — if a slug-changing revise lands before the
+        // first sweep ever runs, the sweep's HomeEntryLookup.FindExisting match requires the
+        // marker to recognise this as the same directory rather than building a fresh, empty
+        // decoy at the new name and stranding this one (adversarial review, backlog 49 cycle 3).
+        using DocumentStore store = NewStore();
+        Guid ownerId = DomainId.New();
+        Guid projectId = DomainId.New();
+        Guid ideaId = DomainId.New();
+        IdeaCaptured captured;
+
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            RegisterProject(session, projectId, ownerId, "hall9k");
+            ProjectHome workspaceHome = ProjectHome.Parse(_home);
+            captured = IdeaDecider.Capture(ideaId, ownerId, "Original idea text", projectId, Now, workspaceHome);
+            session.Events.StartStream<IdeaAggregate>(ideaId, captured);
+            await session.SaveChangesAsync();
+        }
+
+        string ideaDirectory = IdeaPaths.ResolveDirectory(
+            ProjectHome.Parse(_home), ProjectHomePaths.EntryDirectoryName(ideaId, captured.Text), ideaId);
+        string workspace = IdeaPaths.EnsureWorkspace(ideaDirectory);
+        HomeEntryLookup.EnsureIdentityMarker(ideaDirectory, ideaId);
+        File.WriteAllText(Path.Combine(workspace, "notes.md"), "keep me");
+
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            IdeaAggregate idea = await session.Events.AggregateStreamAsync<IdeaAggregate>(ideaId)
+                ?? throw new InvalidOperationException("idea not found");
+            IdeaRevised revised = IdeaDecider.Revise(idea, "Renamed idea text", Now, ownerId);
+            session.Events.Append(ideaId, revised);
+            await session.SaveChangesAsync();
+        }
+
+        await NewEngine(store).PollOnceAsync(CancellationToken.None);
+
+        string ideasRoot = ProjectHomePaths.IdeasDirectory(_home);
+        Directory.Exists(ideaDirectory).Should().BeFalse("the stale slug's directory must not survive the rename");
+        string renamedDirectory = Directory.EnumerateDirectories(ideasRoot).Should().ContainSingle().Subject;
+        Path.GetFileName(renamedDirectory).Should().Contain("renamed-idea-text");
+        File.ReadAllText(Path.Combine(renamedDirectory, "workspace", "notes.md")).Should().Be("keep me",
+            "capture's own workspace file must survive the move rather than being orphaned behind a decoy");
+    }
+
+    [Fact]
     public async Task A_stray_directory_matching_no_task_or_idea_is_reconciled_away_on_the_next_sweep()
     {
         using DocumentStore store = NewStore();

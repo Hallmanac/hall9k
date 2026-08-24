@@ -111,13 +111,6 @@ public static class HomeEntryWriter
     public static string? FindExistingDirectory(string rootDirectory, Guid id) =>
         HomeEntryLookup.FindExistingDirectory(rootDirectory, id);
 
-    private static void EnsureIdentityMarker(string directoryPath, Guid id)
-    {
-        string markerPath = Path.Combine(directoryPath, IdentityMarkerFileName);
-        string fullId = id.ToString("N");
-        if (!File.Exists(markerPath) || File.ReadAllText(markerPath).Trim() != fullId)
-        {
-            File.WriteAllText(markerPath, fullId);
-        }
-    }
+    private static void EnsureIdentityMarker(string directoryPath, Guid id) =>
+        HomeEntryLookup.EnsureIdentityMarker(directoryPath, id);
 }
