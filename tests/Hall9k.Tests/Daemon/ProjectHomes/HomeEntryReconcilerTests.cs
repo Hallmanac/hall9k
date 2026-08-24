@@ -105,11 +105,13 @@ public sealed class HomeEntryReconcilerTests : IDisposable
         Directory.CreateDirectory(Path.Combine(directory, "workspace"));
         File.WriteAllText(Path.Combine(directory, "workspace", "notes.md"), "keep me");
 
-        HomeEntryReconciler.RemoveOrMarkOrphans(_root, new HashSet<string>(), "idea.md");
+        IReadOnlyList<string> firstSweep = HomeEntryReconciler.RemoveOrMarkOrphans(_root, new HashSet<string>(), "idea.md");
         DateTime firstMarked = File.GetLastWriteTimeUtc(Path.Combine(directory, "ORPHANED.md"));
-        HomeEntryReconciler.RemoveOrMarkOrphans(_root, new HashSet<string>(), "idea.md");
+        IReadOnlyList<string> secondSweep = HomeEntryReconciler.RemoveOrMarkOrphans(_root, new HashSet<string>(), "idea.md");
 
         File.GetLastWriteTimeUtc(Path.Combine(directory, "ORPHANED.md")).Should().Be(firstMarked);
+        firstSweep.Should().ContainSingle("the first sweep newly marks the orphan");
+        secondSweep.Should().BeEmpty("an orphan already marked on a prior sweep must not keep counting as handled every sweep after");
     }
 
     public void Dispose()
