@@ -1,4 +1,4 @@
-using Hall9k.Domain.Infrastructure.Ids;
+using Hall9k.Domain.Infrastructure.Storage;
 
 namespace Hall9k.Daemon.ProjectHomes;
 
@@ -26,8 +26,11 @@ public static class HomeEntryWriter
     /// collide on, so a prefix match alone is not enough to know a candidate directory actually
     /// belongs to the id being rendered. Never shown as part of the mirror's own content and
     /// excluded from <see cref="HomeEntryReconciler"/>'s "nothing but generated content" check.
+    /// Defined on <see cref="HomeEntryLookup"/> in <c>Hall9k.Domain</c>, which owns the read-only
+    /// lookup shared with <c>Hall9k.Cli</c>; re-exposed here under this type's existing name so
+    /// every caller in this project keeps reading <c>HomeEntryWriter.IdentityMarkerFileName</c>.
     /// </summary>
-    internal const string IdentityMarkerFileName = ".hall9k-id";
+    internal const string IdentityMarkerFileName = HomeEntryLookup.IdentityMarkerFileName;
 
     /// <summary>
     /// Writes <paramref name="renderedContent"/> as <paramref name="fileName"/> under the entry's
@@ -70,7 +73,7 @@ public static class HomeEntryWriter
                     + "collision); refusing to overwrite it.");
             }
         }
-        else if (FindExisting(rootDirectory, id, excludingName: directoryName) is { } stale)
+        else if (HomeEntryLookup.FindExisting(rootDirectory, id, excludingName: directoryName) is { } stale)
         {
             Directory.Move(stale, targetDirectory);
         }
@@ -95,8 +98,8 @@ public static class HomeEntryWriter
 
     /// <summary>
     /// The directory already on disk for this id, under whatever name it currently carries, if
-    /// any — the read-only half of <see cref="FindExisting"/> for callers that need to place new
-    /// content under an entry's CURRENT directory without inventing a name the render sweep has
+    /// any — the read-only half of <see cref="HomeEntryLookup.FindExisting"/> for callers that need
+    /// to place new content under an entry's CURRENT directory without inventing a name the render sweep has
     /// not renamed onto yet (<c>RunLauncher</c>, adversarial review, backlog 49 cycle 1): a run
     /// directory resolved from the task's live objective can name a slug the sweep has not moved
     /// the directory to, and creating that not-yet-existing directory ahead of the sweep leaves
@@ -105,45 +108,8 @@ public static class HomeEntryWriter
     /// keeps every caller pointed at the one directory that actually exists until the sweep itself
     /// performs the move.
     /// </summary>
-    public static string? FindExistingDirectory(string rootDirectory, Guid id) => FindExisting(rootDirectory, id);
-
-    /// <summary>
-    /// A directory already on disk for this id under some other name — the slug changed since the
-    /// last render. Matching is by short-id prefix first (cheap, and right in the overwhelming
-    /// majority of cases) and then confirmed against the full id recorded in
-    /// <see cref="IdentityMarkerFileName"/>, because the prefix alone is a 32-bit value and two
-    /// unrelated entities in a project with enough history can share one — without the
-    /// confirmation, a same-prefix directory belonging to a different task or idea would be
-    /// <c>Directory.Move</c>d into this entry's slot, merging unrelated content silently. A
-    /// same-prefix candidate with no marker, or a mismatched one, is not this entity's directory
-    /// and is left alone; the caller then creates a fresh directory instead of moving into it, and
-    /// reconciliation judges the untouched candidate on its own next sweep. Excludes
-    /// <paramref name="excludingName"/> so a caller that already confirmed the target does not
-    /// exist never matches itself; null when there is no such name to exclude.
-    /// </summary>
-    private static string? FindExisting(string rootDirectory, Guid id, string? excludingName = null)
-    {
-        if (!Directory.Exists(rootDirectory))
-        {
-            return null;
-        }
-
-        string prefix = DomainId.Short(id) + "-";
-        string fullId = id.ToString("N");
-        return Directory.EnumerateDirectories(rootDirectory)
-            .FirstOrDefault(directory =>
-            {
-                string name = Path.GetFileName(directory);
-                if (!name.StartsWith(prefix, StringComparison.Ordinal)
-                    || (excludingName is not null && string.Equals(name, excludingName, StringComparison.Ordinal)))
-                {
-                    return false;
-                }
-
-                string markerPath = Path.Combine(directory, IdentityMarkerFileName);
-                return File.Exists(markerPath) && File.ReadAllText(markerPath).Trim() == fullId;
-            });
-    }
+    public static string? FindExistingDirectory(string rootDirectory, Guid id) =>
+        HomeEntryLookup.FindExistingDirectory(rootDirectory, id);
 
     private static void EnsureIdentityMarker(string directoryPath, Guid id)
     {
