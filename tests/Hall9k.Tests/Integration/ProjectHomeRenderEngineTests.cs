@@ -180,10 +180,13 @@ public sealed class ProjectHomeRenderEngineTests(PostgresFixture postgres) : ICl
         session.Events.StartStream<TaskAggregate>(taskId, added);
     }
 
-    private static void CaptureIdea(IDocumentSession session, Guid projectId, Guid ownerId, string text)
+    private void CaptureIdea(IDocumentSession session, Guid projectId, Guid ownerId, string text)
     {
         Guid ideaId = DomainId.New();
-        IdeaCaptured captured = IdeaDecider.Capture(ideaId, ownerId, text, projectId, Now);
+        // Mirrors what h9k idea add actually checks: the project's home already materialised
+        // on this machine at capture time (RegisterProject creates _home before this runs).
+        ProjectHome workspaceHome = Directory.Exists(_home) ? ProjectHome.Parse(_home) : ProjectHome.None;
+        IdeaCaptured captured = IdeaDecider.Capture(ideaId, ownerId, text, projectId, Now, workspaceHome);
         session.Events.StartStream<IdeaAggregate>(ideaId, captured);
     }
 

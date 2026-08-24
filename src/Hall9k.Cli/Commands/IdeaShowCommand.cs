@@ -44,7 +44,7 @@ public sealed class IdeaShowCommand : Hall9kAsyncCommand<IdeaShowCommand.Setting
         header.AddRow("Captured", $"{idea.CapturedAt.ToLocalTime():g} "
             + $"[dim]({TaskStatusComposer.RelativeAge(DateTimeOffset.UtcNow - idea.CapturedAt)})[/]");
         header.AddRow("Captured by", await OwnerMarkupAsync(session, idea.OwnerId, cancellationToken));
-        header.AddRow("Workspace", WorkspaceMarkup(idea.Id));
+        header.AddRow("Workspace", WorkspaceMarkup(idea));
         AnsiConsole.Write(header);
 
         if (idea.History.Count > 1)
@@ -69,10 +69,12 @@ public sealed class IdeaShowCommand : Hall9kAsyncCommand<IdeaShowCommand.Setting
     /// The workspace is a plain directory on disk, so what it holds is counted when someone
     /// looks. An empty one is not a problem to report — it is an invitation.
     /// </summary>
-    private static string WorkspaceMarkup(Guid ideaId)
+    private static string WorkspaceMarkup(IdeaDetails idea)
     {
-        string path = IdeaPaths.WorkspaceDirectory(ideaId);
-        return IdeaPaths.FileCount(ideaId) switch
+        string ideaDirectory = IdeaPaths.ResolveDirectory(
+            idea.WorkspaceHome, ProjectHomePaths.EntryDirectoryName(idea.Id, idea.Text), idea.Id);
+        string path = IdeaPaths.WorkspaceDirectory(ideaDirectory);
+        return IdeaPaths.FileCount(ideaDirectory) switch
         {
             null => $"{path.EscapeMarkup()} [dim](not created yet)[/]",
             0 => $"{path.EscapeMarkup()} [dim](empty — research notes, gathered files, and prototypes go here)[/]",

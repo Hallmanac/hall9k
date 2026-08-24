@@ -1,3 +1,5 @@
+using Hall9k.Domain.Features.Project;
+
 namespace Hall9k.Domain.Features.Idea;
 
 /// <summary>
@@ -5,10 +7,15 @@ namespace Hall9k.Domain.Features.Idea;
 /// nullable because an idea may precede its project — or become one — and demanding a project
 /// at capture would defeat the one thing capture is for.
 /// <para>
-/// The discovery workspace is deliberately absent: its path is derived from the id
-/// (<see cref="Hall9k.Domain.Infrastructure.Storage.IdeaPaths"/>), exactly as a run's
-/// directory is, so the stream never records a fact it can recompute — and never records what
-/// accumulates inside it.
+/// WorkspaceHome is the one fact about the discovery workspace this event does record — not
+/// where the workspace is, but whether it started life under a project's home
+/// (<see cref="Hall9k.Domain.Infrastructure.Storage.IdeaPaths"/>): an idea captured before its
+/// project had a home materialised here is permanently on the platform-global location, because
+/// a home gained later must never redirect the read path away from a workspace a human may
+/// already have dropped files into. <see cref="ProjectHome.None"/> for every idea captured with
+/// no project, or with one whose home was not yet materialised on this machine — including every
+/// idea captured before this field existed, which is the honest reading for a stream that never
+/// observed a home in the first place.
 /// </para>
 /// </summary>
 public sealed record IdeaCaptured(
@@ -16,4 +23,5 @@ public sealed record IdeaCaptured(
     Guid OwnerId,
     string Text,
     Guid? ProjectId,
-    DateTimeOffset CapturedAt);
+    DateTimeOffset CapturedAt,
+    string WorkspaceHomeDirectory = "");

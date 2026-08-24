@@ -1,3 +1,4 @@
+using Hall9k.Domain.Features.Project;
 using JasperFx.Events;
 using Marten.Events.Aggregation;
 
@@ -31,6 +32,8 @@ public sealed class IdeaDetails
     public string? DiscardReason { get; set; }
     public DateTimeOffset? DiscardedAt { get; set; }
     public DateTimeOffset CapturedAt { get; set; }
+    /// <summary>The home the discovery workspace was captured under, or <see cref="ProjectHome.None"/> — see <see cref="IdeaCaptured"/>.</summary>
+    public ProjectHome WorkspaceHome { get; set; } = ProjectHome.None;
 
     /// <summary>How many times the note was rewritten after capture.</summary>
     public int Revisions => Math.Max(History.Count - 1, 0);
@@ -47,6 +50,7 @@ public sealed class IdeaDetailsProjection : SingleStreamProjection<IdeaDetails, 
         State = IdeaState.Captured,
         History = [new IdeaNote { Text = @event.Data.Text, WrittenAt = @event.Data.CapturedAt }],
         CapturedAt = @event.Data.CapturedAt,
+        WorkspaceHome = ProjectHome.Parse(@event.Data.WorkspaceHomeDirectory),
     };
 
     public void Apply(IEvent<IdeaRevised> @event, IdeaDetails view)

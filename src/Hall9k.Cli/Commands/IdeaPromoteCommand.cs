@@ -89,7 +89,7 @@ public sealed class IdeaPromoteCommand : Hall9kAsyncCommand<IdeaPromoteCommand.S
             promoted.Objective,
             acceptanceCriteria: [],
             TaskType.Parse(null),
-            AgentContext(idea.Id, seed.Context),
+            AgentContext(idea, seed.Context),
             constraints: null,
             externalReference: null,
             promoted.PromotedAt,
@@ -132,7 +132,7 @@ public sealed class IdeaPromoteCommand : Hall9kAsyncCommand<IdeaPromoteCommand.S
     /// discovery workspace so the research that produced this task is reachable from it. The
     /// pointer is a path, not the files — the bytes stay on disk (Decisions Log #35).
     /// </summary>
-    internal static string AgentContext(Guid ideaId, string? context)
+    internal static string AgentContext(IdeaAggregate idea, string? context)
     {
         StringBuilder agentContext = new();
         if (context.IsNotBlank())
@@ -140,10 +140,12 @@ public sealed class IdeaPromoteCommand : Hall9kAsyncCommand<IdeaPromoteCommand.S
             agentContext.AppendLine(context).AppendLine();
         }
 
+        string ideaDirectory = IdeaPaths.ResolveDirectory(
+            idea.WorkspaceHome, ProjectHomePaths.EntryDirectoryName(idea.Id, idea.Text), idea.Id);
         agentContext.AppendLine(
             "Discovery workspace (research notes, gathered files, and prototypes from before this "
             + "was a task; may be empty):");
-        agentContext.Append(IdeaPaths.WorkspaceDirectory(ideaId));
+        agentContext.Append(IdeaPaths.WorkspaceDirectory(ideaDirectory));
         return agentContext.ToString();
     }
 
@@ -178,7 +180,10 @@ public sealed class IdeaPromoteCommand : Hall9kAsyncCommand<IdeaPromoteCommand.S
         AnsiConsole.MarkupLine(seed.Context.IsNotBlank()
             ? "[dim]  context:[/] the rest of the note, plus the discovery workspace path"
             : "[dim]  context:[/] the discovery workspace path");
-        AnsiConsole.MarkupLine($"[dim]  workspace:[/] {IdeaPaths.WorkspaceDirectory(idea.Id).EscapeMarkup()}");
+        string ideaDirectory = IdeaPaths.ResolveDirectory(
+            idea.WorkspaceHome, ProjectHomePaths.EntryDirectoryName(idea.Id, idea.Text), idea.Id);
+        AnsiConsole.MarkupLine(
+            $"[dim]  workspace:[/] {IdeaPaths.WorkspaceDirectory(ideaDirectory).EscapeMarkup()}");
 
         if (SharpenNudge(promoted.Objective, seed.Context, objectiveGiven) is { } nudge)
         {

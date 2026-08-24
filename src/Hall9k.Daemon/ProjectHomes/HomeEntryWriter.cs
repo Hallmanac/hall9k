@@ -8,13 +8,15 @@ public readonly record struct HomeEntryWriteResult(bool Changed, string Director
 /// <summary>
 /// The filesystem half of a task or idea render (backlog 48): find the entry's directory (moving
 /// it if the slug changed since the last render), and write the rendered file only when it
-/// actually differs. Shared by tasks and ideas, but the <c>workspace/</c> sibling is a task-only
-/// affordance (<paramref name="includeWorkspace"/> on <see cref="Write"/>): an idea's real
-/// discovery workspace lives at the global <c>~/.hall9k/ideas/&lt;id&gt;/workspace</c>, unrelated
-/// to the project home, and creating a same-looking-but-inert <c>workspace/</c> beside
-/// <c>idea.md</c> would invite a human to drop research material into a folder nothing ever reads
-/// (backlog 48's own DISCOVERY.md slice 3, "Relocations", is where the idea workspace moves here
-/// for real — deliberately not this task's).
+/// actually differs. Shared by tasks and ideas, but the <c>workspace/</c> sibling
+/// (<paramref name="includeWorkspace"/> on <see cref="Write"/>) is conditional for an idea in a
+/// way it never is for a task: a task always has one here, while an idea's real discovery
+/// workspace only lives under this render directory when it was captured with a home already
+/// materialised (<c>IdeaDetails.WorkspaceHome</c>, backlog 49) — an idea captured before that, or
+/// with no project at all, keeps its workspace at the platform-global location forever, and the
+/// caller passes <c>includeWorkspace: false</c> for exactly that idea so a same-looking-but-inert
+/// <c>workspace/</c> is never created beside <c>idea.md</c> to invite a human to drop research
+/// material into a folder nothing ever reads.
 /// </summary>
 public static class HomeEntryWriter
 {
