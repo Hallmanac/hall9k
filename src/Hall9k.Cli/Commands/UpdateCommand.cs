@@ -174,15 +174,30 @@ public sealed class UpdateCommand(ProcessRunner? gh = null) : Hall9kAsyncCommand
         }
         finally
         {
-            if (Directory.Exists(downloadDirectory))
-            {
-                Directory.Delete(downloadDirectory, recursive: true);
-            }
+            TryDeleteScratchDirectory(downloadDirectory);
+            TryDeleteScratchDirectory(extractDirectory);
+        }
+    }
 
-            if (Directory.Exists(extractDirectory))
-            {
-                Directory.Delete(extractDirectory, recursive: true);
-            }
+    /// <summary>Best-effort, matching <see cref="InstallCommand.TryDelete"/>: a locked file
+    /// (Defender or an indexer still holding one of the just-extracted executables open) must
+    /// not turn a command that already finished — successfully or not — into an unhandled
+    /// exception that discards the real outcome.</summary>
+    private static void TryDeleteScratchDirectory(string directory)
+    {
+        if (!Directory.Exists(directory))
+        {
+            return;
+        }
+
+        try
+        {
+            Directory.Delete(directory, recursive: true);
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            AnsiConsole.MarkupLineInterpolated(
+                $"[dim]Could not remove scratch directory {directory} yet (still in use) — it will be left for manual cleanup.[/]");
         }
     }
 }
