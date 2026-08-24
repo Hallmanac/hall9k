@@ -121,8 +121,11 @@ public static class RunPaths
     /// a plain overwrite would erase the first the moment the second landed, leaving only the
     /// newest attempt to read. Best-effort, like every other run artifact write: losing it must
     /// not turn a park into a failure, and the caller's own park reason names the path either way.
+    /// Returns the caught exception on failure (null on success) so the caller can log why —
+    /// a permissions problem, a full disk, and a sharing violation all look identical from the
+    /// outside otherwise.
     /// </summary>
-    public static async Task<bool> AppendDisputePositionAsync(
+    public static async Task<Exception?> AppendDisputePositionAsync(
         string filePath, string? summary, CancellationToken cancellationToken)
     {
         try
@@ -130,11 +133,11 @@ public static class RunPaths
             Directory.CreateDirectory(Path.GetDirectoryName(filePath) ?? filePath);
             await File.AppendAllTextAsync(
                 filePath, $"## Dispute position, {DateTimeOffset.UtcNow:u}\n\n{summary}\n\n", cancellationToken);
-            return true;
+            return null;
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
         {
-            return false;
+            return exception;
         }
     }
 
