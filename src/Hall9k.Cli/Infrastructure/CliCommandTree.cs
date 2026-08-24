@@ -177,9 +177,11 @@ public static class CliCommandTree
             pullRequest.AddCommand<PullRequestResolveCommand>("resolve")
                 .WithDescription(
                     "Dispatch a follow-up run onto a done task's existing PR branch to resolve review feedback "
-                    + "(or fix failing CI with --checks). Also resets the closeout monitor's automatic retry budget.")
+                    + "(fix failing CI with --checks, or rebase onto its base branch with --rebase). Also resets "
+                    + "the closeout monitor's automatic retry budget.")
                 .WithExample("pr", "resolve", "28b19893")
-                .WithExample("pr", "resolve", "28b19893", "--checks");
+                .WithExample("pr", "resolve", "28b19893", "--checks")
+                .WithExample("pr", "resolve", "28b19893", "--rebase");
         });
 
         config.AddBranch("review", review =>

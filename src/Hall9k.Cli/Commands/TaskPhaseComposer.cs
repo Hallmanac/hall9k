@@ -206,6 +206,8 @@ internal static class TaskPhaseComposer
             "ChecksFailing" => new TaskPhase($"watching {pullRequest}", SessionLiveness.NotApplicable,
                 ChecksDetail(run)),
             "ReviewPending" => new TaskPhase($"watching {pullRequest}", SessionLiveness.NotApplicable, Threads(run)),
+            "Conflicting" => new TaskPhase($"watching {pullRequest}", SessionLiveness.NotApplicable,
+                "conflicts with its base branch; a rebase follow-up is on the way"),
             "CloseoutParked" => new TaskPhase($"watching {pullRequest} — automatic follow-ups stopped",
                 SessionLiveness.NotApplicable, "the monitor still watches for the merge"),
             // Every run failure records this state, not only the pull request being closed

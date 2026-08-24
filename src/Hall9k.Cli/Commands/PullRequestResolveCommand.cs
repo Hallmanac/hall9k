@@ -34,6 +34,18 @@ public sealed class PullRequestResolveCommand : Hall9kAsyncCommand<PullRequestRe
         [CommandOption("--checks")]
         [Description("Dispatch the fix-the-CI prompt (the PR's checks are failing) instead of the resolve-review-comments prompt")]
         public bool Checks { get; init; }
+
+        [CommandOption("--rebase")]
+        [Description(
+            "Dispatch the rebase-onto-main prompt (the PR's branch conflicts with its base) instead of the "
+            + "resolve-review-comments prompt — for when you see the conflict before the closeout monitor's "
+            + "next inspection does (backlog 44)")]
+        public bool Rebase { get; init; }
+
+        public override ValidationResult Validate() =>
+            Checks && Rebase
+                ? ValidationResult.Error("Pass at most one of --checks and --rebase — they dispatch different follow-up prompts.")
+                : ValidationResult.Success();
     }
 
     protected override async Task<int> ExecuteAsync(Settings settings, CancellationToken cancellationToken)
@@ -60,9 +72,18 @@ public sealed class PullRequestResolveCommand : Hall9kAsyncCommand<PullRequestRe
         BootstrapContext context = await NodeBootstrap.EnsureAsync(session, cancellationToken);
 
         DateTimeOffset resolvedAt = DateTimeOffset.UtcNow;
-        string reason = settings.Reason ?? (settings.Checks
-            ? "CI checks failing on the pull request."
-            : "Unresolved review comments on the pull request.");
+        string reason = settings.Reason ?? (settings.Checks, settings.Rebase) switch
+        {
+            (true, false) => "CI checks failing on the pull request.",
+            (false, true) => "The pull request's branch conflicts with its base branch.",
+            _ => "Unresolved review comments on the pull request.",
+        };
+        FollowUpKind kind = (settings.Checks, settings.Rebase) switch
+        {
+            (true, false) => FollowUpKind.FailingChecks,
+            (false, true) => FollowUpKind.Rebase,
+            _ => FollowUpKind.ReviewFeedback,
+        };
 
         // A human-initiated reopen (Automatic: false) also resets the closeout monitor's
         // automatic follow-up budget — the human asking is a fresh grant (log #22). The
@@ -70,8 +91,7 @@ public sealed class PullRequestResolveCommand : Hall9kAsyncCommand<PullRequestRe
         // CloseoutBudgetGranted below records the same grant on the run the human
         // resolved, so the run's own history shows a human touched it (log #80, backlog 45).
         session.Events.Append(taskId, expectedVersion: fence.Version + 1, TaskDecider.Reopen(
-            task, previousRunId, previousRun.Branch, reason,
-            settings.Checks ? FollowUpKind.FailingChecks : FollowUpKind.ReviewFeedback,
+            task, previousRunId, previousRun.Branch, reason, kind,
             automatic: false,
             resolvedAt, context.OwnerId));
         session.Events.Append(previousRunId, new CloseoutBudgetGranted(previousRunId, reason, resolvedAt));
