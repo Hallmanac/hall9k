@@ -32,6 +32,14 @@ jobs:
         with:
           dotnet-version: 10.0.x
 
+      # The tag drives the version stamped into both binaries, not the csproj's own
+      # placeholder <Version> — without this, CliVersion.Current (h9k --version) and
+      # h9kd's own assembly metadata report the checked-in placeholder forever,
+      # regardless of which release actually built them.
+      - name: Resolve version
+        shell: bash
+        run: echo "VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_ENV"
+
       # Self-contained (no PublishSingleFile — Wolverine/Marten's runtime codegen wants
       # ordinary assembly loading, and a bare machine needs the runtime bundled either
       # way): h9k and h9kd publish into the same directory, exactly as h9k install's
@@ -39,9 +47,9 @@ jobs:
       # InstallCommand --from-release stages from matches what a developer's own
       # install produces.
       - name: Publish h9k
-        run: dotnet publish src/Hall9k.Cli -c Release -r ${{ matrix.rid }} --self-contained true -o dist/${{ matrix.rid }} --nologo
+        run: dotnet publish src/Hall9k.Cli -c Release -r ${{ matrix.rid }} --self-contained true -o dist/${{ matrix.rid }} -p:Version=${{ env.VERSION }} --nologo
       - name: Publish h9kd
-        run: dotnet publish src/Hall9k.Daemon -c Release -r ${{ matrix.rid }} --self-contained true -o dist/${{ matrix.rid }} --nologo
+        run: dotnet publish src/Hall9k.Daemon -c Release -r ${{ matrix.rid }} --self-contained true -o dist/${{ matrix.rid }} -p:Version=${{ env.VERSION }} --nologo
 
       # The canonical skill set (backlog 42, IDEA-skill-layer Tension 8): ships inside
       # the release payload so the bootstrap scripts and h9k update can publish it to
