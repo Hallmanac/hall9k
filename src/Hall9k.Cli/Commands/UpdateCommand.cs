@@ -65,81 +65,117 @@ public sealed class UpdateCommand(ProcessRunner? gh = null) : Hall9kAsyncCommand
         string workingDirectory = Directory.GetCurrentDirectory();
         string archiveName = ReleasePlatform.ArchiveFileName(rid);
 
+        // Both directories are scratch space for this one run — the archive is copied into
+        // ~/.hall9k/bin by way of staging, never read from here again — so they are removed
+        // on every exit, success or failure, rather than left for the temp directory to
+        // accumulate release-sized payloads across every update.
         string downloadDirectory = Path.Combine(Path.GetTempPath(), $"h9k-update-{Path.GetRandomFileName()}");
-        Directory.CreateDirectory(downloadDirectory);
-
-        AnsiConsole.MarkupLineInterpolated($"[dim]Fetching the latest release for {rid} from {repository}…[/]");
-        ProcessResult download = await gh(
-            "gh",
-            [
-                "release", "download",
-                "--repo", repository,
-                "--pattern", archiveName,
-                "--pattern", "checksums.txt",
-                "--dir", downloadDirectory,
-                "--clobber",
-            ],
-            workingDirectory,
-            cancellationToken);
-        if (download.ExitCode != 0)
-        {
-            await Console.Error.WriteLineAsync(
-                $"gh release download failed for {repository} ({archiveName}):");
-            await Console.Error.WriteLineAsync(download.StandardError);
-            await Console.Error.WriteLineAsync(
-                "Check gh auth status — a private repository's releases need an authenticated gh (gh auth login).");
-            return ExitCodes.Error;
-        }
-
-        string archivePath = Path.Combine(downloadDirectory, archiveName);
-        string checksumsPath = Path.Combine(downloadDirectory, "checksums.txt");
-        if (!File.Exists(archivePath))
-        {
-            await Console.Error.WriteLineAsync(
-                $"gh release download reported success but {archiveName} is not in {downloadDirectory} — "
-                + "the release may not carry a build for this platform yet.");
-            return ExitCodes.Error;
-        }
-
-        string? checksumProblem = await ReleaseArchive.VerifyAsync(archivePath, checksumsPath, cancellationToken);
-        if (checksumProblem is not null)
-        {
-            await Console.Error.WriteLineAsync(checksumProblem);
-            return ExitCodes.Error;
-        }
-
-        AnsiConsole.MarkupLine("[dim]Checksum verified.[/]");
-
         string extractDirectory = Path.Combine(Path.GetTempPath(), $"h9k-update-extract-{Path.GetRandomFileName()}");
-        await ReleaseArchive.ExtractAsync(archivePath, extractDirectory, cancellationToken);
-
-        string? payloadProblem = InstallCommand.ValidateReleasePayload(extractDirectory);
-        if (payloadProblem is not null)
+        try
         {
-            await Console.Error.WriteLineAsync(payloadProblem);
-            return ExitCodes.Error;
+            Directory.CreateDirectory(downloadDirectory);
+
+            AnsiConsole.MarkupLineInterpolated($"[dim]Fetching the latest release for {rid} from {repository}…[/]");
+            ProcessResult download;
+            try
+            {
+                download = await gh(
+                    "gh",
+                    [
+                        "release", "download",
+                        "--repo", repository,
+                        "--pattern", archiveName,
+                        "--pattern", "checksums.txt",
+                        "--dir", downloadDirectory,
+                        "--clobber",
+                    ],
+                    workingDirectory,
+                    cancellationToken);
+            }
+            catch (Win32Exception)
+            {
+                await Console.Error.WriteLineAsync(
+                    "gh is not installed or not on the PATH — h9k update fetches releases through the GitHub "
+                    + "CLI. Install it from https://cli.github.com and run gh auth login.");
+                return ExitCodes.Error;
+            }
+            catch (TimeoutException exception)
+            {
+                await Console.Error.WriteLineAsync($"gh release download timed out: {exception.Message}");
+                return ExitCodes.Error;
+            }
+
+            if (download.ExitCode != 0)
+            {
+                await Console.Error.WriteLineAsync(
+                    $"gh release download failed for {repository} ({archiveName}):");
+                await Console.Error.WriteLineAsync(download.StandardError);
+                await Console.Error.WriteLineAsync(
+                    "Check gh auth status — a private repository's releases need an authenticated gh (gh auth login).");
+                return ExitCodes.Error;
+            }
+
+            string archivePath = Path.Combine(downloadDirectory, archiveName);
+            string checksumsPath = Path.Combine(downloadDirectory, "checksums.txt");
+            if (!File.Exists(archivePath))
+            {
+                await Console.Error.WriteLineAsync(
+                    $"gh release download reported success but {archiveName} is not in {downloadDirectory} — "
+                    + "the release may not carry a build for this platform yet.");
+                return ExitCodes.Error;
+            }
+
+            string? checksumProblem = await ReleaseArchive.VerifyAsync(archivePath, checksumsPath, cancellationToken);
+            if (checksumProblem is not null)
+            {
+                await Console.Error.WriteLineAsync(checksumProblem);
+                return ExitCodes.Error;
+            }
+
+            AnsiConsole.MarkupLine("[dim]Checksum verified.[/]");
+
+            await ReleaseArchive.ExtractAsync(archivePath, extractDirectory, cancellationToken);
+
+            string? payloadProblem = InstallCommand.ValidateReleasePayload(extractDirectory);
+            if (payloadProblem is not null)
+            {
+                await Console.Error.WriteLineAsync(payloadProblem);
+                return ExitCodes.Error;
+            }
+
+            string version = File.Exists(Path.Combine(extractDirectory, "VERSION"))
+                ? (await File.ReadAllTextAsync(Path.Combine(extractDirectory, "VERSION"), cancellationToken)).Trim()
+                : "unknown";
+            string skillsSource = Path.Combine(extractDirectory, "skills");
+
+            string staging = DaemonRuntime.StagingBinDirectory;
+            if (Directory.Exists(staging))
+            {
+                Directory.Delete(staging, recursive: true);
+            }
+
+            InstallCommand.StageFromRelease(extractDirectory, staging);
+
+            return await InstallCommand.FinishAsync(
+                staging,
+                Directory.Exists(skillsSource) ? skillsSource : null,
+                version,
+                restart,
+                noRestart,
+                cancellationToken,
+                linkOntoPath);
         }
-
-        string version = File.Exists(Path.Combine(extractDirectory, "VERSION"))
-            ? (await File.ReadAllTextAsync(Path.Combine(extractDirectory, "VERSION"), cancellationToken)).Trim()
-            : "unknown";
-        string skillsSource = Path.Combine(extractDirectory, "skills");
-
-        string staging = DaemonRuntime.StagingBinDirectory;
-        if (Directory.Exists(staging))
+        finally
         {
-            Directory.Delete(staging, recursive: true);
+            if (Directory.Exists(downloadDirectory))
+            {
+                Directory.Delete(downloadDirectory, recursive: true);
+            }
+
+            if (Directory.Exists(extractDirectory))
+            {
+                Directory.Delete(extractDirectory, recursive: true);
+            }
         }
-
-        InstallCommand.StageFromRelease(extractDirectory, staging);
-
-        return await InstallCommand.FinishAsync(
-            staging,
-            Directory.Exists(skillsSource) ? skillsSource : null,
-            version,
-            restart,
-            noRestart,
-            cancellationToken,
-            linkOntoPath);
     }
 }
