@@ -77,6 +77,19 @@ public sealed class UninstallCommandTests : IDisposable
     }
 
     [Fact]
+    public void A_stale_autostart_launch_script_is_swept_too()
+    {
+        // WindowsDaemonAutostart.DisableAsync normally deletes h9kd-autostart-launch.vbs
+        // itself, but that delete is best-effort and can lose to a lock — left behind, the
+        // file can carry a captured PATH (and, before this file's own connection-string fix,
+        // a Postgres password) in plain text past an uninstall that otherwise reports clean.
+        string home = Path.Combine(directory, "home");
+
+        UninstallCommand.InstallOwnedEntries(home, []).Should().Contain(
+            Path.Combine(home, "h9kd-autostart-launch.vbs"));
+    }
+
+    [Fact]
     public void The_rotated_log_is_swept_alongside_the_live_one()
     {
         // DaemonLogRotation writes h9kd.log.1 once the live log passes its size budget. Before

@@ -721,7 +721,12 @@ public sealed class UninstallCommand : Hall9kAsyncCommand<UninstallCommand.Setti
     /// the pid and lock files are: <c>WindowsStopRequestWatcher</c> normally deletes it within a
     /// tick of honoring it, but it can survive on disk when the daemon is force-killed, crashes,
     /// or the delete loses to a lock, and an uninstall that leaves it behind is not the clean
-    /// <c>~/.hall9k</c> removal this command promises.
+    /// <c>~/.hall9k</c> removal this command promises. <c>h9kd-autostart-launch.vbs</c> joins it
+    /// for the identical reason: <see cref="WindowsDaemonAutostart.DisableAsync"/> normally
+    /// deletes it too, on the same best-effort basis, and this entry is the backstop for when
+    /// that delete loses to a lock or autostart was never cleanly disabled — a stray copy is not
+    /// just clutter, since it can carry a captured PATH and (before this same task stopped
+    /// embedding it) a Postgres connection string in plain text.
     /// </para>
     /// <para>
     /// Built from <paramref name="home"/> with the literal relative names rather than by
@@ -745,6 +750,7 @@ public sealed class UninstallCommand : Hall9kAsyncCommand<UninstallCommand.Setti
         Path.Combine(home, "h9kd.pid"),
         Path.Combine(home, "h9kd.lock"),
         Path.Combine(home, "h9kd.stop"),
+        Path.Combine(home, "h9kd-autostart-launch.vbs"),
     ];
 
     /// <summary>The uniquely suffixed <c>bin.old.&lt;random&gt;</c> directories
