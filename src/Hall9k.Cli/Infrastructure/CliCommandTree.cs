@@ -280,6 +280,29 @@ public static class CliCommandTree
             });
         });
 
+        config.AddBranch("config", operatingSettings =>
+        {
+            operatingSettings.SetDescription(
+                "The daemon's durable operating settings — concurrency and the model-by-role policy — read "
+                + "from the platform config file (~/.hall9k/config.json) so an autostart-launched daemon runs "
+                + "with the operator's settings and not just built-in defaults (backlog 59). Precedence: an "
+                + "environment variable outranks this file, which outranks the built-in default. Hand-editing "
+                + "the file works just as well as these commands.");
+            operatingSettings.AddCommand<ConfigShowCommand>("show")
+                .WithDescription(
+                    "The effective operating settings right now, and where each one came from: an environment "
+                    + "variable, the platform config file, or the built-in default — the same precedence "
+                    + "DaemonOptions binds by at daemon startup.")
+                .WithExample("config", "show");
+            operatingSettings.AddCommand<ConfigSetCommand>("set")
+                .WithDescription(
+                    "Write one or more operating settings to the platform config file. A running daemon picks "
+                    + "up the change on its next start (h9k daemon stop, then h9k daemon start) — it binds "
+                    + "configuration once, at startup, the same as every environment variable it reads.")
+                .WithExample("config", "set", "--max-concurrent-agent-sessions", "4")
+                .WithExample("config", "set", "--model-review", "sonnet", "--model-fix", "haiku");
+        });
+
         config.AddBranch("idea", idea =>
         {
             idea.SetDescription(
