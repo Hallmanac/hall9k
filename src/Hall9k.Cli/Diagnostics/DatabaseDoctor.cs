@@ -244,13 +244,14 @@ public static class DatabaseDoctor
                     + "start Docker Desktop, then run h9k doctor again.[/]");
                 break;
             case ContainerRuntimeStatus.NotInstalled:
-                string nativeInstallHint = OperatingSystem.IsWindows()
-                    ? "Docker Desktop (WSL 2 backend, https://www.docker.com/products/docker-desktop/) is the "
-                        + "easiest path, or install Postgres natively for Windows"
+                string installHint = OperatingSystem.IsWindows()
+                    ? "a native install works just as well (winget: winget install PostgreSQL.PostgreSQL, or "
+                        + "the installer at https://www.postgresql.org/download/windows/), or Docker Desktop "
+                        + "(WSL 2 backend, https://www.docker.com/products/docker-desktop/) if you prefer containers"
                     : "a native install works just as well (Homebrew: brew install postgresql@18; "
                         + "apt: sudo apt install postgresql)";
                 AnsiConsole.MarkupLine(
-                    $"[dim]No container runtime (docker) found — Postgres does not need one: {nativeInstallHint}, "
+                    $"[dim]No container runtime (docker) found — Postgres does not need one: {installHint}, "
                     + "or point at one you already run elsewhere (Decisions Log #57).[/]");
                 break;
         }
