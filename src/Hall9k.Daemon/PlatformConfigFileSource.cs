@@ -48,6 +48,15 @@ public static class PlatformConfigFileSource
         try
         {
             using JsonDocument document = JsonDocument.Parse(File.ReadAllText(Hall9kDatabase.ConfigFile));
+            if (document.RootElement.ValueKind != JsonValueKind.Object)
+            {
+                Console.Error.WriteLine(
+                    $"The platform config file ({Hall9kDatabase.ConfigFile}) exists but its top level is not a "
+                    + "JSON object — daemon operating settings from it are skipped this run; environment "
+                    + "variables and built-in defaults still apply. Fix it (h9k config show explains the shape) "
+                    + "and restart to pick it up.");
+                return;
+            }
         }
         catch (JsonException exception)
         {
