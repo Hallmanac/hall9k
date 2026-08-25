@@ -38,7 +38,7 @@ public static class OperatingSettingsResolver
             new RoleModelSetting(
                 pair.Role,
                 ResolveOptionalString(
-                    $"{EnvironmentPrefix}ModelByRole__{pair.Role}", pair.Model, unusableEnvironmentVariables)))];
+                    $"{EnvironmentPrefix}ModelByRole__{pair.Role}", pair.Model, pair.Role, unusableEnvironmentVariables)))];
 
         return new OperatingSettingsReport(concurrency, defaultModel, roles, read.Problem, unusableEnvironmentVariables);
     }
@@ -122,14 +122,14 @@ public static class OperatingSettingsResolver
                 return new ResolvedSetting<string>(fallback, SettingOrigin.Default, null);
             }
 
-            return IsUsableModel(fromEnvironment, environmentVariable, unusable)
+            return IsUsableModel(fromEnvironment, environmentVariable, "every agent session on this node", unusable)
                 ? new ResolvedSetting<string>(fromEnvironment, SettingOrigin.EnvironmentVariable, environmentVariable)
                 : new ResolvedSetting<string>(fallback, SettingOrigin.Default, null);
         }
 
         if (configured is { Length: > 0 } value)
         {
-            return IsUsableModel(value, Hall9kDatabase.ConfigFile, unusable)
+            return IsUsableModel(value, Hall9kDatabase.ConfigFile, "every agent session on this node", unusable)
                 ? new ResolvedSetting<string>(value, SettingOrigin.PlatformConfigFile, Hall9kDatabase.ConfigFile)
                 : new ResolvedSetting<string>(fallback, SettingOrigin.Default, null);
         }
@@ -147,11 +147,16 @@ public static class OperatingSettingsResolver
     /// never returns it — it is a signal to fall through to the next tier, not a spawnable model.
     /// Reporting either shape as the healthy, in-force value the daemon runs on would be wrong in
     /// two different ways: <see cref="AgentModel.IsWellFormed"/> false (garbage, spaces, an
-    /// overlong string) means <c>ClaudeExecutor.SpawnAsync</c> throws for every fresh spawn on this
-    /// node; <see cref="AgentModel.Unknown"/> means the daemon quietly runs on the fallback while
-    /// the reported origin points at this environment variable or config file instead.
+    /// overlong string) means <c>ClaudeExecutor.SpawnAsync</c> throws only for spawns that read
+    /// <paramref name="spawnScope"/> (every session on this node for the platform default, only
+    /// the owning role's spawns for a per-role override); <see cref="AgentModel.Unknown"/> means
+    /// the daemon quietly runs on the fallback while the reported origin points at this
+    /// environment variable or config file instead. The named fallback tier also depends on
+    /// <paramref name="source"/>: an unusable environment variable still has the config file and
+    /// the default underneath it, but an unusable config-file value has only the default left, so
+    /// naming the config file there would point the message at itself.
     /// </summary>
-    private static bool IsUsableModel(string candidate, string source, List<string> unusable)
+    private static bool IsUsableModel(string candidate, string source, string spawnScope, List<string> unusable)
     {
         AgentModel resolved = AgentModel.FromInput(candidate);
         if (resolved.IsWellFormed)
@@ -159,22 +164,28 @@ public static class OperatingSettingsResolver
             return true;
         }
 
+        string fallbackTiers = source == Hall9kDatabase.ConfigFile
+            ? "the default"
+            : "the config file or default";
+
         string message = resolved == AgentModel.Unknown
             ? $"{source} is set to \"{candidate}\", which AgentModel treats as unset (\"default\", or a blank "
                 + "value, clears an override rather than naming one) — the daemon falls through to the next "
                 + "tier rather than running on this value, even though it reads back as though it were in force."
             : $"{source} is set to \"{candidate}\", which is not a usable model name — the daemon will fail to "
-                + "spawn every agent session on this node rather than fall back to the config file or default.";
+                + $"spawn {spawnScope} rather than fall back to {fallbackTiers}.";
         unusable.Add(message);
         return false;
     }
 
     private static ResolvedSetting<string?> ResolveOptionalString(
-        string environmentVariable, string? configured, List<string> unusable)
+        string environmentVariable, string? configured, string role, List<string> unusable)
     {
+        string spawnScope = $"agent sessions using the '{role}' role";
+
         if (Environment.GetEnvironmentVariable(environmentVariable) is { } fromEnvironment)
         {
-            if (fromEnvironment.Length > 0 && !IsUsableModel(fromEnvironment, environmentVariable, unusable))
+            if (fromEnvironment.Length > 0 && !IsUsableModel(fromEnvironment, environmentVariable, spawnScope, unusable))
             {
                 return new ResolvedSetting<string?>(null, SettingOrigin.Default, null);
             }
@@ -184,7 +195,7 @@ public static class OperatingSettingsResolver
 
         if (configured is { Length: > 0 } value)
         {
-            return IsUsableModel(value, Hall9kDatabase.ConfigFile, unusable)
+            return IsUsableModel(value, Hall9kDatabase.ConfigFile, spawnScope, unusable)
                 ? new ResolvedSetting<string?>(value, SettingOrigin.PlatformConfigFile, Hall9kDatabase.ConfigFile)
                 : new ResolvedSetting<string?>(null, SettingOrigin.Default, null);
         }
