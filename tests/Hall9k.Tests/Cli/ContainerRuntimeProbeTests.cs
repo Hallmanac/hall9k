@@ -140,8 +140,9 @@ public sealed class ContainerRuntimeProbeTests : IDisposable
     {
         RecordingProcessRunner runner = RecordingProcessRunner.Succeeding(string.Empty);
 
-        bool exists = await ContainerRuntimeProbe.VolumeExistsAsync(runner.Runner, CancellationToken.None);
+        (bool confirmed, bool exists) = await ContainerRuntimeProbe.VolumeExistsAsync(runner.Runner, CancellationToken.None);
 
+        confirmed.Should().BeTrue();
         exists.Should().BeFalse();
         runner.Calls.Should().ContainSingle(call =>
             call.Arguments.SequenceEqual(new[] { "volume", "ls", "--filter", "name=^hall9k-pgdata$", "--format", "{{.Name}}" }));
@@ -152,24 +153,53 @@ public sealed class ContainerRuntimeProbeTests : IDisposable
     {
         RecordingProcessRunner runner = RecordingProcessRunner.Succeeding("hall9k-pgdata\n");
 
-        bool exists = await ContainerRuntimeProbe.VolumeExistsAsync(runner.Runner, CancellationToken.None);
+        (bool confirmed, bool exists) = await ContainerRuntimeProbe.VolumeExistsAsync(runner.Runner, CancellationToken.None);
 
+        confirmed.Should().BeTrue();
         exists.Should().BeTrue();
     }
 
     [Fact]
-    public async Task A_failed_volume_ls_answers_exists_rather_than_claiming_absence()
+    public async Task A_failed_volume_ls_is_unconfirmed_rather_than_a_claimed_answer()
     {
-        // Empty stdout means the same thing whether docker succeeded and found nothing, or
-        // failed outright — this uninstall feature's own pre-PR review found that a purge
-        // reads a failed `docker volume ls` as "already gone" and reports destruction that was
-        // never observed. Answering true on failure sends the caller on to actually attempt
-        // (and honestly fail) the removal instead.
+        // A failed docker volume ls is not the same fact as "exists" or "does not exist" —
+        // this uninstall feature's own pre-PR review found a caller reading the fail-open true
+        // this used to return as a confirmed legacy-volume detection, and another reading a
+        // fail-open false as a confirmed absence. Neither is observed; only Confirmed: false is.
         RecordingProcessRunner runner = RecordingProcessRunner.Failing("Cannot connect to the Docker daemon");
 
-        bool exists = await ContainerRuntimeProbe.VolumeExistsAsync(runner.Runner, CancellationToken.None);
+        (bool confirmed, bool exists) = await ContainerRuntimeProbe.VolumeExistsAsync(runner.Runner, CancellationToken.None);
 
-        exists.Should().BeTrue();
+        confirmed.Should().BeFalse();
+        exists.Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task Find_data_volumes_matches_any_name_containing_the_literal()
+    {
+        // Deliberately unanchored: a checkout-dirname-prefixed volume from a pre-pin
+        // `docker compose up -d` (docs/operations.md's Provisioning section) matches neither
+        // PostgresRuntime.VolumeName nor PostgresRuntime.LegacyVolumeName exactly, but does
+        // contain "hall9k-pgdata".
+        RecordingProcessRunner runner = RecordingProcessRunner.Succeeding("hall9k_platform_hall9k-pgdata\n");
+
+        (bool confirmed, IReadOnlyList<string> names) = await ContainerRuntimeProbe.FindDataVolumesAsync(runner.Runner, CancellationToken.None);
+
+        confirmed.Should().BeTrue();
+        names.Should().ContainSingle().Which.Should().Be("hall9k_platform_hall9k-pgdata");
+        runner.Calls.Should().ContainSingle(call =>
+            call.Arguments.SequenceEqual(new[] { "volume", "ls", "--filter", "name=hall9k-pgdata", "--format", "{{.Name}}" }));
+    }
+
+    [Fact]
+    public async Task Find_data_volumes_is_unconfirmed_when_volume_ls_fails()
+    {
+        RecordingProcessRunner runner = RecordingProcessRunner.Failing("Cannot connect to the Docker daemon");
+
+        (bool confirmed, IReadOnlyList<string> names) = await ContainerRuntimeProbe.FindDataVolumesAsync(runner.Runner, CancellationToken.None);
+
+        confirmed.Should().BeFalse();
+        names.Should().BeEmpty();
     }
 
     [Fact]
