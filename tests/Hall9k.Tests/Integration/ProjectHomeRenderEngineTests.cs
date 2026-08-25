@@ -763,6 +763,172 @@ public sealed class ProjectHomeRenderEngineTests(PostgresFixture postgres) : ICl
     }
 
     [Fact]
+    public async Task A_task_reopened_into_the_archive_directory_stays_there_while_its_run_is_parked_not_terminal()
+    {
+        // Adversarial review, backlog 51 cycle 4: a run that leaves its actively-running states
+        // (RunState.IsLive) is not yet safe to move out from under — ReviewParked means the run
+        // stopped running, but PullRequestOpener can still write into its RunDirectory once a
+        // human resolves the park (h9k review resolve --merge-ready), and closeout still reads a
+        // handoff from it once the run truly closes out. Only the run's own terminal state
+        // (Completed/Failed/Killed/Superseded) means nothing will touch the directory again — the
+        // guard has to key off that bar, not "still live", or it moves the directory back while a
+        // pull request could still be opened onto it.
+        using DocumentStore store = NewStore();
+        Guid ownerId = DomainId.New();
+        Guid projectId = DomainId.New();
+        Guid taskId = DomainId.New();
+        Guid nodeId = DomainId.New();
+        const string PullRequestUrl = "https://github.com/example/hall9k/pull/12";
+
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            RegisterProject(session, projectId, ownerId, "hall9k");
+            (TaskAggregate task, object[] lifecycle) = TaskSeed.Start(
+                TaskDecider.Add(
+                    taskId, projectId, "Task reopened into the archive directory then parked",
+                    ["criterion"], TaskType.Feature, null, null, null, Now, ownerId),
+                ownerId, Now);
+            List<object> taskEvents = [.. lifecycle];
+
+            TaskClaimed claimed = TaskDecider.Claim(task, nodeId, ownerId, DomainId.New(), Now);
+            task.Apply(claimed);
+            taskEvents.Add(claimed);
+
+            TaskCompleted completed = TaskDecider.Complete(task, task.CurrentRunId!.Value, PullRequestUrl, Now);
+            task.Apply(completed);
+            taskEvents.Add(completed);
+
+            Guid firstRunId = task.CurrentRunId!.Value;
+            session.Events.StartStream<TaskAggregate>(taskId, [.. taskEvents]);
+            session.Events.StartStream<RunAggregate>(firstRunId,
+                new RunDispatched(
+                    firstRunId, taskId, nodeId, ownerId, task.LeaseGeneration, DomainId.New(), "/tmp/worktree",
+                    "task/gets-reopened-then-parked", ExecutorMode.Subscription, Now),
+                new RunCompleted(firstRunId, Now));
+            await session.SaveChangesAsync();
+        }
+
+        // The task archives on the first sweep.
+        await NewEngine(store).PollOnceAsync(CancellationToken.None);
+        string tasksRoot = ProjectHomePaths.TasksDirectory(_home);
+        string archiveRoot = ProjectHomePaths.ArchivedTasksDirectory(_home);
+        Directory.EnumerateDirectories(archiveRoot).Should().ContainSingle(
+            "the closed-out task must have archived on the first sweep");
+
+        Guid followUpRunId;
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            TaskAggregate task = await session.Events.AggregateStreamAsync<TaskAggregate>(taskId)
+                ?? throw new InvalidOperationException("task not found");
+            TaskReopened reopened = TaskDecider.Reopen(
+                task, task.CurrentRunId!.Value, "task/gets-reopened-then-parked", "one more look",
+                FollowUpKind.ReviewFeedback, automatic: false, Now, ownerId);
+            task.Apply(reopened);
+            session.Events.Append(taskId, reopened);
+
+            followUpRunId = DomainId.New();
+            TaskClaimed reclaimed = TaskDecider.Claim(task, nodeId, ownerId, followUpRunId, Now);
+            session.Events.Append(taskId, reclaimed);
+            session.Events.StartStream<RunAggregate>(followUpRunId,
+                new RunDispatched(
+                    followUpRunId, taskId, nodeId, ownerId, task.LeaseGeneration + 1, DomainId.New(),
+                    "/tmp/worktree-followup", "task/gets-reopened-then-parked", ExecutorMode.Subscription, Now));
+            await session.SaveChangesAsync();
+        }
+
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            // The run stopped running and parked for a human — not live, but not terminal either.
+            session.Events.Append(followUpRunId, new ReviewParked(followUpRunId, "a finding was disputed", Now));
+            await session.SaveChangesAsync();
+        }
+
+        await NewEngine(store).PollOnceAsync(CancellationToken.None);
+
+        LiveTaskDirectories(tasksRoot).Should().BeEmpty(
+            "the parked run has not reached its own terminal state, so a pull request could still be " +
+            "opened onto its RunDirectory once a human resolves the park");
+        Directory.EnumerateDirectories(archiveRoot).Should().ContainSingle(
+            "the task's directory must stay put until the run reaches a terminal state");
+
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            session.Events.Append(followUpRunId, new RunFailed(followUpRunId, "the human abandoned the fix", Now));
+            await session.SaveChangesAsync();
+        }
+
+        await NewEngine(store).PollOnceAsync(CancellationToken.None);
+
+        Directory.EnumerateDirectories(archiveRoot).Should().BeEmpty(
+            "once the run reaches its own terminal state, the reopened task is free to move back");
+        LiveTaskDirectories(tasksRoot).Should().ContainSingle(
+            "the reopened task must move back out now that its run is genuinely done with the directory");
+    }
+
+    [Fact]
+    public async Task An_abandoned_task_does_not_archive_on_a_failure_reason_left_over_from_a_retried_earlier_run()
+    {
+        // Adversarial and conformance review, backlog 51 cycle 4: FailureReason survives a retry
+        // on purpose (Apply(TaskRetried)), so it is not proof that the task's CURRENT run went
+        // through TaskFailed — only that some earlier run did. A task whose first run failed, was
+        // retried, and was then abandoned while its second run's own RunDispatched had not yet
+        // landed must keep waiting exactly like any other in-flight launch racing an abandon,
+        // rather than being mistaken for "this run already recorded a launch failure and will
+        // never dispatch" on the strength of the first run's stale reason.
+        using DocumentStore store = NewStore();
+        Guid ownerId = DomainId.New();
+        Guid projectId = DomainId.New();
+        Guid taskId = DomainId.New();
+        Guid nodeId = DomainId.New();
+
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            RegisterProject(session, projectId, ownerId, "hall9k");
+            (TaskAggregate task, object[] lifecycle) = TaskSeed.Start(
+                TaskDecider.Add(
+                    taskId, projectId, "Task retried after a launch failure then abandoned mid-relaunch",
+                    ["criterion"], TaskType.Feature, null, null, null, Now, ownerId),
+                ownerId, Now);
+            List<object> taskEvents = [.. lifecycle];
+
+            TaskClaimed firstClaim = TaskDecider.Claim(task, nodeId, ownerId, DomainId.New(), Now);
+            task.Apply(firstClaim);
+            taskEvents.Add(firstClaim);
+            Guid firstRunId = task.CurrentRunId!.Value;
+
+            TaskFailed failed = TaskDecider.Fail(task, firstRunId, "worktree checkout failed", Now);
+            task.Apply(failed);
+            taskEvents.Add(failed);
+
+            TaskRetried retried = TaskDecider.Retry(task, firstRunId, null, "try again", Now, ownerId);
+            task.Apply(retried);
+            taskEvents.Add(retried);
+
+            TaskClaimed secondClaim = TaskDecider.Claim(task, nodeId, ownerId, DomainId.New(), Now);
+            task.Apply(secondClaim);
+            taskEvents.Add(secondClaim);
+
+            TaskAbandoned abandoned = TaskDecider.Abandon(task, "giving up on this one", Now, ownerId);
+            taskEvents.Add(abandoned);
+
+            // No RunAggregate stream at all for the second run: its own RunDispatched has not
+            // landed yet — the launch is racing the abandon, exactly like the provably-dead case
+            // below, except this failure reason belongs to the FIRST run, not this one.
+            session.Events.StartStream<TaskAggregate>(taskId, [.. taskEvents]);
+            await session.SaveChangesAsync();
+        }
+
+        await NewEngine(store).PollOnceAsync(CancellationToken.None);
+
+        string tasksRoot = ProjectHomePaths.TasksDirectory(_home);
+        string archiveRoot = ProjectHomePaths.ArchivedTasksDirectory(_home);
+        LiveTaskDirectories(tasksRoot).Should().ContainSingle(
+            "the recorded failure belongs to the first run, not the current in-flight launch, so " +
+            "this must defer exactly like any other launch racing an abandon");
+        Directory.Exists(archiveRoot).Should().BeFalse("nothing has archived yet");
+    }
+
+    [Fact]
     public async Task A_task_rendered_live_before_it_closes_out_still_archives_once_it_does()
     {
         // Regression, adversarial review cycle 1: every real task renders live under tasks/
@@ -968,6 +1134,60 @@ public sealed class ProjectHomeRenderEngineTests(PostgresFixture postgres) : ICl
             "the recorded launch failure proves this run will never dispatch, so there is nothing left to wait for");
         string archivedDirectory = Directory.EnumerateDirectories(archiveRoot).Should().ContainSingle().Subject;
         File.ReadAllText(Path.Combine(archivedDirectory, "task.md")).Should().Contain("state: Abandoned");
+    }
+
+    [Fact]
+    public async Task The_provably_dead_launch_diagnostic_logs_once_not_on_every_sweep()
+    {
+        // Conformance review, backlog 51 cycle 4: the condition this diagnostic reports —
+        // Abandoned, current run with a recorded same-run failure and no projection — is
+        // permanent once the task archives, since nothing ever changes an Abandoned task again.
+        // Logging it from inside IsArchived, which every sweep re-evaluates for every task,
+        // would otherwise repeat the same warning forever (roughly one line per poll interval,
+        // indefinitely) — the exact pattern HomeEntryReconciler.Mark exists to avoid, checked
+        // against disk rather than kept in memory so the engine stays a pure function of store
+        // state across restarts too.
+        using DocumentStore store = NewStore();
+        Guid ownerId = DomainId.New();
+        Guid projectId = DomainId.New();
+        Guid taskId = DomainId.New();
+        Guid nodeId = DomainId.New();
+        ListLogger<ProjectHomeRenderEngine> logger = new();
+
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            RegisterProject(session, projectId, ownerId, "hall9k");
+            (TaskAggregate task, object[] lifecycle) = TaskSeed.Start(
+                TaskDecider.Add(
+                    taskId, projectId, "Task whose launch died before dispatching, logged once",
+                    ["criterion"], TaskType.Feature, null, null, null, Now, ownerId),
+                ownerId, Now);
+            List<object> taskEvents = [.. lifecycle];
+
+            TaskClaimed claimed = TaskDecider.Claim(task, nodeId, ownerId, DomainId.New(), Now);
+            task.Apply(claimed);
+            taskEvents.Add(claimed);
+            Guid runId = task.CurrentRunId!.Value;
+
+            TaskFailed failed = TaskDecider.Fail(task, runId, "worktree checkout failed", Now);
+            task.Apply(failed);
+            taskEvents.Add(failed);
+
+            TaskAbandoned abandoned = TaskDecider.Abandon(task, "giving up on this one", Now, ownerId);
+            taskEvents.Add(abandoned);
+
+            session.Events.StartStream<TaskAggregate>(taskId, [.. taskEvents]);
+            await session.SaveChangesAsync();
+        }
+
+        ProjectHomeRenderEngine engine = new(store, logger);
+        await engine.PollOnceAsync(CancellationToken.None);
+        await engine.PollOnceAsync(CancellationToken.None);
+        await engine.PollOnceAsync(CancellationToken.None);
+
+        logger.Lines.Where(line => line.Contains("will never dispatch")).Should().ContainSingle(
+            "the task archived on the first sweep, so every sweep after must recognise the " +
+            "directory is already handled instead of re-logging the same permanent diagnostic");
     }
 
     [Fact]

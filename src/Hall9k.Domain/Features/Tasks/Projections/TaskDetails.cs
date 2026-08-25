@@ -97,6 +97,14 @@ public sealed class TaskDetails
     public FollowUpKind FollowUpKind { get; set; } = FollowUpKind.Unknown;
     public string? FollowUpReason { get; set; }
     public string? FailureReason { get; set; }
+    /// <summary>
+    /// The run <see cref="Events.TaskFailed"/> named. Kept apart from <see cref="FailureReason"/>,
+    /// which survives a retry on purpose (see <c>Apply(TaskRetried)</c>), so a reader can still
+    /// tell whether the standing reason belongs to the task's current run or an earlier, retried
+    /// one — the daemon's project-home render sweep depends on that distinction for its
+    /// Abandoned-with-a-dead-launch escape hatch (adversarial review, backlog 51 cycle 4).
+    /// </summary>
+    public Guid? FailedRunId { get; set; }
     /// <summary>The failed run's branch while a human-requested retry is pending: the launcher resumes it when it survives (Decisions Log #25).</summary>
     public string? RetryBranch { get; set; }
     public string? RetryReason { get; set; }
@@ -346,6 +354,7 @@ public sealed class TaskDetailsProjection : SingleStreamProjection<TaskDetails, 
     public void Apply(IEvent<TaskFailed> @event, TaskDetails view)
     {
         view.FailureReason = @event.Data.Reason;
+        view.FailedRunId = @event.Data.RunId;
         view.State = TaskState.Failed;
         view.FinishedAt = @event.Data.FailedAt;
     }
