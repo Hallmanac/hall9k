@@ -85,9 +85,9 @@ may still be reporting
 then the merge is yours → https://github.com/Hallmanac/hall9k/pull/31
 
 Queued — the node is at its concurrency ceiling; each of these starts as a run
-finishes. Raise Hall9k__MaxConcurrentAgentSessions and restart the daemon to run
-more at once — it is counted in agent sessions, and a run under review holds one
-per review lens
+finishes. Run h9k config set --max-concurrent-agent-sessions <n> and restart the
+daemon to run more at once — it is counted in agent sessions, and a run under
+review holds one per review lens
 81d8bca0  Published  hall9k  Brian Hall  The closeout sweep obse…    added 24m
 ago
     ↳ assigned and ready; the dispatcher has not claimed it yet · waiting for a
