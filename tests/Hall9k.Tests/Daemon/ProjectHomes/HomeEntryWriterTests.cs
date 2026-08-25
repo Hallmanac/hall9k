@@ -13,6 +13,7 @@ namespace Hall9k.Tests.Daemon.ProjectHomes;
 public sealed class HomeEntryWriterTests : IDisposable
 {
     private readonly string _root = Directory.CreateTempSubdirectory("hall9k-home-entry-").FullName;
+    private readonly string _otherRoot = Directory.CreateTempSubdirectory("hall9k-home-entry-other-").FullName;
     private readonly Guid _id = DomainId.New();
     private readonly string _shortId;
 
@@ -142,11 +143,63 @@ public sealed class HomeEntryWriterTests : IDisposable
             "left alone rather than silently merged or deleted");
     }
 
+    [Fact]
+    public void Writing_into_a_different_root_moves_a_directory_found_in_an_alternate_root()
+    {
+        // The archive/unarchive move (backlog 51): a task's directory currently sitting under
+        // tasks/ has to relocate into tasks/_archive/ (or back) rather than a fresh, empty
+        // directory being created at the target root while the real one, with its workspace/
+        // and runs/, is left behind under the old root as an unmerged orphan.
+        string directoryName = $"{_shortId}-goes-terminal";
+        HomeEntryWriter.Write(_root, _id, directoryName, "task.md", "hello");
+        File.WriteAllText(Path.Combine(_root, directoryName, "workspace", "notes.md"), "keep me");
+
+        HomeEntryWriteResult result = HomeEntryWriter.Write(
+            _otherRoot, _id, directoryName, "task.md", "hello v2", alternateRoots: [_root]);
+
+        Directory.Exists(Path.Combine(_root, directoryName)).Should().BeFalse(
+            "the old root must not keep a stale copy once the directory has moved");
+        result.DirectoryPath.Should().Be(Path.Combine(_otherRoot, directoryName));
+        File.ReadAllText(Path.Combine(result.DirectoryPath, "task.md")).Should().Be("hello v2");
+        File.ReadAllText(Path.Combine(result.DirectoryPath, "workspace", "notes.md")).Should().Be("keep me",
+            "the move across roots must carry the workspace along exactly like a same-root slug rename does");
+    }
+
+    [Fact]
+    public void Writing_into_a_different_root_is_idempotent_once_the_directory_already_lives_there()
+    {
+        string directoryName = $"{_shortId}-already-moved";
+        HomeEntryWriter.Write(_otherRoot, _id, directoryName, "task.md", "hello");
+
+        HomeEntryWriteResult result = HomeEntryWriter.Write(
+            _otherRoot, _id, directoryName, "task.md", "hello", alternateRoots: [_root]);
+
+        result.Changed.Should().BeFalse();
+        Directory.EnumerateDirectories(_root).Should().BeEmpty(
+            "nothing in the primary root should ever be touched once the entry already lives at the target");
+    }
+
+    [Fact]
+    public void FindExistingDirectory_with_an_alternate_root_finds_a_directory_sitting_there()
+    {
+        string directoryName = $"{_shortId}-elsewhere";
+        HomeEntryWriter.Write(_otherRoot, _id, directoryName, "task.md", "hello");
+
+        string? found = HomeEntryWriter.FindExistingDirectory(_root, _id, alternateRoots: [_otherRoot]);
+
+        found.Should().Be(Path.Combine(_otherRoot, directoryName));
+    }
+
     public void Dispose()
     {
         if (Directory.Exists(_root))
         {
             Directory.Delete(_root, recursive: true);
+        }
+
+        if (Directory.Exists(_otherRoot))
+        {
+            Directory.Delete(_otherRoot, recursive: true);
         }
     }
 }

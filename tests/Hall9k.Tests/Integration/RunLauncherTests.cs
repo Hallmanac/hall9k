@@ -69,6 +69,25 @@ public sealed class RunLauncherTests(PostgresFixture postgres) : IClassFixture<P
             CancellationToken cancellationToken) => Task.CompletedTask;
     }
 
+    /// <summary>The ordinary case: a pull request that is still open, so dispatch proceeds.</summary>
+    private sealed class NotMergedInspector : IPullRequestInspector
+    {
+        public Task<PullRequestSnapshot> InspectAsync(
+            string repositoryPath, string pullRequestUrl, int pullRequestNumber, CancellationToken cancellationToken) =>
+            Task.FromResult(new PullRequestSnapshot(
+                IsMerged: false, IsClosed: false, MergedAt: null, ClosedAt: null,
+                FailingChecks: [], HasPendingChecks: false, UnresolvedReviewThreadCount: 0,
+                UnresolvedHumanThreadCount: 0, Reviewers: [], ErroredReview: null));
+
+        public Task<PullRequestStateSnapshot> InspectStateAsync(
+            string repositoryPath, string pullRequestUrl, int pullRequestNumber, CancellationToken cancellationToken) =>
+            Task.FromResult(new PullRequestStateSnapshot(IsMerged: false, IsClosed: false, MergedAt: null, ClosedAt: null));
+
+        public Task RerequestReviewAsync(
+            string repositoryPath, string pullRequestUrl, int pullRequestNumber, PullRequestReviewer reviewer,
+            CancellationToken cancellationToken) => Task.CompletedTask;
+    }
+
     /// <summary>Refuses to prepare a workspace: closing out must never reach the checkout step.</summary>
     private sealed class RefusingWorktreeManager : IWorktreeManager
     {
@@ -476,6 +495,107 @@ public sealed class RunLauncherTests(PostgresFixture postgres) : IClassFixture<P
 
             Directory.Exists(Path.Combine(ProjectHomePaths.TasksDirectory(home), newDirectoryName)).Should().BeFalse(
                 "dispatch must never invent the not-yet-renamed directory and orphan the real one");
+        }
+        finally
+        {
+            if (Directory.Exists(home))
+            {
+                Directory.Delete(home, recursive: true);
+            }
+        }
+    }
+
+    /// <summary>
+    /// The archive half of the same race (backlog 51): a task the render sweep already moved
+    /// into tasks/_archive/ on true closeout, then reopened for a follow-up, can still be
+    /// sitting there when the follow-up's run launches — the sweep that would move it back to
+    /// tasks/ runs on its own doorbell-woken schedule, not synchronously with the reopen. The
+    /// follow-up's run directory must land beside the task's real directory wherever it
+    /// currently is, not under a tasks/&lt;name&gt;/ path the sweep has not created.
+    /// </summary>
+    [Fact]
+    public async Task A_reopened_task_still_sitting_in_the_archive_directory_redispatches_beside_its_real_directory()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        using DocumentStore store = DocumentStore.For(opts =>
+        {
+            opts.Connection(postgres.ConnectionString);
+            opts.ConfigureHall9k(AutoCreate.All);
+        });
+        NodeContext node = new();
+        await node.InitializeAsync(store, cts.Token);
+
+        Guid taskId = DomainId.New();
+        Guid firstRunId = DomainId.New();
+        Guid followUpRunId = DomainId.New();
+        Guid projectId = DomainId.New();
+        string home = Path.Combine(Path.GetTempPath(), $"hall9k-archive-race-{DomainId.Short(taskId)}");
+        string directoryName = ProjectHomePaths.EntryDirectoryName(taskId, "Task closed out then reopened");
+        const string branch = "task/archive-race";
+
+        try
+        {
+            // The render sweep already moved this task's directory into tasks/_archive/ on a
+            // prior sweep, before the reopen below — exactly what a true-closeout task gets.
+            HomeEntryWriter.Write(
+                ProjectHomePaths.ArchivedTasksDirectory(home), taskId, directoryName, "task.md", "closed out");
+
+            TaskAggregate aggregate = new();
+            await using (IDocumentSession session = store.LightweightSession())
+            {
+                var registered = ProjectDecider.Register(
+                    projectId, node.OwnerId, DomainId.New(), $"archive-race-{taskId:N}", "/tmp/archive-race-repo",
+                    null, "main", Now, ProjectHome.Parse(home));
+                session.Events.StartStream<ProjectAggregate>(registered.Id, registered);
+
+                Hall9k.Domain.Features.Tasks.Events.TaskAdded added = TaskDecider.Add(
+                    taskId, projectId, "Task closed out then reopened", ["criteria"], TaskType.Chore,
+                    null, null, null, Now.AddHours(-2), node.OwnerId);
+                aggregate.Apply(added);
+                Hall9k.Domain.Features.Tasks.Events.TaskPublished published =
+                    TaskDecider.Publish(aggregate, TaskDependencyGraph.Empty, Now.AddHours(-2), node.OwnerId);
+                aggregate.Apply(published);
+                Hall9k.Domain.Features.Tasks.Events.TaskAssigned assigned =
+                    TaskDecider.Assign(aggregate, node.OwnerId, [], Now.AddHours(-2), node.OwnerId);
+                aggregate.Apply(assigned);
+                Hall9k.Domain.Features.Tasks.Events.TaskClaimed firstClaim =
+                    TaskDecider.Claim(aggregate, node.NodeId, node.OwnerId, firstRunId, Now.AddHours(-2));
+                aggregate.Apply(firstClaim);
+                Hall9k.Domain.Features.Tasks.Events.TaskCompleted completed =
+                    TaskDecider.Complete(aggregate, firstRunId, PullRequestUrl, Now.AddHours(-1));
+                aggregate.Apply(completed);
+                Hall9k.Domain.Features.Tasks.Events.TaskReopened reopened = TaskDecider.Reopen(
+                    aggregate, firstRunId, branch, "one more look", FollowUpKind.ReviewFeedback, automatic: false,
+                    Now, node.OwnerId);
+                aggregate.Apply(reopened);
+                Hall9k.Domain.Features.Tasks.Events.TaskClaimed followUpClaim =
+                    TaskDecider.Claim(aggregate, node.NodeId, node.OwnerId, followUpRunId, Now);
+                aggregate.Apply(followUpClaim);
+
+                session.Events.StartStream<TaskAggregate>(
+                    taskId, [added, published, assigned, firstClaim, completed, reopened, followUpClaim]);
+                session.Store(new TaskLease
+                {
+                    Id = taskId, NodeId = node.NodeId, LeaseGeneration = aggregate.LeaseGeneration, HeartbeatAt = Now,
+                });
+                await session.SaveChangesAsync(cts.Token);
+            }
+
+            CapturingExecutor executor = new();
+            RunLauncher launcher = new(store, new StubWorktreeManager(), executor,
+                NewSupervisor(store, node), NewContextAssembler(store), new NotMergedInspector(),
+                Options.Create(new DaemonOptions()), NullLogger<RunLauncher>.Instance);
+
+            await launcher.LaunchAsync(
+                taskId, followUpRunId, node.NodeId, node.OwnerId, aggregate.LeaseGeneration, cts.Token);
+
+            string expectedDirectory = Path.Combine(
+                ProjectHomePaths.ArchivedTasksDirectory(home), directoryName, "runs", followUpRunId.ToString());
+            executor.Request!.RunDirectory.Should().Be(expectedDirectory,
+                "the follow-up belongs beside the task's real directory, still under tasks/_archive/ until " +
+                "the render sweep itself moves it back out");
+            Directory.Exists(Path.Combine(ProjectHomePaths.TasksDirectory(home), directoryName)).Should().BeFalse(
+                "dispatch must never invent a fresh tasks/ directory ahead of the sweep");
         }
         finally
         {

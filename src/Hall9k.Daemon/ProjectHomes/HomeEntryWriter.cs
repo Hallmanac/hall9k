@@ -40,7 +40,12 @@ public static class HomeEntryWriter
     /// the objective or note was revised — it is moved to the current name rather than left behind
     /// as a stale copy, carrying its <c>workspace/</c> with it. If a directory already sits at both
     /// the old and the new name (a previous move that could not complete), the existing one is left
-    /// alone rather than silently merged into.
+    /// alone rather than silently merged into. <paramref name="alternateRoots"/> extends that same
+    /// search to other roots this entity's directory might currently sit under — a task moving into
+    /// or out of <c>tasks/_archive/</c> (2026-08-25, backlog 51) is the same "move it, don't leave a
+    /// stale copy" rule as a slug rename, just across a different boundary: <paramref name="rootDirectory"/>
+    /// is searched first (a same-root slug rename is the common case), then each alternate root in
+    /// order, and the first stale directory found anywhere is the one moved.
     /// </para>
     /// <para>
     /// Throws <see cref="IOException"/> when a directory already sits at the target name but its
@@ -51,7 +56,7 @@ public static class HomeEntryWriter
     /// </summary>
     public static HomeEntryWriteResult Write(
         string rootDirectory, Guid id, string directoryName, string fileName, string renderedContent,
-        bool includeWorkspace = true)
+        bool includeWorkspace = true, IReadOnlyList<string>? alternateRoots = null)
     {
         string targetDirectory = Path.Combine(rootDirectory, directoryName);
 
@@ -73,7 +78,7 @@ public static class HomeEntryWriter
                     + "collision); refusing to overwrite it.");
             }
         }
-        else if (HomeEntryLookup.FindExisting(rootDirectory, id, excludingName: directoryName) is { } stale)
+        else if (FindStale(rootDirectory, directoryName, id, alternateRoots) is { } stale)
         {
             Directory.Move(stale, targetDirectory);
         }
@@ -108,8 +113,34 @@ public static class HomeEntryWriter
     /// keeps every caller pointed at the one directory that actually exists until the sweep itself
     /// performs the move.
     /// </summary>
-    public static string? FindExistingDirectory(string rootDirectory, Guid id) =>
-        HomeEntryLookup.FindExistingDirectory(rootDirectory, id);
+    /// <paramref name="alternateRoots"/> extends the same search to other roots, exactly as
+    /// <see cref="Write"/>'s own does — a caller resolving a task's current directory has to find
+    /// it whether it is presently live or archived (<c>RunLauncher</c>, 2026-08-25, backlog 51).
+    public static string? FindExistingDirectory(
+        string rootDirectory, Guid id, IReadOnlyList<string>? alternateRoots = null) =>
+        FindStale(rootDirectory, excludingName: null, id, alternateRoots);
+
+    private static string? FindStale(
+        string rootDirectory, string? excludingName, Guid id, IReadOnlyList<string>? alternateRoots)
+    {
+        if (HomeEntryLookup.FindExisting(rootDirectory, id, excludingName) is { } found)
+        {
+            return found;
+        }
+
+        if (alternateRoots is not null)
+        {
+            foreach (string alternateRoot in alternateRoots)
+            {
+                if (HomeEntryLookup.FindExisting(alternateRoot, id) is { } fromAlternate)
+                {
+                    return fromAlternate;
+                }
+            }
+        }
+
+        return null;
+    }
 
     private static void EnsureIdentityMarker(string directoryPath, Guid id) =>
         HomeEntryLookup.EnsureIdentityMarker(directoryPath, id);

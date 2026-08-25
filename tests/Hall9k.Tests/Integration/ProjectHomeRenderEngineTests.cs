@@ -5,6 +5,8 @@ using Hall9k.Domain.Features.Idea;
 using Hall9k.Domain.Features.Project;
 using Hall9k.Domain.Features.Project.Events;
 using Hall9k.Domain.Features.Project.Handlers;
+using Hall9k.Domain.Features.Run;
+using Hall9k.Domain.Features.Run.Events;
 using Hall9k.Domain.Features.Tasks;
 using Hall9k.Domain.Features.Tasks.Events;
 using Hall9k.Domain.Features.Tasks.Handlers;
@@ -12,6 +14,7 @@ using Hall9k.Domain.Infrastructure.Ids;
 using Hall9k.Domain.Infrastructure.Persistence;
 using Hall9k.Domain.Infrastructure.Storage;
 using Hall9k.Domain.Shared.ValueObjects;
+using Hall9k.Tests.Fakes;
 using JasperFx;
 using Marten;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -426,6 +429,247 @@ public sealed class ProjectHomeRenderEngineTests(PostgresFixture postgres) : ICl
         File.ReadAllText(Path.Combine(renamedDirectory, "workspace", "notes.md")).Should().Be("keep me",
             "capture's own workspace file must survive the move rather than being orphaned behind a decoy");
     }
+
+    [Fact]
+    public async Task A_task_that_reaches_true_closeout_moves_into_the_archive_directory()
+    {
+        // True closeout, not raw Done (backlog 51): TaskCompleted fires the moment the pull
+        // request opens, and only RunCompleted — appended once the closeout monitor observes
+        // the merge — means the story is actually over. That is the same bar the dependency
+        // rule (TaskDependencyQuery.IsClosedOut) already uses.
+        using DocumentStore store = NewStore();
+        Guid ownerId = DomainId.New();
+        Guid projectId = DomainId.New();
+        Guid taskId = DomainId.New();
+        Guid nodeId = DomainId.New();
+        const string PullRequestUrl = "https://github.com/example/hall9k/pull/1";
+
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            RegisterProject(session, projectId, ownerId, "hall9k");
+            (TaskAggregate task, object[] lifecycle) = TaskSeed.Start(
+                TaskDecider.Add(
+                    taskId, projectId, "Task that closes out", ["criterion"], TaskType.Feature, null,
+                    null, null, Now, ownerId),
+                ownerId, Now);
+            List<object> taskEvents = [.. lifecycle];
+
+            TaskClaimed claimed = TaskDecider.Claim(task, nodeId, ownerId, DomainId.New(), Now);
+            task.Apply(claimed);
+            taskEvents.Add(claimed);
+
+            TaskCompleted completed = TaskDecider.Complete(task, task.CurrentRunId!.Value, PullRequestUrl, Now);
+            task.Apply(completed);
+            taskEvents.Add(completed);
+
+            Guid runId = task.CurrentRunId!.Value;
+            session.Events.StartStream<TaskAggregate>(taskId, [.. taskEvents]);
+            session.Events.StartStream<RunAggregate>(runId,
+                new RunDispatched(
+                    runId, taskId, nodeId, ownerId, task.LeaseGeneration, DomainId.New(), "/tmp/worktree",
+                    "task/closes-out", ExecutorMode.Subscription, Now),
+                new RunCompleted(runId, Now));
+
+            await session.SaveChangesAsync();
+        }
+
+        ProjectHomeRenderSweepResult sweep = await NewEngine(store).PollOnceAsync(CancellationToken.None);
+
+        string tasksRoot = ProjectHomePaths.TasksDirectory(_home);
+        string archiveRoot = ProjectHomePaths.ArchivedTasksDirectory(_home);
+        LiveTaskDirectories(tasksRoot).Should().BeEmpty(
+            "a task that has reached true closeout must not remain at the top level");
+        string archivedDirectory = Directory.EnumerateDirectories(archiveRoot).Should().ContainSingle().Subject;
+        Path.GetFileName(archivedDirectory).Should().Contain("task-that-closes-out");
+        File.ReadAllText(Path.Combine(archivedDirectory, "task.md")).Should().Contain("state: Done");
+        Directory.Exists(Path.Combine(archivedDirectory, "workspace")).Should().BeTrue();
+        sweep.TasksRendered.Should().Be(1);
+    }
+
+    [Fact]
+    public async Task A_done_task_whose_pull_request_is_still_open_stays_at_the_top_level()
+    {
+        using DocumentStore store = NewStore();
+        Guid ownerId = DomainId.New();
+        Guid projectId = DomainId.New();
+        Guid taskId = DomainId.New();
+        Guid nodeId = DomainId.New();
+
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            RegisterProject(session, projectId, ownerId, "hall9k");
+            (TaskAggregate task, object[] lifecycle) = TaskSeed.Start(
+                TaskDecider.Add(
+                    taskId, projectId, "Task with an open pull request", ["criterion"], TaskType.Feature, null,
+                    null, null, Now, ownerId),
+                ownerId, Now);
+            List<object> taskEvents = [.. lifecycle];
+
+            TaskClaimed claimed = TaskDecider.Claim(task, nodeId, ownerId, DomainId.New(), Now);
+            task.Apply(claimed);
+            taskEvents.Add(claimed);
+
+            // No RunCompleted at all here: the run that carried this task is still out there,
+            // under review — Done alone (TaskCompleted) is not true closeout.
+            TaskCompleted completed = TaskDecider.Complete(
+                task, task.CurrentRunId!.Value, "https://github.com/example/hall9k/pull/2", Now);
+            task.Apply(completed);
+            taskEvents.Add(completed);
+
+            session.Events.StartStream<TaskAggregate>(taskId, [.. taskEvents]);
+            await session.SaveChangesAsync();
+        }
+
+        await NewEngine(store).PollOnceAsync(CancellationToken.None);
+
+        string tasksRoot = ProjectHomePaths.TasksDirectory(_home);
+        string archiveRoot = ProjectHomePaths.ArchivedTasksDirectory(_home);
+        string taskDirectory = LiveTaskDirectories(tasksRoot).Should()
+            .ContainSingle("a Done task whose pull request is still open has not reached true closeout")
+            .Subject;
+        File.ReadAllText(Path.Combine(taskDirectory, "task.md")).Should().Contain("state: Done");
+        Directory.Exists(archiveRoot).Should().BeFalse(
+            "nothing has ever archived here, so the render sweep must never have created the archive root");
+    }
+
+    [Fact]
+    public async Task An_abandoned_task_moves_into_the_archive_directory()
+    {
+        using DocumentStore store = NewStore();
+        Guid ownerId = DomainId.New();
+        Guid projectId = DomainId.New();
+        Guid taskId = DomainId.New();
+
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            RegisterProject(session, projectId, ownerId, "hall9k");
+            TaskAdded added = TaskDecider.Add(
+                taskId, projectId, "Task nobody wants any more", ["criterion"], TaskType.Feature, null,
+                null, null, Now, ownerId);
+            TaskAggregate task = new();
+            task.Apply(added);
+            TaskAbandoned abandoned = TaskDecider.Abandon(task, "no longer needed", Now, ownerId);
+            session.Events.StartStream<TaskAggregate>(taskId, added, abandoned);
+            await session.SaveChangesAsync();
+        }
+
+        await NewEngine(store).PollOnceAsync(CancellationToken.None);
+
+        string tasksRoot = ProjectHomePaths.TasksDirectory(_home);
+        string archiveRoot = ProjectHomePaths.ArchivedTasksDirectory(_home);
+        LiveTaskDirectories(tasksRoot).Should().BeEmpty("abandoned is a terminal state; nothing here is still live");
+        string archivedDirectory = Directory.EnumerateDirectories(archiveRoot).Should().ContainSingle().Subject;
+        File.ReadAllText(Path.Combine(archivedDirectory, "task.md")).Should().Contain("state: Abandoned");
+    }
+
+    [Fact]
+    public async Task A_reopened_archived_task_moves_back_to_the_top_level()
+    {
+        // The other half of the archive rule (backlog 51): the folder must never lie about
+        // liveness, so a task that leaves its terminal state has to come back out on the very
+        // next sweep, carrying task.md, workspace/ and runs/ with it exactly as it moved in.
+        using DocumentStore store = NewStore();
+        Guid ownerId = DomainId.New();
+        Guid projectId = DomainId.New();
+        Guid taskId = DomainId.New();
+        Guid nodeId = DomainId.New();
+        const string PullRequestUrl = "https://github.com/example/hall9k/pull/3";
+        Guid runId;
+
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            RegisterProject(session, projectId, ownerId, "hall9k");
+            (TaskAggregate task, object[] lifecycle) = TaskSeed.Start(
+                TaskDecider.Add(
+                    taskId, projectId, "Task that gets reopened", ["criterion"], TaskType.Feature, null,
+                    null, null, Now, ownerId),
+                ownerId, Now);
+            List<object> taskEvents = [.. lifecycle];
+
+            TaskClaimed claimed = TaskDecider.Claim(task, nodeId, ownerId, DomainId.New(), Now);
+            task.Apply(claimed);
+            taskEvents.Add(claimed);
+
+            TaskCompleted completed = TaskDecider.Complete(task, task.CurrentRunId!.Value, PullRequestUrl, Now);
+            task.Apply(completed);
+            taskEvents.Add(completed);
+
+            runId = task.CurrentRunId!.Value;
+            session.Events.StartStream<TaskAggregate>(taskId, [.. taskEvents]);
+            session.Events.StartStream<RunAggregate>(runId,
+                new RunDispatched(
+                    runId, taskId, nodeId, ownerId, task.LeaseGeneration, DomainId.New(), "/tmp/worktree",
+                    "task/gets-reopened", ExecutorMode.Subscription, Now),
+                new RunCompleted(runId, Now));
+
+            await session.SaveChangesAsync();
+        }
+
+        await NewEngine(store).PollOnceAsync(CancellationToken.None);
+        string tasksRoot = ProjectHomePaths.TasksDirectory(_home);
+        string archiveRoot = ProjectHomePaths.ArchivedTasksDirectory(_home);
+        Directory.EnumerateDirectories(archiveRoot).Should().ContainSingle(
+            "the closed-out task must have archived on the first sweep");
+        File.WriteAllText(
+            Path.Combine(Directory.EnumerateDirectories(archiveRoot).Single(), "workspace", "notes.md"), "keep me");
+
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            TaskAggregate task = await session.Events.AggregateStreamAsync<TaskAggregate>(taskId)
+                ?? throw new InvalidOperationException("task not found");
+            TaskReopened reopened = TaskDecider.Reopen(
+                task, runId, "task/gets-reopened", "one more look", FollowUpKind.ReviewFeedback, automatic: false,
+                Now, ownerId);
+            session.Events.Append(taskId, reopened);
+            await session.SaveChangesAsync();
+        }
+
+        await NewEngine(store).PollOnceAsync(CancellationToken.None);
+
+        Directory.EnumerateDirectories(archiveRoot).Should().BeEmpty(
+            "a reopened task is live again and must not stay archived");
+        string liveDirectory = LiveTaskDirectories(tasksRoot).Should()
+            .ContainSingle("the reopened task must move back to the top level")
+            .Subject;
+        File.ReadAllText(Path.Combine(liveDirectory, "task.md")).Should().Contain("state: Queued");
+        File.ReadAllText(Path.Combine(liveDirectory, "workspace", "notes.md")).Should().Be("keep me",
+            "the move back out must carry the same directory, workspace and all, not a fresh empty one");
+    }
+
+    [Fact]
+    public async Task A_stray_directory_inside_the_archive_root_is_reconciled_like_a_top_level_stray()
+    {
+        // The orphan reconciler treats tasks/_archive/ as platform-owned exactly like tasks/
+        // itself (backlog 51): a stray directory there is caught by the same rule, and the
+        // archive root itself must never be mistaken for a stray inside tasks/'s own pass.
+        using DocumentStore store = NewStore();
+        Guid ownerId = DomainId.New();
+        Guid projectId = DomainId.New();
+
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            RegisterProject(session, projectId, ownerId, "hall9k");
+            await session.SaveChangesAsync();
+        }
+
+        string strayDirectory = Path.Combine(
+            ProjectHomePaths.ArchivedTasksDirectory(_home), "deadbeef-leftover-from-somewhere");
+        Directory.CreateDirectory(strayDirectory);
+        File.WriteAllText(Path.Combine(strayDirectory, "task.md"), "stale generated content");
+
+        ProjectHomeRenderSweepResult sweep = await NewEngine(store).PollOnceAsync(CancellationToken.None);
+
+        sweep.OrphansHandled.Should().Be(1);
+        Directory.Exists(strayDirectory).Should().BeFalse("an empty shell orphan is removed, not left behind");
+        Directory.Exists(ProjectHomePaths.ArchivedTasksDirectory(_home)).Should().BeTrue(
+            "the archive root itself must never be treated as an orphan by its own reconciliation pass");
+        File.Exists(Path.Combine(ProjectHomePaths.ArchivedTasksDirectory(_home), "ORPHANED.md")).Should().BeFalse(
+            "the archive root is platform-owned, not a stray a human dropped beside the tasks it holds");
+    }
+
+    private static IEnumerable<string> LiveTaskDirectories(string tasksRoot) =>
+        Directory.EnumerateDirectories(tasksRoot)
+            .Where(directory => Path.GetFileName(directory) != ProjectHomePaths.ArchiveDirectoryName);
 
     [Fact]
     public async Task A_stray_directory_matching_no_task_or_idea_is_reconciled_away_on_the_next_sweep()
