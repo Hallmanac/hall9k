@@ -267,12 +267,13 @@ public sealed class UninstallCommand : Hall9kAsyncCommand<UninstallCommand.Setti
             AnsiConsole.MarkupLine(outcome switch
             {
                 DaemonAutostartDisableOutcome.DaemonStopped =>
-                    "[green]Autostart unregistered[/] — the LaunchAgent is gone, and h9kd, still running under "
-                        + "it, was stopped in the process.",
+                    $"[green]Autostart unregistered[/] — the {autostart.MechanismDescription} is gone, and h9kd, "
+                        + "still running under it, was stopped in the process.",
                 DaemonAutostartDisableOutcome.DaemonStopping =>
-                    "[yellow]Autostart unregistered[/] — the LaunchAgent is gone, and h9kd (still running under "
-                        + "it) was signalled, but had not exited by the time this stopped watching.",
-                _ => "[green]Autostart unregistered[/] — the LaunchAgent is gone.",
+                    $"[yellow]Autostart unregistered[/] — the {autostart.MechanismDescription} is gone, and h9kd "
+                        + "(still running under it) was signalled, but had not exited by the time this stopped "
+                        + "watching.",
+                _ => $"[green]Autostart unregistered[/] — the {autostart.MechanismDescription} is gone.",
             });
         }
         else if (autostart.IsSupported)
