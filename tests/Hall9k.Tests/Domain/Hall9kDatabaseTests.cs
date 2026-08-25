@@ -111,6 +111,32 @@ public sealed class Hall9kDatabaseTests : IDisposable
         resolution.Source.Should().Be(Path.Combine(home, "repo", Hall9kDatabase.ProjectOverrideFileName));
     }
 
+    /// <summary>
+    /// <c>JsonConfigurationFileParser</c> — what the daemon actually binds this file through —
+    /// parses with comments skipped and trailing commas allowed, the same leniency
+    /// <see cref="PlatformConfigFile.LenientDocumentOptions"/> already reads the "hall9k" section
+    /// with. Origin: the cycle-3 pre-PR review found this type's own connection-string read still
+    /// using System.Text.Json's strict defaults, so a file the daemon's operating-settings section
+    /// calls healthy failed this read as "not valid JSON" and reported
+    /// <see cref="ConnectionStringOrigin.PlatformConfigFileMalformed"/> for every database command.
+    /// </summary>
+    [Fact]
+    public void A_config_file_with_a_comment_and_a_trailing_comma_still_resolves_the_connection_string()
+    {
+        File.WriteAllText(
+            Path.Combine(home, "config.json"),
+            """
+            {
+                "connectionString": "config-value", // set by h9k doctor
+            }
+            """);
+
+        ConnectionStringResolution resolution = Hall9kDatabase.Resolve(startDirectory: home);
+
+        resolution.Value.Should().Be("config-value");
+        resolution.Origin.Should().Be(ConnectionStringOrigin.PlatformConfigFile);
+    }
+
     [Fact]
     public async Task Writing_the_configured_connection_string_makes_it_the_platform_config_file_answer()
     {
