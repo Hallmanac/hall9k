@@ -93,27 +93,45 @@ public sealed class WindowsStopRequestWatcher(
     /// </summary>
     internal bool IsOwnStopRequest()
     {
+        // The move and the read are no longer one try/finally: a read failure after a
+        // successful claim (an indexer or scanner opening the just-renamed file with a
+        // deny-share mode is enough on Windows) must leave the claimed copy on disk for
+        // the next tick to retry, rather than deleting it unconditionally and discarding
+        // the only surviving copy of the request. Skipping the move when a claimed copy
+        // already sits at ClaimPath is what lets that retry find it — the original path
+        // is empty by then, so a fresh move would just fail with "no file yet".
+        if (!File.Exists(ClaimPath))
+        {
+            try
+            {
+                File.Move(DaemonRuntime.StopRequestFile, ClaimPath, overwrite: true);
+            }
+            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+            {
+                // IOException covers both "no file yet" (FileNotFoundException/
+                // DirectoryNotFoundException are IOException subtypes) and a rename racing a
+                // write still landing at the source path; UnauthorizedAccessException covers a
+                // path that exists but is unreadable (a directory in its place, a denying ACL).
+                // Either way this BackgroundService never lets an escaping exception take the
+                // whole host down via the default StopHost behavior — nothing to act on yet;
+                // the next tick tries again.
+                return false;
+            }
+        }
+
         string content;
         try
         {
-            File.Move(DaemonRuntime.StopRequestFile, ClaimPath, overwrite: true);
             content = File.ReadAllText(ClaimPath);
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
         {
-            // IOException covers both "no file yet" (FileNotFoundException/
-            // DirectoryNotFoundException are IOException subtypes) and a rename racing a
-            // write still landing at the source path; UnauthorizedAccessException covers a
-            // path that exists but is unreadable (a directory in its place, a denying ACL).
-            // Either way this BackgroundService never lets an escaping exception take the
-            // whole host down via the default StopHost behavior — nothing to act on yet;
-            // the next tick tries again.
+            // The claim already succeeded, so ClaimPath is left in place on purpose — see
+            // this method's own remarks above.
             return false;
         }
-        finally
-        {
-            DeleteClaimFile();
-        }
+
+        DeleteClaimFile();
 
         DaemonProcessDescriptor? requested;
         try
