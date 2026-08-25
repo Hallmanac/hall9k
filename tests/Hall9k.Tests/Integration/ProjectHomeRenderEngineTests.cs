@@ -917,6 +917,60 @@ public sealed class ProjectHomeRenderEngineTests(PostgresFixture postgres) : ICl
     }
 
     [Fact]
+    public async Task An_abandoned_task_whose_launch_died_before_dispatching_archives_instead_of_waiting_forever()
+    {
+        // Adversarial review, backlog 51 cycle 3: RunLauncher.RecordLaunchFailureAsync only
+        // appends RunFailed when the run's own stream already exists — a failure before
+        // RunDispatched ever commits (a worktree checkout error, say) instead fails the TASK
+        // directly, leaving CurrentRunId naming a run that never had, and never will have, a
+        // projection. Abandoning that task must not wait on a projection that can provably never
+        // appear: FailureReason being set is proof this exact run already went through
+        // TaskFailed, and no later code path writes to that run id.
+        using DocumentStore store = NewStore();
+        Guid ownerId = DomainId.New();
+        Guid projectId = DomainId.New();
+        Guid taskId = DomainId.New();
+        Guid nodeId = DomainId.New();
+
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            RegisterProject(session, projectId, ownerId, "hall9k");
+            (TaskAggregate task, object[] lifecycle) = TaskSeed.Start(
+                TaskDecider.Add(
+                    taskId, projectId, "Task whose launch died before dispatching", ["criterion"], TaskType.Feature,
+                    null, null, null, Now, ownerId),
+                ownerId, Now);
+            List<object> taskEvents = [.. lifecycle];
+
+            TaskClaimed claimed = TaskDecider.Claim(task, nodeId, ownerId, DomainId.New(), Now);
+            task.Apply(claimed);
+            taskEvents.Add(claimed);
+            Guid runId = task.CurrentRunId!.Value;
+
+            TaskFailed failed = TaskDecider.Fail(task, runId, "worktree checkout failed", Now);
+            task.Apply(failed);
+            taskEvents.Add(failed);
+
+            TaskAbandoned abandoned = TaskDecider.Abandon(task, "giving up on this one", Now, ownerId);
+            taskEvents.Add(abandoned);
+
+            // No RunAggregate stream at all for runId: the launch died before RunDispatched
+            // ever committed, so this run's projection genuinely never appears.
+            session.Events.StartStream<TaskAggregate>(taskId, [.. taskEvents]);
+            await session.SaveChangesAsync();
+        }
+
+        await NewEngine(store).PollOnceAsync(CancellationToken.None);
+
+        string tasksRoot = ProjectHomePaths.TasksDirectory(_home);
+        string archiveRoot = ProjectHomePaths.ArchivedTasksDirectory(_home);
+        LiveTaskDirectories(tasksRoot).Should().BeEmpty(
+            "the recorded launch failure proves this run will never dispatch, so there is nothing left to wait for");
+        string archivedDirectory = Directory.EnumerateDirectories(archiveRoot).Should().ContainSingle().Subject;
+        File.ReadAllText(Path.Combine(archivedDirectory, "task.md")).Should().Contain("state: Abandoned");
+    }
+
+    [Fact]
     public async Task A_reopened_archived_task_moves_back_to_the_top_level()
     {
         // The other half of the archive rule (backlog 51): the folder must never lie about
