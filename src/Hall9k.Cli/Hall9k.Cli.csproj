@@ -15,6 +15,18 @@
   </ItemGroup>
 
   <ItemGroup>
+    <!-- The CLI carries no settings file today, but the acceptance criteria calls for the
+         exclusion to live in the project files of both h9k and h9kd, so a Development
+         settings file added here later is excluded from day one rather than depending on
+         whoever adds it to remember the guard (mirrors Hall9k.Daemon.csproj). The lowercase
+         second rule matches on case-sensitive filesystems, where MSBuild's Update comparison
+         does not fold case the way Windows does, so a mistakenly-lowercased
+         *.development.* file is still caught. -->
+    <Content Update="*.Development.*" CopyToOutputDirectory="Never" CopyToPublishDirectory="Never" />
+    <Content Update="*.development.*" CopyToOutputDirectory="Never" CopyToPublishDirectory="Never" />
+  </ItemGroup>
+
+  <ItemGroup>
     <Using Include="Hall9k.Domain.Infrastructure.Extensions" />
     <InternalsVisibleTo Include="Hall9k.Tests" />
   </ItemGroup>
