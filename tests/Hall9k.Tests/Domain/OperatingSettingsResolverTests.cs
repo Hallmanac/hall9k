@@ -65,7 +65,7 @@ public sealed class OperatingSettingsResolverTests : IDisposable
         report.DefaultModel.Value.Should().Be(AgentModel.PlatformFallback);
         report.DefaultModel.Origin.Should().Be(SettingOrigin.Default);
         report.ModelByRole.Should().OnlyContain(role => role.Model.Origin == SettingOrigin.Default && role.Model.Value == null);
-        report.ConfigFileMalformed.Should().BeFalse();
+        report.ConfigFileProblem.Should().BeNull();
     }
 
     [Fact]
@@ -124,7 +124,33 @@ public sealed class OperatingSettingsResolverTests : IDisposable
 
         OperatingSettingsReport report = await OperatingSettingsResolver.ResolveAsync(CancellationToken.None);
 
-        report.ConfigFileMalformed.Should().BeTrue();
+        report.ConfigFileProblem.Should().NotBeNull();
+        report.ConfigFileProblem!.Message.Should().Contain("is not valid JSON");
+        report.ConfigFileProblem.DaemonFailsToStart.Should().BeFalse(
+            "a syntax error is exactly what PlatformConfigFileSource guards and skips gracefully at daemon startup");
+        report.MaxConcurrentAgentSessions.Origin.Should().Be(SettingOrigin.Default);
+    }
+
+    /// <summary>
+    /// A value with the wrong shape is not the same failure as a syntax error: the document
+    /// parses fine, so PlatformConfigFileSource's own guard lets it through, and the daemon's
+    /// ConfigurationBinder then throws at options-resolution time instead of falling back — a
+    /// fatal startup crash rather than the graceful "defaults still apply" a syntax error gets.
+    /// Origin: the cycle-3 pre-PR review found both CLI surfaces reporting this shape as "not
+    /// valid JSON ... defaults still apply", which is wrong on both the cause and the consequence.
+    /// </summary>
+    [Fact]
+    public async Task A_value_with_the_wrong_shape_is_distinguished_from_a_syntax_error()
+    {
+        await File.WriteAllTextAsync(
+            Hall9kDatabase.ConfigFile, """{"hall9k": {"maxConcurrentAgentSessions": "four"}}""");
+
+        OperatingSettingsReport report = await OperatingSettingsResolver.ResolveAsync(CancellationToken.None);
+
+        report.ConfigFileProblem.Should().NotBeNull();
+        report.ConfigFileProblem!.Message.Should().Contain("wrong shape");
+        report.ConfigFileProblem.DaemonFailsToStart.Should().BeTrue(
+            "ConfigurationBinder has no guard for a value-shape problem, so the daemon crashes on it rather than falling back");
         report.MaxConcurrentAgentSessions.Origin.Should().Be(SettingOrigin.Default);
     }
 
@@ -142,7 +168,7 @@ public sealed class OperatingSettingsResolverTests : IDisposable
 
         OperatingSettingsReport report = await OperatingSettingsResolver.ResolveAsync(CancellationToken.None);
 
-        report.ConfigFileMalformed.Should().BeFalse();
+        report.ConfigFileProblem.Should().BeNull();
         report.MaxConcurrentAgentSessions.Value.Should().Be(4);
         report.MaxConcurrentAgentSessions.Origin.Should().Be(SettingOrigin.PlatformConfigFile);
     }

@@ -33,11 +33,12 @@ public sealed class ConfigShowCommand : Hall9kAsyncCommand<ConfigShowCommand.Set
             AnsiConsole.MarkupLineInterpolated(
                 $"[dim]config file: {Hall9kDatabase.ConfigFile} (not created yet — every setting below is a built-in default; h9k config set creates it)[/]");
         }
-        if (report.ConfigFileMalformed)
+        if (report.ConfigFileProblem is { } problem)
         {
-            AnsiConsole.MarkupLine(
-                "[red]That file exists but is not valid JSON[/] — its settings are being ignored; "
-                + "environment variables and built-in defaults still apply. Fix or delete it, then run this again.");
+            string consequence = problem.DaemonFailsToStart
+                ? "the daemon's own ConfigurationBinder fails on the same value, so it will crash outright at startup rather than fall back"
+                : "the daemon skips the file for this run — environment variables and built-in defaults still apply";
+            AnsiConsole.MarkupLineInterpolated($"[red]{problem.Message}[/] {consequence}.");
         }
 
         foreach (string warning in report.UnusableEnvironmentVariables)

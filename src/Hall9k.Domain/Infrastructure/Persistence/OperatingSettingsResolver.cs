@@ -1,4 +1,3 @@
-using Hall9k.Domain.Shared.Exceptions;
 using Hall9k.Domain.Shared.ValueObjects;
 
 namespace Hall9k.Domain.Infrastructure.Persistence;
@@ -18,16 +17,8 @@ public static class OperatingSettingsResolver
 
     public static async Task<OperatingSettingsReport> ResolveAsync(CancellationToken cancellationToken)
     {
-        OperatingSettings configured = new();
-        bool malformed = false;
-        try
-        {
-            configured = await PlatformConfigFile.ReadOperatingSettingsAsync(cancellationToken);
-        }
-        catch (DomainValidationException)
-        {
-            malformed = true;
-        }
+        ConfigFileReadResult read = await PlatformConfigFile.TryReadOperatingSettingsAsync(cancellationToken);
+        OperatingSettings configured = read.Settings;
 
         List<string> unusableEnvironmentVariables = [];
 
@@ -44,7 +35,7 @@ public static class OperatingSettingsResolver
             new RoleModelSetting(
                 pair.Role, ResolveOptionalString($"{EnvironmentPrefix}ModelByRole__{pair.Role}", pair.Model)))];
 
-        return new OperatingSettingsReport(concurrency, defaultModel, roles, malformed, unusableEnvironmentVariables);
+        return new OperatingSettingsReport(concurrency, defaultModel, roles, read.Problem, unusableEnvironmentVariables);
     }
 
     /// <summary>
