@@ -2,6 +2,7 @@ using System.ComponentModel;
 using System.Diagnostics;
 using System.Security;
 using System.Text;
+using Hall9k.Domain.Infrastructure.Persistence;
 using Hall9k.Domain.Infrastructure.Storage;
 
 namespace Hall9k.Cli.DaemonControl;
@@ -103,10 +104,15 @@ public sealed class WindowsDaemonAutostart : IDaemonAutostart
         // Written before the task is registered, so the very first logon that fires the
         // trigger already finds a script in place — overwritten on every re-enable the same
         // way the task registration itself is (schtasks /Create /F).
+        // Encoding.Unicode (UTF-16LE with a BOM), not UTF-8: WSH has no UTF-8 auto-detection —
+        // an unmarked file is read against the system ANSI codepage, and a BOM is exactly what
+        // tells wscript.exe to read UTF-16 instead. Without it, a non-ASCII profile path (an
+        // accented Windows username) would decode as the wrong codepage and corrupt the command
+        // line silently. The task XML two lines below already makes this same choice.
         await File.WriteAllTextAsync(
             LaunchScriptFile,
             LaunchScriptContent(daemonBinaryPath, DaemonRuntime.LogFile, environment),
-            new UTF8Encoding(encoderShouldEmitUTF8Identifier: false),
+            Encoding.Unicode,
             cancellationToken);
 
         string xmlPath = Path.Combine(Path.GetTempPath(), $"hall9k-h9kd-task-{Path.GetRandomFileName()}.xml");
@@ -343,14 +349,19 @@ public sealed class WindowsDaemonAutostart : IDaemonAutostart
     /// logon. Its one statement hides the window <c>cmd.exe</c> would otherwise show
     /// (<c>0</c> is <c>SW_HIDE</c>) and waits for it to exit (<c>True</c>), so the task
     /// instance's own lifetime still tracks the daemon's, exactly as it did when cmd.exe was
-    /// the action directly — <see cref="RestartOnFailure"/> above still restarts on a nonzero
-    /// exit code from THIS wait, unchanged by the indirection.
+    /// the action directly. <c>WScript.Shell.Run</c> returns the exited process's own exit
+    /// code when called with <c>True</c>, but only when that return value is actually used —
+    /// called as a bare statement, wscript.exe still exits 0 regardless of what cmd.exe (and
+    /// h9kd inside it) actually returned. <c>WScript.Quit</c> around the call is what carries
+    /// that code out to wscript.exe's own exit code, which is what Task Scheduler's action
+    /// result — and so <see cref="RestartOnFailure"/> above, which restarts only on a nonzero
+    /// exit — actually observes.
     /// </summary>
     internal static string LaunchScriptContent(
         string daemonBinaryPath, string logFilePath, IReadOnlyList<KeyValuePair<string, string>> environment)
     {
         string commandLine = "cmd.exe " + WindowsCommandLine.WrapForCmdExe(InnerCommand(daemonBinaryPath, logFilePath, environment));
-        return $"CreateObject(\"WScript.Shell\").Run {VbScriptStringLiteral(commandLine)}, 0, True\n";
+        return $"WScript.Quit CreateObject(\"WScript.Shell\").Run({VbScriptStringLiteral(commandLine)}, 0, True)\n";
     }
 
     /// <summary>
@@ -372,6 +383,17 @@ public sealed class WindowsDaemonAutostart : IDaemonAutostart
     /// <c>WScript.Shell.Run</c> (which hands it to <c>CreateProcess</c> unmodified, the same
     /// as <see cref="System.Diagnostics.ProcessStartInfo.Arguments"/> did before) needs no
     /// change to the wrapping itself.
+    /// <para>
+    /// <see cref="Hall9kDatabase.EnvironmentVariableName"/> is deliberately left out of the
+    /// captured set here even when <see cref="EnableAsync"/> is handed it: unlike PATH or
+    /// <c>HALL9K_CLAUDE_PATH</c>, the connection string already has a durable home once an
+    /// install reaches this point — <see cref="Hall9kDatabase.Resolve"/> falls back to
+    /// <see cref="Hall9kDatabase.ConfigFile"/> (written by <c>h9k doctor</c>'s start-offer,
+    /// which the documented install walk runs before autostart is ever enabled) whenever the
+    /// environment does not carry it. Embedding it anyway would only add a second, weaker copy
+    /// of the same secret in plaintext on disk — this file has no equivalent of the config
+    /// file's own permissions or its inclusion in every other secret-handling path.
+    /// </para>
     /// </summary>
     private static string InnerCommand(
         string daemonBinaryPath, string logFilePath, IReadOnlyList<KeyValuePair<string, string>> environment)
@@ -379,6 +401,11 @@ public sealed class WindowsDaemonAutostart : IDaemonAutostart
         StringBuilder inner = new();
         foreach ((string name, string value) in environment)
         {
+            if (name == Hall9kDatabase.EnvironmentVariableName)
+            {
+                continue;
+            }
+
             inner.Append("set ").Append(EscapeForCmdExe(name)).Append('=').Append(EscapeForCmdExe(value)).Append("& ");
         }
 

@@ -1,3 +1,5 @@
+using System.Diagnostics;
+using System.Text;
 using FluentAssertions;
 using Hall9k.Cli.DaemonControl;
 using Xunit;
@@ -28,17 +30,65 @@ public sealed class WindowsDaemonAutostartTests
     }
 
     [Fact]
-    public void Crash_restart_never_resurrects_a_clean_stop()
+    public void The_task_only_restarts_on_a_nonzero_exit()
     {
         string xml = WindowsDaemonAutostart.TaskXmlContent();
 
-        // RestartOnFailure only restarts on a nonzero exit; h9kd's own graceful shutdown
-        // (WindowsStopRequestWatcher) exits 0, indistinguishable from a task with nothing
-        // left to do — mirrors launchd's KeepAlive SuccessfulExit=false. The wait that
-        // carries this exit code up now goes through the launch script's WScript.Shell.Run,
-        // but the task's own RestartOnFailure setting is unchanged by that indirection.
+        // This only asserts the task definition's own shape (RestartOnFailure's presence and
+        // count) — it says nothing about whether wscript.exe's exit code, the thing
+        // RestartOnFailure actually evaluates, carries h9kd's real exit code up through the
+        // launch script at all. That is what
+        // The_launch_script_propagates_the_real_process_exit_code_through_wscript proves for
+        // real, since no XML assertion can observe it.
         xml.Should().Contain("<RestartOnFailure>");
         xml.Should().Contain("<Count>3</Count>");
+    }
+
+    [Fact]
+    public void The_launch_script_propagates_the_real_process_exit_code_through_wscript()
+    {
+        // Runs for real only on the Windows CI leg (the DaemonEnvironmentTests convention for
+        // assertions no other platform can make: cscript.exe does not exist off Windows).
+        // WScript.Shell.Run's return value only reaches wscript.exe's own exit code — the
+        // thing Task Scheduler's RestartOnFailure actually observes — when a caller does
+        // something with it; called as a bare statement (the pre-fix shape), wscript.exe
+        // always exits 0 regardless of what cmd.exe (and h9kd inside it) returned, which
+        // would make RestartOnFailure silently never fire. Proving that requires actually
+        // running the generated script through cscript.exe against a real process exit code,
+        // not reading the script's text.
+        if (!OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        ExitCodeThroughLaunchScript(7).Should().Be(7, "a crashing h9kd's exit code must reach wscript.exe for RestartOnFailure to see it");
+        ExitCodeThroughLaunchScript(0).Should().Be(0, "h9kd's own clean-stop exit code must also reach wscript.exe unchanged");
+    }
+
+    private static int ExitCodeThroughLaunchScript(int simulatedExitCode)
+    {
+        string directory = Directory.CreateTempSubdirectory("h9k-launch-script-").FullName;
+        try
+        {
+            string fakeDaemon = Path.Combine(directory, "fake-h9kd.cmd");
+            File.WriteAllText(fakeDaemon, $"@exit /b {simulatedExitCode}\r\n");
+            string log = Path.Combine(directory, "h9kd.log");
+            string script = Path.Combine(directory, "launch.vbs");
+            File.WriteAllText(script, WindowsDaemonAutostart.LaunchScriptContent(fakeDaemon, log, []), Encoding.Unicode);
+
+            using Process process = Process.Start(new ProcessStartInfo
+            {
+                FileName = "cscript.exe",
+                ArgumentList = { "//nologo", "//B", script },
+                UseShellExecute = false,
+            })!;
+            process.WaitForExit();
+            return process.ExitCode;
+        }
+        finally
+        {
+            Directory.Delete(directory, recursive: true);
+        }
     }
 
     [Fact]
@@ -176,11 +226,7 @@ public sealed class WindowsDaemonAutostartTests
     [Fact]
     public void A_value_containing_a_cmd_metacharacter_is_carried_intact_into_the_launch_script()
     {
-        KeyValuePair<string, string>[] environment =
-        [
-            new(Hall9k.Domain.Infrastructure.Persistence.Hall9kDatabase.EnvironmentVariableName,
-                "Host=localhost;Password=p&ss"),
-        ];
+        KeyValuePair<string, string>[] environment = [new("HALL9K_CLAUDE_PATH", "C:\\tools\\p&ss\\claude.exe")];
 
         string script = WindowsDaemonAutostart.LaunchScriptContent(Binary, Log, environment);
 
@@ -190,6 +236,27 @@ public sealed class WindowsDaemonAutostartTests
         // command cmd.exe actually runs still reads as an escaped ampersand, never a bare
         // one that would end the set statement early.
         script.Should().Contain("p^&ss");
+    }
+
+    [Fact]
+    public void The_connection_string_is_left_out_of_the_launch_script_even_when_captured()
+    {
+        // Unlike PATH or HALL9K_CLAUDE_PATH, the connection string already has a durable
+        // fallback (Hall9kDatabase.Resolve reads the platform config file h9k doctor writes
+        // before autostart is ever enabled), so embedding it here would only add a second,
+        // weaker plaintext copy of the same secret to a file with no equivalent of the config
+        // file's own protections.
+        KeyValuePair<string, string>[] environment =
+        [
+            new(Hall9k.Domain.Infrastructure.Persistence.Hall9kDatabase.EnvironmentVariableName,
+                "Host=localhost;Password=super-secret"),
+            new("PATH", @"C:\tools"),
+        ];
+
+        string script = WindowsDaemonAutostart.LaunchScriptContent(Binary, Log, environment);
+
+        script.Should().NotContain("super-secret");
+        script.Should().Contain("PATH=");
     }
 
     [Fact]
