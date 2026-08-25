@@ -56,7 +56,7 @@ public sealed class RunSupervisor(
     /// a resumed or adopted run whose task has since crossed the <c>tasks/_archive/</c> boundary)
     /// without thinking about it, exactly like every other reader documented in
     /// <see cref="Hall9k.Domain.Infrastructure.Storage.RunPaths.ResolveCurrentDirectory"/>'s own
-    /// doc comment and PLAN.md §16 #83.
+    /// doc comment and PLAN.md §16 #84.
     /// </summary>
     public void StartMonitoring(
         Guid runId, string runDirectory, Guid taskId, int processId, DateTimeOffset processStartedAt,

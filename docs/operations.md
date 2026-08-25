@@ -252,8 +252,12 @@ resolves the run's current directory dynamically rather than trusting the path `
 recorded, so a still-parked run keeps finding its own files once a later sweep does move it back.
 
 A run's directory is resolved once, at dispatch, from its owning task's directory name at that
-moment, and recorded on the run rather than rederived later — the same discipline as the
-worktree path. An idea's workspace location is resolved once too, but at capture instead: a
+moment, and recorded on the run — the same discipline as the worktree path. That record is a
+dispatch-time snapshot rather than a live pointer, though: the task's directory can move into
+`tasks/_archive/` and back afterward, so every reader resolves the run's current location
+through `RunPaths.ResolveCurrentDirectory` rather than trusting the recorded path verbatim, which
+is what lets `h9k logs` keep working on a task the render sweep has since archived. An idea's
+workspace location is resolved once too, but at capture instead: a
 project gaining a home after an idea already exists there does not retroactively move that
 idea's workspace, so two ideas under the same project can legitimately have their workspaces in
 different places depending on when each was captured.

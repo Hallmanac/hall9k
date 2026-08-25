@@ -13,10 +13,13 @@ namespace Hall9k.Domain.Features.Run.Events;
 /// RunDirectory is resolved once here, exactly as WorktreePath is: where the run's prompt,
 /// stream, verify logs and review files live, under the owning task's directory when the
 /// project has a home and the platform-global location otherwise (ruled 2026-08-23, backlog
-/// 49). Every consumer reads this recorded value rather than rederiving it, so old runs (an
-/// empty string, meaning "before this field existed") and new ones resolve through
-/// <c>RunPaths.GlobalDirectory</c> and the recorded path respectively, with no special case at
-/// the read site.
+/// 49). This is the dispatch-time record, not a live pointer: a task's directory can move
+/// under <c>tasks/_archive/</c> and back after dispatch (backlog 51, PLAN.md §16 #84), so every
+/// consumer resolves the run's current location through
+/// <see cref="Hall9k.Domain.Infrastructure.Storage.RunPaths.ResolveCurrentDirectory"/> rather
+/// than trusting this value verbatim; old runs (an empty string, meaning "before this field
+/// existed") and new ones resolve through <c>RunPaths.GlobalDirectory</c> and the recorded path
+/// respectively, with no special case at the read site.
 /// </summary>
 public sealed record RunDispatched(
     Guid Id,
