@@ -74,7 +74,20 @@ public static class AtomicFileWrite
                 return;
             }
 
-            File.Replace(tempPath, resolvedPath, destinationBackupFileName: null);
+            try
+            {
+                File.Replace(tempPath, resolvedPath, destinationBackupFileName: null);
+            }
+            catch (FileNotFoundException)
+            {
+                // The existence check above and the replace below are not one atomic step: a
+                // concurrent reader that claims the target by renaming it away in between (for
+                // example, WindowsStopRequestWatcher's claim-by-rename racing a second
+                // h9k daemon stop write) leaves nothing for File.Replace to swap onto, and it
+                // throws rather than treating "gone" as "never existed". A target that vanished
+                // is exactly the !targetExists case, so finishing the write is a plain move.
+                File.Move(tempPath, resolvedPath);
+            }
         }
         finally
         {
