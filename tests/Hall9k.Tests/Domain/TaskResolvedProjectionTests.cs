@@ -80,14 +80,17 @@ public sealed class TaskResolvedProjectionTests
     }
 
     [Fact]
-    public void Task_details_clears_the_resolved_reason_on_reopen()
+    public void Task_details_keeps_the_resolved_reason_on_reopen_but_stops_it_naming_the_current_run()
     {
-        // Adversarial review, backlog 51 cycle 3: ProjectHomeRenderEngine.IsArchived treats a
-        // non-blank ResolvedReason as permanent closure for a Done task (Decisions Log #27's
-        // attestation exit means no run of that completion will ever carry RunCompleted). A
-        // resolve-then-reopen sequence starts a genuinely new run that CAN still complete
-        // normally, so the stale reason has to go, or the follow-up re-archives the moment it
-        // completes even though its own pull request is still open.
+        // Adversarial review, backlog 51 cycle 8: an earlier fix nulled ResolvedReason on reopen
+        // to stop ProjectHomeRenderEngine.IsArchived from treating a stale attestation as
+        // permanent closure for a follow-up that can still complete normally — but that erased a
+        // human's recorded attestation from the read model, the same defect the FailedRunId/
+        // FailureReason split already exists to avoid for TaskFailed. ResolvedRunId gives
+        // IsArchived the same discrimination without dropping the text: h9k task show keeps
+        // rendering "Resolved: …", and it is ResolvedRunId no longer matching CurrentRunId that
+        // tells the render sweep this particular attestation does not speak for the run
+        // standing right now.
         TaskDetailsProjection projection = new();
         Guid id = DomainId.New();
         Guid failedRunId = DomainId.New();
@@ -104,14 +107,25 @@ public sealed class TaskResolvedProjectionTests
             id, ResolveReason, PullRequestUrl, Now.AddHours(2), DomainId.New())), view);
 
         view.ResolvedReason.Should().Be(ResolveReason);
+        view.ResolvedRunId.Should().Be(failedRunId, "the attestation was made for this run");
 
         projection.Apply(new FakeEvent<TaskReopened>(new TaskReopened(
             id, failedRunId, "task/abc", "One more look before merge.", Now.AddHours(3), DomainId.New())), view);
 
         view.State.Should().Be(TaskState.Queued);
-        view.ResolvedReason.Should().BeNull(
-            "the follow-up run this starts can still reach RunCompleted on its own; the old " +
-            "attestation must not keep counting as this run's closure too");
+        view.ResolvedReason.Should().Be(ResolveReason,
+            "a human's attestation is never erased from the read model; h9k task show keeps rendering it");
+        view.CurrentRunId.Should().BeNull("no run is claimed yet");
+        view.ResolvedRunId.Should().Be(failedRunId,
+            "the attestation still names the run it was made for, which is no longer the current one");
+
+        Guid followUpRunId = DomainId.New();
+        projection.Apply(new FakeEvent<TaskClaimed>(new TaskClaimed(
+            id, DomainId.New(), DomainId.New(), 2, followUpRunId, Now.AddHours(4))), view);
+
+        view.CurrentRunId.Should().Be(followUpRunId);
+        (view.ResolvedRunId == view.CurrentRunId).Should().BeFalse(
+            "IsArchived must not treat the old attestation as this new run's closure too");
     }
 
     [Fact]
