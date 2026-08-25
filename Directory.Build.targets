@@ -1,0 +1,31 @@
+<Project>
+
+  <!-- A Development settings file is a dev-loop concern only (Aspire/the local worktree set
+       DOTNET_ENVIRONMENT=Development); an installed binary always runs Production, so nothing
+       reads it there, and its only fate otherwise is riding into every install unnoticed until
+       someone puts a dev connection string or a chatty flag in it (origin: found sitting in
+       ~/.hall9k/bin beside appsettings.json, 2026-08-24). This lives here rather than in each
+       project file so it binds regardless of the item's type (Content under the Worker/Web SDKs,
+       None under the base SDK) or where in the project body it was declared: Directory.Build.targets
+       imports after the whole project body and the SDK's own default-items resolution, so an
+       Update here reaches an item added anywhere, including one declared after this file would
+       have been read if it were imported at the top (found in review: a project-local Content
+       Update in Hall9k.Cli.csproj was inert for exactly this reason, since the base SDK declares
+       no default Content item for *.json to update in the first place). Only
+       CopyToPublishDirectory is set to Never — CopyToOutputDirectory stays at its default so the
+       file still lands in bin/ for the dev loop that is the only place it is ever meant to be
+       read; setting it to Never too (an earlier version of this rule did) silently broke that
+       loop instead. The glob is recursive (**) so a settings file nested under a subfolder is
+       still caught, matching the recursive checks already applied to a release payload
+       (InstallCommand.IsDevelopmentSettingsFile, the release workflow's `find -iname`). The
+       lowercase second rule matches on case-sensitive filesystems, where MSBuild's Update
+       comparison does not fold case the way Windows does, so a mistakenly-lowercased
+       *.development.* file is still caught. -->
+  <ItemGroup>
+    <Content Update="**\*.Development.*" CopyToPublishDirectory="Never" />
+    <Content Update="**\*.development.*" CopyToPublishDirectory="Never" />
+    <None Update="**\*.Development.*" CopyToPublishDirectory="Never" />
+    <None Update="**\*.development.*" CopyToPublishDirectory="Never" />
+  </ItemGroup>
+
+</Project>
