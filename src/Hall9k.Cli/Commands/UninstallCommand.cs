@@ -1004,9 +1004,38 @@ public sealed class UninstallCommand : Hall9kAsyncCommand<UninstallCommand.Setti
                 AnsiConsole.MarkupLine($"  [yellow]{path.EscapeMarkup()}[/]");
             }
 
-            AnsiConsole.MarkupLine(
-                "[dim]Still in use — most likely this very h9k, if you are running the installed binary. "
-                + "Delete it by hand once this process exits.[/]");
+            bool includesHome = stillPresent.Any(
+                path => string.Equals(path, home, StringComparison.OrdinalIgnoreCase));
+            bool includesManifest = stillPresent.Any(
+                path => string.Equals(path, SkillLibraryPaths.PublishedManifest, StringComparison.OrdinalIgnoreCase));
+
+            if (stillPresent.Any(path =>
+                !string.Equals(path, home, StringComparison.OrdinalIgnoreCase)
+                && !string.Equals(path, SkillLibraryPaths.PublishedManifest, StringComparison.OrdinalIgnoreCase)))
+            {
+                AnsiConsole.MarkupLine(
+                    "[dim]Still in use — most likely this very h9k, if you are running the installed binary. "
+                    + "Delete it by hand once this process exits.[/]");
+            }
+
+            if (includesHome)
+            {
+                AnsiConsole.MarkupLine(
+                    $"[yellow]{home.EscapeMarkup()} itself could not be confirmed empty[/] — that means its "
+                    + "contents could not even be listed (a permission problem, not necessarily a locked file), "
+                    + "and this directory can hold a project's home, its worktrees, your credentials, and "
+                    + "config.json, none of which install owns. Do not delete it by hand: fix whatever is "
+                    + "blocking the read and run h9k uninstall again.");
+            }
+
+            if (includesManifest)
+            {
+                AnsiConsole.MarkupLine(
+                    $"[yellow]{SkillLibraryPaths.PublishedManifest.EscapeMarkup()} could not be read this pass[/] "
+                    + "— do not delete it by hand: without it, a later h9k install cannot tell a published skill "
+                    + "apart from one of your own, and would misclassify the whole published set as your "
+                    + "overrides. Retry once whatever is holding it lets go.");
+            }
         }
 
         TryRemoveIfEmpty(home);

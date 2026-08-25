@@ -77,7 +77,7 @@ public static class DatabaseDoctor
             + $"{Hall9kDatabase.ProjectOverrideFileName} file walking up from "
             + $"{Directory.GetCurrentDirectory().EscapeMarkup()}.[/]");
 
-        (ContainerRuntimeStatus runtime, PostgresContainerStatus container) =
+        (ContainerRuntimeStatus runtime, bool containerConfirmed, PostgresContainerStatus container) =
             await ReportContainerRuntimeStatusAsync(runner, cancellationToken);
 
         if (await ContainerRuntimeProbe.PortListeningAsync("localhost", 5432, cancellationToken))
@@ -88,7 +88,7 @@ public static class DatabaseDoctor
         }
 
         if (runtime == ContainerRuntimeStatus.Running && offerFixes
-            && await OfferAndStartAsync(Hall9kDatabase.DefaultConnectionString, container, runner, cancellationToken))
+            && await OfferAndStartAsync(Hall9kDatabase.DefaultConnectionString, containerConfirmed, container, runner, cancellationToken))
         {
             await Hall9kDatabase.WriteConfiguredConnectionStringAsync(Hall9kDatabase.DefaultConnectionString, cancellationToken);
             AnsiConsole.MarkupLine($"[green]Configured[/]: wrote the connection string to {Hall9kDatabase.ConfigFile.EscapeMarkup()}.");
@@ -130,10 +130,10 @@ public static class DatabaseDoctor
                     // check finds an unreachable local Postgres (origin incident,
                     // 2026-08-21 — a machine reboot leaves the connection string configured
                     // but Docker Desktop, and so hall9k-postgres, not yet back up).
-                    (ContainerRuntimeStatus runtime, PostgresContainerStatus container) =
+                    (ContainerRuntimeStatus runtime, bool containerConfirmed, PostgresContainerStatus container) =
                         await ReportContainerRuntimeStatusAsync(runner, cancellationToken);
                     if (offerFixes && runtime == ContainerRuntimeStatus.Running
-                        && await OfferAndStartAsync(connectionString, container, runner, cancellationToken))
+                        && await OfferAndStartAsync(connectionString, containerConfirmed, container, runner, cancellationToken))
                     {
                         reachability = await DatabaseReachability.ProbeAsync(connectionString, cancellationToken);
                     }
@@ -209,16 +209,17 @@ public static class DatabaseDoctor
     /// follow (origin incident 2026-08-23: the report was reachable only from inside the
     /// interactive start-offer, so scripted and non-interactive runs never saw it).
     /// </summary>
-    private static async Task<(ContainerRuntimeStatus Runtime, PostgresContainerStatus Container)> ReportContainerRuntimeStatusAsync(
+    private static async Task<(ContainerRuntimeStatus Runtime, bool ContainerConfirmed, PostgresContainerStatus Container)> ReportContainerRuntimeStatusAsync(
         ProcessRunner runner, CancellationToken cancellationToken)
     {
         ContainerRuntimeStatus runtime = await ContainerRuntimeProbe.RuntimeStatusAsync(runner, cancellationToken);
+        bool containerConfirmed = true;
         PostgresContainerStatus container = PostgresContainerStatus.Absent;
         switch (runtime)
         {
             case ContainerRuntimeStatus.Running:
                 AnsiConsole.MarkupLine("[dim]A container runtime (Docker) is running.[/]");
-                (bool containerConfirmed, PostgresContainerStatus status) =
+                (containerConfirmed, PostgresContainerStatus status) =
                     await ContainerRuntimeProbe.Hall9kContainerStatusAsync(runner, cancellationToken);
                 if (!containerConfirmed)
                 {
@@ -250,7 +251,7 @@ public static class DatabaseDoctor
                 break;
         }
 
-        return (runtime, container);
+        return (runtime, containerConfirmed, container);
     }
 
     /// <summary>
@@ -262,12 +263,16 @@ public static class DatabaseDoctor
     /// Takes <paramref name="container"/> already resolved by <see cref="ReportContainerRuntimeStatusAsync"/>
     /// rather than re-probing: the report already ran (and already said so, when stopped)
     /// before a caller ever reaches this offer, so this method only ever decides whether to
-    /// ask, never what to report.
+    /// ask, never what to report. <paramref name="containerConfirmed"/> being <see langword="false"/>
+    /// means that report could not tell absent from stopped (<c>docker ps -a</c> itself failed) —
+    /// this sits the offer out entirely rather than guess, since picking either branch below
+    /// (restart what is presumed stopped, or bring up what is presumed absent) would act on a
+    /// fact nobody actually observed this pass.
     /// </summary>
     private static async Task<bool> OfferAndStartAsync(
-        string connectionStringToPoll, PostgresContainerStatus container, ProcessRunner runner, CancellationToken cancellationToken)
+        string connectionStringToPoll, bool containerConfirmed, PostgresContainerStatus container, ProcessRunner runner, CancellationToken cancellationToken)
     {
-        if (!AnsiConsole.Profile.Capabilities.Interactive)
+        if (!AnsiConsole.Profile.Capabilities.Interactive || !containerConfirmed)
         {
             return false;
         }
