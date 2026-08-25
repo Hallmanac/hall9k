@@ -82,14 +82,20 @@ public sealed class ProjectHomeRenderEngine(IDocumentStore store, ILogger<Projec
                 // just its own state (TaskDependencyQuery.IsClosedOut carries the same bar for
                 // the dependency rule): a Done task's own record never changes again between
                 // its pull request opening and the closeout monitor observing the merge, so
-                // only the run projection can tell those two moments apart.
-                Guid[] doneRunIds = [.. tasks
-                    .Where(task => task.State == TaskState.Done && task.CurrentRunId.HasValue)
-                    .Select(task => task.CurrentRunId!.Value)];
-                Dictionary<Guid, RunState> currentRunStates = doneRunIds.Length == 0
+                // only the run projection can tell those two moments apart. An Abandoned task
+                // needs the same lookup for the opposite reason (adversarial review, cycle 1):
+                // abandoning does not kill whatever process is running for it (no daemon-side
+                // handler reacts to TaskAbandoned), so archiving unconditionally could move a
+                // live run's runs/<run-id>/ out from under itself, exactly the hazard the Done
+                // rule above already exists to avoid.
+                Guid[] runIdsNeedingState = [.. tasks
+                    .Where(task => task.State == TaskState.Done || task.State == TaskState.Abandoned)
+                    .Select(task => task.CurrentRunId)
+                    .OfType<Guid>()];
+                Dictionary<Guid, RunState> currentRunStates = runIdsNeedingState.Length == 0
                     ? []
                     : (await query.Query<RunListItem>()
-                            .Where(run => run.Id.IsOneOf(doneRunIds))
+                            .Where(run => run.Id.IsOneOf(runIdsNeedingState))
                             .ToListAsync(cancellationToken))
                         .ToDictionary(run => run.Id, run => run.State);
                 // An idea reassigned away from this project keeps its real, capture-time
@@ -167,20 +173,43 @@ public sealed class ProjectHomeRenderEngine(IDocumentStore store, ILogger<Projec
 
     /// <summary>
     /// Whether a task's directory belongs under <c>tasks/_archive/</c> rather than <c>tasks/</c>
-    /// (2026-08-25, backlog 51): true closeout, or abandoned. True closeout is the same bar
-    /// <see cref="Hall9k.Domain.Features.Tasks.Queries.TaskDependencyQuery"/> uses for the
-    /// dependency rule — Done alone is not enough, because <c>TaskCompleted</c> fires the moment
-    /// the pull request opens, well before a human, Copilot, or the closeout monitor's own review
-    /// loop is done with it. Only <c>RunCompleted</c>, appended once the closeout monitor observes
-    /// the merge, means the story is actually over. Abandoned archives unconditionally: a human
-    /// walked away, whether or not the task ever claimed a run.
+    /// (2026-08-25, backlog 51): true closeout, or abandoned with nothing still live. True closeout
+    /// is the same bar <see cref="Hall9k.Domain.Features.Tasks.Queries.TaskDependencyQuery"/> uses
+    /// for the dependency rule — Done alone is not enough, because <c>TaskCompleted</c> fires the
+    /// moment the pull request opens, well before a human, Copilot, or the closeout monitor's own
+    /// review loop is done with it. Only <c>RunCompleted</c>, appended once the closeout monitor
+    /// observes the merge, means the story is actually over.
+    /// <para>
+    /// Abandoned does not get the same free pass "run or no run" first gave it (adversarial
+    /// review, cycle 1): a human abandoning a task with a live agent does not kill that agent —
+    /// no daemon-side handler reacts to <c>TaskAbandoned</c> at all — so a task can sit Abandoned
+    /// while its current run is still writing to <c>runs/&lt;run-id&gt;/</c>. Moving that directory
+    /// out from under a live process is exactly the hazard the Done rule above already exists to
+    /// avoid, so Abandoned waits on the same signal: no run at all, or the current run has stopped
+    /// being live (<see cref="RunState.IsLive"/> — the same predicate <c>RunSupervisor</c> polls
+    /// against). An unrecognised run state is treated as still-live rather than guessed safe, so a
+    /// missing or not-yet-materialised run projection defers the move to a future sweep instead of
+    /// racing it.
+    /// </para>
     /// </summary>
-    private static bool IsArchived(TaskDetails task, IReadOnlyDictionary<Guid, RunState> currentRunStates) =>
-        task.State == TaskState.Abandoned
-        || (task.State == TaskState.Done
-            && task.CurrentRunId is { } runId
-            && currentRunStates.TryGetValue(runId, out RunState? runState)
-            && runState == RunState.Completed);
+    private static bool IsArchived(TaskDetails task, IReadOnlyDictionary<Guid, RunState> currentRunStates)
+    {
+        if (task.State == TaskState.Done)
+        {
+            return task.CurrentRunId is { } doneRunId
+                && currentRunStates.TryGetValue(doneRunId, out RunState? doneRunState)
+                && doneRunState == RunState.Completed;
+        }
+
+        if (task.State == TaskState.Abandoned)
+        {
+            return task.CurrentRunId is not { } abandonedRunId
+                || (currentRunStates.TryGetValue(abandonedRunId, out RunState? abandonedRunState)
+                    && !abandonedRunState.IsLive);
+        }
+
+        return false;
+    }
 
     private RenderOutcome RenderTask(
         string tasksRoot, string archivedTasksRoot, TaskDetails task, bool archived, string projectName)

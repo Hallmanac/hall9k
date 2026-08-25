@@ -60,6 +60,15 @@ public static class HomeEntryWriter
     {
         string targetDirectory = Path.Combine(rootDirectory, directoryName);
 
+        // Created before anything else touches this root: Directory.Move (below, when a stale
+        // directory is found under a different root entirely — a task crossing into or out of
+        // tasks/_archive/, 2026-08-25, backlog 51) requires every directory in its destination's
+        // path except the final one to already exist, and rootDirectory had no other reason to
+        // exist yet the first time a task archives. Idempotent, so every other caller — the
+        // fresh-create path a few lines down, and a rootDirectory that already exists — pays
+        // nothing for it.
+        Directory.CreateDirectory(rootDirectory);
+
         // The correctly-named directory wins outright when it already exists: no need to go
         // looking for a stale one, and no ambiguity about which of two same-prefix directories
         // (an interrupted move can leave both standing) is "the" existing one. But "already exists
