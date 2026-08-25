@@ -273,6 +273,8 @@ public sealed class CardPublicationEngineTests(PostgresFixture postgres) : IClas
     /// </summary>
     private sealed class UnwatchableProcesses(FakeProcessManager processes) : IProcessManager
     {
+        public SpawnedProcess Spawn(ProcessSpawnRequest request) => processes.Spawn(request);
+
         public bool IsAlive(int processId, DateTimeOffset startedAt) =>
             throw new IOException("the session's stream could not be read");
 

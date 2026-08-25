@@ -59,7 +59,7 @@ string connectionString = resolution.Value;
 builder.Services.AddOptions<DaemonOptions>().Bind(builder.Configuration.GetSection(DaemonOptions.SectionName));
 builder.Services.AddSingleton(new DaemonConnection(connectionString));
 builder.Services.AddSingleton<NodeContext>();
-builder.Services.AddSingleton<IProcessManager, UnixProcessManager>();
+builder.Services.AddSingleton(ProcessManagers.ForCurrentPlatform());
 builder.Services.AddSingleton<IWorktreeManager, GitWorktreeManager>();
 builder.Services.AddSingleton<DispatchEngine>();
 builder.Services.AddSingleton<IExecutor, ClaudeExecutor>();

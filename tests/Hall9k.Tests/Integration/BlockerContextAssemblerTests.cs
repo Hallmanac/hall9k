@@ -282,6 +282,8 @@ public sealed class BlockerContextAssemblerTests(PostgresFixture postgres) : ICl
     private sealed class ShutdownOnFirstLivenessCheck(
         FakeProcessManager inner, CancellationTokenSource shutdown) : IProcessManager
     {
+        public SpawnedProcess Spawn(ProcessSpawnRequest request) => inner.Spawn(request);
+
         public bool IsAlive(int processId, DateTimeOffset startedAt)
         {
             bool alive = inner.IsAlive(processId, startedAt);

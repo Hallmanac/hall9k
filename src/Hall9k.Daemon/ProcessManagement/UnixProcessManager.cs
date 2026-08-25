@@ -1,47 +1,41 @@
-using System.ComponentModel;
 using System.Diagnostics;
 
 namespace Hall9k.Daemon.ProcessManagement;
 
-public sealed class UnixProcessManager : IProcessManager
+/// <summary>
+/// Spawns through <c>/bin/sh -c "exec ..."</c>: <c>exec</c> replaces the shell's own process
+/// image with the real command, so the pid this returns is the real command's pid for its
+/// whole life, never an intermediary's — the same trick <see cref="Hall9k.Daemon.Execution.ClaudeExecutor"/>
+/// used inline before this seam existed. Redirection is native shell syntax, so the child
+/// owns its stdout/stderr file handle directly (log #2): nothing here is a pipe this
+/// process would need to stay alive to keep draining.
+/// </summary>
+public sealed class UnixProcessManager : ProcessManagerBase
 {
-    // Start times can drift slightly between recording and reading; a match within this
-    // window means "same process", anything further means the PID was reused.
-    private static readonly TimeSpan StartTimeTolerance = TimeSpan.FromSeconds(2);
-
-    public bool IsAlive(int processId, DateTimeOffset startedAt) => TryGet(processId, startedAt) is not null;
-
-    public void Terminate(int processId, DateTimeOffset startedAt)
+    public override SpawnedProcess Spawn(ProcessSpawnRequest request)
     {
-        using Process? process = TryGet(processId, startedAt);
-        if (process is null)
+        using Process process = new()
         {
-            return;
-        }
-
-        process.Kill(entireProcessTree: true);
-    }
-
-    private static Process? TryGet(int processId, DateTimeOffset startedAt)
-    {
-        try
-        {
-            Process process = Process.GetProcessById(processId);
-            DateTimeOffset actualStart = new DateTimeOffset(process.StartTime.ToUniversalTime(), TimeSpan.Zero);
-            if ((actualStart - startedAt).Duration() > StartTimeTolerance)
+            StartInfo = new ProcessStartInfo
             {
-                process.Dispose();
-                return null;
-            }
-
-            return process;
-        }
-        catch (Exception exception) when (exception is ArgumentException or InvalidOperationException or Win32Exception)
+                FileName = "/bin/sh",
+                WorkingDirectory = request.WorkingDirectory,
+                UseShellExecute = false,
+            },
+        };
+        foreach ((string name, string value) in request.Environment)
         {
-            // Win32Exception: StartTime is unreadable because the pid now belongs to
-            // another user's (often privileged) process — nothing the daemon spawned,
-            // so the recorded process is gone.
-            return null;
+            process.StartInfo.Environment[name] = value;
         }
+
+        process.StartInfo.ArgumentList.Add("-c");
+        process.StartInfo.ArgumentList.Add($"exec {ShellRedirection.Wrap(request)}");
+
+        if (!process.Start())
+        {
+            throw new InvalidOperationException($"Failed to start process: {request.Command}");
+        }
+
+        return new SpawnedProcess(process.Id, ReadStartedAt(process));
     }
 }
