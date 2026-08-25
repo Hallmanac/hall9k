@@ -175,14 +175,23 @@ database in someone else's cloud quietly forfeits the local-first, works-offline
   deliberately distinct from the installed-mode volume's `hall9k-pgdata` (Decisions Log #83).
   Between that distinct naming and `h9k uninstall --purge-data` refusing to touch a
   `hall9k-postgres`-shaped volume it cannot confirm by inspecting a live `hall9k-postgres`
-  container, purge-data cannot reach into the dev loop's own database. **If your dev loop predates
-  this split**, its data is sitting in a volume still named `hall9k-pgdata` — the next
-  `dotnet run --project src/Hall9k.AppHost` will not find it, mount a fresh empty
-  `hall9k-dev-pgdata` instead, and the board will look wiped even though nothing was deleted.
-  Reconnect to the old data with `docker volume inspect hall9k-pgdata` to confirm it is still
-  there, then either rename it (Docker has no rename; `docker run --rm -v hall9k-pgdata:/from -v
-  hall9k-dev-pgdata:/to alpine sh -c 'cp -a /from/. /to/'` copies it forward) or point AppHost at
-  the old name for one run to read it back out.
+  container, purge-data cannot reach into the dev loop's own database — **once your dev loop has
+  migrated to this split**. **If your dev loop predates this split**, its data is sitting in a
+  volume still named `hall9k-pgdata` — the same literal `h9k install`'s compose file now pins as
+  *its own* volume name. The next `dotnet run --project src/Hall9k.AppHost` will not find it,
+  mount a fresh empty `hall9k-dev-pgdata` instead, and the board will look wiped even though
+  nothing was deleted; **but if installed mode's `h9k doctor` or `h9k daemon start` runs first**,
+  its bring-up sees that same `hall9k-pgdata` volume already sitting there, treats it as its own
+  (§Provisioning's migration check exists precisely for the case where the pinned name already
+  exists), and mounts the dev loop's real data straight into `hall9k-postgres` — after which
+  `h9k uninstall --purge-data` inspects that live container, finds it genuinely mounts
+  `hall9k-pgdata`, and destroys the dev loop's database exactly as designed for data that really
+  is the install's own. The one-time migration below is not optional cleanup; do it (or confirm
+  you never ran the pre-split dev loop) before ever bringing up installed-mode Postgres on this
+  machine. Reconnect to the old data with `docker volume inspect hall9k-pgdata` to confirm it is
+  still there, then either rename it (Docker has no rename; `docker run --rm -v
+  hall9k-pgdata:/from -v hall9k-dev-pgdata:/to alpine sh -c 'cp -a /from/. /to/'` copies it
+  forward) or point AppHost at the old name for one run to read it back out.
 
 They bind the same port (`localhost:5432`), so run one at a time (Decisions Log #74; §15 row 28).
 
