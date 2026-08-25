@@ -54,6 +54,14 @@ public static class RunPaths
     /// out. The move is always exactly a <c>tasks/_archive/</c> segment inserted or removed, so
     /// that is the only fallback tried; a caller with the recorded path still readable, or a run
     /// that never had a project home, sees this return the unchanged input.
+    /// <para>
+    /// The segment is found from the END of the path, not the start (adversarial review, backlog
+    /// 51 cycle 2): a project home is an arbitrary path a human names (<c>h9k project add --home</c>),
+    /// so it can itself contain a <c>tasks</c> segment, and the task's own <c>tasks/</c> root is
+    /// always the LAST one before the task's own <c>&lt;shortid&gt;-&lt;slug&gt;</c> directory — a
+    /// task directory name is never exactly <c>tasks</c>, since <c>EntryDirectoryName</c> always
+    /// prefixes a short id.
+    /// </para>
     /// </summary>
     public static string ResolveCurrentDirectory(string recordedDirectory)
     {
@@ -66,7 +74,7 @@ public static class RunPaths
             + $"{ProjectHomePaths.ArchiveDirectoryName}{Path.DirectorySeparatorChar}";
         string liveSegment = $"{Path.DirectorySeparatorChar}tasks{Path.DirectorySeparatorChar}";
 
-        int archivedAt = recordedDirectory.IndexOf(archiveSegment, StringComparison.Ordinal);
+        int archivedAt = recordedDirectory.LastIndexOf(archiveSegment, StringComparison.Ordinal);
         if (archivedAt >= 0)
         {
             string live = recordedDirectory.Remove(
@@ -74,7 +82,7 @@ public static class RunPaths
             return Directory.Exists(live) ? live : recordedDirectory;
         }
 
-        int liveAt = recordedDirectory.IndexOf(liveSegment, StringComparison.Ordinal);
+        int liveAt = recordedDirectory.LastIndexOf(liveSegment, StringComparison.Ordinal);
         if (liveAt >= 0)
         {
             string archived = recordedDirectory.Insert(

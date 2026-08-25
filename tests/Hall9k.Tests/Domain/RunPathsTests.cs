@@ -93,6 +93,22 @@ public sealed class RunPathsTests
                 "a caller with neither location on disk (a foreign machine) keeps its existing not-found handling");
         }
 
+        [Fact]
+        public void A_home_whose_own_path_contains_a_tasks_segment_still_resolves_the_tasks_own_root()
+        {
+            // Adversarial review, backlog 51 cycle 2: a project home is an arbitrary path a human
+            // names (h9k project add --home), so it can itself contain a "tasks" segment. The
+            // task's own tasks/ root is always the LAST such segment before the task's own
+            // <shortid>-<slug> directory, so the fallback must search from the end of the path.
+            string home = Path.Combine(_home, "tasks", "hall9k");
+            string recorded = Path.Combine(home, "tasks", "abc12345-closed-out", "runs", "some-run");
+            string actual = Path.Combine(home, "tasks", "_archive", "abc12345-closed-out", "runs", "some-run");
+            Directory.CreateDirectory(actual);
+
+            RunPaths.ResolveCurrentDirectory(recorded).Should().Be(actual,
+                "the first '/tasks/' in the path belongs to the home, not the task's own root");
+        }
+
         public void Dispose() => Directory.Delete(_home, recursive: true);
     }
 }
