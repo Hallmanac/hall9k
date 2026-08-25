@@ -256,8 +256,6 @@ public sealed class WindowsDaemonAutostart : IDaemonAutostart
         {
             FileName = "schtasks.exe",
             UseShellExecute = false,
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
             CreateNoWindow = true,
         };
         process.StartInfo.ArgumentList.Add("/Query");
