@@ -1,5 +1,4 @@
 using System.ComponentModel;
-using System.Diagnostics;
 using System.Runtime.Versioning;
 using System.Security;
 using Hall9k.Cli.DaemonControl;
@@ -227,15 +226,12 @@ public sealed class UninstallCommand : Hall9kAsyncCommand<UninstallCommand.Setti
     }
 
     /// <summary>
-    /// Stops whatever is running now — through the service manager first (so KeepAlive
-    /// policy cannot resurrect it mid-uninstall), then the recorded pid directly, the same
-    /// two-step <see cref="DaemonLifecycle.StopAsync"/> already uses for the identical
-    /// "a detached daemon can win the single-instance race against launchd" case — and
-    /// unregisters autostart regardless of whether that first attempt succeeded. Windows has no
-    /// <see cref="DaemonLifecycle"/> path yet (its daemon lifecycle arrives with S1-14), so a
-    /// daemon recorded there — started out of band, since h9k daemon start itself refuses on
-    /// Windows today — is stopped directly instead of through a lifecycle that would refuse
-    /// the whole call outright.
+    /// Stops whatever is running now through <see cref="DaemonLifecycle.StopAsync"/> — the
+    /// service manager first (so KeepAlive/Scheduled Task policy cannot resurrect it
+    /// mid-uninstall), then the recorded pid directly (a graceful SIGTERM on Unix, or the
+    /// <see cref="DaemonRuntime.StopRequestFile"/> request <c>WindowsStopRequestWatcher</c>
+    /// honours on Windows, per S1-14) — and unregisters autostart regardless of whether that
+    /// first attempt succeeded.
     /// <para>
     /// Unregistering autostart is not a no-op on a daemon the first attempt failed to bring
     /// down: on macOS, <see cref="LaunchdDaemonAutostart.DisableAsync"/> runs its own
@@ -261,9 +257,7 @@ public sealed class UninstallCommand : Hall9kAsyncCommand<UninstallCommand.Setti
     {
         IDaemonAutostart autostart = DaemonAutostart.ForCurrentPlatform();
 
-        bool stopped = OperatingSystem.IsWindows()
-            ? await StopWindowsDaemonIfRunningAsync(cancellationToken)
-            : await DaemonLifecycle.StopAsync(autostart, cancellationToken) == ExitCodes.Ok;
+        bool stopped = await DaemonLifecycle.StopAsync(autostart, cancellationToken) == ExitCodes.Ok;
 
         if (autostart.IsSupported && autostart.IsEnabled)
         {
@@ -307,96 +301,6 @@ public sealed class UninstallCommand : Hall9kAsyncCommand<UninstallCommand.Setti
             DaemonAutostartDisableOutcome.DaemonStopping => false,
             _ => stoppedSoFar,
         };
-
-    // Process.Kill(entireProcessTree: true) has already asked the OS to terminate the process;
-    // this is only the wait for that termination to land. A kernel-mode wait the process cannot
-    // be interrupted out of (a hung network filesystem or driver I/O) would otherwise leave
-    // WaitForExitAsync incomplete forever, so this is bounded the same way the Unix stop path's
-    // DaemonLifecycle.StopAsync bounds its own wait (StopTimeout).
-    private static readonly TimeSpan WindowsKillTimeout = TimeSpan.FromSeconds(45);
-
-    /// <summary>
-    /// <see cref="ArgumentException"/> (no such process id, from
-    /// <see cref="Process.GetProcessById(int)"/>) and <see cref="InvalidOperationException"/>
-    /// (the process exited between the probe and the kill, from <see cref="Process.Kill(bool)"/>
-    /// itself) both genuinely mean "already gone" — safe to report as such. A
-    /// <see cref="Win32Exception"/> from <see cref="Process.Kill(bool)"/> means the opposite:
-    /// the runtime only throws it once it has confirmed the process has NOT exited, so it is a
-    /// real failure to terminate (commonly access denied), never a race with the process already
-    /// dying on its own. <see cref="AggregateException"/> is <see cref="Process.Kill(bool)"/>'s
-    /// own wrapper for exactly that same "could not be terminated" failure when the entire-tree
-    /// overload is asked to kill more than one process. Conflating either of the last two with
-    /// "already exited" would tell the caller it is safe to go on and remove bin/, the PATH
-    /// link, and Postgres out from under a daemon that is still very much alive.
-    /// </summary>
-    [SupportedOSPlatform("windows")]
-    private static async Task<bool> StopWindowsDaemonIfRunningAsync(CancellationToken cancellationToken)
-    {
-        DaemonProcessDescriptor? running = DaemonProcess.Probe();
-        if (running is null)
-        {
-            AnsiConsole.MarkupLine("[dim]No running daemon.[/]");
-            return true;
-        }
-
-        Process process;
-        try
-        {
-            process = Process.GetProcessById(running.ProcessId);
-        }
-        catch (ArgumentException)
-        {
-            AnsiConsole.MarkupLine("[dim]The running daemon had already exited.[/]");
-            return true;
-        }
-
-        using (process)
-        {
-            // Probe() validated this pid's identity moments ago, but GetProcessById above opened
-            // a fresh handle by pid alone — if the daemon exited and Windows reused the pid in
-            // that gap, this handle is now some unrelated process. Re-checking identity right
-            // before the kill, the same pid-plus-start-time comparison Probe() itself already
-            // uses, is what keeps entireProcessTree: true from ever landing on a process that
-            // merely inherited h9kd's old pid.
-            if (!DaemonProcess.IsAlive(running.ProcessId, running.StartedAt))
-            {
-                AnsiConsole.MarkupLine(
-                    "[dim]The running daemon had already exited (its pid has since been reused by a "
-                    + "different process, left untouched).[/]");
-                return true;
-            }
-
-            try
-            {
-                process.Kill(entireProcessTree: true);
-                await process.WaitForExitAsync(cancellationToken).WaitAsync(WindowsKillTimeout, cancellationToken);
-                AnsiConsole.MarkupLineInterpolated($"[green]Stopped[/] h9kd (pid {running.ProcessId}).");
-                return true;
-            }
-            catch (InvalidOperationException)
-            {
-                AnsiConsole.MarkupLine("[dim]The running daemon had already exited.[/]");
-                return true;
-            }
-            catch (Exception exception) when (exception is Win32Exception or AggregateException)
-            {
-                AnsiConsole.MarkupLine(
-                    $"[yellow]Could not stop h9kd (pid {running.ProcessId})[/]: {exception.Message.EscapeMarkup()}. "
-                    + $"Stop it by hand (Task Manager, or `taskkill /PID {running.ProcessId} /T /F`), then run "
-                    + "h9k uninstall again.");
-                return false;
-            }
-            catch (TimeoutException)
-            {
-                AnsiConsole.MarkupLine(
-                    $"[yellow]Could not stop h9kd (pid {running.ProcessId})[/]: it did not exit within "
-                    + $"{WindowsKillTimeout.TotalSeconds:0}s of being killed — it may be stuck in an uninterruptible "
-                    + $"wait. Stop it by hand (Task Manager, or `taskkill /PID {running.ProcessId} /T /F`), then run "
-                    + "h9k uninstall again.");
-                return false;
-            }
-        }
-    }
 
     /// <summary>
     /// What actually happened to the Postgres tier — granular enough for
@@ -805,13 +709,19 @@ public sealed class UninstallCommand : Hall9kAsyncCommand<UninstallCommand.Setti
     /// directory (see that method's own origin incident), so removing it needs the install's
     /// publish manifest, not a blind delete.
     /// <para>
-    /// The daemon's pid and single-instance lock files are included unconditionally: this
-    /// method is only ever reached once <see cref="ExecuteAsync"/> has confirmed the daemon
-    /// actually stopped (a daemon that could not be stopped skips this whole removal, home and
-    /// all, rather than needing this list to carve the two files back out). Deleting either out
-    /// from under a daemon that is still running would free the single-instance guard for a
-    /// second daemon to start against the same database, and leave the first one with no pid
-    /// file for <c>h9k daemon status</c> or <c>h9k daemon stop</c> to find it by.
+    /// The daemon's pid, single-instance lock, and stop-request files are included
+    /// unconditionally: this method is only ever reached once <see cref="ExecuteAsync"/> has
+    /// confirmed the daemon actually stopped (a daemon that could not be stopped skips this
+    /// whole removal, home and all, rather than needing this list to carve the files back out).
+    /// Deleting the pid or lock file out from under a daemon that is still running would free
+    /// the single-instance guard for a second daemon to start against the same database, and
+    /// leave the first one with no pid file for <c>h9k daemon status</c> or <c>h9k daemon stop</c>
+    /// to find it by. The stop-request file (<c>h9kd.stop</c>, Windows's stand-in for SIGTERM —
+    /// see <see cref="DaemonLifecycle.RequestGracefulStopAsync"/>) is listed for the same reason
+    /// the pid and lock files are: <c>WindowsStopRequestWatcher</c> normally deletes it within a
+    /// tick of honoring it, but it can survive on disk when the daemon is force-killed, crashes,
+    /// or the delete loses to a lock, and an uninstall that leaves it behind is not the clean
+    /// <c>~/.hall9k</c> removal this command promises.
     /// </para>
     /// <para>
     /// Built from <paramref name="home"/> with the literal relative names rather than by
@@ -834,6 +744,7 @@ public sealed class UninstallCommand : Hall9kAsyncCommand<UninstallCommand.Setti
         Path.Combine(home, "h9kd.log.1"),
         Path.Combine(home, "h9kd.pid"),
         Path.Combine(home, "h9kd.lock"),
+        Path.Combine(home, "h9kd.stop"),
     ];
 
     /// <summary>The uniquely suffixed <c>bin.old.&lt;random&gt;</c> directories
