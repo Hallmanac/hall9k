@@ -23,13 +23,6 @@ public static class DaemonLifecycle
 
     public static async Task<int> StartAsync(IDaemonAutostart autostart, string? binaryOverride, CancellationToken cancellationToken)
     {
-        if (OperatingSystem.IsWindows())
-        {
-            await Console.Error.WriteLineAsync(
-                "The daemon lifecycle on Windows arrives with S1-14 (Decisions Log #3); macOS (and other Unix) only for now.");
-            return ExitCodes.Error;
-        }
-
         if (DaemonProcess.Probe() is { } running)
         {
             await Console.Error.WriteLineAsync(
@@ -122,25 +115,25 @@ public static class DaemonLifecycle
         bool startThroughAutostart = autostart.IsSupported && autostart.IsEnabled;
         if (startThroughAutostart && binaryOverride is not null)
         {
-            // An explicit --binary is a promise launchd cannot keep: the registration
-            // points at the installed binary, so routing through it would start
-            // something other than what was asked for, and say nothing about it. The
-            // override wins and the divergence is stated. Stop is unaffected — it
-            // signals the recorded pid directly whether or not launchd owns the job.
+            // An explicit --binary is a promise the service manager cannot keep: the
+            // registration points at the installed binary, so routing through it would
+            // start something other than what was asked for, and say nothing about it.
+            // The override wins and the divergence is stated. Stop is unaffected — it
+            // signals the recorded pid directly whether or not autostart owns the job.
             AnsiConsole.MarkupLineInterpolated(
-                $"[dim]Autostart is registered, but --binary was given — starting {binary} directly, outside launchd. The registered binary is what starts at login, and what h9k daemon start uses without --binary.[/]");
+                $"[dim]Autostart is registered, but --binary was given — starting {binary} directly, outside {autostart.MechanismDescription}. The registered binary is what starts at login, and what h9k daemon start uses without --binary.[/]");
             startThroughAutostart = false;
         }
 
         if (startThroughAutostart)
         {
-            // Autostart owns the job: starting through launchd keeps stop/restart with
-            // the service manager instead of leaving it a process launchd knows nothing about.
-            AnsiConsole.MarkupLine("[dim]Autostart is registered — starting through launchd.[/]");
+            // Autostart owns the job: starting through the service manager keeps
+            // stop/restart with it instead of leaving it a process it knows nothing about.
+            AnsiConsole.MarkupLineInterpolated($"[dim]Autostart is registered — starting through {autostart.MechanismDescription}.[/]");
             if (!await autostart.StartAsync(cancellationToken))
             {
                 await Console.Error.WriteLineAsync(
-                    "launchctl could not start the daemon — try h9k daemon autostart disable, then h9k daemon start.");
+                    $"{autostart.MechanismDescription} could not start the daemon — try h9k daemon autostart disable, then h9k daemon start.");
                 return ExitCodes.Error;
             }
         }
@@ -211,13 +204,6 @@ public static class DaemonLifecycle
 
     public static async Task<int> StopAsync(IDaemonAutostart autostart, CancellationToken cancellationToken)
     {
-        if (OperatingSystem.IsWindows())
-        {
-            await Console.Error.WriteLineAsync(
-                "The daemon lifecycle on Windows arrives with S1-14 (Decisions Log #3); macOS (and other Unix) only for now.");
-            return ExitCodes.Error;
-        }
-
         DaemonProcessDescriptor? running = DaemonProcess.Probe();
         if (running is null)
         {
@@ -227,24 +213,25 @@ public static class DaemonLifecycle
 
         if (autostart.IsSupported && await autostart.IsLoadedAsync(cancellationToken))
         {
-            // Stopped must mean stopped: unloading through launchctl keeps the
-            // KeepAlive policy from resurrecting a daemon the human just killed.
-            AnsiConsole.MarkupLine("[dim]Autostart owns the job — stopping through launchctl (bootout).[/]");
+            // Stopped must mean stopped: stopping through the service manager keeps its
+            // own crash-restart policy from resurrecting a daemon the human just killed.
+            AnsiConsole.MarkupLineInterpolated($"[dim]Autostart owns the job — stopping through {autostart.MechanismDescription}.[/]");
             if (!await autostart.StopAsync(cancellationToken))
             {
-                await Console.Error.WriteLineAsync("launchctl bootout failed — signaling the daemon directly.");
+                await Console.Error.WriteLineAsync(
+                    $"{autostart.MechanismDescription} could not stop the daemon — signaling it directly.");
             }
         }
 
-        // A loaded job only proves the label is bootstrapped, not that launchd owns the
-        // running pid: a detached daemon can win the single-instance race against
-        // launchd's RunAtLoad instance, leaving the job loaded but idle — bootout then
-        // removes the idle job and never touches the real daemon. So the recorded pid,
-        // if still alive, always gets the direct signal; a second SIGTERM to a host
-        // already shutting down is a no-op.
+        // A loaded job only proves the registration is bootstrapped, not that the service
+        // manager owns the running pid: a detached daemon can win the single-instance race
+        // against a RunAtLoad/logon-trigger instance, leaving the job loaded but idle —
+        // the step above then removes the idle job and never touches the real daemon. So
+        // the recorded pid, if still alive, always gets the direct signal; a second stop
+        // request to a host already shutting down is a no-op.
         if (DaemonProcess.IsAlive(running.ProcessId, running.StartedAt))
         {
-            await Exec.RunAsync("/bin/kill", ["-TERM", running.ProcessId.ToString()], cancellationToken);
+            await RequestGracefulStopAsync(running, cancellationToken);
         }
 
         bool exited = await WaitUntilAsync(
@@ -276,6 +263,12 @@ public static class DaemonLifecycle
     /// </summary>
     private static void SpawnDetached(string binaryPath, string connectionString)
     {
+        if (OperatingSystem.IsWindows())
+        {
+            SpawnDetachedWindows(binaryPath, connectionString);
+            return;
+        }
+
         ProcessStartInfo shell = new()
         {
             FileName = "/bin/sh",
@@ -290,6 +283,61 @@ public static class DaemonLifecycle
 
         using Process? intermediary = Process.Start(shell);
         intermediary?.WaitForExit();
+    }
+
+    /// <summary>
+    /// Windows's detach needs no double-fork: an orphaned Windows process outlives the
+    /// process that started it with no reparenting step required, unlike the Unix side
+    /// above (which exists specifically to reparent h9kd off this CLI invocation and off
+    /// its parent shell). What Windows lacks instead is a way to redirect a child's
+    /// stdout/stderr to a FILE without this process owning the pipe (log #2's "the child
+    /// owns the handle" requirement) — cmd.exe's own <c>&gt;&gt;</c>/<c>2&gt;&amp;1</c>
+    /// syntax supplies that, exactly as <c>WindowsProcessManager</c> uses it for agent
+    /// sessions. cmd.exe stays alive for h9kd's whole run (a plain <c>/c "command"</c>
+    /// blocks until the child exits) — deliberately never awaited here, so this call
+    /// returns the moment the process is created and h9k's own start command keeps
+    /// running without waiting on the daemon's entire lifetime.
+    /// </summary>
+    private static void SpawnDetachedWindows(string binaryPath, string connectionString)
+    {
+        ProcessStartInfo shell = new()
+        {
+            FileName = "cmd.exe",
+            WorkingDirectory = RunPaths.Root,
+            UseShellExecute = false,
+            CreateNoWindow = true,
+        };
+        shell.Environment[Hall9kDatabase.EnvironmentVariableName] = connectionString;
+        // The raw Arguments string, never ArgumentList (see WindowsCommandLine): this
+        // command carries its own embedded quotes around the binary path and the log
+        // file, and ArgumentList would C-runtime-escape them in a way cmd.exe's own /c
+        // parsing does not undo.
+        shell.Arguments = WindowsCommandLine.WrapForCmdExe($"\"{binaryPath}\" < NUL >> \"{DaemonRuntime.LogFile}\" 2>&1");
+
+        using Process? process = Process.Start(shell);
+    }
+
+    /// <summary>
+    /// Unix sends a real SIGTERM; Windows has none to send to an arbitrary process, so it
+    /// writes <see cref="DaemonRuntime.StopRequestFile"/> instead, which
+    /// <c>WindowsStopRequestWatcher</c> (running inside h9kd) polls for and honors by
+    /// calling its own graceful shutdown — the same "ask nicely, poll for the answer"
+    /// idiom every other cross-process signal in this platform already uses, standing in
+    /// for the OS-level signal Windows does not have (Decisions Log #3, S1-14). The
+    /// request names pid plus start time, never a bare pid (Decisions Log #2): a bare pid
+    /// left behind by a daemon that died some other way before the watcher's next tick
+    /// (a force-kill, a reboot) would otherwise match whichever later daemon is assigned
+    /// the same pid and stop it seconds after a clean-looking start.
+    /// </summary>
+    private static async Task RequestGracefulStopAsync(DaemonProcessDescriptor running, CancellationToken cancellationToken)
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            await DaemonPidFile.WriteAsync(DaemonRuntime.StopRequestFile, running, cancellationToken);
+            return;
+        }
+
+        await Exec.RunAsync("/bin/kill", ["-TERM", running.ProcessId.ToString()], cancellationToken);
     }
 
     private static string Truncate(string value, int max) =>

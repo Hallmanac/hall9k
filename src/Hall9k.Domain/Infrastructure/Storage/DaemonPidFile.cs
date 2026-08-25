@@ -23,6 +23,19 @@ public static class DaemonPidFile
     }
 
     /// <summary>
+    /// Same shape as <see cref="Write"/>, for a caller that already has a
+    /// <see cref="CancellationToken"/> in hand and would rather not block on the write —
+    /// the Windows stop-request file (<see cref="DaemonRuntime.StopRequestFile"/>) is
+    /// written this way so the identity it names carries the same pid-plus-start-time
+    /// discipline as the pid file, never a bare pid.
+    /// </summary>
+    public static Task WriteAsync(string path, DaemonProcessDescriptor descriptor, CancellationToken cancellationToken)
+    {
+        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+        return File.WriteAllTextAsync(path, JsonSerializer.Serialize(descriptor, SerializerOptions), cancellationToken);
+    }
+
+    /// <summary>
     /// Null when the file is missing or unreadable — a stale, corrupt or unreadable pid file
     /// never throws. Unreadable covers permissions too: a pid file another account owns
     /// tells us nothing about the daemon, and "not running" is the honest reading of it.
