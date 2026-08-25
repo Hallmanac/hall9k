@@ -182,6 +182,16 @@ connection before recording anything, which is what makes it safe for an agent t
 
 Covered in [operations.md](operations.md#the-daemon-lifecycle) and [INSTALL.md](INSTALL.md).
 
+### The daemon's operating settings
+
+`h9k config show` · `h9k config set`
+
+The concurrency ceiling and the per-role model overrides, durable in the platform config file so
+a fresh machine or an autostarted daemon runs with the operator's settings without an environment
+variable ritual. `show` resolves and names each setting's origin (environment variable, config
+file, or built-in default); `set` merges a change into the file. See
+[operations.md](operations.md#daemon-operating-settings).
+
 ## Identifiers
 
 **Tasks and ideas** take the full identifier **or an unambiguous fragment of it**. A fragment is
