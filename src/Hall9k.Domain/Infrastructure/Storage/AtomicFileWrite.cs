@@ -29,23 +29,34 @@ public static class AtomicFileWrite
         {
             bool targetExists = File.Exists(path);
 
-            // The target's mode is applied to the temp file before any content is written, not
-            // after: applying it afterwards (as a follow-up File.SetUnixFileMode once the write
-            // finished) would leave the file world-readable at the process umask's default mode
-            // for the whole write, and for config.json — which carries the Postgres connection
-            // string under an operator's chmod 600 — that is a real exposure window rather than
-            // a cosmetic one. The file is empty when the mode is narrowed, so there is nothing to
-            // leak during the gap.
+            // Narrowed to a private, owner-writable mode before any content is written, not the
+            // target's own mode: applying nothing here (as a follow-up File.SetUnixFileMode once
+            // the write finished) would leave the file world-readable at the process umask's
+            // default mode for the whole write, and for config.json — which carries the Postgres
+            // connection string under an operator's chmod 600 — that is a real exposure window
+            // rather than a cosmetic one. Applying the target's own mode instead can be stricter
+            // than this: a target chmod'd to 400 or 444 (no owner-write bit at all) would make the
+            // content write below fail outright with UnauthorizedAccessException, a write that
+            // succeeded before this file carried Unix modes at all. UserRead|UserWrite is always
+            // at least as private as the process umask's default and never blocks the write that
+            // follows; the target's exact mode — whatever it narrows down to, including no
+            // owner-write bit — is applied once there is content to protect and before the swap
+            // makes it visible under the real name.
             if (targetExists && !OperatingSystem.IsWindows())
             {
                 using (File.Create(tempPath))
                 {
                 }
 
-                File.SetUnixFileMode(tempPath, File.GetUnixFileMode(path));
+                File.SetUnixFileMode(tempPath, UnixFileMode.UserRead | UnixFileMode.UserWrite);
             }
 
             await File.WriteAllTextAsync(tempPath, contents, cancellationToken);
+
+            if (targetExists && !OperatingSystem.IsWindows())
+            {
+                File.SetUnixFileMode(tempPath, File.GetUnixFileMode(path));
+            }
 
             if (!targetExists)
             {

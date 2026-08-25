@@ -46,6 +46,32 @@ public sealed class AtomicFileWriteTests : IDisposable
         }
     }
 
+    /// <summary>
+    /// A target locked down to <c>chmod 400</c> (the operator hardening scenario this type exists
+    /// to preserve, and the shape <see cref="PlatformConfigFileTests"/> itself stages) has no
+    /// owner-write bit at all. Origin: the cycle-2 pre-PR review found the target's mode applied
+    /// to the temp file *before* the content write, so the write itself failed with
+    /// <see cref="UnauthorizedAccessException"/> on its own staged file — a write that succeeded
+    /// before that mode-ordering change.
+    /// </summary>
+    [Fact]
+    public async Task Overwriting_a_read_only_file_still_succeeds()
+    {
+        await File.WriteAllTextAsync(path, "original");
+
+        if (OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        File.SetUnixFileMode(path, UnixFileMode.UserRead);
+
+        await AtomicFileWrite.WriteAllTextAsync(path, "updated", CancellationToken.None);
+
+        File.GetUnixFileMode(path).Should().Be(UnixFileMode.UserRead, "the target's own restrictive mode must survive the write");
+        (await File.ReadAllTextAsync(path)).Should().Be("updated");
+    }
+
     [Fact]
     public async Task Writing_a_file_that_does_not_exist_yet_just_creates_it()
     {
