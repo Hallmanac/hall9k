@@ -1,3 +1,5 @@
+using System.ComponentModel;
+using System.Diagnostics;
 using FluentAssertions;
 using Hall9k.Daemon.ProcessManagement;
 using Xunit;
@@ -139,6 +141,7 @@ public sealed class ProcessManagerParityTests : IDisposable
     public async Task Terminate_kills_the_whole_process_tree_not_just_the_returned_pid()
     {
         (string stdout, string stderr) = Files();
+        DateTimeOffset beforeSpawn = DateTimeOffset.UtcNow;
         SpawnedProcess spawned = _processManager.Spawn(new ProcessSpawnRequest(
             NestedSleepCommand(), _directory, [], null, stdout, stderr));
 
@@ -149,22 +152,69 @@ public sealed class ProcessManagerParityTests : IDisposable
         _processManager.IsAlive(spawned.ProcessId, spawned.StartedAt).Should().BeTrue(
             "the nested sleep has to actually be running for a tree-kill to mean anything");
 
+        // What actually proves kill-tree, rather than a plain kill of spawned.ProcessId:
+        // spawned.ProcessId is the wrapper (cmd.exe on Windows, the exec'd sh on Unix) and
+        // dies from either a tree-kill or a plain one, so asserting on it alone (as this
+        // test used to) cannot tell the two apart. The nested command's own child process
+        // — found by name and start time, since neither .NET's Process type nor a portable
+        // shell one-liner hands back a genuine grandchild pid without more machinery than
+        // this test is worth — is the one that only a real tree-kill reaches.
+        (int nestedChildProcessId, DateTimeOffset nestedChildStartedAt) = await AwaitNestedChildAsync(beforeSpawn);
+
         _processManager.Terminate(spawned.ProcessId, spawned.StartedAt);
 
         DateTimeOffset deadline = DateTimeOffset.UtcNow + TimeSpan.FromSeconds(10);
-        while (_processManager.IsAlive(spawned.ProcessId, spawned.StartedAt) && DateTimeOffset.UtcNow < deadline)
+        while (_processManager.IsAlive(nestedChildProcessId, nestedChildStartedAt) && DateTimeOffset.UtcNow < deadline)
         {
             await Task.Delay(TimeSpan.FromMilliseconds(100));
         }
 
-        _processManager.IsAlive(spawned.ProcessId, spawned.StartedAt).Should().BeFalse(
+        _processManager.IsAlive(nestedChildProcessId, nestedChildStartedAt).Should().BeFalse(
             "Terminate promises kill-tree — a long-sleeping nested child left running behind it would strand a real agent session's descendants exactly the way AbandonProcessGroup exists to prevent on the launchd side");
     }
 
     private (string Stdout, string Stderr) Files()
     {
-        string suffix = Guid.NewGuid().ToString("N");
+        string suffix = Path.GetRandomFileName();
         return (Path.Combine(_directory, $"stdout-{suffix}.log"), Path.Combine(_directory, $"stderr-{suffix}.log"));
+    }
+
+    private static string NestedChildProcessName() => OperatingSystem.IsWindows() ? "ping" : "sleep";
+
+    private static async Task<(int ProcessId, DateTimeOffset StartedAt)> AwaitNestedChildAsync(DateTimeOffset notBefore)
+    {
+        string processName = NestedChildProcessName();
+        DateTimeOffset earliestAcceptableStart = notBefore - TimeSpan.FromSeconds(1);
+        DateTimeOffset deadline = DateTimeOffset.UtcNow + TimeSpan.FromSeconds(5);
+        while (DateTimeOffset.UtcNow < deadline)
+        {
+            foreach (Process candidate in Process.GetProcessesByName(processName))
+            {
+                using (candidate)
+                {
+                    if (TryReadStartTime(candidate) is { } started && started >= earliestAcceptableStart)
+                    {
+                        return (candidate.Id, started);
+                    }
+                }
+            }
+
+            await Task.Delay(TimeSpan.FromMilliseconds(50));
+        }
+
+        throw new InvalidOperationException($"The nested {processName} child never appeared.");
+    }
+
+    private static DateTimeOffset? TryReadStartTime(Process process)
+    {
+        try
+        {
+            return new DateTimeOffset(process.StartTime.ToUniversalTime(), TimeSpan.Zero);
+        }
+        catch (Exception exception) when (exception is InvalidOperationException or Win32Exception)
+        {
+            return null;
+        }
     }
 
     private static async Task<string> WaitForContentAsync(string filePath)
