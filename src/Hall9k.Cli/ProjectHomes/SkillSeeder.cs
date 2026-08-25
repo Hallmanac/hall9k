@@ -360,7 +360,29 @@ public static class SkillSeeder
         foreach ((string name, string recordedHash) in previously)
         {
             string directory = SkillLibraryPaths.Skill(name);
-            if (!Directory.Exists(directory) || ComputeContentHash(directory) != recordedHash)
+            if (!Directory.Exists(directory))
+            {
+                continue;
+            }
+
+            // TryComputeContentHash, not the throwing ComputeContentHash: this call reads the
+            // identical files the locked-file retry below already has to tolerate failing on
+            // (a Windows editor's exclusive handle, an antivirus scan mid-read), and by this
+            // point in h9k uninstall, bin/ and the PATH link are already gone — an uncaught
+            // exception here would leave the operator with no h9k left to retry with. A failed
+            // read is treated the same as a mismatch (leave it alone) rather than as a
+            // confirmed match: an unreadable directory cannot be confirmed as install's
+            // unmodified output, so it is recorded as still present rather than silently
+            // skipped as though it were an operator's own edit.
+            string? currentHash = TryComputeContentHash(directory);
+            if (currentHash is null)
+            {
+                stillPresent.Add(directory);
+                remaining[name] = recordedHash;
+                continue;
+            }
+
+            if (currentHash != recordedHash)
             {
                 continue;
             }

@@ -125,6 +125,73 @@ public sealed class SkillSeederRemovePublishedTests : IDisposable
         }
     }
 
+    [Fact]
+    public void An_unreadable_file_does_not_throw_and_is_recorded_for_a_retry()
+    {
+        // Before this fix, the entry condition compared against the throwing
+        // ComputeContentHash directly, so a file that could not even be read (a locked handle,
+        // a permission change) threw uncaught out of RemovePublished — and by the point
+        // h9k uninstall reaches this call, bin/ and the PATH link are already gone, leaving the
+        // operator with no h9k left on the machine to retry with.
+        WriteSourceSkill("pr-summary");
+        SkillSeeder.PublishCanonical(_source);
+        string skillDirectory = SkillLibraryPaths.Skill("pr-summary");
+        string skillFile = Path.Combine(skillDirectory, "SKILL.md");
+
+        if (OperatingSystem.IsWindows())
+        {
+            using FileStream lockHandle = new(skillFile, FileMode.Open, FileAccess.Read, FileShare.None);
+
+            AssertLeftInPlaceForRetry(skillDirectory);
+        }
+        else
+        {
+            if (!MadeUnreadable(skillFile))
+            {
+                return;
+            }
+
+            try
+            {
+                AssertLeftInPlaceForRetry(skillDirectory);
+            }
+            finally
+            {
+                File.SetUnixFileMode(skillFile, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+            }
+        }
+    }
+
+    private static void AssertLeftInPlaceForRetry(string skillDirectory)
+    {
+        List<string> stillPresent = [];
+        IReadOnlyList<string> removed = SkillSeeder.RemovePublished(stillPresent);
+
+        removed.Should().BeEmpty();
+        stillPresent.Should().ContainSingle().Which.Should().Be(skillDirectory);
+        Directory.Exists(skillDirectory).Should().BeTrue(
+            "an unreadable directory cannot be confirmed as install's unmodified output, so it must not be deleted");
+    }
+
+    private static bool MadeUnreadable(string path)
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            return false;
+        }
+
+        File.SetUnixFileMode(path, UnixFileMode.None);
+        try
+        {
+            File.ReadAllBytes(path);
+            return false;
+        }
+        catch (Exception exception) when (exception is UnauthorizedAccessException or IOException)
+        {
+            return true;
+        }
+    }
+
     private static void AssertManifestEntrySurvives(string skillDirectory)
     {
         List<string> stillPresent = [];
