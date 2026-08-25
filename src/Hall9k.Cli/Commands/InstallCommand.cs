@@ -134,7 +134,19 @@ public sealed class InstallCommand : Hall9kAsyncCommand<InstallCommand.Settings>
         // place, but only for a checkout that carries the fix (an older branch, a stray
         // worktree, a hand-assembled payload will not), so this is the guard that still holds
         // when it doesn't (origin incident: found sitting in ~/.hall9k/bin, 2026-08-24).
-        RemoveDevelopmentSettingsFiles(staging, cancellationToken);
+        try
+        {
+            RemoveDevelopmentSettingsFiles(staging, cancellationToken);
+        }
+        catch (InvalidOperationException exception)
+        {
+            // Caught here rather than at each of FinishAsync's two callers (ExecuteAsync's
+            // --repo/--from-release branches and UpdateCommand.RunAsync) so both get the
+            // mapped exit code and remedy from one place, the same as the two
+            // WindowsDaemonAutostart throws are caught at their own call sites.
+            await Console.Error.WriteLineAsync(exception.Message);
+            return ExitCodes.Error;
+        }
 
         DaemonProcessDescriptor? runningBefore = DaemonProcess.Probe();
 
