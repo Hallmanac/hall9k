@@ -80,6 +80,41 @@ public sealed class TaskResolvedProjectionTests
     }
 
     [Fact]
+    public void Task_details_clears_the_resolved_reason_on_reopen()
+    {
+        // Adversarial review, backlog 51 cycle 3: ProjectHomeRenderEngine.IsArchived treats a
+        // non-blank ResolvedReason as permanent closure for a Done task (Decisions Log #27's
+        // attestation exit means no run of that completion will ever carry RunCompleted). A
+        // resolve-then-reopen sequence starts a genuinely new run that CAN still complete
+        // normally, so the stale reason has to go, or the follow-up re-archives the moment it
+        // completes even though its own pull request is still open.
+        TaskDetailsProjection projection = new();
+        Guid id = DomainId.New();
+        Guid failedRunId = DomainId.New();
+
+        TaskDetails view = projection.Create(new FakeEvent<TaskAdded>(new TaskAdded(
+            id, DomainId.New(), "Do the thing", ["it is done"], TaskType.Feature,
+            null, null, null, Now, DomainId.New())));
+
+        projection.Apply(new FakeEvent<TaskClaimed>(new TaskClaimed(
+            id, DomainId.New(), DomainId.New(), 1, failedRunId, Now)), view);
+        projection.Apply(new FakeEvent<TaskFailed>(new TaskFailed(
+            id, failedRunId, FailureReason, Now.AddHours(1))), view);
+        projection.Apply(new FakeEvent<TaskResolved>(new TaskResolved(
+            id, ResolveReason, PullRequestUrl, Now.AddHours(2), DomainId.New())), view);
+
+        view.ResolvedReason.Should().Be(ResolveReason);
+
+        projection.Apply(new FakeEvent<TaskReopened>(new TaskReopened(
+            id, failedRunId, "task/abc", "One more look before merge.", Now.AddHours(3), DomainId.New())), view);
+
+        view.State.Should().Be(TaskState.Queued);
+        view.ResolvedReason.Should().BeNull(
+            "the follow-up run this starts can still reach RunCompleted on its own; the old " +
+            "attestation must not keep counting as this run's closure too");
+    }
+
+    [Fact]
     public void Task_list_item_shows_done_with_its_pull_request_after_resolve()
     {
         TaskListItemProjection projection = new();
