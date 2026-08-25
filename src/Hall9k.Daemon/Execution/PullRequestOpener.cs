@@ -174,7 +174,7 @@ public sealed class PullRequestOpener(
     private async Task<(string Url, int Number)> CreatePullRequestAsync(
         RunDetails run, TaskDetails task, string baseBranch, CancellationToken cancellationToken)
     {
-        string bodyFile = Path.Combine(run.RunDirectory, "pr-body.md");
+        string bodyFile = Path.Combine(RunPaths.ResolveCurrentDirectory(run.RunDirectory), "pr-body.md");
         await File.WriteAllTextAsync(
             bodyFile,
             PullRequestBody.Build(run, task, TryReadAgentSummary(run), await SourceUrlAsync(task, cancellationToken)),
@@ -204,7 +204,7 @@ public sealed class PullRequestOpener(
     {
         try
         {
-            string streamFile = RunPaths.StreamFile(run.RunDirectory);
+            string streamFile = RunPaths.StreamFile(RunPaths.ResolveCurrentDirectory(run.RunDirectory));
             if (!File.Exists(streamFile))
             {
                 return null;

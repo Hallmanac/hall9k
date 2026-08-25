@@ -31,14 +31,21 @@ public sealed class ClaudeExecutor(ILogger<ClaudeExecutor> logger) : IExecutor
                 + "(Decisions Log #33); the platform never inherits the owner's personal default.");
         }
 
-        Directory.CreateDirectory(request.RunDirectory);
+        // request.RunDirectory is whatever RunDispatched recorded at this run's ORIGINAL
+        // dispatch — stale for a resumed or redispatched session whose task has since crossed
+        // the tasks/_archive/ boundary (adversarial review, backlog 51 cycle 5): a fresh
+        // dispatch's caller always passes the directory it just resolved on disk, so this is a
+        // no-op there, but a resumed review/fix pass or a budget retry reads the recorded value
+        // straight from the run's projection, which never updates after dispatch.
+        string runDirectory = RunPaths.ResolveCurrentDirectory(request.RunDirectory);
+        Directory.CreateDirectory(runDirectory);
         (string promptFile, string streamFile, string standardErrorFile) = request.SessionArtifactName is { } session
-            ? (RunPaths.SessionPromptFile(request.RunDirectory, session),
-                RunPaths.SessionStreamFile(request.RunDirectory, session),
-                RunPaths.SessionStandardErrorFile(request.RunDirectory, session))
-            : (RunPaths.PromptFile(request.RunDirectory),
-                RunPaths.StreamFile(request.RunDirectory),
-                RunPaths.StandardErrorFile(request.RunDirectory));
+            ? (RunPaths.SessionPromptFile(runDirectory, session),
+                RunPaths.SessionStreamFile(runDirectory, session),
+                RunPaths.SessionStandardErrorFile(runDirectory, session))
+            : (RunPaths.PromptFile(runDirectory),
+                RunPaths.StreamFile(runDirectory),
+                RunPaths.StandardErrorFile(runDirectory));
 
         await File.WriteAllTextAsync(promptFile, request.Prompt, cancellationToken);
         await File.WriteAllTextAsync(SettingsFile(request), SettingsContent, cancellationToken);
@@ -96,10 +103,13 @@ public sealed class ClaudeExecutor(ILogger<ClaudeExecutor> logger) : IExecutor
     /// window, handing it an empty file and losing the trailer suppression that is the whole
     /// point of the file. A session that owns its settings has no writer but itself.
     /// </summary>
-    private static string SettingsFile(AgentSpawnRequest request) =>
-        request.SessionArtifactName is { } session
-            ? RunPaths.SessionSettingsFile(request.RunDirectory, session)
-            : RunPaths.SettingsFile(request.RunDirectory);
+    private static string SettingsFile(AgentSpawnRequest request)
+    {
+        string runDirectory = RunPaths.ResolveCurrentDirectory(request.RunDirectory);
+        return request.SessionArtifactName is { } session
+            ? RunPaths.SessionSettingsFile(runDirectory, session)
+            : RunPaths.SettingsFile(runDirectory);
+    }
 
     /// <summary>
     /// Internal for the argument-policy tests: the flag set IS the policy (logs #1, #5, #33),

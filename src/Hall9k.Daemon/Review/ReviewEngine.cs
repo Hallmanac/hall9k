@@ -169,7 +169,7 @@ public sealed class ReviewEngine(
                     await ParkAsync(context.RunId, context.TaskId,
                         $"A review pass (cycle {run.ReviewCycle}, {VerdictlessLensList(run)}) returned no parseable " +
                         "verdict, even after this cycle's re-prompt. " +
-                        $"Its output: {RunPaths.ReviewFindingsFile(run.RunDirectory, run.ReviewCycle)}. " +
+                        $"Its output: {RunPaths.ReviewFindingsFile(CurrentRunDirectory(run), run.ReviewCycle)}. " +
                         "Judge the diff yourself, then resolve with h9k review resolve or abandon the task.",
                         cancellationToken);
                     return false;
@@ -265,7 +265,7 @@ public sealed class ReviewEngine(
 
         ReviewPassSession pass = run.InFlightReviewPasses[0];
         string streamFile = RunPaths.SessionStreamFile(
-            run.RunDirectory, ReviewArtifactName(run.ReviewCycle, pass.SessionId, pass.Lens));
+            CurrentRunDirectory(run), ReviewArtifactName(run.ReviewCycle, pass.SessionId, pass.Lens));
         AgentResult? result = await WaitForSessionResultAsync(
             context.RunId, streamFile, pass.ProcessId, pass.ProcessStartedAt, cancellationToken);
         if (result is { IsError: true, Summary: { } summary } && BudgetExhaustionParser.IsBudgetExhausted(summary))
@@ -308,7 +308,7 @@ public sealed class ReviewEngine(
         }
 
         string streamFile = RunPaths.SessionStreamFile(
-            run.RunDirectory, FixArtifactName(run.ReviewCycle, sessionId));
+            CurrentRunDirectory(run), FixArtifactName(run.ReviewCycle, sessionId));
         AgentResult? result = await WaitForSessionResultAsync(
             context.RunId, streamFile, processId, processStartedAt, cancellationToken);
         if (result is { IsError: true, Summary: { } summary } && BudgetExhaustionParser.IsBudgetExhausted(summary))
@@ -330,7 +330,7 @@ public sealed class ReviewEngine(
         }
 
         await RecordFixResultAsync(
-            context.RunId, run.RunDirectory, run.ReviewCycle, context.Task.FollowUpKind, result, cancellationToken);
+            context.RunId, CurrentRunDirectory(run), run.ReviewCycle, context.Task.FollowUpKind, result, cancellationToken);
         return true;
     }
 
@@ -516,7 +516,8 @@ public sealed class ReviewEngine(
     {
         string findings = humanFindings.IsNotBlank()
             ? $"Human review verdict (h9k review resolve): needs fixes.\n\n{humanFindings}"
-            : await File.ReadAllTextAsync(RunPaths.ReviewFindingsFile(context.Run.RunDirectory, cycle), cancellationToken);
+            : await File.ReadAllTextAsync(
+                RunPaths.ReviewFindingsFile(CurrentRunDirectory(context.Run), cycle), cancellationToken);
         if (!await EnsureCurrentGenerationAsync(context, cancellationToken))
         {
             return false;
@@ -567,25 +568,26 @@ public sealed class ReviewEngine(
     /// </summary>
     private static string DisputedParkReason(ReviewContext context, RunAggregate run)
     {
+        string runDirectory = CurrentRunDirectory(run);
         if (run.ReviewCycle != 0)
         {
             return "The fix run disputed a review finding — as not-a-defect, as human territory, or as " +
                 $"wrongly graded (cycle {run.ReviewCycle}). " +
-                $"Review position: {RunPaths.ReviewFindingsFile(run.RunDirectory, run.ReviewCycle)}; " +
-                $"fix position: {RunPaths.ReviewFixPositionFile(run.RunDirectory, run.ReviewCycle)}. " +
+                $"Review position: {RunPaths.ReviewFindingsFile(runDirectory, run.ReviewCycle)}; " +
+                $"fix position: {RunPaths.ReviewFixPositionFile(runDirectory, run.ReviewCycle)}. " +
                 "Decide between them, then resolve with h9k review resolve.";
         }
 
         return context.Task.FollowUpKind == FollowUpKind.Rebase
             ? "A resumed rebase follow-up still could not honestly resolve the conflict — both sides " +
               "change the same behavior, not just the same lines. " +
-              $"Conflicting files and its position: {RunPaths.RebaseConflictDisputeFile(run.RunDirectory)}. " +
+              $"Conflicting files and its position: {RunPaths.RebaseConflictDisputeFile(runDirectory)}. " +
               "Decide the conflict yourself, then resolve with h9k review resolve --needs-fixes " +
               "\"<your resolution>\" — nothing has been pushed. (--merge-ready is refused here: " +
               "nothing has been rebased yet.)"
             : "A resumed follow-up still could not honestly judge a review thread — as not-a-defect, " +
               "as human territory, or as wrongly graded. No review pass has run yet, so its position " +
-              $"is: {RunPaths.ReviewThreadDisputeFile(run.RunDirectory)}. Decide between it and the " +
+              $"is: {RunPaths.ReviewThreadDisputeFile(runDirectory)}. Decide between it and the " +
               "fix session's own read, then resolve with h9k review resolve.";
     }
 
@@ -600,7 +602,7 @@ public sealed class ReviewEngine(
         CancellationToken cancellationToken)
     {
         Guid runId = context.RunId;
-        string runDirectory = run.RunDirectory;
+        string runDirectory = CurrentRunDirectory(run);
         int cycle = run.ReviewCycle;
         string output = result.Summary ?? string.Empty;
         await File.WriteAllTextAsync(LensFindingsFile(runDirectory, cycle, pass.Lens), output, cancellationToken);
@@ -1361,7 +1363,7 @@ public sealed class ReviewEngine(
     /// </summary>
     private string CapParkReason(RunAggregate run, ReviewLens capped)
     {
-        string findings = RunPaths.ReviewFindingsFile(run.RunDirectory, run.ReviewCycle);
+        string findings = RunPaths.ReviewFindingsFile(CurrentRunDirectory(run), run.ReviewCycle);
         string levers =
             $"Unresolved findings: {findings}. Fix in the worktree and resolve with " +
             "h9k review resolve --merge-ready, grant a fresh round with --needs-fixes, or abandon the task.";
@@ -1430,6 +1432,19 @@ public sealed class ReviewEngine(
             : $"review-{lens.Slug}-{cycle}-{Short(sessionId)}";
 
     private static string FixArtifactName(int cycle, Guid sessionId) => $"review-fix-{cycle}-{Short(sessionId)}";
+
+    /// <summary>
+    /// Where a run's files actually sit right now, when <c>RunDirectory</c> was recorded before
+    /// a reopen's directory move (adversarial review, backlog 51 cycle 5): a run parked mid pre-PR
+    /// review (a rebase or review-thread dispute) can outlive the render sweep moving its task's
+    /// directory into or out of <c>tasks/_archive/</c> while nobody is actively touching it, so
+    /// every read or write here must re-resolve rather than trust the value <c>RunDispatched</c>
+    /// carried at dispatch.
+    /// </summary>
+    private static string CurrentRunDirectory(RunAggregate run) => RunPaths.ResolveCurrentDirectory(run.RunDirectory);
+
+    /// <summary>Same resolution as <see cref="CurrentRunDirectory(RunAggregate)"/>, for the projection shape.</summary>
+    private static string CurrentRunDirectory(RunDetails run) => RunPaths.ResolveCurrentDirectory(run.RunDirectory);
 
     private static string Short(Guid sessionId) => sessionId.ToString("N")[..8];
 
