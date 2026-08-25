@@ -189,7 +189,7 @@ split so that the lifecycle code, its tests, and CI are checkable here, while th
 Brian's own acceptance step once a release exists to walk from — not something a dispatched run
 can demonstrate for itself.
 
-See `SLICE-1.md` S1-14, Decisions Log #3, #78, #83.
+See `SLICE-1.md` S1-14, Decisions Log #3, #78, #84.
 
 ### Token visibility and exhaustion
 
