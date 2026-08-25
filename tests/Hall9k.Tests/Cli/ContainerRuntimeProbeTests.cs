@@ -71,9 +71,10 @@ public sealed class ContainerRuntimeProbeTests : IDisposable
     {
         RecordingProcessRunner runner = RecordingProcessRunner.Succeeding(string.Empty);
 
-        PostgresContainerStatus status =
+        (bool confirmed, PostgresContainerStatus status) =
             await ContainerRuntimeProbe.Hall9kContainerStatusAsync(runner.Runner, CancellationToken.None);
 
+        confirmed.Should().BeTrue();
         status.Should().Be(PostgresContainerStatus.Absent);
     }
 
@@ -84,9 +85,10 @@ public sealed class ContainerRuntimeProbeTests : IDisposable
         // exists to surface (Decisions Log #58).
         RecordingProcessRunner runner = RecordingProcessRunner.Succeeding("exited\n");
 
-        PostgresContainerStatus status =
+        (bool confirmed, PostgresContainerStatus status) =
             await ContainerRuntimeProbe.Hall9kContainerStatusAsync(runner.Runner, CancellationToken.None);
 
+        confirmed.Should().BeTrue();
         status.Should().Be(PostgresContainerStatus.Stopped);
     }
 
@@ -95,10 +97,29 @@ public sealed class ContainerRuntimeProbeTests : IDisposable
     {
         RecordingProcessRunner runner = RecordingProcessRunner.Succeeding("running\n");
 
-        PostgresContainerStatus status =
+        (bool confirmed, PostgresContainerStatus status) =
             await ContainerRuntimeProbe.Hall9kContainerStatusAsync(runner.Runner, CancellationToken.None);
 
+        confirmed.Should().BeTrue();
         status.Should().Be(PostgresContainerStatus.Running);
+    }
+
+    [Fact]
+    public async Task A_failed_docker_ps_is_unconfirmed_rather_than_a_claimed_absence()
+    {
+        // A failed docker ps -a is not the same fact as "no such container": empty stdout is
+        // what both an absent container and a failed command produce, and this uninstall
+        // feature's own pre-PR review (cycle 4) found the default and purge tiers both reading
+        // that fail-open Absent as an observed fact — stopping (or reporting stopped) nothing
+        // while a live hall9k-postgres container, and its untouched volume, were never actually
+        // checked.
+        RecordingProcessRunner runner = RecordingProcessRunner.Failing("Cannot connect to the Docker daemon");
+
+        (bool confirmed, PostgresContainerStatus status) =
+            await ContainerRuntimeProbe.Hall9kContainerStatusAsync(runner.Runner, CancellationToken.None);
+
+        confirmed.Should().BeFalse();
+        status.Should().Be(PostgresContainerStatus.Absent);
     }
 
     [Fact]

@@ -33,20 +33,38 @@ public static class ContainerRuntimeProbe
         }
     }
 
-    /// <summary>Only meaningful once <see cref="RuntimeStatusAsync"/> says <see cref="ContainerRuntimeStatus.Running"/>.</summary>
-    public static async Task<PostgresContainerStatus> Hall9kContainerStatusAsync(ProcessRunner runner, CancellationToken cancellationToken)
+    /// <summary>Only meaningful once <see cref="RuntimeStatusAsync"/> says <see cref="ContainerRuntimeStatus.Running"/>.
+    /// <para>
+    /// <c>Confirmed</c> is <see langword="false"/> when <c>docker ps -a</c> itself failed
+    /// (nonzero exit — Docker Desktop going away between the <see cref="RuntimeStatusAsync"/>
+    /// probe and this call, say), which is not the same fact as "no such container": empty
+    /// stdout is what an absent container and a failed command both produce, and reading a
+    /// failure as a confirmed absence would let a caller stop or purge nothing while believing
+    /// there was nothing there to touch — the identical stdout-versus-exit-code confusion
+    /// <see cref="DataVolumeNameAsync"/> and <see cref="VolumeExistsAsync"/> are hardened
+    /// against. A caller sees <c>Confirmed: false</c> for that case, and must not read the
+    /// accompanying <see cref="PostgresContainerStatus.Absent"/> as an observed absence.
+    /// </para>
+    /// </summary>
+    public static async Task<(bool Confirmed, PostgresContainerStatus Status)> Hall9kContainerStatusAsync(
+        ProcessRunner runner, CancellationToken cancellationToken)
     {
         ProcessResult result = await runner(
             "docker",
             ["ps", "-a", "--filter", $"name=^/{PostgresRuntime.ContainerName}$", "--format", "{{.State}}"],
             Directory.GetCurrentDirectory(),
             cancellationToken);
-        return result.StandardOutput.Trim() switch
+        if (result.ExitCode != 0)
+        {
+            return (false, PostgresContainerStatus.Absent);
+        }
+
+        return (true, result.StandardOutput.Trim() switch
         {
             "" => PostgresContainerStatus.Absent,
             "running" => PostgresContainerStatus.Running,
             _ => PostgresContainerStatus.Stopped,
-        };
+        });
     }
 
     /// <summary>A bare TCP connect — no Postgres handshake, so it cannot tell native Postgres

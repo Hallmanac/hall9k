@@ -49,8 +49,9 @@ public sealed class UninstallCommandTests : IDisposable
         File.WriteAllText(Path.Combine(home, "h9kd.pid"), "1234\n");
         File.WriteAllText(Path.Combine(home, "h9kd.lock"), string.Empty);
 
-        IReadOnlyList<string> stillPresent = UninstallCommand.RemoveInstallOwnedEntries(
-            UninstallCommand.InstallOwnedEntries(home));
+        List<string> stillPresent = [];
+        stillPresent.AddRange(UninstallCommand.RemoveInstallOwnedEntries(
+            UninstallCommand.InstallOwnedEntries(home, stillPresent)));
         UninstallCommand.TryRemoveIfEmpty(home);
 
         stillPresent.Should().BeEmpty();
@@ -70,7 +71,7 @@ public sealed class UninstallCommandTests : IDisposable
         // a file the platform itself wrote.
         string home = Path.Combine(directory, "home");
 
-        UninstallCommand.InstallOwnedEntries(home).Should().Contain(Path.Combine(home, "h9kd.log.1"));
+        UninstallCommand.InstallOwnedEntries(home, []).Should().Contain(Path.Combine(home, "h9kd.log.1"));
     }
 
     [Fact]
@@ -90,8 +91,9 @@ public sealed class UninstallCommandTests : IDisposable
         Directory.CreateDirectory(credentials);
         File.WriteAllText(Path.Combine(credentials, "jira-token"), "secret\n");
 
-        IReadOnlyList<string> stillPresent = UninstallCommand.RemoveInstallOwnedEntries(
-            UninstallCommand.InstallOwnedEntries(home));
+        List<string> stillPresent = [];
+        stillPresent.AddRange(UninstallCommand.RemoveInstallOwnedEntries(
+            UninstallCommand.InstallOwnedEntries(home, stillPresent)));
         UninstallCommand.TryRemoveIfEmpty(home);
 
         stillPresent.Should().BeEmpty();
@@ -111,7 +113,7 @@ public sealed class UninstallCommandTests : IDisposable
     {
         string home = Path.Combine(directory, "never-existed");
 
-        UninstallCommand.RemoveInstallOwnedEntries(UninstallCommand.InstallOwnedEntries(home)).Should().BeEmpty();
+        UninstallCommand.RemoveInstallOwnedEntries(UninstallCommand.InstallOwnedEntries(home, [])).Should().BeEmpty();
     }
 
     [Fact]
@@ -125,13 +127,60 @@ public sealed class UninstallCommandTests : IDisposable
         Directory.CreateDirectory(fallback);
         File.WriteAllText(Path.Combine(fallback, "h9k"), "a retired copy\n");
 
-        UninstallCommand.InstallOwnedEntries(home).Should().Contain(fallback);
+        UninstallCommand.InstallOwnedEntries(home, []).Should().Contain(fallback);
 
-        IReadOnlyList<string> stillPresent = UninstallCommand.RemoveInstallOwnedEntries(
-            UninstallCommand.InstallOwnedEntries(home));
+        List<string> stillPresent = [];
+        stillPresent.AddRange(UninstallCommand.RemoveInstallOwnedEntries(
+            UninstallCommand.InstallOwnedEntries(home, stillPresent)));
 
         stillPresent.Should().BeEmpty();
         Directory.Exists(fallback).Should().BeFalse();
+    }
+
+    [Fact]
+    public void An_unenumerable_home_is_named_not_thrown_while_sweeping_retired_bin_fallbacks()
+    {
+        // RetiredBinFallbacks enumerates home itself for bin.old.* fallbacks — the one
+        // enumeration in this feature's removal path that used to have no guard, unlike its
+        // siblings (DeleteContentsBestEffort, TryRemoveIfEmpty, SkillSeeder's own retiring
+        // pass). Before this was fixed, a read bit dropped on home escaped this call site as a
+        // raw, uncaught exception after the PATH link was already gone, rather than being named
+        // through stillPresent the way every other failure in this removal path already is.
+        if (OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        string home = Path.Combine(directory, "unenumerable-home");
+        Directory.CreateDirectory(home);
+        File.WriteAllText(Path.Combine(home, "h9kd.log"), "log\n");
+
+        // Execute-only: a known child path (bin, h9kd.log, …) can still be reached by name, but
+        // listing home's own entries — the glob this test targets — needs the read bit too.
+        File.SetUnixFileMode(home, UnixFileMode.UserExecute);
+        try
+        {
+            Directory.EnumerateFileSystemEntries(home).Any();
+            return;
+        }
+        catch (Exception exception) when (exception is UnauthorizedAccessException or IOException)
+        {
+            // Confirmed unenumerable — proceed with the assertion below.
+        }
+
+        try
+        {
+            List<string> stillPresent = [];
+            Action act = () => UninstallCommand.InstallOwnedEntries(home, stillPresent);
+
+            act.Should().NotThrow("an unenumerable home must be reported, never left to escape as a raw exception");
+            stillPresent.Should().Contain(home);
+        }
+        finally
+        {
+            File.SetUnixFileMode(
+                home, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+        }
     }
 
     [Fact]
@@ -146,7 +195,7 @@ public sealed class UninstallCommandTests : IDisposable
         string home = Path.Combine(directory, "home");
         Directory.CreateDirectory(Path.Combine(home, "bin.old"));
 
-        UninstallCommand.InstallOwnedEntries(home)
+        UninstallCommand.InstallOwnedEntries(home, [])
             .Count(entry => entry == Path.Combine(home, "bin.old"))
             .Should().Be(1);
     }
@@ -177,8 +226,9 @@ public sealed class UninstallCommandTests : IDisposable
             // relocation keeps the rest of the removal honest.
             using FileStream lockHandle = new(locked, FileMode.Open, FileAccess.Read, FileShare.Read | FileShare.Delete);
 
-            IReadOnlyList<string> stillPresent = UninstallCommand.RemoveInstallOwnedEntries(
-                UninstallCommand.InstallOwnedEntries(home));
+            List<string> stillPresent = [];
+            stillPresent.AddRange(UninstallCommand.RemoveInstallOwnedEntries(
+                UninstallCommand.InstallOwnedEntries(home, stillPresent)));
 
             stillPresent.Should().BeEmpty(
                 "the locked bin/ was relocated outside the install home rather than left behind, so "
@@ -195,8 +245,9 @@ public sealed class UninstallCommandTests : IDisposable
 
             try
             {
-                IReadOnlyList<string> stillPresent = UninstallCommand.RemoveInstallOwnedEntries(
-                    UninstallCommand.InstallOwnedEntries(home));
+                List<string> stillPresent = [];
+                stillPresent.AddRange(UninstallCommand.RemoveInstallOwnedEntries(
+                    UninstallCommand.InstallOwnedEntries(home, stillPresent)));
 
                 stillPresent.Should().ContainSingle().Which.Should().Be(locked);
                 File.Exists(Path.Combine(home, "h9kd.log")).Should().BeFalse(
@@ -237,8 +288,9 @@ public sealed class UninstallCommandTests : IDisposable
 
         try
         {
-            IReadOnlyList<string> stillPresent = UninstallCommand.RemoveInstallOwnedEntries(
-                UninstallCommand.InstallOwnedEntries(home));
+            List<string> stillPresent = [];
+            stillPresent.AddRange(UninstallCommand.RemoveInstallOwnedEntries(
+                UninstallCommand.InstallOwnedEntries(home, stillPresent)));
 
             stillPresent.Should().ContainSingle().Which.Should().Be(binDirectory,
                 "bin/'s own contents deleted fine, but bin/ itself could not be unlinked from home, so it "
@@ -288,7 +340,7 @@ public sealed class UninstallCommandTests : IDisposable
         {
             IReadOnlyList<string> stillPresent = null!;
             Action act = () => stillPresent =
-                UninstallCommand.RemoveInstallOwnedEntries(UninstallCommand.InstallOwnedEntries(home));
+                UninstallCommand.RemoveInstallOwnedEntries(UninstallCommand.InstallOwnedEntries(home, []));
 
             act.Should().NotThrow("an unenumerable directory must be reported, never left to escape as a raw exception");
             stillPresent.Should().Contain(blocked);
@@ -324,8 +376,9 @@ public sealed class UninstallCommandTests : IDisposable
         // full explanation of why a plain FileShare.Read handle would be stricter than reality.
         using FileStream lockHandle = new(locked, FileMode.Open, FileAccess.Read, FileShare.Read | FileShare.Delete);
 
-        IReadOnlyList<string> stillPresent = UninstallCommand.RemoveInstallOwnedEntries(
-            UninstallCommand.InstallOwnedEntries(home));
+        List<string> stillPresent = [];
+        stillPresent.AddRange(UninstallCommand.RemoveInstallOwnedEntries(
+            UninstallCommand.InstallOwnedEntries(home, stillPresent)));
 
         stillPresent.Should().BeEmpty();
         Directory.Exists(binDirectory).Should().BeFalse("bin/ was moved out of the install home, not merely emptied");
@@ -527,6 +580,46 @@ public sealed class UninstallCommandTests : IDisposable
         ok.Should().BeTrue();
         outcome.Should().Be(UninstallCommand.DataTierOutcome.ContainerAbsent, "no container means no purge happened");
         runner.Calls.Should().NotContain(call => call.Arguments.Count > 0 && call.Arguments[0] == "stop");
+    }
+
+    [Fact]
+    public async Task A_failed_container_status_check_is_reported_not_read_as_absent()
+    {
+        // docker info succeeds (the runtime is running) but docker ps -a itself then fails —
+        // this uninstall feature's own pre-PR review (cycle 4) found that fail-open empty
+        // stdout read as a confirmed ContainerAbsent, so a live hall9k-postgres container was
+        // never actually stopped while the run claimed there was nothing to stop.
+        RecordingProcessRunner runner = null!;
+        runner = new RecordingProcessRunner(() => runner.Calls[^1].Arguments switch
+        {
+            ["ps", ..] => new ProcessResult(1, string.Empty, "Cannot connect to the Docker daemon"),
+            _ => new ProcessResult(0, string.Empty, string.Empty),
+        });
+
+        (bool ok, UninstallCommand.DataTierOutcome outcome) = await UninstallCommand.HandleDataTierAsync(purgeData: false, runner.Runner, CancellationToken.None);
+
+        ok.Should().BeFalse("the container's real status was never actually observed");
+        outcome.Should().Be(UninstallCommand.DataTierOutcome.ContainerStatusCheckFailed);
+        runner.Calls.Should().NotContain(call => call.Arguments.Count > 0 && call.Arguments[0] == "stop",
+            "nothing confirmed running means nothing here should be stopped either");
+    }
+
+    [Fact]
+    public async Task A_failed_container_status_check_fails_a_requested_purge_rather_than_guessing_absent()
+    {
+        RecordingProcessRunner runner = null!;
+        runner = new RecordingProcessRunner(() => runner.Calls[^1].Arguments switch
+        {
+            ["ps", ..] => new ProcessResult(1, string.Empty, "Cannot connect to the Docker daemon"),
+            _ => new ProcessResult(0, string.Empty, string.Empty),
+        });
+
+        (bool ok, UninstallCommand.DataTierOutcome outcome) = await UninstallCommand.HandleDataTierAsync(purgeData: true, runner.Runner, CancellationToken.None);
+
+        ok.Should().BeFalse("--purge-data promises destruction; a container status that was never actually observed cannot honor that");
+        outcome.Should().Be(UninstallCommand.DataTierOutcome.ContainerStatusCheckFailed);
+        runner.Calls.Should().NotContain(call => call.Arguments.Count > 0 && (call.Arguments[0] == "rm" || call.Arguments[0] == "volume"),
+            "nothing confirmed absent or present means nothing here should be destroyed");
     }
 
     [Fact]

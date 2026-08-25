@@ -117,7 +117,7 @@ public sealed class UninstallCommand : Hall9kAsyncCommand<UninstallCommand.Setti
         // need is loaded (or at least still on disk to load) while bin/ still exists.
         List<string> stillPresent = [];
         IReadOnlyList<string> skillsRemoved = SkillSeeder.RemovePublished(stillPresent);
-        stillPresent.AddRange(RemoveInstallOwnedEntries(InstallOwnedEntries(home)));
+        stillPresent.AddRange(RemoveInstallOwnedEntries(InstallOwnedEntries(home, stillPresent)));
         bool homeFullyRemoved = stillPresent.Count == 0 && pathLinkRemoved;
 
         ReportHomeRemoval(home, stillPresent, skillsRemoved);
@@ -188,8 +188,9 @@ public sealed class UninstallCommand : Hall9kAsyncCommand<UninstallCommand.Setti
             return null;
         }
 
-        PostgresContainerStatus container = await ContainerRuntimeProbe.Hall9kContainerStatusAsync(runner, cancellationToken);
-        if (container == PostgresContainerStatus.Absent)
+        (bool containerConfirmed, PostgresContainerStatus container) =
+            await ContainerRuntimeProbe.Hall9kContainerStatusAsync(runner, cancellationToken);
+        if (!containerConfirmed || container == PostgresContainerStatus.Absent)
         {
             return null;
         }
@@ -334,6 +335,7 @@ public sealed class UninstallCommand : Hall9kAsyncCommand<UninstallCommand.Setti
         NotAttempted,
         NoContainerRuntime,
         ContainerRuntimeNotRunning,
+        ContainerStatusCheckFailed,
         ContainerAbsent,
         ContainerAlreadyStopped,
         ContainerStopped,
@@ -386,7 +388,24 @@ public sealed class UninstallCommand : Hall9kAsyncCommand<UninstallCommand.Setti
             return (false, outcome);
         }
 
-        PostgresContainerStatus container = await ContainerRuntimeProbe.Hall9kContainerStatusAsync(runner, cancellationToken);
+        (bool containerConfirmed, PostgresContainerStatus container) =
+            await ContainerRuntimeProbe.Hall9kContainerStatusAsync(runner, cancellationToken);
+        if (!containerConfirmed)
+        {
+            // docker ps -a itself failed — not the same fact as "no such container": empty
+            // stdout is what both an absent container and a failed command produce, so reading
+            // this as a confirmed absence would report a container stopped or a volume
+            // untouched that was never actually observed (finding #3, cycle 4 review).
+            string remedy = $"docker ps -a --filter name=^/{PostgresRuntime.ContainerName}$";
+            AnsiConsole.MarkupLine(purgeData
+                ? $"[yellow]Purge incomplete[/] — checking Docker for the {PostgresRuntime.ContainerName} "
+                    + $"container (docker ps -a) itself failed, so nothing was removed. Retry once Docker is "
+                    + $"answering reliably, or check yourself: {remedy}"
+                : $"[yellow]Could not confirm {PostgresRuntime.ContainerName}'s status[/] — checking Docker "
+                    + $"(docker ps -a) itself failed, so nothing was stopped. Retry once Docker is answering "
+                    + $"reliably, or check yourself: {remedy}");
+            return (false, DataTierOutcome.ContainerStatusCheckFailed);
+        }
 
         if (purgeData)
         {
@@ -684,12 +703,12 @@ public sealed class UninstallCommand : Hall9kAsyncCommand<UninstallCommand.Setti
     /// track the repository's own compose file.
     /// </para>
     /// </summary>
-    internal static IReadOnlyList<string> InstallOwnedEntries(string home) =>
+    internal static IReadOnlyList<string> InstallOwnedEntries(string home, List<string> stillPresent) =>
     [
         Path.Combine(home, "bin"),
         Path.Combine(home, "bin.staging"),
         Path.Combine(home, "bin.old"),
-        .. RetiredBinFallbacks(home),
+        .. RetiredBinFallbacks(home, stillPresent),
         Path.Combine(home, "postgres"),
         Path.Combine(home, "h9kd.log"),
         Path.Combine(home, "h9kd.log.1"),
@@ -707,7 +726,7 @@ public sealed class UninstallCommand : Hall9kAsyncCommand<UninstallCommand.Setti
     /// fallbacks — the same quirk <see cref="InstallCommand.SweepRetiredDirectories"/> documents
     /// and skips. <c>bin.old</c> is already listed separately in <see cref="InstallOwnedEntries"/>,
     /// so without the exclusion a locked one would appear, and be reported, twice.</summary>
-    private static IEnumerable<string> RetiredBinFallbacks(string home)
+    private static IEnumerable<string> RetiredBinFallbacks(string home, List<string> stillPresent)
     {
         if (!Directory.Exists(home))
         {
@@ -715,8 +734,22 @@ public sealed class UninstallCommand : Hall9kAsyncCommand<UninstallCommand.Setti
         }
 
         string binOld = Path.Combine(home, "bin.old");
-        return Directory.EnumerateDirectories(home, "bin.old.*")
-            .Where(path => !string.Equals(path, binOld, StringComparison.OrdinalIgnoreCase));
+        try
+        {
+            return Directory.EnumerateDirectories(home, "bin.old.*")
+                .Where(path => !string.Equals(path, binOld, StringComparison.OrdinalIgnoreCase))
+                .ToList();
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            // The read/execute bit dropped on home itself, the same point-of-no-return call
+            // site (the PATH link is already gone by here) TryRemoveIfEmpty's identical
+            // enumeration already guards. Reported through stillPresent rather than left to
+            // escape as a raw stack trace, since a fallback this pass cannot even see is one
+            // it must not silently claim never existed.
+            stillPresent.Add(home);
+            return [];
+        }
     }
 
     /// <summary>
