@@ -1,3 +1,4 @@
+using System.Text.Json;
 using FluentAssertions;
 using Hall9k.Domain.Infrastructure.Persistence;
 using Hall9k.Domain.Shared.Exceptions;
@@ -200,5 +201,83 @@ public sealed class PlatformConfigFileTests : IDisposable
 
         settings.ModelByRole.Should().NotBeNull();
         settings.ModelByRole.Build.Should().BeNull();
+    }
+
+    /// <summary>
+    /// The daemon binds this section through <c>IConfiguration</c>, where every key comparison is
+    /// case-insensitive, so a hand-edit using the casing the env-var table and the daemon's own
+    /// startup log print ("Hall9k") has to be read exactly like the canonical lowercase key.
+    /// Origin: the cycle-4 pre-PR review found the CLI's <see cref="JsonObject"/> indexer lookup
+    /// treating "Hall9k" as a different, absent section from "hall9k".
+    /// </summary>
+    [Fact]
+    public async Task A_section_key_spelled_with_the_daemons_own_casing_still_reads()
+    {
+        await File.WriteAllTextAsync(
+            Hall9kDatabase.ConfigFile, """{"Hall9k": {"maxConcurrentAgentSessions": 6}}""");
+
+        OperatingSettings settings = await PlatformConfigFile.ReadOperatingSettingsAsync(CancellationToken.None);
+
+        settings.MaxConcurrentAgentSessions.Should().Be(6);
+    }
+
+    /// <summary>
+    /// Writing must replace whatever key already names the section rather than adding a second,
+    /// differently-cased one beside it: <c>JsonConfigurationFileParser</c>'s keys are also
+    /// case-insensitive, so two such keys is a duplicate-key <see cref="FormatException"/> at
+    /// daemon startup, not two settings.
+    /// </summary>
+    [Fact]
+    public async Task Writing_over_a_differently_cased_section_key_replaces_it_rather_than_duplicating_it()
+    {
+        await File.WriteAllTextAsync(
+            Hall9kDatabase.ConfigFile, """{"Hall9k": {"maxConcurrentAgentSessions": 6}}""");
+
+        await PlatformConfigFile.WriteOperatingSettingsAsync(s => s.DefaultModel = "sonnet", CancellationToken.None);
+
+        string written = await File.ReadAllTextAsync(Hall9kDatabase.ConfigFile);
+        using JsonDocument document = JsonDocument.Parse(written);
+        PlatformConfigFile.HasCaseInsensitiveDuplicateKeys(document.RootElement).Should().BeFalse(
+            "the write must replace the existing (differently-cased) section key rather than add a second one");
+    }
+
+    /// <summary>
+    /// A file already holding two case-variant section keys (from a hand-edit, or from the bug
+    /// the previous two tests guard against) is exactly what crashes the real daemon with a raw
+    /// duplicate-key <see cref="FormatException"/>; a merge write must refuse rather than silently
+    /// picking one of the two.
+    /// </summary>
+    [Fact]
+    public async Task A_config_file_with_a_case_variant_duplicate_key_is_a_diagnosable_exception()
+    {
+        await File.WriteAllTextAsync(
+            Hall9kDatabase.ConfigFile,
+            """{"hall9k": {"maxConcurrentAgentSessions": 3}, "Hall9k": {"maxConcurrentAgentSessions": 6}}""");
+
+        Func<Task> read = () => PlatformConfigFile.ReadOperatingSettingsAsync(CancellationToken.None);
+
+        await read.Should().ThrowAsync<DomainValidationException>(
+            "Microsoft.Extensions.Configuration.Json's keys are case-insensitive, so this file crashes the "
+            + "daemon at startup rather than resolving to either section");
+    }
+
+    /// <summary>
+    /// This shape does not actually crash the daemon: <c>ModelByRole</c> is a complex object, and
+    /// <c>ConfigurationBinder</c> has no string-to-object conversion for it, so it silently binds
+    /// no children rather than throwing the way it does for the numeric <c>MaxConcurrentAgentSessions</c>
+    /// leaf. Origin: the cycle-4 pre-PR review found <see cref="PlatformConfigFile.TryReadOperatingSettingsAsync"/>
+    /// reporting every shape mismatch as a startup crash, which is wrong for this one.
+    /// </summary>
+    [Fact]
+    public async Task A_scalar_given_for_the_model_by_role_object_is_reported_as_not_crashing_the_daemon()
+    {
+        await File.WriteAllTextAsync(
+            Hall9kDatabase.ConfigFile, """{"hall9k": {"modelByRole": "sonnet"}}""");
+
+        ConfigFileReadResult result = await PlatformConfigFile.TryReadOperatingSettingsAsync(CancellationToken.None);
+
+        result.Problem.Should().NotBeNull();
+        result.Problem!.DaemonFailsToStart.Should().BeFalse(
+            "ConfigurationBinder has no converter for this complex type, so it binds no children rather than throwing");
     }
 }

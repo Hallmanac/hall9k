@@ -72,13 +72,28 @@ public static class PlatformConfigFile
 
         try
         {
-            return ConfigFileReadResult.Ok(DeserializeSection(document));
+            return ConfigFileReadResult.Ok(DeserializeSectionCore(document));
         }
-        catch (DomainValidationException exception)
+        catch (JsonException exception)
         {
-            return ConfigFileReadResult.Failed(exception.Message, daemonFailsToStart: true);
+            return ConfigFileReadResult.Failed(ShapeErrorMessage(exception), DaemonFailsToStartOn(exception));
         }
     }
+
+    /// <summary>
+    /// Whether <paramref name="exception"/>'s shape mismatch is one <c>ConfigurationBinder</c>
+    /// actually throws on too, rather than one this type's stricter POCO deserialize rejects but
+    /// the binder quietly ignores. The binder only has a registered conversion for the scalar
+    /// leaves in this shape (<see cref="OperatingSettings.MaxConcurrentAgentSessions"/>); a
+    /// mismatch anywhere else — a string given for the whole <c>modelByRole</c> object, say — has
+    /// no such conversion, so the binder falls back to binding the object's (nonexistent)
+    /// children and leaves the property at its default rather than throwing. Keyed off
+    /// <see cref="JsonException.Path"/> rather than re-implementing that resolution here, so the
+    /// one property this can go wrong for stays a single name rather than two copies of the same
+    /// list drifting apart.
+    /// </summary>
+    private static bool DaemonFailsToStartOn(JsonException exception) =>
+        exception.Path == "$.maxConcurrentAgentSessions";
 
     /// <summary>
     /// Read-modify-write under the section key: <paramref name="mutate"/> sees the settings as
@@ -98,13 +113,39 @@ public static class PlatformConfigFile
 
         mutate(settings);
 
-        document[SectionName] = JsonSerializer.SerializeToNode(settings, SerializerOptions);
+        // Replace whatever key already names this section — never add a second one: the daemon
+        // binds it through IConfiguration, where "hall9k" and "Hall9k" are the same key, so
+        // leaving the existing casing in place and adding our own would hand
+        // JsonConfigurationFileParser two keys that collide and throw at daemon startup.
+        string sectionKey = ExistingSectionKey(document) ?? SectionName;
+        document.Remove(sectionKey);
+        document[sectionKey] = JsonSerializer.SerializeToNode(settings, SerializerOptions);
         await AtomicFileWrite.WriteAllTextAsync(
             Hall9kDatabase.ConfigFile, document.ToJsonString(SerializerOptions), cancellationToken);
         return created;
     }
 
-    private static JsonObject? Section(JsonObject document) => document[SectionName] as JsonObject;
+    /// <summary>
+    /// Looked up case-insensitively, the same way the daemon finds this section through
+    /// <c>IConfiguration</c> (every <c>Microsoft.Extensions.Configuration</c> key comparison is
+    /// ordinal-ignore-case): an ordinal <see cref="JsonObject"/> indexer lookup would miss a
+    /// hand-edited "Hall9k" and silently treat the section as absent.
+    /// </summary>
+    private static JsonObject? Section(JsonObject document) =>
+        ExistingSectionKey(document) is { } key ? document[key] as JsonObject : null;
+
+    private static string? ExistingSectionKey(JsonObject document)
+    {
+        foreach (KeyValuePair<string, JsonNode?> property in document)
+        {
+            if (string.Equals(property.Key, SectionName, StringComparison.OrdinalIgnoreCase))
+            {
+                return property.Key;
+            }
+        }
+
+        return null;
+    }
 
     /// <summary>
     /// Deserializes the "hall9k" section, the same way <see cref="ReadDocumentAsync"/> guards a
@@ -122,27 +163,39 @@ public static class PlatformConfigFile
     /// </summary>
     private static OperatingSettings DeserializeSection(JsonObject document)
     {
+        try
+        {
+            return DeserializeSectionCore(document);
+        }
+        catch (JsonException exception)
+        {
+            throw new DomainValidationException(ShapeErrorMessage(exception));
+        }
+    }
+
+    /// <summary>
+    /// The same deserialize <see cref="DeserializeSection"/> wraps into a <see
+    /// cref="DomainValidationException"/> for the write path, left as a raw throw here so <see
+    /// cref="TryReadOperatingSettingsAsync"/> can inspect <see cref="JsonException.Path"/> itself
+    /// before deciding whether the mismatch is one the daemon's own <c>ConfigurationBinder</c>
+    /// would actually crash on.
+    /// </summary>
+    private static OperatingSettings DeserializeSectionCore(JsonObject document)
+    {
         if (Section(document) is not { } section)
         {
             return new();
         }
 
-        OperatingSettings settings;
-        try
-        {
-            settings = section.Deserialize<OperatingSettings>(SerializerOptions) ?? new();
-        }
-        catch (JsonException exception)
-        {
-            throw new DomainValidationException(
-                $"The platform config file ({Hall9kDatabase.ConfigFile}) has a \"hall9k\" section, but a value "
-                + $"there has the wrong shape ({exception.Message}). h9k config set merges into this same section, "
-                + "so it cannot write until the existing value parses — fix it directly in a text editor first.");
-        }
-
+        OperatingSettings settings = section.Deserialize<OperatingSettings>(SerializerOptions) ?? new();
         settings.ModelByRole ??= new();
         return settings;
     }
+
+    private static string ShapeErrorMessage(JsonException exception) =>
+        $"The platform config file ({Hall9kDatabase.ConfigFile}) has a \"hall9k\" section, but a value "
+        + $"there has the wrong shape ({exception.Message}). h9k config set merges into this same section, "
+        + "so it cannot write until the existing value parses — fix it directly in a text editor first.";
 
     /// <summary>
     /// Throws rather than silently starting fresh: unlike the connection-string write (the
@@ -174,10 +227,63 @@ public static class PlatformConfigFile
         // bare number). Falling back to an empty JsonObject here would be the quiet overwrite
         // this method's own contract refuses for a syntax error — whatever the file held,
         // connectionString included, would vanish under the next write with no message at all.
-        return parsed as JsonObject
+        JsonObject document = parsed as JsonObject
             ?? throw new DomainValidationException(
                 $"The platform config file ({Hall9kDatabase.ConfigFile}) exists but its top level is not a JSON "
                 + "object — a merge write needs a { ... } document to add the \"hall9k\" section to. Fix or "
                 + "delete it, then try again.");
+
+        // JsonObject collapses a key that repeats under a different case down to one entry
+        // silently, so it cannot tell us this happened — check the raw text instead, with the
+        // same JsonDocument-based walk PlatformConfigFileSource runs on the daemon side, so a
+        // file shaped like this is diagnosed identically on both.
+        using JsonDocument forDuplicateCheck = JsonDocument.Parse(text);
+        if (HasCaseInsensitiveDuplicateKeys(forDuplicateCheck.RootElement))
+        {
+            throw new DomainValidationException(
+                $"The platform config file ({Hall9kDatabase.ConfigFile}) has a key that repeats under a "
+                + "different case (for example \"hall9k\" and \"Hall9k\") — Microsoft.Extensions.Configuration.Json "
+                + "treats keys case-insensitively and refuses to load a file shaped like this. Fix or delete it, "
+                + "then try again.");
+        }
+
+        return document;
+    }
+
+    /// <summary>
+    /// Whether any JSON object in <paramref name="element"/> repeats a property name under a
+    /// different case — the shape <c>Microsoft.Extensions.Configuration.Json</c>'s own parser
+    /// refuses outright (its keys are ordinal-ignore-case, so "Hall9k" and "hall9k" collide) with
+    /// an unguarded <see cref="FormatException"/>. Shared with <see cref="PlatformConfigFileSource"/>
+    /// so the CLI's read and the daemon's own pre-parse guard treat the exact same file the same way.
+    /// </summary>
+    public static bool HasCaseInsensitiveDuplicateKeys(JsonElement element)
+    {
+        switch (element.ValueKind)
+        {
+            case JsonValueKind.Object:
+                HashSet<string> seen = new(StringComparer.OrdinalIgnoreCase);
+                foreach (JsonProperty property in element.EnumerateObject())
+                {
+                    if (!seen.Add(property.Name) || HasCaseInsensitiveDuplicateKeys(property.Value))
+                    {
+                        return true;
+                    }
+                }
+
+                return false;
+            case JsonValueKind.Array:
+                foreach (JsonElement item in element.EnumerateArray())
+                {
+                    if (HasCaseInsensitiveDuplicateKeys(item))
+                    {
+                        return true;
+                    }
+                }
+
+                return false;
+            default:
+                return false;
+        }
     }
 }
