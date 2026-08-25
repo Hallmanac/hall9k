@@ -214,6 +214,7 @@ Everything hangs off `~/.hall9k` (or `HALL9K_HOME`):
 │   ├── ideas/<id>-<slug>/      idea.md (rendered) + workspace/, when captured with this home (below)
 │   ├── tasks/<id>-<slug>/      task.md (rendered) + workspace/ for refinement material, plus:
 │   │   └── runs/<run-id>/      every run this task ever dispatched — see the run shape below
+│   │   _archive/<id>-<slug>/   the same shape, moved here once the task is terminal (below)
 │   ├── skills/                 symlinks into ~/.hall9k/skills, plus this project's own
 │   └── .claude/skills/         symlinks into the line above: the Claude Code adapter
 ├── ideas/<idea-id>/workspace/  the fallback for an idea captured with no project, or a project
@@ -234,6 +235,21 @@ Everything hangs off `~/.hall9k` (or `HALL9K_HOME`):
     ├── blocker-context.md      what the immediate blockers handed down
     └── handoff.md              what this run hands down in turn
 ```
+
+A task's directory moves into `tasks/_archive/` the moment it is terminal — true closeout (its
+pull request merged and the closeout monitor observed it, not merely `Done` with a pull request
+still under review) or abandoned — and moves back out once it is reopened and its current run is
+no longer live, so a browse of `tasks/` in an editor shows only the drafts, published, and
+in-flight work that still needs attention. The directory itself is unchanged by the move:
+`task.md`, `workspace/`, and every `runs/<run-id>/` travel with it. The render sweep owns this,
+the same sweep that keeps `task.md` current, so it happens without a human ever touching the
+filesystem by hand. The liveness check on the way back out is deliberate, not an oversight: a
+reopened task's follow-up run can already be writing into its directory (RunLauncher's
+alternate-root search dispatches straight into `tasks/_archive/` when that is where the directory
+still sits), so moving it back out from under an active writer would race that run. The sweep
+defers the move until the run leaves its actively-running states, and every daemon-side reader
+resolves the run's current directory dynamically rather than trusting the path `RunDispatched`
+recorded, so a still-parked run keeps finding its own files once a later sweep does move it back.
 
 A run's directory is resolved once, at dispatch, from its owning task's directory name at that
 moment, and recorded on the run rather than rederived later — the same discipline as the

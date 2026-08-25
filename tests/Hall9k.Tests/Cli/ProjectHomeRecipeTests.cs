@@ -392,6 +392,8 @@ public sealed class ProjectHomeRecipeTests : IDisposable
         rendered.Should().Contain("repo/");
         rendered.Should().Contain("ideas/");
         rendered.Should().Contain("tasks/");
+        rendered.Should().Contain(
+            ProjectHomePaths.ArchiveDirectoryName, "the layout must teach where a terminal task's directory goes");
         rendered.Should().Contain("skills/");
         rendered.Should().Contain(Path.Combine(ProjectHomePaths.DevWorktree(home), "AGENTS.md"),
             "the repository's own guidance is the deep layer this file points at");

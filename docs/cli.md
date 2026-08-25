@@ -111,7 +111,7 @@ otherwise, in the same shape on every machine:
 ├── AGENTS.md   generated from the project's facts; never hand-maintained
 ├── repo/       <name>.git (bare clone) · dev/ (a worktree on the primary branch) · wt-*/
 ├── ideas/
-├── tasks/
+├── tasks/      _archive/ holds terminal tasks (closed out or abandoned); moved back if reopened
 ├── skills/     plain markdown skill docs, seeded from the install's canonical set
 └── .claude/    generated Claude Code plumbing: skills/ symlinked, never copied
 ```
@@ -131,6 +131,11 @@ its own sweep — nothing needs to be told to re-render — and the render is on
 then apply the edit with `h9k task revise <id> --file <path>` (`h9k idea revise <id> "<text>"` for
 an idea, which has no `--file` form). A direct edit that is never applied is silently overwritten
 the next time the daemon sweeps, which the file's own header line says.
+
+The same sweep moves a task's whole directory into `tasks/_archive/` the moment it goes
+terminal — true closeout (merged, and the closeout monitor observed it) or abandoned — and moves
+it back out if it is ever reopened, so an editor's file explorer, sorted alphabetically, shows
+only live work above the one folder everything finished sorts into.
 
 Going from nothing to a working project directory on a second machine:
 
