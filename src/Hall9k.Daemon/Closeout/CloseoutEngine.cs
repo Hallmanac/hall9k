@@ -974,7 +974,7 @@ public sealed class CloseoutEngine(
     private async Task<(HandoffOutcome Outcome, string? Handoff)> ReadHandoffAsync(
         Guid runId, string runDirectory, CancellationToken cancellationToken)
     {
-        string path = RunPaths.HandoffFile(runDirectory);
+        string path = RunPaths.HandoffFile(RunPaths.ResolveCurrentDirectory(runDirectory));
         try
         {
             if (!File.Exists(path))

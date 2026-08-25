@@ -763,16 +763,18 @@ public sealed class ProjectHomeRenderEngineTests(PostgresFixture postgres) : ICl
     }
 
     [Fact]
-    public async Task A_task_reopened_into_the_archive_directory_stays_there_while_its_run_is_parked_not_terminal()
+    public async Task A_task_reopened_into_the_archive_directory_moves_back_the_moment_its_run_parks()
     {
-        // Adversarial review, backlog 51 cycle 4: a run that leaves its actively-running states
-        // (RunState.IsLive) is not yet safe to move out from under — ReviewParked means the run
-        // stopped running, but PullRequestOpener can still write into its RunDirectory once a
-        // human resolves the park (h9k review resolve --merge-ready), and closeout still reads a
-        // handoff from it once the run truly closes out. Only the run's own terminal state
-        // (Completed/Failed/Killed/Superseded) means nothing will touch the directory again — the
-        // guard has to key off that bar, not "still live", or it moves the directory back while a
-        // pull request could still be opened onto it.
+        // Adversarial review, backlog 51 cycle 5: cycle 4 had kept a reopened task's directory
+        // inside tasks/_archive/ until its follow-up run reached a TERMINAL state, on the theory
+        // that a parked-but-not-live run (ReviewParked) could still have a pull request opened
+        // onto its RunDirectory once a human resolved the park. That kept a needs-you park hidden
+        // inside tasks/_archive/ for the follow-up's whole review loop — exactly the state a human
+        // browsing tasks/ most needs to see at the top level. Now that PullRequestOpener,
+        // CloseoutEngine, ReviewEngine, and ClaudeExecutor all re-resolve a run's directory
+        // dynamically (RunPaths.ResolveCurrentDirectory) instead of trusting the value RunDispatched
+        // recorded once at dispatch, it is safe to move the directory back as soon as the run stops
+        // being LIVE (RunState.IsLive) rather than waiting for it to go fully terminal.
         using DocumentStore store = NewStore();
         Guid ownerId = DomainId.New();
         Guid projectId = DomainId.New();
@@ -838,31 +840,19 @@ public sealed class ProjectHomeRenderEngineTests(PostgresFixture postgres) : ICl
 
         await using (IDocumentSession session = store.LightweightSession())
         {
-            // The run stopped running and parked for a human — not live, but not terminal either.
+            // The run stopped running and parked for a human — not live, and not terminal either.
             session.Events.Append(followUpRunId, new ReviewParked(followUpRunId, "a finding was disputed", Now));
             await session.SaveChangesAsync();
         }
 
         await NewEngine(store).PollOnceAsync(CancellationToken.None);
 
-        LiveTaskDirectories(tasksRoot).Should().BeEmpty(
-            "the parked run has not reached its own terminal state, so a pull request could still be " +
-            "opened onto its RunDirectory once a human resolves the park");
-        Directory.EnumerateDirectories(archiveRoot).Should().ContainSingle(
-            "the task's directory must stay put until the run reaches a terminal state");
-
-        await using (IDocumentSession session = store.LightweightSession())
-        {
-            session.Events.Append(followUpRunId, new RunFailed(followUpRunId, "the human abandoned the fix", Now));
-            await session.SaveChangesAsync();
-        }
-
-        await NewEngine(store).PollOnceAsync(CancellationToken.None);
-
         Directory.EnumerateDirectories(archiveRoot).Should().BeEmpty(
-            "once the run reaches its own terminal state, the reopened task is free to move back");
+            "the moment the run stops being live it is safe to move the directory back — the run's own " +
+            "consumers now resolve wherever it actually sits rather than trusting a stale recorded path");
         LiveTaskDirectories(tasksRoot).Should().ContainSingle(
-            "the reopened task must move back out now that its run is genuinely done with the directory");
+            "the reopened task's needs-you park must surface at the top level of tasks/, not stay " +
+            "hidden inside tasks/_archive/ for the rest of its follow-up review loop");
     }
 
     [Fact]
@@ -1080,6 +1070,63 @@ public sealed class ProjectHomeRenderEngineTests(PostgresFixture postgres) : ICl
 
         LiveTaskDirectories(tasksRoot).Should().BeEmpty("the run has stopped, so the abandoned task can archive now");
         Directory.EnumerateDirectories(archiveRoot).Should().ContainSingle();
+    }
+
+    [Fact]
+    public async Task An_abandoned_task_whose_run_is_permanently_parked_archives_instead_of_waiting_forever()
+    {
+        // Adversarial review, backlog 51 cycle 5: nothing un-parks a run once its task is
+        // abandoned — h9k pr resolve refuses a task that is not Claimed and the retry sweep does
+        // the same, so a run left ReviewParked or BudgetParked when its task is abandoned will
+        // never reach a terminal state on its own. Requiring IsTerminal (cycle 4) left a task like
+        // this stranded at the top level of tasks/ forever, the opposite of what this rule exists
+        // to do. RunState.IsLive is the right bar: a parked run has no active process that could
+        // race a directory move, and every daemon-side reader of a run's directory now resolves
+        // it dynamically rather than trusting the recorded value, so nothing is stranded by moving
+        // it immediately.
+        using DocumentStore store = NewStore();
+        Guid ownerId = DomainId.New();
+        Guid projectId = DomainId.New();
+        Guid taskId = DomainId.New();
+        Guid nodeId = DomainId.New();
+        Guid runId;
+
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            RegisterProject(session, projectId, ownerId, "hall9k");
+            (TaskAggregate task, object[] lifecycle) = TaskSeed.Start(
+                TaskDecider.Add(
+                    taskId, projectId, "Task abandoned while its review park will never be resolved",
+                    ["criterion"], TaskType.Feature, null, null, null, Now, ownerId),
+                ownerId, Now);
+            List<object> taskEvents = [.. lifecycle];
+
+            TaskClaimed claimed = TaskDecider.Claim(task, nodeId, ownerId, DomainId.New(), Now);
+            task.Apply(claimed);
+            taskEvents.Add(claimed);
+            runId = task.CurrentRunId!.Value;
+
+            TaskAbandoned abandoned = TaskDecider.Abandon(task, "nobody is coming back to resolve this park", Now, ownerId);
+            taskEvents.Add(abandoned);
+
+            session.Events.StartStream<TaskAggregate>(taskId, [.. taskEvents]);
+            session.Events.StartStream<RunAggregate>(runId,
+                new RunDispatched(
+                    runId, taskId, nodeId, ownerId, task.LeaseGeneration, DomainId.New(), "/tmp/worktree",
+                    "task/abandoned-while-parked", ExecutorMode.Subscription, Now),
+                new ReviewParked(runId, "a finding was disputed", Now));
+            await session.SaveChangesAsync();
+        }
+
+        await NewEngine(store).PollOnceAsync(CancellationToken.None);
+
+        string tasksRoot = ProjectHomePaths.TasksDirectory(_home);
+        string archiveRoot = ProjectHomePaths.ArchivedTasksDirectory(_home);
+        LiveTaskDirectories(tasksRoot).Should().BeEmpty(
+            "the run is parked, not live, and nothing will ever un-park an abandoned task's run — " +
+            "waiting for its terminal state would wait forever");
+        string archivedDirectory = Directory.EnumerateDirectories(archiveRoot).Should().ContainSingle().Subject;
+        File.ReadAllText(Path.Combine(archivedDirectory, "task.md")).Should().Contain("state: Abandoned");
     }
 
     [Fact]

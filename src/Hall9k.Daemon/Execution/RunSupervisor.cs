@@ -403,9 +403,10 @@ public sealed class RunSupervisor(
             return ThreadDisputeOutcome.Stale;
         }
 
+        string runDirectory = RunPaths.ResolveCurrentDirectory(run.RunDirectory);
         string disputeFilePath = isRebaseDispute
-            ? RunPaths.RebaseConflictDisputeFile(run.RunDirectory)
-            : RunPaths.ReviewThreadDisputeFile(run.RunDirectory);
+            ? RunPaths.RebaseConflictDisputeFile(runDirectory)
+            : RunPaths.ReviewThreadDisputeFile(runDirectory);
         await WriteDisputePositionAsync(disputeFilePath, result.Summary, cancellationToken);
         string reason = isRebaseDispute
             ? "A follow-up could not honestly resolve a rebase conflict — both sides changed the same "
