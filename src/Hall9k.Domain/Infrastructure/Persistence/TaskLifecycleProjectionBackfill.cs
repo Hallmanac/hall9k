@@ -38,12 +38,33 @@ public static class TaskLifecycleProjectionBackfill
     /// have the earlier ones; the alternation is parenthesised so it stays one predicate
     /// whatever Marten conjoins it with. Written as jsonb_exists rather than the <c>?</c>
     /// operator because <c>?</c> is Marten's parameter placeholder.
+    /// <para>
+    /// Markers here apply to both <see cref="TaskListItem"/> and <see cref="TaskDetails"/>: every
+    /// field named below exists on both projections' current shape. A marker for a field only one
+    /// of the two carries belongs on <see cref="StaleDetailsOnlyDocument"/> instead — mixing it in
+    /// here would make the OTHER document type read as permanently stale, since a key that
+    /// projection never writes at all is indistinguishable from one an old document is merely
+    /// missing.
+    /// </para>
     /// </summary>
     private const string StaleDocument =
         "(not jsonb_exists(d.data, 'assignedOwnerId')"               // pre-lifecycle-split (log #34)
         + " or not jsonb_exists(d.data, 'deadDependencyReasons')"    // pre-blocker-recovery (log #61)
         + " or not jsonb_exists(d.data, 'assignedAt')"               // pre-concurrency-ceiling (log #64)
         + " or not jsonb_exists(d.data, 'failureReason'))";          // pre-status-redesign (log #66)
+
+    /// <summary>
+    /// <see cref="StaleDocument"/>'s markers, plus the fields <see cref="TaskDetails"/> alone
+    /// carries (backlog 51): <see cref="TaskDetails.FailedRunId"/> and
+    /// <see cref="TaskDetails.ResolvedRunId"/> exist only on the detail document, since only the
+    /// daemon's project-home render sweep reads them, so a document written before either landed
+    /// never had the key and would otherwise sit un-archived at the top level of <c>tasks/</c>
+    /// forever, indistinguishable from a task genuinely still live.
+    /// </summary>
+    private const string StaleDetailsOnlyDocument =
+        "(" + StaleDocument
+        + " or not jsonb_exists(d.data, 'failedRunId')"
+        + " or not jsonb_exists(d.data, 'resolvedRunId'))";
 
     /// <summary>
     /// Rebuilds every task stream still carrying an out-of-date document and returns the ids it
@@ -127,7 +148,7 @@ public static class TaskLifecycleProjectionBackfill
             .Select(task => task.Id)
             .ToListAsync(cancellationToken);
         IReadOnlyList<Guid> details = await session.Query<TaskDetails>()
-            .Where(task => task.MatchesSql(StaleDocument))
+            .Where(task => task.MatchesSql(StaleDetailsOnlyDocument))
             .Select(task => task.Id)
             .ToListAsync(cancellationToken);
 

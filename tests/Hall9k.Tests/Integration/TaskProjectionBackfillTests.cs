@@ -211,6 +211,60 @@ public sealed class TaskProjectionBackfillTests(PostgresFixture postgres) : ICla
     }
 
     /// <summary>
+    /// A document written before the tasks/_archive/ archiving rule (backlog 51) carries
+    /// ResolvedReason but no ResolvedRunId, which the render sweep's <c>IsArchived</c> compares
+    /// against the task's current run to tell "this resolve belongs to the run standing right
+    /// now" from a stale note left over from a superseded run. With the key absent, that
+    /// comparison reads null against a real run id and never matches, so the task's directory
+    /// would sit at the top level of <c>tasks/</c> forever — the same class of defect the
+    /// failureReason marker below already covers for <c>FailedRunId</c>.
+    /// </summary>
+    [Fact]
+    public async Task A_resolve_projected_before_the_archiving_rule_still_carries_its_run_id_after_the_backfill_runs()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        using DocumentStore store = NewStore();
+
+        Guid taskId = DomainId.New();
+        Guid ownerId = DomainId.New();
+        Guid runId = DomainId.New();
+        await using (IDocumentSession seed = store.LightweightSession())
+        {
+            TaskAdded added = Add(taskId, "Resolved on an attestation, projected before the archiving rule");
+            (TaskAggregate task, object[] lifecycle) = TaskSeed.Start(added, ownerId, Now);
+            TaskClaimed claimed = TaskDecider.Claim(task, DomainId.New(), ownerId, runId, Now);
+            task.Apply(claimed);
+            TaskFailed failed = TaskDecider.Fail(task, runId, "the run failed", Now.AddMinutes(1));
+            task.Apply(failed);
+            TaskResolved resolved = TaskDecider.Resolve(
+                task, "merged by hand", null, Now.AddMinutes(2), ownerId);
+            seed.Events.StartStream<TaskAggregate>(taskId, [.. lifecycle, claimed, failed, resolved]);
+            await seed.SaveChangesAsync(cts.Token);
+        }
+
+        await StripKeyAsync(taskId, "resolvedRunId", ["mt_doc_taskdetails"], cts.Token);
+
+        await using (IQuerySession query = store.QuerySession())
+        {
+            TaskDetails stale = (await query.LoadAsync<TaskDetails>(taskId, cts.Token))!;
+            stale.ResolvedRunId.Should().BeNull(
+                "the pre-archiving-rule document never wrote this key at all");
+        }
+
+        (await TaskLifecycleProjectionBackfill.RunAsync(store, cts.Token)).Should().Equal(
+            [taskId], "the missing key is a staleness marker, so the window closes at the next daemon start");
+
+        await using (IQuerySession query = store.QuerySession())
+        {
+            TaskDetails details = (await query.LoadAsync<TaskDetails>(taskId, cts.Token))!;
+            details.ResolvedRunId.Should().Be(
+                runId, "the stream always said which run this attestation belongs to");
+            details.CurrentRunId.Should().Be(
+                runId, "and it is this task's current run, which is what IsArchived actually compares against");
+        }
+    }
+
+    /// <summary>
     /// A task Blocked on two blockers, both recorded dead, written through the same deciders the
     /// resolver uses. The blockers themselves need no streams here: what is under test is the
     /// dependent's document, and the records that hold it live on the dependent's own stream.
