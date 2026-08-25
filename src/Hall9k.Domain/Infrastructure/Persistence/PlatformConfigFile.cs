@@ -214,7 +214,24 @@ public static class PlatformConfigFile
             return new JsonObject();
         }
 
-        string text = await File.ReadAllTextAsync(Hall9kDatabase.ConfigFile, cancellationToken);
+        string text;
+        try
+        {
+            text = await File.ReadAllTextAsync(Hall9kDatabase.ConfigFile, cancellationToken);
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            // The same case PlatformConfigFileSource guards on the daemon side (a file this
+            // account cannot read — sudo-created, or chmod'd by another user on a shared box):
+            // reported as a document-level failure rather than left to escape as a raw
+            // exception, so a caller that only wants to describe the file (h9k config show,
+            // h9k daemon status) degrades the same way the daemon itself does instead of dying
+            // on an unhandled stack trace.
+            throw new DomainValidationException(
+                $"The platform config file ({Hall9kDatabase.ConfigFile}) could not be read "
+                + $"({exception.Message}). Fix its permissions, then try again.");
+        }
+
         JsonNode? parsed;
         try
         {
