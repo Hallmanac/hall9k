@@ -292,7 +292,16 @@ public sealed class WindowsDaemonAutostart : IDaemonAutostart
     /// <summary>
     /// The task definition XML <c>schtasks /Create /XML</c> registers. A LogonTrigger with
     /// an InteractiveToken principal (Decisions Log #3: the daemon runs as the signed-in
-    /// user, never as a service identity); RestartOnFailure mirrors launchd's KeepAlive
+    /// user, never as a service identity). The trigger names the enabling user explicitly
+    /// via <c>UserId</c> — <c>Get-ScheduledTask</c>'s own documentation is blunt that
+    /// omitting it means "fire at any user's logon", not "fire at the registering user's",
+    /// and the macOS equivalent (a per-user LaunchAgent) has no such any-user mode to
+    /// accidentally match. Left unset, a second local account logging on would fire the
+    /// trigger, Task Scheduler would try to run the action under that account's own
+    /// interactive token per the Principal above, and — since the launch script and
+    /// captured PATH belong to the enabling user, not this one — the run would fail
+    /// repeatedly and burn <c>RestartOnFailure</c>'s budget without ever starting the
+    /// enabling user's own daemon. RestartOnFailure mirrors launchd's KeepAlive
     /// SuccessfulExit=false (restart only after a crash, never after h9kd's own clean
     /// exit); ExecutionTimeLimit is set to PT0S (unlimited) because Task Scheduler's
     /// default of 72 hours would otherwise kill a daemon meant to run indefinitely.
@@ -320,6 +329,7 @@ public sealed class WindowsDaemonAutostart : IDaemonAutostart
     internal static string TaskXmlContent()
     {
         string arguments = SecurityElement.Escape($"//B \"{LaunchScriptFile}\"");
+        string userId = SecurityElement.Escape(CurrentUserId());
 
         return $"""
             <?xml version="1.0" encoding="UTF-16"?>
@@ -330,6 +340,7 @@ public sealed class WindowsDaemonAutostart : IDaemonAutostart
               <Triggers>
                 <LogonTrigger>
                   <Enabled>true</Enabled>
+                  <UserId>{userId}</UserId>
                 </LogonTrigger>
               </Triggers>
               <Principals>
@@ -359,6 +370,18 @@ public sealed class WindowsDaemonAutostart : IDaemonAutostart
 
             """.ReplaceLineEndings("\n");
     }
+
+    /// <summary>
+    /// The identity <see cref="TaskXmlContent"/>'s LogonTrigger names via <c>UserId</c> —
+    /// <c>DOMAIN\User</c> (or <c>MachineName\User</c> for a local account), the same form
+    /// Task Scheduler accepts and displays for a trigger scoped to one user rather than
+    /// every user's logon. <see cref="Environment.UserDomainName"/>/<see cref="Environment.UserName"/>
+    /// rather than <c>WindowsIdentity.GetCurrent()</c>: both resolve to this same identity on
+    /// Windows, but the former runs on every platform without throwing, which several of
+    /// this file's own tests (<c>WindowsDaemonAutostartTests</c>) depend on by calling
+    /// <see cref="TaskXmlContent"/> unconditionally on every CI leg, not just Windows's.
+    /// </summary>
+    private static string CurrentUserId() => $@"{Environment.UserDomainName}\{Environment.UserName}";
 
     /// <summary>
     /// The VBScript <see cref="EnableAsync"/> writes to <see cref="LaunchScriptFile"/> and the

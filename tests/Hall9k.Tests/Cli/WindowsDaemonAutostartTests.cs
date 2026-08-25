@@ -30,6 +30,23 @@ public sealed class WindowsDaemonAutostartTests
     }
 
     [Fact]
+    public void The_logon_trigger_names_the_enabling_user_rather_than_firing_at_any_logon()
+    {
+        // Get-ScheduledTask's own documentation is explicit that an omitted UserId on a
+        // LogonTrigger means "fire at any user's logon" — a second local account signing
+        // in would then fire the trigger, Task Scheduler would try to run the action under
+        // an interactive token that account does not have (the Principal above has no
+        // UserId of its own either, so it resolves to whoever registers the task), and
+        // RestartOnFailure would burn its budget on a run that could never succeed while
+        // never starting the enabling user's own daemon.
+        string xml = WindowsDaemonAutostart.TaskXmlContent();
+
+        xml.Should().Contain($@"{System.Environment.UserDomainName}\{System.Environment.UserName}");
+        int logonTriggerEnd = xml.IndexOf("</LogonTrigger>", StringComparison.Ordinal);
+        xml[..logonTriggerEnd].Should().Contain("<UserId>", "the trigger must name a user, not fire at every logon");
+    }
+
+    [Fact]
     public void The_task_only_restarts_on_a_nonzero_exit()
     {
         string xml = WindowsDaemonAutostart.TaskXmlContent();
