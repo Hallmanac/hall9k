@@ -147,6 +147,34 @@ public sealed class PlatformConfigFileSourceTests : IDisposable
     }
 
     /// <summary>
+    /// <c>JsonConfigurationFileParser</c> parses with comments skipped and trailing commas
+    /// allowed, so this pre-parse guard must accept exactly what it accepts — a stricter guard
+    /// would report a file the daemon's own parser loads fine as "not valid JSON". Origin: the
+    /// cycle-2 pre-PR review found <see cref="JsonDocument.Parse(string)"/>'s default (strict)
+    /// options used here instead.
+    /// </summary>
+    [Fact]
+    public async Task A_config_file_with_a_comment_and_a_trailing_comma_is_not_rejected()
+    {
+        await File.WriteAllTextAsync(
+            Hall9kDatabase.ConfigFile,
+            """
+            {
+                "hall9k": {
+                    "maxConcurrentAgentSessions": 4, // laptop OOMs above 4
+                },
+            }
+            """);
+        ConfigurationBuilder builder = new();
+        builder.AddEnvironmentVariables();
+
+        Action insert = () => PlatformConfigFileSource.Insert(builder);
+
+        insert.Should().NotThrow();
+        Bind(builder).MaxConcurrentAgentSessions.Should().Be(4);
+    }
+
+    /// <summary>
     /// Valid JSON with a non-object root (an array, a bare string, a bare number) passes
     /// <c>JsonDocument.Parse</c>, so a guard that only catches <see cref="System.Text.Json.JsonException"/>
     /// lets it through to <c>JsonConfigurationFileParser</c>, which throws a raw

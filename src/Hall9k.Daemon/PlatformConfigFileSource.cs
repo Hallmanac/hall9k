@@ -47,7 +47,8 @@ public static class PlatformConfigFileSource
 
         try
         {
-            using JsonDocument document = JsonDocument.Parse(File.ReadAllText(Hall9kDatabase.ConfigFile));
+            using JsonDocument document = JsonDocument.Parse(
+                File.ReadAllText(Hall9kDatabase.ConfigFile), PlatformConfigFile.LenientDocumentOptions);
             if (document.RootElement.ValueKind != JsonValueKind.Object)
             {
                 Console.Error.WriteLine(

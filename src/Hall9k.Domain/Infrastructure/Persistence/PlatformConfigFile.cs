@@ -19,6 +19,22 @@ public static class PlatformConfigFile
 {
     private const string SectionName = "hall9k";
 
+    /// <summary>
+    /// The exact leniency <c>Microsoft.Extensions.Configuration.Json</c>'s own
+    /// <c>JsonConfigurationFileParser</c> parses this file with (comments skipped, trailing
+    /// commas allowed) — shared with <see cref="Hall9k.Daemon.PlatformConfigFileSource"/>'s
+    /// pre-parse guard so neither it nor this type's own duplicate-key check ever rejects a file
+    /// the daemon's real parser would load fine. Origin: the cycle-2 pre-PR review found both
+    /// <see cref="JsonDocument.Parse(string, JsonDocumentOptions)"/> calls here and the daemon's
+    /// used the strict default options, refusing a commented or trailing-comma-terminated file
+    /// as "not valid JSON" when the daemon's own parser would have loaded it without complaint.
+    /// </summary>
+    public static readonly JsonDocumentOptions LenientDocumentOptions = new()
+    {
+        CommentHandling = JsonCommentHandling.Skip,
+        AllowTrailingCommas = true,
+    };
+
     private static readonly JsonSerializerOptions SerializerOptions = new()
     {
         WriteIndented = true,
@@ -67,16 +83,68 @@ public static class PlatformConfigFile
         }
         catch (DomainValidationException exception)
         {
-            return ConfigFileReadResult.Failed(exception.Message, daemonFailsToStart: false);
+            return ConfigFileReadResult.Failed(exception.Message);
         }
 
         try
         {
             return ConfigFileReadResult.Ok(DeserializeSectionCore(document));
         }
+        catch (JsonException exception) when (DaemonFailsToStartOn(exception))
+        {
+            return ConfigFileReadResult.DaemonCrashes(ShapeErrorMessage(exception));
+        }
         catch (JsonException exception)
         {
-            return ConfigFileReadResult.Failed(ShapeErrorMessage(exception), DaemonFailsToStartOn(exception));
+            // ConfigurationBinder does not crash on this shape: it has no conversion for the
+            // affected leaf, so it silently leaves that one property at its default while
+            // binding every sibling key normally. The diagnosis has to recover the same siblings
+            // rather than discarding the whole section, or a healthy maxConcurrentAgentSessions
+            // sitting next to a malformed modelByRole would be reported as skipped too.
+            return ConfigFileReadResult.SettingIgnored(RecoverSectionIgnoring(document, exception), ShapeErrorMessage(exception));
+        }
+    }
+
+    /// <summary>
+    /// Re-deserializes the section with the one top-level property named by
+    /// <paramref name="exception"/>'s <see cref="JsonException.Path"/> removed first, so every
+    /// other property still binds — the same tolerance <c>ConfigurationBinder</c> itself has for
+    /// a leaf it cannot convert. <see cref="JsonException.Path"/> always starts with the failing
+    /// top-level property (<c>$.modelByRole</c>, or <c>$.modelByRole.build</c> for a mismatch
+    /// nested inside it), so taking only the first segment after <c>$.</c> is enough to name it
+    /// regardless of how deep the actual mismatch sits.
+    /// </summary>
+    private static OperatingSettings RecoverSectionIgnoring(JsonObject document, JsonException exception)
+    {
+        if (Section(document) is not { } section)
+        {
+            return new();
+        }
+
+        string? failingProperty = exception.Path?.Split('.', 3) is [_, { Length: > 0 } name, ..] ? name : null;
+        JsonObject recovery = (JsonObject)section.DeepClone();
+        if (failingProperty is not null)
+        {
+            foreach (string key in recovery.Select(property => property.Key).ToList())
+            {
+                if (string.Equals(key, failingProperty, StringComparison.OrdinalIgnoreCase))
+                {
+                    recovery.Remove(key);
+                }
+            }
+        }
+
+        try
+        {
+            OperatingSettings settings = recovery.Deserialize<OperatingSettings>(SerializerOptions) ?? new();
+            settings.ModelByRole ??= new();
+            return settings;
+        }
+        catch (JsonException)
+        {
+            // A second malformed leaf beyond the one already being ignored: fall back to nothing
+            // recovered rather than looping, the same conservative outcome as before this fix.
+            return new();
         }
     }
 
@@ -235,7 +303,7 @@ public static class PlatformConfigFile
         JsonNode? parsed;
         try
         {
-            parsed = JsonNode.Parse(text);
+            parsed = JsonNode.Parse(text, documentOptions: LenientDocumentOptions);
         }
         catch (JsonException)
         {
@@ -258,7 +326,7 @@ public static class PlatformConfigFile
         // silently, so it cannot tell us this happened — check the raw text instead, with the
         // same JsonDocument-based walk PlatformConfigFileSource runs on the daemon side, so a
         // file shaped like this is diagnosed identically on both.
-        using JsonDocument forDuplicateCheck = JsonDocument.Parse(text);
+        using JsonDocument forDuplicateCheck = JsonDocument.Parse(text, LenientDocumentOptions);
         if (HasCaseInsensitiveDuplicateKeys(forDuplicateCheck.RootElement))
         {
             throw new DomainValidationException(

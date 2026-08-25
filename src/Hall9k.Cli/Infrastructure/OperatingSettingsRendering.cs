@@ -21,9 +21,14 @@ public static class OperatingSettingsRendering
 
         if (report.ConfigFileProblem is { } problem)
         {
-            string consequence = problem.DaemonFailsToStart
-                ? "The daemon's own ConfigurationBinder fails on the same value, so it will crash outright at startup rather than fall back."
-                : "The daemon skips the file for this run — environment variables and built-in defaults still apply.";
+            string consequence = problem.Consequence switch
+            {
+                ConfigFileProblemConsequence.DaemonFailsToStart =>
+                    "The daemon's own ConfigurationBinder fails on the same value, so it will crash outright at startup rather than fall back.",
+                ConfigFileProblemConsequence.SettingIsIgnored =>
+                    "The daemon's own ConfigurationBinder has no conversion for this value, so it leaves just this setting at its default — every other setting in the file, and environment variables and built-in defaults, still apply.",
+                _ => "The daemon skips the file for this run — environment variables and built-in defaults still apply.",
+            };
             lines.Add($"{problem.Message} {consequence}");
         }
 
