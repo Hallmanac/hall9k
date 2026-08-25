@@ -339,13 +339,16 @@ public sealed class PlatformConfigFileTests : IDisposable
     /// too, even though <c>ConfigurationBinder</c> binds it fine. Origin: the cycle-3 pre-PR review
     /// found <see cref="PlatformConfigFile"/>'s recovery stripping the whole first path segment,
     /// so a sibling role the daemon does in fact bind was reported as unset.
+    /// <c>build</c> is given an empty object here rather than a number: <c>JsonConfigurationFileParser</c>
+    /// routes an object into nested keys instead of a leaf value, so the binder genuinely leaves it
+    /// unset, unlike a number or boolean (see the sibling test just below, which covers that case).
     /// </summary>
     [Fact]
     public async Task A_shape_mismatch_nested_inside_model_by_role_only_discards_that_one_role()
     {
         await File.WriteAllTextAsync(
             Hall9kDatabase.ConfigFile,
-            """{"hall9k": {"modelByRole": {"build": 3, "review": "sonnet"}}}""");
+            """{"hall9k": {"modelByRole": {"build": {}, "review": "sonnet"}}}""");
 
         ConfigFileReadResult result = await PlatformConfigFile.TryReadOperatingSettingsAsync(CancellationToken.None);
 
@@ -354,6 +357,64 @@ public sealed class PlatformConfigFileTests : IDisposable
         result.Settings.ModelByRole.Review.Should().Be(
             "sonnet", "ConfigurationBinder binds this sibling role fine even though build fails to convert");
         result.Settings.ModelByRole.Build.Should().BeNull();
+    }
+
+    /// <summary>
+    /// <c>JsonConfigurationFileParser</c> stringifies every JSON leaf before <c>ConfigurationBinder</c>
+    /// ever sees it, so a hand-quoted number here is a value the daemon binds and spawns on — not
+    /// one it silently ignores. Reporting it as ignored (falling back to a healthy default) would
+    /// hide that every session in this role is about to be spawned with <c>--model 3</c>. Origin:
+    /// the cycle-4 pre-PR review found this exact shape reported as <c>SettingIsIgnored</c> when
+    /// the daemon in fact binds and runs on the coerced string.
+    /// </summary>
+    [Fact]
+    public async Task A_number_given_for_a_role_model_binds_as_the_daemon_would_rather_than_being_reported_as_ignored()
+    {
+        await File.WriteAllTextAsync(
+            Hall9kDatabase.ConfigFile, """{"hall9k": {"modelByRole": {"build": 3}}}""");
+
+        ConfigFileReadResult result = await PlatformConfigFile.TryReadOperatingSettingsAsync(CancellationToken.None);
+
+        result.Problem.Should().BeNull("ConfigurationBinder binds this value fine, so there is nothing to report");
+        result.Settings.ModelByRole.Build.Should().Be("3");
+    }
+
+    /// <summary>
+    /// The same coercion as the sibling test above, for <c>defaultModel</c> rather than a role
+    /// under <c>modelByRole</c>.
+    /// </summary>
+    [Fact]
+    public async Task A_number_given_for_the_default_model_binds_as_the_daemon_would_rather_than_being_reported_as_ignored()
+    {
+        await File.WriteAllTextAsync(Hall9kDatabase.ConfigFile, """{"hall9k": {"defaultModel": 5}}""");
+
+        ConfigFileReadResult result = await PlatformConfigFile.TryReadOperatingSettingsAsync(CancellationToken.None);
+
+        result.Problem.Should().BeNull("ConfigurationBinder binds this value fine, so there is nothing to report");
+        result.Settings.DefaultModel.Should().Be("5");
+    }
+
+    /// <summary>
+    /// <c>JsonConfigurationFileParser</c> flattens an empty JSON object or array into nested keys
+    /// rather than a value at <c>maxConcurrentAgentSessions</c>'s own key, so <c>ConfigurationBinder</c>
+    /// finds nothing to convert and leaves the setting at its default — it does not crash the way
+    /// an unparseable string does. Origin: the cycle-4 pre-PR review found this shape reported as
+    /// <c>DaemonFailsToStart</c> when the daemon in fact starts normally on the built-in default.
+    /// </summary>
+    [Theory]
+    [InlineData("{}")]
+    [InlineData("[]")]
+    public async Task An_empty_container_for_the_concurrency_ceiling_is_reported_as_ignored_not_a_crash(string shape)
+    {
+        await File.WriteAllTextAsync(
+            Hall9kDatabase.ConfigFile, "{\"hall9k\": {\"maxConcurrentAgentSessions\": " + shape + "}}");
+
+        ConfigFileReadResult result = await PlatformConfigFile.TryReadOperatingSettingsAsync(CancellationToken.None);
+
+        result.Problem.Should().NotBeNull();
+        result.Problem!.Consequence.Should().Be(ConfigFileProblemConsequence.SettingIsIgnored,
+            "the daemon starts normally on the built-in default rather than crashing on this shape");
+        result.Settings.MaxConcurrentAgentSessions.Should().BeNull();
     }
 
     /// <summary>

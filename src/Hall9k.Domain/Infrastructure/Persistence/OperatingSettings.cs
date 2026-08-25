@@ -23,6 +23,7 @@ public sealed class OperatingSettings
 
     public int? MaxConcurrentAgentSessions { get; set; }
 
+    [JsonConverter(typeof(LenientModelStringJsonConverter))]
     public string? DefaultModel { get; set; }
 
     public RoleModelSettings ModelByRole { get; set; } = new();
@@ -38,16 +39,22 @@ public sealed class OperatingSettings
 /// </summary>
 public sealed class RoleModelSettings
 {
+    [JsonConverter(typeof(LenientModelStringJsonConverter))]
     public string? Build { get; set; }
 
+    [JsonConverter(typeof(LenientModelStringJsonConverter))]
     public string? Review { get; set; }
 
+    [JsonConverter(typeof(LenientModelStringJsonConverter))]
     public string? Fix { get; set; }
 
+    [JsonConverter(typeof(LenientModelStringJsonConverter))]
     public string? Synthesis { get; set; }
 
+    [JsonConverter(typeof(LenientModelStringJsonConverter))]
     public string? Refinement { get; set; }
 
+    [JsonConverter(typeof(LenientModelStringJsonConverter))]
     public string? Publication { get; set; }
 
     [JsonExtensionData]
@@ -63,4 +70,36 @@ public sealed class RoleModelSettings
         yield return (nameof(Refinement), Refinement);
         yield return (nameof(Publication), Publication);
     }
+}
+
+/// <summary>
+/// Reads a model-name leaf exactly as <c>JsonConfigurationFileParser</c> stringifies it before
+/// <c>ConfigurationBinder</c> ever sees it: a JSON string as itself, and a JSON number or boolean
+/// the same text <see cref="JsonElement.ToString()"/> renders for it ("3", "True"). Without this,
+/// a hand-quoted number or boolean here — the same mistake <see cref="OperatingSettings.MaxConcurrentAgentSessions"/>
+/// already tolerates in the other direction — is a value the daemon binds and runs on happily, but
+/// this type refused as the wrong shape, so <c>h9k config show</c> would report the setting as
+/// ignored (falling back to a healthy default) while every session using it actually fails to
+/// spawn. An object or array still throws: <c>JsonConfigurationFileParser</c> routes those into
+/// nested keys rather than a leaf value, which <see cref="PlatformConfigFile"/>'s existing
+/// shape-mismatch recovery already handles correctly for a leaf that stays this type's
+/// responsibility. Origin: the cycle-4 pre-PR review found a hand-quoted number for
+/// <c>defaultModel</c> or a role under <c>modelByRole</c> reported as merely ignored when the
+/// daemon in fact binds and spawns on the coerced value.
+/// </summary>
+internal sealed class LenientModelStringJsonConverter : JsonConverter<string?>
+{
+    public override string? Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options) =>
+        reader.TokenType switch
+        {
+            JsonTokenType.String => reader.GetString(),
+            JsonTokenType.Null => null,
+            JsonTokenType.Number => JsonElement.ParseValue(ref reader).ToString(),
+            JsonTokenType.True => bool.TrueString,
+            JsonTokenType.False => bool.FalseString,
+            _ => throw new JsonException("The JSON value could not be converted to System.String."),
+        };
+
+    public override void Write(Utf8JsonWriter writer, string? value, JsonSerializerOptions options) =>
+        writer.WriteStringValue(value);
 }

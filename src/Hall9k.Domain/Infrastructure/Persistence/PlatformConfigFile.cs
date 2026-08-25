@@ -90,7 +90,7 @@ public static class PlatformConfigFile
         {
             return ConfigFileReadResult.Ok(DeserializeSectionCore(document));
         }
-        catch (JsonException exception) when (DaemonFailsToStartOn(exception))
+        catch (JsonException exception) when (DaemonFailsToStartOn(document, exception))
         {
             return ConfigFileReadResult.DaemonCrashes(ShapeErrorMessage(exception));
         }
@@ -197,9 +197,49 @@ public static class PlatformConfigFile
     /// <c>PropertyNameCaseInsensitive</c>), and a hand-edited PascalCase key — the casing this
     /// project's own docs print — must still be recognised as the property
     /// <c>ConfigurationBinder</c> binds case-insensitively too.
+    /// <para>
+    /// The path match alone is not enough: <c>JsonConfigurationFileParser</c> flattens a JSON
+    /// object or array into nested keys rather than a value at this leaf's own key, so the binder
+    /// finds nothing to convert and leaves the property at its default — it does not throw, even
+    /// though this type's stricter deserialize does. Only a genuinely scalar value that still
+    /// fails to convert (a non-numeric string) crashes the binder for real. Origin: the cycle-4
+    /// pre-PR review found <c>{"maxConcurrentAgentSessions": {}}</c> reported as a startup crash
+    /// when the daemon in fact starts normally on the built-in default.
+    /// </para>
     /// </summary>
-    private static bool DaemonFailsToStartOn(JsonException exception) =>
-        string.Equals(exception.Path, "$.maxConcurrentAgentSessions", StringComparison.OrdinalIgnoreCase);
+    private static bool DaemonFailsToStartOn(JsonObject document, JsonException exception) =>
+        string.Equals(exception.Path, "$.maxConcurrentAgentSessions", StringComparison.OrdinalIgnoreCase)
+        && NodeAtPath(document, exception.Path) is not (JsonObject or JsonArray);
+
+    /// <summary>
+    /// Walks <paramref name="path"/> (a <see cref="JsonException.Path"/> like
+    /// <c>$.modelByRole.build</c>) into the "hall9k" section and returns the node found there, so
+    /// <see cref="DaemonFailsToStartOn"/> can tell a JSON container (routed by
+    /// <c>JsonConfigurationFileParser</c> into nested keys, never a crash) from a scalar that
+    /// simply fails to convert (a real binder crash) — the same case-insensitive walk
+    /// <see cref="RemoveFailingLeaf"/> uses to find the leaf to discard.
+    /// </summary>
+    private static JsonNode? NodeAtPath(JsonObject document, string? path)
+    {
+        if (Section(document) is not { } section)
+        {
+            return null;
+        }
+
+        string[] segments = path?.Split('.') is { Length: > 1 } parts ? parts[1..] : [];
+        JsonNode? current = section;
+        foreach (string segment in segments)
+        {
+            if (current is not JsonObject obj || FindKeyIgnoringCase(obj, segment) is not { } key)
+            {
+                return null;
+            }
+
+            current = obj[key];
+        }
+
+        return current;
+    }
 
     /// <summary>
     /// Read-modify-write under the section key: <paramref name="mutate"/> sees the settings as
