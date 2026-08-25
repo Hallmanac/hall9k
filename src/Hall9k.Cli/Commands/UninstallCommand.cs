@@ -67,7 +67,27 @@ public sealed class UninstallCommand : Hall9kAsyncCommand<UninstallCommand.Setti
             return ExitCodes.Error;
         }
 
-        bool daemonStopped = await StopDaemonAsync(cancellationToken);
+        bool daemonStopped;
+        try
+        {
+            daemonStopped = await StopDaemonAsync(cancellationToken);
+        }
+        catch (InvalidOperationException exception)
+        {
+            // WindowsDaemonAutostart.DisableAsync throws when schtasks /Delete itself fails
+            // (LaunchdDaemonAutostart's own DisableAsync never does — a missing plist is a
+            // no-op there), and this call site predates that: it runs uncaught, same as
+            // DaemonAutostartDisableCommand's identical call before that command grew its
+            // own try/catch around it. Stop here, before bin/, the PATH link, or the home
+            // are touched, rather than let a .NET stack trace stand in for this command's
+            // own summary.
+            IDaemonAutostart autostart = DaemonAutostart.ForCurrentPlatform();
+            await Console.Error.WriteLineAsync(
+                $"Autostart disable failed: the {autostart.MechanismDescription} may still be registered. "
+                + $"{exception.Message}");
+            return ExitCodes.Error;
+        }
+
         if (!daemonStopped)
         {
             // Nothing else runs: h9k itself (bin/ and the PATH link) stays in place so the
