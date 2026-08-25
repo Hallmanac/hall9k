@@ -76,6 +76,18 @@ public static class RunPaths
     /// splitting the path and checking the segment at that fixed offset can never be confused by
     /// anything the home's own path happens to contain.
     /// </para>
+    /// <para>
+    /// The fallback's existence check lands on the TASK directory (the segment three from the
+    /// end), never the run's own leaf directory (adversarial review, backlog 51 cycle 8): a run
+    /// recorded moments before the render sweep relocates its task directory out from under it
+    /// has no leaf at either the recorded path or its flipped variant yet — <c>ClaudeExecutor</c>
+    /// creates that leaf itself, after this call returns — so checking the leaf can never tell
+    /// which side is current for a run that has not been dispatched yet, and silently keeps
+    /// resolving to the side that is about to (or already did) stop existing. The task directory,
+    /// though, is what <c>HomeEntryWriter.Write</c> actually moves whole, so its presence at one
+    /// side or the other is the true signal — and checking there is strictly better even for an
+    /// already-populated run, since a moved task directory carries its run leaves along with it.
+    /// </para>
     /// </summary>
     public static string ResolveCurrentDirectory(string recordedDirectory)
     {
@@ -89,18 +101,29 @@ public static class RunPaths
         // archived: […, "tasks", "_archive", taskDirectory, "runs", runId] — five trailing segments.
         if (segments.Length >= 5 && segments[^4] == ProjectHomePaths.ArchiveDirectoryName)
         {
-            string live = string.Join(
-                Path.DirectorySeparatorChar, segments[..^4].Concat(segments[^3..]));
-            return Directory.Exists(live) ? live : recordedDirectory;
+            string liveTaskDirectory = string.Join(Path.DirectorySeparatorChar, segments[..^4].Append(segments[^3]));
+            if (!Directory.Exists(liveTaskDirectory))
+            {
+                return recordedDirectory;
+            }
+
+            return string.Join(Path.DirectorySeparatorChar, segments[..^4].Concat(segments[^3..]));
         }
 
         // live: […, "tasks", taskDirectory, "runs", runId] — four trailing segments.
         if (segments.Length >= 4 && segments[^4] == "tasks")
         {
-            string archived = string.Join(
+            string archivedTaskDirectory = string.Join(
+                Path.DirectorySeparatorChar,
+                segments[..^3].Append(ProjectHomePaths.ArchiveDirectoryName).Append(segments[^3]));
+            if (!Directory.Exists(archivedTaskDirectory))
+            {
+                return recordedDirectory;
+            }
+
+            return string.Join(
                 Path.DirectorySeparatorChar,
                 segments[..^3].Append(ProjectHomePaths.ArchiveDirectoryName).Concat(segments[^3..]));
-            return Directory.Exists(archived) ? archived : recordedDirectory;
         }
 
         return recordedDirectory;
