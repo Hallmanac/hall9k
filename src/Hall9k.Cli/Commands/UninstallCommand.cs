@@ -93,10 +93,12 @@ public sealed class UninstallCommand : Hall9kAsyncCommand<UninstallCommand.Setti
             // remedy: there would be no h9k left on this machine to run it with, and "before
             // anything is removed" (the promise the purge refusal itself makes) would already be
             // false by the time the operator read it. This gate is purge-only: on the default
-            // tier, dataTierOk is false only when a live hall9k-postgres container's `docker stop`
-            // failed, and that remedy is a bare `docker stop` an operator can run without h9k
-            // still being on the machine, so it does not block the removal below (its outcome is
-            // still folded into this run's exit code further down).
+            // tier, dataTierOk can also come back false — a live hall9k-postgres container's
+            // `docker stop` failing, or `docker ps -a` itself failing so the container's status
+            // could not even be confirmed — but every remedy those two default-tier cases print
+            // (a bare `docker stop hall9k-postgres`, or `docker ps -a --filter ...`) is a command
+            // an operator can run without h9k still being on the machine, so neither blocks the
+            // removal below (the outcome is still folded into this run's exit code further down).
             PrintSummary(settings.PurgeData, dataTierOutcome, daemonStopped: true, homeRemovalOutcome: null);
             return ExitCodes.Error;
         }
@@ -116,11 +118,11 @@ public sealed class UninstallCommand : Hall9kAsyncCommand<UninstallCommand.Setti
         // about to delete. Hashing before bin/ goes means every assembly this process could ever
         // need is loaded (or at least still on disk to load) while bin/ still exists.
         List<string> stillPresent = [];
-        IReadOnlyList<string> skillsRemoved = SkillSeeder.RemovePublished(stillPresent);
+        (IReadOnlyList<string> skillsRemoved, bool skillManifestConfirmed) = SkillSeeder.RemovePublished(stillPresent);
         stillPresent.AddRange(RemoveInstallOwnedEntries(InstallOwnedEntries(home, stillPresent)));
         bool homeFullyRemoved = stillPresent.Count == 0 && pathLinkRemoved;
 
-        ReportHomeRemoval(home, stillPresent, skillsRemoved);
+        ReportHomeRemoval(home, stillPresent, skillsRemoved, skillManifestConfirmed);
         PrintSummary(settings.PurgeData, dataTierOutcome, daemonStopped: true, homeRemovalOutcome: homeFullyRemoved);
 
         return dataTierOk && homeFullyRemoved ? ExitCodes.Ok : ExitCodes.Error;
@@ -132,7 +134,7 @@ public sealed class UninstallCommand : Hall9kAsyncCommand<UninstallCommand.Setti
     /// command a no-op. --yes is the only way past a non-interactive session: there is no
     /// terminal to ask, so silence is never read as consent.
     /// <para>
-    /// The volume named in the prompt is observed, not guessed: <see cref="ObserveMountedVolumeNameAsync"/>
+    /// The volume(s) named in the prompt are observed, not guessed: <see cref="ObserveMountedVolumeNamesAsync"/>
     /// inspects the live container the same way <see cref="HandleDataTierAsync"/> will when it
     /// actually purges, so the prompt never names a different volume than the one that ends up
     /// destroyed. A <c>docker inspect</c> is read-only, so running it here does not violate
@@ -142,11 +144,14 @@ public sealed class UninstallCommand : Hall9kAsyncCommand<UninstallCommand.Setti
     /// </summary>
     private static async Task<bool> ConfirmPurgeAsync(bool yes, ProcessRunner runner, CancellationToken cancellationToken)
     {
-        string? observedVolume = await ObserveMountedVolumeNameAsync(runner, cancellationToken);
-        string volumeClause = observedVolume is null
-            ? "its data volume, once one can be confirmed to exist — nothing is guessed at and destroyed "
-                + $"if {PostgresRuntime.ContainerName} turns out to be absent"
-            : $"its {observedVolume} data volume";
+        IReadOnlyList<string> observedVolumes = await ObserveMountedVolumeNamesAsync(runner, cancellationToken);
+        string volumeClause = observedVolumes.Count switch
+        {
+            0 => "its data volume, once one can be confirmed to exist — nothing is guessed at and destroyed "
+                + $"if {PostgresRuntime.ContainerName} turns out to be absent",
+            1 => $"its {observedVolumes[0]} data volume",
+            _ => $"its {string.Join(" and ", observedVolumes)} data volumes",
+        };
 
         AnsiConsole.MarkupLine(
             $"[red]--purge-data will destroy the {PostgresRuntime.ContainerName} container and {volumeClause}[/] "
@@ -171,32 +176,32 @@ public sealed class UninstallCommand : Hall9kAsyncCommand<UninstallCommand.Setti
 
     /// <summary>
     /// What <see cref="HandleDataTierAsync"/> will actually purge, observed the same way it
-    /// observes it: <see langword="null"/> when Docker itself cannot be asked (not running or
-    /// not installed), when <c>hall9k-postgres</c> is absent, or when it exists but has no named
-    /// volume mount to report (a bind mount, or an anonymous volume) — none of those three cases
-    /// has anything to inspect, and falling back to the bare <see cref="PostgresRuntime.VolumeName"/>
-    /// literal in any of them would be exactly the guess "never guess at unobserved facts" rules
-    /// out: that literal is also the pre-migration Aspire dev loop's own volume name (see that
-    /// property's remarks), so naming it here without having observed the container actually
-    /// mount it would assert ownership of a volume that may not be this install's at all.
+    /// observes it: empty when Docker itself cannot be asked (not running or not installed),
+    /// when <c>hall9k-postgres</c> is absent, or when it exists but has no named volume mount to
+    /// report (a bind mount, or an anonymous volume) — none of those three cases has anything to
+    /// inspect, and falling back to the bare <see cref="PostgresRuntime.VolumeName"/> literal in
+    /// any of them would be exactly the guess "never guess at unobserved facts" rules out: that
+    /// literal is also the pre-migration Aspire dev loop's own volume name (see that property's
+    /// remarks), so naming it here without having observed the container actually mount it would
+    /// assert ownership of a volume that may not be this install's at all.
     /// </summary>
-    private static async Task<string?> ObserveMountedVolumeNameAsync(ProcessRunner runner, CancellationToken cancellationToken)
+    private static async Task<IReadOnlyList<string>> ObserveMountedVolumeNamesAsync(ProcessRunner runner, CancellationToken cancellationToken)
     {
         ContainerRuntimeStatus runtime = await ContainerRuntimeProbe.RuntimeStatusAsync(runner, cancellationToken);
         if (runtime != ContainerRuntimeStatus.Running)
         {
-            return null;
+            return [];
         }
 
         (bool containerConfirmed, PostgresContainerStatus container) =
             await ContainerRuntimeProbe.Hall9kContainerStatusAsync(runner, cancellationToken);
         if (!containerConfirmed || container == PostgresContainerStatus.Absent)
         {
-            return null;
+            return [];
         }
 
-        (_, string? name) = await ContainerRuntimeProbe.DataVolumeNameAsync(runner, cancellationToken);
-        return name;
+        (_, IReadOnlyList<string> names) = await ContainerRuntimeProbe.DataVolumeNameAsync(runner, cancellationToken);
+        return names;
     }
 
     /// <summary>
@@ -262,6 +267,13 @@ public sealed class UninstallCommand : Hall9kAsyncCommand<UninstallCommand.Setti
         return stopped;
     }
 
+    // Process.Kill(entireProcessTree: true) has already asked the OS to terminate the process;
+    // this is only the wait for that termination to land. A kernel-mode wait the process cannot
+    // be interrupted out of (a hung network filesystem or driver I/O) would otherwise leave
+    // WaitForExitAsync incomplete forever, so this is bounded the same way the Unix stop path's
+    // DaemonLifecycle.StopAsync bounds its own wait (StopTimeout).
+    private static readonly TimeSpan WindowsKillTimeout = TimeSpan.FromSeconds(45);
+
     /// <summary>
     /// <see cref="ArgumentException"/> (no such process id, from
     /// <see cref="Process.GetProcessById(int)"/>) and <see cref="InvalidOperationException"/>
@@ -276,13 +288,6 @@ public sealed class UninstallCommand : Hall9kAsyncCommand<UninstallCommand.Setti
     /// "already exited" would tell the caller it is safe to go on and remove bin/, the PATH
     /// link, and Postgres out from under a daemon that is still very much alive.
     /// </summary>
-    // Process.Kill(entireProcessTree: true) has already asked the OS to terminate the process;
-    // this is only the wait for that termination to land. A kernel-mode wait the process cannot
-    // be interrupted out of (a hung network filesystem or driver I/O) would otherwise leave
-    // WaitForExitAsync incomplete forever, so this is bounded the same way the Unix stop path's
-    // DaemonLifecycle.StopAsync bounds its own wait (StopTimeout).
-    private static readonly TimeSpan WindowsKillTimeout = TimeSpan.FromSeconds(45);
-
     [SupportedOSPlatform("windows")]
     private static async Task<bool> StopWindowsDaemonIfRunningAsync(CancellationToken cancellationToken)
     {
@@ -364,10 +369,14 @@ public sealed class UninstallCommand : Hall9kAsyncCommand<UninstallCommand.Setti
 
     /// <summary>
     /// The Postgres tier: stop-never-remove by default, or destroy both container and volume
-    /// once <see cref="ConfirmPurgeAsync"/> has already consented. <c>Ok</c> is false only when
-    /// <paramref name="purgeData"/> was asked for and could not be fully carried out — the
-    /// signal <see cref="ExecuteAsync"/> uses to end the command with a nonzero exit rather
-    /// than reporting a purge as done when it was not. <c>Outcome</c> names exactly what was
+    /// once <see cref="ConfirmPurgeAsync"/> has already consented. <c>Ok</c> is false whenever
+    /// this tier could not do what it set out to do — a purge asked for and not fully carried
+    /// out, but also a default-tier `docker stop` or `docker ps -a` that itself failed — which is
+    /// the signal <see cref="ExecuteAsync"/> folds into a nonzero exit rather than reporting the
+    /// tier as clean when it was not. Only the purge case blocks the home removal that follows
+    /// (see <see cref="ExecuteAsync"/>'s own reasoning on the gate): the default tier's own
+    /// failure remedies are bare docker commands an operator can run without h9k, so its
+    /// <c>Ok: false</c> still lets that removal proceed. <c>Outcome</c> names exactly what was
     /// observed, so <see cref="PrintSummary"/> can report "the data volume is gone" only when a
     /// volume was actually observed and removed, and can avoid claiming a container was stopped
     /// or destroyed when the probe found none — never conflating "nothing was there to touch"
@@ -477,8 +486,11 @@ public sealed class UninstallCommand : Hall9kAsyncCommand<UninstallCommand.Setti
             // name for (an anonymous volume does get reported, under its generated hex name), and
             // falling back to the bare PostgresRuntime.VolumeName literal here would be the
             // identical guess the absent-container branch above refuses to make — this container
-            // is present, but that does not make the literal its volume.
-            (bool volumeConfirmed, string? volumeName) = await ContainerRuntimeProbe.DataVolumeNameAsync(runner, cancellationToken);
+            // is present, but that does not make the literal its volume. A container can mount
+            // more than one named volume, so every one it reports gets purged below — keeping
+            // only the first would destroy one volume, leave the rest sitting untouched and
+            // unreported, and still claim the whole install's data was gone.
+            (bool volumeConfirmed, IReadOnlyList<string> volumeNames) = await ContainerRuntimeProbe.DataVolumeNameAsync(runner, cancellationToken);
             if (!volumeConfirmed)
             {
                 // docker inspect itself failed — not the same fact as "no named volume mounted".
@@ -494,7 +506,7 @@ public sealed class UninstallCommand : Hall9kAsyncCommand<UninstallCommand.Setti
 
             bool containerRemoved = await ContainerRuntimeProbe.RemoveContainerAsync(runner, cancellationToken);
 
-            if (volumeName is null)
+            if (volumeNames.Count == 0)
             {
                 AnsiConsole.MarkupLine(containerRemoved
                     ? $"[red]Purged[/]: the {PostgresRuntime.ContainerName} container is gone. It had no named "
@@ -506,22 +518,40 @@ public sealed class UninstallCommand : Hall9kAsyncCommand<UninstallCommand.Setti
                 return (containerRemoved, containerRemoved ? DataTierOutcome.PurgedContainerOnly : DataTierOutcome.PurgeIncomplete);
             }
 
-            (bool volumeCheckConfirmed, bool volumeStillExists) = await ContainerRuntimeProbe.VolumeExistsAsync(
-                runner, cancellationToken, volumeName);
-            bool volumeRemoved = (volumeCheckConfirmed && !volumeStillExists)
-                || await ContainerRuntimeProbe.RemoveVolumeAsync(runner, cancellationToken, volumeName);
-            if (containerRemoved && volumeRemoved)
+            List<string> removedVolumes = [];
+            List<string> remainingVolumes = [];
+            foreach (string volumeName in volumeNames)
             {
+                (bool volumeCheckConfirmed, bool volumeStillExists) = await ContainerRuntimeProbe.VolumeExistsAsync(
+                    runner, cancellationToken, volumeName);
+                bool volumeRemoved = (volumeCheckConfirmed && !volumeStillExists)
+                    || await ContainerRuntimeProbe.RemoveVolumeAsync(runner, cancellationToken, volumeName);
+                (volumeRemoved ? removedVolumes : remainingVolumes).Add(volumeName);
+            }
+
+            if (containerRemoved && remainingVolumes.Count == 0)
+            {
+                string volumeWord = removedVolumes.Count > 1 ? "data volumes" : "data volume";
                 AnsiConsole.MarkupLine(
-                    $"[red]Purged[/]: the {PostgresRuntime.ContainerName} container and its {volumeName} "
-                    + "data volume are gone. Every task, run, and idea recorded there is gone with them.");
+                    $"[red]Purged[/]: the {PostgresRuntime.ContainerName} container and its "
+                    + $"{string.Join(" and ", removedVolumes)} {volumeWord} are gone. Every task, run, and idea "
+                    + "recorded there is gone with them.");
                 return (true, DataTierOutcome.PurgedContainerAndVolume);
             }
 
+            List<string> remedies = [];
+            if (!containerRemoved)
+            {
+                remedies.Add($"docker rm -f {PostgresRuntime.ContainerName}");
+            }
+            remedies.AddRange(remainingVolumes.Select(name => $"docker volume rm {name}"));
+
             AnsiConsole.MarkupLine(
                 $"[red]Purge incomplete[/] — {(containerRemoved ? "the container is gone" : "the container could not be removed")}, "
-                + $"{(volumeRemoved ? "the volume is gone" : $"the {volumeName} volume could not be removed")}. "
-                + $"Finish by hand: docker rm -f {PostgresRuntime.ContainerName}; docker volume rm {volumeName}");
+                + (remainingVolumes.Count > 0
+                    ? $"{string.Join(" and ", remainingVolumes)} could not be removed"
+                    : "every data volume is gone")
+                + $". Finish by hand: {string.Join("; ", remedies)}");
             return (false, DataTierOutcome.PurgeIncomplete);
         }
 
@@ -955,8 +985,14 @@ public sealed class UninstallCommand : Hall9kAsyncCommand<UninstallCommand.Setti
     /// set" as a blanket claim: <see cref="SkillSeeder.RemovePublished"/> deliberately leaves a
     /// skill alone when an operator has edited it since it was published, and a summary that
     /// says "removed" regardless would claim an outcome nobody observed.
+    /// <paramref name="skillManifestConfirmed"/> is false when the manifest exists but could not
+    /// be read this pass, the same condition <see cref="SkillPublication.ManifestUnconfirmed"/>
+    /// reports on the install side — the entire published skill set is still on disk in that
+    /// case, so the skills clause says so instead of reading the empty
+    /// <paramref name="skillsRemoved"/> as "nothing was ever published".
     /// </summary>
-    private static void ReportHomeRemoval(string home, IReadOnlyList<string> stillPresent, IReadOnlyList<string> skillsRemoved)
+    private static void ReportHomeRemoval(
+        string home, IReadOnlyList<string> stillPresent, IReadOnlyList<string> skillsRemoved, bool skillManifestConfirmed)
     {
         bool homeExistedBeforeRemoval = Directory.Exists(home);
 
@@ -975,10 +1011,13 @@ public sealed class UninstallCommand : Hall9kAsyncCommand<UninstallCommand.Setti
 
         TryRemoveIfEmpty(home);
 
-        string skillsClause = skillsRemoved.Count > 0
-            ? $"the skill set ({string.Join(", ", skillsRemoved).EscapeMarkup()})"
-            : "the skill set (nothing to remove there — none was ever published, or what is there was edited "
-                + "since and left alone)";
+        string skillsClause = !skillManifestConfirmed
+            ? "the skill set (left untouched — its manifest could not be read this pass, so a published skill "
+                + "cannot be told apart from an operator's own file; retry once whatever is holding it lets go)"
+            : skillsRemoved.Count > 0
+                ? $"the skill set ({string.Join(", ", skillsRemoved).EscapeMarkup()})"
+                : "the skill set (nothing to remove there — none was ever published, or what is there was edited "
+                    + "since and left alone)";
 
         if (!Directory.Exists(home))
         {
@@ -1071,7 +1110,9 @@ public sealed class UninstallCommand : Hall9kAsyncCommand<UninstallCommand.Setti
                         + "sitting there untouched, with its data volume exactly as you left it.",
                 DataTierOutcome.ContainerAbsent =>
                     $"[dim]Left in Docker:[/] no {PostgresRuntime.ContainerName} container was found — there was "
-                        + "nothing here to stop, and nothing here to lose.",
+                        + "nothing here to stop. This tier does not look for a data volume without a container to "
+                        + "inspect, so a volume left behind by an earlier `docker rm` was not touched either way; "
+                        + "h9k uninstall --purge-data is what finds and removes one.",
                 DataTierOutcome.ContainerAlreadyStopped or DataTierOutcome.ContainerStopped =>
                     $"[green]Left in Docker:[/] the {PostgresRuntime.ContainerName} container (stopped) and its "
                         + "data volume, untouched. Every task, run, and idea you've recorded is safe there — a "
