@@ -166,10 +166,12 @@ container and offers to start it, exactly as it would after a reboot).
 `h9k uninstall --purge-data` is the one path that destroys the container **and** its volume
 — every task, run, and idea recorded there goes with it, permanently. It names what is about
 to die and asks for confirmation before doing anything; in a non-interactive session (no
-terminal to answer the prompt) it refuses unless `--yes` is also given. This is the only
-uninstall that is a true "start from nothing" — a plain `h9k uninstall` followed by a fresh
-`h9k install` is not the stranger-installs-from-this-README scenario, because the data is
-still there waiting; `--purge-data` is.
+terminal to answer the prompt) it refuses unless `--yes` is also given. It is the only
+uninstall that destroys your recorded data — a plain `h9k uninstall` followed by a fresh
+`h9k install` reconnects to the data still waiting in Docker; `--purge-data` leaves nothing
+there to reconnect to. `config.json`, though, is never `--purge-data`'s to remove either: if
+it exists, it survives every uninstall tier, and after a purge it may still name the
+database that was just destroyed — check it before your next `h9k install` if you had one.
 
 ## Known platform gaps
 
