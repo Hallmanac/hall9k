@@ -324,6 +324,13 @@ public sealed class TaskDetailsProjection : SingleStreamProjection<TaskDetails, 
         view.FinishedAt = @event.Data.CompletedAt;
     }
 
+    // ResolvedReason is cleared here, not just carried: it is the signal
+    // ProjectHomeRenderEngine.IsArchived treats as permanent closure because no run of a
+    // resolve-only completion will ever carry RunCompleted (Decisions Log #27) — true only of
+    // the completion that just reopened. The follow-up run this starts can still complete
+    // normally, so leaving the old reason standing would archive it the moment TaskCompleted
+    // reinstates Done, ahead of the closeout monitor ever observing its merge. The events
+    // themselves still carry the original resolution, so nothing about it is lost.
     public void Apply(IEvent<TaskReopened> @event, TaskDetails view)
     {
         view.FollowUpBranch = @event.Data.Branch;
@@ -331,6 +338,7 @@ public sealed class TaskDetailsProjection : SingleStreamProjection<TaskDetails, 
         view.FollowUpReason = @event.Data.Reason;
         view.ClaimedByNodeId = null;
         view.CurrentRunId = null;
+        view.ResolvedReason = null;
         view.State = TaskState.Queued;
         view.FinishedAt = null;
     }
