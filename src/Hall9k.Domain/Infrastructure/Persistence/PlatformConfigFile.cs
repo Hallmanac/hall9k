@@ -88,7 +88,9 @@ public static class PlatformConfigFile
 
         try
         {
-            return ConfigFileReadResult.Ok(DeserializeSectionCore(document));
+            OperatingSettings settings = DeserializeSectionCore(document);
+            ApplyMaxConcurrentAgentSessionsBinderQuirk(document, settings);
+            return ConfigFileReadResult.Ok(settings);
         }
         catch (JsonException exception) when (DaemonFailsToStartOn(document, exception))
         {
@@ -130,6 +132,7 @@ public static class PlatformConfigFile
         {
             OperatingSettings settings = recovery.Deserialize<OperatingSettings>(SerializerOptions) ?? new();
             settings.ModelByRole ??= new();
+            ApplyMaxConcurrentAgentSessionsBinderQuirk(document, settings);
             return ConfigFileReadResult.SettingIgnored(settings, ShapeErrorMessage(exception));
         }
         catch (JsonException retryException) when (DaemonFailsToStartOn(document, retryException))
@@ -212,17 +215,69 @@ public static class PlatformConfigFile
     /// <c>ConfigurationBinder</c> binds case-insensitively too.
     /// <para>
     /// The path match alone is not enough: <c>JsonConfigurationFileParser</c> flattens a JSON
-    /// object or array into nested keys rather than a value at this leaf's own key, so the binder
-    /// finds nothing to convert and leaves the property at its default — it does not throw, even
-    /// though this type's stricter deserialize does. Only a genuinely scalar value that still
-    /// fails to convert (a non-numeric string) crashes the binder for real. Origin: the cycle-4
-    /// pre-PR review found <c>{"maxConcurrentAgentSessions": {}}</c> reported as a startup crash
-    /// when the daemon in fact starts normally on the built-in default.
+    /// object or a non-empty array into nested keys rather than a value at this leaf's own key,
+    /// so the binder finds nothing to convert and leaves the property at its default — it does
+    /// not throw, even though this type's stricter deserialize does. Only a genuinely scalar
+    /// value that still fails to convert (a non-numeric string), or an <em>empty</em> array,
+    /// crashes the binder for real: unlike an empty object, an empty array still gets a direct
+    /// entry at this leaf's own key (its value the empty string), so the binder does find
+    /// something to convert and fails on it. Origin: the cycle-4 pre-PR review found
+    /// <c>{"maxConcurrentAgentSessions": {}}</c> reported as a startup crash when the daemon in
+    /// fact starts normally on the built-in default; the cycle-7 review found the reverse for
+    /// <c>{"maxConcurrentAgentSessions": []}</c> — reported as merely ignored when the daemon in
+    /// fact crashes on it. Both were confirmed against the pinned binder version directly.
     /// </para>
     /// </summary>
-    private static bool DaemonFailsToStartOn(JsonObject document, JsonException exception) =>
-        string.Equals(exception.Path, "$.maxConcurrentAgentSessions", StringComparison.OrdinalIgnoreCase)
-        && NodeAtPath(document, exception.Path) is not (JsonObject or JsonArray);
+    private static bool DaemonFailsToStartOn(JsonObject document, JsonException exception)
+    {
+        if (!string.Equals(exception.Path, "$.maxConcurrentAgentSessions", StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        return NodeAtPath(document, exception.Path) switch
+        {
+            JsonObject => false,
+            JsonArray array => array.Count == 0,
+            _ => true,
+        };
+    }
+
+    /// <summary>
+    /// <c>ConfigurationBinder</c> does not merely skip an explicit JSON <c>null</c> or an empty
+    /// object <c>{}</c> at this one leaf the way it skips every other shape mismatch here: because
+    /// <see cref="OperatingSettings.MaxConcurrentAgentSessions"/> mirrors a non-nullable
+    /// <c>int</c> on the daemon's own <c>DaemonOptions</c>, there is no null to assign, so the
+    /// binder's explicit-value handling resolves it to <see langword="default"/> — zero — rather
+    /// than leaving the property untouched at its built-in default of three. Reporting "ignored,
+    /// default (3) still applies" for either shape would tell an operator the daemon dispatches
+    /// at full concurrency when it has in fact floored itself to exactly one running session
+    /// (<see cref="OperatingSettingsResolver"/>'s own sub-1 warning depends on this method leaving
+    /// the value at zero rather than null, so it fires instead of staying silent). Every other
+    /// object or array shape here — a non-empty object, a non-empty array — genuinely is left
+    /// alone by the binder and must not be zeroed. Confirmed against the pinned binder version
+    /// directly rather than inferred. Origin: cycle-7 pre-PR review.
+    /// </summary>
+    private static void ApplyMaxConcurrentAgentSessionsBinderQuirk(JsonObject document, OperatingSettings settings)
+    {
+        if (Section(document) is not { } section
+            || FindKeyIgnoringCase(section, "maxConcurrentAgentSessions") is not { } key)
+        {
+            return;
+        }
+
+        bool bindsToZero = section[key] switch
+        {
+            null => true,
+            JsonObject { Count: 0 } => true,
+            _ => false,
+        };
+
+        if (bindsToZero)
+        {
+            settings.MaxConcurrentAgentSessions = 0;
+        }
+    }
 
     /// <summary>
     /// Walks <paramref name="path"/> (a <see cref="JsonException.Path"/> like

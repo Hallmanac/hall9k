@@ -395,16 +395,65 @@ public sealed class PlatformConfigFileTests : IDisposable
     }
 
     /// <summary>
-    /// <c>JsonConfigurationFileParser</c> flattens an empty JSON object or array into nested keys
-    /// rather than a value at <c>maxConcurrentAgentSessions</c>'s own key, so <c>ConfigurationBinder</c>
-    /// finds nothing to convert and leaves the setting at its default — it does not crash the way
-    /// an unparseable string does. Origin: the cycle-4 pre-PR review found this shape reported as
-    /// <c>DaemonFailsToStart</c> when the daemon in fact starts normally on the built-in default.
+    /// <c>JsonConfigurationFileParser</c> flattens an empty JSON object into nested keys rather
+    /// than a value at <c>maxConcurrentAgentSessions</c>'s own key, so <c>ConfigurationBinder</c>
+    /// finds nothing to convert there — it does not crash the way an unparseable string does. But
+    /// unlike every other shape this method reports as merely ignored, the binder does not leave
+    /// the setting at its built-in default of three either: because the property mirrors a
+    /// non-nullable <c>int</c> on the daemon side, its explicit-value handling resolves an object
+    /// with no children to zero. Origin: the cycle-4 pre-PR review found this shape reported as
+    /// <c>DaemonFailsToStart</c> when the daemon in fact starts (though not on the default); the
+    /// cycle-7 review found the reported settings still claimed the healthy default of three when
+    /// the daemon actually floors dispatch to one running session. Both confirmed against the
+    /// pinned binder version directly.
+    /// </summary>
+    [Fact]
+    public async Task An_empty_object_for_the_concurrency_ceiling_is_reported_as_ignored_but_binds_to_zero()
+    {
+        await File.WriteAllTextAsync(
+            Hall9kDatabase.ConfigFile, """{"hall9k": {"maxConcurrentAgentSessions": {}}}""");
+
+        ConfigFileReadResult result = await PlatformConfigFile.TryReadOperatingSettingsAsync(CancellationToken.None);
+
+        result.Problem.Should().NotBeNull();
+        result.Problem!.Consequence.Should().Be(ConfigFileProblemConsequence.SettingIsIgnored,
+            "the daemon starts normally on this shape rather than crashing");
+        result.Settings.MaxConcurrentAgentSessions.Should().Be(0,
+            "ConfigurationBinder's explicit-value handling resolves a childless object to zero for a "
+            + "non-nullable int property, not to the type's declared default of three");
+    }
+
+    /// <summary>
+    /// Unlike an empty object, an empty JSON array still gets a direct entry at
+    /// <c>maxConcurrentAgentSessions</c>'s own key (the empty string), so <c>ConfigurationBinder</c>
+    /// does find something to convert there and fails on it exactly like an unparseable string
+    /// does — the daemon crashes at startup. Origin: the cycle-7 pre-PR review found this shape
+    /// reported as merely ignored (falling back to a healthy default) when the daemon in fact
+    /// never starts. Confirmed against the pinned binder version directly.
+    /// </summary>
+    [Fact]
+    public async Task An_empty_array_for_the_concurrency_ceiling_is_reported_as_a_daemon_crash()
+    {
+        await File.WriteAllTextAsync(
+            Hall9kDatabase.ConfigFile, """{"hall9k": {"maxConcurrentAgentSessions": []}}""");
+
+        ConfigFileReadResult result = await PlatformConfigFile.TryReadOperatingSettingsAsync(CancellationToken.None);
+
+        result.Problem.Should().NotBeNull();
+        result.Problem!.Consequence.Should().Be(ConfigFileProblemConsequence.DaemonFailsToStart,
+            "an empty array still gets a direct leaf value (the empty string), which fails to convert to int "
+            + "exactly like an unparseable string does");
+    }
+
+    /// <summary>
+    /// A non-empty object or array is what the cycle-4 fix actually covers: <c>ConfigurationBinder</c>
+    /// finds children under this key instead of a leaf value, so it leaves the property alone —
+    /// genuinely at its built-in default of three, unlike the empty-object shape above.
     /// </summary>
     [Theory]
-    [InlineData("{}")]
-    [InlineData("[]")]
-    public async Task An_empty_container_for_the_concurrency_ceiling_is_reported_as_ignored_not_a_crash(string shape)
+    [InlineData("""{"anything": "goes"}""")]
+    [InlineData("[1, 2]")]
+    public async Task A_non_empty_container_for_the_concurrency_ceiling_is_reported_as_ignored_at_the_true_default(string shape)
     {
         await File.WriteAllTextAsync(
             Hall9kDatabase.ConfigFile, "{\"hall9k\": {\"maxConcurrentAgentSessions\": " + shape + "}}");
@@ -413,8 +462,34 @@ public sealed class PlatformConfigFileTests : IDisposable
 
         result.Problem.Should().NotBeNull();
         result.Problem!.Consequence.Should().Be(ConfigFileProblemConsequence.SettingIsIgnored,
-            "the daemon starts normally on the built-in default rather than crashing on this shape");
-        result.Settings.MaxConcurrentAgentSessions.Should().BeNull();
+            "the daemon starts normally on this shape rather than crashing");
+        result.Settings.MaxConcurrentAgentSessions.Should().BeNull(
+            "ConfigurationBinder finds children under this key rather than a leaf value, so it leaves the "
+            + "property genuinely untouched at its built-in default of three");
+    }
+
+    /// <summary>
+    /// An explicit JSON <c>null</c> never fails to deserialize at all — <c>int?</c> accepts it
+    /// happily — so this shape reaches none of the exception-driven classification above and needs
+    /// its own guard. <c>ConfigurationBinder</c> treats it the same way it treats an empty object:
+    /// its explicit-value handling resolves the non-nullable <c>int</c> this property mirrors on
+    /// the daemon side to zero, not to the type's declared default of three. Reporting this read as
+    /// healthy with no problem at all — which is what happens without the guard, since there is no
+    /// exception to classify — would be the same wrong-value mistake as the empty-object shape, just
+    /// with no message alongside it whatsoever. Origin: cycle-7 pre-PR review, confirmed against the
+    /// pinned binder version directly.
+    /// </summary>
+    [Fact]
+    public async Task An_explicit_null_for_the_concurrency_ceiling_binds_to_zero_with_no_exception_to_classify()
+    {
+        await File.WriteAllTextAsync(
+            Hall9kDatabase.ConfigFile, """{"hall9k": {"maxConcurrentAgentSessions": null}}""");
+
+        ConfigFileReadResult result = await PlatformConfigFile.TryReadOperatingSettingsAsync(CancellationToken.None);
+
+        result.Settings.MaxConcurrentAgentSessions.Should().Be(0,
+            "ConfigurationBinder's explicit-value handling resolves an explicit null to zero for a "
+            + "non-nullable int property, exactly as it does for an empty object");
     }
 
     /// <summary>
