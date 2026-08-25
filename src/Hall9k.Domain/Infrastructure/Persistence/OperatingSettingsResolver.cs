@@ -70,9 +70,14 @@ public static class OperatingSettingsResolver
             : new ResolvedSetting<int>(fallback, SettingOrigin.Default, null);
     }
 
+    // A set-but-empty variable (Hall9k__DefaultModel=, or a reference to another variable that
+    // expanded to nothing) still counts as set for ConfigurationBinder — it binds "" over
+    // whatever the config file holds, exactly the way ResolveInt already treats an empty
+    // MaxConcurrentAgentSessions as set-but-unparseable rather than absent. Requiring Length > 0
+    // here would report the config-file value as in force while the daemon actually runs on "".
     private static ResolvedSetting<string> ResolveString(string environmentVariable, string? configured, string fallback)
     {
-        if (Environment.GetEnvironmentVariable(environmentVariable) is { Length: > 0 } fromEnvironment)
+        if (Environment.GetEnvironmentVariable(environmentVariable) is { } fromEnvironment)
         {
             return new ResolvedSetting<string>(fromEnvironment, SettingOrigin.EnvironmentVariable, environmentVariable);
         }
@@ -84,7 +89,7 @@ public static class OperatingSettingsResolver
 
     private static ResolvedSetting<string?> ResolveOptionalString(string environmentVariable, string? configured)
     {
-        if (Environment.GetEnvironmentVariable(environmentVariable) is { Length: > 0 } fromEnvironment)
+        if (Environment.GetEnvironmentVariable(environmentVariable) is { } fromEnvironment)
         {
             return new ResolvedSetting<string?>(fromEnvironment, SettingOrigin.EnvironmentVariable, environmentVariable);
         }
