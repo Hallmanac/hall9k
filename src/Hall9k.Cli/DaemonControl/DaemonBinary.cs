@@ -10,7 +10,7 @@ namespace Hall9k.Cli.DaemonControl;
 /// </summary>
 public static class DaemonBinary
 {
-    private const string BinaryName = "h9kd";
+    private static readonly string BinaryName = OperatingSystem.IsWindows() ? "h9kd.exe" : "h9kd";
 
     public static string? Locate()
     {

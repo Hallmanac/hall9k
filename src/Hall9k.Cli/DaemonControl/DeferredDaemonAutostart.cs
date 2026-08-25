@@ -11,6 +11,8 @@ public sealed class DeferredDaemonAutostart(string notSupportedMessage) : IDaemo
 
     public string NotSupportedMessage => notSupportedMessage;
 
+    public string MechanismDescription => "not available on this platform yet";
+
     public bool IsEnabled => false;
 
     public Task<bool> IsLoadedAsync(CancellationToken cancellationToken) => Task.FromResult(false);

@@ -12,6 +12,13 @@ public interface IDaemonAutostart
     /// <summary>The teaching message printed when this platform has no implementation yet.</summary>
     string NotSupportedMessage { get; }
 
+    /// <summary>
+    /// What this platform's mechanism is called, for status and enable-confirmation
+    /// messages that would otherwise have to guess or hardcode one platform's name
+    /// (launchd LaunchAgent / Task Scheduler logon task).
+    /// </summary>
+    string MechanismDescription { get; }
+
     /// <summary>The registration exists (survives reboots), whether or not the job is loaded right now.</summary>
     bool IsEnabled { get; }
 

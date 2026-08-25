@@ -96,6 +96,15 @@ builder.Services.AddHostedService<CardPublicationLoop>();
 builder.Services.AddHostedService<ProjectHomeRenderLoop>();
 builder.Services.AddHostedService<LogRotationService>();
 
+// Windows has no SIGTERM h9k daemon stop can send to an arbitrary process (Decisions Log
+// #3, S1-14); this watcher is the graceful-stop request in its place. Never registered on
+// Unix, which keeps using a real signal, and the request file this watches for is never
+// written there either.
+if (OperatingSystem.IsWindows())
+{
+    builder.Services.AddHostedService<WindowsStopRequestWatcher>();
+}
+
 // h9k daemon stop sends SIGTERM; graceful shutdown means in-flight event appends get
 // this long to finish. Agents are detached by design and keep running — adoption on
 // the next start picks them back up (Decisions Log #2, #7).

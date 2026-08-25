@@ -36,4 +36,15 @@ public static class DaemonRuntime
     /// marker so "on demand" shows its latency cost the moment it is paid.
     /// </summary>
     public const string CatchUpMarker = "Catch-up complete";
+
+    /// <summary>
+    /// Windows has no SIGTERM a CLI can send to an arbitrary process (Decisions Log #3,
+    /// S1-14): this file is the graceful-stop request in its place. <c>h9k daemon stop</c>
+    /// writes it; the daemon polls for it (<c>WindowsStopRequestWatcher</c>) and deletes it
+    /// on the way down, the same file-based "doorbell plus poll backstop" idiom every other
+    /// daemon loop already uses, rather than the fragile Win32 console-signal dance most
+    /// remote-graceful-stop tools reach for. Unix keeps using a real SIGTERM — this path
+    /// only exists on Windows and never gets written or watched anywhere else.
+    /// </summary>
+    public static string StopRequestFile => Path.Combine(RunPaths.Root, "h9kd.stop");
 }
