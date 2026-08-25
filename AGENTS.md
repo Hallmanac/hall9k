@@ -90,8 +90,9 @@ never changes after (backlog 49): an idea captured with a project whose home alr
 its workspace under that home from the start; an idea captured with no project, or with a project
 that has no home yet, keeps its workspace at the global location permanently, even once it is
 later assigned to a project — assignment never retroactively relocates an already-materialised
-workspace. The hall9k project's own move into its default home is the separate cutover chore
-(backlog 52), so until it runs this repository is still worked from `~/Code/Hall9k_Platform`.
+workspace. The hall9k project's own move into its default home landed as that cutover chore
+(backlog 52): the project home at `~/.hall9k/projects/hall9k` is canonical, and this repository is
+worked from its `repo/dev` worktree.
 
 Ideas come before tasks (Decisions Log #35). An idea undergoes **discovery** (what is this?);
 a draft task undergoes **refinement** (how does this become executable?). A task is an idea with
@@ -166,9 +167,12 @@ CI runs build + test on ubuntu and windows for every push/PR to main.
 
 **Who this section is for.** An *interactive* Claude Code session in this repo is the
 **orchestrator window** (PLAN.md §2, §12): the conversational surface over `h9k`, driving the
-platform on a human's behalf. A *headless* session the daemon dispatched is not one. If you
-arrived with a task id, a worktree and acceptance criteria, this section is not your job; read it
-only to know what the window above you is doing, and go to the coding standards below.
+platform on a human's behalf. Since the cutover (backlog 52) landed, "this repo" is the project's
+own home, opened at `~/.hall9k/projects/hall9k/repo/dev` — the same `repo/dev` worktree shape
+every project's home takes, not a standalone checkout. A *headless* session the daemon dispatched
+is not one. If you arrived with a task id, a worktree and acceptance criteria, this section is not
+your job; read it only to know what the window above you is doing, and go to the coding standards
+below.
 
 Everything here has been done live, by one interactive session, through the whole v0 build. It is
 a record of what proved out, not a proposal.
@@ -203,9 +207,11 @@ h9k task publish <id> --assign                                      # the gate, 
 
 Three things are outside the law, because they are not platform features:
 
-- **The backlog and the planning docs.** Writing `backlog/<n>-<slug>.md`, appending a decision to
-  PLAN.md §16, amending SLICE-1.md: this is the window's own work product, and it is what a task
-  is authored *from*.
+- **The planning docs.** Appending a decision to PLAN.md §16, amending SLICE-1.md: this is the
+  window's own work product, and it is what a task is authored *from*. The in-tree `backlog/` is
+  a dogfood-era archive (see `backlog/README.md`) rather than a live target — a new backlog-shaped
+  item goes through `h9k idea add` / `h9k task add` and renders into the project home instead
+  (backlog 48).
 - **Reading anything.** Inspecting the tree, the streams, the logs, a PR diff.
 - **Unbreaking the platform when the platform is what is broken.** A daemon that will not start
   cannot dispatch the task that fixes it. Do the smallest thing that restores dispatch, then task

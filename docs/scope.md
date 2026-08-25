@@ -120,8 +120,9 @@ platform-global locations they always used — `~/.hall9k/runs/<run-id>/` and
 `~/.hall9k/ideas/<idea-id>/workspace` — when there is no home to put them under, and a stream or
 idea recorded before this shipped keeps reading from exactly where its files have always been.
 
-What is **not** here yet: the one-time relocation of the hall9k project itself into its default
-home (backlog 52).
+The hall9k project itself completed this same move into its default home (backlog 52): the
+project's home at `~/.hall9k/projects/hall9k` is canonical, and this repository is that home's
+`repo/dev` worktree.
 
 ### The help tree
 
