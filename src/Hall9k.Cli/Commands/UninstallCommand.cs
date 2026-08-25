@@ -436,6 +436,23 @@ public sealed class UninstallCommand : Hall9kAsyncCommand<UninstallCommand.Setti
                 return (true, outcome);
             }
 
+            if (notInstalled)
+            {
+                // Unlike "installed but not running" — where a real hall9k-postgres container may
+                // be sitting there unreachable — no docker binary on this machine means no docker
+                // daemon has ever run here, so there is no container and no docker-managed volume
+                // for this install to have created in the first place. docs/operations.md's
+                // native/remote-Postgres path makes this an ordinary machine, not an edge case, and
+                // refusing the whole uninstall with an unfollowable "start Docker" remedy stranded
+                // it. Proceeding (Ok: true) is the honest read of "nothing here to destroy", not a
+                // guess about what a volume contains.
+                AnsiConsole.MarkupLine(
+                    $"[dim]{reason}[/] — {PostgresRuntime.ContainerName} can only ever have run under Docker, so "
+                    + "there is no container and no data volume here for --purge-data to destroy. Proceeding "
+                    + "with the rest of the uninstall.");
+                return (true, outcome);
+            }
+
             AnsiConsole.MarkupLine(
                 $"[red]Could not purge[/]: {reason.EscapeMarkup()}, so {PostgresRuntime.ContainerName} could not "
                 + "be reached and which volume it actually mounts cannot be confirmed — a container from before "
@@ -1004,6 +1021,15 @@ public sealed class UninstallCommand : Hall9kAsyncCommand<UninstallCommand.Setti
     /// </summary>
     internal static void TryRemoveIfEmpty(string home, List<string> stillPresent)
     {
+        if (stillPresent.Contains(home, StringComparer.OrdinalIgnoreCase))
+        {
+            // Already named as still-present earlier in this same run — RetiredBinFallbacks hits
+            // the identical unreadable-home condition this method's own enumeration would hit
+            // again below. Re-deriving the same failure here would only list home a second time
+            // (ReportHomeRemoval has no way to tell the two additions apart), not add information.
+            return;
+        }
+
         if (!Directory.Exists(home))
         {
             return;
@@ -1075,10 +1101,13 @@ public sealed class UninstallCommand : Hall9kAsyncCommand<UninstallCommand.Setti
                 path => string.Equals(path, home, StringComparison.OrdinalIgnoreCase));
             bool includesManifest = stillPresent.Any(
                 path => string.Equals(path, SkillLibraryPaths.PublishedManifest, StringComparison.OrdinalIgnoreCase));
+            bool includesSkillsDirectory = stillPresent.Any(
+                path => string.Equals(path, SkillLibraryPaths.CanonicalDirectory, StringComparison.OrdinalIgnoreCase));
 
             if (stillPresent.Any(path =>
                 !string.Equals(path, home, StringComparison.OrdinalIgnoreCase)
-                && !string.Equals(path, SkillLibraryPaths.PublishedManifest, StringComparison.OrdinalIgnoreCase)))
+                && !string.Equals(path, SkillLibraryPaths.PublishedManifest, StringComparison.OrdinalIgnoreCase)
+                && !string.Equals(path, SkillLibraryPaths.CanonicalDirectory, StringComparison.OrdinalIgnoreCase)))
             {
                 AnsiConsole.MarkupLine(
                     "[dim]Still in use — most likely this very h9k, if you are running the installed binary. "
@@ -1087,12 +1116,29 @@ public sealed class UninstallCommand : Hall9kAsyncCommand<UninstallCommand.Setti
 
             if (includesHome)
             {
+                // Two different failures land home here — its contents could not be listed, or
+                // listing confirmed it empty but the directory itself could not then be unlinked
+                // — and stillPresent does not distinguish which one actually happened. Naming
+                // only the first would blame a read that had, in the second case, already
+                // succeeded, so both are named as the honest, unobserved-which-one truth rather
+                // than asserting a specific cause that was never actually confirmed.
                 AnsiConsole.MarkupLine(
-                    $"[yellow]{home.EscapeMarkup()} itself could not be confirmed empty[/] — that means its "
-                    + "contents could not even be listed (a permission problem, not necessarily a locked file), "
-                    + "and this directory can hold a project's home, its worktrees, your credentials, and "
-                    + "config.json, none of which install owns. Do not delete it by hand: fix whatever is "
-                    + "blocking the read and run h9k uninstall again.");
+                    $"[yellow]{home.EscapeMarkup()} could not be fully removed[/] — either its contents could "
+                    + "not be listed, or listing confirmed it empty but deleting it was denied (both are "
+                    + "permission problems, not necessarily a locked file), and this directory can hold a "
+                    + "project's home, its worktrees, your credentials, and config.json, none of which install "
+                    + "owns. Do not delete it by hand: fix whatever is blocking the read or the delete, and run "
+                    + "h9k uninstall again.");
+            }
+
+            if (includesSkillsDirectory)
+            {
+                AnsiConsole.MarkupLine(
+                    $"[yellow]{SkillLibraryPaths.CanonicalDirectory.EscapeMarkup()} could not be confirmed "
+                    + "empty[/] — an operator can and does write skills of their own straight into that same "
+                    + "directory, beside the published set, so its contents could not be told apart from those "
+                    + "this pass. Do not delete it by hand: fix whatever is blocking the read and run h9k "
+                    + "uninstall again.");
             }
 
             if (includesManifest)
@@ -1236,13 +1282,19 @@ public sealed class UninstallCommand : Hall9kAsyncCommand<UninstallCommand.Setti
 
         AnsiConsole.MarkupLine(dataTierOutcome switch
         {
+            DataTierOutcome.NoContainerRuntime =>
+                "[dim]Nothing to purge:[/] no container runtime (Docker) is installed on this machine, so this "
+                    + $"install never had a {PostgresRuntime.ContainerName} container or a data volume for "
+                    + "Docker to destroy.",
             DataTierOutcome.ContainerAbsent =>
                 $"[dim]Nothing to purge:[/] no {PostgresRuntime.ContainerName} container and no "
                     + $"{PostgresRuntime.VolumeName} volume were found — this install never left anything in "
                     + "Docker to destroy.",
             DataTierOutcome.PurgedContainerAndVolume =>
                 $"[red]Destroyed:[/] the {PostgresRuntime.ContainerName} container and its data volume — "
-                    + "nothing survives from this install; a fresh install starts from nothing.",
+                    + "every task, run, and idea recorded there is gone; a fresh install's database starts "
+                    + "empty. config.json, if it exists, still survives (see above) and may still name that "
+                    + "now-destroyed database — check it before your next h9k install.",
             DataTierOutcome.PurgedContainerOnly =>
                 $"[red]Destroyed:[/] the {PostgresRuntime.ContainerName} container — there was no separate "
                     + "data volume to destroy (either none was ever created, or it was mounted as a bind mount "

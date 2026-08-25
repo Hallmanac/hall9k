@@ -230,6 +230,51 @@ public sealed class UninstallCommandTests : IDisposable
     }
 
     [Fact]
+    public void An_unenumerable_home_is_named_once_not_twice_across_the_whole_removal_pass()
+    {
+        // ExecuteAsync runs InstallOwnedEntries (which sweeps RetiredBinFallbacks) and then
+        // TryRemoveIfEmpty against the very same stillPresent list, and both hit the identical
+        // unreadable-home condition independently. Before this was fixed, an unenumerable home
+        // was recorded by both, so the summary listed ~/.hall9k twice under "Could not remove
+        // everything install owns" as though it were two distinct leftovers.
+        if (OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        string home = Path.Combine(directory, "unenumerable-home");
+        Directory.CreateDirectory(home);
+        File.WriteAllText(Path.Combine(home, "h9kd.log"), "log\n");
+
+        File.SetUnixFileMode(home, UnixFileMode.UserExecute);
+        try
+        {
+            Directory.EnumerateFileSystemEntries(home).Any();
+            return;
+        }
+        catch (Exception exception) when (exception is UnauthorizedAccessException or IOException)
+        {
+            // Confirmed unenumerable — proceed with the assertion below.
+        }
+
+        try
+        {
+            List<string> stillPresent = [];
+            stillPresent.AddRange(UninstallCommand.RemoveInstallOwnedEntries(
+                UninstallCommand.InstallOwnedEntries(home, stillPresent)));
+            UninstallCommand.TryRemoveIfEmpty(home, stillPresent);
+
+            stillPresent.Count(path => string.Equals(path, home, StringComparison.OrdinalIgnoreCase))
+                .Should().Be(1, "home is one leftover, not two, no matter how many steps independently hit it");
+        }
+        finally
+        {
+            File.SetUnixFileMode(
+                home, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+        }
+    }
+
+    [Fact]
     public void Bin_old_itself_is_never_listed_twice()
     {
         // On Windows, FileSystemName's Win32-expression translation rewrites a trailing ".*"
@@ -758,6 +803,24 @@ public sealed class UninstallCommandTests : IDisposable
         ok.Should().BeTrue("nothing reachable is not a failure for the default, non-destructive tier");
         outcome.Should().Be(UninstallCommand.DataTierOutcome.NoContainerRuntime,
             "docker itself would not even start — there is no runtime installed to ask");
+    }
+
+    [Fact]
+    public async Task A_purge_on_a_machine_with_no_docker_at_all_proceeds_rather_than_refusing()
+    {
+        // docs/operations.md supports a native or remote Postgres reached via
+        // HALL9K_CONNECTION_STRING, so a machine with no docker binary is ordinary, not an edge
+        // case — and it has no container and no docker-managed volume for --purge-data to have
+        // ever created. Before this was fixed, this case refused the whole uninstall and printed
+        // "Start Docker, then run h9k uninstall --purge-data again to finish", a remedy nobody on
+        // such a machine could ever follow.
+        RecordingProcessRunner runner = RecordingProcessRunner.Unstartable(
+            new System.ComponentModel.Win32Exception("No such file or directory"));
+
+        (bool ok, UninstallCommand.DataTierOutcome outcome) = await UninstallCommand.HandleDataTierAsync(purgeData: true, runner.Runner, CancellationToken.None);
+
+        ok.Should().BeTrue("no docker runtime means no container and no volume ever existed here to purge");
+        outcome.Should().Be(UninstallCommand.DataTierOutcome.NoContainerRuntime);
     }
 
     [Fact]
