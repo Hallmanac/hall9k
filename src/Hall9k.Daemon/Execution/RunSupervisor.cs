@@ -421,13 +421,23 @@ public sealed class RunSupervisor(
             ? RunPaths.RebaseConflictDisputeFile(runDirectory)
             : RunPaths.ReviewThreadDisputeFile(runDirectory);
         await WriteDisputePositionAsync(disputeFilePath, result.Summary, cancellationToken);
+
+        // The ReviewParked appended below is itself what ends this run's liveness, which
+        // releases the reopen guard and lets the next render sweep un-archive the task
+        // directory — so the path named in the reason must be where the sweep leaves it,
+        // not where it sits the instant before (ReviewEngine.ParkedRunDirectory does the
+        // same anticipation for the identical dispute file; adversarial review, cycle 3).
+        string parkedRunDirectory = RunPaths.AnticipateDirectoryAfterSweep(runDirectory, willArchive: false);
+        string parkedDisputeFilePath = isRebaseDispute
+            ? RunPaths.RebaseConflictDisputeFile(parkedRunDirectory)
+            : RunPaths.ReviewThreadDisputeFile(parkedRunDirectory);
         string reason = isRebaseDispute
             ? "A follow-up could not honestly resolve a rebase conflict — both sides changed the same "
-              + $"behavior, not just the same lines. Conflicting files and both positions: {disputeFilePath}. "
+              + $"behavior, not just the same lines. Conflicting files and both positions: {parkedDisputeFilePath}. "
               + "Decide between them, then resolve with h9k review resolve --needs-fixes \"<your resolution>\" "
               + "— nothing has been pushed. (--merge-ready is refused here: nothing has been rebased yet.)"
             : "A follow-up disputed a review thread as a design call it cannot honestly make. "
-              + $"Both positions: {disputeFilePath}. "
+              + $"Both positions: {parkedDisputeFilePath}. "
               + "Decide between them, then resolve with h9k review resolve — nothing has been pushed.";
         session.Events.Append(runId, new ReviewParked(runId, reason, DateTimeOffset.UtcNow));
         await session.SaveChangesAsync(cancellationToken);
