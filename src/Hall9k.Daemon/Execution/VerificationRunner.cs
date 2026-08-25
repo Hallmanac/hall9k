@@ -81,10 +81,18 @@ public sealed class VerificationRunner(
             return true;
         }
 
+        // run.RunDirectory is whatever RunDispatched recorded once, at dispatch — stale for a
+        // run whose task has since crossed the tasks/_archive/ boundary (backlog 51 cycle 6):
+        // gates run well after the agent's own session ends, so the render sweep has had a
+        // chance to move the task's directory by the time this reads it. Resolved once, here,
+        // rather than at each gate: every reader of a recorded RunDirectory funnels through
+        // RunPaths.ResolveCurrentDirectory (PLAN.md §16 #83).
+        string runDirectory = RunPaths.ResolveCurrentDirectory(run.RunDirectory);
+
         foreach (VerifyCommand gate in gates)
         {
             (bool passed, string summary, bool isInfrastructureFailure, string? excerpt) =
-                await RunGateAsync(run.RunDirectory, run.WorktreePath, gate, cancellationToken);
+                await RunGateAsync(runDirectory, run.WorktreePath, gate, cancellationToken);
             if (passed)
             {
                 logger.LogInformation("Run {RunId} gate '{Gate}' passed", runId, gate.Name);
@@ -129,7 +137,7 @@ public sealed class VerificationRunner(
                 runId, gate.Name, summary);
 
             (bool retryPassed, string retrySummary, bool retryIsInfrastructureFailure, _) =
-                await RunGateAsync(run.RunDirectory, run.WorktreePath, gate, cancellationToken);
+                await RunGateAsync(runDirectory, run.WorktreePath, gate, cancellationToken);
             if (retryPassed)
             {
                 logger.LogInformation("Run {RunId} gate '{Gate}' passed on retry", runId, gate.Name);

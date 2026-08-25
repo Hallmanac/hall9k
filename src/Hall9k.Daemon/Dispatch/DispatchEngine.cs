@@ -11,6 +11,7 @@ using Hall9k.Domain.Features.Tasks.Handlers;
 using Hall9k.Domain.Features.Tasks.Projections;
 using Hall9k.Domain.Infrastructure.Ids;
 using Hall9k.Domain.Infrastructure.Persistence;
+using Hall9k.Domain.Infrastructure.Storage;
 using JasperFx.Events;
 using Marten;
 using Marten.Events;
@@ -169,7 +170,8 @@ public sealed class DispatchEngine(
                 && run is not null
                 && run.NodeId == node.NodeId
                 && (run.State == RunState.Dispatched || run.State == RunState.Running)
-                && !await RunResultFile.AlreadyWrittenAsync(run.RunDirectory, cancellationToken))
+                && !await RunResultFile.AlreadyWrittenAsync(
+                    RunPaths.ResolveCurrentDirectory(run.RunDirectory), cancellationToken))
             {
                 session.Events.Append(run.Id, new RunFailed(run.Id, LeaseExpiryFailure(lease, run), now));
             }
