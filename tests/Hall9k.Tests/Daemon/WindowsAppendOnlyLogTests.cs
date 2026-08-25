@@ -45,4 +45,31 @@ public sealed class WindowsAppendOnlyLogTests : IDisposable
         // closed — the assertion only needs the bytes on disk, not the live handle.
         File.ReadAllText(logFile).Should().Be("after the truncate\r\n");
     }
+
+    [Fact]
+    public void A_writer_appends_to_existing_content_without_inserting_a_byte_order_mark()
+    {
+        // Encoding.UTF8 carries a BOM preamble that StreamWriter only suppresses when the
+        // stream already reports Position > 0 — never true for a freshly opened
+        // FILE_APPEND_DATA handle even though it writes at end-of-file, so a naive
+        // Encoding.UTF8 writer stamps EF BB BF into the middle of an already-populated log
+        // on every daemon start. A_writer_survives_a_truncate_from_another_handle above
+        // writes before any truncation happens, so the preamble flag is already set by the
+        // time its asserted line lands — only a writer opened against pre-existing content
+        // exercises the bug this test guards against.
+        if (!OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        File.WriteAllText(logFile, "existing content\r\n");
+
+        using (StreamWriter writer = WindowsAppendOnlyLog.OpenAppendWriter(logFile))
+        {
+            writer.WriteLine("appended");
+        }
+
+        byte[] expected = System.Text.Encoding.UTF8.GetBytes("existing content\r\nappended\r\n");
+        File.ReadAllBytes(logFile).Should().Equal(expected);
+    }
 }
