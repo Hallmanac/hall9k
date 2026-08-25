@@ -48,10 +48,10 @@ public sealed class ClaudeExecutor(ILogger<ClaudeExecutor> logger) : IExecutor
                 RunPaths.StandardErrorFile(runDirectory));
 
         await File.WriteAllTextAsync(promptFile, request.Prompt, cancellationToken);
-        await File.WriteAllTextAsync(SettingsFile(request), SettingsContent, cancellationToken);
+        await File.WriteAllTextAsync(SettingsFile(request, runDirectory), SettingsContent, cancellationToken);
 
         string command =
-            $"exec {ClaudeBinary()} {string.Join(' ', Arguments(request))} " +
+            $"exec {ClaudeBinary()} {string.Join(' ', Arguments(request, runDirectory))} " +
             $"< \"{promptFile}\" " +
             $"> \"{streamFile}\" " +
             $"2> \"{standardErrorFile}\"";
@@ -96,26 +96,31 @@ public sealed class ClaudeExecutor(ILogger<ClaudeExecutor> logger) : IExecutor
     private const string SettingsContent = """{"includeCoAuthoredBy": false}""";
 
     /// <summary>
-    /// The settings file this spawn writes and hands its child. It follows the session's own
-    /// artifact name wherever there is one, because one file per run has a writer per spawn:
-    /// a review cycle dispatches its lenses back to back (log #59), and the second spawn's
-    /// truncate-and-rewrite would otherwise land inside the first child's config-loading
-    /// window, handing it an empty file and losing the trailer suppression that is the whole
-    /// point of the file. A session that owns its settings has no writer but itself.
+    /// The settings file this spawn writes and hands its child, under <paramref name="runDirectory"/>
+    /// — the value the caller already resolved once via <see cref="RunPaths.ResolveCurrentDirectory"/>,
+    /// never re-resolved here, so a render sweep that relocates the task directory mid-spawn cannot
+    /// leave the write, the <c>--settings</c> argument and each other pointed at different sides of
+    /// the move (adversarial review, backlog 51 cycle 2). It follows the session's own artifact name
+    /// wherever there is one, because one file per run has a writer per spawn: a review cycle
+    /// dispatches its lenses back to back (log #59), and the second spawn's truncate-and-rewrite
+    /// would otherwise land inside the first child's config-loading window, handing it an empty file
+    /// and losing the trailer suppression that is the whole point of the file. A session that owns
+    /// its settings has no writer but itself.
     /// </summary>
-    private static string SettingsFile(AgentSpawnRequest request)
-    {
-        string runDirectory = RunPaths.ResolveCurrentDirectory(request.RunDirectory);
-        return request.SessionArtifactName is { } session
+    private static string SettingsFile(AgentSpawnRequest request, string runDirectory) =>
+        request.SessionArtifactName is { } session
             ? RunPaths.SessionSettingsFile(runDirectory, session)
             : RunPaths.SettingsFile(runDirectory);
-    }
 
     /// <summary>
     /// Internal for the argument-policy tests: the flag set IS the policy (logs #1, #5, #33),
-    /// and it is worth asserting without spawning a process.
+    /// and it is worth asserting without spawning a process. Resolves its own run directory when
+    /// called this way, since a test constructs a request without ever having resolved one.
     /// </summary>
-    internal static IEnumerable<string> Arguments(AgentSpawnRequest request)
+    internal static IEnumerable<string> Arguments(AgentSpawnRequest request) =>
+        Arguments(request, RunPaths.ResolveCurrentDirectory(request.RunDirectory));
+
+    private static IEnumerable<string> Arguments(AgentSpawnRequest request, string runDirectory)
     {
         yield return "-p";
         yield return "--output-format stream-json";
@@ -135,7 +140,7 @@ public sealed class ClaudeExecutor(ILogger<ClaudeExecutor> logger) : IExecutor
             yield return $"--model \"{request.Model.Value}\"";
         }
 
-        yield return $"--settings \"{SettingsFile(request)}\"";
+        yield return $"--settings \"{SettingsFile(request, runDirectory)}\"";
 
         if (request.Mode.UsesBareFlag)
         {
