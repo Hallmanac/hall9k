@@ -23,7 +23,7 @@ Then:
 | [AGENTS.md](../AGENTS.md) | The contributor and agent guide: coding standards, git rules, the review rhythm, and the orchestrator-window role. `CLAUDE.md` defers to it. |
 | [SLICE-1.md](../SLICE-1.md) | The current build breakdown with acceptance criteria per slice. |
 | [HALL9K-P2P-DESIGN.md](../HALL9K-P2P-DESIGN.md) | The peer-to-peer layer: identity, discovery, NAT traversal. Design only; nothing is built. |
-| [backlog/](../backlog) | One file per unstarted piece of work. The numbered ones carry an objective and acceptance criteria in the frontmatter `h9k task add --file` reads; the `IDEA-` notes beside them are earlier-stage prose. What tasks are authored from. |
+| [backlog/](../backlog) | The dogfood-era archive: one file per pre-cutover piece of work. The numbered ones carry an objective and acceptance criteria in the frontmatter `h9k task add --file` reads; the `IDEA-` notes beside them are earlier-stage prose. New work is captured with `h9k idea add` / `h9k task add` and renders into the project home instead (backlog 48). |
 
 ## A note on how these are written
 

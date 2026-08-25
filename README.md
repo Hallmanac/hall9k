@@ -275,10 +275,12 @@ Below that sit the documents the new docs point into rather than replace:
 - **[SLICE-1.md](SLICE-1.md)** is the current build breakdown and its acceptance criteria.
 - **[HALL9K-P2P-DESIGN.md](HALL9K-P2P-DESIGN.md)** is the peer-to-peer layer: identity,
   discovery, NAT traversal. Design only; nothing is built.
-- **[backlog/](backlog/)** holds one file per unstarted piece of work. The numbered ones carry an
-  objective and acceptance criteria in the frontmatter `h9k task add --file` reads; the `IDEA-`
-  notes beside them are earlier-stage prose. It is what tasks get authored from, and it is where
-  [docs/scope.md](docs/scope.md) points when it says something is designed but unbuilt.
+- **[backlog/](backlog/)** is the dogfood-era archive: one file per pre-cutover piece of work. The
+  numbered ones carry an objective and acceptance criteria in the frontmatter `h9k task add --file`
+  reads; the `IDEA-` notes beside them are earlier-stage prose. [docs/scope.md](docs/scope.md)
+  still points into it wherever a designed-but-unbuilt item traces back to one of these files; new
+  work is captured with `h9k idea add` / `h9k task add` and renders into the project home instead
+  (backlog 48).
 
 ---
 
