@@ -126,6 +126,7 @@ public sealed class DaemonEnvironmentTests
                 new KeyValuePair<string, string>("HALL9K_CLAUDE_PATH", pinned),
             ]);
 
+            unresolved.Should().NotContain(pinned);
             unresolved.Should().NotContain("claude");
         }
         finally
