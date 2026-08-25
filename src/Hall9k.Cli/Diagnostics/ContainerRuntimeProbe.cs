@@ -83,7 +83,7 @@ public static class ContainerRuntimeProbe
     }
 
     /// <summary>Stops the container without removing it — <c>h9k uninstall</c>'s default tier
-    /// (Decisions Log #82): the data volume is never touched by a plain stop, so a later
+    /// (Decisions Log #83): the data volume is never touched by a plain stop, so a later
     /// reinstall reconnects to exactly what was there.</summary>
     public static async Task<bool> StopRunningContainerAsync(ProcessRunner runner, CancellationToken cancellationToken)
     {
@@ -93,7 +93,7 @@ public static class ContainerRuntimeProbe
     }
 
     /// <summary>Removes the container itself (not its volume) — half of <c>h9k uninstall
-    /// --purge-data</c>'s destructive tier (Decisions Log #82). <c>-f</c> so a still-running
+    /// --purge-data</c>'s destructive tier (Decisions Log #83). <c>-f</c> so a still-running
     /// container is stopped and removed in one call rather than needing the stop above first.</summary>
     public static async Task<bool> RemoveContainerAsync(ProcessRunner runner, CancellationToken cancellationToken)
     {
@@ -132,7 +132,7 @@ public static class ContainerRuntimeProbe
     }
 
     /// <summary>Removes the named data volume — the other half of <c>h9k uninstall
-    /// --purge-data</c> (Decisions Log #82), and the one call in this file that actually
+    /// --purge-data</c> (Decisions Log #83), and the one call in this file that actually
     /// destroys recorded work rather than merely pausing or starting a container. Callers check
     /// <see cref="VolumeExistsAsync"/> first: this call is not itself idempotent against an
     /// absent volume.</summary>

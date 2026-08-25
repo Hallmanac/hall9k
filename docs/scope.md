@@ -89,7 +89,19 @@ on macOS, a Windows startup task once S1-14 lands) that snapshots the environmen
 reports any tool it cannot resolve. Daemon start/stop run on macOS and Linux today; Windows has
 binaries but no daemon lifecycle yet (see Windows support, below).
 
-See [PLAN.md Decisions Log #78](../PLAN.md).
+`h9k uninstall` reverses the install without reversing the work: it stops a running daemon,
+unregisters autostart, removes the PATH link, and deletes only what `h9k install` itself wrote
+under `~/.hall9k` (bin/, the skill set, the Postgres compose file, the daemon's log and pid
+files) — never a registered project's home, `config.json` (an operator or `h9k doctor` writes
+that, never install), credentials, or the global idea/run fallback directories, which are real
+work living as siblings of those files, not the install. The
+`hall9k-postgres` Docker container is only ever stopped — its data volume is never touched,
+because the data lives in Docker rather than in the home this command trims, and a later
+`h9k install` reconnects to it. `--purge-data` is the one path that destroys the container and its
+volume too, and it names what is about to die and asks for confirmation first, refusing outright
+in a non-interactive session without an explicit `--yes`.
+
+See [PLAN.md Decisions Log #78, #83](../PLAN.md).
 
 ### The project home
 

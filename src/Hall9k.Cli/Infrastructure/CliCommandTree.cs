@@ -237,7 +237,7 @@ public static class CliCommandTree
 
         config.AddCommand<UninstallCommand>("uninstall")
             .WithDescription(
-                "Take the platform off this machine without taking the work with it (Decisions Log #82): stop a "
+                "Take the platform off this machine without taking the work with it (Decisions Log #83): stop a "
                 + "running daemon, unregister autostart, drop the PATH link, and remove everything h9k install "
                 + "itself wrote under ~/.hall9k — bin/, the skill set, logs — while leaving a registered "
                 + "project's home, config.json, your credentials, and anything else you put there untouched. The "
