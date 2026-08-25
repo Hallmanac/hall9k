@@ -1,4 +1,3 @@
-using System.Linq;
 using Hall9k.Domain.Features.Project;
 
 namespace Hall9k.Domain.Infrastructure.Storage;
