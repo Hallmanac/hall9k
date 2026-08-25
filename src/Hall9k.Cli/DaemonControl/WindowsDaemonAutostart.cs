@@ -50,6 +50,16 @@ public sealed class WindowsDaemonAutostart : IDaemonAutostart
     /// <summary>The leaf half of <see cref="TaskName"/> — see <see cref="TaskFolder"/>.</summary>
     private const string TaskLeafName = "h9kd";
 
+    /// <summary>
+    /// The persistent VBScript launcher the task action invokes through <c>wscript.exe</c>
+    /// (see <see cref="TaskXmlContent"/> and <see cref="LaunchScriptContent"/> for why a
+    /// script host stands between Task Scheduler and cmd.exe). Written by
+    /// <see cref="EnableAsync"/> before the task is registered, overwritten on every
+    /// re-enable, and best-effort deleted by <see cref="DisableAsync"/> — its lifecycle
+    /// mirrors the task's own rather than needing separate uninstall bookkeeping.
+    /// </summary>
+    private static string LaunchScriptFile => Path.Combine(RunPaths.Root, "h9kd-autostart-launch.vbs");
+
     public bool IsSupported => true;
 
     public string NotSupportedMessage => string.Empty;
@@ -89,9 +99,18 @@ public sealed class WindowsDaemonAutostart : IDaemonAutostart
         CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        string xmlPath = Path.Combine(Path.GetTempPath(), $"hall9k-h9kd-task-{Path.GetRandomFileName()}.xml");
+
+        // Written before the task is registered, so the very first logon that fires the
+        // trigger already finds a script in place — overwritten on every re-enable the same
+        // way the task registration itself is (schtasks /Create /F).
         await File.WriteAllTextAsync(
-            xmlPath, TaskXmlContent(daemonBinaryPath, DaemonRuntime.LogFile, environment), Encoding.Unicode, cancellationToken);
+            LaunchScriptFile,
+            LaunchScriptContent(daemonBinaryPath, DaemonRuntime.LogFile, environment),
+            new UTF8Encoding(encoderShouldEmitUTF8Identifier: false),
+            cancellationToken);
+
+        string xmlPath = Path.Combine(Path.GetTempPath(), $"hall9k-h9kd-task-{Path.GetRandomFileName()}.xml");
+        await File.WriteAllTextAsync(xmlPath, TaskXmlContent(), Encoding.Unicode, cancellationToken);
         try
         {
             ExecResult result = await Exec.RunAsync(
@@ -137,6 +156,18 @@ public sealed class WindowsDaemonAutostart : IDaemonAutostart
         {
             throw new InvalidOperationException(
                 $"schtasks /Delete failed (exit {result.ExitCode}): {result.StandardError}");
+        }
+
+        // Best-effort, same discipline as EnableAsync's temp XML cleanup: nothing will ever
+        // invoke this script again once the task is gone, so a delete failure here (the file
+        // open in a stuck wscript, an indexer) leaves a harmless stale copy rather than a
+        // reason to report a disable that otherwise fully succeeded as failed.
+        try
+        {
+            File.Delete(LaunchScriptFile);
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
         }
 
         if (running is null)
@@ -243,18 +274,29 @@ public sealed class WindowsDaemonAutostart : IDaemonAutostart
     /// exit); ExecutionTimeLimit is set to PT0S (unlimited) because Task Scheduler's
     /// default of 72 hours would otherwise kill a daemon meant to run indefinitely.
     /// <para>
-    /// The action is cmd.exe, not h9kd directly, for the same reason
-    /// <see cref="DaemonLifecycle.SpawnDetachedWindows"/> and the daemon's own
-    /// WindowsProcessManager both go through it: redirecting stdout/stderr to the log file
-    /// needs a real shell's <c>&gt;&gt;</c>/<c>2&gt;&amp;1</c>, and carrying the captured
-    /// environment in scoped <c>set</c> prefixes needs a shell to run them in ahead of the
-    /// real command.
+    /// The action is <c>wscript.exe</c> running <see cref="LaunchScriptFile"/>, never cmd.exe
+    /// directly: there is no Task Scheduler setting that suppresses a console window for an
+    /// action process (<c>&lt;Hidden&gt;</c> hides the task from the Task Scheduler UI, not
+    /// the window a console-subsystem action creates), and an InteractiveToken principal runs
+    /// the action on the signed-in user's own visible desktop precisely so h9kd inherits their
+    /// Claude Code/git/gh credentials, the same reason
+    /// <see cref="DaemonLifecycle.SpawnDetachedWindows"/> gives up passing
+    /// <c>CREATE_NO_WINDOW</c> the way it can for a CLI-launched daemon. cmd.exe run this way
+    /// would sit on the desktop as a visible window for the daemon's entire life, and closing
+    /// it — the obvious reaction — delivers CTRL_CLOSE_EVENT, cutting the 30s graceful-shutdown
+    /// budget down to Windows's ~5s console-close grace period. <c>wscript.exe</c> is a
+    /// Windows-subsystem host (unlike its console-subsystem sibling <c>cscript.exe</c>): it
+    /// never allocates a console for itself, and <see cref="LaunchScriptContent"/>'s
+    /// <c>WScript.Shell.Run(..., 0, True)</c> call starts cmd.exe with an explicit hidden
+    /// window style, so nothing on the desktop appears at any point in the chain.
+    /// <c>//B</c> (batch mode) additionally suppresses script-error dialogs, so a malformed
+    /// script fails silently into the log rather than popping a message box with nothing to
+    /// dismiss it.
     /// </para>
     /// </summary>
-    internal static string TaskXmlContent(
-        string daemonBinaryPath, string logFilePath, IReadOnlyList<KeyValuePair<string, string>> environment)
+    internal static string TaskXmlContent()
     {
-        string arguments = SecurityElement.Escape(CommandLine(daemonBinaryPath, logFilePath, environment));
+        string arguments = SecurityElement.Escape($"//B \"{LaunchScriptFile}\"");
 
         return $"""
             <?xml version="1.0" encoding="UTF-16"?>
@@ -286,7 +328,7 @@ public sealed class WindowsDaemonAutostart : IDaemonAutostart
               </Settings>
               <Actions Context="Author">
                 <Exec>
-                  <Command>%WINDIR%\System32\cmd.exe</Command>
+                  <Command>%WINDIR%\System32\wscript.exe</Command>
                   <Arguments>{arguments}</Arguments>
                 </Exec>
               </Actions>
@@ -296,14 +338,42 @@ public sealed class WindowsDaemonAutostart : IDaemonAutostart
     }
 
     /// <summary>
-    /// The full <c>cmd.exe /c "..."</c> command line the task action runs: every captured
+    /// The VBScript <see cref="EnableAsync"/> writes to <see cref="LaunchScriptFile"/> and the
+    /// task action (<see cref="TaskXmlContent"/>) runs through <c>wscript.exe</c> at every
+    /// logon. Its one statement hides the window <c>cmd.exe</c> would otherwise show
+    /// (<c>0</c> is <c>SW_HIDE</c>) and waits for it to exit (<c>True</c>), so the task
+    /// instance's own lifetime still tracks the daemon's, exactly as it did when cmd.exe was
+    /// the action directly — <see cref="RestartOnFailure"/> above still restarts on a nonzero
+    /// exit code from THIS wait, unchanged by the indirection.
+    /// </summary>
+    internal static string LaunchScriptContent(
+        string daemonBinaryPath, string logFilePath, IReadOnlyList<KeyValuePair<string, string>> environment)
+    {
+        string commandLine = "cmd.exe " + WindowsCommandLine.WrapForCmdExe(InnerCommand(daemonBinaryPath, logFilePath, environment));
+        return $"CreateObject(\"WScript.Shell\").Run {VbScriptStringLiteral(commandLine)}, 0, True\n";
+    }
+
+    /// <summary>
+    /// Escapes <paramref name="value"/> as a VBScript double-quoted string literal for
+    /// <see cref="LaunchScriptContent"/> — VBScript has no backslash-escape syntax, so the
+    /// only character its string literals treat specially is the quote itself, doubled.
+    /// </summary>
+    private static string VbScriptStringLiteral(string value) => "\"" + value.Replace("\"", "\"\"") + "\"";
+
+    /// <summary>
+    /// The full <c>cmd.exe /c "..."</c> command line the launch script runs: every captured
     /// variable set ahead of h9kd, scoped to this one process tree (see the type-level doc
     /// on why this is the Windows answer to launchd's per-job EnvironmentVariables dict),
     /// then h9kd itself with stdin from NUL and stdout/stderr appended to the log — wrapped
     /// for cmd.exe's own quote handling by <see cref="WindowsCommandLine"/>, the same as
-    /// every other cmd.exe invocation on this platform that carries embedded quotes.
+    /// every other cmd.exe invocation on this platform that carries embedded quotes. cmd.exe
+    /// parses its own <c>/c</c> argument with this same quirky fallback rule regardless of
+    /// what started it, so wrapping this exact string in a VBScript literal for
+    /// <c>WScript.Shell.Run</c> (which hands it to <c>CreateProcess</c> unmodified, the same
+    /// as <see cref="System.Diagnostics.ProcessStartInfo.Arguments"/> did before) needs no
+    /// change to the wrapping itself.
     /// </summary>
-    private static string CommandLine(
+    private static string InnerCommand(
         string daemonBinaryPath, string logFilePath, IReadOnlyList<KeyValuePair<string, string>> environment)
     {
         StringBuilder inner = new();
@@ -314,12 +384,12 @@ public sealed class WindowsDaemonAutostart : IDaemonAutostart
 
         inner.Append('"').Append(daemonBinaryPath).Append('"')
             .Append(" < NUL >> \"").Append(logFilePath).Append("\" 2>&1");
-        return WindowsCommandLine.WrapForCmdExe(inner.ToString());
+        return inner.ToString();
     }
 
     /// <summary>
     /// Escapes a captured environment name or value for the unquoted <c>set NAME=VALUE&amp;</c>
-    /// position in <see cref="CommandLine"/> — this text sits outside the quoted path
+    /// position in <see cref="InnerCommand"/> — this text sits outside the quoted path
     /// segments, so cmd.exe parses it as real command syntax rather than as data. Without
     /// this, a connection string password containing <c>&amp;</c> truncates the variable
     /// and runs the remainder of its own value as a command. <c>^</c> escapes the other
