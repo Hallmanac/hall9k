@@ -533,6 +533,70 @@ public sealed class ProjectHomeRenderEngineTests(PostgresFixture postgres) : ICl
     }
 
     [Fact]
+    public async Task A_task_rendered_live_before_it_closes_out_still_archives_once_it_does()
+    {
+        // Regression, adversarial review cycle 1: every real task renders live under tasks/
+        // (tasks/_archive/ does not exist yet) well before it ever reaches true closeout, unlike
+        // the fixture above, which seeds the terminal state before the very first sweep and so
+        // never exercises HomeEntryWriter.Write moving a directory INTO an archive root that does
+        // not exist on disk yet.
+        using DocumentStore store = NewStore();
+        Guid ownerId = DomainId.New();
+        Guid projectId = DomainId.New();
+        Guid taskId = DomainId.New();
+        Guid nodeId = DomainId.New();
+        const string PullRequestUrl = "https://github.com/example/hall9k/pull/4";
+
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            RegisterProject(session, projectId, ownerId, "hall9k");
+            (TaskAggregate task, object[] lifecycle) = TaskSeed.Start(
+                TaskDecider.Add(
+                    taskId, projectId, "Task that was live before it closes out", ["criterion"], TaskType.Feature,
+                    null, null, null, Now, ownerId),
+                ownerId, Now);
+            List<object> taskEvents = [.. lifecycle];
+
+            TaskClaimed claimed = TaskDecider.Claim(task, nodeId, ownerId, DomainId.New(), Now);
+            task.Apply(claimed);
+            taskEvents.Add(claimed);
+
+            session.Events.StartStream<TaskAggregate>(taskId, [.. taskEvents]);
+            await session.SaveChangesAsync();
+        }
+
+        await NewEngine(store).PollOnceAsync(CancellationToken.None);
+
+        string tasksRoot = ProjectHomePaths.TasksDirectory(_home);
+        string archiveRoot = ProjectHomePaths.ArchivedTasksDirectory(_home);
+        LiveTaskDirectories(tasksRoot).Should().ContainSingle("the task is still Working on the first sweep");
+        Directory.Exists(archiveRoot).Should().BeFalse(
+            "nothing has archived yet, so the render sweep must never have created the archive root");
+
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            TaskAggregate task = await session.Events.AggregateStreamAsync<TaskAggregate>(taskId)
+                ?? throw new InvalidOperationException("task not found");
+            Guid runId = task.CurrentRunId!.Value;
+            TaskCompleted completed = TaskDecider.Complete(task, runId, PullRequestUrl, Now);
+            session.Events.Append(taskId, completed);
+            session.Events.StartStream<RunAggregate>(runId,
+                new RunDispatched(
+                    runId, taskId, nodeId, ownerId, task.LeaseGeneration, DomainId.New(), "/tmp/worktree",
+                    "task/was-live", ExecutorMode.Subscription, Now),
+                new RunCompleted(runId, Now));
+            await session.SaveChangesAsync();
+        }
+
+        await NewEngine(store).PollOnceAsync(CancellationToken.None);
+
+        LiveTaskDirectories(tasksRoot).Should().BeEmpty(
+            "a task that has reached true closeout must not remain at the top level");
+        string archivedDirectory = Directory.EnumerateDirectories(archiveRoot).Should().ContainSingle().Subject;
+        File.ReadAllText(Path.Combine(archivedDirectory, "task.md")).Should().Contain("state: Done");
+    }
+
+    [Fact]
     public async Task An_abandoned_task_moves_into_the_archive_directory()
     {
         using DocumentStore store = NewStore();
@@ -560,6 +624,66 @@ public sealed class ProjectHomeRenderEngineTests(PostgresFixture postgres) : ICl
         LiveTaskDirectories(tasksRoot).Should().BeEmpty("abandoned is a terminal state; nothing here is still live");
         string archivedDirectory = Directory.EnumerateDirectories(archiveRoot).Should().ContainSingle().Subject;
         File.ReadAllText(Path.Combine(archivedDirectory, "task.md")).Should().Contain("state: Abandoned");
+    }
+
+    [Fact]
+    public async Task An_abandoned_task_with_a_live_run_stays_at_the_top_level_until_the_run_stops()
+    {
+        // Regression, adversarial review cycle 1: abandoning a task does not kill whatever agent
+        // is currently running for it — no daemon-side handler reacts to TaskAbandoned — so
+        // archiving unconditionally would move runs/<run-id>/ out from under a process still
+        // writing to it, exactly the hazard the true-closeout rule above already guards against.
+        using DocumentStore store = NewStore();
+        Guid ownerId = DomainId.New();
+        Guid projectId = DomainId.New();
+        Guid taskId = DomainId.New();
+        Guid nodeId = DomainId.New();
+        Guid runId;
+
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            RegisterProject(session, projectId, ownerId, "hall9k");
+            (TaskAggregate task, object[] lifecycle) = TaskSeed.Start(
+                TaskDecider.Add(
+                    taskId, projectId, "Task abandoned mid-run", ["criterion"], TaskType.Feature, null, null, null,
+                    Now, ownerId),
+                ownerId, Now);
+            List<object> taskEvents = [.. lifecycle];
+
+            TaskClaimed claimed = TaskDecider.Claim(task, nodeId, ownerId, DomainId.New(), Now);
+            task.Apply(claimed);
+            taskEvents.Add(claimed);
+            runId = task.CurrentRunId!.Value;
+
+            TaskAbandoned abandoned = TaskDecider.Abandon(task, "changed my mind", Now, ownerId);
+            taskEvents.Add(abandoned);
+
+            session.Events.StartStream<TaskAggregate>(taskId, [.. taskEvents]);
+            session.Events.StartStream<RunAggregate>(runId,
+                new RunDispatched(
+                    runId, taskId, nodeId, ownerId, task.LeaseGeneration, DomainId.New(), "/tmp/worktree",
+                    "task/abandoned-mid-run", ExecutorMode.Subscription, Now));
+            await session.SaveChangesAsync();
+        }
+
+        await NewEngine(store).PollOnceAsync(CancellationToken.None);
+
+        string tasksRoot = ProjectHomePaths.TasksDirectory(_home);
+        string archiveRoot = ProjectHomePaths.ArchivedTasksDirectory(_home);
+        LiveTaskDirectories(tasksRoot).Should().ContainSingle(
+            "the run is still live, so archiving now would move it out from under itself");
+        Directory.Exists(archiveRoot).Should().BeFalse("nothing has archived yet");
+
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            session.Events.Append(runId, new RunFailed(runId, "agent process died", Now));
+            await session.SaveChangesAsync();
+        }
+
+        await NewEngine(store).PollOnceAsync(CancellationToken.None);
+
+        LiveTaskDirectories(tasksRoot).Should().BeEmpty("the run has stopped, so the abandoned task can archive now");
+        Directory.EnumerateDirectories(archiveRoot).Should().ContainSingle();
     }
 
     [Fact]
