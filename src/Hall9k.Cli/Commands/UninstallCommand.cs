@@ -276,6 +276,13 @@ public sealed class UninstallCommand : Hall9kAsyncCommand<UninstallCommand.Setti
     /// "already exited" would tell the caller it is safe to go on and remove bin/, the PATH
     /// link, and Postgres out from under a daemon that is still very much alive.
     /// </summary>
+    // Process.Kill(entireProcessTree: true) has already asked the OS to terminate the process;
+    // this is only the wait for that termination to land. A kernel-mode wait the process cannot
+    // be interrupted out of (a hung network filesystem or driver I/O) would otherwise leave
+    // WaitForExitAsync incomplete forever, so this is bounded the same way the Unix stop path's
+    // DaemonLifecycle.StopAsync bounds its own wait (StopTimeout).
+    private static readonly TimeSpan WindowsKillTimeout = TimeSpan.FromSeconds(45);
+
     [SupportedOSPlatform("windows")]
     private static async Task<bool> StopWindowsDaemonIfRunningAsync(CancellationToken cancellationToken)
     {
@@ -302,7 +309,7 @@ public sealed class UninstallCommand : Hall9kAsyncCommand<UninstallCommand.Setti
             try
             {
                 process.Kill(entireProcessTree: true);
-                await process.WaitForExitAsync(cancellationToken);
+                await process.WaitForExitAsync(cancellationToken).WaitAsync(WindowsKillTimeout, cancellationToken);
                 AnsiConsole.MarkupLineInterpolated($"[green]Stopped[/] h9kd (pid {running.ProcessId}).");
                 return true;
             }
@@ -316,6 +323,15 @@ public sealed class UninstallCommand : Hall9kAsyncCommand<UninstallCommand.Setti
                 AnsiConsole.MarkupLine(
                     $"[yellow]Could not stop h9kd (pid {running.ProcessId})[/]: {exception.Message.EscapeMarkup()}. "
                     + $"Stop it by hand (Task Manager, or `taskkill /PID {running.ProcessId} /T /F`), then run "
+                    + "h9k uninstall again.");
+                return false;
+            }
+            catch (TimeoutException)
+            {
+                AnsiConsole.MarkupLine(
+                    $"[yellow]Could not stop h9kd (pid {running.ProcessId})[/]: it did not exit within "
+                    + $"{WindowsKillTimeout.TotalSeconds:0}s of being killed — it may be stuck in an uninterruptible "
+                    + $"wait. Stop it by hand (Task Manager, or `taskkill /PID {running.ProcessId} /T /F`), then run "
                     + "h9k uninstall again.");
                 return false;
             }
@@ -1061,6 +1077,11 @@ public sealed class UninstallCommand : Hall9kAsyncCommand<UninstallCommand.Setti
                         + "data volume, untouched. Every task, run, and idea you've recorded is safe there — a "
                         + "later h9k install reconnects to it. Run h9k uninstall --purge-data if you want that "
                         + "gone too.",
+                DataTierOutcome.ContainerStatusCheckFailed =>
+                    $"[yellow]Left in Docker, status unknown:[/] whether {PostgresRuntime.ContainerName} is "
+                        + "running, stopped, or absent could not be confirmed — see above for how to check it "
+                        + "yourself. Nothing in Docker was touched either way, so its data volume (if any) is "
+                        + "untouched and a later h9k install still reconnects to it.",
                 _ =>
                     $"[yellow]Left in Docker, still running:[/] {PostgresRuntime.ContainerName} could not be "
                         + "stopped — see above for the command to stop it by hand. Its data volume was never "
