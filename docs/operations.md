@@ -94,9 +94,18 @@ set) into the registration, because the service manager starts from its own mini
 through `PATH`. It reports any of those three that the captured environment cannot resolve, at
 enable time, where you can still fix it. Move a tool afterwards and you re-run `enable`. Only
 variables that are genuinely set are recorded; an unset one stays unset rather than being filled
-in with a plausible default. On Windows the captured variables travel as `set` prefixes scoped to
-the one `cmd.exe` invocation that then runs `h9kd`, never as a registry mutation — nothing outside
-that one task is touched.
+in with a plausible default — **except `HALL9K_CONNECTION_STRING` on Windows**, which is
+deliberately never carried into the registration even when the enabling shell has it set: unlike
+`PATH` or `HALL9K_CLAUDE_PATH`, the connection string already has a durable home once an install
+reaches this point (the platform config file, which `h9k doctor`'s start-offer writes to when
+nothing was configured yet), and embedding it in the launch script would only add a second,
+weaker plaintext copy on disk. `enable` warns at the time you'd still be able to fix it when the
+shell has the variable set but the platform config file does not otherwise supply one. `h9k
+doctor` will not fix this for you in that moment — your shell already resolves a connection
+string from the variable, so doctor reports healthy and never touches `config.json` — add
+`{"connectionString": "…"}` to `~/.hall9k/config.json` by hand instead. On Windows the captured
+variables travel as `set` prefixes scoped to the one `cmd.exe` invocation that then runs `h9kd`,
+never as a registry mutation — nothing outside that one task is touched.
 
 A launchd- or Task-Scheduler-owned daemon restarts after a crash but never after a clean stop
 (`RestartOnFailure` on Windows mirrors launchd's `KeepAlive SuccessfulExit=false`), and

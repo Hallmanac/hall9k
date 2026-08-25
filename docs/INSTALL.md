@@ -185,6 +185,16 @@ worth knowing:
   as you, the signed-in user. `h9k daemon autostart enable` registers it (`\Hall9k\h9kd` in Task
   Scheduler's library); `disable` fully unregisters it. Nothing is registered by `h9k install` or
   `h9k update` — autostart is the same explicit, separate opt-in on every platform.
+- **The registration never carries `HALL9K_CONNECTION_STRING`, even when your shell has it set.**
+  Every other captured variable (`PATH`, `HALL9K_CLAUDE_PATH`) travels into the registration; the
+  connection string is deliberately left out, because a durable copy belongs in the platform
+  config file (`h9k doctor`'s start-offer writes it there when nothing was configured yet) rather
+  than a second, weaker plaintext copy in the launch script. If you configured Postgres purely by
+  exporting the variable, `enable` warns you at enable time — an autostarted daemon would
+  otherwise exit immediately at every logon with no connection string configured. `h9k doctor`
+  will not fix this for you here: your shell already resolves a connection string from the
+  variable, so doctor reports healthy and never touches `config.json`. Add
+  `{"connectionString": "…"}` to `~/.hall9k/config.json` by hand instead.
 - **`h9k daemon stop` asks gracefully rather than sending a signal**, because Windows has no
   SIGTERM for an arbitrary process the way Unix does: it writes a small stop-request file the
   running `h9kd` polls for and acts on itself. The effect is identical either way — in-flight

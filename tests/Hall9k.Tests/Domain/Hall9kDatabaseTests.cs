@@ -170,4 +170,71 @@ public sealed class Hall9kDatabaseTests : IDisposable
         resolution.Value.Should().Be("written-value", "the doctor's own write is what fixes a broken file, not a reason to crash mid-fix");
         resolution.Origin.Should().Be(ConnectionStringOrigin.PlatformConfigFile);
     }
+
+    [Fact]
+    public void No_config_file_at_all_does_not_supply_a_connection_string()
+    {
+        Hall9kDatabase.ConfigFileSuppliesConnectionString().Should().BeFalse();
+    }
+
+    /// <summary>
+    /// The distinction the adversarial cycle-5 review found missing: a config file that
+    /// merely EXISTS (h9k config set writes one with only a "hall9k" operating-settings
+    /// section, no connectionString key) must not be mistaken for one that supplies a
+    /// connection string — a caller checking File.Exists(Hall9kDatabase.ConfigFile) alone
+    /// would wrongly conclude a connection string is available elsewhere.
+    /// </summary>
+    [Fact]
+    public void A_config_file_with_only_operating_settings_does_not_supply_a_connection_string()
+    {
+        File.WriteAllText(Path.Combine(home, "config.json"), """{"hall9k": {"maxConcurrentAgentSessions": 4}}""");
+
+        Hall9kDatabase.ConfigFileSuppliesConnectionString().Should().BeFalse();
+    }
+
+    [Fact]
+    public void A_config_file_carrying_a_connection_string_supplies_one()
+    {
+        File.WriteAllText(Path.Combine(home, "config.json"), """{"connectionString": "config-value"}""");
+
+        Hall9kDatabase.ConfigFileSuppliesConnectionString().Should().BeTrue();
+    }
+
+    /// <summary>
+    /// The cycle-6 review found <see cref="Hall9kDatabase.ConfigFileSuppliesConnectionString"/>'s
+    /// bool collapsing three distinct situations — missing, present-without-the-key, and
+    /// malformed — into one "does not supply one" fact, which a caller then reported as
+    /// "does not exist" even when the file was sitting right there with a typo in it or with
+    /// only its operating-settings section. <see cref="ConnectionStringStateInConfigFile"/>
+    /// keeps them apart so a warning can name the actual remedy.
+    /// </summary>
+    [Fact]
+    public void No_config_file_at_all_reports_missing()
+    {
+        Hall9kDatabase.ConnectionStringStateInConfigFile().Should().Be(ConfigFileConnectionStringState.Missing);
+    }
+
+    [Fact]
+    public void A_config_file_with_only_operating_settings_reports_present_without_a_connection_string()
+    {
+        File.WriteAllText(Path.Combine(home, "config.json"), """{"hall9k": {"maxConcurrentAgentSessions": 4}}""");
+
+        Hall9kDatabase.ConnectionStringStateInConfigFile().Should().Be(ConfigFileConnectionStringState.PresentWithoutConnectionString);
+    }
+
+    [Fact]
+    public void An_unparsable_config_file_reports_malformed_rather_than_missing()
+    {
+        File.WriteAllText(Path.Combine(home, "config.json"), "{ not valid json");
+
+        Hall9kDatabase.ConnectionStringStateInConfigFile().Should().Be(ConfigFileConnectionStringState.Malformed);
+    }
+
+    [Fact]
+    public void A_config_file_carrying_a_connection_string_reports_supplied()
+    {
+        File.WriteAllText(Path.Combine(home, "config.json"), """{"connectionString": "config-value"}""");
+
+        Hall9kDatabase.ConnectionStringStateInConfigFile().Should().Be(ConfigFileConnectionStringState.Supplied);
+    }
 }
