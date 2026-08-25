@@ -4,7 +4,7 @@ namespace Hall9k.Cli.DaemonControl;
 /// The not-yet side of the autostart seam: platforms without an implementation refuse
 /// with a teaching message instead of guessing. macOS and Windows both have real
 /// implementations now (<see cref="LaunchdDaemonAutostart"/>, <see cref="WindowsDaemonAutostart"/>,
-/// Decisions Log #3, #84) — this is what <see cref="DaemonAutostart.ForCurrentPlatform"/>
+/// Decisions Log #3, #85) — this is what <see cref="DaemonAutostart.ForCurrentPlatform"/>
 /// falls back to on every other platform (Linux, as of this writing).
 /// </summary>
 public sealed class DeferredDaemonAutostart(string notSupportedMessage) : IDaemonAutostart

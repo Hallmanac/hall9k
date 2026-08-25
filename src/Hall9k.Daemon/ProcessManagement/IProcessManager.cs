@@ -27,7 +27,7 @@ public sealed record ProcessSpawnRequest(
 /// <summary>
 /// The cross-platform seam for agent process control (Decisions Log #3): macOS implemented
 /// first, Windows second (<see cref="UnixProcessManager"/>, <see cref="WindowsProcessManager"/>,
-/// Decisions Log #84). PID + start time together are a process identity per Decisions Log #2 —
+/// Decisions Log #85). PID + start time together are a process identity per Decisions Log #2 —
 /// a bare pid is a lie waiting to happen (PID reuse, log #2).
 /// </summary>
 public interface IProcessManager

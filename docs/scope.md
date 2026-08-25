@@ -102,7 +102,7 @@ because the data lives in Docker rather than in the home this command trims, and
 volume too, and it names what is about to die and asks for confirmation first, refusing outright
 in a non-interactive session without an explicit `--yes`.
 
-See [PLAN.md Decisions Log #78, #83, #84](../PLAN.md).
+See [PLAN.md Decisions Log #78, #83, #85](../PLAN.md).
 
 ### The project home
 
@@ -189,7 +189,7 @@ split so that the lifecycle code, its tests, and CI are checkable here, while th
 Brian's own acceptance step once a release exists to walk from — not something a dispatched run
 can demonstrate for itself.
 
-See `SLICE-1.md` S1-14, Decisions Log #3, #78, #84.
+See `SLICE-1.md` S1-14, Decisions Log #3, #78, #85.
 
 ### Token visibility and exhaustion
 
