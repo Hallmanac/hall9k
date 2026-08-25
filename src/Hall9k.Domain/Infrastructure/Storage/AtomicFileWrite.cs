@@ -24,7 +24,7 @@ public static class AtomicFileWrite
 {
     public static async Task WriteAllTextAsync(string path, string contents, CancellationToken cancellationToken)
     {
-        string tempPath = $"{path}.tmp-{Guid.NewGuid():N}";
+        string tempPath = $"{path}.tmp-{Path.GetRandomFileName()}";
         try
         {
             await File.WriteAllTextAsync(tempPath, contents, cancellationToken);
@@ -44,7 +44,17 @@ public static class AtomicFileWrite
         }
         finally
         {
-            File.Delete(tempPath);
+            // Best-effort: the temp file is already gone on the success path (Move/Replace
+            // consumed it), so this only ever has real work to do when the try block threw, and a
+            // delete failure here (permissions, a concurrent scanner) must not shadow that
+            // original exception with one about a harmless orphaned temp file.
+            try
+            {
+                File.Delete(tempPath);
+            }
+            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+            {
+            }
         }
     }
 }
