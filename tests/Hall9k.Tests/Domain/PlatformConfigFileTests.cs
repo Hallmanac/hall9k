@@ -280,4 +280,26 @@ public sealed class PlatformConfigFileTests : IDisposable
         result.Problem!.DaemonFailsToStart.Should().BeFalse(
             "ConfigurationBinder has no converter for this complex type, so it binds no children rather than throwing");
     }
+
+    /// <summary>
+    /// <see cref="JsonException.Path"/> carries the document's own casing, not the POCO's, so a
+    /// hand-edit using the PascalCase names this project's own docs print for the property (not
+    /// just the section key the sibling tests above cover) must still be recognised as the one
+    /// property <c>ConfigurationBinder</c> actually crashes the daemon on. Origin: the cycle-1
+    /// pre-PR review found the ordinal comparison in <c>DaemonFailsToStartOn</c> missing this case,
+    /// reporting "defaults still apply" for a value that in fact kills the daemon at startup.
+    /// </summary>
+    [Fact]
+    public async Task A_pascal_cased_property_name_still_reports_that_the_daemon_fails_to_start()
+    {
+        await File.WriteAllTextAsync(
+            Hall9kDatabase.ConfigFile, """{"hall9k": {"MaxConcurrentAgentSessions": "four"}}""");
+
+        ConfigFileReadResult result = await PlatformConfigFile.TryReadOperatingSettingsAsync(CancellationToken.None);
+
+        result.Problem.Should().NotBeNull();
+        result.Problem!.DaemonFailsToStart.Should().BeTrue(
+            "ConfigurationBinder's own key comparison is case-insensitive too, so this value crashes the daemon "
+            + "exactly like the lowercase-keyed shape does");
+    }
 }

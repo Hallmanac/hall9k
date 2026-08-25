@@ -90,10 +90,14 @@ public static class PlatformConfigFile
     /// children and leaves the property at its default rather than throwing. Keyed off
     /// <see cref="JsonException.Path"/> rather than re-implementing that resolution here, so the
     /// one property this can go wrong for stays a single name rather than two copies of the same
-    /// list drifting apart.
+    /// list drifting apart. Compared case-insensitively: <see cref="JsonException.Path"/> carries
+    /// whatever casing the document itself used (this type deserializes with
+    /// <c>PropertyNameCaseInsensitive</c>), and a hand-edited PascalCase key — the casing this
+    /// project's own docs print — must still be recognised as the property
+    /// <c>ConfigurationBinder</c> binds case-insensitively too.
     /// </summary>
     private static bool DaemonFailsToStartOn(JsonException exception) =>
-        exception.Path == "$.maxConcurrentAgentSessions";
+        string.Equals(exception.Path, "$.maxConcurrentAgentSessions", StringComparison.OrdinalIgnoreCase);
 
     /// <summary>
     /// Read-modify-write under the section key: <paramref name="mutate"/> sees the settings as
