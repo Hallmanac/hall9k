@@ -352,7 +352,7 @@ public sealed class InstallCommandTests : IDisposable
     [Fact]
     public void Staging_from_a_release_payload_never_copies_a_development_settings_file()
     {
-        // Defense in depth on top of the project files' own exclusion: a stale payload —
+        // Defense in depth on top of Directory.Build.targets' own exclusion: a stale payload —
         // built before that fix, or assembled by hand — must not carry a Development settings
         // file forward into ~/.hall9k/bin, since staging is the last point before it would
         // land on an installed machine.

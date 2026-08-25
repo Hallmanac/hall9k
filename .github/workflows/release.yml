@@ -71,9 +71,9 @@ jobs:
       # A Development settings file has no business in a release payload: an installed
       # daemon always runs Production, so it would ship unread today and become tomorrow's
       # dev connection string or chatty flag riding into every install (origin: found in
-      # ~/.hall9k/bin beside appsettings.json, 2026-08-24). Hall9k.Cli.csproj and
-      # Hall9k.Daemon.csproj already exclude it from publish output; this is the payload's
-      # own check, catching a project added later that doesn't carry the same guard.
+      # ~/.hall9k/bin beside appsettings.json, 2026-08-24). Directory.Build.targets already
+      # excludes it from publish output; this is the payload's own check, catching a project
+      # added later that doesn't carry the same guard, or a build that bypassed it.
       # Placed immediately before archiving, so it inspects the exact directory tree that
       # becomes the release artifact rather than an earlier snapshot of it.
       - name: Verify no Development settings shipped
