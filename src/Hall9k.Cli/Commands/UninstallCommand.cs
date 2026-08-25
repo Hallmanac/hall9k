@@ -798,29 +798,42 @@ public sealed class UninstallCommand : Hall9kAsyncCommand<UninstallCommand.Setti
 
     private static void DeleteContentsBestEffort(string directory, List<string> stillPresent)
     {
-        foreach (string file in Directory.EnumerateFiles(directory))
+        try
         {
-            try
+            foreach (string file in Directory.EnumerateFiles(directory))
             {
-                File.Delete(file);
+                try
+                {
+                    File.Delete(file);
+                }
+                catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+                {
+                    stillPresent.Add(file);
+                }
             }
-            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+
+            foreach (string subdirectory in Directory.EnumerateDirectories(directory))
             {
-                stillPresent.Add(file);
+                DeleteContentsBestEffort(subdirectory, stillPresent);
+                try
+                {
+                    Directory.Delete(subdirectory);
+                }
+                catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+                {
+                    // Not empty because something inside could not be removed, already recorded above.
+                }
             }
         }
-
-        foreach (string subdirectory in Directory.EnumerateDirectories(directory))
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
         {
-            DeleteContentsBestEffort(subdirectory, stillPresent);
-            try
-            {
-                Directory.Delete(subdirectory);
-            }
-            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
-            {
-                // Not empty because something inside could not be removed, already recorded above.
-            }
+            // The enumeration itself failed — a permission dropped on this directory's own
+            // read/execute bit, or the directory removed out from under this walk by a
+            // concurrent process — rather than a per-file failure the loops above could record
+            // individually. Reported through stillPresent, the same discipline every failure in
+            // this method already uses, rather than left to escape as a raw stack trace after
+            // bin/ and the PATH link may already be gone.
+            stillPresent.Add(directory);
         }
     }
 
@@ -832,7 +845,26 @@ public sealed class UninstallCommand : Hall9kAsyncCommand<UninstallCommand.Setti
     /// </summary>
     internal static void TryRemoveIfEmpty(string home)
     {
-        if (!Directory.Exists(home) || Directory.EnumerateFileSystemEntries(home).Any())
+        if (!Directory.Exists(home))
+        {
+            return;
+        }
+
+        bool empty;
+        try
+        {
+            empty = !Directory.EnumerateFileSystemEntries(home).Any();
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            // An unreadable home is not the same fact as an empty one — this is the same
+            // point-of-no-return call site (bin/ and the PATH link are already gone by here) that
+            // made SkillSeeder.ReadManifest's identical read fail this safely rather than throw.
+            // Left in place rather than guessed at and deleted.
+            return;
+        }
+
+        if (!empty)
         {
             return;
         }
