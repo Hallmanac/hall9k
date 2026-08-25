@@ -538,9 +538,9 @@ public sealed class ProjectHomeRenderEngineTests(PostgresFixture postgres) : ICl
         // Adversarial review, backlog 51 cycle 2: h9k task resolve is the attestation exit from
         // Failed (Decisions Log #27) — it ends the task Done without ever touching CurrentRunId
         // (TaskAggregate.Apply(TaskResolved), unlike TaskRetried, leaves it exactly as it was), so
-        // the current run stays Failed forever. Archiving must be judged against ANY of the
-        // task's runs reaching RunCompleted, not only the current one, or a hand-resolved task
-        // never leaves the top level.
+        // the current run stays Failed forever. This exercises the ResolvedReason attestation
+        // branch specifically — no run of this task ever reaches RunCompleted, so archiving here
+        // depends entirely on the attestation, not on the "any run" broadening below.
         using DocumentStore store = NewStore();
         Guid ownerId = DomainId.New();
         Guid projectId = DomainId.New();
@@ -586,6 +586,82 @@ public sealed class ProjectHomeRenderEngineTests(PostgresFixture postgres) : ICl
         string archiveRoot = ProjectHomePaths.ArchivedTasksDirectory(_home);
         LiveTaskDirectories(tasksRoot).Should().BeEmpty(
             "a hand-resolved task is terminal by attestation and must not remain at the top level");
+        string archivedDirectory = Directory.EnumerateDirectories(archiveRoot).Should().ContainSingle().Subject;
+        File.ReadAllText(Path.Combine(archivedDirectory, "task.md")).Should().Contain("state: Done");
+    }
+
+    [Fact]
+    public async Task A_task_closed_out_again_archives_on_an_earlier_runs_completion_even_though_its_current_run_has_no_projection_yet()
+    {
+        // Adversarial review, backlog 51 cycle 3: the hand-resolved test above passes through
+        // TaskDetails.ResolvedReason alone and never actually exercises the "any of the task's
+        // runs, not only the current one" broadening the Done branch also relies on — narrowing
+        // IsArchived's Done check back to a current-run-only test leaves that test green while
+        // silently breaking this rule. A follow-up run whose own RunDispatched has not landed
+        // yet (a crash between the claim and the dispatch, or the render sweep simply polling in
+        // that window) leaves CurrentRunId naming a run with no projection at all; only the
+        // first run's own RunCompleted proves true closeout here, and ResolvedReason is never
+        // set on this task at all.
+        using DocumentStore store = NewStore();
+        Guid ownerId = DomainId.New();
+        Guid projectId = DomainId.New();
+        Guid taskId = DomainId.New();
+        Guid nodeId = DomainId.New();
+        const string PullRequestUrl = "https://github.com/example/hall9k/pull/11";
+
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            RegisterProject(session, projectId, ownerId, "hall9k");
+            (TaskAggregate task, object[] lifecycle) = TaskSeed.Start(
+                TaskDecider.Add(
+                    taskId, projectId, "Task closed out again while its follow-up run is still undispatched",
+                    ["criterion"], TaskType.Feature, null, null, null, Now, ownerId),
+                ownerId, Now);
+            List<object> taskEvents = [.. lifecycle];
+
+            TaskClaimed firstClaim = TaskDecider.Claim(task, nodeId, ownerId, DomainId.New(), Now);
+            task.Apply(firstClaim);
+            taskEvents.Add(firstClaim);
+            Guid firstRunId = task.CurrentRunId!.Value;
+            int firstGeneration = task.LeaseGeneration;
+
+            TaskCompleted firstCompleted = TaskDecider.Complete(task, firstRunId, PullRequestUrl, Now);
+            task.Apply(firstCompleted);
+            taskEvents.Add(firstCompleted);
+
+            TaskReopened reopened = TaskDecider.Reopen(
+                task, firstRunId, "task/closed-out-twice", "one more look", FollowUpKind.ReviewFeedback,
+                automatic: false, Now, ownerId);
+            task.Apply(reopened);
+            taskEvents.Add(reopened);
+
+            TaskClaimed secondClaim = TaskDecider.Claim(task, nodeId, ownerId, DomainId.New(), Now);
+            task.Apply(secondClaim);
+            taskEvents.Add(secondClaim);
+            Guid secondRunId = task.CurrentRunId!.Value;
+
+            TaskCompleted secondCompleted = TaskDecider.Complete(task, secondRunId, PullRequestUrl, Now);
+            task.Apply(secondCompleted);
+            taskEvents.Add(secondCompleted);
+
+            session.Events.StartStream<TaskAggregate>(taskId, [.. taskEvents]);
+            // Only the FIRST run ever gets a projection; the second (current) run's own
+            // RunDispatched never lands — the exact gap the "any run" rule exists to cover.
+            session.Events.StartStream<RunAggregate>(firstRunId,
+                new RunDispatched(
+                    firstRunId, taskId, nodeId, ownerId, firstGeneration, DomainId.New(), "/tmp/worktree",
+                    "task/closed-out-twice", ExecutorMode.Subscription, Now),
+                new RunCompleted(firstRunId, Now));
+            await session.SaveChangesAsync();
+        }
+
+        await NewEngine(store).PollOnceAsync(CancellationToken.None);
+
+        string tasksRoot = ProjectHomePaths.TasksDirectory(_home);
+        string archiveRoot = ProjectHomePaths.ArchivedTasksDirectory(_home);
+        LiveTaskDirectories(tasksRoot).Should().BeEmpty(
+            "an earlier run of this task already reached true closeout, so the task archives even " +
+            "though its current run has no projection to check yet");
         string archivedDirectory = Directory.EnumerateDirectories(archiveRoot).Should().ContainSingle().Subject;
         File.ReadAllText(Path.Combine(archivedDirectory, "task.md")).Should().Contain("state: Done");
     }
