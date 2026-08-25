@@ -72,4 +72,32 @@ public sealed class DaemonEnvironmentTests
 
         unresolved.Should().BeEquivalentTo(["claude", "gh", "git"]);
     }
+
+    [Fact]
+    public void On_windows_a_bare_tool_name_resolves_through_pathext()
+    {
+        // Runs for real only on the Windows CI leg (the AtomicFileWriteTests convention for
+        // OS-specific assertions): a Windows install never has a literal file named `git`,
+        // only `git.exe` — CreateProcess and cmd.exe both resolve the bare name against
+        // PATHEXT. Checking only the bare name reported a correctly-installed tool as
+        // missing on every Windows h9k daemon autostart enable.
+        if (!OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        string searchDirectory = Directory.CreateTempSubdirectory("h9k-pathext-").FullName;
+        File.WriteAllText(Path.Combine(searchDirectory, "git.exe"), string.Empty);
+        try
+        {
+            IReadOnlyList<string> unresolved = DaemonEnvironment.UnresolvedTools(
+                [new KeyValuePair<string, string>("PATH", searchDirectory)]);
+
+            unresolved.Should().NotContain("git");
+        }
+        finally
+        {
+            Directory.Delete(searchDirectory, true);
+        }
+    }
 }
