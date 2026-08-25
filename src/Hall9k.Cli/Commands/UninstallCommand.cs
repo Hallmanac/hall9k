@@ -621,13 +621,21 @@ public sealed class UninstallCommand : Hall9kAsyncCommand<UninstallCommand.Setti
     /// <summary>The pure part of <see cref="RemoveFromWindowsPath"/>: drop
     /// <paramref name="directory"/> from <paramref name="currentUserPath"/> if it is there
     /// (trailing separators and casing ignored, matching <see cref="InstallCommand.ComputeUserPath"/>),
-    /// leaving every other entry — including any <c>%VAR%</c> reference — exactly as written.</summary>
+    /// leaving every other entry — including any <c>%VAR%</c> reference, any empty entry, and any
+    /// surrounding whitespace — exactly as written. Splits on the raw path separator alone,
+    /// deliberately without <see cref="StringSplitOptions.RemoveEmptyEntries"/> or
+    /// <see cref="StringSplitOptions.TrimEntries"/>: those options are for the membership
+    /// comparison only (matching <see cref="InstallCommand.ComputeUserPath"/>'s own write-side
+    /// discipline of trimming to decide, never to rebuild), not for what gets rejoined — using
+    /// them for reconstruction would drop every empty entry (which Windows resolves as the
+    /// current directory during PATH search) and trim padding on every other entry too, not just
+    /// the one actually being removed.</summary>
     internal static string ComputeUserPathWithoutDirectory(string currentUserPath, string directory)
     {
         string normalized = directory.TrimEnd('\\', '/');
         IEnumerable<string> kept = currentUserPath
-            .Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
-            .Where(entry => !string.Equals(entry.TrimEnd('\\', '/'), normalized, StringComparison.OrdinalIgnoreCase));
+            .Split(Path.PathSeparator)
+            .Where(entry => !string.Equals(entry.Trim().TrimEnd('\\', '/'), normalized, StringComparison.OrdinalIgnoreCase));
         return string.Join(Path.PathSeparator, kept);
     }
 
