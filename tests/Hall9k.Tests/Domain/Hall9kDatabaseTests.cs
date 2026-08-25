@@ -171,42 +171,12 @@ public sealed class Hall9kDatabaseTests : IDisposable
         resolution.Origin.Should().Be(ConnectionStringOrigin.PlatformConfigFile);
     }
 
-    [Fact]
-    public void No_config_file_at_all_does_not_supply_a_connection_string()
-    {
-        Hall9kDatabase.ConfigFileSuppliesConnectionString().Should().BeFalse();
-    }
-
     /// <summary>
-    /// The distinction the adversarial cycle-5 review found missing: a config file that
-    /// merely EXISTS (h9k config set writes one with only a "hall9k" operating-settings
-    /// section, no connectionString key) must not be mistaken for one that supplies a
-    /// connection string — a caller checking File.Exists(Hall9kDatabase.ConfigFile) alone
-    /// would wrongly conclude a connection string is available elsewhere.
-    /// </summary>
-    [Fact]
-    public void A_config_file_with_only_operating_settings_does_not_supply_a_connection_string()
-    {
-        File.WriteAllText(Path.Combine(home, "config.json"), """{"hall9k": {"maxConcurrentAgentSessions": 4}}""");
-
-        Hall9kDatabase.ConfigFileSuppliesConnectionString().Should().BeFalse();
-    }
-
-    [Fact]
-    public void A_config_file_carrying_a_connection_string_supplies_one()
-    {
-        File.WriteAllText(Path.Combine(home, "config.json"), """{"connectionString": "config-value"}""");
-
-        Hall9kDatabase.ConfigFileSuppliesConnectionString().Should().BeTrue();
-    }
-
-    /// <summary>
-    /// The cycle-6 review found <see cref="Hall9kDatabase.ConfigFileSuppliesConnectionString"/>'s
-    /// bool collapsing three distinct situations — missing, present-without-the-key, and
-    /// malformed — into one "does not supply one" fact, which a caller then reported as
-    /// "does not exist" even when the file was sitting right there with a typo in it or with
-    /// only its operating-settings section. <see cref="ConnectionStringStateInConfigFile"/>
-    /// keeps them apart so a warning can name the actual remedy.
+    /// Missing, present-without-the-key, and malformed each want their own remedy text (cycle-6
+    /// review): a caller reporting all three as "does not exist" would say so even when the file
+    /// was sitting right there with a typo in it or with only its operating-settings section.
+    /// <see cref="ConnectionStringStateInConfigFile"/> keeps them apart so a warning can name the
+    /// actual remedy.
     /// </summary>
     [Fact]
     public void No_config_file_at_all_reports_missing()
