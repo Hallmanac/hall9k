@@ -196,4 +196,34 @@ public sealed class OperatingSettingsResolverTests : IDisposable
             warning => warning.Contains("Hall9k__MaxConcurrentAgentSessions") && warning.Contains("four"),
             "the daemon fails to start on this value rather than falling back, so hiding it here would mislead");
     }
+
+    /// <summary>
+    /// A shell expanding an unset variable into an empty assignment
+    /// (<c>Hall9k__MaxConcurrentAgentSessions=</c>, the origin incident's own failure shape) still
+    /// sets the variable — <see cref="Environment.GetEnvironmentVariable"/> returns "", not null —
+    /// and <c>ConfigurationBinder</c> fails to parse "" as an int exactly like it fails on "four".
+    /// Origin: the cycle-4 pre-PR review found the resolver's <c>{ Length: > 0 }</c> guard treating
+    /// this the same as unset, so it silently fell through to the config file or default with no
+    /// warning while the real daemon would crash at startup on the same value.
+    /// </summary>
+    [Fact]
+    public async Task A_set_but_empty_integer_env_var_is_reported_rather_than_treated_as_unset()
+    {
+        // Windows' own environment block cannot represent a variable set to an empty value
+        // distinct from unset (SetEnvironmentVariable(name, "") deletes it there), so the shell
+        // expansion this guards against is a Unix-only failure mode — nothing to assert on Windows.
+        if (OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        Environment.SetEnvironmentVariable("Hall9k__MaxConcurrentAgentSessions", "");
+
+        OperatingSettingsReport report = await OperatingSettingsResolver.ResolveAsync(CancellationToken.None);
+
+        report.MaxConcurrentAgentSessions.Origin.Should().Be(SettingOrigin.Default);
+        report.UnusableEnvironmentVariables.Should().ContainSingle(
+            warning => warning.Contains("Hall9k__MaxConcurrentAgentSessions"),
+            "an empty value still sets the variable and still fails ConfigurationBinder's int conversion at daemon startup");
+    }
 }

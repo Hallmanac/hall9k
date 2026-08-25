@@ -49,7 +49,11 @@ public static class OperatingSettingsResolver
     private static ResolvedSetting<int> ResolveInt(
         string environmentVariable, int? configured, int fallback, List<string> unusable)
     {
-        if (Environment.GetEnvironmentVariable(environmentVariable) is { Length: > 0 } fromEnvironment)
+        // Unlike ResolveString, an empty value is not treated as unset here: a shell that expands
+        // an unset variable into "" (Hall9k__MaxConcurrentAgentSessions= with nothing after it —
+        // the origin incident's own failure shape) still sets the variable, and the daemon's
+        // ConfigurationBinder fails to parse "" as an int exactly the way it fails on "four".
+        if (Environment.GetEnvironmentVariable(environmentVariable) is { } fromEnvironment)
         {
             if (int.TryParse(fromEnvironment, out int parsed))
             {
