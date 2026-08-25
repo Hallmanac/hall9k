@@ -721,8 +721,12 @@ public sealed class UninstallCommand : Hall9kAsyncCommand<UninstallCommand.Setti
     /// the pid and lock files are: <c>WindowsStopRequestWatcher</c> normally deletes it within a
     /// tick of honoring it, but it can survive on disk when the daemon is force-killed, crashes,
     /// or the delete loses to a lock, and an uninstall that leaves it behind is not the clean
-    /// <c>~/.hall9k</c> removal this command promises. <c>h9kd-autostart-launch.vbs</c> joins it
-    /// for the identical reason: <see cref="WindowsDaemonAutostart.DisableAsync"/> normally
+    /// <c>~/.hall9k</c> removal this command promises. <c>h9kd.stop.claimed</c> joins it for the
+    /// same reason: <c>WindowsStopRequestWatcher</c> claims <c>h9kd.stop</c> onto this path
+    /// before reading it and normally deletes the claimed copy within the same tick, but a read
+    /// or delete that loses to a lock or a crash mid-claim leaves it behind exactly like its
+    /// unclaimed sibling. <c>h9kd-autostart-launch.vbs</c> joins both for the identical reason:
+    /// <see cref="WindowsDaemonAutostart.DisableAsync"/> normally
     /// deletes it too, on the same best-effort basis, and this entry is the backstop for when
     /// that delete loses to a lock or autostart was never cleanly disabled — a stray copy is not
     /// just clutter, since it can carry a captured PATH and (before this same task stopped
@@ -750,6 +754,7 @@ public sealed class UninstallCommand : Hall9kAsyncCommand<UninstallCommand.Setti
         Path.Combine(home, "h9kd.pid"),
         Path.Combine(home, "h9kd.lock"),
         Path.Combine(home, "h9kd.stop"),
+        Path.Combine(home, "h9kd.stop.claimed"),
         Path.Combine(home, "h9kd-autostart-launch.vbs"),
     ];
 

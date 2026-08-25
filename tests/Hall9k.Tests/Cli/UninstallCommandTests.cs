@@ -77,6 +77,19 @@ public sealed class UninstallCommandTests : IDisposable
     }
 
     [Fact]
+    public void A_stale_claimed_stop_request_copy_is_swept_too()
+    {
+        // WindowsStopRequestWatcher claims h9kd.stop onto h9kd.stop.claimed before reading it
+        // and normally deletes that copy within the same tick, but a read or delete that loses
+        // to a lock or a crash mid-claim leaves it behind exactly like its unclaimed sibling —
+        // and h9kd.stop's own sweep entry does not cover a different filename.
+        string home = Path.Combine(directory, "home");
+
+        UninstallCommand.InstallOwnedEntries(home, []).Should().Contain(
+            Path.Combine(home, "h9kd.stop.claimed"));
+    }
+
+    [Fact]
     public void A_stale_autostart_launch_script_is_swept_too()
     {
         // WindowsDaemonAutostart.DisableAsync normally deletes h9kd-autostart-launch.vbs
