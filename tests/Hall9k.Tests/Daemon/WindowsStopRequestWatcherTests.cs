@@ -1,5 +1,4 @@
 using System.Diagnostics;
-using System.Linq;
 using FluentAssertions;
 using Hall9k.Daemon;
 using Hall9k.Domain.Infrastructure.Storage;

@@ -30,13 +30,19 @@ public sealed class WindowsStopRequestWatcher(
 
     private readonly DateTimeOffset startedAt = CurrentProcessStartedAt();
 
-    // The stale content most recently warned about — a delete that keeps failing (a
-    // read-only attribute, a lock an antivirus scanner holds) would otherwise re-read and
-    // re-warn about the identical file on every 250ms tick for the daemon's whole life,
-    // flooding h9kd.log until LogRotationService rotates away the run history a human
-    // actually reads that log for. Warning once per distinct stale content keeps the
-    // honest report without the flood; a genuinely new stale request (different content)
-    // still gets its own warning.
+    // The path a request is claimed onto before it is inspected — see IsOwnStopRequest's
+    // own doc for why claiming (an atomic rename) replaces a plain read-then-delete. A
+    // property, not a static readonly field: DaemonRuntime.StopRequestFile resolves against
+    // HALL9K_HOME on every access rather than once, and tests redirect that per run.
+    private static string ClaimPath => DaemonRuntime.StopRequestFile + ".claimed";
+
+    // The stale content most recently warned about — a claim that keeps recurring for the
+    // same content (a write source that keeps recreating an already-stale request) would
+    // otherwise re-warn about it on every 250ms tick for the daemon's whole life, flooding
+    // h9kd.log until LogRotationService rotates away the run history a human actually reads
+    // that log for. Warning once per distinct stale content keeps the honest report without
+    // the flood; a genuinely new stale request (different content) still gets its own
+    // warning.
     private string? lastWarnedStaleContent;
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -49,9 +55,10 @@ public sealed class WindowsStopRequestWatcher(
                 continue;
             }
 
+            // The claim already removed the request file from disk (see IsOwnStopRequest),
+            // so nothing is left to delete here before signaling shutdown.
             logger.LogInformation(
                 "Graceful stop requested via {StopRequestFile} — shutting down", DaemonRuntime.StopRequestFile);
-            DeleteRequestFile();
             lifetime.StopApplication();
             return;
         }
@@ -59,38 +66,53 @@ public sealed class WindowsStopRequestWatcher(
     }
 
     /// <summary>
-    /// True only when the file both exists and names THIS process's identity — pid AND
+    /// True only when a request naming THIS process's identity was just claimed — pid AND
     /// start time, never a bare pid (Decisions Log #2: the same discipline
     /// <see cref="DaemonRuntime.PidFile"/> already carries). h9k daemon stop and
     /// WindowsDaemonAutostart.DisableAsync both write the identity of the daemon they mean
     /// to stop, so a mismatch means the file is stale — left behind by a reboot mid-wait, a
-    /// force-kill from Task Manager, or a delete that failed against a lock — and belongs
-    /// to a daemon that is already gone, never to this one. A bare pid match alone is not
-    /// enough: the next daemon this machine starts can be assigned the very same pid, and
-    /// honoring it anyway would shut it down seconds after a clean-looking h9k daemon
-    /// start. A mismatch is cleared here rather than left for the next daemon to hit the
-    /// same trap. Internal for direct unit coverage of the stale-content warning
-    /// de-duplication below, the same way <c>WindowsDaemonAutostart</c>'s own pure-logic
-    /// methods are exposed for direct testing rather than requiring a live poll loop.
+    /// force-kill from Task Manager, or a claim that raced a write before this fix existed —
+    /// and belongs to a daemon that is already gone, never to this one.
+    /// <para>
+    /// Claiming is <see cref="File.Move(string, string, bool)"/>ing the request file onto
+    /// <see cref="ClaimPath"/> before reading it, rather than reading it in place and
+    /// deleting it by path afterward: a rename is a single atomic filesystem operation, so
+    /// whatever this reads is always a complete file exactly as some writer left it, and the
+    /// original path is vacated in that same step — there is no window between "read" and
+    /// "delete" for a fresh write from <c>h9k daemon stop</c> to land in and then be deleted
+    /// unseen (cycle-7 pre-PR review finding: the previous read-then-delete-by-path could
+    /// either throw a sharing violation into <c>h9k daemon stop</c> or silently discard the
+    /// very request it just wrote). <see cref="DaemonPidFile.WriteAsync"/> writes the
+    /// request the same atomic way (stage-then-rename via <c>AtomicFileWrite</c>), so the
+    /// file this ever observes is always either the previous complete request or the next
+    /// one, never a partial one.
+    /// </para>
+    /// Internal for direct unit coverage of the stale-content warning de-duplication below,
+    /// the same way <c>WindowsDaemonAutostart</c>'s own pure-logic methods are exposed for
+    /// direct testing rather than requiring a live poll loop.
     /// </summary>
     internal bool IsOwnStopRequest()
     {
         string content;
         try
         {
-            content = File.ReadAllText(DaemonRuntime.StopRequestFile);
+            File.Move(DaemonRuntime.StopRequestFile, ClaimPath, overwrite: true);
+            content = File.ReadAllText(ClaimPath);
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
         {
             // IOException covers both "no file yet" (FileNotFoundException/
-            // DirectoryNotFoundException are IOException subtypes) and a sharing violation
-            // against a write still in flight; UnauthorizedAccessException covers the path
-            // existing but being unreadable (a directory in its place, a denying ACL) —
-            // matching DeleteRequestFile's own guard below for the same path, so this
-            // BackgroundService never lets an escaping exception take the whole host down
-            // via the default StopHost behavior. Nothing to act on yet either way; the next
-            // tick tries again.
+            // DirectoryNotFoundException are IOException subtypes) and a rename racing a
+            // write still landing at the source path; UnauthorizedAccessException covers a
+            // path that exists but is unreadable (a directory in its place, a denying ACL).
+            // Either way this BackgroundService never lets an escaping exception take the
+            // whole host down via the default StopHost behavior — nothing to act on yet;
+            // the next tick tries again.
             return false;
+        }
+        finally
+        {
+            DeleteClaimFile();
         }
 
         DaemonProcessDescriptor? requested;
@@ -119,38 +141,25 @@ public sealed class WindowsStopRequestWatcher(
             lastWarnedStaleContent = content;
         }
 
-        // A delete that keeps failing for this same stale content already got its one
-        // warning above (and, on failure, its one warning below) — retrying the delete
-        // itself is still worth doing silently in case whatever held the lock has since let
-        // go, but warning about the SAME failure again every tick is the flood this whole
-        // gate exists to stop.
-        DeleteRequestFile(warnOnFailure: isNewStaleContent);
         return false;
     }
 
     /// <summary>
-    /// Deleted before <see cref="IHostApplicationLifetime.StopApplication"/> runs, not after:
-    /// a leftover request file would otherwise stop the very next daemon this machine
-    /// starts the moment its own watcher's first tick sees it. A delete that itself fails
-    /// (locked, permissions) still lets the caller proceed — a stale copy on disk, but
-    /// whatever it asked for (this daemon stopping, or the mismatch being noticed) already
-    /// happened.
+    /// Best-effort cleanup of the already-claimed copy — the request is off
+    /// <see cref="DaemonRuntime.StopRequestFile"/> the moment the claiming move succeeds
+    /// (see <see cref="IsOwnStopRequest"/>), so nothing else ever reads
+    /// <see cref="ClaimPath"/> and a failure to delete it here (a lock, permissions) leaves
+    /// only harmless litter rather than anything that could reach — let alone stop — the
+    /// next daemon this machine starts.
     /// </summary>
-    private void DeleteRequestFile(bool warnOnFailure = true)
+    private static void DeleteClaimFile()
     {
         try
         {
-            File.Delete(DaemonRuntime.StopRequestFile);
+            File.Delete(ClaimPath);
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
         {
-            if (warnOnFailure)
-            {
-                logger.LogWarning(
-                    exception,
-                    "Could not delete {StopRequestFile} — a stale copy could stop the next daemon that starts",
-                    DaemonRuntime.StopRequestFile);
-            }
         }
     }
 

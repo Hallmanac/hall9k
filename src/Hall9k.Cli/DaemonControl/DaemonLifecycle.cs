@@ -211,12 +211,14 @@ public static class DaemonLifecycle
             return ExitCodes.Ok;
         }
 
+        bool stoppedThroughAutostart = false;
         if (autostart.IsSupported && await autostart.IsLoadedAsync(cancellationToken))
         {
             // Stopped must mean stopped: stopping through the service manager keeps its
             // own crash-restart policy from resurrecting a daemon the human just killed.
             AnsiConsole.MarkupLineInterpolated($"[dim]Autostart owns the job — stopping through {autostart.MechanismDescription}.[/]");
-            if (!await autostart.StopAsync(cancellationToken))
+            stoppedThroughAutostart = await autostart.StopAsync(cancellationToken);
+            if (!stoppedThroughAutostart)
             {
                 await Console.Error.WriteLineAsync(
                     $"{autostart.MechanismDescription} could not stop the daemon — signaling it directly.");
@@ -227,9 +229,18 @@ public static class DaemonLifecycle
         // manager owns the running pid: a detached daemon can win the single-instance race
         // against a RunAtLoad/logon-trigger instance, leaving the job loaded but idle —
         // the step above then removes the idle job and never touches the real daemon. So
-        // the recorded pid, if still alive, always gets the direct signal; a second stop
-        // request to a host already shutting down is a no-op.
-        if (DaemonProcess.IsAlive(running.ProcessId, running.StartedAt))
+        // the recorded pid, if still alive, always gets the direct signal — except on
+        // Windows when the step above already delivered one: unlike a second Unix SIGTERM
+        // (harmless — the same signal, sent twice), the Windows "signal" is a second write
+        // of the identical stop-request file. DaemonPidFile.WriteAsync's atomic stage-and-
+        // rename and WindowsStopRequestWatcher's atomic claim-by-rename (cycle-7 pre-PR
+        // review finding) make a second write safe either way — claimed by this daemon's
+        // watcher if it is still polling, or left for the next daemon to log as stale and
+        // discard once this one has already exited — so skipping it here is purely to avoid
+        // that redundant write and the stale-request warning it would otherwise leave behind
+        // in the next daemon's log, not a correctness requirement.
+        bool skipDirectSignal = OperatingSystem.IsWindows() && stoppedThroughAutostart;
+        if (!skipDirectSignal && DaemonProcess.IsAlive(running.ProcessId, running.StartedAt))
         {
             await RequestGracefulStopAsync(running, cancellationToken);
         }
@@ -308,6 +319,10 @@ public static class DaemonLifecycle
             CreateNoWindow = true,
         };
         shell.Environment[Hall9kDatabase.EnvironmentVariableName] = connectionString;
+        // Tells h9kd this is the cmd.exe `>>` redirect WindowsAppendOnlyLog exists to
+        // survive a rotation of — see DaemonRuntime.AppendOnlyLogEnvironmentVariable's own
+        // doc for why this can't just be OperatingSystem.IsWindows().
+        shell.Environment[DaemonRuntime.AppendOnlyLogEnvironmentVariable] = "1";
         // The raw Arguments string, never ArgumentList (see WindowsCommandLine): this
         // command carries its own embedded quotes around the binary path and the log
         // file, and ArgumentList would C-runtime-escape them in a way cmd.exe's own /c
