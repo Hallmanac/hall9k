@@ -211,6 +211,47 @@ public sealed class UninstallCommandTests : IDisposable
     }
 
     [Fact]
+    public void A_directory_that_cannot_be_unlinked_from_its_parent_is_named_not_silently_dropped()
+    {
+        // Every file inside bin/ can delete fine (bin/ itself stays writable) while removing
+        // the bin/ directory entry still fails, because that unlink needs write permission on
+        // home — bin's parent — which is what this test denies. Before this was fixed,
+        // lockedUnderThisEntry stayed empty (no per-file failure explains a parent-permission
+        // failure) and the directory silently vanished from the report even though it was
+        // still on disk, so the command claimed a removal that never happened.
+        if (OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        string home = Path.Combine(directory, "readonly-parent-home");
+        Directory.CreateDirectory(home);
+        string binDirectory = Path.Combine(home, "bin");
+        Directory.CreateDirectory(binDirectory);
+        File.WriteAllText(Path.Combine(binDirectory, "h9k"), "cli\n");
+
+        if (!MadeUnwritable(home))
+        {
+            return;
+        }
+
+        try
+        {
+            IReadOnlyList<string> stillPresent = UninstallCommand.RemoveInstallOwnedEntries(
+                UninstallCommand.InstallOwnedEntries(home));
+
+            stillPresent.Should().ContainSingle().Which.Should().Be(binDirectory,
+                "bin/'s own contents deleted fine, but bin/ itself could not be unlinked from home, so it "
+                + "is still on disk and must be named rather than reported as removed");
+        }
+        finally
+        {
+            File.SetUnixFileMode(
+                home, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+        }
+    }
+
+    [Fact]
     public void Bin_locked_on_Windows_is_relocated_outside_home_instead_of_left_behind()
     {
         // The concrete scenario this exists for: h9k uninstall runs from the very binary it is
@@ -252,10 +293,47 @@ public sealed class UninstallCommandTests : IDisposable
         string link = Path.Combine(binDirectory, "h9k");
         File.CreateSymbolicLink(link, target);
 
-        UninstallCommand.RemoveFromPath(target, binDirectory, Path.Combine(directory, "home"));
+        bool removed = UninstallCommand.RemoveFromPath(target, binDirectory, Path.Combine(directory, "home"));
 
+        removed.Should().BeTrue();
         File.Exists(link).Should().BeFalse();
         InstallCommand.Classify(link).Should().Be(InstallCommand.PathEntry.Absent);
+    }
+
+    [Fact]
+    public void A_symlink_that_cannot_be_deleted_is_reported_as_not_removed()
+    {
+        // Before this returned a verdict, a locked PATH link was printed as a warning but the
+        // caller had no way to know the removal failed, so the summary and exit code both
+        // claimed the PATH link came off regardless.
+        if (OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        string binDirectory = Path.Combine(directory, "readonly-path-entry");
+        Directory.CreateDirectory(binDirectory);
+        string target = InstalledBinary();
+        string link = Path.Combine(binDirectory, "h9k");
+        File.CreateSymbolicLink(link, target);
+
+        if (!MadeUnwritable(binDirectory))
+        {
+            return;
+        }
+
+        try
+        {
+            bool removed = UninstallCommand.RemoveFromPath(target, binDirectory, Path.Combine(directory, "home"));
+
+            removed.Should().BeFalse("deleting the symlink needs write permission on its containing directory, which was denied");
+            InstallCommand.Classify(link).Should().Be(InstallCommand.PathEntry.Symlink, "the link is still there — it was never removed");
+        }
+        finally
+        {
+            File.SetUnixFileMode(
+                binDirectory, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+        }
     }
 
     [Fact]
@@ -381,9 +459,10 @@ public sealed class UninstallCommandTests : IDisposable
     {
         RecordingProcessRunner runner = RecordingProcessRunner.Succeeding("running\n");
 
-        bool ok = await UninstallCommand.HandleDataTierAsync(purgeData: false, runner.Runner, CancellationToken.None);
+        (bool ok, UninstallCommand.DataTierOutcome outcome) = await UninstallCommand.HandleDataTierAsync(purgeData: false, runner.Runner, CancellationToken.None);
 
         ok.Should().BeTrue();
+        outcome.Should().Be(UninstallCommand.DataTierOutcome.ContainerStopped);
         runner.Calls.Should().Contain(call => call.Arguments.SequenceEqual(new[] { "stop", "hall9k-postgres" }));
         runner.Calls.Should().NotContain(call => call.Arguments.Count > 0 && call.Arguments[0] == "rm");
         runner.Calls.Should().NotContain(call => call.Arguments.Count > 0 && call.Arguments[0] == "volume");
@@ -394,9 +473,10 @@ public sealed class UninstallCommandTests : IDisposable
     {
         RecordingProcessRunner runner = RecordingProcessRunner.Succeeding(string.Empty);
 
-        bool ok = await UninstallCommand.HandleDataTierAsync(purgeData: false, runner.Runner, CancellationToken.None);
+        (bool ok, UninstallCommand.DataTierOutcome outcome) = await UninstallCommand.HandleDataTierAsync(purgeData: false, runner.Runner, CancellationToken.None);
 
         ok.Should().BeTrue();
+        outcome.Should().Be(UninstallCommand.DataTierOutcome.ContainerAbsent, "no container means no purge happened");
         runner.Calls.Should().NotContain(call => call.Arguments.Count > 0 && call.Arguments[0] == "stop");
     }
 
@@ -405,9 +485,11 @@ public sealed class UninstallCommandTests : IDisposable
     {
         RecordingProcessRunner runner = RecordingProcessRunner.Failing("Cannot connect to the Docker daemon");
 
-        bool ok = await UninstallCommand.HandleDataTierAsync(purgeData: false, runner.Runner, CancellationToken.None);
+        (bool ok, UninstallCommand.DataTierOutcome outcome) = await UninstallCommand.HandleDataTierAsync(purgeData: false, runner.Runner, CancellationToken.None);
 
         ok.Should().BeTrue("nothing reachable is not a failure for the default, non-destructive tier");
+        outcome.Should().Be(UninstallCommand.DataTierOutcome.NoContainerRuntime,
+            "this is the non-purge tier — nothing was ever asked to be destroyed, and there was no runtime to ask");
     }
 
     [Fact]
@@ -415,9 +497,11 @@ public sealed class UninstallCommandTests : IDisposable
     {
         RecordingProcessRunner runner = RecordingProcessRunner.Failing("Cannot connect to the Docker daemon");
 
-        bool ok = await UninstallCommand.HandleDataTierAsync(purgeData: true, runner.Runner, CancellationToken.None);
+        (bool ok, UninstallCommand.DataTierOutcome outcome) = await UninstallCommand.HandleDataTierAsync(purgeData: true, runner.Runner, CancellationToken.None);
 
         ok.Should().BeFalse("--purge-data promises destruction; an unreachable Docker cannot honor that silently");
+        outcome.Should().Be(UninstallCommand.DataTierOutcome.NoContainerRuntime,
+            "nothing could be reached, so nothing could have been destroyed");
         runner.Calls.Should().NotContain(call => call.Arguments.Count > 0 && (call.Arguments[0] == "rm" || call.Arguments[0] == "volume"));
     }
 
@@ -433,9 +517,11 @@ public sealed class UninstallCommandTests : IDisposable
             _ => new ProcessResult(0, string.Empty, string.Empty),
         });
 
-        bool ok = await UninstallCommand.HandleDataTierAsync(purgeData: true, runner.Runner, CancellationToken.None);
+        (bool ok, UninstallCommand.DataTierOutcome outcome) = await UninstallCommand.HandleDataTierAsync(purgeData: true, runner.Runner, CancellationToken.None);
 
         ok.Should().BeTrue();
+        outcome.Should().Be(UninstallCommand.DataTierOutcome.PurgedContainerAndVolume,
+            "both the container and its named volume were actually removed");
         runner.Calls.Should().Contain(call => call.Arguments.SequenceEqual(new[] { "rm", "-f", "hall9k-postgres" }));
         runner.Calls.Should().Contain(call => call.Arguments.SequenceEqual(new[] { "volume", "rm", "hall9k-pgdata" }));
     }
@@ -459,9 +545,11 @@ public sealed class UninstallCommandTests : IDisposable
             _ => new ProcessResult(0, string.Empty, string.Empty),
         });
 
-        bool ok = await UninstallCommand.HandleDataTierAsync(purgeData: true, runner.Runner, CancellationToken.None);
+        (bool ok, UninstallCommand.DataTierOutcome outcome) = await UninstallCommand.HandleDataTierAsync(purgeData: true, runner.Runner, CancellationToken.None);
 
         ok.Should().BeTrue();
+        outcome.Should().Be(UninstallCommand.DataTierOutcome.PurgedContainerAndVolume,
+            "the container's real volume was observed and actually removed");
         runner.Calls.Should().Contain(call => call.Arguments.SequenceEqual(new[] { "volume", "rm", "postgres_hall9k-pgdata" }));
         runner.Calls.Should().NotContain(call => call.Arguments.SequenceEqual(new[] { "volume", "rm", "hall9k-pgdata" }),
             "the container's real volume has a different name; guessing the bare literal would miss it");
@@ -483,9 +571,11 @@ public sealed class UninstallCommandTests : IDisposable
             _ => new ProcessResult(0, string.Empty, string.Empty),
         });
 
-        bool ok = await UninstallCommand.HandleDataTierAsync(purgeData: true, runner.Runner, CancellationToken.None);
+        (bool ok, UninstallCommand.DataTierOutcome outcome) = await UninstallCommand.HandleDataTierAsync(purgeData: true, runner.Runner, CancellationToken.None);
 
         ok.Should().BeFalse("ownership of the literally-named volume cannot be confirmed with no container to inspect");
+        outcome.Should().Be(UninstallCommand.DataTierOutcome.PurgeUnconfirmedVolume,
+            "nothing was destroyed — the volume was left untouched rather than guessed at");
         runner.Calls.Should().NotContain(call => call.Arguments.SequenceEqual(new[] { "volume", "rm", "hall9k-pgdata" }),
             "never destroy a volume whose ownership was never observed");
         runner.Calls.Should().NotContain(call => call.Arguments.Count > 0 && call.Arguments[0] == "rm",
@@ -501,9 +591,11 @@ public sealed class UninstallCommandTests : IDisposable
         // incomplete for a machine already in exactly the state --purge-data asked for.
         RecordingProcessRunner runner = RecordingProcessRunner.Succeeding(string.Empty);
 
-        bool ok = await UninstallCommand.HandleDataTierAsync(purgeData: true, runner.Runner, CancellationToken.None);
+        (bool ok, UninstallCommand.DataTierOutcome outcome) = await UninstallCommand.HandleDataTierAsync(purgeData: true, runner.Runner, CancellationToken.None);
 
         ok.Should().BeTrue("nothing was ever created, so there is nothing --purge-data needs to remove");
+        outcome.Should().Be(UninstallCommand.DataTierOutcome.ContainerAbsent,
+            "there was no container and no volume to destroy — the summary must not claim either was destroyed when this ran as a no-op");
         runner.Calls.Should().NotContain(call => call.Arguments.Count > 0 && call.Arguments[0] == "rm",
             "there is no container to remove");
         runner.Calls.Should().NotContain(call => call.Arguments.SequenceEqual(new[] { "volume", "rm", "hall9k-pgdata" }),
@@ -527,9 +619,11 @@ public sealed class UninstallCommandTests : IDisposable
             _ => new ProcessResult(0, string.Empty, string.Empty),
         });
 
-        bool ok = await UninstallCommand.HandleDataTierAsync(purgeData: true, runner.Runner, CancellationToken.None);
+        (bool ok, UninstallCommand.DataTierOutcome outcome) = await UninstallCommand.HandleDataTierAsync(purgeData: true, runner.Runner, CancellationToken.None);
 
         ok.Should().BeTrue("the container came off, and there was no named volume to observe and destroy");
+        outcome.Should().Be(UninstallCommand.DataTierOutcome.PurgedContainerOnly,
+            "no named volume was ever observed — the summary must not claim a data volume was destroyed here");
         runner.Calls.Should().Contain(call => call.Arguments.SequenceEqual(new[] { "rm", "-f", "hall9k-postgres" }));
         runner.Calls.Should().NotContain(call => call.Arguments.Count > 0 && call.Arguments[0] == "volume",
             "no named volume was observed, so nothing should ever be asked about a volume, guessed or otherwise");
@@ -548,8 +642,9 @@ public sealed class UninstallCommandTests : IDisposable
             _ => new ProcessResult(0, string.Empty, string.Empty),
         });
 
-        bool ok = await UninstallCommand.HandleDataTierAsync(purgeData: true, runner.Runner, CancellationToken.None);
+        (bool ok, UninstallCommand.DataTierOutcome outcome) = await UninstallCommand.HandleDataTierAsync(purgeData: true, runner.Runner, CancellationToken.None);
 
         ok.Should().BeFalse("the container came off but the data did not — that is not what --purge-data promised");
+        outcome.Should().Be(UninstallCommand.DataTierOutcome.PurgeIncomplete, "the volume removal itself failed — nothing was actually destroyed");
     }
 }

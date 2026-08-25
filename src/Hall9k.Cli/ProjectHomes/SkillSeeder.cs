@@ -372,8 +372,24 @@ public static class SkillSeeder
             }
             catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
             {
+                // Recorded against the directory's post-partial-delete contents, not the
+                // pre-deletion recordedHash: Directory.Delete(recursive: true) can remove some
+                // files before hitting the one that is locked, so the hash that was true before
+                // this attempt no longer matches what is actually left on disk. Keeping the stale
+                // hash here would make a retried uninstall (or the next install's own retiring
+                // pass) see a mismatch and conclude an operator had edited the skill, leaving it
+                // behind forever instead of recognising it as still install-owned.
+                //
+                // The re-hash itself can hit the identical locked-or-permission-denied file that
+                // just made the delete fail, so it is allowed to fail too — falling back to the
+                // pre-deletion recordedHash rather than throwing out of here uncaught. That is
+                // still the best available record: a directory the delete could not even start
+                // to read still matches recordedHash exactly, and the only case that misses is a
+                // permission failure hit partway through, where a stale hash means at most one
+                // extra manual look on a later attempt, not a crashed CLI after bin/ and the
+                // PATH link are already gone.
                 stillPresent.Add(directory);
-                remaining[name] = recordedHash;
+                remaining[name] = TryComputeContentHash(directory) ?? recordedHash;
             }
         }
 
@@ -457,6 +473,23 @@ public static class SkillSeeder
         }
 
         return Convert.ToHexString(hash.GetHashAndReset());
+    }
+
+    /// <summary>The failable twin of <see cref="ComputeContentHash"/>, for a caller that is
+    /// already inside a locked-file recovery path and cannot let a second such failure escape
+    /// uncaught: <see langword="null"/> on the identical <see cref="IOException"/> or
+    /// <see cref="UnauthorizedAccessException"/> a locked or permission-denied file inside
+    /// <paramref name="directory"/> would otherwise throw while it is being read.</summary>
+    private static string? TryComputeContentHash(string directory)
+    {
+        try
+        {
+            return ComputeContentHash(directory);
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            return null;
+        }
     }
 
     /// <summary>
