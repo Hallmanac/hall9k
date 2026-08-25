@@ -252,6 +252,55 @@ public sealed class UninstallCommandTests : IDisposable
     }
 
     [Fact]
+    public void A_subdirectory_that_cannot_be_enumerated_is_named_not_thrown()
+    {
+        // DeleteContentsBestEffort enumerates lazily (Directory.EnumerateFiles /
+        // EnumerateDirectories), so a failure surfaces mid-iteration rather than at the initial
+        // call. Before this fix, that escaped as a raw, uncaught exception from this
+        // point-of-no-return call site (bin/'s own PATH link is already gone by the time this
+        // reaches a locked sibling) instead of being named through stillPresent the way every
+        // other failure in this method already is.
+        if (OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        string home = Path.Combine(directory, "unenumerable-home");
+        string binDirectory = Path.Combine(home, "bin");
+        string blocked = Path.Combine(binDirectory, "blocked");
+        Directory.CreateDirectory(blocked);
+        File.WriteAllText(Path.Combine(blocked, "h9k"), "cli\n");
+
+        // Execute-only: a subdirectory can still be traversed into by full path, but listing its
+        // own entries — what this test targets — needs the read bit specifically.
+        File.SetUnixFileMode(blocked, UnixFileMode.UserExecute);
+        try
+        {
+            Directory.EnumerateFileSystemEntries(blocked).Any();
+            return;
+        }
+        catch (Exception exception) when (exception is UnauthorizedAccessException or IOException)
+        {
+            // Confirmed unenumerable — proceed with the assertion below.
+        }
+
+        try
+        {
+            IReadOnlyList<string> stillPresent = null!;
+            Action act = () => stillPresent =
+                UninstallCommand.RemoveInstallOwnedEntries(UninstallCommand.InstallOwnedEntries(home));
+
+            act.Should().NotThrow("an unenumerable directory must be reported, never left to escape as a raw exception");
+            stillPresent.Should().Contain(blocked);
+        }
+        finally
+        {
+            File.SetUnixFileMode(
+                blocked, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+        }
+    }
+
+    [Fact]
     public void Bin_locked_on_Windows_is_relocated_outside_home_instead_of_left_behind()
     {
         // The concrete scenario this exists for: h9k uninstall runs from the very binary it is

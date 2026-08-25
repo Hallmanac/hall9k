@@ -162,6 +162,53 @@ public sealed class SkillSeederRemovePublishedTests : IDisposable
         }
     }
 
+    /// <summary>
+    /// Before this fix, the final "is the canonical directory empty now" check enumerated it
+    /// outside any try, so a directory that could not be listed (read permission dropped, or —
+    /// on Windows — an antivirus scan mid-walk) escaped as a raw, uncaught exception from this
+    /// point-of-no-return call site, rather than being named through <c>stillPresent</c> the way
+    /// every other failure in this method already is.
+    /// </summary>
+    [Fact]
+    public void An_unenumerable_canonical_directory_is_reported_not_thrown()
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        WriteSourceSkill("pr-summary");
+        SkillSeeder.PublishCanonical(_source);
+        string canonical = SkillLibraryPaths.CanonicalDirectory;
+
+        // Execute-only: direct access to a known path (the skill directory, the manifest) still
+        // works, but listing the directory's own entries — the check this test targets — needs
+        // the read bit specifically and fails without it.
+        File.SetUnixFileMode(canonical, UnixFileMode.UserExecute);
+        try
+        {
+            Directory.EnumerateFileSystemEntries(canonical).Any();
+            return;
+        }
+        catch (Exception exception) when (exception is UnauthorizedAccessException or IOException)
+        {
+            // Confirmed unreadable — proceed with the assertion below.
+        }
+
+        try
+        {
+            List<string> stillPresent = [];
+            Action act = () => SkillSeeder.RemovePublished(stillPresent);
+
+            act.Should().NotThrow("an unenumerable directory must be reported, never left to escape as a raw exception");
+        }
+        finally
+        {
+            File.SetUnixFileMode(
+                canonical, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+        }
+    }
+
     private static void AssertLeftInPlaceForRetry(string skillDirectory)
     {
         List<string> stillPresent = [];

@@ -453,15 +453,34 @@ public static class SkillSeeder
         }
 
         string canonical = SkillLibraryPaths.CanonicalDirectory;
-        if (Directory.Exists(canonical) && !Directory.EnumerateFileSystemEntries(canonical).Any())
+        if (Directory.Exists(canonical))
         {
+            bool empty;
             try
             {
-                Directory.Delete(canonical);
+                empty = !Directory.EnumerateFileSystemEntries(canonical).Any();
             }
             catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
             {
-                // Left as an empty directory; nothing install-owned remains inside it either way.
+                // An unenumerable canonical directory is not the same fact as an empty one —
+                // reported through stillPresent rather than left to escape as a raw stack trace
+                // out of this point-of-no-return call site (bin/ and the PATH link are already
+                // gone by here), the identical discipline UninstallCommand.DeleteContentsBestEffort
+                // uses for the same read.
+                stillPresent.Add(canonical);
+                empty = false;
+            }
+
+            if (empty)
+            {
+                try
+                {
+                    Directory.Delete(canonical);
+                }
+                catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+                {
+                    // Left as an empty directory; nothing install-owned remains inside it either way.
+                }
             }
         }
 
