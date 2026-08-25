@@ -27,17 +27,30 @@ public static class AtomicFileWrite
         string tempPath = $"{path}.tmp-{Path.GetRandomFileName()}";
         try
         {
+            bool targetExists = File.Exists(path);
+
+            // The target's mode is applied to the temp file before any content is written, not
+            // after: applying it afterwards (as a follow-up File.SetUnixFileMode once the write
+            // finished) would leave the file world-readable at the process umask's default mode
+            // for the whole write, and for config.json — which carries the Postgres connection
+            // string under an operator's chmod 600 — that is a real exposure window rather than
+            // a cosmetic one. The file is empty when the mode is narrowed, so there is nothing to
+            // leak during the gap.
+            if (targetExists && !OperatingSystem.IsWindows())
+            {
+                using (File.Create(tempPath))
+                {
+                }
+
+                File.SetUnixFileMode(tempPath, File.GetUnixFileMode(path));
+            }
+
             await File.WriteAllTextAsync(tempPath, contents, cancellationToken);
 
-            if (!File.Exists(path))
+            if (!targetExists)
             {
                 File.Move(tempPath, path);
                 return;
-            }
-
-            if (!OperatingSystem.IsWindows())
-            {
-                File.SetUnixFileMode(tempPath, File.GetUnixFileMode(path));
             }
 
             File.Replace(tempPath, path, destinationBackupFileName: null);
