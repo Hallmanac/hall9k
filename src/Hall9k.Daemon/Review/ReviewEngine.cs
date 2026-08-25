@@ -169,7 +169,7 @@ public sealed class ReviewEngine(
                     await ParkAsync(context.RunId, context.TaskId,
                         $"A review pass (cycle {run.ReviewCycle}, {VerdictlessLensList(run)}) returned no parseable " +
                         "verdict, even after this cycle's re-prompt. " +
-                        $"Its output: {RunPaths.ReviewFindingsFile(CurrentRunDirectory(run), run.ReviewCycle)}. " +
+                        $"Its output: {RunPaths.ReviewFindingsFile(ParkedRunDirectory(run), run.ReviewCycle)}. " +
                         "Judge the diff yourself, then resolve with h9k review resolve or abandon the task.",
                         cancellationToken);
                     return false;
@@ -568,7 +568,7 @@ public sealed class ReviewEngine(
     /// </summary>
     private static string DisputedParkReason(ReviewContext context, RunAggregate run)
     {
-        string runDirectory = CurrentRunDirectory(run);
+        string runDirectory = ParkedRunDirectory(run);
         if (run.ReviewCycle != 0)
         {
             return "The fix run disputed a review finding — as not-a-defect, as human territory, or as " +
@@ -1363,7 +1363,7 @@ public sealed class ReviewEngine(
     /// </summary>
     private string CapParkReason(RunAggregate run, ReviewLens capped)
     {
-        string findings = RunPaths.ReviewFindingsFile(CurrentRunDirectory(run), run.ReviewCycle);
+        string findings = RunPaths.ReviewFindingsFile(ParkedRunDirectory(run), run.ReviewCycle);
         string levers =
             $"Unresolved findings: {findings}. Fix in the worktree and resolve with " +
             "h9k review resolve --merge-ready, grant a fresh round with --needs-fixes, or abandon the task.";
@@ -1442,6 +1442,20 @@ public sealed class ReviewEngine(
     /// carried at dispatch.
     /// </summary>
     private static string CurrentRunDirectory(RunAggregate run) => RunPaths.ResolveCurrentDirectory(run.RunDirectory);
+
+    /// <summary>
+    /// The directory a park reason should name — not where the run's files sit right now
+    /// (<see cref="CurrentRunDirectory(RunAggregate)"/>), but where the sweep puts them once the
+    /// <c>ReviewParked</c> this text is being composed for lands (adversarial review, backlog 51
+    /// cycle 10). A parked run is no longer live, so the reopen guard that can be holding a
+    /// reopened task's directory inside <c>tasks/_archive/</c> only because its current run was
+    /// still live stops applying the moment this park commits, and the very next sweep moves the
+    /// directory back to <c>tasks/</c>. The common case — a task that was never reopened, and
+    /// whose directory was never under <c>tasks/_archive/</c> to begin with — is untouched:
+    /// <see cref="RunPaths.AnticipateDirectoryAfterSweep"/> only changes an already-archived path.
+    /// </summary>
+    private static string ParkedRunDirectory(RunAggregate run) =>
+        RunPaths.AnticipateDirectoryAfterSweep(CurrentRunDirectory(run), willArchive: false);
 
     /// <summary>Same resolution as <see cref="CurrentRunDirectory(RunAggregate)"/>, for the projection shape.</summary>
     private static string CurrentRunDirectory(RunDetails run) => RunPaths.ResolveCurrentDirectory(run.RunDirectory);
