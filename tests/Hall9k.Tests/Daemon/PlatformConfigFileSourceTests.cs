@@ -168,4 +168,105 @@ public sealed class PlatformConfigFileSourceTests : IDisposable
             OperatingSettings.DefaultMaxConcurrentAgentSessions,
             "a non-object root falls back to the built-in default rather than taking configuration binding down with it");
     }
+
+    /// <summary>
+    /// <c>JsonDocument</c> — what this pre-parse guard uses — accepts a key that repeats under a
+    /// different case without complaint, but <c>JsonConfigurationFileParser</c>'s own keys are
+    /// ordinal-ignore-case and throws a raw <see cref="FormatException"/> on the collision when
+    /// <c>builder.Build()</c> actually loads the source. Origin: the cycle-4 pre-PR review found
+    /// this shape — reachable by hand-editing the casing the env-var table prints, or by the
+    /// CLI's own pre-fix write bug — killed the daemon with exactly the unguarded crash this
+    /// pre-parse check exists to prevent.
+    /// </summary>
+    [Fact]
+    public async Task A_case_variant_duplicate_key_is_skipped_rather_than_crashing_configuration_build()
+    {
+        await File.WriteAllTextAsync(
+            Hall9kDatabase.ConfigFile,
+            """{"hall9k": {"maxConcurrentAgentSessions": 3}, "Hall9k": {"maxConcurrentAgentSessions": 6}}""");
+        ConfigurationBuilder builder = new();
+        builder.AddEnvironmentVariables();
+
+        Action insert = () => PlatformConfigFileSource.Insert(builder);
+
+        insert.Should().NotThrow();
+        Action build = () => Bind(builder);
+        build.Should().NotThrow(
+            "a duplicate case-variant key must be skipped by this guard rather than reaching " +
+            "JsonConfigurationFileParser, which throws a raw FormatException on it");
+    }
+
+    /// <summary>
+    /// <see cref="Microsoft.Extensions.FileProviders.PhysicalFileProvider"/>'s constructor throws
+    /// <see cref="ArgumentException"/> for a non-rooted root, which turns this method's
+    /// never-crash-the-daemon contract into an unhandled startup exception when
+    /// <c>HALL9K_HOME</c> is set to a relative path. Origin: the cycle-4 pre-PR review.
+    /// </summary>
+    [Fact]
+    public async Task A_relative_home_directory_does_not_crash_the_insert()
+    {
+        string relativeHome = Path.GetRelativePath(Directory.GetCurrentDirectory(), home);
+        Environment.SetEnvironmentVariable("HALL9K_HOME", relativeHome);
+        await PlatformConfigFile.WriteOperatingSettingsAsync(s => s.MaxConcurrentAgentSessions = 7, CancellationToken.None);
+        ConfigurationBuilder builder = new();
+        builder.AddEnvironmentVariables();
+
+        Action insert = () => PlatformConfigFileSource.Insert(builder);
+
+        insert.Should().NotThrow();
+        Bind(builder).MaxConcurrentAgentSessions.Should().Be(7);
+    }
+
+    /// <summary>
+    /// The pre-parse guard's <c>catch</c> only covered <see cref="System.Text.Json.JsonException"/>,
+    /// so <see cref="File.ReadAllText(string)"/> throwing for an IO or permission reason (the file
+    /// this account cannot read, a transient IO error) bubbled straight out of <c>Insert</c> and
+    /// crashed daemon startup instead of being reported and skipped like every other malformed-file
+    /// case. Origin: PR #45 review.
+    /// </summary>
+    [Fact]
+    public async Task An_unreadable_config_file_is_skipped_rather_than_crashing_configuration_build()
+    {
+        await PlatformConfigFile.WriteOperatingSettingsAsync(s => s.MaxConcurrentAgentSessions = 7, CancellationToken.None);
+        if (!MadeUnreadable(Hall9kDatabase.ConfigFile))
+        {
+            // Windows has no POSIX mode, and root reads through one; on either the case this
+            // test describes cannot be staged, so there is nothing to assert.
+            return;
+        }
+
+        ConfigurationBuilder builder = new();
+        builder.AddEnvironmentVariables();
+
+        Action insert = () => PlatformConfigFileSource.Insert(builder);
+
+        insert.Should().NotThrow();
+        Bind(builder).MaxConcurrentAgentSessions.Should().Be(
+            OperatingSettings.DefaultMaxConcurrentAgentSessions,
+            "a file this account cannot read falls back to the built-in default rather than taking " +
+            "configuration binding down with it");
+    }
+
+    /// <summary>
+    /// Strips every permission bit and confirms the read is actually denied. False when the
+    /// platform or the caller's privileges make the denial impossible to stage.
+    /// </summary>
+    private static bool MadeUnreadable(string path)
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            return false;
+        }
+
+        File.SetUnixFileMode(path, UnixFileMode.None);
+        try
+        {
+            File.ReadAllText(path);
+            return false;
+        }
+        catch (UnauthorizedAccessException)
+        {
+            return true;
+        }
+    }
 }

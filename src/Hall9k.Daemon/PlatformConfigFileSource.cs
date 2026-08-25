@@ -57,11 +57,34 @@ public static class PlatformConfigFileSource
                     + "and restart to pick it up.");
                 return;
             }
+
+            // JsonDocument accepts a key that repeats under a different case without complaint,
+            // but JsonConfigurationFileParser's own keys are ordinal-ignore-case and throws a raw
+            // FormatException on the collision — the exact unguarded startup crash this pre-parse
+            // check exists to turn into a graceful skip.
+            if (PlatformConfigFile.HasCaseInsensitiveDuplicateKeys(document.RootElement))
+            {
+                Console.Error.WriteLine(
+                    $"The platform config file ({Hall9kDatabase.ConfigFile}) has a key that repeats under a "
+                    + "different case (for example \"hall9k\" and \"Hall9k\") — daemon operating settings from "
+                    + "it are skipped this run; environment variables and built-in defaults still apply. Fix it "
+                    + "(h9k config show explains the shape) and restart to pick it up.");
+                return;
+            }
         }
         catch (JsonException exception)
         {
             Console.Error.WriteLine(
                 $"The platform config file ({Hall9kDatabase.ConfigFile}) is not valid JSON "
+                + $"({exception.Message}) — daemon operating settings from it are skipped this run; "
+                + "environment variables and built-in defaults still apply. Fix it (h9k config show "
+                + "explains the shape) and restart to pick it up.");
+            return;
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            Console.Error.WriteLine(
+                $"The platform config file ({Hall9kDatabase.ConfigFile}) could not be read "
                 + $"({exception.Message}) — daemon operating settings from it are skipped this run; "
                 + "environment variables and built-in defaults still apply. Fix it (h9k config show "
                 + "explains the shape) and restart to pick it up.");
@@ -77,7 +100,7 @@ public static class PlatformConfigFileSource
 
         configuration.Sources.Insert(index, new JsonConfigurationSource
         {
-            FileProvider = new PhysicalFileProvider(Path.GetDirectoryName(Hall9kDatabase.ConfigFile)!),
+            FileProvider = new PhysicalFileProvider(Path.GetFullPath(Path.GetDirectoryName(Hall9kDatabase.ConfigFile)!)),
             Path = Path.GetFileName(Hall9kDatabase.ConfigFile),
             Optional = true,
             ReloadOnChange = false,
