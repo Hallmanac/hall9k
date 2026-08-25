@@ -78,24 +78,49 @@ public sealed class ProjectHomeRenderEngine(IDocumentStore store, ILogger<Projec
                     .ToListAsync(cancellationToken);
                 IReadOnlyList<IdeaDetails> ideas = [.. allIdeas.Where(idea => idea.ProjectId == project.Id)];
 
-                // Whether a Done task has reached true closeout needs the run it hangs on, not
+                // Whether a Done task has reached true closeout needs a run it hangs on, not
                 // just its own state (TaskDependencyQuery.IsClosedOut carries the same bar for
                 // the dependency rule): a Done task's own record never changes again between
                 // its pull request opening and the closeout monitor observing the merge, so
-                // only the run projection can tell those two moments apart. An Abandoned task
-                // needs the same lookup for the opposite reason (adversarial review, cycle 1):
-                // abandoning does not kill whatever process is running for it (no daemon-side
-                // handler reacts to TaskAbandoned), so archiving unconditionally could move a
-                // live run's runs/<run-id>/ out from under itself, exactly the hazard the Done
-                // rule above already exists to avoid.
-                Guid[] runIdsNeedingState = [.. tasks
-                    .Where(task => task.State == TaskState.Done || task.State == TaskState.Abandoned)
-                    .Select(task => task.CurrentRunId)
-                    .OfType<Guid>()];
-                Dictionary<Guid, RunState> currentRunStates = runIdsNeedingState.Length == 0
+                // only the run projection can tell those two moments apart. Any of the task's
+                // runs reaching RunCompleted counts — not only its current one (adversarial
+                // review, backlog 51 cycle 2, the same reason BlockerHandoffQuery.ClosedOutRunsAsync
+                // reads every run rather than just the current): a follow-up that closes out
+                // before its own RunDispatched lands leaves CurrentRunId pointing at a run with
+                // no projection at all, which would never archive if only the current run's state
+                // counted. h9k task resolve's Failed-only attestation exit (Decisions Log #27) is
+                // a separate case IsArchived checks for on its own (TaskDetails.ResolvedReason):
+                // it ends the task Done specifically because no run of it will ever carry
+                // RunCompleted, so no amount of searching every run finds one.
+                Guid[] doneTaskIds = [.. tasks.Where(task => task.State == TaskState.Done).Select(task => task.Id)];
+                HashSet<Guid> taskIdsWithCompletedRun = doneTaskIds.Length == 0
                     ? []
                     : (await query.Query<RunListItem>()
-                            .Where(run => run.Id.IsOneOf(runIdsNeedingState))
+                            .Where(run => run.TaskId.IsOneOf(doneTaskIds))
+                            .ToListAsync(cancellationToken))
+                        // Filtered here rather than in the query itself: RunState is a value
+                        // object behind a JsonConverter, and every other query in this codebase
+                        // that needs to select on it server-side goes through MatchesSql against
+                        // the raw JSON (DispatchEngine.LoadAsync, CloseoutEngine's watch queries)
+                        // rather than a plain == Marten's LINQ provider can translate.
+                        .Where(run => run.State == RunState.Completed)
+                        .Select(run => run.TaskId)
+                        .ToHashSet();
+                // The current run's own state is still needed, for two other guards: an Abandoned
+                // task's archiving is deferred while its current run is still live (adversarial
+                // review, cycle 1: abandoning does not kill whatever process is running for it, no
+                // daemon-side handler reacts to TaskAbandoned, so archiving unconditionally could
+                // move a live run's runs/<run-id>/ out from under itself), and a task in any other
+                // state whose directory currently sits under tasks/_archive/ (a reopen RunLauncher
+                // dispatched straight there, ahead of this sweep ever moving it back) must not have
+                // that directory moved back out while the run now writing into it is still live
+                // (adversarial review, backlog 51 cycle 2). Every task's current run is fetched,
+                // not only Done/Abandoned's, because the second guard applies regardless of state.
+                Guid[] currentRunIds = [.. tasks.Select(task => task.CurrentRunId).OfType<Guid>()];
+                Dictionary<Guid, RunState> currentRunStates = currentRunIds.Length == 0
+                    ? []
+                    : (await query.Query<RunListItem>()
+                            .Where(run => run.Id.IsOneOf(currentRunIds))
                             .ToListAsync(cancellationToken))
                         .ToDictionary(run => run.Id, run => run.State);
                 // An idea reassigned away from this project keeps its real, capture-time
@@ -116,7 +141,23 @@ public sealed class ProjectHomeRenderEngine(IDocumentStore store, ILogger<Projec
                 HashSet<string> archivedTaskDirectoryNames = [];
                 foreach (TaskDetails task in tasks)
                 {
-                    bool archived = IsArchived(task, currentRunStates);
+                    bool archived = IsArchived(task, taskIdsWithCompletedRun, currentRunStates);
+                    if (!archived
+                        && CurrentRunIsLiveOrUnknown(task, currentRunStates)
+                        && HomeEntryWriter.FindExistingDirectory(archivedTasksRoot, task.Id) is not null)
+                    {
+                        // The task's own directory is presently inside tasks/_archive/ — a reopen
+                        // RunLauncher dispatched straight there via its alternate-root search, ahead
+                        // of this sweep ever moving it back — and the run now writing into it is
+                        // still live (or its projection has not caught up yet, which is the same
+                        // "cannot prove it's safe" signal). Moving it back out from under that run
+                        // is exactly the hazard the Abandoned branch above already guards against,
+                        // generalized to every non-terminal state (adversarial review, backlog 51
+                        // cycle 2). Defer: a later sweep, once the run stops being live, moves it
+                        // back on its own.
+                        archived = true;
+                    }
+
                     string directoryName = TaskDocumentRenderer.DirectoryName(task);
                     (archived ? archivedTaskDirectoryNames : liveTaskDirectoryNames).Add(directoryName);
 
@@ -178,38 +219,62 @@ public sealed class ProjectHomeRenderEngine(IDocumentStore store, ILogger<Projec
     /// for the dependency rule — Done alone is not enough, because <c>TaskCompleted</c> fires the
     /// moment the pull request opens, well before a human, Copilot, or the closeout monitor's own
     /// review loop is done with it. Only <c>RunCompleted</c>, appended once the closeout monitor
-    /// observes the merge, means the story is actually over.
+    /// observes the merge, means the story is actually over — and it is asked of every run the
+    /// task ever had, not only its current one (adversarial review, backlog 51 cycle 2): a
+    /// follow-up whose closeout lands before its own <c>RunDispatched</c> does leaves
+    /// <c>CurrentRunId</c> naming a run with no projection at all, which would never archive if
+    /// only the current run's own state counted.
+    /// <para>
+    /// <c>h9k task resolve</c>'s Failed-only attestation exit (Decisions Log #27) needs a second,
+    /// run-independent signal rather than a broader run search: it ends the task Done specifically
+    /// because the platform's own bookkeeping never will observe a merge for it ("the bookkeeping
+    /// died"), so no run of this task will ever carry <c>RunCompleted</c> — <c>TaskResolved</c> IS
+    /// the closure, on the human's attestation alone. <see cref="TaskDetails.ResolvedReason"/>,
+    /// set only by that event and never cleared, is exactly that signal.
+    /// </para>
     /// <para>
     /// Abandoned does not get the same free pass "run or no run" first gave it (adversarial
     /// review, cycle 1): a human abandoning a task with a live agent does not kill that agent —
     /// no daemon-side handler reacts to <c>TaskAbandoned</c> at all — so a task can sit Abandoned
     /// while its current run is still writing to <c>runs/&lt;run-id&gt;/</c>. Moving that directory
     /// out from under a live process is exactly the hazard the Done rule above already exists to
-    /// avoid, so Abandoned waits on the same signal: no run at all, or the current run has stopped
-    /// being live (<see cref="RunState.IsLive"/> — the same predicate <c>RunSupervisor</c> polls
-    /// against). An unrecognised run state is treated as still-live rather than guessed safe, so a
-    /// missing or not-yet-materialised run projection defers the move to a future sweep instead of
-    /// racing it.
+    /// avoid, so Abandoned waits on the same signal as <see cref="CurrentRunIsLiveOrUnknown"/>: no
+    /// run at all, or the current run has stopped being live (<see cref="RunState.IsLive"/> — the
+    /// same predicate <c>RunSupervisor</c> polls against). A missing or not-yet-materialised run
+    /// projection is treated as still-live rather than guessed safe, deferring the move to a
+    /// future sweep instead of racing it — an actual <see cref="RunState.Unknown"/> projection,
+    /// by contrast, is not live (<see cref="RunState.IsLive"/> excludes it) and archives normally.
     /// </para>
     /// </summary>
-    private static bool IsArchived(TaskDetails task, IReadOnlyDictionary<Guid, RunState> currentRunStates)
+    private static bool IsArchived(
+        TaskDetails task, IReadOnlySet<Guid> taskIdsWithCompletedRun, IReadOnlyDictionary<Guid, RunState> currentRunStates)
     {
         if (task.State == TaskState.Done)
         {
-            return task.CurrentRunId is { } doneRunId
-                && currentRunStates.TryGetValue(doneRunId, out RunState? doneRunState)
-                && doneRunState == RunState.Completed;
+            return taskIdsWithCompletedRun.Contains(task.Id) || task.ResolvedReason.IsNotBlank();
         }
 
         if (task.State == TaskState.Abandoned)
         {
-            return task.CurrentRunId is not { } abandonedRunId
-                || (currentRunStates.TryGetValue(abandonedRunId, out RunState? abandonedRunState)
-                    && !abandonedRunState.IsLive);
+            return !CurrentRunIsLiveOrUnknown(task, currentRunStates);
         }
 
         return false;
     }
+
+    /// <summary>
+    /// Whether the run this task currently hangs on is either genuinely live
+    /// (<see cref="RunState.IsLive"/>) or cannot yet be proven otherwise — no run at all is the
+    /// only case this returns false for without a run state to check, since nothing is writing to
+    /// this task's directory when it has no current run. Shared by the Abandoned archive guard
+    /// above and the render loop's own guard against moving a task's directory back out of
+    /// <c>tasks/_archive/</c> while the run that was dispatched straight into it (a reopen,
+    /// <c>RunLauncher</c>'s alternate-root search, backlog 51) is still writing there — the same
+    /// "cannot prove it's safe" caution, generalized past the Abandoned state that first needed it.
+    /// </summary>
+    private static bool CurrentRunIsLiveOrUnknown(TaskDetails task, IReadOnlyDictionary<Guid, RunState> currentRunStates) =>
+        task.CurrentRunId is { } currentRunId
+        && (!currentRunStates.TryGetValue(currentRunId, out RunState? currentRunState) || currentRunState.IsLive);
 
     private RenderOutcome RenderTask(
         string tasksRoot, string archivedTasksRoot, TaskDetails task, bool archived, string projectName)
