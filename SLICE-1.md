@@ -313,7 +313,7 @@ reattach shared with macOS in `ProcessManagerBase` since neither turned out to b
 proven by `ProcessManagerParityTests` — one suite, run for real against whichever platform's
 implementation is under test, green on both CI legs. `h9k daemon start|stop|status` and
 `h9k daemon autostart enable|disable` (`WindowsDaemonAutostart`, a Task Scheduler logon task,
-never a service) all work on Windows now; `h9kd install` still only places binaries and registers
+never a service) all work on Windows now; `h9k install` still only places binaries and registers
 nothing, exactly as decision #31 requires everywhere — `autostart enable` is the opt-in that
 registers the logon task. **What is still open, deliberately not this task's to close:** the real
 end-to-end walk (bootstrap → install → doctor → daemon start → autostart → one real task to a PR)
