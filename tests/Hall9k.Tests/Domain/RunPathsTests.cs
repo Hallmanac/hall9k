@@ -109,6 +109,23 @@ public sealed class RunPathsTests
                 "the first '/tasks/' in the path belongs to the home, not the task's own root");
         }
 
+        [Fact]
+        public void A_home_whose_own_path_contains_a_tasks_archive_segment_still_resolves_the_tasks_own_root()
+        {
+            // Adversarial review, backlog 51 cycle 7: LastIndexOf found the HOME's own
+            // "/tasks/_archive/" segment first and stripped that instead of the task's own one,
+            // silently returning the stale recorded path. Anchoring by position from the end of
+            // the path (four or five trailing segments) rather than searching the string for a
+            // literal match sidesteps the home's own path contents entirely.
+            string home = Path.Combine(_home, "tasks", "_archive", "hall9k");
+            string recorded = Path.Combine(home, "tasks", "abc12345-closed-out", "runs", "some-run");
+            string actual = Path.Combine(home, "tasks", "_archive", "abc12345-closed-out", "runs", "some-run");
+            Directory.CreateDirectory(actual);
+
+            RunPaths.ResolveCurrentDirectory(recorded).Should().Be(actual,
+                "the home's own '/tasks/_archive/' segment must not be mistaken for the task's own root");
+        }
+
         public void Dispose() => Directory.Delete(_home, recursive: true);
     }
 }
