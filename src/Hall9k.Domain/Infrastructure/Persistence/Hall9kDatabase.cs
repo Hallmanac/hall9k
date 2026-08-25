@@ -177,7 +177,17 @@ public static class Hall9kDatabase
         return null;
     }
 
-    private static readonly JsonSerializerOptions SerializerOptions = new() { WriteIndented = true };
+    // The exact leniency PlatformConfigFile.LenientDocumentOptions parses this same file with
+    // (comments skipped, trailing commas allowed): a file h9k config show and h9k daemon status
+    // call healthy must never fail this connection-string read, or a fresh install with a
+    // commented config.json reports PlatformConfigFileMalformed and every database command —
+    // including an autostarted daemon — dies with "No Hall9k connection string is configured."
+    private static readonly JsonSerializerOptions SerializerOptions = new()
+    {
+        WriteIndented = true,
+        ReadCommentHandling = JsonCommentHandling.Skip,
+        AllowTrailingCommas = true,
+    };
 
     /// <summary>
     /// One key of a config file this type does not own alone — <see cref="JsonExtensionData"/>
