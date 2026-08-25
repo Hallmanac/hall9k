@@ -38,6 +38,14 @@ public static class WindowsAppendOnlyLog
     private const uint OpenAlways = 4;
     private const uint FileAttributeNormal = 0x80;
 
+    // Encoding.UTF8 carries a byte-order-mark preamble that StreamWriter only suppresses
+    // when the underlying stream already reports Position > 0 — never true for a freshly
+    // opened FILE_APPEND_DATA handle, even though it writes at end-of-file, so each of the
+    // two writers TakeOverConsoleOutput opens would otherwise stamp EF BB BF into the middle
+    // of an already-populated h9kd.log on every daemon start. The cmd.exe `>>` handle this
+    // replaces never emitted one, so this is that same no-BOM behavior, made explicit.
+    private static readonly UTF8Encoding NoPreambleUtf8 = new(encoderShouldEmitUTF8Identifier: false);
+
     /// <summary>
     /// Swaps <see cref="Console.Out"/> and <see cref="Console.Error"/> for two independent
     /// append-only handles onto <paramref name="logFilePath"/>. Called once, early in
@@ -70,7 +78,7 @@ public static class WindowsAppendOnlyLog
         }
 
         FileStream stream = new(handle, FileAccess.Write);
-        return new StreamWriter(stream, Encoding.UTF8) { AutoFlush = true };
+        return new StreamWriter(stream, NoPreambleUtf8) { AutoFlush = true };
     }
 
     [DllImport("kernel32.dll", EntryPoint = "CreateFileW", CharSet = CharSet.Unicode, SetLastError = true)]
