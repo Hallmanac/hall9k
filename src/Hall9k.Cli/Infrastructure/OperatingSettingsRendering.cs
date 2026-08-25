@@ -22,9 +22,9 @@ public static class OperatingSettingsRendering
         if (report.ConfigFileProblem is { } problem)
         {
             string consequence = problem.DaemonFailsToStart
-                ? "the daemon's own ConfigurationBinder fails on the same value, so it will crash outright at startup rather than fall back"
-                : "the daemon skips the file for this run — environment variables and built-in defaults still apply";
-            lines.Add($"{problem.Message} {consequence}.");
+                ? "The daemon's own ConfigurationBinder fails on the same value, so it will crash outright at startup rather than fall back."
+                : "The daemon skips the file for this run — environment variables and built-in defaults still apply.";
+            lines.Add($"{problem.Message} {consequence}");
         }
 
         lines.AddRange(report.UnusableEnvironmentVariables);
