@@ -335,13 +335,16 @@ is the guided path, not the only one. A running daemon binds configuration once,
 change — from either path — takes effect on the next `h9k daemon stop` / `h9k daemon start`, the
 same as changing an environment variable would.
 
-`h9k daemon status` prints the identical resolution, but from *this shell's* environment, not the
-running daemon's own: a value with `(env: …)` there names what a daemon started fresh from this
-shell right now would pick up, which is not necessarily what the already-running process actually
-started with — an autostarted daemon in particular never sees a `Hall9k__` variable at all, since
-`DaemonEnvironment.InheritedVariables` carries only `PATH` and the `HALL9K_*` redirection
-variables into the LaunchAgent. The config-file and default tiers do not have this gap: both are
-read from disk fresh on every invocation, so they describe the running daemon exactly.
+`h9k daemon status` prints the identical resolution, but it names what a daemon *started right
+now* would pick up, not what the already-running process actually started with — and that gap
+is not limited to the `(env: …)` origin. An autostarted daemon in particular never sees a
+`Hall9k__` variable at all, since `DaemonEnvironment.InheritedVariables` carries only `PATH` and
+the `HALL9K_*` redirection variables into the LaunchAgent, so an `(env: …)` origin there may not
+match what it started with. The config-file and default tiers have the same gap for a different
+reason: they are read from disk fresh on every invocation, which makes them fresh relative to the
+*file*, not to the *running process* — a running daemon binds configuration once, at startup, so
+if the file is created, edited, or removed afterwards, `h9k daemon status` shows the file's
+current state while the daemon keeps running on whatever it read when it started.
 
 `h9k install` and `h9k update` never touch an existing config file; a missing one is created (with
 defaults, and only the settings you asked to change) the first time `h9k config set` needs it,

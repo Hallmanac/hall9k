@@ -52,10 +52,12 @@ public sealed class DaemonStatusCommand : Hall9kAsyncCommand<DaemonStatusCommand
 
         string settingsHeader = running is null
             ? "settings a daemon started now would resolve (h9k config show for the full picture, h9k config set to change one):"
-            : $"settings resolved from this shell right now, not observed from pid {running.ProcessId} itself — an "
-              + "autostarted daemon never receives Hall9k__ variables, so an (env: …) origin below may not match "
-              + "what the running daemon actually started with (h9k config show for the full picture, h9k config "
-              + "set to change one):";
+            : $"settings a daemon started now would resolve, not observed from pid {running.ProcessId} itself — a "
+              + "running daemon binds configuration once, at startup, so none of these origins are guaranteed to "
+              + "match what it actually started with: an (env: …) origin may not match because an autostarted "
+              + "daemon never receives Hall9k__ variables at all, and a (config: …) origin or built-in default may "
+              + "not match either if the file was created, edited, or removed after this daemon started (h9k "
+              + "config show for the full picture, h9k config set to change one):";
         AnsiConsole.MarkupLineInterpolated($"[dim]{settingsHeader}[/]");
         foreach ((string label, string value) in OperatingSettingsRendering.Rows(report))
         {
