@@ -134,7 +134,7 @@ public sealed class InstallCommand : Hall9kAsyncCommand<InstallCommand.Settings>
         // place, but only for a checkout that carries the fix (an older branch, a stray
         // worktree, a hand-assembled payload will not), so this is the guard that still holds
         // when it doesn't (origin incident: found sitting in ~/.hall9k/bin, 2026-08-24).
-        RemoveDevelopmentSettingsFiles(staging);
+        RemoveDevelopmentSettingsFiles(staging, cancellationToken);
 
         DaemonProcessDescriptor? runningBefore = DaemonProcess.Probe();
 
@@ -324,8 +324,10 @@ public sealed class InstallCommand : Hall9kAsyncCommand<InstallCommand.Settings>
     /// <see cref="UpdateCommand"/>) produced staging — including the local `dotnet publish`
     /// path, which never goes through <see cref="StageFromRelease"/>'s own filtering and depends
     /// on Directory.Build.targets alone to keep the file out in the first place. Recursive
-    /// because a nested project directory can carry its own settings file.</summary>
-    internal static void RemoveDevelopmentSettingsFiles(string staging)
+    /// because a nested project directory can carry its own settings file, and checked per file —
+    /// same as <see cref="StageFromRelease"/> and <see cref="CopyDirectoryRecursively"/> on the
+    /// same tree — rather than left to run the whole walk uninterruptibly.</summary>
+    internal static void RemoveDevelopmentSettingsFiles(string staging, CancellationToken cancellationToken = default)
     {
         if (!Directory.Exists(staging))
         {
@@ -334,6 +336,7 @@ public sealed class InstallCommand : Hall9kAsyncCommand<InstallCommand.Settings>
 
         foreach (string file in Directory.EnumerateFiles(staging, "*", SearchOption.AllDirectories))
         {
+            cancellationToken.ThrowIfCancellationRequested();
             if (IsDevelopmentSettingsFile(Path.GetFileName(file)))
             {
                 File.Delete(file);

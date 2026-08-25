@@ -15,17 +15,38 @@ namespace Hall9k.Tests.Cli;
 public sealed class PublishExcludesDevelopmentSettingsTests : IDisposable
 {
     private readonly string directory = Directory.CreateTempSubdirectory("h9k-publish-").FullName;
+    private readonly string artifactsPath = Directory.CreateTempSubdirectory("h9k-publish-artifacts-").FullName;
 
-    public void Dispose() => Directory.Delete(directory, recursive: true);
+    public void Dispose()
+    {
+        Directory.Delete(directory, recursive: true);
+        Directory.Delete(artifactsPath, recursive: true);
+    }
 
     [Fact]
     public async Task Publishing_the_daemon_excludes_its_development_settings_file()
     {
         string repoRoot = FindRepositoryRoot();
+        using CancellationTokenSource timeout = new(TimeSpan.FromMinutes(5));
+
+        // UseArtifactsOutput/ArtifactsPath (global properties, so they propagate to every
+        // project in the graph — Domain, Connectors and ServiceDefaults included) redirect
+        // every project's obj/bin into this test's own temp directory instead of the repo's
+        // own src/Hall9k.*/obj|bin/Release. Without that, this publish races any other MSBuild
+        // touching the same project directories (a concurrent dotnet build, a second run of
+        // this test) for the underlying obj cache files, and CI's `dotnet test --no-build`
+        // would otherwise come after a build step that left those directories in a state this
+        // publish then rewrites. The timeout bounds the other risk this test carries: a
+        // `dotnet publish` blocked on NuGet's machine-wide global-packages lock hangs
+        // indefinitely rather than failing, since Exec.RunAsync has no process-level timeout
+        // of its own.
         ExecResult publish = await Exec.RunAsync(
             "dotnet",
-            ["publish", Path.Combine(repoRoot, "src", "Hall9k.Daemon"), "-c", "Release", "-o", directory, "--nologo"],
-            CancellationToken.None);
+            [
+                "publish", Path.Combine(repoRoot, "src", "Hall9k.Daemon"), "-c", "Release", "-o", directory, "--nologo",
+                "-p:UseArtifactsOutput=true", $"-p:ArtifactsPath={artifactsPath}",
+            ],
+            timeout.Token);
 
         publish.Succeeded.Should().BeTrue(
             $"dotnet publish should succeed:\n{publish.StandardOutput}\n{publish.StandardError}");
