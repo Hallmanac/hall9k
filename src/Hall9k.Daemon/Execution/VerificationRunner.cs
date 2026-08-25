@@ -170,15 +170,30 @@ public sealed class VerificationRunner(
         string logFile = Path.Combine(runDirectory, $"verify-{Sanitize(gate.Name)}.log");
         Directory.CreateDirectory(runDirectory);
 
+        string innerCommand = $"({gate.Command}) > \"{logFile}\" 2>&1";
+
         using Process process = new();
         process.StartInfo = new ProcessStartInfo
         {
-            FileName = "/bin/sh",
             WorkingDirectory = worktreePath,
             UseShellExecute = false,
         };
-        process.StartInfo.ArgumentList.Add("-c");
-        process.StartInfo.ArgumentList.Add($"({gate.Command}) > \"{logFile}\" 2>&1");
+        if (OperatingSystem.IsWindows())
+        {
+            // The raw Arguments string, never ArgumentList (see WindowsCommandLine): a
+            // project's verify command is entirely capable of carrying its own embedded
+            // quotes (this repo's own CI filter, `--filter "Category!=RequiresDocker"`,
+            // is exactly that shape), and ArgumentList would C-runtime-escape them in a
+            // way cmd.exe's own /c parsing does not undo.
+            process.StartInfo.FileName = "cmd.exe";
+            process.StartInfo.Arguments = WindowsCommandLine.WrapForCmdExe(innerCommand);
+        }
+        else
+        {
+            process.StartInfo.FileName = "/bin/sh";
+            process.StartInfo.ArgumentList.Add("-c");
+            process.StartInfo.ArgumentList.Add(innerCommand);
+        }
 
         try
         {

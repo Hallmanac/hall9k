@@ -611,9 +611,12 @@ public sealed class RunLauncherTests(PostgresFixture postgres) : IClassFixture<P
     /// without reaching a dispatch, and a task with no BlockedBy edges assembles nothing
     /// anyway (Decisions Log #36).
     /// </summary>
-    private static BlockerContextAssembler NewContextAssembler(DocumentStore store) =>
-        new(store, new ClaudeExecutor(NullLogger<ClaudeExecutor>.Instance), new FakeProcessManager(),
+    private static BlockerContextAssembler NewContextAssembler(DocumentStore store)
+    {
+        FakeProcessManager processes = new();
+        return new(store, new ClaudeExecutor(NullLogger<ClaudeExecutor>.Instance, processes), processes,
             Options.Create(new DaemonOptions()), NullLogger<BlockerContextAssembler>.Instance);
+    }
 
     private static RunSupervisor NewSupervisor(DocumentStore store, NodeContext node)
     {
@@ -621,7 +624,7 @@ public sealed class RunLauncherTests(PostgresFixture postgres) : IClassFixture<P
         VerificationRunner verification = new(
             store, Options.Create(new DaemonOptions()), NullLogger<VerificationRunner>.Instance);
         ReviewEngine review = new(
-            store, new ClaudeExecutor(NullLogger<ClaudeExecutor>.Instance), processes, verification,
+            store, new ClaudeExecutor(NullLogger<ClaudeExecutor>.Instance, processes), processes, verification,
             Options.Create(new DaemonOptions()), NullLogger<ReviewEngine>.Instance);
         return new RunSupervisor(store, node, processes, verification, review,
             new PullRequestOpener(store, NullLogger<PullRequestOpener>.Instance),
