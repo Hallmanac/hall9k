@@ -110,6 +110,15 @@ public sealed class TaskDetails
     public string? RetryReason { get; set; }
     /// <summary>The human's attestation that the objective was met despite the run failure (Decisions Log #27); shown by h9k task show.</summary>
     public string? ResolvedReason { get; set; }
+    /// <summary>
+    /// The run <see cref="Events.TaskResolved"/> attested for. Kept apart from
+    /// <see cref="ResolvedReason"/>, which survives a reopen on purpose (see
+    /// <c>Apply(TaskReopened)</c>), so a reader can still tell whether the standing reason
+    /// belongs to the task's current run or an earlier, superseded one — the same distinction
+    /// <see cref="FailedRunId"/> gives <see cref="FailureReason"/>, and for the same consumer:
+    /// the daemon's project-home render sweep's Done-archiving check.
+    /// </summary>
+    public Guid? ResolvedRunId { get; set; }
     /// <summary>The human's walk-away note; kept apart from FailureReason so the run's observed failure stays visible beside it.</summary>
     public string? AbandonedReason { get; set; }
     public DateTimeOffset AddedAt { get; set; }
@@ -332,13 +341,16 @@ public sealed class TaskDetailsProjection : SingleStreamProjection<TaskDetails, 
         view.FinishedAt = @event.Data.CompletedAt;
     }
 
-    // ResolvedReason is cleared here, not just carried: it is the signal
-    // ProjectHomeRenderEngine.IsArchived treats as permanent closure because no run of a
-    // resolve-only completion will ever carry RunCompleted (Decisions Log #27) — true only of
-    // the completion that just reopened. The follow-up run this starts can still complete
-    // normally, so leaving the old reason standing would archive it the moment TaskCompleted
-    // reinstates Done, ahead of the closeout monitor ever observing its merge. The events
-    // themselves still carry the original resolution, so nothing about it is lost.
+    // ResolvedReason survives here on purpose (adversarial review, backlog 51 cycle 8): it is a
+    // human's recorded attestation (Decisions Log #27), and erasing it on reopen would drop the
+    // "Resolved: …" row h9k task show renders the moment a follow-up starts, with no way to
+    // recover it short of reading the raw stream — the same doctrine Apply(TaskFailed)/
+    // Apply(TaskRetried) already hold for FailureReason. What ProjectHomeRenderEngine.IsArchived
+    // actually needs is not "was this task ever resolved" but "does the standing resolve
+    // attestation belong to the task's CURRENT run" — exactly what ResolvedRunId (compared
+    // against CurrentRunId) answers, the same way FailedRunId discriminates FailureReason.
+    // Nulling CurrentRunId here is what makes that comparison correctly read "not this run"
+    // until the follow-up's own TaskClaimed sets a fresh one.
     public void Apply(IEvent<TaskReopened> @event, TaskDetails view)
     {
         view.FollowUpBranch = @event.Data.Branch;
@@ -346,7 +358,6 @@ public sealed class TaskDetailsProjection : SingleStreamProjection<TaskDetails, 
         view.FollowUpReason = @event.Data.Reason;
         view.ClaimedByNodeId = null;
         view.CurrentRunId = null;
-        view.ResolvedReason = null;
         view.State = TaskState.Queued;
         view.FinishedAt = null;
     }
@@ -375,6 +386,7 @@ public sealed class TaskDetailsProjection : SingleStreamProjection<TaskDetails, 
     public void Apply(IEvent<TaskResolved> @event, TaskDetails view)
     {
         view.ResolvedReason = @event.Data.Reason;
+        view.ResolvedRunId = view.CurrentRunId;
         view.PullRequestUrl = @event.Data.PullRequestUrl ?? view.PullRequestUrl;
         view.FollowUpBranch = null;
         view.FollowUpKind = FollowUpKind.Unknown;

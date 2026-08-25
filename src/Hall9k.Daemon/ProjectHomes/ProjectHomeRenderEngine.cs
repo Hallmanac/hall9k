@@ -256,12 +256,18 @@ public sealed class ProjectHomeRenderEngine(IDocumentStore store, ILogger<Projec
     /// <c>CurrentRunId</c> naming a run with no projection at all, which would never archive if
     /// only the current run's own state counted.
     /// <para>
-    /// <c>h9k task resolve</c>'s Failed-only attestation exit (Decisions Log #27) needs a second,
-    /// run-independent signal rather than a broader run search: it ends the task Done specifically
-    /// because the platform's own bookkeeping never will observe a merge for it ("the bookkeeping
-    /// died"), so no run of this task will ever carry <c>RunCompleted</c> — <c>TaskResolved</c> IS
-    /// the closure, on the human's attestation alone. <see cref="TaskDetails.ResolvedReason"/>,
-    /// set only by that event and never cleared, is exactly that signal.
+    /// <c>h9k task resolve</c>'s Failed-only attestation exit (Decisions Log #27) needs a second
+    /// signal rather than a broader run search: it ends the task Done specifically because the
+    /// platform's own bookkeeping never will observe a merge for it ("the bookkeeping died"), so
+    /// no run of this task will ever carry <c>RunCompleted</c> — <c>TaskResolved</c> IS the
+    /// closure, on the human's attestation alone. <see cref="TaskDetails.ResolvedReason"/> is that
+    /// signal, but it survives a reopen on purpose (adversarial review, backlog 51 cycle 8 — the
+    /// same doctrine <see cref="TaskDetails.FailureReason"/> already holds), so a resolved-then-
+    /// reopened task whose follow-up later completes normally still carries the OLD attestation
+    /// text. <see cref="TaskDetails.ResolvedRunId"/>, compared against the task's current run,
+    /// discriminates "this resolve belongs to the run standing right now" from "a stale note left
+    /// over from a superseded run" — exactly as <see cref="TaskDetails.FailedRunId"/> already does
+    /// for <c>FailureReason</c>.
     /// </para>
     /// <para>
     /// A third case reaches Done with no <c>RunCompleted</c> and no <c>ResolvedReason</c> either
@@ -334,7 +340,7 @@ public sealed class ProjectHomeRenderEngine(IDocumentStore store, ILogger<Projec
         if (task.State == TaskState.Done)
         {
             return taskIdsWithCompletedRun.Contains(task.Id)
-                || task.ResolvedReason.IsNotBlank()
+                || (task.ResolvedReason.IsNotBlank() && task.ResolvedRunId == task.CurrentRunId)
                 || (task.CurrentRunId is { } currentRunId && !currentRunStates.ContainsKey(currentRunId));
         }
 
