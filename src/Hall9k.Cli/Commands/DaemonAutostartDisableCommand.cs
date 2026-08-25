@@ -25,14 +25,25 @@ public sealed class DaemonAutostartDisableCommand : Hall9kAsyncCommand<DaemonAut
             return ExitCodes.Ok;
         }
 
-        DaemonAutostartDisableOutcome outcome = await autostart.DisableAsync(cancellationToken);
-        AnsiConsole.MarkupLine("[green]Autostart disabled[/]: the LaunchAgent is unregistered.");
+        DaemonAutostartDisableOutcome outcome;
+        try
+        {
+            outcome = await autostart.DisableAsync(cancellationToken);
+        }
+        catch (InvalidOperationException exception)
+        {
+            await Console.Error.WriteLineAsync(
+                $"Autostart disable failed: the {autostart.MechanismDescription} may still be registered. {exception.Message}");
+            return ExitCodes.Error;
+        }
+
+        AnsiConsole.MarkupLineInterpolated($"[green]Autostart disabled[/]: the {autostart.MechanismDescription} is unregistered.");
         AnsiConsole.MarkupLine(outcome switch
         {
             DaemonAutostartDisableOutcome.DaemonStopped =>
-                "[yellow]The launchd-owned daemon was stopped with it[/] — start it on demand again with h9k daemon start.",
+                "[yellow]The autostart-owned daemon was stopped with it[/] — start it on demand again with h9k daemon start.",
             DaemonAutostartDisableOutcome.DaemonStopping =>
-                "[yellow]The launchd-owned daemon was signalled and is still shutting down[/] — it finishes in-flight "
+                "[yellow]The autostart-owned daemon was signalled and is still shutting down[/] — it finishes in-flight "
                 + "event appends first; h9k daemon status says when it is gone.",
             _ => "[dim]No running daemon was stopped; whatever runs now is untouched and starts only when "
                 + "h9k daemon start runs it.[/]",
