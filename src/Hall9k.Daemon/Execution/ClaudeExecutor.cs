@@ -1,5 +1,5 @@
 using Hall9k.Domain.Infrastructure.Storage;
-using System.Diagnostics;
+using Hall9k.Daemon.ProcessManagement;
 using Hall9k.Domain.Features.Run;
 using Hall9k.Domain.Shared.ValueObjects;
 
@@ -8,21 +8,22 @@ namespace Hall9k.Daemon.Execution;
 /// <summary>
 /// Spawns claude -p with the settled flag policy (Decisions Log #1): plain -p under the
 /// subscription (full config inherited — agents act as the owner, with the owner's tools);
-/// --bare only in api-key mode. Stdout redirects to the run's stream file via the shell,
-/// so the CHILD owns the file handle and a daemon restart never breaks capture (log #2).
-/// Prompt and settings travel as files — no shell-escaping of user content.
+/// --bare only in api-key mode. Stdout redirects to the run's stream file through
+/// <see cref="IProcessManager"/>'s platform shell, so the CHILD owns the file handle and a
+/// daemon restart never breaks capture (log #2). Prompt and settings travel as files — no
+/// shell-escaping of user content.
 /// The model is always passed explicitly on a fresh session (log #33): the one thing the
 /// platform deliberately does NOT inherit from the owner's config, because a personal
 /// default changed on a Tuesday is not a platform decision.
 /// </summary>
-public sealed class ClaudeExecutor(ILogger<ClaudeExecutor> logger) : IExecutor
+public sealed class ClaudeExecutor(ILogger<ClaudeExecutor> logger, IProcessManager processManager) : IExecutor
 {
     public async Task<SpawnedAgent> SpawnAsync(AgentSpawnRequest request, CancellationToken cancellationToken)
     {
         // The chain always ends at an explicit platform default, so an unusable model here
         // means a caller skipped it. Refuse rather than spawn and inherit silently; that
-        // silence is the origin incident (log #33). The value also lands in a /bin/sh
-        // command, so a malformed one is never quoted-and-hoped-for.
+        // silence is the origin incident (log #33). The value also lands in the platform
+        // shell's command line, so a malformed one is never quoted-and-hoped-for.
         if (!request.Model.IsWellFormed && request.ResumeSessionId is null)
         {
             throw new InvalidOperationException(
@@ -50,43 +51,17 @@ public sealed class ClaudeExecutor(ILogger<ClaudeExecutor> logger) : IExecutor
         await File.WriteAllTextAsync(promptFile, request.Prompt, cancellationToken);
         await File.WriteAllTextAsync(SettingsFile(request, runDirectory), SettingsContent, cancellationToken);
 
-        string command =
-            $"exec {ClaudeBinary()} {string.Join(' ', Arguments(request, runDirectory))} " +
-            $"< \"{promptFile}\" " +
-            $"> \"{streamFile}\" " +
-            $"2> \"{standardErrorFile}\"";
+        string command = $"\"{ClaudeBinary()}\" {string.Join(' ', Arguments(request, runDirectory))}";
 
-        Process process = new();
-        process.StartInfo = new ProcessStartInfo
-        {
-            FileName = "/bin/sh",
-            WorkingDirectory = request.WorktreePath,
-            UseShellExecute = false,
-        };
         // The child inherits the owner's environment (log #1) with the caller's additions on
         // top — the caller states what this particular session needs, and nothing else changes.
-        foreach ((string name, string value) in request.Environment)
-        {
-            process.StartInfo.Environment[name] = value;
-        }
-        // ArgumentList passes the command verbatim — .NET's Arguments string parser does
-        // not understand single quotes, and shell syntax must reach sh untouched.
-        process.StartInfo.ArgumentList.Add("-c");
-        process.StartInfo.ArgumentList.Add(command);
+        SpawnedProcess spawned = processManager.Spawn(new ProcessSpawnRequest(
+            command, request.WorktreePath, [.. request.Environment], promptFile, streamFile, standardErrorFile));
 
-        using (process)
-        {
-            if (!process.Start())
-            {
-                throw new InvalidOperationException($"Failed to start agent for run {request.RunId}.");
-            }
-
-            DateTimeOffset startedAt = new(process.StartTime.ToUniversalTime(), TimeSpan.Zero);
-            logger.LogInformation(
-                "Agent spawned for run {RunId}: pid {ProcessId}, session {SessionId}, mode {Mode}, model {Model}",
-                request.RunId, process.Id, request.SessionId, request.Mode.Value, request.Model.Value);
-            return new SpawnedAgent(process.Id, startedAt);
-        }
+        logger.LogInformation(
+            "Agent spawned for run {RunId}: pid {ProcessId}, session {SessionId}, mode {Mode}, model {Model}",
+            request.RunId, spawned.ProcessId, request.SessionId, request.Mode.Value, request.Model.Value);
+        return new SpawnedAgent(spawned.ProcessId, spawned.StartedAt);
     }
 
     private static string ClaudeBinary() =>

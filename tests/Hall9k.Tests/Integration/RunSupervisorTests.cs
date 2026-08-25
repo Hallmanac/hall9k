@@ -648,11 +648,11 @@ public sealed class RunSupervisorTests(PostgresFixture postgres) : IClassFixture
     private static RunSupervisor NewSupervisor(
         DocumentStore store, NodeContext node, IProcessManager? processManager = null, ILogger<RunSupervisor>? logger = null)
     {
-        processManager ??= new UnixProcessManager();
+        processManager ??= ProcessManagers.ForCurrentPlatform();
         VerificationRunner verification = new(
             store, Options.Create(new DaemonOptions()), NullLogger<VerificationRunner>.Instance);
         ReviewEngine review = new(
-            store, new ClaudeExecutor(NullLogger<ClaudeExecutor>.Instance), processManager, verification,
+            store, new ClaudeExecutor(NullLogger<ClaudeExecutor>.Instance, processManager), processManager, verification,
             Options.Create(new DaemonOptions()), NullLogger<ReviewEngine>.Instance);
         return new RunSupervisor(store, node, processManager, verification, review,
             new PullRequestOpener(store, NullLogger<PullRequestOpener>.Instance),
