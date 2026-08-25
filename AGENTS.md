@@ -28,6 +28,7 @@ docker compose up -d         # Postgres only (installed mode / manual runs)
 h9k install                  # publish release binaries to ~/.hall9k/bin (no service registered)
 h9k update                   # refresh an already-installed machine from the latest GitHub release, no repo/SDK needed
 h9k daemon start|stop|status # the CLI-owned daemon lifecycle (Decisions Log #31)
+h9k config show|set          # the daemon's durable operating settings: concurrency, model-by-role (backlog 59)
 h9k doctor                   # diagnose the database situation and what to do about it (Decisions Log #73, #74)
 h9k project add --name <n> --repo-url <url>   # register a project and create its home directory
 h9k project init <name>      # create, repair or refresh a project's home; idempotent

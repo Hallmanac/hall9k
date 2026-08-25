@@ -169,7 +169,8 @@ Everything hangs off `~/.hall9k` (or `HALL9K_HOME`):
 ```
 ~/.hall9k/
 ├── bin/                        h9k and h9kd release binaries (h9k install)
-├── config.json                 the platform config file (h9k doctor's connectionString, §Postgres)
+├── config.json                 the platform config file: connectionString (h9k doctor, §Postgres)
+│                               and the "hall9k" section (h9k config set/show, §Configuration)
 ├── credentials/                file-kind secrets, one file per credential
 ├── h9kd.log                    the daemon log; h9k daemon status tails it
 ├── h9kd.pid, h9kd.lock         the local liveness probe
@@ -260,7 +261,9 @@ the remote, and in remote-tracking refs.
 | `HALL9K_CLAUDE_PATH` | Pins the `claude` binary instead of resolving it through `PATH` |
 
 Daemon options bind from configuration in the usual .NET way, so each is also an environment
-variable under the `Hall9k__` prefix. The ones worth knowing:
+variable under the `Hall9k__` prefix — and, for the settings worth tuning per machine, from the
+platform config file too (see [Daemon operating settings](#daemon-operating-settings) below). The
+ones worth knowing:
 
 | Option | Default | What it governs |
 |---|---|---|
@@ -298,6 +301,51 @@ own, because the divisor is read off the lens list rather than written down.
 A queued row names the concurrency ceiling as its reason only when the dispatcher recorded a
 current measurement saying this node is full. With none, it says it is ready and stops, because a
 queue that is not moving has many causes and a stopped daemon is the commonest.
+
+### Daemon operating settings
+
+The concurrency ceiling and the model-by-role policy are durable, not just environment variables
+(backlog 59): they also load from the `"hall9k"` section of the platform config file
+(`~/.hall9k/config.json`, the same file [§Postgres](#postgres) uses for `connectionString`),
+deliberately outside `bin/` — an update replaces `bin/` wholesale, and these settings belong to
+the machine, not the build. Precedence, highest first:
+
+1. An environment variable under the `Hall9k__` prefix — this shell, this invocation.
+2. The platform config file — a durable per-machine setting, written by hand or by `h9k config
+   set`.
+3. The built-in default (the values in the table above).
+
+An environment variable therefore stays a one-off override rather than the only way to set
+anything, which is what makes this durable for the case an environment variable structurally
+cannot reach: a daemon started by autostart (a launchd `LaunchAgent` today, a Windows logon task
+when it lands) has no operator shell to export anything into, so before backlog 59 it always ran
+on built-in defaults no matter what the operator had configured by hand.
+
+```bash
+h9k config show                                        # every setting, and where it came from
+h9k config set --max-concurrent-agent-sessions 4        # the concurrency ceiling
+h9k config set --model-review sonnet --model-fix haiku  # per-role model overrides
+```
+
+`h9k config set` writes to the config file; `h9k config show` resolves a setting the same way
+`DaemonOptions` binds it at daemon startup — env, then config file, then default — and names the
+origin of each, so a shell-quoting mistake or a typo in the file is diagnosable from one command
+instead of a stale-log hunt. Hand-editing the file works just as well as the CLI: `h9k config set`
+is the guided path, not the only one. A running daemon binds configuration once, at startup, so a
+change — from either path — takes effect on the next `h9k daemon stop` / `h9k daemon start`, the
+same as changing an environment variable would.
+
+`h9k daemon status` prints the identical resolution, but from *this shell's* environment, not the
+running daemon's own: a value with `(env: …)` there names what a daemon started fresh from this
+shell right now would pick up, which is not necessarily what the already-running process actually
+started with — an autostarted daemon in particular never sees a `Hall9k__` variable at all, since
+`DaemonEnvironment.InheritedVariables` carries only `PATH` and the `HALL9K_*` redirection
+variables into the LaunchAgent. The config-file and default tiers do not have this gap: both are
+read from disk fresh on every invocation, so they describe the running daemon exactly.
+
+`h9k install` and `h9k update` never touch an existing config file; a missing one is created (with
+defaults, and only the settings you asked to change) the first time `h9k config set` needs it,
+and it says so.
 
 ### Per project and per owner
 
