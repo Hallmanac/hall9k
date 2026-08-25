@@ -68,6 +68,24 @@ jobs:
         shell: bash
         run: echo "${VERSION}" > "dist/${{ matrix.rid }}/VERSION"
 
+      # A Development settings file has no business in a release payload: an installed
+      # daemon always runs Production, so it would ship unread today and become tomorrow's
+      # dev connection string or chatty flag riding into every install (origin: found in
+      # ~/.hall9k/bin beside appsettings.json, 2026-08-24). Hall9k.Cli.csproj and
+      # Hall9k.Daemon.csproj already exclude it from publish output; this is the payload's
+      # own check, catching a project added later that doesn't carry the same guard.
+      # Placed immediately before archiving, so it inspects the exact directory tree that
+      # becomes the release artifact rather than an earlier snapshot of it.
+      - name: Verify no Development settings shipped
+        shell: bash
+        run: |
+          matches=$(find "dist/${{ matrix.rid }}" -iname "*.Development.*")
+          if [ -n "$matches" ]; then
+            echo "::error::Development settings file(s) present in the release payload:"
+            echo "$matches"
+            exit 1
+          fi
+
       # COPYFILE_DISABLE stops macOS's bsdtar from shadowing every file with an AppleDouble
       # ._ entry (extended-attribute/resource-fork sidecars) — without it, the osx-arm64
       # payload doubles its entry count with files no consumer (h9k install --from-release,
