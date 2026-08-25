@@ -85,6 +85,23 @@ public sealed class RunPathsTests
         }
 
         [Fact]
+        public void A_brand_new_run_whose_task_moved_before_the_run_leaf_was_ever_created_still_resolves()
+        {
+            // Adversarial review, backlog 51 cycle 8: a run just dispatched has no leaf directory
+            // on either side yet — ClaudeExecutor creates it only after this call returns — so a
+            // task directory relocated by the render sweep between RunLauncher resolving this
+            // path and ClaudeExecutor creating the leaf must still be found by the task directory
+            // alone existing, not by the (necessarily absent) run leaf.
+            string recorded = Path.Combine(_home, "tasks", "_archive", "abc12345-reopened", "runs", "brand-new-run");
+            string actualTaskDirectory = Path.Combine(_home, "tasks", "abc12345-reopened");
+            Directory.CreateDirectory(actualTaskDirectory);
+
+            RunPaths.ResolveCurrentDirectory(recorded).Should().Be(
+                Path.Combine(actualTaskDirectory, "runs", "brand-new-run"),
+                "the task directory already moved back out of tasks/_archive/, even though this run's own leaf was never created on either side");
+        }
+
+        [Fact]
         public void Neither_the_recorded_nor_the_alternate_path_existing_falls_back_to_the_recorded_path()
         {
             string recorded = Path.Combine(_home, "tasks", "abc12345-gone", "runs", "some-run");
