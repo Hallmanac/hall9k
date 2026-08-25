@@ -366,14 +366,14 @@ public static class SkillSeeder
     /// </summary>
     public static IReadOnlyList<string> RemovePublished(List<string> stillPresent)
     {
-        // The unconfirmed half of TryReadManifest's answer is deliberately discarded here: by
-        // the time h9k uninstall reaches this call, bin/ and the PATH link may already be gone,
-        // so reading as empty on failure (rather than throwing, or refusing to proceed) is the
-        // safe direction — at worst an install-owned skill survives one uninstall attempt
-        // longer. PublishCanonical's own use of TryReadManifest cannot make the same trade,
-        // since its manifest write would otherwise turn that same empty reading into a
-        // permanent one — see its own remarks.
-        (_, IReadOnlyDictionary<string, string> previously) = TryReadManifest();
+        // An unreadable manifest still reads as empty here, so the removal loop below treats
+        // every name as unknown rather than throwing or refusing to proceed — at worst an
+        // install-owned skill survives one uninstall attempt longer. But Confirmed is kept
+        // (unlike a discard) because the manifest write below must not treat that empty
+        // reading as a confirmed empty manifest: doing so would delete a manifest this pass
+        // only failed to read, permanently reclassifying every install-owned skill as an
+        // operator override — the same trade PublishCanonical's own remarks describe.
+        (bool manifestConfirmed, IReadOnlyDictionary<string, string> previously) = TryReadManifest();
         List<string> removed = [];
         Dictionary<string, string> remaining = [];
         foreach ((string name, string recordedHash) in previously)
@@ -442,10 +442,14 @@ public static class SkillSeeder
                     SkillLibraryPaths.PublishedManifest,
                     remaining.Select(entry => $"{entry.Key}\t{entry.Value}"));
             }
-            else if (File.Exists(SkillLibraryPaths.PublishedManifest))
+            else if (manifestConfirmed && File.Exists(SkillLibraryPaths.PublishedManifest))
             {
                 File.Delete(SkillLibraryPaths.PublishedManifest);
             }
+            // else: remaining is empty because the read above failed, not because nothing
+            // was left to preserve — leaving the file untouched means a retried uninstall (or
+            // the next install's own retiring pass), once the read succeeds, recovers the
+            // real record instead of finding it already gone.
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
         {
