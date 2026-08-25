@@ -158,7 +158,8 @@ public static class ContainerRuntimeProbe
     /// pre-migration <c>hall9k-pgdata</c> (see <see cref="Hall9k.Domain.Infrastructure.Storage.PostgresRuntime.VolumeName"/>'s
     /// own remarks). Returns <see langword="null"/> when the container has no named volume
     /// mount to report (absent, or an anonymous-volume/bind-mount container), which callers
-    /// read as "fall back to the pinned literal" for the case that literal is actually right.
+    /// must read as "there is no named volume to observe here" — never as licence to fall back
+    /// to the pinned literal, which is exactly the guess this method exists to avoid.
     /// </summary>
     public static async Task<string?> DataVolumeNameAsync(ProcessRunner runner, CancellationToken cancellationToken)
     {

@@ -80,31 +80,41 @@ public sealed class UninstallCommand : Hall9kAsyncCommand<UninstallCommand.Setti
                 "[yellow]h9kd is still running[/] — leaving bin/, the PATH link, and Postgres exactly as they "
                 + "are, so h9k stays runnable and nothing is pulled out from under the daemon while it may "
                 + "still be writing. Stop it, then run h9k uninstall again.");
-            PrintSummary(settings.PurgeData, dataTierOk: false, daemonStopped: false, homeFullyRemoved: true);
+            PrintSummary(settings.PurgeData, DataTierOutcome.NotAttempted, daemonStopped: false, homeRemovalOutcome: null);
             return ExitCodes.Error;
         }
 
-        bool dataTierOk = await HandleDataTierAsync(settings.PurgeData, runner, cancellationToken);
-
-        if (OperatingSystem.IsWindows())
+        (bool dataTierOk, DataTierOutcome dataTierOutcome) = await HandleDataTierAsync(settings.PurgeData, runner, cancellationToken);
+        if (settings.PurgeData && !dataTierOk)
         {
-            RemoveFromWindowsPath(DaemonRuntime.BinDirectory);
+            // HandleDataTierAsync has already printed why (Docker unreachable, or a purge it
+            // could not fully confirm) and what to run again — "run h9k uninstall --purge-data
+            // again". Removing bin/, the PATH link, and the home here anyway would strand that
+            // remedy: there would be no h9k left on this machine to run it with, and "before
+            // anything is removed" (the promise the purge refusal itself makes) would already be
+            // false by the time the operator read it. This gate is purge-only: on the default
+            // tier, dataTierOk is false only when a live hall9k-postgres container's `docker stop`
+            // failed, and that remedy is a bare `docker stop` an operator can run without h9k
+            // still being on the machine, so it does not block the removal below (its outcome is
+            // still folded into this run's exit code further down).
+            PrintSummary(settings.PurgeData, dataTierOutcome, daemonStopped: true, homeRemovalOutcome: null);
+            return ExitCodes.Error;
         }
-        else
-        {
-            RemoveFromPath(
+
+        bool pathLinkRemoved = OperatingSystem.IsWindows()
+            ? RemoveFromWindowsPath(DaemonRuntime.BinDirectory)
+            : RemoveFromPath(
                 Path.Combine(DaemonRuntime.BinDirectory, "h9k"),
                 Environment.GetEnvironmentVariable("PATH") ?? string.Empty,
                 Environment.GetFolderPath(Environment.SpecialFolder.UserProfile));
-        }
 
         string home = PlatformPaths.Home;
         List<string> stillPresent = [.. RemoveInstallOwnedEntries(InstallOwnedEntries(home))];
         IReadOnlyList<string> skillsRemoved = SkillSeeder.RemovePublished(stillPresent);
-        bool homeFullyRemoved = stillPresent.Count == 0;
+        bool homeFullyRemoved = stillPresent.Count == 0 && pathLinkRemoved;
 
         ReportHomeRemoval(home, stillPresent, skillsRemoved);
-        PrintSummary(settings.PurgeData, dataTierOk, daemonStopped: true, homeFullyRemoved);
+        PrintSummary(settings.PurgeData, dataTierOutcome, daemonStopped: true, homeRemovalOutcome: homeFullyRemoved);
 
         return dataTierOk && homeFullyRemoved ? ExitCodes.Ok : ExitCodes.Error;
     }
@@ -301,13 +311,39 @@ public sealed class UninstallCommand : Hall9kAsyncCommand<UninstallCommand.Setti
     }
 
     /// <summary>
+    /// What actually happened to the Postgres tier — granular enough for
+    /// <see cref="PrintSummary"/> to describe exactly what it observed, rather than
+    /// collapsing every success into one asserted outcome ("stopped" implying a container that
+    /// may never have existed, or "destroyed" implying a volume that was never there to
+    /// destroy). <see cref="NotAttempted"/> is the daemon-still-running case: the whole tier
+    /// was left untried on purpose, so there is nothing here to describe.
+    /// </summary>
+    internal enum DataTierOutcome
+    {
+        NotAttempted,
+        NoContainerRuntime,
+        ContainerAbsent,
+        ContainerAlreadyStopped,
+        ContainerStopped,
+        ContainerStopFailed,
+        PurgeUnconfirmedVolume,
+        PurgedContainerOnly,
+        PurgedContainerAndVolume,
+        PurgeIncomplete,
+    }
+
+    /// <summary>
     /// The Postgres tier: stop-never-remove by default, or destroy both container and volume
-    /// once <see cref="ConfirmPurgeAsync"/> has already consented. Returns false only when
+    /// once <see cref="ConfirmPurgeAsync"/> has already consented. <c>Ok</c> is false only when
     /// <paramref name="purgeData"/> was asked for and could not be fully carried out — the
     /// signal <see cref="ExecuteAsync"/> uses to end the command with a nonzero exit rather
-    /// than reporting a purge as done when it was not.
+    /// than reporting a purge as done when it was not. <c>Outcome</c> names exactly what was
+    /// observed, so <see cref="PrintSummary"/> can report "the data volume is gone" only when a
+    /// volume was actually observed and removed, and can avoid claiming a container was stopped
+    /// or destroyed when the probe found none — never conflating "nothing was there to touch"
+    /// with "it was touched and is now gone".
     /// </summary>
-    internal static async Task<bool> HandleDataTierAsync(
+    internal static async Task<(bool Ok, DataTierOutcome Outcome)> HandleDataTierAsync(
         bool purgeData, ProcessRunner runner, CancellationToken cancellationToken)
     {
         ContainerRuntimeStatus runtime = await ContainerRuntimeProbe.RuntimeStatusAsync(runner, cancellationToken);
@@ -320,14 +356,17 @@ public sealed class UninstallCommand : Hall9kAsyncCommand<UninstallCommand.Setti
             if (!purgeData)
             {
                 AnsiConsole.MarkupLine($"[dim]{reason} — nothing to stop in Docker. Your database, if any, is untouched.[/]");
-                return true;
+                return (true, DataTierOutcome.NoContainerRuntime);
             }
 
             AnsiConsole.MarkupLine(
-                $"[red]Could not purge[/]: {reason.EscapeMarkup()}, so {PostgresRuntime.ContainerName} and its "
-                + $"data volume could not be reached. Start Docker and run: docker rm -f {PostgresRuntime.ContainerName} "
-                + $"&& docker volume rm {PostgresRuntime.VolumeName}");
-            return false;
+                $"[red]Could not purge[/]: {reason.EscapeMarkup()}, so {PostgresRuntime.ContainerName} could not "
+                + "be reached and which volume it actually mounts cannot be confirmed — a container from before "
+                + $"this branch's compose name: pin, or the pre-migration Aspire dev loop, can carry the "
+                + $"{PostgresRuntime.VolumeName} literal without being this install's volume at all. Start "
+                + "Docker, then run h9k uninstall --purge-data again so the real volume can be confirmed before "
+                + "anything is removed.");
+            return (false, DataTierOutcome.NoContainerRuntime);
         }
 
         PostgresContainerStatus container = await ContainerRuntimeProbe.Hall9kContainerStatusAsync(runner, cancellationToken);
@@ -351,7 +390,7 @@ public sealed class UninstallCommand : Hall9kAsyncCommand<UninstallCommand.Setti
                     AnsiConsole.MarkupLine(
                         $"[dim]No {PostgresRuntime.ContainerName} container and no {PostgresRuntime.VolumeName} "
                         + "volume — nothing to purge.[/]");
-                    return true;
+                    return (true, DataTierOutcome.ContainerAbsent);
                 }
 
                 AnsiConsole.MarkupLine(
@@ -361,7 +400,7 @@ public sealed class UninstallCommand : Hall9kAsyncCommand<UninstallCommand.Setti
                     + "(the pre-migration Aspire dev loop uses this identical literal name), so it was left "
                     + $"untouched rather than guessed at and destroyed. If you are sure it is this install's, "
                     + $"remove it by hand: docker volume rm {PostgresRuntime.VolumeName}");
-                return false;
+                return (false, DataTierOutcome.PurgeUnconfirmedVolume);
             }
 
             // Asked of the live container rather than assumed: a container brought up with a
@@ -382,7 +421,7 @@ public sealed class UninstallCommand : Hall9kAsyncCommand<UninstallCommand.Setti
                     : $"[yellow]Purge incomplete[/] — the container could not be removed. It also had no named "
                         + "data volume mounted for this to observe and destroy. Finish by hand: "
                         + $"docker rm -f {PostgresRuntime.ContainerName}");
-                return containerRemoved;
+                return (containerRemoved, containerRemoved ? DataTierOutcome.PurgedContainerOnly : DataTierOutcome.PurgeIncomplete);
             }
 
             bool volumeRemoved = !await ContainerRuntimeProbe.VolumeExistsAsync(runner, cancellationToken, volumeName)
@@ -392,14 +431,14 @@ public sealed class UninstallCommand : Hall9kAsyncCommand<UninstallCommand.Setti
                 AnsiConsole.MarkupLine(
                     $"[red]Purged[/]: the {PostgresRuntime.ContainerName} container and its {volumeName} "
                     + "data volume are gone. Every task, run, and idea recorded there is gone with them.");
-                return true;
+                return (true, DataTierOutcome.PurgedContainerAndVolume);
             }
 
             AnsiConsole.MarkupLine(
                 $"[red]Purge incomplete[/] — {(containerRemoved ? "the container is gone" : "the container could not be removed")}, "
                 + $"{(volumeRemoved ? "the volume is gone" : $"the {volumeName} volume could not be removed")}. "
                 + $"Finish by hand: docker rm -f {PostgresRuntime.ContainerName}; docker volume rm {volumeName}");
-            return false;
+            return (false, DataTierOutcome.PurgeIncomplete);
         }
 
         if (container != PostgresContainerStatus.Running)
@@ -407,7 +446,9 @@ public sealed class UninstallCommand : Hall9kAsyncCommand<UninstallCommand.Setti
             AnsiConsole.MarkupLine(container == PostgresContainerStatus.Absent
                 ? $"[dim]No {PostgresRuntime.ContainerName} container found — nothing to stop.[/]"
                 : $"[dim]{PostgresRuntime.ContainerName} is already stopped — its data volume is untouched.[/]");
-            return true;
+            return (true, container == PostgresContainerStatus.Absent
+                ? DataTierOutcome.ContainerAbsent
+                : DataTierOutcome.ContainerAlreadyStopped);
         }
 
         bool stopped = await ContainerRuntimeProbe.StopRunningContainerAsync(runner, cancellationToken);
@@ -416,7 +457,7 @@ public sealed class UninstallCommand : Hall9kAsyncCommand<UninstallCommand.Setti
                 + "everything you've recorded is exactly as you left it, in Docker rather than in this install. "
                 + "Reinstalling h9k reconnects to it."
             : $"[yellow]Could not stop {PostgresRuntime.ContainerName}[/] — stop it by hand: docker stop {PostgresRuntime.ContainerName}");
-        return stopped;
+        return (stopped, stopped ? DataTierOutcome.ContainerStopped : DataTierOutcome.ContainerStopFailed);
     }
 
     /// <summary>
@@ -425,8 +466,14 @@ public sealed class UninstallCommand : Hall9kAsyncCommand<UninstallCommand.Setti
     /// ~/.local/bin fallback), deleting only a symlink that resolves to exactly
     /// <paramref name="target"/> — never a real file, and never a symlink pointing anywhere
     /// else, which might be an operator's own.
+    /// <para>
+    /// Returns <see langword="false"/> when a matching symlink was found but could not be
+    /// deleted (already printed above, with the manual remedy), so a caller can fold that
+    /// failure into its own exit code and summary rather than reporting the link as gone —
+    /// the identical gap <see cref="RemoveInstallOwnedEntries"/> already closes for bin/ itself.
+    /// </para>
     /// </summary>
-    internal static void RemoveFromPath(string target, string pathVariable, string homeDirectory)
+    internal static bool RemoveFromPath(string target, string pathVariable, string homeDirectory)
     {
         List<string> candidates =
         [
@@ -437,6 +484,7 @@ public sealed class UninstallCommand : Hall9kAsyncCommand<UninstallCommand.Setti
         ];
 
         bool removedAny = false;
+        bool anyFailed = false;
         foreach (string directory in candidates.Distinct(StringComparer.Ordinal))
         {
             string path = Path.Combine(directory, "h9k");
@@ -461,21 +509,27 @@ public sealed class UninstallCommand : Hall9kAsyncCommand<UninstallCommand.Setti
             {
                 AnsiConsole.MarkupLineInterpolated(
                     $"[yellow]Could not remove {path}[/] — remove it by hand: rm {path}");
+                anyFailed = true;
             }
         }
 
-        if (!removedAny)
+        if (!removedAny && !anyFailed)
         {
             AnsiConsole.MarkupLine("[dim]No PATH link found pointing at the installed h9k — nothing to remove there.[/]");
         }
+
+        return !anyFailed;
     }
 
     /// <summary>The reverse of <see cref="InstallCommand.EnsureOnWindowsPath"/>: drop
     /// <paramref name="binDirectory"/> from the user's PATH if it is there, through the same
     /// registry seam (never <see cref="Environment.SetEnvironmentVariable(string, string?, EnvironmentVariableTarget)"/>,
-    /// which would flatten any surviving <c>%VAR%</c> reference on write).</summary>
+    /// which would flatten any surviving <c>%VAR%</c> reference on write). Returns
+    /// <see langword="false"/> only when the registry key could not be opened — the manual
+    /// remedy is already printed above — so a caller can fold that failure into its own exit
+    /// code and summary instead of reporting the PATH link as gone.</summary>
     [SupportedOSPlatform("windows")]
-    internal static void RemoveFromWindowsPath(string binDirectory)
+    internal static bool RemoveFromWindowsPath(string binDirectory)
     {
         RegistryKey? environmentKey;
         try
@@ -491,7 +545,7 @@ public sealed class UninstallCommand : Hall9kAsyncCommand<UninstallCommand.Setti
         {
             AnsiConsole.MarkupLineInterpolated(
                 $"[yellow]Could not open HKCU\\Environment to remove h9k from your PATH[/] — remove {binDirectory} from your user PATH by hand.");
-            return;
+            return false;
         }
 
         using (environmentKey)
@@ -510,7 +564,7 @@ public sealed class UninstallCommand : Hall9kAsyncCommand<UninstallCommand.Setti
             if (!present)
             {
                 AnsiConsole.MarkupLine("[dim]Not on PATH — nothing to remove there.[/]");
-                return;
+                return true;
             }
 
             string updated = ComputeUserPathWithoutDirectory(current, binDirectory);
@@ -518,6 +572,7 @@ public sealed class UninstallCommand : Hall9kAsyncCommand<UninstallCommand.Setti
             InstallCommand.BroadcastEnvironmentChange();
             AnsiConsole.MarkupLineInterpolated(
                 $"[green]Removed from PATH[/]: {binDirectory} (open a new terminal for it to take effect).");
+            return true;
         }
     }
 
@@ -643,7 +698,13 @@ public sealed class UninstallCommand : Hall9kAsyncCommand<UninstallCommand.Setti
                 }
                 catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
                 {
-                    // Non-empty because something under it could not be removed — recorded below.
+                    // Could be non-empty because something under it could not be removed
+                    // (recorded in lockedUnderThisEntry above) — but the directory itself can
+                    // also fail to delete for a reason no per-file failure explains (no write
+                    // permission on the directory entry itself, an open handle to the directory
+                    // rather than a file inside it), in which case lockedUnderThisEntry stays
+                    // empty even though the directory demonstrably survived. The fallback below
+                    // covers that case so a still-present directory is never reported as gone.
                 }
 
                 if (OperatingSystem.IsWindows() && TryRelocateOutsideHome(path))
@@ -651,7 +712,7 @@ public sealed class UninstallCommand : Hall9kAsyncCommand<UninstallCommand.Setti
                     continue;
                 }
 
-                stillPresent.AddRange(lockedUnderThisEntry);
+                stillPresent.AddRange(lockedUnderThisEntry.Count > 0 ? lockedUnderThisEntry : [path]);
             }
             else if (File.Exists(path))
             {
@@ -802,7 +863,21 @@ public sealed class UninstallCommand : Hall9kAsyncCommand<UninstallCommand.Setti
                 + "not install's to remove, and was left alone.");
     }
 
-    private static void PrintSummary(bool purgeData, bool dataTierOk, bool daemonStopped, bool homeFullyRemoved)
+    /// <summary>
+    /// <paramref name="homeRemovalOutcome"/> is three-valued rather than a plain
+    /// <see langword="bool"/> because there are three genuinely different outcomes to report,
+    /// not two: <see langword="null"/> means bin/, the PATH link, and the home were never
+    /// touched this run at all (a still-running daemon, or a purge <see cref="HandleDataTierAsync"/>
+    /// could not carry out — both leave the whole removal untried on purpose, so the operator's
+    /// remedy above still has an h9k to run it with). A <see langword="bool"/> value means the
+    /// removal was attempted, and says whether everything install owns — including the PATH
+    /// link, folded in by the caller alongside the home's own leftovers — actually came off.
+    /// Collapsing the untried case into <see langword="true"/> would tell an operator work was
+    /// removed that was never touched; collapsing it into <see langword="false"/> would print
+    /// "the PATH link came off" when it was never attempted either.
+    /// </summary>
+    private static void PrintSummary(
+        bool purgeData, DataTierOutcome dataTierOutcome, bool daemonStopped, bool? homeRemovalOutcome)
     {
         AnsiConsole.WriteLine();
         AnsiConsole.MarkupLine("[bold]Summary[/]");
@@ -821,31 +896,64 @@ public sealed class UninstallCommand : Hall9kAsyncCommand<UninstallCommand.Setti
             return;
         }
 
-        AnsiConsole.MarkupLine(homeFullyRemoved
-            ? "[dim]Removed from this machine:[/] the daemon (if it was running), its autostart registration "
-                + "(if any), the PATH link, and everything h9k install itself wrote under ~/.hall9k — bin/, "
-                + "the skill set, the Postgres compose file, logs. A registered project's home, config.json, "
-                + "your credentials, and anything else you put there were left alone."
-            : "[yellow]Not fully removed:[/] the daemon (if it was running), its autostart registration (if "
-                + "any), and the PATH link came off, but some of what h9k install wrote under ~/.hall9k could "
-                + "not be removed — see above for what is still there. A registered project's home, "
-                + "config.json, your credentials, and anything else you put there were left alone either way.");
+        AnsiConsole.MarkupLine(homeRemovalOutcome switch
+        {
+            null =>
+                "[yellow]Not removed:[/] the purge above could not be completed, so bin/, the PATH link, and "
+                    + "everything else h9k install wrote under ~/.hall9k were left exactly as they are — "
+                    + "removing them here would strand the remedy above with no h9k left on this machine to "
+                    + "run it with. Follow that remedy, then run h9k uninstall --purge-data again.",
+            true =>
+                "[dim]Removed from this machine:[/] the daemon (if it was running), its autostart registration "
+                    + "(if any), the PATH link, and everything h9k install itself wrote under ~/.hall9k — bin/, "
+                    + "the skill set, the Postgres compose file, logs. A registered project's home, config.json, "
+                    + "your credentials, and anything else you put there were left alone.",
+            false =>
+                "[yellow]Not fully removed:[/] the daemon (if it was running) and its autostart registration (if "
+                    + "any) came off, but the PATH link and/or some of what h9k install wrote under ~/.hall9k "
+                    + "could not be removed — see above for exactly what is still there and how to finish by "
+                    + "hand. A registered project's home, config.json, your credentials, and anything else you "
+                    + "put there were left alone either way.",
+        });
 
         if (!purgeData)
         {
-            AnsiConsole.MarkupLine(dataTierOk
-                ? $"[green]Left in Docker:[/] the {PostgresRuntime.ContainerName} container (stopped) and its "
-                    + "data volume, untouched. Every task, run, and idea you've recorded is safe there — a later "
-                    + "h9k install reconnects to it. Run h9k uninstall --purge-data if you want that gone too."
-                : $"[yellow]Left in Docker, still running:[/] {PostgresRuntime.ContainerName} could not be "
-                    + "stopped — see above for the command to stop it by hand. Its data volume was never "
-                    + "touched either way, so a later h9k install still reconnects to it.");
+            AnsiConsole.MarkupLine(dataTierOutcome switch
+            {
+                DataTierOutcome.NoContainerRuntime =>
+                    "[dim]Left in Docker:[/] no container runtime (Docker) was found on this machine, so there "
+                        + "was nothing to stop. If Postgres is running natively, or elsewhere, it is untouched "
+                        + "either way — this uninstall never reaches outside Docker.",
+                DataTierOutcome.ContainerAbsent =>
+                    $"[dim]Left in Docker:[/] no {PostgresRuntime.ContainerName} container was found — there was "
+                        + "nothing here to stop, and nothing here to lose.",
+                DataTierOutcome.ContainerAlreadyStopped or DataTierOutcome.ContainerStopped =>
+                    $"[green]Left in Docker:[/] the {PostgresRuntime.ContainerName} container (stopped) and its "
+                        + "data volume, untouched. Every task, run, and idea you've recorded is safe there — a "
+                        + "later h9k install reconnects to it. Run h9k uninstall --purge-data if you want that "
+                        + "gone too.",
+                _ =>
+                    $"[yellow]Left in Docker, still running:[/] {PostgresRuntime.ContainerName} could not be "
+                        + "stopped — see above for the command to stop it by hand. Its data volume was never "
+                        + "touched either way, so a later h9k install still reconnects to it.",
+            });
             return;
         }
 
-        AnsiConsole.MarkupLine(dataTierOk
-            ? $"[red]Destroyed:[/] the {PostgresRuntime.ContainerName} container and its data volume — nothing "
-                + "survives from this install; a fresh install starts from nothing."
-            : "[red]Purge did not fully complete[/] — see above for what to finish by hand.");
+        AnsiConsole.MarkupLine(dataTierOutcome switch
+        {
+            DataTierOutcome.ContainerAbsent =>
+                $"[dim]Nothing to purge:[/] no {PostgresRuntime.ContainerName} container and no "
+                    + $"{PostgresRuntime.VolumeName} volume were found — this install never left anything in "
+                    + "Docker to destroy.",
+            DataTierOutcome.PurgedContainerAndVolume =>
+                $"[red]Destroyed:[/] the {PostgresRuntime.ContainerName} container and its data volume — "
+                    + "nothing survives from this install; a fresh install starts from nothing.",
+            DataTierOutcome.PurgedContainerOnly =>
+                $"[red]Destroyed:[/] the {PostgresRuntime.ContainerName} container — there was no separate "
+                    + "data volume to destroy (either none was ever created, or it was mounted as a bind mount "
+                    + "rather than a named volume), so there was nothing else here for --purge-data to remove.",
+            _ => "[red]Purge did not fully complete[/] — see above for what to finish by hand.",
+        });
     }
 }
