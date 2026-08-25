@@ -379,6 +379,31 @@ public sealed class InstallCommandTests : IDisposable
     }
 
     [Fact]
+    public void Removing_development_settings_files_covers_staging_that_never_went_through_staging_from_release()
+    {
+        // The --repo branch of ExecuteAsync stages straight from `dotnet publish`, never
+        // through StageFromRelease, and depends on Directory.Build.targets alone to keep a
+        // Development settings file out — a checkout that lacks that fix (an older branch, a
+        // stray worktree) would otherwise carry the file into ~/.hall9k/bin. FinishAsync runs
+        // this over staging regardless of which branch produced it, so it must catch what
+        // StageFromRelease's own filtering never saw.
+        string staging = Path.Combine(directory, "staging");
+        Directory.CreateDirectory(Path.Combine(staging, "de"));
+        File.WriteAllText(Path.Combine(staging, "appsettings.json"), "{}\n");
+        File.WriteAllText(Path.Combine(staging, "appsettings.Development.json"), "{\"dev\":true}\n");
+        File.WriteAllText(Path.Combine(staging, "de", "appsettings.DEVELOPMENT.json"), "{\"dev\":true}\n");
+
+        InstallCommand.RemoveDevelopmentSettingsFiles(staging);
+
+        File.Exists(Path.Combine(staging, "appsettings.json")).Should().BeTrue(
+            "the production settings file still belongs in ~/.hall9k/bin");
+        File.Exists(Path.Combine(staging, "appsettings.Development.json")).Should().BeFalse(
+            "a Development settings file that reached staging by any path must not survive it");
+        File.Exists(Path.Combine(staging, "de", "appsettings.DEVELOPMENT.json")).Should().BeFalse(
+            "the match is case-insensitive and recursive, the same as the release workflow's own find -iname gate");
+    }
+
+    [Fact]
     public void Staging_from_a_release_payload_copies_subdirectories_other_than_skills()
     {
         string fromRelease = Path.Combine(directory, "release");
