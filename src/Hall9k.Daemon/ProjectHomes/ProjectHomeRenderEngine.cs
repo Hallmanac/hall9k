@@ -141,7 +141,7 @@ public sealed class ProjectHomeRenderEngine(IDocumentStore store, ILogger<Projec
                 HashSet<string> archivedTaskDirectoryNames = [];
                 foreach (TaskDetails task in tasks)
                 {
-                    bool archived = IsArchived(task, taskIdsWithCompletedRun, currentRunStates);
+                    bool archived = IsArchived(task, taskIdsWithCompletedRun, currentRunStates, logger);
                     if (!archived
                         && CurrentRunIsLiveOrUnknown(task, currentRunStates)
                         && HomeEntryWriter.FindExistingDirectory(archivedTasksRoot, task.Id) is not null)
@@ -245,9 +245,24 @@ public sealed class ProjectHomeRenderEngine(IDocumentStore store, ILogger<Projec
     /// future sweep instead of racing it — an actual <see cref="RunState.Unknown"/> projection,
     /// by contrast, is not live (<see cref="RunState.IsLive"/> excludes it) and archives normally.
     /// </para>
+    /// <para>
+    /// One missing-projection case is knowable rather than merely deferred, though (adversarial
+    /// review, backlog 51 cycle 3): a launch that dies before <c>RunDispatched</c> ever commits
+    /// (a worktree checkout failure, say) has <see cref="RunLauncher"/> record it as
+    /// <c>TaskFailed</c> directly — <c>RunLauncher.RecordLaunchFailureAsync</c> only appends
+    /// <c>RunFailed</c> when the run's own stream already exists — so <c>TaskDetails.FailureReason</c>
+    /// being set is proof that this task's current run went through <c>TaskFailed</c>, and by the
+    /// time that event lands the launch attempt that would have written <c>RunDispatched</c> has
+    /// already returned. No later code path appends to that same run id, so its projection
+    /// provably never appears; this is the "sits at top level permanently" case reviewers found,
+    /// and it archives with a logged diagnostic rather than waiting forever. An Abandoned task
+    /// with no recorded failure is not this case — it may still be an in-flight launch racing the
+    /// abandon — and keeps waiting exactly as before.
+    /// </para>
     /// </summary>
     private static bool IsArchived(
-        TaskDetails task, IReadOnlySet<Guid> taskIdsWithCompletedRun, IReadOnlyDictionary<Guid, RunState> currentRunStates)
+        TaskDetails task, IReadOnlySet<Guid> taskIdsWithCompletedRun, IReadOnlyDictionary<Guid, RunState> currentRunStates,
+        ILogger logger)
     {
         if (task.State == TaskState.Done)
         {
@@ -256,7 +271,23 @@ public sealed class ProjectHomeRenderEngine(IDocumentStore store, ILogger<Projec
 
         if (task.State == TaskState.Abandoned)
         {
-            return !CurrentRunIsLiveOrUnknown(task, currentRunStates);
+            if (!CurrentRunIsLiveOrUnknown(task, currentRunStates))
+            {
+                return true;
+            }
+
+            if (task.CurrentRunId is { } currentRunId
+                && !currentRunStates.ContainsKey(currentRunId)
+                && task.FailureReason.IsNotBlank())
+            {
+                logger.LogWarning(
+                    "Task {TaskId} is abandoned with current run {RunId} that never got a run projection "
+                    + "and already recorded a launch failure — archiving; that run will never dispatch",
+                    DomainId.Short(task.Id), DomainId.Short(currentRunId));
+                return true;
+            }
+
+            return false;
         }
 
         return false;
