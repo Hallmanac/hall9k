@@ -1,5 +1,6 @@
 using System.ComponentModel;
 using System.Diagnostics;
+using System.Text;
 using FluentAssertions;
 using Hall9k.Daemon.ProcessManagement;
 using Xunit;
@@ -34,8 +35,9 @@ public sealed class ProcessManagerParityTests : IDisposable
     public void Spawn_reports_a_live_identity_for_a_process_that_is_still_running()
     {
         (string stdout, string stderr) = Files();
+        string pidFilePath = Path.Combine(_directory, $"nested-child-pid-{Path.GetRandomFileName()}.txt");
         SpawnedProcess spawned = _processManager.Spawn(new ProcessSpawnRequest(
-            NestedSleepCommand(), _directory, [], null, stdout, stderr));
+            NestedSleepCommand(pidFilePath), _directory, [], null, stdout, stderr));
 
         try
         {
@@ -141,9 +143,9 @@ public sealed class ProcessManagerParityTests : IDisposable
     public async Task Terminate_kills_the_whole_process_tree_not_just_the_returned_pid()
     {
         (string stdout, string stderr) = Files();
-        DateTimeOffset beforeSpawn = DateTimeOffset.UtcNow;
+        string pidFilePath = Path.Combine(_directory, $"nested-child-pid-{Path.GetRandomFileName()}.txt");
         SpawnedProcess spawned = _processManager.Spawn(new ProcessSpawnRequest(
-            NestedSleepCommand(), _directory, [], null, stdout, stderr));
+            NestedSleepCommand(pidFilePath), _directory, [], null, stdout, stderr));
 
         // Give the nested child a moment to actually start before pulling the tree down
         // from under it — otherwise this could terminate before the grandchild exists at
@@ -155,11 +157,12 @@ public sealed class ProcessManagerParityTests : IDisposable
         // What actually proves kill-tree, rather than a plain kill of spawned.ProcessId:
         // spawned.ProcessId is the wrapper (cmd.exe on Windows, the exec'd sh on Unix) and
         // dies from either a tree-kill or a plain one, so asserting on it alone (as this
-        // test used to) cannot tell the two apart. The nested command's own child process
-        // — found by name and start time, since neither .NET's Process type nor a portable
-        // shell one-liner hands back a genuine grandchild pid without more machinery than
-        // this test is worth — is the one that only a real tree-kill reaches.
-        (int nestedChildProcessId, DateTimeOffset nestedChildStartedAt) = await AwaitNestedChildAsync(beforeSpawn);
+        // test used to) cannot tell the two apart. The nested command writes its own real
+        // child's pid to a file rather than being found by name and a start-time window —
+        // a global process-table search can latch onto an unrelated same-named process
+        // from a concurrent test or an unrelated shell on the machine, which either fails
+        // a defect-free seam or lets a real kill-tree bug pass green.
+        (int nestedChildProcessId, DateTimeOffset nestedChildStartedAt) = await AwaitNestedChildAsync(pidFilePath);
 
         _processManager.Terminate(spawned.ProcessId, spawned.StartedAt);
 
@@ -179,30 +182,39 @@ public sealed class ProcessManagerParityTests : IDisposable
         return (Path.Combine(_directory, $"stdout-{suffix}.log"), Path.Combine(_directory, $"stderr-{suffix}.log"));
     }
 
-    private static string NestedChildProcessName() => OperatingSystem.IsWindows() ? "ping" : "sleep";
-
-    private static async Task<(int ProcessId, DateTimeOffset StartedAt)> AwaitNestedChildAsync(DateTimeOffset notBefore)
+    /// <summary>
+    /// Reads the nested child's own pid back from the file <see cref="NestedSleepCommand"/>
+    /// wrote it to, rather than searching the whole process table by name and a start-time
+    /// window — a search that can latch onto an unrelated same-named process elsewhere on
+    /// the machine (another test's <c>sleep</c>, a concurrent shell script) and prove
+    /// nothing about this test's own tree.
+    /// </summary>
+    private static async Task<(int ProcessId, DateTimeOffset StartedAt)> AwaitNestedChildAsync(string pidFilePath)
     {
-        string processName = NestedChildProcessName();
-        DateTimeOffset earliestAcceptableStart = notBefore - TimeSpan.FromSeconds(1);
         DateTimeOffset deadline = DateTimeOffset.UtcNow + TimeSpan.FromSeconds(5);
         while (DateTimeOffset.UtcNow < deadline)
         {
-            foreach (Process candidate in Process.GetProcessesByName(processName))
+            if (File.Exists(pidFilePath) &&
+                int.TryParse((await File.ReadAllTextAsync(pidFilePath)).Trim(), out int nestedChildProcessId))
             {
-                using (candidate)
+                try
                 {
-                    if (TryReadStartTime(candidate) is { } started && started >= earliestAcceptableStart)
+                    using Process nestedChild = Process.GetProcessById(nestedChildProcessId);
+                    if (TryReadStartTime(nestedChild) is { } started)
                     {
-                        return (candidate.Id, started);
+                        return (nestedChildProcessId, started);
                     }
+                }
+                catch (ArgumentException)
+                {
+                    // The pid file raced its own process's exit; fall through and retry.
                 }
             }
 
             await Task.Delay(TimeSpan.FromMilliseconds(50));
         }
 
-        throw new InvalidOperationException($"The nested {processName} child never appeared.");
+        throw new InvalidOperationException("The nested child's pid file never appeared.");
     }
 
     private static DateTimeOffset? TryReadStartTime(Process process)
@@ -246,13 +258,32 @@ public sealed class ProcessManagerParityTests : IDisposable
         OperatingSystem.IsWindows() ? $"echo %{variableName}%" : $"echo ${variableName}";
 
     /// <summary>
-    /// A command that spawns its own child and outlives its own immediate process long
-    /// enough to prove Terminate reaches that child too, not just whatever pid Spawn
-    /// returned. Windows already gets this shape for free (the returned pid is always
-    /// cmd.exe with the real command as its child); Unix needs it built by hand, since
-    /// <c>exec</c> collapses that layer away for the ordinary case.
+    /// A command that spawns its own child, outlives its own immediate process long
+    /// enough to prove Terminate reaches that child too (not just whatever pid Spawn
+    /// returned), and writes that child's real pid to <paramref name="pidFilePath"/> so
+    /// the test can identify it without searching the process table. Windows already gets
+    /// the parent/child shape for free (the returned pid is always cmd.exe with the real
+    /// command as its child) but has no shell built-in for "my last background job's pid"
+    /// the way <c>$!</c> is on Unix, so it goes through PowerShell instead — passed as
+    /// <c>-EncodedCommand</c> base64 rather than <c>-Command "..."</c> so the script's own
+    /// quotes never have to survive <see cref="ShellRedirection"/> and
+    /// <c>WindowsCommandLine.WrapForCmdExe</c>'s cmd.exe quoting on top of PowerShell's.
     /// </summary>
-    private static string NestedSleepCommand() => OperatingSystem.IsWindows()
-        ? "ping -n 30 127.0.0.1"
-        : "sh -c \"sleep 30 & wait\"";
+    private static string NestedSleepCommand(string pidFilePath) => OperatingSystem.IsWindows()
+        ? $"powershell -NoProfile -NonInteractive -EncodedCommand {EncodeNestedPingScript(pidFilePath)}"
+        // \$ rather than $: this whole string sits inside the outer exec'd sh's own
+        // double-quoted argument (see UnixProcessManager), and double quotes do not
+        // protect $ from that outer shell's own parameter expansion — unescaped, "$!"
+        // would resolve to the outer shell's (empty) last-background-job pid before the
+        // inner "sh -c" ever saw it, leaving the pid file blank.
+        : $"sh -c \"sleep 30 & echo \\$! > '{pidFilePath}'; wait\"";
+
+    private static string EncodeNestedPingScript(string pidFilePath)
+    {
+        string script =
+            $"$p = Start-Process -FilePath ping -ArgumentList '-n','30','127.0.0.1' -PassThru -WindowStyle Hidden; " +
+            $"Set-Content -Path '{pidFilePath}' -Value $p.Id; " +
+            "Wait-Process -Id $p.Id";
+        return Convert.ToBase64String(Encoding.Unicode.GetBytes(script));
+    }
 }
