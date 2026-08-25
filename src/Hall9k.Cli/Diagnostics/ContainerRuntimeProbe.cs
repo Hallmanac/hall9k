@@ -82,6 +82,97 @@ public static class ContainerRuntimeProbe
         return result.ExitCode == 0;
     }
 
+    /// <summary>Stops the container without removing it — <c>h9k uninstall</c>'s default tier
+    /// (Decisions Log #82): the data volume is never touched by a plain stop, so a later
+    /// reinstall reconnects to exactly what was there.</summary>
+    public static async Task<bool> StopRunningContainerAsync(ProcessRunner runner, CancellationToken cancellationToken)
+    {
+        ProcessResult result = await runner(
+            "docker", ["stop", PostgresRuntime.ContainerName], Directory.GetCurrentDirectory(), cancellationToken);
+        return result.ExitCode == 0;
+    }
+
+    /// <summary>Removes the container itself (not its volume) — half of <c>h9k uninstall
+    /// --purge-data</c>'s destructive tier (Decisions Log #82). <c>-f</c> so a still-running
+    /// container is stopped and removed in one call rather than needing the stop above first.</summary>
+    public static async Task<bool> RemoveContainerAsync(ProcessRunner runner, CancellationToken cancellationToken)
+    {
+        ProcessResult result = await runner(
+            "docker", ["rm", "-f", PostgresRuntime.ContainerName], Directory.GetCurrentDirectory(), cancellationToken);
+        return result.ExitCode == 0;
+    }
+
+    /// <summary>Whether the named data volume exists at all — asked before
+    /// <see cref="RemoveVolumeAsync"/> so a machine that never started Postgres (install
+    /// deliberately does not start it, Decisions Log #58) reads as "nothing to purge" rather than
+    /// a failed <c>docker volume rm</c> against a volume nobody ever created. Defaults to
+    /// <see cref="PostgresRuntime.VolumeName"/>, the name a fresh install's pinned compose file
+    /// creates, but a caller purging an existing container asks <see cref="DataVolumeNameAsync"/>
+    /// what it actually mounts first and checks that name instead — see that method's own
+    /// remarks for why the bare literal cannot be trusted on its own.
+    /// <para>
+    /// A failed <c>docker volume ls</c> (nonzero exit — the daemon going away between an earlier
+    /// call and this one, say) is not the same fact as "no such volume", and answering
+    /// <see langword="false"/> for it would read exactly like a confirmed absence to a caller
+    /// that treats "does not exist" as "already gone, nothing left to remove". Answering
+    /// <see langword="true"/> instead is the fail-safe direction: it sends a purge on to actually
+    /// attempt (and, if docker is really unreachable, honestly fail) the removal, rather than
+    /// skip it and report a volume destroyed that nobody observed being destroyed.
+    /// </para>
+    /// </summary>
+    public static async Task<bool> VolumeExistsAsync(
+        ProcessRunner runner, CancellationToken cancellationToken, string? volumeName = null)
+    {
+        ProcessResult result = await runner(
+            "docker",
+            ["volume", "ls", "--filter", $"name=^{volumeName ?? PostgresRuntime.VolumeName}$", "--format", "{{.Name}}"],
+            Directory.GetCurrentDirectory(),
+            cancellationToken);
+        return result.ExitCode != 0 || result.StandardOutput.Trim().Length > 0;
+    }
+
+    /// <summary>Removes the named data volume — the other half of <c>h9k uninstall
+    /// --purge-data</c> (Decisions Log #82), and the one call in this file that actually
+    /// destroys recorded work rather than merely pausing or starting a container. Callers check
+    /// <see cref="VolumeExistsAsync"/> first: this call is not itself idempotent against an
+    /// absent volume.</summary>
+    public static async Task<bool> RemoveVolumeAsync(
+        ProcessRunner runner, CancellationToken cancellationToken, string? volumeName = null)
+    {
+        ProcessResult result = await runner(
+            "docker", ["volume", "rm", volumeName ?? PostgresRuntime.VolumeName],
+            Directory.GetCurrentDirectory(), cancellationToken);
+        return result.ExitCode == 0;
+    }
+
+    /// <summary>
+    /// Asks <c>hall9k-postgres</c> itself which named volume it has mounted, rather than
+    /// assuming the bare literal <see cref="PostgresRuntime.VolumeName"/> — the name only a
+    /// compose file carrying this branch's <c>name:</c> pin actually produces. A container
+    /// created before that pin landed (or brought up from a checkout whose own
+    /// <c>docker-compose.yml</c> was never pinned) mounts a Compose-project-prefixed name
+    /// instead, e.g. <c>postgres_hall9k-pgdata</c>, and <c>h9k uninstall --purge-data</c>
+    /// destroying the container while guessing at the volume's name would either miss the real
+    /// volume and report destruction that never happened, or — worse — hit an unrelated volume
+    /// that happens to carry the guessed literal, such as the Aspire dev loop's own
+    /// pre-migration <c>hall9k-pgdata</c> (see <see cref="Hall9k.Domain.Infrastructure.Storage.PostgresRuntime.VolumeName"/>'s
+    /// own remarks). Returns <see langword="null"/> when the container has no named volume
+    /// mount to report (absent, or an anonymous-volume/bind-mount container), which callers
+    /// read as "fall back to the pinned literal" for the case that literal is actually right.
+    /// </summary>
+    public static async Task<string?> DataVolumeNameAsync(ProcessRunner runner, CancellationToken cancellationToken)
+    {
+        ProcessResult result = await runner(
+            "docker",
+            ["inspect", PostgresRuntime.ContainerName, "--format", "{{range .Mounts}}{{if eq .Type \"volume\"}}{{.Name}}\n{{end}}{{end}}"],
+            Directory.GetCurrentDirectory(),
+            cancellationToken);
+        string name = result.StandardOutput
+            .Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .FirstOrDefault() ?? string.Empty;
+        return name.Length > 0 ? name : null;
+    }
+
     /// <summary>Stands up the platform-owned Postgres for the first time — writes the shipped
     /// compose definition if <c>h9k install</c> never got the chance to, then brings it up.</summary>
     public static async Task<bool> ComposeUpAsync(ProcessRunner runner, CancellationToken cancellationToken)
