@@ -56,9 +56,24 @@ public static class ProjectHomePaths
     public static string TasksDirectory(string home) => Path.Combine(home, "tasks");
 
     /// <summary>
+    /// Where a task's directory moves once it reaches true closeout (merged, observed) or is
+    /// abandoned — a leading underscore so it sorts to the top of an editor's file explorer,
+    /// ahead of every live task, and honestly covers both endings (2026-08-25, backlog 51). Not
+    /// a directory name a task or idea can ever compute for itself (<see cref="EntryDirectoryName"/>
+    /// always starts with a short id, never an underscore), so it can never collide with one.
+    /// </summary>
+    public const string ArchiveDirectoryName = "_archive";
+
+    /// <summary>The terminal home for a task's directory: <c>tasks/_archive/</c>.</summary>
+    public static string ArchivedTasksDirectory(string home) => Path.Combine(TasksDirectory(home), ArchiveDirectoryName);
+
+    /// <summary>
     /// A task's own directory, named by short id plus a slug from its objective (backlog 48):
     /// <c>tasks/98ac05ef-project-home/</c>. Holds <c>task.md</c> (the rendered contract) and a
-    /// <c>workspace/</c> for whatever refinement accumulates beside it.
+    /// <c>workspace/</c> for whatever refinement accumulates beside it. Rooted directly under
+    /// <see cref="TasksDirectory"/> while the task is live; a terminal task's directory is this
+    /// same shape rooted under <see cref="ArchivedTasksDirectory"/> instead (the render sweep
+    /// decides which root a task's directory belongs under, not this helper).
     /// </summary>
     public static string TaskDirectory(string home, string directoryName) => Path.Combine(TasksDirectory(home), directoryName);
 

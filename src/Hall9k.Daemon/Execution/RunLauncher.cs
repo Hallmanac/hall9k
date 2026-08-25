@@ -100,22 +100,33 @@ public sealed class RunLauncher(
             // under the task's own directory when the project has a home (backlog 49), and
             // every consumer reads the recorded value from here on rather than rederiving it.
             //
-            // The task's directory NAME, though, is read from disk rather than freshly computed
-            // from the task's live objective (adversarial review, cycle 1): the doorbell-woken
-            // render sweep owns renaming that directory when a revision changes its slug, and it
-            // runs on its own schedule, not synchronously with dispatch. Trusting the freshly
-            // computed name here would, on a revise-then-redispatch landing ahead of that sweep,
-            // create the not-yet-renamed directory itself — stranding the true, already-populated
-            // one under its old name as an orphan the next reconciliation pass only marks, never
-            // merges. Resolving against whatever directory already exists for this task keeps the
-            // run pointed at the one directory that is actually there; the eventual sweep still
+            // The task's directory, though, is read from disk rather than freshly computed from
+            // the task's live objective (adversarial review, cycle 1): the doorbell-woken render
+            // sweep owns renaming that directory when a revision changes its slug, and it runs
+            // on its own schedule, not synchronously with dispatch. Trusting the freshly computed
+            // name here would, on a revise-then-redispatch landing ahead of that sweep, create the
+            // not-yet-renamed directory itself — stranding the true, already-populated one under
+            // its old name as an orphan the next reconciliation pass only marks, never merges.
+            // Resolving against whatever directory already exists for this task keeps the run
+            // pointed at the one directory that is actually there; the eventual sweep still
             // renames it, runs/ and all, exactly as it always has.
-            string taskDirectoryName = project.HomeDirectory.HasValue
-                && HomeEntryWriter.FindExistingDirectory(
-                    ProjectHomePaths.TasksDirectory(project.HomeDirectory.Value), task.Id) is { } existingTaskDirectory
-                    ? Path.GetFileName(existingTaskDirectory)
-                    : TaskDocumentRenderer.DirectoryName(task);
-            string runDirectory = RunPaths.ResolveDirectory(project.HomeDirectory, taskDirectoryName, runId);
+            //
+            // A task being redispatched (a follow-up onto a reopened Done task, backlog 51) can
+            // have its directory sitting under tasks/_archive/ rather than tasks/ right up until
+            // the render sweep's own next pass moves it back — TaskReopened lands on the task
+            // stream well ahead of any guarantee that the sweep has already caught up with it.
+            // Searching the archive root too, and placing the new run directly under whichever
+            // directory is actually found, keeps the run's files beside the task's real
+            // task.md/workspace/ wherever they currently sit, rather than resolving a runs/
+            // directory under a tasks/ path the sweep has not created yet.
+            string? existingTaskDirectory = project.HomeDirectory.HasValue
+                ? HomeEntryWriter.FindExistingDirectory(
+                    ProjectHomePaths.TasksDirectory(project.HomeDirectory.Value), task.Id,
+                    alternateRoots: [ProjectHomePaths.ArchivedTasksDirectory(project.HomeDirectory.Value)])
+                : null;
+            string runDirectory = existingTaskDirectory is not null
+                ? Path.Combine(existingTaskDirectory, "runs", runId.ToString())
+                : RunPaths.ResolveDirectory(project.HomeDirectory, TaskDocumentRenderer.DirectoryName(task), runId);
 
             session.Events.StartStream<RunAggregate>(runId, new RunDispatched(
                 runId, taskId, nodeId, ownerId, leaseGeneration, sessionId,

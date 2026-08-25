@@ -1,6 +1,9 @@
 using Hall9k.Domain.Features.Idea;
 using Hall9k.Domain.Features.Idea.Rendering;
 using Hall9k.Domain.Features.Project.Projections;
+using Hall9k.Domain.Features.Run;
+using Hall9k.Domain.Features.Run.Projections;
+using Hall9k.Domain.Features.Tasks;
 using Hall9k.Domain.Features.Tasks.Projections;
 using Hall9k.Domain.Features.Tasks.Rendering;
 using Hall9k.Domain.Infrastructure.Ids;
@@ -65,6 +68,7 @@ public sealed class ProjectHomeRenderEngine(IDocumentStore store, ILogger<Projec
             {
                 string home = project.HomeDirectory.Value;
                 string tasksRoot = ProjectHomePaths.TasksDirectory(home);
+                string archivedTasksRoot = ProjectHomePaths.ArchivedTasksDirectory(home);
                 string ideasRoot = ProjectHomePaths.IdeasDirectory(home);
                 Directory.CreateDirectory(tasksRoot);
                 Directory.CreateDirectory(ideasRoot);
@@ -73,6 +77,21 @@ public sealed class ProjectHomeRenderEngine(IDocumentStore store, ILogger<Projec
                     .Where(task => task.ProjectId == project.Id)
                     .ToListAsync(cancellationToken);
                 IReadOnlyList<IdeaDetails> ideas = [.. allIdeas.Where(idea => idea.ProjectId == project.Id)];
+
+                // Whether a Done task has reached true closeout needs the run it hangs on, not
+                // just its own state (TaskDependencyQuery.IsClosedOut carries the same bar for
+                // the dependency rule): a Done task's own record never changes again between
+                // its pull request opening and the closeout monitor observing the merge, so
+                // only the run projection can tell those two moments apart.
+                Guid[] doneRunIds = [.. tasks
+                    .Where(task => task.State == TaskState.Done && task.CurrentRunId.HasValue)
+                    .Select(task => task.CurrentRunId!.Value)];
+                Dictionary<Guid, RunState> currentRunStates = doneRunIds.Length == 0
+                    ? []
+                    : (await query.Query<RunListItem>()
+                            .Where(run => run.Id.IsOneOf(doneRunIds))
+                            .ToListAsync(cancellationToken))
+                        .ToDictionary(run => run.Id, run => run.State);
                 // An idea reassigned away from this project keeps its real, capture-time
                 // workspace here permanently (backlog 49: assignment never retroactively
                 // relocates an already-materialised workspace) even though it no longer renders
@@ -87,9 +106,15 @@ public sealed class ProjectHomeRenderEngine(IDocumentStore store, ILogger<Projec
                 projectsInspected++;
 
                 HashSet<string> failedTaskShortIds = [];
+                HashSet<string> liveTaskDirectoryNames = [];
+                HashSet<string> archivedTaskDirectoryNames = [];
                 foreach (TaskDetails task in tasks)
                 {
-                    switch (RenderTask(tasksRoot, task, project.Name))
+                    bool archived = IsArchived(task, currentRunStates);
+                    string directoryName = TaskDocumentRenderer.DirectoryName(task);
+                    (archived ? archivedTaskDirectoryNames : liveTaskDirectoryNames).Add(directoryName);
+
+                    switch (RenderTask(tasksRoot, archivedTasksRoot, task, archived, project.Name))
                     {
                         case RenderOutcome.Written:
                             tasksRendered++;
@@ -115,8 +140,8 @@ public sealed class ProjectHomeRenderEngine(IDocumentStore store, ILogger<Projec
                 }
 
                 orphansHandled += ReconcileOrphans(
-                    tasksRoot, ideasRoot, tasks, ideas, ideasAnchoredHereButOwnedElsewhere, project.Name,
-                    failedTaskShortIds, failedIdeaShortIds);
+                    tasksRoot, archivedTasksRoot, ideasRoot, liveTaskDirectoryNames, archivedTaskDirectoryNames,
+                    ideas, ideasAnchoredHereButOwnedElsewhere, project.Name, failedTaskShortIds, failedIdeaShortIds);
             }
             catch (Exception exception) when (exception is not OperationCanceledException)
             {
@@ -140,13 +165,34 @@ public sealed class ProjectHomeRenderEngine(IDocumentStore store, ILogger<Projec
     /// </summary>
     private enum RenderOutcome { Written, Unchanged, Failed }
 
-    private RenderOutcome RenderTask(string tasksRoot, TaskDetails task, string projectName)
+    /// <summary>
+    /// Whether a task's directory belongs under <c>tasks/_archive/</c> rather than <c>tasks/</c>
+    /// (2026-08-25, backlog 51): true closeout, or abandoned. True closeout is the same bar
+    /// <see cref="Hall9k.Domain.Features.Tasks.Queries.TaskDependencyQuery"/> uses for the
+    /// dependency rule — Done alone is not enough, because <c>TaskCompleted</c> fires the moment
+    /// the pull request opens, well before a human, Copilot, or the closeout monitor's own review
+    /// loop is done with it. Only <c>RunCompleted</c>, appended once the closeout monitor observes
+    /// the merge, means the story is actually over. Abandoned archives unconditionally: a human
+    /// walked away, whether or not the task ever claimed a run.
+    /// </summary>
+    private static bool IsArchived(TaskDetails task, IReadOnlyDictionary<Guid, RunState> currentRunStates) =>
+        task.State == TaskState.Abandoned
+        || (task.State == TaskState.Done
+            && task.CurrentRunId is { } runId
+            && currentRunStates.TryGetValue(runId, out RunState? runState)
+            && runState == RunState.Completed);
+
+    private RenderOutcome RenderTask(
+        string tasksRoot, string archivedTasksRoot, TaskDetails task, bool archived, string projectName)
     {
         try
         {
             string directoryName = TaskDocumentRenderer.DirectoryName(task);
             string rendered = TaskDocumentRenderer.Render(task, projectName);
-            bool changed = HomeEntryWriter.Write(tasksRoot, task.Id, directoryName, "task.md", rendered).Changed;
+            string targetRoot = archived ? archivedTasksRoot : tasksRoot;
+            string alternateRoot = archived ? tasksRoot : archivedTasksRoot;
+            bool changed = HomeEntryWriter.Write(
+                targetRoot, task.Id, directoryName, "task.md", rendered, alternateRoots: [alternateRoot]).Changed;
             return changed ? RenderOutcome.Written : RenderOutcome.Unchanged;
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
@@ -186,9 +232,10 @@ public sealed class ProjectHomeRenderEngine(IDocumentStore store, ILogger<Projec
     }
 
     private int ReconcileOrphans(
-        string tasksRoot, string ideasRoot, IReadOnlyList<TaskDetails> tasks, IReadOnlyList<IdeaDetails> ideas,
-        IReadOnlyList<IdeaDetails> ideasAnchoredHereButOwnedElsewhere, string projectName,
-        IReadOnlySet<string> failedTaskShortIds, IReadOnlySet<string> failedIdeaShortIds)
+        string tasksRoot, string archivedTasksRoot, string ideasRoot,
+        IReadOnlySet<string> liveTaskDirectoryNames, IReadOnlySet<string> archivedTaskDirectoryNames,
+        IReadOnlyList<IdeaDetails> ideas, IReadOnlyList<IdeaDetails> ideasAnchoredHereButOwnedElsewhere,
+        string projectName, IReadOnlySet<string> failedTaskShortIds, IReadOnlySet<string> failedIdeaShortIds)
     {
         try
         {
@@ -202,7 +249,14 @@ public sealed class ProjectHomeRenderEngine(IDocumentStore store, ILogger<Projec
             // standing while this set only knows the new name, so failedTaskShortIds/
             // failedIdeaShortIds tell the reconciler which short ids to leave alone regardless of
             // name — the same entity, the same sweep, not yet safe to judge.
-            HashSet<string> knownTaskDirectoryNames = [.. tasks.Select(TaskDocumentRenderer.DirectoryName)];
+            //
+            // tasks/ itself now holds one directory that is not a task at all — tasks/_archive/,
+            // where a terminal task's directory actually lives (2026-08-25, backlog 51). It is
+            // added to the live set unconditionally so this pass never judges it against
+            // IsOnlyGeneratedContent (which would delete it the moment it's empty) or marks it
+            // ORPHANED.md; the archive root gets its own reconciliation pass below, against the
+            // terminal tasks that actually belong there, exactly like the live root's.
+            HashSet<string> knownTaskDirectoryNames = [.. liveTaskDirectoryNames, ProjectHomePaths.ArchiveDirectoryName];
             // Also known: ideas reassigned away from this project whose real workspace still
             // lives here (ideasAnchoredHereButOwnedElsewhere) — not rendered under this project
             // any more, but their on-disk directory is the idea's one true home and must survive
@@ -221,6 +275,8 @@ public sealed class ProjectHomeRenderEngine(IDocumentStore store, ILogger<Projec
                     .OfType<string>()];
             return HomeEntryReconciler.RemoveOrMarkOrphans(
                     tasksRoot, knownTaskDirectoryNames, "task.md", failedTaskShortIds).Count
+                + HomeEntryReconciler.RemoveOrMarkOrphans(
+                    archivedTasksRoot, archivedTaskDirectoryNames, "task.md", failedTaskShortIds).Count
                 + HomeEntryReconciler.RemoveOrMarkOrphans(
                     ideasRoot, knownIdeaDirectoryNames, "idea.md", failedIdeaShortIds).Count;
         }
