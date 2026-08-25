@@ -28,11 +28,17 @@ public static class DaemonPidFile
     /// the Windows stop-request file (<see cref="DaemonRuntime.StopRequestFile"/>) is
     /// written this way so the identity it names carries the same pid-plus-start-time
     /// discipline as the pid file, never a bare pid.
+    /// <see cref="AtomicFileWrite"/> rather than a plain <c>File.WriteAllTextAsync</c>: the
+    /// stop-request file has a concurrent reader (<c>WindowsStopRequestWatcher</c>, polling
+    /// every 250ms) that this write must never observe half-written, and staging into a temp
+    /// file and renaming it into place means the watcher's read is racing an atomic rename
+    /// rather than a truncate-then-write with a real content-writing window (cycle-7 pre-PR
+    /// review finding).
     /// </summary>
     public static Task WriteAsync(string path, DaemonProcessDescriptor descriptor, CancellationToken cancellationToken)
     {
         Directory.CreateDirectory(Path.GetDirectoryName(path)!);
-        return File.WriteAllTextAsync(path, JsonSerializer.Serialize(descriptor, SerializerOptions), cancellationToken);
+        return AtomicFileWrite.WriteAllTextAsync(path, JsonSerializer.Serialize(descriptor, SerializerOptions), cancellationToken);
     }
 
     /// <summary>
