@@ -1,3 +1,4 @@
+using System.Linq;
 using Hall9k.Domain.Features.Project;
 
 namespace Hall9k.Domain.Infrastructure.Storage;
@@ -64,12 +65,17 @@ public static class RunPaths
     /// that is the only fallback tried; a caller with the recorded path still readable, or a run
     /// that never had a project home, sees this return the unchanged input.
     /// <para>
-    /// The segment is found from the END of the path, not the start (adversarial review, backlog
-    /// 51 cycle 2): a project home is an arbitrary path a human names (<c>h9k project add --home</c>),
-    /// so it can itself contain a <c>tasks</c> segment, and the task's own <c>tasks/</c> root is
-    /// always the LAST one before the task's own <c>&lt;shortid&gt;-&lt;slug&gt;</c> directory — a
-    /// task directory name is never exactly <c>tasks</c>, since <c>EntryDirectoryName</c> always
-    /// prefixes a short id.
+    /// The segment is found by position from the END of the path, not by searching the string for
+    /// the FIRST or LAST literal match (adversarial review, backlog 51 cycles 2 and 7): a project
+    /// home is an arbitrary path a human names (<c>h9k project add --home</c>), so it can itself
+    /// contain a <c>tasks</c> segment, or even a <c>tasks/_archive</c> one — a home at
+    /// <c>/h/tasks/_archive/proj</c> made <c>LastIndexOf</c> match the HOME's own archive segment
+    /// instead of the task's, silently stripping the wrong one and then giving up when the result
+    /// did not exist on disk. The run's own directory always sits at a fixed number of segments
+    /// from the end — <c>…/tasks/&lt;shortid&gt;-&lt;slug&gt;/runs/&lt;run-id&gt;</c> (live) or
+    /// <c>…/tasks/_archive/&lt;shortid&gt;-&lt;slug&gt;/runs/&lt;run-id&gt;</c> (archived) — so
+    /// splitting the path and checking the segment at that fixed offset can never be confused by
+    /// anything the home's own path happens to contain.
     /// </para>
     /// </summary>
     public static string ResolveCurrentDirectory(string recordedDirectory)
@@ -79,23 +85,22 @@ public static class RunPaths
             return recordedDirectory;
         }
 
-        string archiveSegment = $"{Path.DirectorySeparatorChar}tasks{Path.DirectorySeparatorChar}"
-            + $"{ProjectHomePaths.ArchiveDirectoryName}{Path.DirectorySeparatorChar}";
-        string liveSegment = $"{Path.DirectorySeparatorChar}tasks{Path.DirectorySeparatorChar}";
+        string[] segments = recordedDirectory.Split(Path.DirectorySeparatorChar);
 
-        int archivedAt = recordedDirectory.LastIndexOf(archiveSegment, StringComparison.Ordinal);
-        if (archivedAt >= 0)
+        // archived: […, "tasks", "_archive", taskDirectory, "runs", runId] — five trailing segments.
+        if (segments.Length >= 5 && segments[^4] == ProjectHomePaths.ArchiveDirectoryName)
         {
-            string live = recordedDirectory.Remove(
-                archivedAt + liveSegment.Length, archiveSegment.Length - liveSegment.Length);
+            string live = string.Join(
+                Path.DirectorySeparatorChar, segments[..^4].Concat(segments[^3..]));
             return Directory.Exists(live) ? live : recordedDirectory;
         }
 
-        int liveAt = recordedDirectory.LastIndexOf(liveSegment, StringComparison.Ordinal);
-        if (liveAt >= 0)
+        // live: […, "tasks", taskDirectory, "runs", runId] — four trailing segments.
+        if (segments.Length >= 4 && segments[^4] == "tasks")
         {
-            string archived = recordedDirectory.Insert(
-                liveAt + liveSegment.Length, $"{ProjectHomePaths.ArchiveDirectoryName}{Path.DirectorySeparatorChar}");
+            string archived = string.Join(
+                Path.DirectorySeparatorChar,
+                segments[..^3].Append(ProjectHomePaths.ArchiveDirectoryName).Concat(segments[^3..]));
             return Directory.Exists(archived) ? archived : recordedDirectory;
         }
 
