@@ -86,9 +86,13 @@ public static class RunPaths
     /// name and checking whether that literal name exists on the other side, which only covers an
     /// archive flip that left the slug untouched. This call has no full task id to confirm a
     /// candidate against the way <see cref="HomeEntryLookup.FindExisting"/> does when it has one, so
-    /// a match is trusted only when it is the sole directory under a root carrying that prefix;
-    /// zero or more than one leaves this exactly as unable to resolve as a literal-name check would
-    /// have been, and returns the recorded path unchanged rather than guessing.
+    /// a match is trusted only when it is the sole directory across BOTH roots together carrying
+    /// that prefix (adversarial review, backlog 51 cycle 11) — checking one root, taking a unique
+    /// hit there, and never looking at the other would let a genuine cross-root collision (task T
+    /// archived, task U live, both sharing T's recorded short-id prefix) resolve to U's directory
+    /// on the strength of a match the live root never had reason to doubt. Zero or more than one
+    /// candidate over the combined roots leaves this exactly as unable to resolve as a literal-name
+    /// check would have been, and returns the recorded path unchanged rather than guessing.
     /// </para>
     /// <para>
     /// The search lands on the TASK directory, never the run's own leaf directory (adversarial
@@ -129,9 +133,9 @@ public static class RunPaths
         }
 
         string recordedTaskDirectoryName = segments[^3];
-        string? currentTaskDirectory =
-            FindTaskDirectoryByShortIdPrefix(ProjectHomePaths.TasksDirectory(home), recordedTaskDirectoryName)
-            ?? FindTaskDirectoryByShortIdPrefix(ProjectHomePaths.ArchivedTasksDirectory(home), recordedTaskDirectoryName);
+        string? currentTaskDirectory = FindTaskDirectoryByShortIdPrefix(
+            ProjectHomePaths.TasksDirectory(home), ProjectHomePaths.ArchivedTasksDirectory(home),
+            recordedTaskDirectoryName);
 
         return currentTaskDirectory is null
             ? recordedDirectory
@@ -183,26 +187,39 @@ public static class RunPaths
     }
 
     /// <summary>
-    /// The one directory directly under <paramref name="root"/> whose name starts with
-    /// <paramref name="recordedTaskDirectoryName"/>'s own short-id prefix (backlog 51 cycle 9) — the
-    /// part of <c>&lt;shortid&gt;-&lt;slug&gt;</c> before the slug, which a rename changes and a
-    /// short id never does. Zero or several candidates both come back null: with no full task id to
-    /// confirm a match against, a short-id collision between two directories under one root is
-    /// indistinguishable from a genuine miss, and guessing between them would be exactly the thing
-    /// <see cref="ResolveCurrentDirectory"/> exists to avoid doing with a stale path.
+    /// The one directory across <paramref name="liveRoot"/> and <paramref name="archivedRoot"/>
+    /// together whose name starts with <paramref name="recordedTaskDirectoryName"/>'s own short-id
+    /// prefix (backlog 51 cycles 9 and 11) — the part of <c>&lt;shortid&gt;-&lt;slug&gt;</c> before
+    /// the slug, which a rename changes and a short id never does. The two roots are searched as one
+    /// pool, not one after the other with the first root's unique hit winning outright: a candidate
+    /// that looks unique within the live root can still collide with a different task's directory
+    /// sitting in the archive root, and only pooling both before judging uniqueness catches that.
+    /// Zero or several candidates both come back null: with no full task id to confirm a match
+    /// against, a short-id collision is indistinguishable from a genuine miss, and guessing between
+    /// them would be exactly the thing <see cref="ResolveCurrentDirectory"/> exists to avoid doing
+    /// with a stale path.
     /// </summary>
-    private static string? FindTaskDirectoryByShortIdPrefix(string root, string recordedTaskDirectoryName)
+    private static string? FindTaskDirectoryByShortIdPrefix(
+        string liveRoot, string archivedRoot, string recordedTaskDirectoryName)
     {
-        if (recordedTaskDirectoryName.Length < 9 || !Directory.Exists(root))
+        if (recordedTaskDirectoryName.Length < 9)
         {
             return null;
         }
 
         string prefix = recordedTaskDirectoryName[..8] + "-";
-        string[] matches = [.. Directory.EnumerateDirectories(root)
-            .Where(directory => Path.GetFileName(directory).StartsWith(prefix, StringComparison.Ordinal))];
+        string[] matches = [
+            .. MatchingDirectories(liveRoot, prefix),
+            .. MatchingDirectories(archivedRoot, prefix),
+        ];
         return matches.Length == 1 ? matches[0] : null;
     }
+
+    private static IEnumerable<string> MatchingDirectories(string root, string prefix) =>
+        Directory.Exists(root)
+            ? Directory.EnumerateDirectories(root)
+                .Where(directory => Path.GetFileName(directory).StartsWith(prefix, StringComparison.Ordinal))
+            : [];
 
     public static string StreamFile(string runDirectory) => Path.Combine(runDirectory, "stream.jsonl");
 
