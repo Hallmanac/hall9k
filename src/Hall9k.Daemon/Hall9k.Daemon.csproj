@@ -7,21 +7,6 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <!-- A Development settings file is a dev-loop concern only (Aspire/the local worktree
-         set DOTNET_ENVIRONMENT=Development); an installed daemon always runs Production, so
-         nothing reads it, and its only fate is riding into every install unnoticed until
-         someone puts a dev connection string or a chatty flag in it (origin: found sitting
-         in ~/.hall9k/bin beside appsettings.json, 2026-08-24). Update rather than Remove: the
-         file stays in source control and in the project, it just never gets copied to this
-         project's own build output or publish directory either. The lowercase second rule
-         matches on case-sensitive filesystems, where MSBuild's Update comparison does not
-         fold case the way Windows does, so a mistakenly-lowercased *.development.* file is
-         still caught. -->
-    <Content Update="*.Development.*" CopyToOutputDirectory="Never" CopyToPublishDirectory="Never" />
-    <Content Update="*.development.*" CopyToOutputDirectory="Never" CopyToPublishDirectory="Never" />
-  </ItemGroup>
-
-  <ItemGroup>
     <PackageReference Include="Microsoft.Extensions.Hosting" />
     <PackageReference Include="WolverineFx" />
   </ItemGroup>
