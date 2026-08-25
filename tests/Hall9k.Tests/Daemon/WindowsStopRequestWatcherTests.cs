@@ -1,7 +1,9 @@
 using System.Diagnostics;
+using System.Linq;
 using FluentAssertions;
 using Hall9k.Daemon;
 using Hall9k.Domain.Infrastructure.Storage;
+using Hall9k.Tests.Fakes;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging.Abstractions;
 using Xunit;
@@ -97,6 +99,44 @@ public sealed class WindowsStopRequestWatcherTests : IDisposable
 
         lifetime.StopRequested.Should().BeTrue();
         File.Exists(DaemonRuntime.StopRequestFile).Should().BeFalse();
+    }
+
+    [Fact]
+    public void A_stale_stop_request_with_unchanged_content_is_warned_about_only_once()
+    {
+        // Stands in for a delete that keeps failing against the same stale file (the origin
+        // finding: h9kd.stop carrying the read-only attribute) — here simulated by simply
+        // rewriting the identical content back before the next poll, since IsOwnStopRequest
+        // does not know or care whether the delete actually succeeded, only whether the
+        // content it just read matches what it already warned about.
+        string staleContent = """{"ProcessId":999999,"StartedAt":"2024-01-01T00:00:00Z"}""";
+        ListLogger<WindowsStopRequestWatcher> logger = new();
+        WindowsStopRequestWatcher watcher = new(new FakeApplicationLifetime(), logger);
+
+        File.WriteAllText(DaemonRuntime.StopRequestFile, staleContent);
+        watcher.IsOwnStopRequest().Should().BeFalse();
+
+        File.WriteAllText(DaemonRuntime.StopRequestFile, staleContent);
+        watcher.IsOwnStopRequest().Should().BeFalse();
+
+        logger.Lines.Count(line => line.Contains("Ignoring stale")).Should().Be(
+            1, "a stale file that will not go away must not re-flood the log on every 250ms tick");
+    }
+
+    [Fact]
+    public void A_stale_stop_request_naming_a_different_daemon_gets_its_own_fresh_warning()
+    {
+        ListLogger<WindowsStopRequestWatcher> logger = new();
+        WindowsStopRequestWatcher watcher = new(new FakeApplicationLifetime(), logger);
+
+        File.WriteAllText(DaemonRuntime.StopRequestFile, """{"ProcessId":999999,"StartedAt":"2024-01-01T00:00:00Z"}""");
+        watcher.IsOwnStopRequest().Should().BeFalse();
+
+        File.WriteAllText(DaemonRuntime.StopRequestFile, """{"ProcessId":888888,"StartedAt":"2024-01-02T00:00:00Z"}""");
+        watcher.IsOwnStopRequest().Should().BeFalse();
+
+        logger.Lines.Count(line => line.Contains("Ignoring stale")).Should().Be(
+            2, "distinct stale content is a distinct occurrence, and each still gets its own warning");
     }
 
     private static async Task RunBrieflyAsync(WindowsStopRequestWatcher watcher)
