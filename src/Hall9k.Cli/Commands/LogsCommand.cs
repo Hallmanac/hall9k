@@ -47,7 +47,12 @@ public sealed class LogsCommand : Hall9kAsyncCommand<LogsCommand.Settings>
             : runs.FirstOrDefault(r => r.Id.ToString("N").EndsWith(settings.Run.Replace("-", ""), StringComparison.OrdinalIgnoreCase))
                 ?? throw new DomainNotFoundException($"No run matching '{settings.Run}' on task {taskId}.");
 
-        string streamFile = RunPaths.StreamFile(run.RunDirectory);
+        // run.RunDirectory is recorded once, at dispatch, and never updated (RunDispatched doc
+        // comment); a task that has since reached true closeout or been abandoned has had its
+        // whole directory relocated into or out of tasks/_archive/ by the render sweep, taking
+        // this run's directory with it (backlog 51). Reading a merged task's transcript is
+        // exactly when that recorded path is stale, so resolve where it actually is first.
+        string streamFile = RunPaths.StreamFile(RunPaths.ResolveCurrentDirectory(run.RunDirectory));
         if (!File.Exists(streamFile))
         {
             throw new DomainNotFoundException(

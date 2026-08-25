@@ -44,6 +44,47 @@ public static class RunPaths
                 ProjectHomePaths.TaskDirectory(home.Value, taskDirectoryName), "runs", runId.ToString())
             : GlobalDirectory(runId);
 
+    /// <summary>
+    /// Where a run's directory actually sits on disk right now, when that may no longer be
+    /// <paramref name="recordedDirectory"/> — the value carried on <c>RunDispatched</c> and never
+    /// updated afterward (adversarial review, backlog 51 cycle 1). The render sweep relocates a
+    /// task's whole directory into or out of <c>tasks/_archive/</c> as it crosses the terminal
+    /// boundary, carrying every one of its runs' <c>runs/&lt;run-id&gt;/</c> along with it, so a
+    /// run recorded while its task was live is found one path segment away once that task closes
+    /// out. The move is always exactly a <c>tasks/_archive/</c> segment inserted or removed, so
+    /// that is the only fallback tried; a caller with the recorded path still readable, or a run
+    /// that never had a project home, sees this return the unchanged input.
+    /// </summary>
+    public static string ResolveCurrentDirectory(string recordedDirectory)
+    {
+        if (Directory.Exists(recordedDirectory))
+        {
+            return recordedDirectory;
+        }
+
+        string archiveSegment = $"{Path.DirectorySeparatorChar}tasks{Path.DirectorySeparatorChar}"
+            + $"{ProjectHomePaths.ArchiveDirectoryName}{Path.DirectorySeparatorChar}";
+        string liveSegment = $"{Path.DirectorySeparatorChar}tasks{Path.DirectorySeparatorChar}";
+
+        int archivedAt = recordedDirectory.IndexOf(archiveSegment, StringComparison.Ordinal);
+        if (archivedAt >= 0)
+        {
+            string live = recordedDirectory.Remove(
+                archivedAt + liveSegment.Length, archiveSegment.Length - liveSegment.Length);
+            return Directory.Exists(live) ? live : recordedDirectory;
+        }
+
+        int liveAt = recordedDirectory.IndexOf(liveSegment, StringComparison.Ordinal);
+        if (liveAt >= 0)
+        {
+            string archived = recordedDirectory.Insert(
+                liveAt + liveSegment.Length, $"{ProjectHomePaths.ArchiveDirectoryName}{Path.DirectorySeparatorChar}");
+            return Directory.Exists(archived) ? archived : recordedDirectory;
+        }
+
+        return recordedDirectory;
+    }
+
     public static string StreamFile(string runDirectory) => Path.Combine(runDirectory, "stream.jsonl");
 
     public static string PromptFile(string runDirectory) => Path.Combine(runDirectory, "prompt.md");
