@@ -125,7 +125,7 @@ public sealed class RunLauncher(
                     alternateRoots: [ProjectHomePaths.ArchivedTasksDirectory(project.HomeDirectory.Value)])
                 : null;
             string runDirectory = existingTaskDirectory is not null
-                ? Path.Combine(existingTaskDirectory, "runs", runId.ToString())
+                ? RunPaths.ResolveDirectoryUnderTaskDirectory(existingTaskDirectory, runId)
                 : RunPaths.ResolveDirectory(project.HomeDirectory, TaskDocumentRenderer.DirectoryName(task), runId);
 
             session.Events.StartStream<RunAggregate>(runId, new RunDispatched(
