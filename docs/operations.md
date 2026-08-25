@@ -214,7 +214,7 @@ Everything hangs off `~/.hall9k` (or `HALL9K_HOME`):
 │   ├── ideas/<id>-<slug>/      idea.md (rendered) + workspace/, when captured with this home (below)
 │   ├── tasks/<id>-<slug>/      task.md (rendered) + workspace/ for refinement material, plus:
 │   │   └── runs/<run-id>/      every run this task ever dispatched — see the run shape below
-│   │   _archive/<id>-<slug>/   the same shape, moved here once the task is terminal (below)
+│   ├── tasks/_archive/<id>-<slug>/  the same shape, moved here once the task is terminal (below)
 │   ├── skills/                 symlinks into ~/.hall9k/skills, plus this project's own
 │   └── .claude/skills/         symlinks into the line above: the Claude Code adapter
 ├── ideas/<idea-id>/workspace/  the fallback for an idea captured with no project, or a project
