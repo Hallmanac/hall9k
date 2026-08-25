@@ -45,11 +45,10 @@ The mechanism, in short:
   `h9k install` does (Decisions Log #31, S1-12).
 
 **Platform note.** Release binaries are self-contained (no .NET runtime needed on the target
-machine) for all three platforms, but the *daemon lifecycle* is not yet uniform: `h9k daemon
-start` / `stop` run on macOS and Linux, and `h9k daemon autostart enable` only on macOS today (a
-Linux systemd unit is unbuilt). Windows has none of the three yet — `h9k install` / `h9k update`
-place the binaries there, but running `h9kd` on Windows is future work tracked as `SLICE-1.md`'s
-S1-14, not something this release mechanism changes.
+machine) for all three platforms. The daemon lifecycle (`h9k daemon start|stop|status`) runs on
+macOS, Windows, and Linux; `h9k daemon autostart enable|disable` runs on macOS and Windows (a
+Linux systemd user unit is unbuilt) — see [The daemon lifecycle](#the-daemon-lifecycle) below for
+what each platform's mechanism is.
 
 ## The daemon lifecycle
 
@@ -77,7 +76,12 @@ lease(s); closeout sweep inspected 0 pull request(s) and observed 0 merge(s)
 **Stopping the daemon does not stop the agents.** They are detached processes by design, so they
 keep working and the next start adopts them. `h9k daemon stop` says so.
 
-Start-at-login is macOS-only today, as a launchd LaunchAgent:
+On Windows, `stop` has no SIGTERM to send an arbitrary process, so it asks gracefully instead: it
+writes a small stop-request file the running `h9kd` polls for and honors itself
+(`WindowsStopRequestWatcher`) — same effect, in-flight event appends finish either way, just a
+different way of asking.
+
+Start-at-login works on macOS (a launchd LaunchAgent) and Windows (a Task Scheduler logon task):
 
 ```bash
 h9k daemon autostart enable
@@ -85,14 +89,21 @@ h9k daemon autostart disable
 ```
 
 `enable` snapshots the enabling shell's `PATH` (plus any `HALL9K_*` variables that are actually
-set) into the registration, because launchd starts from its own minimal environment and the
-daemon resolves `claude`, `gh`, and `git` through `PATH`. It reports any of those three that the
-captured environment cannot resolve, at enable time, where you can still fix it. Move a tool
-afterwards and you re-run `enable`. Only variables that are genuinely set are recorded; an unset
-one stays unset rather than being filled in with a plausible default.
+set) into the registration, because the service manager starts from its own minimal environment
+(or, on Windows, from none of its own at all) and the daemon resolves `claude`, `gh`, and `git`
+through `PATH`. It reports any of those three that the captured environment cannot resolve, at
+enable time, where you can still fix it. Move a tool afterwards and you re-run `enable`. Only
+variables that are genuinely set are recorded; an unset one stays unset rather than being filled
+in with a plausible default. On Windows the captured variables travel as `set` prefixes scoped to
+the one `cmd.exe` invocation that then runs `h9kd`, never as a registry mutation — nothing outside
+that one task is touched.
 
-A launchd-owned daemon restarts after a crash but never after a clean stop, and
-`h9k daemon stop` goes through `launchctl` when autostart owns the job, so stopped means stopped.
+A launchd- or Task-Scheduler-owned daemon restarts after a crash but never after a clean stop
+(`RestartOnFailure` on Windows mirrors launchd's `KeepAlive SuccessfulExit=false`), and
+`h9k daemon stop` routes through whichever service manager owns the job, so stopped means
+stopped either way. Windows registers the task at `\Hall9k\h9kd` in Task Scheduler's own library —
+never a Windows service, which would run as a different identity and lose your Claude Code, git,
+and `gh` credentials (Decisions Log #3).
 
 ## Postgres
 
@@ -370,9 +381,9 @@ the machine, not the build. Precedence, highest first:
 
 An environment variable therefore stays a one-off override rather than the only way to set
 anything, which is what makes this durable for the case an environment variable structurally
-cannot reach: a daemon started by autostart (a launchd `LaunchAgent` today, a Windows logon task
-when it lands) has no operator shell to export anything into, so before backlog 59 it always ran
-on built-in defaults no matter what the operator had configured by hand.
+cannot reach: a daemon started by autostart (a launchd `LaunchAgent` or a Windows Task Scheduler
+logon task) has no operator shell to export anything into, so before backlog 59 it always ran on
+built-in defaults no matter what the operator had configured by hand.
 
 ```bash
 h9k config show                                        # every setting, and where it came from
