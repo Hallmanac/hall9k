@@ -136,7 +136,11 @@ public static class ProjectHomePaths
 
     /// <summary>
     /// Every directory the shape is made of, in creation order. One list so the recipe that
-    /// creates a home and the render that describes it cannot drift apart.
+    /// creates a home and the render that describes it cannot drift apart —
+    /// <see cref="ArchivedTasksDirectory"/> included, even though nothing lands there until a
+    /// task first goes terminal, because the render advertises it as part of the always-there
+    /// layout (backlog 51, conformance review) and an empty directory costs nothing to create
+    /// up front.
     /// </summary>
     public static IReadOnlyList<string> Directories(string home) =>
     [
@@ -144,6 +148,7 @@ public static class ProjectHomePaths
         RepoDirectory(home),
         IdeasDirectory(home),
         TasksDirectory(home),
+        ArchivedTasksDirectory(home),
         SkillsDirectory(home),
         ClaudeDirectory(home),
         ClaudeSkillsDirectory(home),
