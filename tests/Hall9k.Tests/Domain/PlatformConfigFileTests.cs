@@ -418,6 +418,56 @@ public sealed class PlatformConfigFileTests : IDisposable
     }
 
     /// <summary>
+    /// Two malformed leaves, where the first one <see cref="JsonException"/> reports is a leaf
+    /// <c>ConfigurationBinder</c> tolerates (<c>defaultModel</c>) but the second — found only once
+    /// recovery retries the deserialize with the first removed — is the one leaf the binder
+    /// actually crashes on (<c>maxConcurrentAgentSessions</c> holding a non-numeric string). The
+    /// overall read has to be reported as <c>DaemonFailsToStart</c>, not <c>SettingIsIgnored</c>,
+    /// because the daemon dies at startup on the second leaf regardless of what the first one did.
+    /// Origin: the cycle-6 pre-PR review found the retry's own failure silently discarded, so this
+    /// exact file was reported as "just one setting ignored" while the daemon in fact crashes.
+    /// The sibling test below covers the same two leaves in the opposite key order, where the
+    /// crashing leaf is the *first* exception found and no recovery retry ever runs — both orders
+    /// must land on the same verdict.
+    /// </summary>
+    [Fact]
+    public async Task A_second_malformed_leaf_found_only_on_retry_still_reports_a_daemon_crash()
+    {
+        await File.WriteAllTextAsync(
+            Hall9kDatabase.ConfigFile,
+            """{"hall9k": {"defaultModel": {}, "maxConcurrentAgentSessions": "four"}}""");
+
+        ConfigFileReadResult result = await PlatformConfigFile.TryReadOperatingSettingsAsync(CancellationToken.None);
+
+        result.Problem.Should().NotBeNull();
+        result.Problem!.Consequence.Should().Be(ConfigFileProblemConsequence.DaemonFailsToStart,
+            "ConfigurationBinder throws converting \"four\" to an int, even though the sibling "
+            + "defaultModel mismatch alone would only be ignored");
+    }
+
+    /// <summary>
+    /// The same two malformed leaves as the test above, with the crashing one
+    /// (<c>maxConcurrentAgentSessions</c>) written first: <see cref="JsonException"/> reports it as
+    /// the very first mismatch, so <c>DaemonFailsToStartOn</c> classifies the read as a crash
+    /// immediately and <c>RecoverSectionIgnoring</c>'s retry path never runs at all. Both key
+    /// orders have to land on the identical verdict, since the daemon crashes on this file either
+    /// way — only the code path that discovers it differs.
+    /// </summary>
+    [Fact]
+    public async Task A_second_malformed_leaf_found_first_also_reports_a_daemon_crash()
+    {
+        await File.WriteAllTextAsync(
+            Hall9kDatabase.ConfigFile,
+            """{"hall9k": {"maxConcurrentAgentSessions": "four", "defaultModel": {}}}""");
+
+        ConfigFileReadResult result = await PlatformConfigFile.TryReadOperatingSettingsAsync(CancellationToken.None);
+
+        result.Problem.Should().NotBeNull();
+        result.Problem!.Consequence.Should().Be(ConfigFileProblemConsequence.DaemonFailsToStart,
+            "ConfigurationBinder throws converting \"four\" to an int, whichever key order this is found in");
+    }
+
+    /// <summary>
     /// The daemon's own guard (<c>PlatformConfigFileSource</c>) degrades gracefully when it cannot
     /// read the file at all — a root-owned file, or one <c>chmod</c>'d by another account on a
     /// shared box. The CLI side has to match rather than let the raw exception escape, since

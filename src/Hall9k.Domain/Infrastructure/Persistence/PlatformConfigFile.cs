@@ -101,7 +101,7 @@ public static class PlatformConfigFile
             // binding every sibling key normally. The diagnosis has to recover the same siblings
             // rather than discarding the whole section, or a healthy maxConcurrentAgentSessions
             // sitting next to a malformed modelByRole would be reported as skipped too.
-            return ConfigFileReadResult.SettingIgnored(RecoverSectionIgnoring(document, exception), ShapeErrorMessage(exception));
+            return RecoverSectionIgnoring(document, exception);
         }
     }
 
@@ -115,11 +115,11 @@ public static class PlatformConfigFile
     /// first segment's whole object — is what keeps <c>review</c> reported when only <c>build</c>
     /// is malformed.
     /// </summary>
-    private static OperatingSettings RecoverSectionIgnoring(JsonObject document, JsonException exception)
+    private static ConfigFileReadResult RecoverSectionIgnoring(JsonObject document, JsonException exception)
     {
         if (Section(document) is not { } section)
         {
-            return new();
+            return ConfigFileReadResult.SettingIgnored(new(), ShapeErrorMessage(exception));
         }
 
         JsonObject recovery = (JsonObject)section.DeepClone();
@@ -130,13 +130,26 @@ public static class PlatformConfigFile
         {
             OperatingSettings settings = recovery.Deserialize<OperatingSettings>(SerializerOptions) ?? new();
             settings.ModelByRole ??= new();
-            return settings;
+            return ConfigFileReadResult.SettingIgnored(settings, ShapeErrorMessage(exception));
+        }
+        catch (JsonException retryException) when (DaemonFailsToStartOn(document, retryException))
+        {
+            // A second malformed leaf beyond the one already being ignored, and this one is the
+            // one leaf ConfigurationBinder itself throws on: the classification has to revisit
+            // against this new exception rather than keep the first exception's "just ignored"
+            // verdict, or a file that genuinely crashes the daemon at startup is reported as
+            // merely having one setting fall back to its default. Origin: the cycle-6 pre-PR
+            // review found this exact silent-downgrade — swapping the two malformed keys' order
+            // in the same file flipped the report from DaemonFailsToStart to SettingIsIgnored
+            // even though the daemon crashes on both orderings.
+            return ConfigFileReadResult.DaemonCrashes(ShapeErrorMessage(retryException));
         }
         catch (JsonException)
         {
-            // A second malformed leaf beyond the one already being ignored: fall back to nothing
+            // A second malformed leaf beyond the one already being ignored, and — like the
+            // first — not one ConfigurationBinder crashes on either: fall back to nothing
             // recovered rather than looping, the same conservative outcome as before this fix.
-            return new();
+            return ConfigFileReadResult.SettingIgnored(new(), ShapeErrorMessage(exception));
         }
     }
 
