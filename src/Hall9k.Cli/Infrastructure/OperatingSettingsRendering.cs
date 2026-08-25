@@ -9,6 +9,29 @@ namespace Hall9k.Cli.Infrastructure;
 /// </summary>
 public static class OperatingSettingsRendering
 {
+    /// <summary>
+    /// Every line that names a problem with how the settings resolved — a malformed or wrongly
+    /// shaped config file, an environment variable set to a value the daemon cannot use — in the
+    /// one wording both commands print, so editing the crash-consequence sentence on one surface
+    /// cannot silently diverge from the other.
+    /// </summary>
+    public static IReadOnlyList<string> ProblemLines(OperatingSettingsReport report)
+    {
+        List<string> lines = [];
+
+        if (report.ConfigFileProblem is { } problem)
+        {
+            string consequence = problem.DaemonFailsToStart
+                ? "the daemon's own ConfigurationBinder fails on the same value, so it will crash outright at startup rather than fall back"
+                : "the daemon skips the file for this run — environment variables and built-in defaults still apply";
+            lines.Add($"{problem.Message} {consequence}.");
+        }
+
+        lines.AddRange(report.UnusableEnvironmentVariables);
+
+        return lines;
+    }
+
     public static IReadOnlyList<(string Label, string Value)> Rows(OperatingSettingsReport report)
     {
         List<(string Label, string Value)> rows =

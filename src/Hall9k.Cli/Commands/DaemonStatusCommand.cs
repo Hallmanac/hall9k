@@ -37,17 +37,9 @@ public sealed class DaemonStatusCommand : Hall9kAsyncCommand<DaemonStatusCommand
         });
 
         OperatingSettingsReport report = await OperatingSettingsResolver.ResolveAsync(cancellationToken);
-        if (report.ConfigFileProblem is { } problem)
+        foreach (string line in OperatingSettingsRendering.ProblemLines(report))
         {
-            string consequence = problem.DaemonFailsToStart
-                ? "the daemon's own ConfigurationBinder fails on the same value, so it will crash outright at startup rather than fall back"
-                : "the daemon skips the file for this run — environment variables and built-in defaults still apply";
-            AnsiConsole.MarkupLineInterpolated($"[red]{problem.Message}[/] {consequence}.");
-        }
-
-        foreach (string warning in report.UnusableEnvironmentVariables)
-        {
-            AnsiConsole.MarkupLineInterpolated($"[red]{warning}[/]");
+            AnsiConsole.MarkupLineInterpolated($"[red]{line}[/]");
         }
 
         string settingsHeader = running is null
