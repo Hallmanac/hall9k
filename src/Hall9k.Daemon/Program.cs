@@ -31,8 +31,14 @@ if (instance is null)
 // Before anything logs a single line: the inherited stdout/stderr h9kd gets from
 // cmd.exe's own `>>` redirect does not survive a live rotation (WindowsAppendOnlyLog),
 // so every line — not just the ones after the first rotation — needs to go through the
-// replacement handle from the start.
-if (OperatingSystem.IsWindows())
+// replacement handle from the start. Gated on the marker the two launch paths that
+// actually set up that cmd.exe redirect set (DaemonRuntime.AppendOnlyLogEnvironmentVariable),
+// not on OperatingSystem.IsWindows() alone: h9kd started any other way on Windows — a bare
+// terminal invocation, or the AppHost dev loop — has its own real console/pipe, and taking
+// it over here would silently vanish every line (including this process's own
+// unconfigured-connection-string refusal below) into the installed daemon's log instead.
+if (OperatingSystem.IsWindows()
+    && Environment.GetEnvironmentVariable(DaemonRuntime.AppendOnlyLogEnvironmentVariable) == "1")
 {
     WindowsAppendOnlyLog.TakeOverConsoleOutput(DaemonRuntime.LogFile);
 }

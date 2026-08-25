@@ -427,6 +427,11 @@ public sealed class WindowsDaemonAutostart : IDaemonAutostart
             inner.Append("set ").Append(EscapeForCmdExe(name)).Append('=').Append(EscapeForCmdExe(value)).Append("& ");
         }
 
+        // Tells h9kd this is the cmd.exe `>>` redirect WindowsAppendOnlyLog exists to
+        // survive a rotation of — never one of the operator's own captured variables, so
+        // it is set unconditionally here rather than threaded through RecordedVariableNames.
+        inner.Append("set ").Append(DaemonRuntime.AppendOnlyLogEnvironmentVariable).Append("=1& ");
+
         inner.Append('"').Append(daemonBinaryPath).Append('"')
             .Append(" < NUL >> \"").Append(logFilePath).Append("\" 2>&1");
         return inner.ToString();
