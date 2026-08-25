@@ -41,6 +41,13 @@ if (OperatingSystem.IsWindows()
     && Environment.GetEnvironmentVariable(DaemonRuntime.AppendOnlyLogEnvironmentVariable) == "1")
 {
     WindowsAppendOnlyLog.TakeOverConsoleOutput(DaemonRuntime.LogFile);
+
+    // Cleared from this process's own environment the moment it has been acted on: a
+    // child process spawned later (an agent session, a verify-gate command) inherits
+    // this process's environment by default, and without clearing it here that child's
+    // own h9kd — the dev loop, a bare terminal invocation, run to check on this very
+    // change — would see the marker and wrongly take over its console output too.
+    Environment.SetEnvironmentVariable(DaemonRuntime.AppendOnlyLogEnvironmentVariable, null);
 }
 
 HostApplicationBuilder builder = Host.CreateApplicationBuilder(args);
