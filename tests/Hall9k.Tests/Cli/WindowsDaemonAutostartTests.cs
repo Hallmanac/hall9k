@@ -155,6 +155,20 @@ public sealed class WindowsDaemonAutostartTests
     }
 
     [Fact]
+    public void The_launch_script_marks_h9kd_as_running_behind_the_append_only_log_redirect()
+    {
+        // Program.cs only takes over its own console output with WindowsAppendOnlyLog when
+        // it sees this marker (Hall9k.Domain.Infrastructure.Storage.DaemonRuntime.
+        // AppendOnlyLogEnvironmentVariable) — without it, every other way of starting h9kd
+        // on Windows would have its console silently redirected into the installed
+        // daemon's log too. This launch path is one of the two that actually is the
+        // cmd.exe >> redirect that gate exists to recognize, so it must set the marker.
+        string script = WindowsDaemonAutostart.LaunchScriptContent(Binary, Log, Environment);
+
+        script.Should().Contain("HALL9K_DAEMON_APPEND_ONLY_LOG=1");
+    }
+
+    [Fact]
     public void An_unobserved_environment_is_left_out_rather_than_invented()
     {
         string script = WindowsDaemonAutostart.LaunchScriptContent(Binary, Log, []);

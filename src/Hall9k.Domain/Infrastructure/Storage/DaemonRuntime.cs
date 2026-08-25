@@ -47,4 +47,20 @@ public static class DaemonRuntime
     /// only exists on Windows and never gets written or watched anywhere else.
     /// </summary>
     public static string StopRequestFile => Path.Combine(RunPaths.Root, "h9kd.stop");
+
+    /// <summary>
+    /// Set to <c>"1"</c> only by the two Windows launch paths that redirect h9kd's
+    /// stdout/stderr through cmd.exe's own <c>&gt;&gt;</c> append before h9kd ever starts
+    /// (<c>DaemonLifecycle.SpawnDetachedWindows</c> and <c>WindowsDaemonAutostart</c>'s
+    /// launch script) — never by a human's shell, and never inherited from one, since
+    /// neither path forwards the parent's own environment for this name. Program.cs reads
+    /// it to decide whether swapping in <c>WindowsAppendOnlyLog</c>'s replacement
+    /// handles is even applicable: without this gate, every other way of running h9kd on
+    /// Windows (a bare terminal invocation, the <c>dotnet run --project Hall9k.AppHost</c>
+    /// dev loop) had its console output silently redirected into the installed daemon's
+    /// log file instead, because <c>WindowsAppendOnlyLog</c> was applied unconditionally on
+    /// the OS check alone rather than on whether stdout was actually the cmd.exe redirect it
+    /// exists to survive a rotation of.
+    /// </summary>
+    public const string AppendOnlyLogEnvironmentVariable = "HALL9K_DAEMON_APPEND_ONLY_LOG";
 }
