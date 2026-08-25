@@ -1,5 +1,6 @@
 using Hall9k.Domain.Features.Project;
 using Hall9k.Domain.Features.Run;
+using Hall9k.Domain.Infrastructure.Persistence;
 using Hall9k.Domain.Shared.ValueObjects;
 
 namespace Hall9k.Daemon;
@@ -34,7 +35,7 @@ public sealed class DaemonOptions
     /// to the machine.
     /// </para>
     /// </summary>
-    public int MaxConcurrentAgentSessions { get; set; } = 3;
+    public int MaxConcurrentAgentSessions { get; set; } = OperatingSettings.DefaultMaxConcurrentAgentSessions;
 
     /// <summary>Fallback sweep interval; the doorbell usually wakes the loop sooner.</summary>
     public TimeSpan PollInterval { get; set; } = TimeSpan.FromSeconds(5);

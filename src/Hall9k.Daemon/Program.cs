@@ -31,6 +31,10 @@ if (instance is null)
 HostApplicationBuilder builder = Host.CreateApplicationBuilder(args);
 builder.AddServiceDefaults();
 
+// Ahead of the environment variables source Host.CreateApplicationBuilder already added, so an
+// env var still outranks a config-file setting (backlog 59): env, then config file, then default.
+PlatformConfigFileSource.Insert(builder.Configuration);
+
 // Stdout IS the log file when the CLI starts the daemon detached, so how this reads is
 // part of the lifecycle contract, not a preference (Decisions Log #31).
 DaemonLogging.Configure(builder.Logging);
