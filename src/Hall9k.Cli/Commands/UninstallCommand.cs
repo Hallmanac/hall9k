@@ -182,9 +182,13 @@ public sealed class UninstallCommand : Hall9kAsyncCommand<UninstallCommand.Setti
         }
 
         PostgresContainerStatus container = await ContainerRuntimeProbe.Hall9kContainerStatusAsync(runner, cancellationToken);
-        return container == PostgresContainerStatus.Absent
-            ? null
-            : await ContainerRuntimeProbe.DataVolumeNameAsync(runner, cancellationToken);
+        if (container == PostgresContainerStatus.Absent)
+        {
+            return null;
+        }
+
+        (_, string? name) = await ContainerRuntimeProbe.DataVolumeNameAsync(runner, cancellationToken);
+        return name;
     }
 
     /// <summary>
@@ -322,6 +326,7 @@ public sealed class UninstallCommand : Hall9kAsyncCommand<UninstallCommand.Setti
     {
         NotAttempted,
         NoContainerRuntime,
+        ContainerRuntimeNotRunning,
         ContainerAbsent,
         ContainerAlreadyStopped,
         ContainerStopped,
@@ -349,14 +354,18 @@ public sealed class UninstallCommand : Hall9kAsyncCommand<UninstallCommand.Setti
         ContainerRuntimeStatus runtime = await ContainerRuntimeProbe.RuntimeStatusAsync(runner, cancellationToken);
         if (runtime != ContainerRuntimeStatus.Running)
         {
-            string reason = runtime == ContainerRuntimeStatus.NotInstalled
+            bool notInstalled = runtime == ContainerRuntimeStatus.NotInstalled;
+            string reason = notInstalled
                 ? "No container runtime (docker) is installed"
                 : "Docker is installed but not running";
+            DataTierOutcome outcome = notInstalled
+                ? DataTierOutcome.NoContainerRuntime
+                : DataTierOutcome.ContainerRuntimeNotRunning;
 
             if (!purgeData)
             {
                 AnsiConsole.MarkupLine($"[dim]{reason} — nothing to stop in Docker. Your database, if any, is untouched.[/]");
-                return (true, DataTierOutcome.NoContainerRuntime);
+                return (true, outcome);
             }
 
             AnsiConsole.MarkupLine(
@@ -366,7 +375,7 @@ public sealed class UninstallCommand : Hall9kAsyncCommand<UninstallCommand.Setti
                 + $"{PostgresRuntime.VolumeName} literal without being this install's volume at all. Start "
                 + "Docker, then run h9k uninstall --purge-data again so the real volume can be confirmed before "
                 + "anything is removed.");
-            return (false, DataTierOutcome.NoContainerRuntime);
+            return (false, outcome);
         }
 
         PostgresContainerStatus container = await ContainerRuntimeProbe.Hall9kContainerStatusAsync(runner, cancellationToken);
@@ -378,28 +387,47 @@ public sealed class UninstallCommand : Hall9kAsyncCommand<UninstallCommand.Setti
                 // No container left to docker inspect, so which volume is really this install's
                 // cannot be observed — only guessed at. A container created before this
                 // branch's compose name: pin (or brought up from an unpinned checkout) mounts a
-                // Compose-project-prefixed volume, not the bare PostgresRuntime.VolumeName
-                // literal, and the literal is also the exact string a pre-migration Aspire dev
-                // loop names its own volume (PostgresRuntime.VolumeName's own remarks). Guessing
-                // here risks destroying that unrelated volume while reporting success. If no
-                // volume even carries the literal name, there is nothing to guess wrong about.
+                // Compose-project-prefixed volume — typically PostgresRuntime.LegacyVolumeName —
+                // not the bare PostgresRuntime.VolumeName literal, and that literal is also the
+                // exact string a pre-migration Aspire dev loop names its own volume
+                // (PostgresRuntime.VolumeName's own remarks). Checking only the pinned literal
+                // would read the ordinary "container removed with docker compose down, volume
+                // kept" sequence on a pre-pin install as "nothing here at all" and declare the
+                // machine data-free while the real volume sits untouched under the other name.
+                // Guessing which one to destroy is still refused either way — this only widens
+                // what counts as "something to guess wrong about".
                 bool literalVolumeExists = await ContainerRuntimeProbe.VolumeExistsAsync(
                     runner, cancellationToken, PostgresRuntime.VolumeName);
-                if (!literalVolumeExists)
+                bool legacyVolumeExists = await ContainerRuntimeProbe.VolumeExistsAsync(
+                    runner, cancellationToken, PostgresRuntime.LegacyVolumeName);
+                if (!literalVolumeExists && !legacyVolumeExists)
                 {
                     AnsiConsole.MarkupLine(
                         $"[dim]No {PostgresRuntime.ContainerName} container and no {PostgresRuntime.VolumeName} "
-                        + "volume — nothing to purge.[/]");
+                        + $"or {PostgresRuntime.LegacyVolumeName} volume — nothing to purge.[/]");
                     return (true, DataTierOutcome.ContainerAbsent);
                 }
 
+                List<string> foundVolumes = [];
+                if (literalVolumeExists)
+                {
+                    foundVolumes.Add(PostgresRuntime.VolumeName);
+                }
+
+                if (legacyVolumeExists)
+                {
+                    foundVolumes.Add(PostgresRuntime.LegacyVolumeName);
+                }
+
+                string removalCommands = string.Join("; ", foundVolumes.Select(name => $"docker volume rm {name}"));
                 AnsiConsole.MarkupLine(
-                    $"[yellow]Purge incomplete[/] — {PostgresRuntime.ContainerName} is absent, so its data "
-                    + $"volume's real name cannot be confirmed by inspecting it. A volume named "
-                    + $"{PostgresRuntime.VolumeName} exists, but it could belong to something else entirely "
-                    + "(the pre-migration Aspire dev loop uses this identical literal name), so it was left "
+                    $"[yellow]Purge incomplete[/] — {PostgresRuntime.ContainerName} is absent, so which volume "
+                    + $"is really this install's cannot be confirmed by inspecting it. A volume named "
+                    + $"{string.Join(" and ", foundVolumes)} exists, but it could belong to something else "
+                    + "entirely (a pre-pin installed-mode Postgres, or the pre-migration Aspire dev loop, can "
+                    + "carry either literal without being this install's volume at all), so it was left "
                     + $"untouched rather than guessed at and destroyed. If you are sure it is this install's, "
-                    + $"remove it by hand: docker volume rm {PostgresRuntime.VolumeName}");
+                    + $"remove it by hand: {removalCommands}");
                 return (false, DataTierOutcome.PurgeUnconfirmedVolume);
             }
 
@@ -408,7 +436,19 @@ public sealed class UninstallCommand : Hall9kAsyncCommand<UninstallCommand.Setti
             // for, and falling back to the bare PostgresRuntime.VolumeName literal here would be
             // the identical guess the absent-container branch above refuses to make — this
             // container is present, but that does not make the literal its volume.
-            string? volumeName = await ContainerRuntimeProbe.DataVolumeNameAsync(runner, cancellationToken);
+            (bool volumeConfirmed, string? volumeName) = await ContainerRuntimeProbe.DataVolumeNameAsync(runner, cancellationToken);
+            if (!volumeConfirmed)
+            {
+                // docker inspect itself failed — not the same fact as "no named volume mounted".
+                // Removing the container now would destroy the one thing that could still answer
+                // which volume is really this install's, so the container is left alone too.
+                AnsiConsole.MarkupLine(
+                    $"[yellow]Purge incomplete[/] — {PostgresRuntime.ContainerName} could not be inspected to "
+                    + "confirm which data volume it has mounted, so nothing was removed. Retry once Docker is "
+                    + $"answering reliably, or confirm the volume yourself first: docker inspect "
+                    + $"{PostgresRuntime.ContainerName}");
+                return (false, DataTierOutcome.PurgeIncomplete);
+            }
 
             bool containerRemoved = await ContainerRuntimeProbe.RemoveContainerAsync(runner, cancellationToken);
 
@@ -924,6 +964,10 @@ public sealed class UninstallCommand : Hall9kAsyncCommand<UninstallCommand.Setti
                     "[dim]Left in Docker:[/] no container runtime (Docker) was found on this machine, so there "
                         + "was nothing to stop. If Postgres is running natively, or elsewhere, it is untouched "
                         + "either way — this uninstall never reaches outside Docker.",
+                DataTierOutcome.ContainerRuntimeNotRunning =>
+                    "[dim]Left in Docker:[/] Docker is installed but was not running, so there was nothing to "
+                        + $"stop here. Start Docker and a {PostgresRuntime.ContainerName} container may well be "
+                        + "sitting there untouched, with its data volume exactly as you left it.",
                 DataTierOutcome.ContainerAbsent =>
                     $"[dim]Left in Docker:[/] no {PostgresRuntime.ContainerName} container was found — there was "
                         + "nothing here to stop, and nothing here to lose.",

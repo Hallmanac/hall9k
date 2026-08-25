@@ -276,15 +276,34 @@ public static class DatabaseDoctor
             return false;
         }
 
-        bool started = container == PostgresContainerStatus.Stopped
-            ? await ContainerRuntimeProbe.StartStoppedContainerAsync(runner, cancellationToken)
-            : await ContainerRuntimeProbe.ComposeUpAsync(runner, cancellationToken);
-        if (!started)
+        if (container == PostgresContainerStatus.Stopped)
         {
-            AnsiConsole.MarkupLine(
-                $"[red]Docker could not start it[/] — check docker logs {PostgresRuntime.ContainerName}, "
-                + "or run the command by hand.");
-            return false;
+            if (!await ContainerRuntimeProbe.StartStoppedContainerAsync(runner, cancellationToken))
+            {
+                AnsiConsole.MarkupLine(
+                    $"[red]Docker could not start it[/] — check docker logs {PostgresRuntime.ContainerName}, "
+                    + "or run the command by hand.");
+                return false;
+            }
+        }
+        else
+        {
+            switch (await ContainerRuntimeProbe.ComposeUpAsync(runner, cancellationToken))
+            {
+                case ComposeUpResult.LegacyVolumeDetected:
+                    AnsiConsole.MarkupLine(
+                        $"[red]Not starting[/] — a {PostgresRuntime.LegacyVolumeName} volume exists from before "
+                        + $"this install's compose name: pin. Bringing up a fresh container now would create a "
+                        + $"new, empty {PostgresRuntime.VolumeName} volume alongside it rather than reconnect to "
+                        + "your data. See docs/operations.md's Provisioning section to migrate it forward by "
+                        + "hand, then run h9k doctor again.");
+                    return false;
+                case ComposeUpResult.Failed:
+                    AnsiConsole.MarkupLine(
+                        $"[red]Docker could not start it[/] — check docker logs {PostgresRuntime.ContainerName}, "
+                        + "or run the command by hand.");
+                    return false;
+            }
         }
 
         AnsiConsole.Markup("[dim]Waiting for it to come up…[/]");
