@@ -134,8 +134,9 @@ the next time the daemon sweeps, which the file's own header line says.
 
 The same sweep moves a task's whole directory into `tasks/_archive/` the moment it goes
 terminal — true closeout (merged, and the closeout monitor observed it) or abandoned — and moves
-it back out if it is ever reopened, so an editor's file explorer, sorted alphabetically, shows
-only live work above the one folder everything finished sorts into.
+it back out if it is ever reopened. `_archive`'s leading underscore sorts it to the top of an
+editor's file explorer, ahead of every live task, so the one folder everything finished sorts
+into is out of the way at a glance rather than interleaved with what still needs attention.
 
 Going from nothing to a working project directory on a second machine:
 
