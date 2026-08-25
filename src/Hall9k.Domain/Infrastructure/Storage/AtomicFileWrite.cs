@@ -19,15 +19,25 @@ namespace Hall9k.Domain.Infrastructure.Storage;
 /// source file's ACL instead). A target that does not exist yet has no prior permissions to
 /// preserve, so it is just moved into place.
 /// </para>
+/// <para>
+/// <paramref name="path"/> is resolved through a symbolic link before any of that happens: the
+/// rename swaps out whatever inode currently sits at the resolved path, so swapping at the
+/// symlink's own path instead would unlink the symlink itself and leave a plain file in its
+/// place. An operator who keeps <c>config.json</c> as a symlink into a separately
+/// version-controlled dotfiles repo needs the link to survive a write the same way the
+/// permissions above do. Origin: the cycle-4 pre-PR review found the first write after such a
+/// symlink replaced it outright, orphaning the file it pointed at.
+/// </para>
 /// </summary>
 public static class AtomicFileWrite
 {
     public static async Task WriteAllTextAsync(string path, string contents, CancellationToken cancellationToken)
     {
-        string tempPath = $"{path}.tmp-{Path.GetRandomFileName()}";
+        string resolvedPath = ResolveSymbolicLinkTarget(path);
+        string tempPath = $"{resolvedPath}.tmp-{Path.GetRandomFileName()}";
         try
         {
-            bool targetExists = File.Exists(path);
+            bool targetExists = File.Exists(resolvedPath);
 
             // Narrowed to a private, owner-writable mode before any content is written, not the
             // target's own mode: applying nothing here (as a follow-up File.SetUnixFileMode once
@@ -55,16 +65,16 @@ public static class AtomicFileWrite
 
             if (targetExists && !OperatingSystem.IsWindows())
             {
-                File.SetUnixFileMode(tempPath, File.GetUnixFileMode(path));
+                File.SetUnixFileMode(tempPath, File.GetUnixFileMode(resolvedPath));
             }
 
             if (!targetExists)
             {
-                File.Move(tempPath, path);
+                File.Move(tempPath, resolvedPath);
                 return;
             }
 
-            File.Replace(tempPath, path, destinationBackupFileName: null);
+            File.Replace(tempPath, resolvedPath, destinationBackupFileName: null);
         }
         finally
         {
@@ -81,4 +91,18 @@ public static class AtomicFileWrite
             }
         }
     }
+
+    /// <summary>
+    /// The real file a symlink at <paramref name="path"/> ultimately points to, or
+    /// <paramref name="path"/> itself when it is not a symlink — including when nothing exists
+    /// there yet (the ordinary first-write case), which <see cref="FileSystemInfo.ResolveLinkTarget"/>
+    /// itself refuses with <see cref="FileNotFoundException"/> rather than answering "not a link".
+    /// <see cref="FileSystemInfo.ResolveLinkTarget"/> walks the whole chain
+    /// (<c>returnFinalTarget: true</c>), so a symlink pointing at another symlink still resolves
+    /// to the one real file the swap must land on.
+    /// </summary>
+    private static string ResolveSymbolicLinkTarget(string path) =>
+        File.Exists(path) || Directory.Exists(path)
+            ? new FileInfo(path).ResolveLinkTarget(returnFinalTarget: true)?.FullName ?? path
+            : path;
 }
