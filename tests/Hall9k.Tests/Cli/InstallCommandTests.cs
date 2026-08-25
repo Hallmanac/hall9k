@@ -350,6 +350,35 @@ public sealed class InstallCommandTests : IDisposable
     }
 
     [Fact]
+    public void Staging_from_a_release_payload_never_copies_a_development_settings_file()
+    {
+        // Defense in depth on top of the project files' own exclusion: a stale payload —
+        // built before that fix, or assembled by hand — must not carry a Development settings
+        // file forward into ~/.hall9k/bin, since staging is the last point before it would
+        // land on an installed machine.
+        string fromRelease = Path.Combine(directory, "release");
+        Directory.CreateDirectory(Path.Combine(fromRelease, "de"));
+        File.WriteAllText(Path.Combine(fromRelease, InstallCommand.BinaryFileName("h9k")), "cli\n");
+        File.WriteAllText(Path.Combine(fromRelease, InstallCommand.BinaryFileName("h9kd")), "daemon\n");
+        File.WriteAllText(Path.Combine(fromRelease, "appsettings.json"), "{}\n");
+        File.WriteAllText(Path.Combine(fromRelease, "appsettings.Development.json"), "{\"dev\":true}\n");
+        File.WriteAllText(Path.Combine(fromRelease, "de", "appsettings.Development.json"), "{\"dev\":true}\n");
+        File.WriteAllText(Path.Combine(fromRelease, "appsettings.development.json"), "{\"dev\":true}\n");
+        string staging = Path.Combine(directory, "staging");
+
+        InstallCommand.StageFromRelease(fromRelease, staging, CancellationToken.None);
+
+        File.Exists(Path.Combine(staging, "appsettings.json")).Should().BeTrue(
+            "the production settings file still belongs in ~/.hall9k/bin");
+        File.Exists(Path.Combine(staging, "appsettings.Development.json")).Should().BeFalse(
+            "a stale release payload's Development settings file must not ride into an install");
+        File.Exists(Path.Combine(staging, "de", "appsettings.Development.json")).Should().BeFalse(
+            "the same rule applies to a Development settings file sitting in a nested directory");
+        File.Exists(Path.Combine(staging, "appsettings.development.json")).Should().BeFalse(
+            "the filter matches case-insensitively, the same as the release workflow's own find -iname gate");
+    }
+
+    [Fact]
     public void Staging_from_a_release_payload_copies_subdirectories_other_than_skills()
     {
         string fromRelease = Path.Combine(directory, "release");

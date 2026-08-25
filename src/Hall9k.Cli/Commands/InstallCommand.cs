@@ -253,23 +253,28 @@ public sealed class InstallCommand : Hall9kAsyncCommand<InstallCommand.Settings>
 
     /// <summary>Copies the platform's binaries (and every other published file — DLLs,
     /// runtimeconfig, native host, satellite-resource subdirectories — but not the skills/
-    /// subdirectory or the VERSION marker, neither of which belongs in ~/.hall9k/bin) from an
-    /// extracted release payload into staging. Checked per file rather than left to run to
-    /// completion: the payload is a self-contained publish of two apps, tens of megabytes, and
-    /// the zip-extraction step immediately before this one earned its own per-entry
-    /// cancellation check for the same reason (60bc393).</summary>
+    /// subdirectory, the VERSION marker, or a Development settings file, none of which belongs
+    /// in ~/.hall9k/bin) from an extracted release payload into staging. The Development check
+    /// is defense in depth on top of Hall9k.Cli.csproj's and Hall9k.Daemon.csproj's own
+    /// exclusions: a payload built before those fixes, or assembled by hand, can still carry
+    /// the file, and staging is the last point before it would land on an installed machine.
+    /// Checked per file rather than left to run to completion: the payload is a
+    /// self-contained publish of two apps, tens of megabytes, and the zip-extraction step
+    /// immediately before this one earned its own per-entry cancellation check for the same
+    /// reason (60bc393).</summary>
     internal static void StageFromRelease(string fromRelease, string staging, CancellationToken cancellationToken = default)
     {
         Directory.CreateDirectory(staging);
         foreach (string file in Directory.EnumerateFiles(fromRelease))
         {
-            if (Path.GetFileName(file) is "VERSION")
+            string fileName = Path.GetFileName(file);
+            if (fileName is "VERSION" || IsDevelopmentSettingsFile(fileName))
             {
                 continue;
             }
 
             cancellationToken.ThrowIfCancellationRequested();
-            File.Copy(file, Path.Combine(staging, Path.GetFileName(file)), overwrite: true);
+            File.Copy(file, Path.Combine(staging, fileName), overwrite: true);
         }
 
         foreach (string sourceDirectory in Directory.EnumerateDirectories(fromRelease))
@@ -288,8 +293,14 @@ public sealed class InstallCommand : Hall9kAsyncCommand<InstallCommand.Settings>
         Directory.CreateDirectory(destinationDirectory);
         foreach (string file in Directory.EnumerateFiles(sourceDirectory))
         {
+            string fileName = Path.GetFileName(file);
+            if (IsDevelopmentSettingsFile(fileName))
+            {
+                continue;
+            }
+
             cancellationToken.ThrowIfCancellationRequested();
-            File.Copy(file, Path.Combine(destinationDirectory, Path.GetFileName(file)), overwrite: true);
+            File.Copy(file, Path.Combine(destinationDirectory, fileName), overwrite: true);
         }
 
         foreach (string nested in Directory.EnumerateDirectories(sourceDirectory))
@@ -297,6 +308,16 @@ public sealed class InstallCommand : Hall9kAsyncCommand<InstallCommand.Settings>
             CopyDirectoryRecursively(nested, Path.Combine(destinationDirectory, Path.GetFileName(nested)), cancellationToken);
         }
     }
+
+    /// <summary>Mirrors the project files' own <c>*.Development.*</c> exclusion (see
+    /// Hall9k.Cli.csproj and Hall9k.Daemon.csproj) at the file-name level, using the same glob
+    /// semantics: a literal <c>.Development.</c> segment bounded by dots anywhere in the name —
+    /// <c>appsettings.Development.json</c> today, whatever sibling gets the same treatment
+    /// tomorrow. A bare <c>Development.json</c> does not match the glob (nothing precedes the
+    /// dot) and is not treated as a Development settings file either, keeping this check and
+    /// the project-file exclusion catching exactly the same files.</summary>
+    private static bool IsDevelopmentSettingsFile(string fileName) =>
+        fileName.Contains(".Development.", StringComparison.OrdinalIgnoreCase);
 
     /// <summary>
     /// Windows has no PATH-directory convention the way Unix does (no /usr/local/bin every
