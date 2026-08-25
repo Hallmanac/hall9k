@@ -105,12 +105,32 @@ available on this machine to point at, including a stopped `hall9k-postgres` con
 an earlier session. See `docs/operations.md` for the full precedence chain and the two
 provisioning paths.
 
+## Daemon operating settings
+
+The concurrency ceiling and the model-by-role policy are durable per-machine settings, not just
+environment variables (backlog 59): they load from `~/.hall9k/config.json` — the same file the
+connection string above lives in, deliberately outside `bin/` so an update never touches it —
+with precedence environment variable, then this file, then the built-in default. This is what
+lets a daemon started by autostart (no operator shell to export anything into) still run with the
+operator's own settings instead of silently falling back to defaults.
+
+```bash
+h9k config show                                   # every setting, and where it came from
+h9k config set --max-concurrent-agent-sessions 4  # the concurrency ceiling
+```
+
+Hand-editing the file works just as well as `h9k config set`; a missing file is created (with only
+what you asked to change) the first time it is needed, and it says so. See
+`docs/operations.md`'s [Daemon operating settings](operations.md#daemon-operating-settings) for
+the full precedence chain and every setting.
+
 ## Everyday commands, once installed
 
 ```bash
 h9k doctor                 # diagnose the database situation, on demand
 h9k daemon start            # launch h9kd, detached, on demand
-h9k daemon status           # running or not, pid, uptime, recent log lines
+h9k daemon status           # running or not, pid, uptime, recent log lines, and the effective settings
+h9k config show             # the daemon's operating settings, and where each one came from
 h9k status                  # the attention pane
 h9k update                  # fetch and install the latest release
 ```
