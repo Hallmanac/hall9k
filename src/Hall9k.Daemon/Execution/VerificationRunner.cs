@@ -86,7 +86,7 @@ public sealed class VerificationRunner(
         // gates run well after the agent's own session ends, so the render sweep has had a
         // chance to move the task's directory by the time this reads it. Resolved once, here,
         // rather than at each gate: every reader of a recorded RunDirectory funnels through
-        // RunPaths.ResolveCurrentDirectory (PLAN.md §16 #83).
+        // RunPaths.ResolveCurrentDirectory (PLAN.md §16 #84).
         string runDirectory = RunPaths.ResolveCurrentDirectory(run.RunDirectory);
 
         foreach (VerifyCommand gate in gates)
