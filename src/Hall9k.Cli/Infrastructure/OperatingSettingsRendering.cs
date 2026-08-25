@@ -26,7 +26,7 @@ public static class OperatingSettingsRendering
                 ConfigFileProblemConsequence.DaemonFailsToStart =>
                     "The daemon's own ConfigurationBinder fails on the same value, so it will crash outright at startup rather than fall back.",
                 ConfigFileProblemConsequence.SettingIsIgnored =>
-                    "The daemon's own ConfigurationBinder has no conversion for this value, so it leaves just this setting at its default — every other setting in the file, and environment variables and built-in defaults, still apply.",
+                    "The daemon's own ConfigurationBinder has no conversion for this value, so this setting does not take its value from the file — every other setting in the file, and environment variables and built-in defaults, still apply. What it resolved to instead (usually the built-in default, but zero for an empty JSON object on a numeric setting) is in the row below.",
                 _ => "The daemon skips the file for this run — environment variables and built-in defaults still apply.",
             };
             lines.Add($"{problem.Message} {consequence}");
