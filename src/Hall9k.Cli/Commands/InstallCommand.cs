@@ -526,6 +526,17 @@ public sealed class InstallCommand : Hall9kAsyncCommand<InstallCommand.Settings>
         }
 
         SkillPublication publication = SkillSeeder.PublishCanonical(source);
+        if (publication.ManifestUnconfirmed)
+        {
+            AnsiConsole.MarkupLine(
+                $"[yellow]Skills not published this run[/]: {SkillLibraryPaths.PublishedManifest.EscapeMarkup()} "
+                + "exists but could not be read (likely held open by another process — an antivirus scan or an "
+                + "editor). Without it, an already-published skill cannot be told apart from one you wrote "
+                + "yourself, so nothing in the canonical set was published, retired, or classified as an override "
+                + "this pass. Run h9k install again once it's free.");
+            return;
+        }
+
         string names = string.Join(", ", publication.Published);
 
         AnsiConsole.MarkupLineInterpolated(

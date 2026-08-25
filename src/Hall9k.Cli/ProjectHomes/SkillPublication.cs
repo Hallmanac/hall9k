@@ -20,7 +20,16 @@ namespace Hall9k.Cli.ProjectHomes;
 /// Skill names this install ships that were already in the canonical directory without any
 /// install having put them there. The existing content stays and shadows the shipped version.
 /// </param>
+/// <param name="ManifestUnconfirmed">
+/// True when the published manifest exists but could not be read this pass (a Windows antivirus
+/// scan or an editor holding it open) — not the same fact as no manifest ever existing. When
+/// true, nothing was published, retired, or classified as an override: without the manifest,
+/// an already-present shipped skill cannot be told apart from an operator's own file of the same
+/// name, so <see cref="Published"/>, <see cref="Retired"/>, and <see cref="LeftAlone"/> are all
+/// empty rather than guessed at, and the caller should say so rather than report any of them.
+/// </param>
 public sealed record SkillPublication(
     IReadOnlyList<string> Published,
     IReadOnlyList<string> Retired,
-    IReadOnlyList<string> LeftAlone);
+    IReadOnlyList<string> LeftAlone,
+    bool ManifestUnconfirmed = false);

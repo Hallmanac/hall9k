@@ -308,11 +308,12 @@ public sealed class ProjectHomeRecipeTests : IDisposable
     /// <summary>
     /// Before this fix, an unreadable manifest was read exactly like an absent one, so
     /// <c>commit-plan</c>'s already-existing destination failed the ownership check and landed
-    /// in <c>leftAlone</c> — and the unconditional manifest rewrite at the end of
-    /// <see cref="SkillSeeder.PublishCanonical"/> then overwrote the real manifest with that
-    /// empty reading, permanently reclassifying every install-owned skill as an operator
-    /// override on every later install. This uninstall feature's own pre-PR review found the
-    /// swallow that made a read failure indistinguishable from "nothing was ever published".
+    /// in <c>leftAlone</c> — falsely reporting an install-owned skill as an operator override
+    /// that was never observed, and (for a name new to this source) leaving a copy on disk whose
+    /// hash was never recorded anywhere, since the unconditional manifest rewrite at the end of
+    /// <see cref="SkillSeeder.PublishCanonical"/> was skipped for the same reason. Both are the
+    /// same root cause: proceeding on an empty reading of a manifest that is not actually empty.
+    /// The fix is to do nothing at all this pass — see <see cref="SkillPublication.ManifestUnconfirmed"/>.
     /// </summary>
     [Fact]
     public void Publishing_does_not_erase_the_manifest_when_it_cannot_be_read()
@@ -348,9 +349,13 @@ public sealed class ProjectHomeRecipeTests : IDisposable
             }
         }
 
-        publication.LeftAlone.Should().Equal(["commit-plan"],
-            "the manifest could not be read this pass, so the already-published skill cannot be "
-            + "confirmed safe to overwrite");
+        publication.ManifestUnconfirmed.Should().BeTrue(
+            "the manifest could not be read this pass, so nothing can safely be classified");
+        publication.Published.Should().BeEmpty();
+        publication.Retired.Should().BeEmpty();
+        publication.LeftAlone.Should().BeEmpty(
+            "commit-plan was never observed to be an operator override — reporting it as one "
+            + "would be a claim this pass never confirmed");
         File.ReadAllText(SkillLibraryPaths.PublishedManifest).Should().Be(manifestBeforeFailure,
             "an unreadable manifest must never be overwritten with an empty one — that would "
             + "permanently forget every previously published skill");
