@@ -45,6 +45,13 @@ public sealed class WindowsStopRequestWatcher(
     // warning.
     private string? lastWarnedStaleContent;
 
+    // Set once DeleteClaimFile has warned about a claimed copy it could not remove even after
+    // clearing the read-only attribute — an ACL denial rather than the read-only case that
+    // retry already recovers from. Without this, the same permanent failure would re-log on
+    // every 250ms tick for the rest of the daemon's life, the same flood lastWarnedStaleContent
+    // exists to prevent for stale content.
+    private bool warnedAboutStuckClaimFile;
+
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         using PeriodicTimer timer = new(PollInterval);
@@ -163,21 +170,47 @@ public sealed class WindowsStopRequestWatcher(
     }
 
     /// <summary>
-    /// Best-effort cleanup of the already-claimed copy — the request is off
+    /// Cleanup of the already-claimed copy — the request is off
     /// <see cref="DaemonRuntime.StopRequestFile"/> the moment the claiming move succeeds
-    /// (see <see cref="IsOwnStopRequest"/>), so nothing else ever reads
-    /// <see cref="ClaimPath"/> and a failure to delete it here (a lock, permissions) leaves
-    /// only harmless litter rather than anything that could reach — let alone stop — the
-    /// next daemon this machine starts.
+    /// (see <see cref="IsOwnStopRequest"/>), so nothing else ever reads <see cref="ClaimPath"/>.
+    /// A transient failure to delete it (a lock, an indexer holding it open) is harmless
+    /// litter that the next tick's retry clears. A read-only <see cref="ClaimPath"/> is not
+    /// transient, though: <see cref="File.Move(string, string, bool)"/>'s rename carries the
+    /// attribute across from the source (cycle-2 pre-PR review finding), and a plain
+    /// <see cref="File.Delete(string)"/> refuses a read-only file forever — which would leave
+    /// <see cref="IsOwnStopRequest"/>'s <c>File.Exists(ClaimPath)</c> guard permanently true,
+    /// shadowing every stop request written afterward with no daemon ever able to claim one
+    /// again. Clearing the attribute and retrying once turns that permanent wedge back into
+    /// the harmless case; only an ACL denial (rather than the read-only attribute) survives
+    /// the retry, and that gets one warning rather than the silence this used to leave behind.
     /// </summary>
-    private static void DeleteClaimFile()
+    private void DeleteClaimFile()
     {
         try
         {
             File.Delete(ClaimPath);
+            return;
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
         {
+        }
+
+        try
+        {
+            File.SetAttributes(ClaimPath, FileAttributes.Normal);
+            File.Delete(ClaimPath);
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            if (!warnedAboutStuckClaimFile)
+            {
+                logger.LogWarning(
+                    exception,
+                    "Could not delete {ClaimPath} even after clearing its read-only attribute — stop requests "
+                        + "may go unclaimed until it is removed by hand",
+                    ClaimPath);
+                warnedAboutStuckClaimFile = true;
+            }
         }
     }
 
