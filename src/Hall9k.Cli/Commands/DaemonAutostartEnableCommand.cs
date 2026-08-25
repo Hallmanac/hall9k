@@ -1,5 +1,6 @@
 using Hall9k.Cli.DaemonControl;
 using Hall9k.Cli.Infrastructure;
+using Hall9k.Domain.Infrastructure.Persistence;
 using Hall9k.Domain.Infrastructure.Storage;
 using Spectre.Console;
 using Spectre.Console.Cli;
@@ -40,9 +41,10 @@ public sealed class DaemonAutostartEnableCommand : Hall9kAsyncCommand<DaemonAuto
         // carries this shell's PATH (and HALL9K_* overrides) into it — otherwise an
         // autostarted daemon runs but cannot find claude or gh.
         IReadOnlyList<KeyValuePair<string, string>> environment = DaemonEnvironment.Capture();
+        IReadOnlyList<string> recordedVariables;
         try
         {
-            await autostart.EnableAsync(installedBinary, environment, cancellationToken);
+            recordedVariables = await autostart.EnableAsync(installedBinary, environment, cancellationToken);
         }
         catch (InvalidOperationException exception)
         {
@@ -56,7 +58,7 @@ public sealed class DaemonAutostartEnableCommand : Hall9kAsyncCommand<DaemonAuto
         AnsiConsole.MarkupLine(
             "[dim]h9kd starts at your next login and restarts after a crash (never after a clean stop). "
             + "Nothing was started now — h9k daemon start does that. Undo with h9k daemon autostart disable.[/]");
-        string recorded = Markup.Escape(string.Join(", ", environment.Select(variable => variable.Key)));
+        string recorded = Markup.Escape(string.Join(", ", recordedVariables));
         AnsiConsole.MarkupLine(
             $"[dim]Recorded this shell's environment ({recorded}) into the registration: {autostart.MechanismDescription} "
             + "would otherwise start the daemon with a PATH that has no claude, gh, or git on it. Re-run this "
@@ -69,6 +71,22 @@ public sealed class DaemonAutostartEnableCommand : Hall9kAsyncCommand<DaemonAuto
                 $"[yellow]Not on the recorded PATH: {Markup.Escape(string.Join(", ", unresolved))}[/] — an "
                 + "autostarted daemon would start fine and then fail every run that needs them. Fix the PATH "
                 + "(or set HALL9K_CLAUDE_PATH), then re-run h9k daemon autostart enable.");
+        }
+
+        // A mechanism that withholds the connection string (Windows: see
+        // WindowsDaemonAutostart) leaves an autostarted h9kd with no way to resolve one
+        // unless the platform config file already supplies it — the case h9k doctor's
+        // start-offer covers, but not the one where an operator configured a reachable
+        // Postgres purely by exporting HALL9K_CONNECTION_STRING.
+        bool capturedButNotRecorded = environment.Any(variable => variable.Key == Hall9kDatabase.EnvironmentVariableName)
+            && !recordedVariables.Contains(Hall9kDatabase.EnvironmentVariableName);
+        if (capturedButNotRecorded && !File.Exists(Hall9kDatabase.ConfigFile))
+        {
+            AnsiConsole.MarkupLine(
+                $"[yellow]{Hall9kDatabase.EnvironmentVariableName} is set in this shell, but {autostart.MechanismDescription} "
+                + $"does not carry it, and {Markup.Escape(Hall9kDatabase.ConfigFile)} does not exist to supply one another way[/] — "
+                + "an autostarted daemon would exit immediately at every logon with no connection string configured. "
+                + "Run h9k doctor to give it a durable one.");
         }
 
         return ExitCodes.Ok;

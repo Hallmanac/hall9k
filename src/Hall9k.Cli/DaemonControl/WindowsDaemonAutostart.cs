@@ -94,7 +94,7 @@ public sealed class WindowsDaemonAutostart : IDaemonAutostart
     internal static string StateQueryCommand() =>
         $"(Get-ScheduledTask -TaskPath '{TaskFolder}' -TaskName '{TaskLeafName}').State.ToString()";
 
-    public async Task EnableAsync(
+    public async Task<IReadOnlyList<string>> EnableAsync(
         string daemonBinaryPath,
         IReadOnlyList<KeyValuePair<string, string>> environment,
         CancellationToken cancellationToken)
@@ -129,10 +129,12 @@ public sealed class WindowsDaemonAutostart : IDaemonAutostart
         }
         finally
         {
-            // Best-effort, same discipline as AtomicFileWrite's own temp-file cleanup: the
-            // XML embeds the captured HALL9K_CONNECTION_STRING, so it is worth deleting, but
-            // a delete failure (antivirus, an indexer still holding it open) must not shadow
-            // a registration that actually succeeded by reporting the command as failed.
+            // Best-effort, same discipline as AtomicFileWrite's own temp-file cleanup:
+            // nothing reads this file again once schtasks has registered the task from it
+            // (the launch script, not this XML, carries the command line — see InnerCommand's
+            // own doc on why the connection string is not here either), so a delete failure
+            // (antivirus, an indexer still holding it open) must not shadow a registration
+            // that actually succeeded by reporting the command as failed.
             try
             {
                 File.Delete(xmlPath);
@@ -141,7 +143,22 @@ public sealed class WindowsDaemonAutostart : IDaemonAutostart
             {
             }
         }
+
+        return RecordedVariableNames(environment);
     }
+
+    /// <summary>
+    /// The names <see cref="EnableAsync"/> actually carries into the registration —
+    /// everything captured except <see cref="Hall9kDatabase.EnvironmentVariableName"/> (see
+    /// <see cref="InnerCommand"/>'s own doc for why). Internal for direct unit coverage,
+    /// the same way <see cref="EscapeForCmdExe"/> is: a caller reporting what was recorded
+    /// must ask this rather than assume it is everything it captured.
+    /// </summary>
+    internal static IReadOnlyList<string> RecordedVariableNames(
+        IReadOnlyList<KeyValuePair<string, string>> environment) =>
+        [.. environment
+            .Select(variable => variable.Key)
+            .Where(name => name != Hall9kDatabase.EnvironmentVariableName)];
 
     public async Task<DaemonAutostartDisableOutcome> DisableAsync(CancellationToken cancellationToken)
     {
@@ -398,10 +415,11 @@ public sealed class WindowsDaemonAutostart : IDaemonAutostart
     private static string InnerCommand(
         string daemonBinaryPath, string logFilePath, IReadOnlyList<KeyValuePair<string, string>> environment)
     {
+        IReadOnlyList<string> recordedNames = RecordedVariableNames(environment);
         StringBuilder inner = new();
         foreach ((string name, string value) in environment)
         {
-            if (name == Hall9kDatabase.EnvironmentVariableName)
+            if (!recordedNames.Contains(name))
             {
                 continue;
             }

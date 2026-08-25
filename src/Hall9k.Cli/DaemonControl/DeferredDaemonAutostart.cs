@@ -19,7 +19,7 @@ public sealed class DeferredDaemonAutostart(string notSupportedMessage) : IDaemo
 
     public Task<bool> IsLoadedAsync(CancellationToken cancellationToken) => Task.FromResult(false);
 
-    public Task EnableAsync(
+    public Task<IReadOnlyList<string>> EnableAsync(
         string daemonBinaryPath,
         IReadOnlyList<KeyValuePair<string, string>> environment,
         CancellationToken cancellationToken) =>

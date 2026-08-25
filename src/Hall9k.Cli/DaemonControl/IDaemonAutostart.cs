@@ -29,9 +29,13 @@ public interface IDaemonAutostart
     /// Registers start-at-login for the given binary, carrying the given environment
     /// into it: a service manager starts from its own minimal environment, not the
     /// operator's shell, and the daemon resolves claude, gh, and git through PATH
-    /// (see <see cref="DaemonEnvironment"/>).
+    /// (see <see cref="DaemonEnvironment"/>). Returns the names actually written into the
+    /// registration — never assume it is all of <paramref name="environment"/>, since an
+    /// implementation may deliberately withhold one (Windows drops the connection string;
+    /// see <see cref="WindowsDaemonAutostart"/>) — so a caller reporting what happened
+    /// reports what happened rather than what it asked for.
     /// </summary>
-    Task EnableAsync(
+    Task<IReadOnlyList<string>> EnableAsync(
         string daemonBinaryPath,
         IReadOnlyList<KeyValuePair<string, string>> environment,
         CancellationToken cancellationToken);
