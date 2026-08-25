@@ -68,16 +68,15 @@ public sealed class StatusCommand : Hall9kAsyncCommand<StatusCommand.Settings>
         if (rows.Any(row => row.WaitingForSlot))
         {
             // The lever is named once for the whole section rather than repeated on every row:
-            // it is one setting for the node, not a per-task action. The environment form is
-            // the one that reaches an installed daemon, whose working directory is never its
-            // binary directory, so the published appsettings.json is not read there
-            // (DaemonLogging carries that observation); options bind at startup, hence the
+            // it is one setting for the node, not a per-task action. h9k config set writes the
+            // daemon's durable operating settings (~/.hall9k/config.json), read by absolute path
+            // regardless of the daemon's working directory; options bind at startup, hence the
             // restart.
             listed += Section(rows, AttentionBucket.Queued, "queued",
                 "[blue]Queued[/] [dim]— the node is at its concurrency ceiling; each of these starts as a "
-                + "run finishes. Raise[/] Hall9k__MaxConcurrentAgentSessions [dim]and restart the daemon to run "
-                + "more at once — it is counted in agent sessions, and a run under review holds one per review "
-                + "lens[/]", now, inServiceOrder: true);
+                + "run finishes. Run[/] h9k config set --max-concurrent-agent-sessions <n> [dim]and restart the "
+                + "daemon to run more at once — it is counted in agent sessions, and a run under review holds "
+                + "one per review lens[/]", now, inServiceOrder: true);
         }
 
         // Blocked work is neither running nor waiting on you, but the wait has a cause worth

@@ -262,7 +262,9 @@ public static class CliCommandTree
                     + "adopted on the next start. Goes through launchctl when autostart owns the job, so stopped means stopped.")
                 .WithExample("daemon", "stop");
             daemon.AddCommand<DaemonStatusCommand>("status")
-                .WithDescription("Running or not, pid, uptime, autostart posture, and the last few log lines")
+                .WithDescription(
+                    "Running or not, pid, uptime, autostart posture, the last few log lines, and the effective "
+                    + "operating settings (concurrency, model roles) with where each one came from")
                 .WithExample("daemon", "status");
             daemon.AddBranch("autostart", autostart =>
             {
