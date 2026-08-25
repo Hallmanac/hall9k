@@ -145,4 +145,27 @@ public sealed class PlatformConfigFileSourceTests : IDisposable
             OperatingSettings.DefaultMaxConcurrentAgentSessions,
             "a broken file falls back to the built-in default rather than taking configuration binding down with it");
     }
+
+    /// <summary>
+    /// Valid JSON with a non-object root (an array, a bare string, a bare number) passes
+    /// <c>JsonDocument.Parse</c>, so a guard that only catches <see cref="System.Text.Json.JsonException"/>
+    /// lets it through to <c>JsonConfigurationFileParser</c>, which throws a raw
+    /// <see cref="FormatException"/> and kills the daemon at startup — the cycle-3 pre-PR review's
+    /// high-severity finding. <see cref="PlatformConfigFile.ReadDocumentAsync"/> already guards this
+    /// exact shape on the CLI side; the daemon side has to as well.
+    /// </summary>
+    [Fact]
+    public async Task A_valid_json_non_object_root_is_skipped_rather_than_crashing_configuration_build()
+    {
+        await File.WriteAllTextAsync(Hall9kDatabase.ConfigFile, "[1, 2, 3]");
+        ConfigurationBuilder builder = new();
+        builder.AddEnvironmentVariables();
+
+        Action insert = () => PlatformConfigFileSource.Insert(builder);
+
+        insert.Should().NotThrow();
+        Bind(builder).MaxConcurrentAgentSessions.Should().Be(
+            OperatingSettings.DefaultMaxConcurrentAgentSessions,
+            "a non-object root falls back to the built-in default rather than taking configuration binding down with it");
+    }
 }
