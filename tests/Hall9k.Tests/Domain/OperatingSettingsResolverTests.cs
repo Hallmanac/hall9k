@@ -93,6 +93,34 @@ public sealed class OperatingSettingsResolverTests : IDisposable
         report.MaxConcurrentAgentSessions.Source.Should().Be("Hall9k__MaxConcurrentAgentSessions");
     }
 
+    /// <summary>
+    /// Mirrors the case-insensitive lookup <c>EnvironmentVariablesConfigurationProvider</c>
+    /// performs when the daemon binds this section: it loads every variable into an
+    /// <c>OrdinalIgnoreCase</c> dictionary, so a shell export using all-caps (the form many shells
+    /// favor) still reaches the daemon. <see cref="Environment.GetEnvironmentVariable(string)"/>
+    /// is case-sensitive on Linux and macOS, so the resolver has to look the variable up its own
+    /// way rather than delegate to it directly. Origin: the cycle-6 pre-PR review found
+    /// <c>export HALL9K__MAXCONCURRENTAGENTSESSIONS=9</c> bound and run by the daemon while this
+    /// resolver reported the setting as its built-in default.
+    /// </summary>
+    [Fact]
+    public async Task A_differently_cased_environment_variable_is_still_resolved()
+    {
+        const string differentlyCasedName = "HALL9K__MAXCONCURRENTAGENTSESSIONS";
+        Environment.SetEnvironmentVariable(differentlyCasedName, "9");
+        try
+        {
+            OperatingSettingsReport report = await OperatingSettingsResolver.ResolveAsync(CancellationToken.None);
+
+            report.MaxConcurrentAgentSessions.Value.Should().Be(9);
+            report.MaxConcurrentAgentSessions.Origin.Should().Be(SettingOrigin.EnvironmentVariable);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable(differentlyCasedName, null);
+        }
+    }
+
     [Fact]
     public async Task A_role_left_unset_reports_as_the_default_with_no_value()
     {

@@ -44,6 +44,37 @@ public static class OperatingSettingsResolver
     }
 
     /// <summary>
+    /// The same lookup <c>EnvironmentVariablesConfigurationProvider</c> performs when the daemon
+    /// binds this section: it loads every process environment variable into an
+    /// <c>OrdinalIgnoreCase</c> dictionary (after normalizing <c>__</c> to <c>:</c>, a step that
+    /// makes no difference to case), so <c>IConfiguration</c> finds <c>Hall9k:MaxConcurrentAgentSessions</c>
+    /// regardless of the exported name's casing. <see cref="Environment.GetEnvironmentVariable(string)"/>
+    /// is case-sensitive on Linux and macOS, so calling it directly with <paramref name="name"/>'s
+    /// exact casing would miss a variable the daemon is in fact running on. Origin: the cycle-6
+    /// pre-PR review found <c>export HALL9K__MAXCONCURRENTAGENTSESSIONS=9</c> — the all-caps form
+    /// a shell user reaches for — bound and run by the daemon while this resolver reported the
+    /// setting as its built-in default, because the exact-case lookup returned null.
+    /// </summary>
+    private static string? GetEnvironmentVariable(string name)
+    {
+        string? found = null;
+        foreach (System.Collections.DictionaryEntry entry in Environment.GetEnvironmentVariables())
+        {
+            if (entry.Key is string key && string.Equals(key, name, StringComparison.OrdinalIgnoreCase))
+            {
+                // Last one wins, the same as EnvironmentVariablesConfigurationProvider's own
+                // Data[key] = value assignment inside its enumeration loop: two raw variable
+                // names that only differ by case both land in the daemon's OrdinalIgnoreCase
+                // dictionary under one key, so whichever the enumeration visits last is the
+                // value the daemon actually binds.
+                found = entry.Value as string;
+            }
+        }
+
+        return found;
+    }
+
+    /// <summary>
     /// Unlike <see cref="ResolveString"/>, a set-but-unparseable value cannot just ride through as
     /// itself: <see cref="DaemonOptions"/> binds this key through <c>ConfigurationBinder</c>, which
     /// throws at options-resolution time rather than keeping the config-file/default value, so
@@ -58,7 +89,7 @@ public static class OperatingSettingsResolver
         // an unset variable into "" (Hall9k__MaxConcurrentAgentSessions= with nothing after it —
         // the origin incident's own failure shape) still sets the variable, and the daemon's
         // ConfigurationBinder fails to parse "" as an int exactly the way it fails on "four".
-        if (Environment.GetEnvironmentVariable(environmentVariable) is { } fromEnvironment)
+        if (GetEnvironmentVariable(environmentVariable) is { } fromEnvironment)
         {
             if (int.TryParse(fromEnvironment, out int parsed))
             {
@@ -112,7 +143,7 @@ public static class OperatingSettingsResolver
     private static ResolvedSetting<string> ResolveString(
         string environmentVariable, string? configured, string fallback, List<string> unusable)
     {
-        if (Environment.GetEnvironmentVariable(environmentVariable) is { } fromEnvironment)
+        if (GetEnvironmentVariable(environmentVariable) is { } fromEnvironment)
         {
             if (fromEnvironment.Length == 0)
             {
@@ -183,7 +214,7 @@ public static class OperatingSettingsResolver
     {
         string spawnScope = $"agent sessions using the '{role}' role";
 
-        if (Environment.GetEnvironmentVariable(environmentVariable) is { } fromEnvironment)
+        if (GetEnvironmentVariable(environmentVariable) is { } fromEnvironment)
         {
             if (fromEnvironment.Length > 0 && !IsUsableModel(fromEnvironment, environmentVariable, spawnScope, unusable))
             {
