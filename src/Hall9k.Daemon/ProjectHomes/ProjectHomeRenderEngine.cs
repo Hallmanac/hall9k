@@ -107,15 +107,20 @@ public sealed class ProjectHomeRenderEngine(IDocumentStore store, ILogger<Projec
                         .Select(run => run.TaskId)
                         .ToHashSet();
                 // The current run's own state is still needed, for two other guards: an Abandoned
-                // task's archiving is deferred while its current run is still live (adversarial
-                // review, cycle 1: abandoning does not kill whatever process is running for it, no
-                // daemon-side handler reacts to TaskAbandoned, so archiving unconditionally could
-                // move a live run's runs/<run-id>/ out from under itself), and a task in any other
-                // state whose directory currently sits under tasks/_archive/ (a reopen RunLauncher
-                // dispatched straight there, ahead of this sweep ever moving it back) must not have
-                // that directory moved back out while the run now writing into it is still live
-                // (adversarial review, backlog 51 cycle 2). Every task's current run is fetched,
-                // not only Done/Abandoned's, because the second guard applies regardless of state.
+                // task's archiving is deferred while its current run might still touch its
+                // directory (adversarial review, cycle 1: abandoning does not kill whatever process
+                // is running for it, no daemon-side handler reacts to TaskAbandoned, so archiving
+                // unconditionally could move a live run's runs/<run-id>/ out from under itself), and
+                // a task in any other state whose directory currently sits under tasks/_archive/ (a
+                // reopen RunLauncher dispatched straight there, ahead of this sweep ever moving it
+                // back) must not have that directory moved back out while its run might still write
+                // to or be read from it (adversarial review, backlog 51 cycles 2 and 4: a run that
+                // has left its actively-running states — parked awaiting a human, or waiting on
+                // closeout's own retry budget — can still have a pull request opened onto its
+                // RunDirectory, or a handoff read from it once it truly closes out, so "no longer
+                // running" is not the same bar as "safe to move"; only a run's own terminal state
+                // is). Every task's current run is fetched, not only Done/Abandoned's, because the
+                // second guard applies regardless of state.
                 Guid[] currentRunIds = [.. tasks.Select(task => task.CurrentRunId).OfType<Guid>()];
                 Dictionary<Guid, RunState> currentRunStates = currentRunIds.Length == 0
                     ? []
@@ -141,20 +146,24 @@ public sealed class ProjectHomeRenderEngine(IDocumentStore store, ILogger<Projec
                 HashSet<string> archivedTaskDirectoryNames = [];
                 foreach (TaskDetails task in tasks)
                 {
-                    bool archived = IsArchived(task, taskIdsWithCompletedRun, currentRunStates, logger);
+                    bool archived = IsArchived(
+                        task, taskIdsWithCompletedRun, currentRunStates, archivedTasksRoot, logger);
                     if (!archived
-                        && CurrentRunIsLiveOrUnknown(task, currentRunStates)
+                        && CurrentRunMightStillTouchDirectory(task, currentRunStates)
                         && HomeEntryWriter.FindExistingDirectory(archivedTasksRoot, task.Id) is not null)
                     {
                         // The task's own directory is presently inside tasks/_archive/ — a reopen
                         // RunLauncher dispatched straight there via its alternate-root search, ahead
-                        // of this sweep ever moving it back — and the run now writing into it is
-                        // still live (or its projection has not caught up yet, which is the same
-                        // "cannot prove it's safe" signal). Moving it back out from under that run
-                        // is exactly the hazard the Abandoned branch above already guards against,
-                        // generalized to every non-terminal state (adversarial review, backlog 51
-                        // cycle 2). Defer: a later sweep, once the run stops being live, moves it
-                        // back on its own.
+                        // of this sweep ever moving it back — and the run now writing into it has not
+                        // reached its own terminal state yet (or its projection has not caught up,
+                        // which is the same "cannot prove it's safe" signal). Moving it back out from
+                        // under that run is exactly the hazard the Abandoned branch above already
+                        // guards against, generalized to every non-terminal state (adversarial review,
+                        // backlog 51 cycles 2 and 4 — cycle 4 is why this checks the run's terminal
+                        // state rather than its live one: PullRequestOpener can still write into
+                        // RunDirectory from a parked, no-longer-live run, e.g. on `h9k review resolve
+                        // --merge-ready`). Defer: a later sweep, once the run reaches a terminal
+                        // state, moves it back on its own.
                         archived = true;
                     }
 
@@ -238,31 +247,43 @@ public sealed class ProjectHomeRenderEngine(IDocumentStore store, ILogger<Projec
     /// no daemon-side handler reacts to <c>TaskAbandoned</c> at all — so a task can sit Abandoned
     /// while its current run is still writing to <c>runs/&lt;run-id&gt;/</c>. Moving that directory
     /// out from under a live process is exactly the hazard the Done rule above already exists to
-    /// avoid, so Abandoned waits on the same signal as <see cref="CurrentRunIsLiveOrUnknown"/>: no
-    /// run at all, or the current run has stopped being live (<see cref="RunState.IsLive"/> — the
-    /// same predicate <c>RunSupervisor</c> polls against). A missing or not-yet-materialised run
-    /// projection is treated as still-live rather than guessed safe, deferring the move to a
-    /// future sweep instead of racing it — an actual <see cref="RunState.Unknown"/> projection,
-    /// by contrast, is not live (<see cref="RunState.IsLive"/> excludes it) and archives normally.
+    /// avoid, so Abandoned waits on the same signal as
+    /// <see cref="CurrentRunMightStillTouchDirectory"/>: no run at all, or the current run has
+    /// reached its own terminal state (<see cref="RunState.IsTerminal"/>, not merely left
+    /// <see cref="RunState.IsLive"/> — cycle 4 found that a parked, no-longer-live run can still
+    /// have a pull request opened onto its <c>RunDirectory</c>, so "live" was the wrong bar). A
+    /// missing or not-yet-materialised run projection is treated as still-in-play rather than
+    /// guessed safe, deferring the move to a future sweep instead of racing it — an actual
+    /// <see cref="RunState.Unknown"/> projection, by contrast, is not terminal either and so still
+    /// defers, exactly like every other non-terminal state.
     /// </para>
     /// <para>
     /// One missing-projection case is knowable rather than merely deferred, though (adversarial
     /// review, backlog 51 cycle 3): a launch that dies before <c>RunDispatched</c> ever commits
     /// (a worktree checkout failure, say) has <see cref="RunLauncher"/> record it as
     /// <c>TaskFailed</c> directly — <c>RunLauncher.RecordLaunchFailureAsync</c> only appends
-    /// <c>RunFailed</c> when the run's own stream already exists — so <c>TaskDetails.FailureReason</c>
-    /// being set is proof that this task's current run went through <c>TaskFailed</c>, and by the
-    /// time that event lands the launch attempt that would have written <c>RunDispatched</c> has
-    /// already returned. No later code path appends to that same run id, so its projection
-    /// provably never appears; this is the "sits at top level permanently" case reviewers found,
-    /// and it archives with a logged diagnostic rather than waiting forever. An Abandoned task
-    /// with no recorded failure is not this case — it may still be an in-flight launch racing the
+    /// <c>RunFailed</c> when the run's own stream already exists — so <c>TaskFailed</c> having named
+    /// the task's *current* run (<see cref="TaskDetails.FailedRunId"/>) is proof that this exact run
+    /// went through <c>TaskFailed</c>, and by the time that event lands the launch attempt that
+    /// would have written <c>RunDispatched</c> has already returned. Checking
+    /// <see cref="TaskDetails.FailureReason"/> alone is not enough (conformance and adversarial
+    /// review, cycle 4): it survives a retry on purpose (<c>Apply(TaskRetried)</c>), so a task whose
+    /// first run failed, was retried, and got abandoned again while its *second* run's
+    /// <c>RunDispatched</c> was still in flight would otherwise read as "this run already recorded a
+    /// launch failure" when the reason on file belongs to the first run, not the current one.
+    /// <see cref="TaskDetails.FailedRunId"/> is compared against the current run id specifically so
+    /// only a same-run failure counts. No later code path appends to that run id, so its projection
+    /// provably never appears; this is the "sits at top level permanently" case reviewers found, and
+    /// it archives with a diagnostic logged once — checked against disk, the same way
+    /// <see cref="HomeEntryReconciler"/> avoids repeating its own log line forever — rather than
+    /// every sweep for as long as the task remains Abandoned. An Abandoned task with no recorded
+    /// failure for its current run is not this case — it may still be an in-flight launch racing the
     /// abandon — and keeps waiting exactly as before.
     /// </para>
     /// </summary>
     private static bool IsArchived(
         TaskDetails task, IReadOnlySet<Guid> taskIdsWithCompletedRun, IReadOnlyDictionary<Guid, RunState> currentRunStates,
-        ILogger logger)
+        string archivedTasksRoot, ILogger logger)
     {
         if (task.State == TaskState.Done)
         {
@@ -271,19 +292,29 @@ public sealed class ProjectHomeRenderEngine(IDocumentStore store, ILogger<Projec
 
         if (task.State == TaskState.Abandoned)
         {
-            if (!CurrentRunIsLiveOrUnknown(task, currentRunStates))
+            if (!CurrentRunMightStillTouchDirectory(task, currentRunStates))
             {
                 return true;
             }
 
             if (task.CurrentRunId is { } currentRunId
                 && !currentRunStates.ContainsKey(currentRunId)
-                && task.FailureReason.IsNotBlank())
+                && task.FailedRunId == currentRunId)
             {
-                logger.LogWarning(
-                    "Task {TaskId} is abandoned with current run {RunId} that never got a run projection "
-                    + "and already recorded a launch failure — archiving; that run will never dispatch",
-                    DomainId.Short(task.Id), DomainId.Short(currentRunId));
+                // Logged once, checked against disk rather than kept in memory: the engine is a
+                // pure function of the store's state on every sweep (this class's own doc comment),
+                // so a flag in a field would contradict that shape, and the directory itself is the
+                // record of whether an earlier sweep already reported this — the same reasoning
+                // HomeEntryReconciler.Mark uses for its own orphan marker (adversarial review,
+                // backlog 51 cycle 4).
+                if (HomeEntryWriter.FindExistingDirectory(archivedTasksRoot, task.Id) is null)
+                {
+                    logger.LogWarning(
+                        "Task {TaskId} is abandoned with current run {RunId} that never got a run projection "
+                        + "and already recorded a launch failure for that same run — archiving; that run will never dispatch",
+                        DomainId.Short(task.Id), DomainId.Short(currentRunId));
+                }
+
                 return true;
             }
 
@@ -294,18 +325,27 @@ public sealed class ProjectHomeRenderEngine(IDocumentStore store, ILogger<Projec
     }
 
     /// <summary>
-    /// Whether the run this task currently hangs on is either genuinely live
-    /// (<see cref="RunState.IsLive"/>) or cannot yet be proven otherwise — no run at all is the
-    /// only case this returns false for without a run state to check, since nothing is writing to
-    /// this task's directory when it has no current run. Shared by the Abandoned archive guard
-    /// above and the render loop's own guard against moving a task's directory back out of
-    /// <c>tasks/_archive/</c> while the run that was dispatched straight into it (a reopen,
-    /// <c>RunLauncher</c>'s alternate-root search, backlog 51) is still writing there — the same
-    /// "cannot prove it's safe" caution, generalized past the Abandoned state that first needed it.
+    /// Whether the run this task currently hangs on has not yet reached its own terminal state
+    /// (<see cref="RunState.IsTerminal"/>) or cannot yet be proven to have — no run at all is the
+    /// only case this returns false for without a run state to check, since nothing can write to or
+    /// read from this task's directory when it has no current run. This is deliberately a wider bar
+    /// than <see cref="RunState.IsLive"/> (adversarial review, backlog 51 cycle 4): a run that has
+    /// left its actively-running states — parked awaiting a human (<c>ReviewParked</c>,
+    /// <c>CloseoutParked</c>) or waiting on closeout's own checks — is not live, but
+    /// <c>PullRequestOpener</c> can still write into its <c>RunDirectory</c> once a human resolves
+    /// that park (<c>h9k review resolve --merge-ready</c>), and closeout still reads a handoff from
+    /// it once it truly closes out. Only the run's own terminal state (<c>Completed</c>,
+    /// <c>Failed</c>, <c>Killed</c>, <c>Superseded</c>) means nothing will touch that directory
+    /// again. Shared by the Abandoned archive guard above and the render loop's own guard against
+    /// moving a task's directory back out of <c>tasks/_archive/</c> while the run that was
+    /// dispatched straight into it (a reopen, <c>RunLauncher</c>'s alternate-root search, backlog 51)
+    /// might still touch it — the same "cannot prove it's safe" caution, generalized past the
+    /// Abandoned state that first needed it.
     /// </summary>
-    private static bool CurrentRunIsLiveOrUnknown(TaskDetails task, IReadOnlyDictionary<Guid, RunState> currentRunStates) =>
+    private static bool CurrentRunMightStillTouchDirectory(
+        TaskDetails task, IReadOnlyDictionary<Guid, RunState> currentRunStates) =>
         task.CurrentRunId is { } currentRunId
-        && (!currentRunStates.TryGetValue(currentRunId, out RunState? currentRunState) || currentRunState.IsLive);
+        && (!currentRunStates.TryGetValue(currentRunId, out RunState? currentRunState) || !currentRunState.IsTerminal);
 
     private RenderOutcome RenderTask(
         string tasksRoot, string archivedTasksRoot, TaskDetails task, bool archived, string projectName)
