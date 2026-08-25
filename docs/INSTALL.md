@@ -138,6 +138,39 @@ h9k update                  # fetch and install the latest release
 The full command surface is discoverable from `h9k --help` at every level — every command
 carries a worked example, and a wrong invocation prints its own help back.
 
+## Taking it off a machine
+
+```bash
+h9k uninstall                 # default: the platform goes, your data survives
+h9k uninstall --purge-data    # the only path that destroys the database too
+```
+
+`h9k uninstall` takes the platform off a machine without taking the work with it. It stops
+a running daemon, unregisters autostart (a macOS LaunchAgent, or a Windows logon task once
+that lands), removes the PATH link, and removes everything under `~/.hall9k` that `h9k
+install` itself ever wrote — `bin/`, the skill set, the Postgres compose file, the daemon's
+log and pid files — and deletes `~/.hall9k` itself once that leaves it empty. On a machine
+that has done nothing but install and uninstall, that is everything: a removed home is a
+removed home. A registered project's home (`~/.hall9k/projects/<name>`, real git clones and
+worktrees), `config.json` (written by an operator or by `h9k doctor`'s start-offer, never by
+install itself), your credentials, and anything else you or another tool put there are left
+alone — none of that is the install's to remove, and this command never guesses otherwise.
+
+**Your database survives by default.** The `hall9k-postgres` Docker container is stopped,
+never removed, and its data volume is never touched — the data lives in Docker, not in the
+home this command deletes. Every task, run, and idea you have recorded is exactly where you
+left it. Run `h9k install` again on the same machine and it reconnects to that same
+database, same as it always did (`h9k doctor`'s detect-and-start flow finds the stopped
+container and offers to start it, exactly as it would after a reboot).
+
+`h9k uninstall --purge-data` is the one path that destroys the container **and** its volume
+— every task, run, and idea recorded there goes with it, permanently. It names what is about
+to die and asks for confirmation before doing anything; in a non-interactive session (no
+terminal to answer the prompt) it refuses unless `--yes` is also given. This is the only
+uninstall that is a true "start from nothing" — a plain `h9k uninstall` followed by a fresh
+`h9k install` is not the stranger-installs-from-this-README scenario, because the data is
+still there waiting; `--purge-data` is.
+
 ## Known platform gaps
 
 - **Windows daemon lifecycle is not yet built.** `h9k install` / `h9k update` place the

@@ -7,7 +7,7 @@ using Xunit;
 namespace Hall9k.Tests.Cli;
 
 /// <summary>
-/// The two tiers <c>h9k uninstall</c> keeps deliberately separate (Decisions Log #82): the
+/// The two tiers <c>h9k uninstall</c> keeps deliberately separate (Decisions Log #83): the
 /// machine-local tier (PATH link, ~/.hall9k) is plain file removal, exercised here the same
 /// way <c>InstallCommandTests</c> exercises its install-time mirror image; the data tier
 /// (the hall9k-postgres container and its volume) never touches a real Docker, standing in

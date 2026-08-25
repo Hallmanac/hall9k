@@ -156,9 +156,33 @@ database in someone else's cloud quietly forfeits the local-first, works-offline
   on the next install — it is not a customization surface). Nothing is started at install time;
   `h9k doctor` or `h9k daemon start` bring it up the first time it is actually needed, on your
   confirmation. Run it by hand any time with `docker compose -f ~/.hall9k/postgres/docker-compose.yml up -d`.
+  **If your installed Postgres predates this branch's `name:` pin**, Compose had been prefixing
+  the volume with its own notion of the project name instead of the literal `hall9k-pgdata` —
+  typically `postgres_hall9k-pgdata` for `~/.hall9k/postgres/docker-compose.yml` (Compose derives
+  the prefix from the compose file's directory, `postgres`). Republishing the compose file (via
+  `h9k update` or a fresh `h9k install`) does not migrate that data forward: the pinned name
+  points at a different, empty volume, so the next `docker compose up` recreates the container
+  against nothing and the board looks wiped even though the old volume is untouched. The same
+  applies to a contributor's own checkout-rooted `docker compose up -d` against the repository's
+  `docker-compose.yml`, whose pre-pin volume is `<checkout-dirname>_hall9k-pgdata`. Confirm the
+  old volume is still there with `docker volume inspect postgres_hall9k-pgdata` (or the checkout
+  variant), then either rename it forward (`docker run --rm -v postgres_hall9k-pgdata:/from -v
+  hall9k-pgdata:/to alpine sh -c 'cp -a /from/. /to/'`) or point the compose file at the old name
+  for one run to read it back out.
 - **The dev loop**: `dotnet run --project src/Hall9k.AppHost` brings up its own Postgres container
   alongside the daemon and the Aspire dashboard, injecting the connection string directly rather
-  than through any of the three homes above.
+  than through any of the three homes above. Its data volume is named `hall9k-dev-pgdata`,
+  deliberately distinct from the installed-mode volume's `hall9k-pgdata` (Decisions Log #83).
+  Between that distinct naming and `h9k uninstall --purge-data` refusing to touch a
+  `hall9k-postgres`-shaped volume it cannot confirm by inspecting a live `hall9k-postgres`
+  container, purge-data cannot reach into the dev loop's own database. **If your dev loop predates
+  this split**, its data is sitting in a volume still named `hall9k-pgdata` — the next
+  `dotnet run --project src/Hall9k.AppHost` will not find it, mount a fresh empty
+  `hall9k-dev-pgdata` instead, and the board will look wiped even though nothing was deleted.
+  Reconnect to the old data with `docker volume inspect hall9k-pgdata` to confirm it is still
+  there, then either rename it (Docker has no rename; `docker run --rm -v hall9k-pgdata:/from -v
+  hall9k-dev-pgdata:/to alpine sh -c 'cp -a /from/. /to/'` copies it forward) or point AppHost at
+  the old name for one run to read it back out.
 
 They bind the same port (`localhost:5432`), so run one at a time (Decisions Log #74; §15 row 28).
 

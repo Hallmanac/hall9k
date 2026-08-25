@@ -178,7 +178,14 @@ connection before recording anything, which is what makes it safe for an agent t
 
 ### Install and the daemon
 
-`h9k install` · `h9k update` · `h9k daemon start | stop | status` · `h9k daemon autostart enable | disable`
+`h9k install` · `h9k update` · `h9k uninstall [--purge-data]` · `h9k daemon start | stop | status` ·
+`h9k daemon autostart enable | disable`
+
+`uninstall` takes the platform off the machine — binaries, PATH link, autostart, and everything
+else `install` itself wrote under `~/.hall9k` — but leaves a registered project's home,
+credentials, and the `hall9k-postgres` Docker container's data volume untouched by default, so a
+later `install` reconnects to it. `--purge-data` is the only path that destroys the volume too,
+and it asks first.
 
 Covered in [operations.md](operations.md#the-daemon-lifecycle) and [INSTALL.md](INSTALL.md).
 

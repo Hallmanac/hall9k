@@ -15,7 +15,7 @@ using Spectre.Console.Cli;
 namespace Hall9k.Cli.Commands;
 
 /// <summary>
-/// Takes the platform off a machine without taking the work with it (Decisions Log #82,
+/// Takes the platform off a machine without taking the work with it (Decisions Log #83,
 /// the Windows walk): stops a running daemon, unregisters autostart, removes the PATH link,
 /// and removes everything under ~/.hall9k that <c>h9k install</c> itself ever wrote — bin/,
 /// the skill set, the Postgres compose file, the daemon's log/pid/lock files — so a removed
