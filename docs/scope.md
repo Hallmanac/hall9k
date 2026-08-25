@@ -84,10 +84,11 @@ consent, install, and finish with `h9k doctor`. `h9k install` publishes binaries
 links `h9k` onto the PATH, and publishes the skill set to `~/.hall9k/skills`, either from a local
 `dotnet publish` (`--repo`) or from an already-downloaded release payload (`--from-release`).
 `h9k update` is the same `--from-release` path wired to `gh release download`, for a machine that
-already has `h9k`. The daemon has a CLI-owned lifecycle with a strictly opt-in autostart (launchd
-on macOS, a Windows startup task once S1-14 lands) that snapshots the environment it will need and
-reports any tool it cannot resolve. Daemon start/stop run on macOS and Linux today; Windows has
-binaries but no daemon lifecycle yet (see Windows support, below).
+already has `h9k`. The daemon has a CLI-owned lifecycle with a strictly opt-in autostart (a
+launchd LaunchAgent on macOS, a Task Scheduler logon task on Windows) that snapshots the
+environment it will need and reports any tool it cannot resolve. Daemon start/stop/status run on
+macOS, Windows, and Linux; autostart runs on macOS and Windows (see Windows support, below, and
+Decisions Log #3 for why neither is a service).
 
 `h9k uninstall` reverses the install without reversing the work: it stops a running daemon,
 unregisters autostart, removes the PATH link, and deletes only what `h9k install` itself wrote
@@ -101,7 +102,7 @@ because the data lives in Docker rather than in the home this command trims, and
 volume too, and it names what is about to die and asks for confirmation first, refusing outright
 in a non-interactive session without an explicit `--yes`.
 
-See [PLAN.md Decisions Log #78, #83](../PLAN.md).
+See [PLAN.md Decisions Log #78, #83, #84](../PLAN.md).
 
 ### The project home
 
@@ -176,12 +177,19 @@ See [PLAN.md §13](../PLAN.md), Decisions Log #5.
 
 Windows builds and tests in CI (with the Docker-dependent integration tier excluded, since
 Windows runners cannot run Linux containers). `h9k install` and `h9k update` place release
-binaries on Windows and put `h9k` on the PATH, but the *daemon* lifecycle does not exist there
-yet: `h9k daemon start` / `stop` / `autostart enable` all refuse with a named not-yet message, and
-the process manager still needs spawn, kill-tree, and reattach parity. The daemon form is decided:
-a Task Scheduler logon task, so it runs as the user and credentials work.
+binaries on Windows and put `h9k` on the PATH; `h9k daemon start` / `stop` / `status` and
+`h9k daemon autostart enable` / `disable` all work there now too — `IProcessManager` gained its
+Windows implementation (spawn via `cmd.exe`, kill-tree and reattach shared with macOS since
+neither turned out to be OS-specific), and autostart is a Task Scheduler logon task, never a
+service, so it runs as the signed-in user and credentials work exactly as they do on demand.
 
-See `SLICE-1.md` S1-14, Decisions Log #3, #78.
+What is still outstanding, on purpose, is the real-machine walk: this task's own acceptance was
+split so that the lifecycle code, its tests, and CI are checkable here, while the actual install
+→ doctor → daemon start → autostart → one-task-to-a-PR walk on a physical Windows machine is
+Brian's own acceptance step once a release exists to walk from — not something a dispatched run
+can demonstrate for itself.
+
+See `SLICE-1.md` S1-14, Decisions Log #3, #78, #83.
 
 ### Token visibility and exhaustion
 

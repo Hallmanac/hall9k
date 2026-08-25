@@ -146,8 +146,8 @@ h9k uninstall --purge-data    # the only path that destroys the database too
 ```
 
 `h9k uninstall` takes the platform off a machine without taking the work with it. It stops
-a running daemon, unregisters autostart (a macOS LaunchAgent, or a Windows logon task once
-that lands), removes the PATH link, and removes everything under `~/.hall9k` that `h9k
+a running daemon, unregisters autostart (a macOS LaunchAgent, or a Windows logon task),
+removes the PATH link, and removes everything under `~/.hall9k` that `h9k
 install` itself ever wrote — `bin/`, the skill set, the Postgres compose file, the daemon's
 log and pid files — and deletes `~/.hall9k` itself once that leaves it empty. On a machine
 that has done nothing but install and uninstall, that is everything: a removed home is a
@@ -173,12 +173,32 @@ there to reconnect to. `config.json`, though, is never `--purge-data`'s to remov
 it exists, it survives every uninstall tier, and after a purge it may still name the
 database that was just destroyed — check it before your next `h9k install` if you had one.
 
+## Windows notes
+
+The daemon lifecycle works the same way on Windows as on macOS — `h9k daemon start` / `stop` /
+`status`, and `h9k daemon autostart enable` / `disable` — with two Windows-specific mechanics
+worth knowing:
+
+- **Autostart is a Task Scheduler logon task, never a Windows service** (Decisions Log #3): a
+  service runs as a different account by default and would lose your Claude Code, git, and `gh`
+  credentials, the exact problem the logon task's `InteractiveToken` principal avoids by running
+  as you, the signed-in user. `h9k daemon autostart enable` registers it (`\Hall9k\h9kd` in Task
+  Scheduler's library); `disable` fully unregisters it. Nothing is registered by `h9k install` or
+  `h9k update` — autostart is the same explicit, separate opt-in on every platform.
+- **`h9k daemon stop` asks gracefully rather than sending a signal**, because Windows has no
+  SIGTERM for an arbitrary process the way Unix does: it writes a small stop-request file the
+  running `h9kd` polls for and acts on itself. The effect is identical either way — in-flight
+  event appends finish before the process exits — this is purely how the request travels.
+
+**Docker Desktop for Postgres.** `h9k doctor` diagnoses the database exactly as it does on macOS
+and Linux, offering to start Hall9k's own `docker compose` definition when nothing is reachable —
+on Windows that means [Docker Desktop](https://www.docker.com/products/docker-desktop/) installed
+and running (WSL 2 backend). If Docker Desktop is not installed, `h9k doctor` says so and names
+the fix rather than guessing; nothing here is Windows-specific beyond having Docker Desktop itself
+in place instead of Docker Engine.
+
 ## Known platform gaps
 
-- **Windows daemon lifecycle is not yet built.** `h9k install` / `h9k update` place the
-  binaries on Windows today, but `h9k daemon start` / `stop` / `autostart enable` all
-  refuse there with a named not-yet message — running `h9kd` on Windows is future work
-  (`SLICE-1.md`'s S1-14). macOS and Linux both run the daemon on demand today.
-- **Start-at-login (`h9k daemon autostart enable`) is macOS-only** even on Linux, where the
-  daemon otherwise runs fine on demand — a systemd unit is unbuilt. Start it by hand with
+- **Start-at-login (`h9k daemon autostart enable`) is macOS- and Windows-only.** Linux otherwise
+  runs the daemon fine on demand — a systemd user unit is unbuilt. Start it by hand with
   `h9k daemon start` there for now.

@@ -244,8 +244,8 @@ installed mode" objective became the opt-in extra; decision log #31 records the 
      daemon dispatches exactly like an on-demand one: the registration records the enabling shell's
      `PATH` and `HALL9K_*` overrides, since launchd's own `PATH` finds neither `claude` nor `gh`.
   5. `h9k status` states plainly when the daemon is not running, so a quiet queue is never a mystery.
-- **Constraints:** macOS only (Windows lifecycle + autostart deferred to S1-14 behind the
-  `IDaemonAutostart` seam, with a clear not-yet message).
+- **Constraints:** macOS built here; Windows lifecycle + autostart landed with S1-14 behind the
+  same `IDaemonAutostart`/`IProcessManager` seams this task built them on.
 - **Commands:** `h9k install [--restart|--no-restart]` · `h9k daemon start|stop|status` ·
   `h9k daemon autostart enable|disable` — see `h9k daemon --help`.
 
@@ -306,6 +306,19 @@ than renaming it. The RunSuperseded-to-FollowedUp persisted rename stays parked 
 - **Acceptance criteria:** spawn/kill-tree/reattach parity tests green on Windows; `h9kd install`
   registers a logon task; one real task runs end-to-end to a PR on the Windows machine.
 - **Constraints:** no Windows-service mode; Parallels for iteration, tower for validation.
+
+**Lifecycle landed 2026-08-25 (PLAN.md §16 #83); the tower walk is still open.** `IProcessManager`
+gained its Windows implementation (`WindowsProcessManager`: spawn via `cmd.exe`, kill-tree and
+reattach shared with macOS in `ProcessManagerBase` since neither turned out to be OS-specific),
+proven by `ProcessManagerParityTests` — one suite, run for real against whichever platform's
+implementation is under test, green on both CI legs. `h9k daemon start|stop|status` and
+`h9k daemon autostart enable|disable` (`WindowsDaemonAutostart`, a Task Scheduler logon task,
+never a service) all work on Windows now; `h9kd install` still only places binaries and registers
+nothing, exactly as decision #31 requires everywhere — `autostart enable` is the opt-in that
+registers the logon task. **What is still open, deliberately not this task's to close:** the real
+end-to-end walk (bootstrap → install → doctor → daemon start → autostart → one real task to a PR)
+on an actual Windows machine, which needs a release to exist first and is Brian's own acceptance
+step, per this task's split acceptance criteria.
 
 ---
 
