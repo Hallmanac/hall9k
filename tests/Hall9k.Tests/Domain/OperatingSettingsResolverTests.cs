@@ -197,6 +197,39 @@ public sealed class OperatingSettingsResolverTests : IDisposable
         report.MaxConcurrentAgentSessions.Origin.Should().Be(SettingOrigin.PlatformConfigFile);
     }
 
+    /// <summary>
+    /// <c>ConfigSetCommand.ApplyModel</c> gates every model it writes through
+    /// <c>AgentModel.IsWellFormed</c>, but a hand-edited config file never goes through that gate,
+    /// and <c>ClaudeExecutor.SpawnAsync</c> throws for every fresh spawn on the node when it gets a
+    /// value like this. Origin: the cycle-2 pre-PR review found the resolver reporting a value like
+    /// this as a healthy, in-force <c>default-model</c> rather than naming the mistake.
+    /// </summary>
+    [Fact]
+    public async Task An_unusable_model_name_in_the_config_file_is_reported_rather_than_presented_as_healthy()
+    {
+        await PlatformConfigFile.WriteOperatingSettingsAsync(s => s.DefaultModel = "not a real model", CancellationToken.None);
+
+        OperatingSettingsReport report = await OperatingSettingsResolver.ResolveAsync(CancellationToken.None);
+
+        report.DefaultModel.Value.Should().Be(AgentModel.PlatformFallback);
+        report.DefaultModel.Origin.Should().Be(SettingOrigin.Default);
+        report.UnusableEnvironmentVariables.Should().ContainSingle(
+            warning => warning.Contains(Hall9kDatabase.ConfigFile) && warning.Contains("not a real model"));
+    }
+
+    [Fact]
+    public async Task An_unusable_model_name_in_an_environment_variable_is_reported_rather_than_presented_as_healthy()
+    {
+        Environment.SetEnvironmentVariable("Hall9k__DefaultModel", "not a real model");
+
+        OperatingSettingsReport report = await OperatingSettingsResolver.ResolveAsync(CancellationToken.None);
+
+        report.DefaultModel.Value.Should().Be(AgentModel.PlatformFallback);
+        report.DefaultModel.Origin.Should().Be(SettingOrigin.Default);
+        report.UnusableEnvironmentVariables.Should().ContainSingle(
+            warning => warning.Contains("Hall9k__DefaultModel") && warning.Contains("not a real model"));
+    }
+
     [Fact]
     public async Task An_explicit_null_model_by_role_section_does_not_crash_the_resolver()
     {
@@ -252,16 +285,17 @@ public sealed class OperatingSettingsResolverTests : IDisposable
     }
 
     /// <summary>
-    /// Unlike the integer setting, <c>ConfigurationBinder</c> binds "" as a perfectly valid string
-    /// over whatever the config file holds — it never throws, so the daemon really does run with
-    /// <c>DefaultModel = ""</c>. Reporting the config-file value as still in force here would be
-    /// exactly backwards: the environment variable outranks the file even when it is empty. Origin:
-    /// the cycle-1 pre-PR review found <c>ResolveString</c>/<c>ResolveOptionalString</c>'s
-    /// <c>{ Length: > 0 }</c> guard treating a set-but-empty variable as unset, left over from
-    /// before commit 8b50e40 fixed the same defect for <c>ResolveInt</c>.
+    /// <c>ConfigurationBinder</c> binds "" as a perfectly valid string over whatever the config
+    /// file holds, so the daemon really does run with <c>DaemonOptions.DefaultModel = ""</c> — but
+    /// that value is the <c>platformDefault</c> argument to <see cref="AgentModel.Resolve"/>, which
+    /// maps a blank value to <c>Unknown</c> and falls through to <see cref="AgentModel.PlatformFallback"/>.
+    /// Reporting the empty string, or the masked config-file value, as the effective model would
+    /// both be wrong: the daemon runs on neither. Origin: the cycle-2 pre-PR review found this
+    /// resolver reporting the blank environment value itself as the effective
+    /// <c>DefaultModel</c> — a value <c>AgentModel</c> never actually resolves to.
     /// </summary>
     [Fact]
-    public async Task A_set_but_empty_string_env_var_outranks_the_config_file_rather_than_being_treated_as_unset()
+    public async Task A_set_but_empty_default_model_env_var_falls_through_to_the_platform_fallback()
     {
         if (OperatingSystem.IsWindows())
         {
@@ -273,8 +307,11 @@ public sealed class OperatingSettingsResolverTests : IDisposable
 
         OperatingSettingsReport report = await OperatingSettingsResolver.ResolveAsync(CancellationToken.None);
 
-        report.DefaultModel.Value.Should().Be(string.Empty);
-        report.DefaultModel.Origin.Should().Be(SettingOrigin.EnvironmentVariable);
+        report.DefaultModel.Value.Should().Be(AgentModel.PlatformFallback);
+        report.DefaultModel.Origin.Should().Be(SettingOrigin.Default);
+        report.UnusableEnvironmentVariables.Should().ContainSingle(
+            warning => warning.Contains("Hall9k__DefaultModel"),
+            "an empty value shadows the config file's \"sonnet\" and is never itself a model the daemon runs on");
     }
 
     [Fact]

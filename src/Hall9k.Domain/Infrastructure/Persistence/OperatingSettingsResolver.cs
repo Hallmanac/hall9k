@@ -29,7 +29,10 @@ public static class OperatingSettingsResolver
             unusableEnvironmentVariables);
 
         ResolvedSetting<string> defaultModel = ResolveString(
-            $"{EnvironmentPrefix}DefaultModel", configured.DefaultModel, AgentModel.PlatformFallback);
+            $"{EnvironmentPrefix}DefaultModel",
+            configured.DefaultModel,
+            AgentModel.PlatformFallback,
+            unusableEnvironmentVariables);
 
         List<RoleModelSetting> roles = [.. configured.ModelByRole.AsPairs().Select(pair =>
             new RoleModelSetting(
@@ -70,21 +73,67 @@ public static class OperatingSettingsResolver
             : new ResolvedSetting<int>(fallback, SettingOrigin.Default, null);
     }
 
-    // A set-but-empty variable (Hall9k__DefaultModel=, or a reference to another variable that
-    // expanded to nothing) still counts as set for ConfigurationBinder — it binds "" over
-    // whatever the config file holds, exactly the way ResolveInt already treats an empty
-    // MaxConcurrentAgentSessions as set-but-unparseable rather than absent. Requiring Length > 0
-    // here would report the config-file value as in force while the daemon actually runs on "".
-    private static ResolvedSetting<string> ResolveString(string environmentVariable, string? configured, string fallback)
+    /// <summary>
+    /// Unlike <see cref="ResolveOptionalString"/>, a set-but-empty value cannot just be reported
+    /// as itself: this is the bottom of <see cref="AgentModel.Resolve"/>'s chain, where
+    /// <paramref name="fallback"/> is the only tier left underneath, so a blank value here — which
+    /// <c>AgentModel.FromInput</c> maps to <c>Unknown</c> — makes the daemon fall through straight
+    /// to <paramref name="fallback"/>, never to <paramref name="configured"/>: ConfigurationBinder
+    /// already overwrote the config-file value with the empty one before <c>AgentModel</c> ever
+    /// sees it. Reporting the config-file value as still in force here would be exactly the "an
+    /// unusable value here breaks every dispatch" mistake <see cref="ResolveInt"/> already guards
+    /// against for the integer setting, so the same <paramref name="unusable"/> list records it.
+    /// </summary>
+    private static ResolvedSetting<string> ResolveString(
+        string environmentVariable, string? configured, string fallback, List<string> unusable)
     {
         if (Environment.GetEnvironmentVariable(environmentVariable) is { } fromEnvironment)
         {
-            return new ResolvedSetting<string>(fromEnvironment, SettingOrigin.EnvironmentVariable, environmentVariable);
+            if (fromEnvironment.Length == 0)
+            {
+                unusable.Add(
+                    $"{environmentVariable} is set to an empty value — AgentModel treats that as unset, so the "
+                    + "daemon falls through to the platform default rather than to the config file's value.");
+                return new ResolvedSetting<string>(fallback, SettingOrigin.Default, null);
+            }
+
+            return IsUsableModel(fromEnvironment, environmentVariable, unusable)
+                ? new ResolvedSetting<string>(fromEnvironment, SettingOrigin.EnvironmentVariable, environmentVariable)
+                : new ResolvedSetting<string>(fallback, SettingOrigin.Default, null);
         }
 
-        return configured is { Length: > 0 } value
-            ? new ResolvedSetting<string>(value, SettingOrigin.PlatformConfigFile, Hall9kDatabase.ConfigFile)
-            : new ResolvedSetting<string>(fallback, SettingOrigin.Default, null);
+        if (configured is { Length: > 0 } value)
+        {
+            return IsUsableModel(value, Hall9kDatabase.ConfigFile, unusable)
+                ? new ResolvedSetting<string>(value, SettingOrigin.PlatformConfigFile, Hall9kDatabase.ConfigFile)
+                : new ResolvedSetting<string>(fallback, SettingOrigin.Default, null);
+        }
+
+        return new ResolvedSetting<string>(fallback, SettingOrigin.Default, null);
+    }
+
+    /// <summary>
+    /// Whether <paramref name="candidate"/> is a value <c>AgentModel</c> can actually spawn on —
+    /// the same <see cref="AgentModel.IsWellFormed"/> gate <c>ConfigSetCommand.ApplyModel</c>
+    /// applies on the write path, applied here too because a hand-edited config file or a raw
+    /// environment variable never goes through that gate. This is the platform-wide bottom of the
+    /// resolution chain, so an unusable value here breaks every dispatch on the node
+    /// (<c>ClaudeExecutor.SpawnAsync</c> throws for every fresh spawn) rather than one project or
+    /// task — exactly the consequence naming the mistake in <paramref name="unusable"/> exists to
+    /// surface instead of reporting it as a healthy, in-force setting.
+    /// </summary>
+    private static bool IsUsableModel(string candidate, string source, List<string> unusable)
+    {
+        AgentModel resolved = AgentModel.FromInput(candidate);
+        if (resolved == AgentModel.Unknown || resolved.IsWellFormed)
+        {
+            return true;
+        }
+
+        unusable.Add(
+            $"{source} is set to \"{candidate}\", which is not a usable model name — the daemon will fail to "
+            + "spawn every agent session on this node rather than fall back to the config file or default.");
+        return false;
     }
 
     private static ResolvedSetting<string?> ResolveOptionalString(string environmentVariable, string? configured)
