@@ -106,13 +106,14 @@ public static class PlatformConfigFile
     }
 
     /// <summary>
-    /// Re-deserializes the section with the one top-level property named by
-    /// <paramref name="exception"/>'s <see cref="JsonException.Path"/> removed first, so every
-    /// other property still binds — the same tolerance <c>ConfigurationBinder</c> itself has for
-    /// a leaf it cannot convert. <see cref="JsonException.Path"/> always starts with the failing
-    /// top-level property (<c>$.modelByRole</c>, or <c>$.modelByRole.build</c> for a mismatch
-    /// nested inside it), so taking only the first segment after <c>$.</c> is enough to name it
-    /// regardless of how deep the actual mismatch sits.
+    /// Re-deserializes the section with only the exact leaf named by <paramref name="exception"/>'s
+    /// <see cref="JsonException.Path"/> removed, so every sibling — including a sibling nested
+    /// inside the same object — still binds, the same tolerance <c>ConfigurationBinder</c> itself
+    /// has for a leaf it cannot convert. <see cref="JsonException.Path"/> names the full walk to
+    /// the mismatch (<c>$.modelByRole</c> for a top-level shape mismatch, <c>$.modelByRole.build</c>
+    /// for one nested inside it), so removing only the last segment's container — rather than the
+    /// first segment's whole object — is what keeps <c>review</c> reported when only <c>build</c>
+    /// is malformed.
     /// </summary>
     private static OperatingSettings RecoverSectionIgnoring(JsonObject document, JsonException exception)
     {
@@ -121,18 +122,9 @@ public static class PlatformConfigFile
             return new();
         }
 
-        string? failingProperty = exception.Path?.Split('.', 3) is [_, { Length: > 0 } name, ..] ? name : null;
         JsonObject recovery = (JsonObject)section.DeepClone();
-        if (failingProperty is not null)
-        {
-            foreach (string key in recovery.Select(property => property.Key).ToList())
-            {
-                if (string.Equals(key, failingProperty, StringComparison.OrdinalIgnoreCase))
-                {
-                    recovery.Remove(key);
-                }
-            }
-        }
+        string[] segments = exception.Path?.Split('.') is { Length: > 1 } parts ? parts[1..] : [];
+        RemoveFailingLeaf(recovery, segments);
 
         try
         {
@@ -147,6 +139,48 @@ public static class PlatformConfigFile
             return new();
         }
     }
+
+    /// <summary>
+    /// Walks <paramref name="segments"/> (for example <c>["modelByRole", "build"]</c>) into
+    /// <paramref name="recovery"/> and removes only the final one, so a mismatch nested inside an
+    /// object discards just that leaf rather than every sibling under it. Falls back to removing
+    /// whatever can be named at the point the walk stops — a missing or non-object container along
+    /// the way — which is the same conservative "drop the whole thing" outcome this replaces, but
+    /// only for the shapes that still cannot be walked.
+    /// </summary>
+    private static void RemoveFailingLeaf(JsonObject recovery, string[] segments)
+    {
+        if (segments.Length == 0)
+        {
+            return;
+        }
+
+        JsonObject current = recovery;
+        for (int i = 0; i < segments.Length - 1; i++)
+        {
+            string? key = FindKeyIgnoringCase(current, segments[i]);
+            if (key is null || current[key] is not JsonObject nested)
+            {
+                if (key is not null)
+                {
+                    current.Remove(key);
+                }
+
+                return;
+            }
+
+            current = nested;
+        }
+
+        if (FindKeyIgnoringCase(current, segments[^1]) is { } leafKey)
+        {
+            current.Remove(leafKey);
+        }
+    }
+
+    private static string? FindKeyIgnoringCase(JsonObject obj, string name) =>
+        obj.Select(property => property.Key)
+            .FirstOrDefault(key => string.Equals(key, name, StringComparison.OrdinalIgnoreCase));
 
     /// <summary>
     /// Whether <paramref name="exception"/>'s shape mismatch is one <c>ConfigurationBinder</c>

@@ -333,6 +333,30 @@ public sealed class PlatformConfigFileTests : IDisposable
     }
 
     /// <summary>
+    /// <c>JsonException.Path</c> for a mismatch nested inside <c>modelByRole</c> (<c>$.modelByRole.build</c>)
+    /// names the whole walk to the leaf, not just the top-level property — removing the whole
+    /// <c>modelByRole</c> object because the path merely starts with it would discard <c>review</c>
+    /// too, even though <c>ConfigurationBinder</c> binds it fine. Origin: the cycle-3 pre-PR review
+    /// found <see cref="PlatformConfigFile"/>'s recovery stripping the whole first path segment,
+    /// so a sibling role the daemon does in fact bind was reported as unset.
+    /// </summary>
+    [Fact]
+    public async Task A_shape_mismatch_nested_inside_model_by_role_only_discards_that_one_role()
+    {
+        await File.WriteAllTextAsync(
+            Hall9kDatabase.ConfigFile,
+            """{"hall9k": {"modelByRole": {"build": 3, "review": "sonnet"}}}""");
+
+        ConfigFileReadResult result = await PlatformConfigFile.TryReadOperatingSettingsAsync(CancellationToken.None);
+
+        result.Problem.Should().NotBeNull();
+        result.Problem!.Consequence.Should().Be(ConfigFileProblemConsequence.SettingIsIgnored);
+        result.Settings.ModelByRole.Review.Should().Be(
+            "sonnet", "ConfigurationBinder binds this sibling role fine even though build fails to convert");
+        result.Settings.ModelByRole.Build.Should().BeNull();
+    }
+
+    /// <summary>
     /// The daemon's own guard (<c>PlatformConfigFileSource</c>) degrades gracefully when it cannot
     /// read the file at all — a root-owned file, or one <c>chmod</c>'d by another account on a
     /// shared box. The CLI side has to match rather than let the raw exception escape, since
