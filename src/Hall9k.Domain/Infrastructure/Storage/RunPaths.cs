@@ -56,18 +56,21 @@ public static class RunPaths
     /// <summary>
     /// Where a run's directory actually sits on disk right now, when that may no longer be
     /// <paramref name="recordedDirectory"/> — the value carried on <c>RunDispatched</c> and never
-    /// updated afterward (adversarial review, backlog 51 cycle 1). The render sweep relocates a
-    /// task's whole directory into or out of <c>tasks/_archive/</c> as it crosses the terminal
-    /// boundary, carrying every one of its runs' <c>runs/&lt;run-id&gt;/</c> along with it, so a
-    /// run recorded while its task was live is found one path segment away once that task closes
-    /// out. The move is always exactly a <c>tasks/_archive/</c> segment inserted or removed, so
-    /// that is the only fallback tried; a caller with the recorded path still readable, or a run
-    /// that never had a project home, sees this return the unchanged input.
+    /// updated afterward (adversarial review, backlog 51 cycle 1). A task's directory can move for
+    /// two independent reasons, either of which can happen with or without the other: the render
+    /// sweep flips it across the <c>tasks/_archive/</c> boundary as the task crosses the terminal
+    /// boundary, and a slug-changing revise renames it within whichever root it currently sits
+    /// under (the daemon's <c>HomeEntryWriter.Write</c> moves a stale-named directory the same way
+    /// regardless of which of the two crossed a root boundary). Either move
+    /// carries every one of the task's runs' <c>runs/&lt;run-id&gt;/</c> along with it, so this
+    /// resolves by the recorded task directory's short-id prefix rather than assuming its full name
+    /// is still current: a caller with the recorded path still readable, or a run that never had a
+    /// project home, sees this return the unchanged input.
     /// <para>
-    /// The segment is found by position from the END of the path, not by searching the string for
-    /// the FIRST or LAST literal match (adversarial review, backlog 51 cycles 2 and 7): a project
-    /// home is an arbitrary path a human names (<c>h9k project add --home</c>), so it can itself
-    /// contain a <c>tasks</c> segment, or even a <c>tasks/_archive</c> one — a home at
+    /// The task-directory segment is found by position from the END of the path, not by searching
+    /// the string for the FIRST or LAST literal match (adversarial review, backlog 51 cycles 2 and
+    /// 7): a project home is an arbitrary path a human names (<c>h9k project add --home</c>), so it
+    /// can itself contain a <c>tasks</c> segment, or even a <c>tasks/_archive</c> one — a home at
     /// <c>/h/tasks/_archive/proj</c> made <c>LastIndexOf</c> match the HOME's own archive segment
     /// instead of the task's, silently stripping the wrong one and then giving up when the result
     /// did not exist on disk. The run's own directory always sits at a fixed number of segments
@@ -77,16 +80,26 @@ public static class RunPaths
     /// anything the home's own path happens to contain.
     /// </para>
     /// <para>
-    /// The fallback's existence check lands on the TASK directory (the segment three from the
-    /// end), never the run's own leaf directory (adversarial review, backlog 51 cycle 8): a run
-    /// recorded moments before the render sweep relocates its task directory out from under it
-    /// has no leaf at either the recorded path or its flipped variant yet — <c>ClaudeExecutor</c>
-    /// creates that leaf itself, after this call returns — so checking the leaf can never tell
-    /// which side is current for a run that has not been dispatched yet, and silently keeps
-    /// resolving to the side that is about to (or already did) stop existing. The task directory,
-    /// though, is what <c>HomeEntryWriter.Write</c> actually moves whole, so its presence at one
-    /// side or the other is the true signal — and checking there is strictly better even for an
-    /// already-populated run, since a moved task directory carries its run leaves along with it.
+    /// Once the home is known, the current task directory is found by searching both
+    /// <c>tasks/</c> and <c>tasks/_archive/</c> for a directory whose name starts with the recorded
+    /// directory's own short-id prefix (backlog 51 cycle 9) — never by recomputing the recorded
+    /// name and checking whether that literal name exists on the other side, which only covers an
+    /// archive flip that left the slug untouched. This call has no full task id to confirm a
+    /// candidate against the way <see cref="HomeEntryLookup.FindExisting"/> does when it has one, so
+    /// a match is trusted only when it is the sole directory under a root carrying that prefix;
+    /// zero or more than one leaves this exactly as unable to resolve as a literal-name check would
+    /// have been, and returns the recorded path unchanged rather than guessing.
+    /// </para>
+    /// <para>
+    /// The search lands on the TASK directory, never the run's own leaf directory (adversarial
+    /// review, backlog 51 cycle 8): a run recorded moments before the render sweep relocates its
+    /// task directory out from under it has no leaf at either the recorded path or its current one
+    /// yet — <c>ClaudeExecutor</c> creates that leaf itself, after this call returns — so checking
+    /// the leaf can never tell which side is current for a run that has not been dispatched yet.
+    /// The task directory, though, is what <c>HomeEntryWriter.Write</c> actually moves whole, so its
+    /// presence at one side or the other is the true signal — and checking there is strictly better
+    /// even for an already-populated run, since a moved task directory carries its run leaves along
+    /// with it.
     /// </para>
     /// </summary>
     public static string ResolveCurrentDirectory(string recordedDirectory)
@@ -98,35 +111,53 @@ public static class RunPaths
 
         string[] segments = recordedDirectory.Split(Path.DirectorySeparatorChar);
 
+        string home;
+
         // archived: […, "tasks", "_archive", taskDirectory, "runs", runId] — five trailing segments.
         if (segments.Length >= 5 && segments[^4] == ProjectHomePaths.ArchiveDirectoryName)
         {
-            string liveTaskDirectory = string.Join(Path.DirectorySeparatorChar, segments[..^4].Append(segments[^3]));
-            if (!Directory.Exists(liveTaskDirectory))
-            {
-                return recordedDirectory;
-            }
-
-            return string.Join(Path.DirectorySeparatorChar, segments[..^4].Concat(segments[^3..]));
+            home = string.Join(Path.DirectorySeparatorChar, segments[..^5]);
         }
-
         // live: […, "tasks", taskDirectory, "runs", runId] — four trailing segments.
-        if (segments.Length >= 4 && segments[^4] == "tasks")
+        else if (segments.Length >= 4 && segments[^4] == "tasks")
         {
-            string archivedTaskDirectory = string.Join(
-                Path.DirectorySeparatorChar,
-                segments[..^3].Append(ProjectHomePaths.ArchiveDirectoryName).Append(segments[^3]));
-            if (!Directory.Exists(archivedTaskDirectory))
-            {
-                return recordedDirectory;
-            }
-
-            return string.Join(
-                Path.DirectorySeparatorChar,
-                segments[..^3].Append(ProjectHomePaths.ArchiveDirectoryName).Concat(segments[^3..]));
+            home = string.Join(Path.DirectorySeparatorChar, segments[..^4]);
+        }
+        else
+        {
+            return recordedDirectory;
         }
 
-        return recordedDirectory;
+        string recordedTaskDirectoryName = segments[^3];
+        string? currentTaskDirectory =
+            FindTaskDirectoryByShortIdPrefix(ProjectHomePaths.TasksDirectory(home), recordedTaskDirectoryName)
+            ?? FindTaskDirectoryByShortIdPrefix(ProjectHomePaths.ArchivedTasksDirectory(home), recordedTaskDirectoryName);
+
+        return currentTaskDirectory is null
+            ? recordedDirectory
+            : Path.Combine(currentTaskDirectory, segments[^2], segments[^1]);
+    }
+
+    /// <summary>
+    /// The one directory directly under <paramref name="root"/> whose name starts with
+    /// <paramref name="recordedTaskDirectoryName"/>'s own short-id prefix (backlog 51 cycle 9) — the
+    /// part of <c>&lt;shortid&gt;-&lt;slug&gt;</c> before the slug, which a rename changes and a
+    /// short id never does. Zero or several candidates both come back null: with no full task id to
+    /// confirm a match against, a short-id collision between two directories under one root is
+    /// indistinguishable from a genuine miss, and guessing between them would be exactly the thing
+    /// <see cref="ResolveCurrentDirectory"/> exists to avoid doing with a stale path.
+    /// </summary>
+    private static string? FindTaskDirectoryByShortIdPrefix(string root, string recordedTaskDirectoryName)
+    {
+        if (recordedTaskDirectoryName.Length < 9 || !Directory.Exists(root))
+        {
+            return null;
+        }
+
+        string prefix = recordedTaskDirectoryName[..8] + "-";
+        string[] matches = [.. Directory.EnumerateDirectories(root)
+            .Where(directory => Path.GetFileName(directory).StartsWith(prefix, StringComparison.Ordinal))];
+        return matches.Length == 1 ? matches[0] : null;
     }
 
     public static string StreamFile(string runDirectory) => Path.Combine(runDirectory, "stream.jsonl");

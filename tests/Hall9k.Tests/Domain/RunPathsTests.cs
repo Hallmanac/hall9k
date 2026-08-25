@@ -111,6 +111,45 @@ public sealed class RunPathsTests
         }
 
         [Fact]
+        public void A_slug_changing_revise_that_left_the_task_live_still_resolves()
+        {
+            // A rename is not an archive flip: the task never crossed the tasks/_archive/
+            // boundary, so a fallback that only tries flipping that segment never finds it.
+            string recorded = Path.Combine(_home, "tasks", "abc12345-old-objective", "runs", "some-run");
+            string actual = Path.Combine(_home, "tasks", "abc12345-revised-objective", "runs", "some-run");
+            Directory.CreateDirectory(actual);
+
+            RunPaths.ResolveCurrentDirectory(recorded).Should().Be(actual,
+                "the task directory was renamed onto its revised slug, same root, same short id");
+        }
+
+        [Fact]
+        public void A_slug_changing_revise_combined_with_an_archive_flip_still_resolves()
+        {
+            string recorded = Path.Combine(_home, "tasks", "abc12345-old-objective", "runs", "some-run");
+            string actual = Path.Combine(
+                _home, "tasks", "_archive", "abc12345-revised-objective", "runs", "some-run");
+            Directory.CreateDirectory(actual);
+
+            RunPaths.ResolveCurrentDirectory(recorded).Should().Be(actual,
+                "the task both renamed and archived since the run's directory was recorded");
+        }
+
+        [Fact]
+        public void A_short_id_prefix_matching_two_directories_falls_back_to_the_recorded_path()
+        {
+            // With no full task id to confirm a candidate against, an ambiguous prefix match is
+            // exactly as unresolved as no match at all — guessing between the two would risk
+            // resolving to a different task's directory entirely.
+            string recorded = Path.Combine(_home, "tasks", "abc12345-old-objective", "runs", "some-run");
+            Directory.CreateDirectory(Path.Combine(_home, "tasks", "abc12345-revised-objective"));
+            Directory.CreateDirectory(Path.Combine(_home, "tasks", "abc12345-a-different-task-entirely"));
+
+            RunPaths.ResolveCurrentDirectory(recorded).Should().Be(recorded,
+                "two directories share this short-id prefix, so neither can be trusted as the match");
+        }
+
+        [Fact]
         public void A_home_whose_own_path_contains_a_tasks_segment_still_resolves_the_tasks_own_root()
         {
             // Adversarial review, backlog 51 cycle 2: a project home is an arbitrary path a human
