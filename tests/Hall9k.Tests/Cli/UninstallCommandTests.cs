@@ -1,5 +1,6 @@
 using FluentAssertions;
 using Hall9k.Cli.Commands;
+using Hall9k.Cli.DaemonControl;
 using Hall9k.Connectors.Processes;
 using Hall9k.Tests.Fakes;
 using Xunit;
@@ -52,7 +53,7 @@ public sealed class UninstallCommandTests : IDisposable
         List<string> stillPresent = [];
         stillPresent.AddRange(UninstallCommand.RemoveInstallOwnedEntries(
             UninstallCommand.InstallOwnedEntries(home, stillPresent)));
-        UninstallCommand.TryRemoveIfEmpty(home);
+        UninstallCommand.TryRemoveIfEmpty(home, stillPresent);
 
         stillPresent.Should().BeEmpty();
         Directory.Exists(home).Should().BeFalse(
@@ -94,7 +95,7 @@ public sealed class UninstallCommandTests : IDisposable
         List<string> stillPresent = [];
         stillPresent.AddRange(UninstallCommand.RemoveInstallOwnedEntries(
             UninstallCommand.InstallOwnedEntries(home, stillPresent)));
-        UninstallCommand.TryRemoveIfEmpty(home);
+        UninstallCommand.TryRemoveIfEmpty(home, stillPresent);
 
         stillPresent.Should().BeEmpty();
         Directory.Exists(home).Should().BeTrue("a project home, config.json, and credentials are still there");
@@ -106,6 +107,51 @@ public sealed class UninstallCommandTests : IDisposable
         File.Exists(Path.Combine(home, "config.json")).Should().BeTrue(
             "config.json is never install's to write — an operator or h9k doctor's start-offer writes it, "
             + "and it can be the only record of a hand-configured connection string");
+    }
+
+    [Fact]
+    public void An_empty_home_that_cannot_be_unlinked_is_named_not_silently_reported_removed()
+    {
+        // TryRemoveIfEmpty confirms home is empty and then deletes it, but confirming empty and
+        // actually unlinking the directory entry are two different operations that can fail
+        // independently: dropping the write bit on home's PARENT lets EnumerateFileSystemEntries
+        // still succeed (home is genuinely empty) while Directory.Delete(home) itself is denied.
+        // Before this was fixed, that denial was swallowed and homeFullyRemoved came back true
+        // with the empty home still on disk.
+        if (OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        string home = Path.Combine(directory, "undeletable-home");
+        Directory.CreateDirectory(home);
+
+        UnixFileMode originalDirectoryMode = File.GetUnixFileMode(directory);
+        File.SetUnixFileMode(directory, UnixFileMode.UserRead | UnixFileMode.UserExecute);
+        try
+        {
+            try
+            {
+                Directory.Delete(home);
+                return; // this environment does not enforce the restriction (e.g. running as root)
+            }
+            catch (Exception exception) when (exception is UnauthorizedAccessException or IOException)
+            {
+                // Confirmed undeletable — home is still there, proceed with the real assertion.
+            }
+
+            List<string> stillPresent = [];
+            Action act = () => UninstallCommand.TryRemoveIfEmpty(home, stillPresent);
+
+            act.Should().NotThrow();
+            stillPresent.Should().Contain(
+                home, "the delete failed, so this run's exit code must not read it as removed");
+            Directory.Exists(home).Should().BeTrue();
+        }
+        finally
+        {
+            File.SetUnixFileMode(directory, originalDirectoryMode);
+        }
     }
 
     [Fact]
@@ -301,6 +347,36 @@ public sealed class UninstallCommandTests : IDisposable
             File.SetUnixFileMode(
                 home, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
         }
+    }
+
+    [Fact]
+    public void A_directory_symlink_standing_in_for_bin_is_unlinked_not_recursed_into()
+    {
+        // Directory.Exists follows a directory symlink or junction, so recursing into "bin/"'s
+        // contents when bin/ is actually a link would walk through to whatever it points at and
+        // delete that directory's contents instead of just removing the link itself.
+        if (OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        string home = Path.Combine(directory, "symlinked-bin-home");
+        Directory.CreateDirectory(home);
+        string outsideTarget = Path.Combine(directory, "outside-target");
+        Directory.CreateDirectory(outsideTarget);
+        File.WriteAllText(Path.Combine(outsideTarget, "do-not-delete.txt"), "real work\n");
+        string binLink = Path.Combine(home, "bin");
+        Directory.CreateSymbolicLink(binLink, outsideTarget);
+
+        List<string> stillPresent = [];
+        stillPresent.AddRange(UninstallCommand.RemoveInstallOwnedEntries(
+            UninstallCommand.InstallOwnedEntries(home, stillPresent)));
+
+        stillPresent.Should().BeEmpty();
+        Directory.Exists(binLink).Should().BeFalse("the link itself is install-owned and must go");
+        Directory.Exists(outsideTarget).Should().BeTrue(
+            "a directory symlink must be unlinked, never recursed into and emptied");
+        File.Exists(Path.Combine(outsideTarget, "do-not-delete.txt")).Should().BeTrue();
     }
 
     [Fact]
@@ -571,6 +647,25 @@ public sealed class UninstallCommandTests : IDisposable
     }
 
     [Fact]
+    public async Task A_restarting_container_is_still_stopped_not_left_to_come_back()
+    {
+        // Hall9kContainerStatusAsync collapses every docker ps State besides "running" into
+        // Stopped, so a restart-looping container (its restart policy actively bringing it back
+        // up) reads exactly like one that is genuinely at rest. Before this was fixed, only the
+        // Running case called `docker stop`, so a restarting container was left alone here and
+        // could come back under its own restart policy while the rest of the machine was removed
+        // around it. docker stop is idempotent, so calling it unconditionally (whenever a
+        // container is present at all) costs nothing when it turns out to already be at rest.
+        RecordingProcessRunner runner = RecordingProcessRunner.Succeeding("restarting\n");
+
+        (bool ok, UninstallCommand.DataTierOutcome outcome) = await UninstallCommand.HandleDataTierAsync(purgeData: false, runner.Runner, CancellationToken.None);
+
+        ok.Should().BeTrue();
+        outcome.Should().Be(UninstallCommand.DataTierOutcome.ContainerStopped);
+        runner.Calls.Should().Contain(call => call.Arguments.SequenceEqual(new[] { "stop", "hall9k-postgres" }));
+    }
+
+    [Fact]
     public async Task No_container_means_nothing_to_stop()
     {
         RecordingProcessRunner runner = RecordingProcessRunner.Succeeding(string.Empty);
@@ -838,7 +933,7 @@ public sealed class UninstallCommandTests : IDisposable
     public async Task A_container_with_no_named_volume_mount_purges_the_container_without_guessing_a_volume()
     {
         // A container brought up with a bind mount, or an anonymous volume, has nothing named
-        // for `docker inspect` to report — DataVolumeNameAsync returns null. Falling back to the
+        // for `docker inspect` to report — DataVolumeNameAsync returns an empty list. Falling back to the
         // bare PostgresRuntime.VolumeName literal there would be the identical guess the
         // absent-container branch already refuses to make, and could destroy an unrelated
         // volume that happens to carry that literal name (the pre-migration Aspire dev loop's
@@ -901,5 +996,75 @@ public sealed class UninstallCommandTests : IDisposable
 
         ok.Should().BeFalse("the container came off but the data did not — that is not what --purge-data promised");
         outcome.Should().Be(UninstallCommand.DataTierOutcome.PurgeIncomplete, "the volume removal itself failed — nothing was actually destroyed");
+    }
+
+    [Fact]
+    public async Task A_container_mounting_two_named_volumes_has_both_removed_before_purge_is_declared_complete()
+    {
+        // A container can mount more than one named volume (a hand-created container, or a
+        // pre-pin compose file with a separate volume). Keeping only the first name docker
+        // inspect reports would purge that one, leave the second sitting untouched on disk, and
+        // still report the whole install's data as gone — the fix for that gap.
+        RecordingProcessRunner runner = null!;
+        runner = new RecordingProcessRunner(() => runner.Calls[^1].Arguments switch
+        {
+            ["ps", ..] => new ProcessResult(0, "running\n", string.Empty),
+            ["inspect", ..] => new ProcessResult(0, "hall9k-pgdata\nhall9k-wal\n", string.Empty),
+            ["volume", "ls", "--filter", "name=^hall9k-pgdata$", ..] => new ProcessResult(0, "hall9k-pgdata\n", string.Empty),
+            ["volume", "ls", "--filter", "name=^hall9k-wal$", ..] => new ProcessResult(0, "hall9k-wal\n", string.Empty),
+            _ => new ProcessResult(0, string.Empty, string.Empty),
+        });
+
+        (bool ok, UninstallCommand.DataTierOutcome outcome) = await UninstallCommand.HandleDataTierAsync(purgeData: true, runner.Runner, CancellationToken.None);
+
+        ok.Should().BeTrue("both named volumes were observed and actually removed");
+        outcome.Should().Be(UninstallCommand.DataTierOutcome.PurgedContainerAndVolume);
+        runner.Calls.Should().Contain(call => call.Arguments.SequenceEqual(new[] { "volume", "rm", "hall9k-pgdata" }));
+        runner.Calls.Should().Contain(call => call.Arguments.SequenceEqual(new[] { "volume", "rm", "hall9k-wal" }));
+    }
+
+    [Fact]
+    public async Task A_container_mounting_two_named_volumes_reports_incomplete_when_only_one_removal_fails()
+    {
+        RecordingProcessRunner runner = null!;
+        runner = new RecordingProcessRunner(() => runner.Calls[^1].Arguments switch
+        {
+            ["ps", ..] => new ProcessResult(0, "running\n", string.Empty),
+            ["inspect", ..] => new ProcessResult(0, "hall9k-pgdata\nhall9k-wal\n", string.Empty),
+            ["volume", "ls", "--filter", "name=^hall9k-pgdata$", ..] => new ProcessResult(0, "hall9k-pgdata\n", string.Empty),
+            ["volume", "ls", "--filter", "name=^hall9k-wal$", ..] => new ProcessResult(0, "hall9k-wal\n", string.Empty),
+            ["volume", "rm", "hall9k-wal"] => new ProcessResult(1, string.Empty, "volume is in use"),
+            _ => new ProcessResult(0, string.Empty, string.Empty),
+        });
+
+        (bool ok, UninstallCommand.DataTierOutcome outcome) = await UninstallCommand.HandleDataTierAsync(purgeData: true, runner.Runner, CancellationToken.None);
+
+        ok.Should().BeFalse("one of the two data volumes could not actually be removed");
+        outcome.Should().Be(UninstallCommand.DataTierOutcome.PurgeIncomplete,
+            "a partial removal must never be reported as the whole install's data being gone");
+    }
+
+    // --- FoldAutostartOutcomeIntoStopped -----------------------------------------------------
+
+    [Theory]
+    [InlineData(false, DaemonAutostartDisableOutcome.DaemonStopped, true)]
+    [InlineData(true, DaemonAutostartDisableOutcome.DaemonStopped, true)]
+    [InlineData(true, DaemonAutostartDisableOutcome.NothingStopped, true)]
+    [InlineData(false, DaemonAutostartDisableOutcome.NothingStopped, false)]
+    public void An_outcome_other_than_DaemonStopping_leaves_or_confirms_stopped(
+        bool stoppedSoFar, DaemonAutostartDisableOutcome outcome, bool expected)
+    {
+        UninstallCommand.FoldAutostartOutcomeIntoStopped(stoppedSoFar, outcome).Should().Be(expected);
+    }
+
+    [Fact]
+    public void DaemonStopping_overrides_an_already_true_stopped_flag()
+    {
+        // The direct stop attempt can come back true because it found nothing running yet — then
+        // autostart's own DisableAsync observes a daemon launchd started in that gap, signals it,
+        // and has not confirmed it exited by the time it stops watching. A plain `||` would let
+        // the earlier true mask that: this must come back false instead.
+        UninstallCommand.FoldAutostartOutcomeIntoStopped(
+            stoppedSoFar: true, DaemonAutostartDisableOutcome.DaemonStopping).Should().BeFalse();
     }
 }

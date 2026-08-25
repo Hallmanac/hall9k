@@ -48,9 +48,10 @@ public sealed class SkillSeederRemovePublishedTests : IDisposable
         File.WriteAllText(Path.Combine(handWritten, "SKILL.md"), "# my-team-conventions\n");
 
         List<string> stillPresent = [];
-        IReadOnlyList<string> removed = SkillSeeder.RemovePublished(stillPresent);
+        (IReadOnlyList<string> removed, bool manifestConfirmed) = SkillSeeder.RemovePublished(stillPresent);
 
         removed.Should().ContainSingle().Which.Should().Be("pr-summary");
+        manifestConfirmed.Should().BeTrue();
         stillPresent.Should().BeEmpty();
         Directory.Exists(SkillLibraryPaths.Skill("pr-summary")).Should().BeFalse();
         Directory.Exists(handWritten).Should().BeTrue(
@@ -69,9 +70,10 @@ public sealed class SkillSeederRemovePublishedTests : IDisposable
         File.WriteAllText(Path.Combine(SkillLibraryPaths.Skill("pr-summary"), "SKILL.md"), "# edited by hand\n");
 
         List<string> stillPresent = [];
-        IReadOnlyList<string> removed = SkillSeeder.RemovePublished(stillPresent);
+        (IReadOnlyList<string> removed, bool manifestConfirmed) = SkillSeeder.RemovePublished(stillPresent);
 
         removed.Should().BeEmpty();
+        manifestConfirmed.Should().BeTrue();
         Directory.Exists(SkillLibraryPaths.Skill("pr-summary")).Should().BeTrue(
             "an operator's edit to a published skill is their own work, not install's to delete");
     }
@@ -81,10 +83,61 @@ public sealed class SkillSeederRemovePublishedTests : IDisposable
     {
         List<string> stillPresent = [];
 
-        IReadOnlyList<string> removed = SkillSeeder.RemovePublished(stillPresent);
+        (IReadOnlyList<string> removed, bool manifestConfirmed) = SkillSeeder.RemovePublished(stillPresent);
 
         removed.Should().BeEmpty();
+        manifestConfirmed.Should().BeTrue();
         stillPresent.Should().BeEmpty();
+    }
+
+    /// <summary>
+    /// Cycle 3's adversarial finding: <c>RemovePublished</c> computed the manifest's confirmed
+    /// flag and then discarded it, so a manifest an antivirus scan (or an editor) is holding
+    /// open read back exactly like "nothing was ever published" — an empty
+    /// <c>Removed</c> list and an empty <c>stillPresent</c>, which <c>h9k uninstall</c> would
+    /// have reported as a clean removal while every published skill stayed on disk.
+    /// </summary>
+    [Fact]
+    public void An_unreadable_manifest_reports_unconfirmed_and_touches_nothing()
+    {
+        WriteSourceSkill("pr-summary");
+        SkillSeeder.PublishCanonical(_source);
+        string manifest = SkillLibraryPaths.PublishedManifest;
+
+        if (OperatingSystem.IsWindows())
+        {
+            using FileStream lockHandle = new(manifest, FileMode.Open, FileAccess.Read, FileShare.None);
+
+            AssertManifestUnconfirmed(manifest);
+        }
+        else
+        {
+            if (!MadeUnreadable(manifest))
+            {
+                return;
+            }
+
+            try
+            {
+                AssertManifestUnconfirmed(manifest);
+            }
+            finally
+            {
+                File.SetUnixFileMode(manifest, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+            }
+        }
+    }
+
+    private static void AssertManifestUnconfirmed(string manifest)
+    {
+        List<string> stillPresent = [];
+        (IReadOnlyList<string> removed, bool manifestConfirmed) = SkillSeeder.RemovePublished(stillPresent);
+
+        removed.Should().BeEmpty("nothing published can be told apart from an override without the manifest");
+        manifestConfirmed.Should().BeFalse();
+        stillPresent.Should().ContainSingle().Which.Should().Be(manifest);
+        Directory.Exists(SkillLibraryPaths.Skill("pr-summary")).Should().BeTrue(
+            "the whole published skill set must survive an uninstall that could not confirm the manifest");
     }
 
     [Fact]
@@ -209,12 +262,92 @@ public sealed class SkillSeederRemovePublishedTests : IDisposable
         }
     }
 
+    /// <summary>
+    /// The sibling gap to <see cref="An_unenumerable_canonical_directory_is_reported_not_thrown"/>:
+    /// confirming <c>canonical</c> empty and actually unlinking it are two different operations
+    /// that fail independently — a write bit dropped on canonical's own parent lets the emptying
+    /// enumeration succeed while <c>Directory.Delete(canonical)</c> itself is denied. Before this
+    /// was fixed, that denial was swallowed and <c>h9k uninstall</c> could report a clean removal
+    /// with <c>~/.hall9k/skills</c> still sitting there, empty, on disk.
+    /// </summary>
+    [Fact]
+    public void An_undeletable_empty_canonical_directory_is_reported_not_silently_dropped()
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        WriteSourceSkill("pr-summary");
+        SkillSeeder.PublishCanonical(_source);
+        string canonical = SkillLibraryPaths.CanonicalDirectory;
+        string probe = Path.Combine(_platformHome, "probe");
+        Directory.CreateDirectory(probe);
+
+        UnixFileMode originalHomeMode = File.GetUnixFileMode(_platformHome);
+        File.SetUnixFileMode(_platformHome, UnixFileMode.UserRead | UnixFileMode.UserExecute);
+        try
+        {
+            try
+            {
+                Directory.Delete(probe);
+                return; // this environment does not enforce the restriction (e.g. running as root)
+            }
+            catch (Exception exception) when (exception is UnauthorizedAccessException or IOException)
+            {
+                // Confirmed undeletable — proceed with the real assertion.
+            }
+
+            List<string> stillPresent = [];
+            (IReadOnlyList<string> removed, bool manifestConfirmed) = SkillSeeder.RemovePublished(stillPresent);
+
+            removed.Should().ContainSingle().Which.Should().Be("pr-summary");
+            manifestConfirmed.Should().BeTrue();
+            stillPresent.Should().Contain(
+                canonical, "the directory was emptied out but its own unlink failed, so this must not read as removed");
+            Directory.Exists(canonical).Should().BeTrue();
+        }
+        finally
+        {
+            File.SetUnixFileMode(_platformHome, originalHomeMode);
+        }
+    }
+
+    /// <summary>
+    /// A manifest name is combined directly onto <see cref="SkillLibraryPaths.CanonicalDirectory"/>
+    /// (<see cref="SkillLibraryPaths.Skill(string)"/>) before being hashed and, on a match,
+    /// recursively deleted — so a corrupt or tampered <c>.published</c> file naming a
+    /// <c>..</c>-relative path must never be resolved and touched, no matter what hash it claims
+    /// to have.
+    /// </summary>
+    [Fact]
+    public void A_manifest_entry_naming_a_path_outside_canonical_is_never_touched()
+    {
+        Directory.CreateDirectory(SkillLibraryPaths.CanonicalDirectory);
+        string outsideTarget = Path.Combine(_platformHome, "sibling-target");
+        Directory.CreateDirectory(outsideTarget);
+        File.WriteAllText(Path.Combine(outsideTarget, "do-not-delete.txt"), "real work\n");
+
+        string traversalName = Path.Combine("..", "sibling-target");
+        File.WriteAllText(SkillLibraryPaths.PublishedManifest, $"{traversalName}\tanyhash\n");
+
+        List<string> stillPresent = [];
+        (IReadOnlyList<string> removed, bool manifestConfirmed) = SkillSeeder.RemovePublished(stillPresent);
+
+        manifestConfirmed.Should().BeTrue();
+        removed.Should().BeEmpty();
+        Directory.Exists(outsideTarget).Should().BeTrue(
+            "a manifest entry naming a path outside canonical must never be resolved and deleted");
+        File.Exists(Path.Combine(outsideTarget, "do-not-delete.txt")).Should().BeTrue();
+    }
+
     private static void AssertLeftInPlaceForRetry(string skillDirectory)
     {
         List<string> stillPresent = [];
-        IReadOnlyList<string> removed = SkillSeeder.RemovePublished(stillPresent);
+        (IReadOnlyList<string> removed, bool manifestConfirmed) = SkillSeeder.RemovePublished(stillPresent);
 
         removed.Should().BeEmpty();
+        manifestConfirmed.Should().BeTrue();
         stillPresent.Should().ContainSingle().Which.Should().Be(skillDirectory);
         Directory.Exists(skillDirectory).Should().BeTrue(
             "an unreadable directory cannot be confirmed as install's unmodified output, so it must not be deleted");
@@ -242,9 +375,10 @@ public sealed class SkillSeederRemovePublishedTests : IDisposable
     private static void AssertManifestEntrySurvives(string skillDirectory)
     {
         List<string> stillPresent = [];
-        IReadOnlyList<string> removed = SkillSeeder.RemovePublished(stillPresent);
+        (IReadOnlyList<string> removed, bool manifestConfirmed) = SkillSeeder.RemovePublished(stillPresent);
 
         removed.Should().BeEmpty();
+        manifestConfirmed.Should().BeTrue();
         stillPresent.Should().ContainSingle().Which.Should().Be(skillDirectory);
         File.Exists(SkillLibraryPaths.PublishedManifest).Should().BeTrue(
             "the locked skill's manifest entry must survive for a retry");

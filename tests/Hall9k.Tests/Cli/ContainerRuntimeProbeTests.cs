@@ -231,27 +231,41 @@ public sealed class ContainerRuntimeProbeTests : IDisposable
         // postgres_hall9k-pgdata, and purge has to ask the container rather than guess.
         RecordingProcessRunner runner = RecordingProcessRunner.Succeeding("postgres_hall9k-pgdata\n");
 
-        (bool confirmed, string? name) = await ContainerRuntimeProbe.DataVolumeNameAsync(runner.Runner, CancellationToken.None);
+        (bool confirmed, IReadOnlyList<string> names) = await ContainerRuntimeProbe.DataVolumeNameAsync(runner.Runner, CancellationToken.None);
 
         confirmed.Should().BeTrue();
-        name.Should().Be("postgres_hall9k-pgdata");
+        names.Should().Equal("postgres_hall9k-pgdata");
         runner.Calls.Should().ContainSingle(call =>
             call.Arguments.Count >= 2 && call.Arguments[0] == "inspect" && call.Arguments[1] == "hall9k-postgres");
     }
 
     [Fact]
-    public async Task Data_volume_name_is_null_for_a_container_with_no_named_volume_mount()
+    public async Task Data_volume_name_reports_every_named_mount_not_just_the_first()
     {
-        RecordingProcessRunner runner = RecordingProcessRunner.Succeeding(string.Empty);
+        // A container can mount more than one named volume (a hand-created container, or a
+        // pre-pin compose file with a separate volume) — keeping only the first would purge one
+        // and silently leave the other on disk while claiming the whole install's data gone.
+        RecordingProcessRunner runner = RecordingProcessRunner.Succeeding("hall9k-pgdata\nhall9k-wal\n");
 
-        (bool confirmed, string? name) = await ContainerRuntimeProbe.DataVolumeNameAsync(runner.Runner, CancellationToken.None);
+        (bool confirmed, IReadOnlyList<string> names) = await ContainerRuntimeProbe.DataVolumeNameAsync(runner.Runner, CancellationToken.None);
 
-        confirmed.Should().BeTrue("docker inspect answered — it just reported no named volume mount");
-        name.Should().BeNull();
+        confirmed.Should().BeTrue();
+        names.Should().Equal("hall9k-pgdata", "hall9k-wal");
     }
 
     [Fact]
-    public async Task Data_volume_name_is_unconfirmed_rather_than_null_when_docker_inspect_fails()
+    public async Task Data_volume_name_is_empty_for_a_container_with_no_named_volume_mount()
+    {
+        RecordingProcessRunner runner = RecordingProcessRunner.Succeeding(string.Empty);
+
+        (bool confirmed, IReadOnlyList<string> names) = await ContainerRuntimeProbe.DataVolumeNameAsync(runner.Runner, CancellationToken.None);
+
+        confirmed.Should().BeTrue("docker inspect answered — it just reported no named volume mount");
+        names.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task Data_volume_name_is_unconfirmed_rather_than_empty_when_docker_inspect_fails()
     {
         // A failed docker inspect (the daemon dropping the connection, a container removed out
         // from under this call) is not the same fact as "this container mounts no named volume"
@@ -259,10 +273,46 @@ public sealed class ContainerRuntimeProbeTests : IDisposable
         // way and destroying a container it believed had nothing left to lose.
         RecordingProcessRunner runner = RecordingProcessRunner.Failing("Error: No such object: hall9k-postgres");
 
-        (bool confirmed, string? name) = await ContainerRuntimeProbe.DataVolumeNameAsync(runner.Runner, CancellationToken.None);
+        (bool confirmed, IReadOnlyList<string> names) = await ContainerRuntimeProbe.DataVolumeNameAsync(runner.Runner, CancellationToken.None);
 
         confirmed.Should().BeFalse("docker inspect itself failed — this is not a confirmed absence");
-        name.Should().BeNull();
+        names.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task Data_volume_name_is_unconfirmed_rather_than_throwing_when_docker_hangs()
+    {
+        // RuntimeStatusAsync already having confirmed Docker answers once does not mean it will
+        // keep answering — a later call in the same command can still hit a wedged daemon, and
+        // this uninstall feature's own pre-PR review found that case escaping as a raw,
+        // unhandled TimeoutException mid-purge instead of the same honest "not confirmed" every
+        // other docker failure here already reports.
+        RecordingProcessRunner runner = RecordingProcessRunner.NeverAnswering();
+
+        (bool confirmed, IReadOnlyList<string> names) = await ContainerRuntimeProbe.DataVolumeNameAsync(runner.Runner, CancellationToken.None);
+
+        confirmed.Should().BeFalse("docker itself hung — this is not a confirmed absence");
+        names.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task Remove_volume_is_false_rather_than_throwing_when_docker_hangs()
+    {
+        RecordingProcessRunner runner = RecordingProcessRunner.NeverAnswering();
+
+        bool removed = await ContainerRuntimeProbe.RemoveVolumeAsync(runner.Runner, CancellationToken.None);
+
+        removed.Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task Remove_container_is_false_rather_than_throwing_when_docker_hangs()
+    {
+        RecordingProcessRunner runner = RecordingProcessRunner.NeverAnswering();
+
+        bool removed = await ContainerRuntimeProbe.RemoveContainerAsync(runner.Runner, CancellationToken.None);
+
+        removed.Should().BeFalse();
     }
 
     [Fact]

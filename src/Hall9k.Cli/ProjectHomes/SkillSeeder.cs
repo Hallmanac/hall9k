@@ -365,24 +365,37 @@ public static class SkillSeeder
     /// hand-written skill was never in the manifest to begin with, and one an operator has
     /// edited since it was published no longer matches its recorded hash, so both are left
     /// alone here exactly as a later install would leave them. Returns the names actually
-    /// removed. A locked file is recorded into <paramref name="stillPresent"/> rather than
-    /// aborting the rest, the same best-effort discipline
+    /// removed, and whether the manifest could be read at all this pass. A locked file is
+    /// recorded into <paramref name="stillPresent"/> rather than aborting the rest, the same
+    /// best-effort discipline
     /// <see cref="Hall9k.Cli.Commands.UninstallCommand.RemoveInstallOwnedEntries"/> uses — and its
     /// entry stays in the manifest rather than being dropped with the rest, so a locked skill
     /// is still recognisable as install-owned on the next uninstall attempt (or the next
     /// install's own retiring pass) instead of being silently reclassified as an operator
     /// override once its lock clears.
+    /// <para>
+    /// A manifest that exists but could not be read this pass is reported through
+    /// <paramref name="stillPresent"/> and <c>ManifestConfirmed: false</c> rather than as a clean
+    /// removal: without it, an already-published skill cannot be told apart from an operator's
+    /// own file of the same name, so nothing is touched, but the entire published skill set is
+    /// still sitting on disk — the caller must not report that as success. Mirrors
+    /// <see cref="SkillPublication.ManifestUnconfirmed"/>, the identical signal
+    /// <see cref="PublishCanonical"/> already surfaces to <c>h9k install</c>.
+    /// </para>
     /// </summary>
-    public static IReadOnlyList<string> RemovePublished(List<string> stillPresent)
+    public static (IReadOnlyList<string> Removed, bool ManifestConfirmed) RemovePublished(List<string> stillPresent)
     {
-        // An unreadable manifest still reads as empty here, so the removal loop below treats
-        // every name as unknown rather than throwing or refusing to proceed — at worst an
-        // install-owned skill survives one uninstall attempt longer. But Confirmed is kept
-        // (unlike a discard) because the manifest write below must not treat that empty
-        // reading as a confirmed empty manifest: doing so would delete a manifest this pass
-        // only failed to read, permanently reclassifying every install-owned skill as an
-        // operator override — the same trade PublishCanonical's own remarks describe.
         (bool manifestConfirmed, IReadOnlyDictionary<string, string> previously) = TryReadManifest();
+        if (!manifestConfirmed)
+        {
+            // Nothing published can be told apart from an operator's own file without the
+            // manifest, so nothing here is touched — but the whole published skill set is still
+            // on disk, which is the manifest's own condition to report as still present rather
+            // than let the caller read an empty Removed list as "there was nothing to remove".
+            stillPresent.Add(SkillLibraryPaths.PublishedManifest);
+            return ([], false);
+        }
+
         List<string> removed = [];
         Dictionary<string, string> remaining = [];
         foreach ((string name, string recordedHash) in previously)
@@ -451,14 +464,10 @@ public static class SkillSeeder
                     SkillLibraryPaths.PublishedManifest,
                     remaining.Select(entry => $"{entry.Key}\t{entry.Value}"));
             }
-            else if (manifestConfirmed && File.Exists(SkillLibraryPaths.PublishedManifest))
+            else if (File.Exists(SkillLibraryPaths.PublishedManifest))
             {
                 File.Delete(SkillLibraryPaths.PublishedManifest);
             }
-            // else: remaining is empty because the read above failed, not because nothing
-            // was left to preserve — leaving the file untouched means a retried uninstall (or
-            // the next install's own retiring pass), once the read succeeds, recovers the
-            // real record instead of finding it already gone.
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
         {
@@ -492,12 +501,15 @@ public static class SkillSeeder
                 }
                 catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
                 {
-                    // Left as an empty directory; nothing install-owned remains inside it either way.
+                    // Confirmed empty but the unlink itself was denied — genuinely install's to
+                    // finish, so recorded rather than swallowed, the same discipline the read
+                    // failure above already uses, so a caller's exit code reflects this surviving.
+                    stillPresent.Add(canonical);
                 }
             }
         }
 
-        return removed;
+        return (removed, true);
     }
 
     /// <summary>
@@ -534,7 +546,7 @@ public static class SkillSeeder
         foreach (string line in lines)
         {
             string[] parts = line.Split('\t', 2);
-            if (parts is [{ } name, { } hash] && name.IsNotBlank())
+            if (parts is [{ } name, { } hash] && name.IsNotBlank() && IsCanonicalChildName(name))
             {
                 manifest[name] = hash;
             }
@@ -542,6 +554,20 @@ public static class SkillSeeder
 
         return (true, manifest);
     }
+
+    /// <summary>
+    /// A manifest entry is only ever combined onto <see cref="SkillLibraryPaths.CanonicalDirectory"/>
+    /// as-is (<see cref="SkillLibraryPaths.Skill(string)"/>), then hashed and, on a match,
+    /// recursively deleted — so a corrupt or tampered <c>.published</c> file naming a rooted path
+    /// or a <c>..</c> segment would have that hash-and-delete land on whatever the combined path
+    /// actually resolves to, never confirmed to be a canonical skill at all. Rejected here, at the
+    /// one place every entry is parsed, rather than trusted to every downstream consumer to
+    /// re-check.
+    /// </summary>
+    private static bool IsCanonicalChildName(string name) =>
+        name is not ("." or "..")
+        && !Path.IsPathRooted(name)
+        && name.IndexOfAny([Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar]) < 0;
 
     /// <summary>
     /// A deterministic content hash of every file under <paramref name="directory"/>, relative path

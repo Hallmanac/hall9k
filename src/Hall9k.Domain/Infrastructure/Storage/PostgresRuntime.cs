@@ -38,9 +38,13 @@ public static class PostgresRuntime
     /// The literal volume name a pre-pin installed-mode compose file leaves behind: Compose's
     /// own project-name derivation for <see cref="ComposeDirectory"/>'s "postgres" leaf, before
     /// this branch's <c>name:</c> pin above existed to override it (docs/operations.md's
-    /// Provisioning section has the full migration story). <c>h9k doctor</c>'s bring-up-fresh
-    /// offer checks for this literal before creating a new, empty, pinned <see cref="VolumeName"/>
-    /// volume out from under it — see <c>ContainerRuntimeProbe.ComposeUpAsync</c> in Hall9k.Cli.
+    /// Provisioning section has the full migration story). No code path compares against this
+    /// literal directly: <c>ContainerRuntimeProbe.ComposeUpAsync</c>'s bring-up-fresh offer (and
+    /// <c>UninstallCommand.HandleDataTierAsync</c>'s own absent-container purge path) instead
+    /// search by the unanchored <c>hall9k-pgdata</c> substring, which this literal contains, so
+    /// they also catch a checkout-dirname-prefixed volume that neither this literal nor
+    /// <see cref="VolumeName"/> names. Kept as a named constant purely for the migration story
+    /// above to point at, and for anything reading this file to have the literal in one place.
     /// </summary>
     public const string LegacyVolumeName = "postgres_hall9k-pgdata";
 

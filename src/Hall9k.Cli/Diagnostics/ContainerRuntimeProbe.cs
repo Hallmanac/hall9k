@@ -33,6 +33,33 @@ public static class ContainerRuntimeProbe
         }
     }
 
+    /// <summary>
+    /// Every other method below runs a <c>docker</c> subcommand once <see cref="RuntimeStatusAsync"/>
+    /// has already confirmed the daemon answers — but "answered once" is not "will keep
+    /// answering": Docker can wedge between that check and a later call in the same command, and
+    /// <see cref="ExternalProcess"/> reports that as a thrown <see cref="TimeoutException"/> (its
+    /// deadline, or a process that exited but left a descendant holding its output pipe), or a
+    /// thrown <see cref="Win32Exception"/> if docker disappears from PATH entirely mid-run. An
+    /// uncaught exception here would escape <c>h9k uninstall --purge-data</c> mid-sequence — after
+    /// the daemon has already been stopped and the home partly torn down — as a raw stack trace
+    /// instead of the honest "could not be confirmed" outcome every caller already knows how to
+    /// report for an ordinary nonzero exit. Folding both into the same <see langword="null"/>
+    /// result lets every call site below treat "docker never answered" exactly like "docker
+    /// answered no", which is the only distinction any of them actually needs.
+    /// </summary>
+    private static async Task<ProcessResult?> TryRunAsync(
+        ProcessRunner runner, string fileName, IReadOnlyList<string> arguments, string workingDirectory, CancellationToken cancellationToken)
+    {
+        try
+        {
+            return await runner(fileName, arguments, workingDirectory, cancellationToken);
+        }
+        catch (Exception exception) when (exception is Win32Exception or TimeoutException)
+        {
+            return null;
+        }
+    }
+
     /// <summary>Only meaningful once <see cref="RuntimeStatusAsync"/> says <see cref="ContainerRuntimeStatus.Running"/>.
     /// <para>
     /// <c>Confirmed</c> is <see langword="false"/> when <c>docker ps -a</c> itself failed
@@ -49,12 +76,13 @@ public static class ContainerRuntimeProbe
     public static async Task<(bool Confirmed, PostgresContainerStatus Status)> Hall9kContainerStatusAsync(
         ProcessRunner runner, CancellationToken cancellationToken)
     {
-        ProcessResult result = await runner(
+        ProcessResult? result = await TryRunAsync(
+            runner,
             "docker",
             ["ps", "-a", "--filter", $"name=^/{PostgresRuntime.ContainerName}$", "--format", "{{.State}}"],
             Directory.GetCurrentDirectory(),
             cancellationToken);
-        if (result.ExitCode != 0)
+        if (result is null || result.ExitCode != 0)
         {
             return (false, PostgresContainerStatus.Absent);
         }
@@ -95,9 +123,9 @@ public static class ContainerRuntimeProbe
 
     public static async Task<bool> StartStoppedContainerAsync(ProcessRunner runner, CancellationToken cancellationToken)
     {
-        ProcessResult result = await runner(
-            "docker", ["start", PostgresRuntime.ContainerName], Directory.GetCurrentDirectory(), cancellationToken);
-        return result.ExitCode == 0;
+        ProcessResult? result = await TryRunAsync(
+            runner, "docker", ["start", PostgresRuntime.ContainerName], Directory.GetCurrentDirectory(), cancellationToken);
+        return result is { ExitCode: 0 };
     }
 
     /// <summary>Stops the container without removing it — <c>h9k uninstall</c>'s default tier
@@ -105,9 +133,9 @@ public static class ContainerRuntimeProbe
     /// reinstall reconnects to exactly what was there.</summary>
     public static async Task<bool> StopRunningContainerAsync(ProcessRunner runner, CancellationToken cancellationToken)
     {
-        ProcessResult result = await runner(
-            "docker", ["stop", PostgresRuntime.ContainerName], Directory.GetCurrentDirectory(), cancellationToken);
-        return result.ExitCode == 0;
+        ProcessResult? result = await TryRunAsync(
+            runner, "docker", ["stop", PostgresRuntime.ContainerName], Directory.GetCurrentDirectory(), cancellationToken);
+        return result is { ExitCode: 0 };
     }
 
     /// <summary>Removes the container itself (not its volume) — half of <c>h9k uninstall
@@ -115,9 +143,9 @@ public static class ContainerRuntimeProbe
     /// container is stopped and removed in one call rather than needing the stop above first.</summary>
     public static async Task<bool> RemoveContainerAsync(ProcessRunner runner, CancellationToken cancellationToken)
     {
-        ProcessResult result = await runner(
-            "docker", ["rm", "-f", PostgresRuntime.ContainerName], Directory.GetCurrentDirectory(), cancellationToken);
-        return result.ExitCode == 0;
+        ProcessResult? result = await TryRunAsync(
+            runner, "docker", ["rm", "-f", PostgresRuntime.ContainerName], Directory.GetCurrentDirectory(), cancellationToken);
+        return result is { ExitCode: 0 };
     }
 
     /// <summary>Whether the named data volume exists at all — asked before
@@ -142,12 +170,13 @@ public static class ContainerRuntimeProbe
     public static async Task<(bool Confirmed, bool Exists)> VolumeExistsAsync(
         ProcessRunner runner, CancellationToken cancellationToken, string? volumeName = null)
     {
-        ProcessResult result = await runner(
+        ProcessResult? result = await TryRunAsync(
+            runner,
             "docker",
             ["volume", "ls", "--filter", $"name=^{volumeName ?? PostgresRuntime.VolumeName}$", "--format", "{{.Name}}"],
             Directory.GetCurrentDirectory(),
             cancellationToken);
-        return result.ExitCode != 0 ? (false, false) : (true, result.StandardOutput.Trim().Length > 0);
+        return result is null || result.ExitCode != 0 ? (false, false) : (true, result.StandardOutput.Trim().Length > 0);
     }
 
     /// <summary>
@@ -164,12 +193,13 @@ public static class ContainerRuntimeProbe
     public static async Task<(bool Confirmed, IReadOnlyList<string> Names)> FindDataVolumesAsync(
         ProcessRunner runner, CancellationToken cancellationToken)
     {
-        ProcessResult result = await runner(
+        ProcessResult? result = await TryRunAsync(
+            runner,
             "docker",
             ["volume", "ls", "--filter", "name=hall9k-pgdata", "--format", "{{.Name}}"],
             Directory.GetCurrentDirectory(),
             cancellationToken);
-        if (result.ExitCode != 0)
+        if (result is null || result.ExitCode != 0)
         {
             return (false, []);
         }
@@ -187,14 +217,14 @@ public static class ContainerRuntimeProbe
     public static async Task<bool> RemoveVolumeAsync(
         ProcessRunner runner, CancellationToken cancellationToken, string? volumeName = null)
     {
-        ProcessResult result = await runner(
-            "docker", ["volume", "rm", volumeName ?? PostgresRuntime.VolumeName],
+        ProcessResult? result = await TryRunAsync(
+            runner, "docker", ["volume", "rm", volumeName ?? PostgresRuntime.VolumeName],
             Directory.GetCurrentDirectory(), cancellationToken);
-        return result.ExitCode == 0;
+        return result is { ExitCode: 0 };
     }
 
     /// <summary>
-    /// Asks <c>hall9k-postgres</c> itself which named volume it has mounted, rather than
+    /// Asks <c>hall9k-postgres</c> itself which named volume(s) it has mounted, rather than
     /// assuming the bare literal <see cref="PostgresRuntime.VolumeName"/> — the name only a
     /// compose file carrying this branch's <c>name:</c> pin actually produces. A container
     /// created before that pin landed (or brought up from a checkout whose own
@@ -204,40 +234,43 @@ public static class ContainerRuntimeProbe
     /// volume and report destruction that never happened, or — worse — hit an unrelated volume
     /// that happens to carry the guessed literal, such as the Aspire dev loop's own
     /// pre-migration <c>hall9k-pgdata</c> (see <see cref="Hall9k.Domain.Infrastructure.Storage.PostgresRuntime.VolumeName"/>'s
-    /// own remarks). Returns <see langword="null"/> when the container has no named volume
-    /// mount to report — a bind mount, or no volume mount at all; an anonymous volume does not
-    /// land here, since <c>docker inspect</c> reports one under its generated hex name the same
-    /// as any named volume — which callers must read as "there is no named volume to observe
-    /// here" — never as licence to fall back to the pinned literal, which is exactly the guess
-    /// this method exists to avoid.
+    /// own remarks). Every named volume mount is returned, not just the first: a container that
+    /// mounts more than one (a hand-created container, or a pre-pin compose file with a separate
+    /// volume) would otherwise have one purged and reported as the whole install's data being
+    /// gone while the rest sat on disk, unreported and unobserved. Returns an empty list when the
+    /// container has no named volume mount to report — a bind mount, or no volume mount at all;
+    /// an anonymous volume does not land here, since <c>docker inspect</c> reports one under its
+    /// generated hex name the same as any named volume — which callers must read as "there is no
+    /// named volume to observe here" — never as licence to fall back to the pinned literal, which
+    /// is exactly the guess this method exists to avoid.
     /// <para>
-    /// <c>Confirmed</c> is <see langword="false"/> when <c>docker inspect</c> itself failed
-    /// (nonzero exit — the daemon dropping the connection between an earlier call and this one,
-    /// say), which is not the same fact as "this container mounts no named volume": collapsing
-    /// the two would let a caller read a failed inspect as a confirmed absence and proceed to
-    /// destroy the container while believing there was never a volume to observe, the identical
-    /// stdout-versus-exit-code confusion <see cref="VolumeExistsAsync"/> is hardened against.
-    /// A caller sees <c>Confirmed: false, Name: null</c> for that case, and only ever sees
-    /// <c>Confirmed: true, Name: null</c> when the container was actually inspected and reported
-    /// no named volume mount.
+    /// <c>Confirmed</c> is <see langword="false"/> when <c>docker inspect</c> itself failed or
+    /// could not be run at all (nonzero exit, or the daemon dropping the connection between an
+    /// earlier call and this one), which is not the same fact as "this container mounts no named
+    /// volume": collapsing the two would let a caller read a failed inspect as a confirmed
+    /// absence and proceed to destroy the container while believing there was never a volume to
+    /// observe, the identical stdout-versus-exit-code confusion <see cref="VolumeExistsAsync"/>
+    /// is hardened against. A caller sees <c>Confirmed: false</c> with an empty list for that
+    /// case, and only ever sees <c>Confirmed: true</c> with an empty list when the container was
+    /// actually inspected and reported no named volume mount.
     /// </para>
     /// </summary>
-    public static async Task<(bool Confirmed, string? Name)> DataVolumeNameAsync(ProcessRunner runner, CancellationToken cancellationToken)
+    public static async Task<(bool Confirmed, IReadOnlyList<string> Names)> DataVolumeNameAsync(ProcessRunner runner, CancellationToken cancellationToken)
     {
-        ProcessResult result = await runner(
+        ProcessResult? result = await TryRunAsync(
+            runner,
             "docker",
             ["inspect", PostgresRuntime.ContainerName, "--format", "{{range .Mounts}}{{if eq .Type \"volume\"}}{{.Name}}\n{{end}}{{end}}"],
             Directory.GetCurrentDirectory(),
             cancellationToken);
-        if (result.ExitCode != 0)
+        if (result is null || result.ExitCode != 0)
         {
-            return (false, null);
+            return (false, []);
         }
 
-        string name = result.StandardOutput
-            .Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
-            .FirstOrDefault() ?? string.Empty;
-        return (true, name.Length > 0 ? name : null);
+        string[] names = result.StandardOutput
+            .Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        return (true, names);
     }
 
     /// <summary>
@@ -291,10 +324,10 @@ public static class ContainerRuntimeProbe
         {
             PostgresRuntime.WriteComposeFile();
         }
-        ProcessResult result = await runner(
-            "docker", ["compose", "-f", PostgresRuntime.ComposeFile, "up", "-d"],
+        ProcessResult? result = await TryRunAsync(
+            runner, "docker", ["compose", "-f", PostgresRuntime.ComposeFile, "up", "-d"],
             PostgresRuntime.ComposeDirectory, cancellationToken);
-        return (result.ExitCode == 0 ? ComposeUpResult.Started : ComposeUpResult.Failed, []);
+        return (result is { ExitCode: 0 } ? ComposeUpResult.Started : ComposeUpResult.Failed, []);
     }
 }
 
