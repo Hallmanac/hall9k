@@ -60,7 +60,7 @@ the project says otherwise, in the same shape on every machine:
 ├── AGENTS.md   generated from the project's facts; a render, never hand-maintained
 ├── repo/       <name>.git (bare clone) · dev/ (a worktree on the primary branch) · wt-*/
 ├── ideas/
-├── tasks/
+├── tasks/      _archive/ holds terminal tasks (closed out or abandoned); moved back if reopened
 ├── skills/     plain markdown skill docs, seeded from the install's canonical set
 └── .claude/    generated Claude Code plumbing: skills/ symlinked into skills/, never copied
 ```
