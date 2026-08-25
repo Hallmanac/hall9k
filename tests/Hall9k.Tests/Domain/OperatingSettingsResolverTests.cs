@@ -226,4 +226,48 @@ public sealed class OperatingSettingsResolverTests : IDisposable
             warning => warning.Contains("Hall9k__MaxConcurrentAgentSessions"),
             "an empty value still sets the variable and still fails ConfigurationBinder's int conversion at daemon startup");
     }
+
+    /// <summary>
+    /// Unlike the integer setting, <c>ConfigurationBinder</c> binds "" as a perfectly valid string
+    /// over whatever the config file holds — it never throws, so the daemon really does run with
+    /// <c>DefaultModel = ""</c>. Reporting the config-file value as still in force here would be
+    /// exactly backwards: the environment variable outranks the file even when it is empty. Origin:
+    /// the cycle-1 pre-PR review found <c>ResolveString</c>/<c>ResolveOptionalString</c>'s
+    /// <c>{ Length: > 0 }</c> guard treating a set-but-empty variable as unset, left over from
+    /// before commit 8b50e40 fixed the same defect for <c>ResolveInt</c>.
+    /// </summary>
+    [Fact]
+    public async Task A_set_but_empty_string_env_var_outranks_the_config_file_rather_than_being_treated_as_unset()
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        await PlatformConfigFile.WriteOperatingSettingsAsync(s => s.DefaultModel = "sonnet", CancellationToken.None);
+        Environment.SetEnvironmentVariable("Hall9k__DefaultModel", "");
+
+        OperatingSettingsReport report = await OperatingSettingsResolver.ResolveAsync(CancellationToken.None);
+
+        report.DefaultModel.Value.Should().Be(string.Empty);
+        report.DefaultModel.Origin.Should().Be(SettingOrigin.EnvironmentVariable);
+    }
+
+    [Fact]
+    public async Task A_set_but_empty_role_env_var_outranks_the_config_file_rather_than_being_treated_as_unset()
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        await PlatformConfigFile.WriteOperatingSettingsAsync(s => s.ModelByRole.Review = "sonnet", CancellationToken.None);
+        Environment.SetEnvironmentVariable("Hall9k__ModelByRole__Review", "");
+
+        OperatingSettingsReport report = await OperatingSettingsResolver.ResolveAsync(CancellationToken.None);
+
+        RoleModelSetting review = report.ModelByRole.Single(role => role.Role == nameof(RoleModelSettings.Review));
+        review.Model.Value.Should().Be(string.Empty);
+        review.Model.Origin.Should().Be(SettingOrigin.EnvironmentVariable);
+    }
 }
