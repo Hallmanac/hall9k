@@ -305,6 +305,76 @@ public sealed class ProjectHomeRecipeTests : IDisposable
         File.Exists(Path.Combine(SkillLibraryPaths.Skill("pr-summary"), "SKILL.md")).Should().BeTrue();
     }
 
+    /// <summary>
+    /// Before this fix, an unreadable manifest was read exactly like an absent one, so
+    /// <c>commit-plan</c>'s already-existing destination failed the ownership check and landed
+    /// in <c>leftAlone</c> — and the unconditional manifest rewrite at the end of
+    /// <see cref="SkillSeeder.PublishCanonical"/> then overwrote the real manifest with that
+    /// empty reading, permanently reclassifying every install-owned skill as an operator
+    /// override on every later install. This uninstall feature's own pre-PR review found the
+    /// swallow that made a read failure indistinguishable from "nothing was ever published".
+    /// </summary>
+    [Fact]
+    public void Publishing_does_not_erase_the_manifest_when_it_cannot_be_read()
+    {
+        string source = Path.Combine(_platformHome, "release-skills");
+        WriteSkill(source, "commit-plan", "Shipped by the platform.");
+        SkillSeeder.PublishCanonical(source);
+        string manifestBeforeFailure = File.ReadAllText(SkillLibraryPaths.PublishedManifest);
+
+        SkillPublication publication;
+        if (OperatingSystem.IsWindows())
+        {
+            using FileStream lockHandle = new(
+                SkillLibraryPaths.PublishedManifest, FileMode.Open, FileAccess.Read, FileShare.None);
+
+            publication = SkillSeeder.PublishCanonical(source);
+        }
+        else
+        {
+            if (!MadeUnreadable(SkillLibraryPaths.PublishedManifest))
+            {
+                return;
+            }
+
+            try
+            {
+                publication = SkillSeeder.PublishCanonical(source);
+            }
+            finally
+            {
+                File.SetUnixFileMode(
+                    SkillLibraryPaths.PublishedManifest, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+            }
+        }
+
+        publication.LeftAlone.Should().Equal(["commit-plan"],
+            "the manifest could not be read this pass, so the already-published skill cannot be "
+            + "confirmed safe to overwrite");
+        File.ReadAllText(SkillLibraryPaths.PublishedManifest).Should().Be(manifestBeforeFailure,
+            "an unreadable manifest must never be overwritten with an empty one — that would "
+            + "permanently forget every previously published skill");
+    }
+
+    private static bool MadeUnreadable(string path)
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            return false;
+        }
+
+        File.SetUnixFileMode(path, UnixFileMode.None);
+        try
+        {
+            File.ReadAllText(path);
+            return false;
+        }
+        catch (Exception exception) when (exception is UnauthorizedAccessException or IOException)
+        {
+            return true;
+        }
+    }
+
     [Fact]
     public void The_render_names_the_layout_the_deep_layer_and_the_tools_the_bindings_imply()
     {

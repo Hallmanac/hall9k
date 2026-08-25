@@ -274,7 +274,7 @@ public static class SkillSeeder
         string canonical = SkillLibraryPaths.CanonicalDirectory;
         Directory.CreateDirectory(canonical);
 
-        IReadOnlyDictionary<string, string> previously = ReadManifest();
+        (bool manifestConfirmed, IReadOnlyDictionary<string, string> previously) = TryReadManifest();
 
         List<string> published = [];
         List<string> leftAlone = [];
@@ -330,9 +330,21 @@ public static class SkillSeeder
             retired.Add(name);
         }
 
-        File.WriteAllLines(
-            SkillLibraryPaths.PublishedManifest,
-            published.Select(name => $"{name}\t{hashes[name]}"));
+        if (manifestConfirmed)
+        {
+            File.WriteAllLines(
+                SkillLibraryPaths.PublishedManifest,
+                published.Select(name => $"{name}\t{hashes[name]}"));
+        }
+        // else: the manifest exists but could not be read this pass (a Windows antivirus scan
+        // or editor holding it) — not the same fact as "no manifest ever existed". previously
+        // above already read as empty for that case, the safe direction for classification (an
+        // already-published skill lands in leftAlone rather than being overwritten), but writing
+        // that empty state back out would destroy the real manifest this pass just failed to
+        // read, permanently reclassifying every install-owned skill as an operator override the
+        // next time this runs. Leaving the file untouched means the next attempt, once the read
+        // succeeds, recovers the record instead of finding it already gone.
+
         return new SkillPublication(published, retired, leftAlone);
     }
 
@@ -354,7 +366,14 @@ public static class SkillSeeder
     /// </summary>
     public static IReadOnlyList<string> RemovePublished(List<string> stillPresent)
     {
-        IReadOnlyDictionary<string, string> previously = ReadManifest();
+        // The unconfirmed half of TryReadManifest's answer is deliberately discarded here: by
+        // the time h9k uninstall reaches this call, bin/ and the PATH link may already be gone,
+        // so reading as empty on failure (rather than throwing, or refusing to proceed) is the
+        // safe direction — at worst an install-owned skill survives one uninstall attempt
+        // longer. PublishCanonical's own use of TryReadManifest cannot make the same trade,
+        // since its manifest write would otherwise turn that same empty reading into a
+        // permanent one — see its own remarks.
+        (_, IReadOnlyDictionary<string, string> previously) = TryReadManifest();
         List<string> removed = [];
         Dictionary<string, string> remaining = [];
         foreach ((string name, string recordedHash) in previously)
@@ -452,20 +471,35 @@ public static class SkillSeeder
     /// <summary>
     /// What the last install published here, by name, with a content hash of what it wrote — the
     /// discriminator <see cref="PublishCanonical"/> uses to tell "still exactly what this method
-    /// shipped" apart from "somebody has edited this since". An absent manifest is read as empty,
-    /// which is the safe direction: nothing is removed or overwritten on the pass that first writes
-    /// it, so at worst a skill retired before this record existed lingers one install longer than
-    /// it might have.
+    /// shipped" apart from "somebody has edited this since". A missing manifest file is a
+    /// confirmed empty one: nothing is removed or overwritten on the pass that first writes it,
+    /// so at worst a skill retired before this record existed lingers one install longer than it
+    /// might have. A manifest that exists but could not be read (a Windows antivirus scan or
+    /// editor holding it) is a different fact — <c>Confirmed: false</c> — and callers must not
+    /// read that the same way as a confirmed empty manifest: <see cref="PublishCanonical"/>
+    /// treats the two differently precisely because collapsing them once made an unreadable
+    /// manifest permanently indistinguishable from an absent one (see that method's own
+    /// remarks).
     /// </summary>
-    private static IReadOnlyDictionary<string, string> ReadManifest()
+    private static (bool Confirmed, IReadOnlyDictionary<string, string> Manifest) TryReadManifest()
     {
         if (!File.Exists(SkillLibraryPaths.PublishedManifest))
         {
-            return new Dictionary<string, string>();
+            return (true, new Dictionary<string, string>());
+        }
+
+        string[] lines;
+        try
+        {
+            lines = File.ReadAllLines(SkillLibraryPaths.PublishedManifest);
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            return (false, new Dictionary<string, string>());
         }
 
         Dictionary<string, string> manifest = [];
-        foreach (string line in File.ReadAllLines(SkillLibraryPaths.PublishedManifest))
+        foreach (string line in lines)
         {
             string[] parts = line.Split('\t', 2);
             if (parts is [{ } name, { } hash] && name.IsNotBlank())
@@ -474,7 +508,7 @@ public static class SkillSeeder
             }
         }
 
-        return manifest;
+        return (true, manifest);
     }
 
     /// <summary>
