@@ -30,6 +30,15 @@ public sealed class WindowsStopRequestWatcher(
 
     private readonly DateTimeOffset startedAt = CurrentProcessStartedAt();
 
+    // The stale content most recently warned about — a delete that keeps failing (a
+    // read-only attribute, a lock an antivirus scanner holds) would otherwise re-read and
+    // re-warn about the identical file on every 250ms tick for the daemon's whole life,
+    // flooding h9kd.log until LogRotationService rotates away the run history a human
+    // actually reads that log for. Warning once per distinct stale content keeps the
+    // honest report without the flood; a genuinely new stale request (different content)
+    // still gets its own warning.
+    private string? lastWarnedStaleContent;
+
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         using PeriodicTimer timer = new(PollInterval);
@@ -60,9 +69,11 @@ public sealed class WindowsStopRequestWatcher(
     /// enough: the next daemon this machine starts can be assigned the very same pid, and
     /// honoring it anyway would shut it down seconds after a clean-looking h9k daemon
     /// start. A mismatch is cleared here rather than left for the next daemon to hit the
-    /// same trap.
+    /// same trap. Internal for direct unit coverage of the stale-content warning
+    /// de-duplication below, the same way <c>WindowsDaemonAutostart</c>'s own pure-logic
+    /// methods are exposed for direct testing rather than requiring a live poll loop.
     /// </summary>
-    private bool IsOwnStopRequest()
+    internal bool IsOwnStopRequest()
     {
         string content;
         try
@@ -99,10 +110,21 @@ public sealed class WindowsStopRequestWatcher(
             return true;
         }
 
-        logger.LogWarning(
-            "Ignoring stale {StopRequestFile} ({Content}) — not this daemon (pid {ProcessId}, started {StartedAt:u})",
-            DaemonRuntime.StopRequestFile, content.Trim(), Environment.ProcessId, startedAt);
-        DeleteRequestFile();
+        bool isNewStaleContent = !string.Equals(content, lastWarnedStaleContent, StringComparison.Ordinal);
+        if (isNewStaleContent)
+        {
+            logger.LogWarning(
+                "Ignoring stale {StopRequestFile} ({Content}) — not this daemon (pid {ProcessId}, started {StartedAt:u})",
+                DaemonRuntime.StopRequestFile, content.Trim(), Environment.ProcessId, startedAt);
+            lastWarnedStaleContent = content;
+        }
+
+        // A delete that keeps failing for this same stale content already got its one
+        // warning above (and, on failure, its one warning below) — retrying the delete
+        // itself is still worth doing silently in case whatever held the lock has since let
+        // go, but warning about the SAME failure again every tick is the flood this whole
+        // gate exists to stop.
+        DeleteRequestFile(warnOnFailure: isNewStaleContent);
         return false;
     }
 
@@ -114,7 +136,7 @@ public sealed class WindowsStopRequestWatcher(
     /// whatever it asked for (this daemon stopping, or the mismatch being noticed) already
     /// happened.
     /// </summary>
-    private void DeleteRequestFile()
+    private void DeleteRequestFile(bool warnOnFailure = true)
     {
         try
         {
@@ -122,10 +144,13 @@ public sealed class WindowsStopRequestWatcher(
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
         {
-            logger.LogWarning(
-                exception,
-                "Could not delete {StopRequestFile} — a stale copy could stop the next daemon that starts",
-                DaemonRuntime.StopRequestFile);
+            if (warnOnFailure)
+            {
+                logger.LogWarning(
+                    exception,
+                    "Could not delete {StopRequestFile} — a stale copy could stop the next daemon that starts",
+                    DaemonRuntime.StopRequestFile);
+            }
         }
     }
 
