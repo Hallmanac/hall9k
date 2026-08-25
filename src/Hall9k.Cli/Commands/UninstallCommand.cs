@@ -111,6 +111,7 @@ public sealed class UninstallCommand : Hall9kAsyncCommand<UninstallCommand.Setti
                 Environment.GetFolderPath(Environment.SpecialFolder.UserProfile));
 
         string home = PlatformPaths.Home;
+        bool homeExistedBeforeRemoval = Directory.Exists(home);
 
         // Skills first, deliberately: RemovePublished hashes file contents, which on a
         // self-contained install can still need to lazily load an assembly this process has not
@@ -120,9 +121,10 @@ public sealed class UninstallCommand : Hall9kAsyncCommand<UninstallCommand.Setti
         List<string> stillPresent = [];
         (IReadOnlyList<string> skillsRemoved, bool skillManifestConfirmed) = SkillSeeder.RemovePublished(stillPresent);
         stillPresent.AddRange(RemoveInstallOwnedEntries(InstallOwnedEntries(home, stillPresent)));
+        TryRemoveIfEmpty(home, stillPresent);
         bool homeFullyRemoved = stillPresent.Count == 0 && pathLinkRemoved;
 
-        ReportHomeRemoval(home, stillPresent, skillsRemoved, skillManifestConfirmed);
+        ReportHomeRemoval(home, homeExistedBeforeRemoval, stillPresent, skillsRemoved, skillManifestConfirmed);
         PrintSummary(settings.PurgeData, dataTierOutcome, daemonStopped: true, homeRemovalOutcome: homeFullyRemoved);
 
         return dataTierOk && homeFullyRemoved ? ExitCodes.Ok : ExitCodes.Error;
@@ -246,7 +248,7 @@ public sealed class UninstallCommand : Hall9kAsyncCommand<UninstallCommand.Setti
         if (autostart.IsSupported && autostart.IsEnabled)
         {
             DaemonAutostartDisableOutcome outcome = await autostart.DisableAsync(cancellationToken);
-            stopped = stopped || outcome == DaemonAutostartDisableOutcome.DaemonStopped;
+            stopped = FoldAutostartOutcomeIntoStopped(stopped, outcome);
 
             AnsiConsole.MarkupLine(outcome switch
             {
@@ -266,6 +268,25 @@ public sealed class UninstallCommand : Hall9kAsyncCommand<UninstallCommand.Setti
 
         return stopped;
     }
+
+    /// <summary>
+    /// <see cref="DaemonAutostartDisableOutcome.NothingStopped"/> means the service manager found
+    /// nothing of its own to touch, so whatever the direct stop attempt already found stands
+    /// unchanged. <see cref="DaemonAutostartDisableOutcome.DaemonStopped"/> and
+    /// <see cref="DaemonAutostartDisableOutcome.DaemonStopping"/> are both a live manager-owned
+    /// process actually observed just now — and only the first is confirmed gone, so
+    /// <c>DaemonStopping</c> must override a <paramref name="stoppedSoFar"/> that was already
+    /// <see langword="true"/> (the direct attempt finding nothing running, moments before launchd
+    /// started this very process) rather than let a plain <c>||</c> mask a daemon this call just
+    /// found still shutting down.
+    /// </summary>
+    internal static bool FoldAutostartOutcomeIntoStopped(bool stoppedSoFar, DaemonAutostartDisableOutcome outcome) =>
+        outcome switch
+        {
+            DaemonAutostartDisableOutcome.DaemonStopped => true,
+            DaemonAutostartDisableOutcome.DaemonStopping => false,
+            _ => stoppedSoFar,
+        };
 
     // Process.Kill(entireProcessTree: true) has already asked the OS to terminate the process;
     // this is only the wait for that termination to land. A kernel-mode wait the process cannot
@@ -311,6 +332,20 @@ public sealed class UninstallCommand : Hall9kAsyncCommand<UninstallCommand.Setti
 
         using (process)
         {
+            // Probe() validated this pid's identity moments ago, but GetProcessById above opened
+            // a fresh handle by pid alone — if the daemon exited and Windows reused the pid in
+            // that gap, this handle is now some unrelated process. Re-checking identity right
+            // before the kill, the same pid-plus-start-time comparison Probe() itself already
+            // uses, is what keeps entireProcessTree: true from ever landing on a process that
+            // merely inherited h9kd's old pid.
+            if (!DaemonProcess.IsAlive(running.ProcessId, running.StartedAt))
+            {
+                AnsiConsole.MarkupLine(
+                    "[dim]The running daemon had already exited (its pid has since been reused by a "
+                    + "different process, left untouched).[/]");
+                return true;
+            }
+
             try
             {
                 process.Kill(entireProcessTree: true);
@@ -358,7 +393,6 @@ public sealed class UninstallCommand : Hall9kAsyncCommand<UninstallCommand.Setti
         ContainerRuntimeNotRunning,
         ContainerStatusCheckFailed,
         ContainerAbsent,
-        ContainerAlreadyStopped,
         ContainerStopped,
         ContainerStopFailed,
         PurgeUnconfirmedVolume,
@@ -555,16 +589,19 @@ public sealed class UninstallCommand : Hall9kAsyncCommand<UninstallCommand.Setti
             return (false, DataTierOutcome.PurgeIncomplete);
         }
 
-        if (container != PostgresContainerStatus.Running)
+        if (container == PostgresContainerStatus.Absent)
         {
-            AnsiConsole.MarkupLine(container == PostgresContainerStatus.Absent
-                ? $"[dim]No {PostgresRuntime.ContainerName} container found — nothing to stop.[/]"
-                : $"[dim]{PostgresRuntime.ContainerName} is already stopped — its data volume is untouched.[/]");
-            return (true, container == PostgresContainerStatus.Absent
-                ? DataTierOutcome.ContainerAbsent
-                : DataTierOutcome.ContainerAlreadyStopped);
+            AnsiConsole.MarkupLine($"[dim]No {PostgresRuntime.ContainerName} container found — nothing to stop.[/]");
+            return (true, DataTierOutcome.ContainerAbsent);
         }
 
+        // Called unconditionally rather than only when Hall9kContainerStatusAsync's own status
+        // reads Running: that probe collapses every Docker state besides "running" into Stopped,
+        // including "restarting" and "paused" — an active, non-terminal state that would
+        // otherwise be left alone here and come back on its own restart policy while the rest of
+        // the machine is torn down around it. docker stop is idempotent against a container that
+        // genuinely is already stopped (confirmed: exit 0 either way), so there is no case where
+        // calling it unconditionally does anything worse than a no-op.
         bool stopped = await ContainerRuntimeProbe.StopRunningContainerAsync(runner, cancellationToken);
         AnsiConsole.MarkupLine(stopped
             ? $"[green]Stopped[/] the {PostgresRuntime.ContainerName} container. Its data volume was never touched — "
@@ -826,7 +863,18 @@ public sealed class UninstallCommand : Hall9kAsyncCommand<UninstallCommand.Setti
             if (Directory.Exists(path))
             {
                 List<string> lockedUnderThisEntry = [];
-                DeleteContentsBestEffort(path, lockedUnderThisEntry);
+
+                // A directory symlink or junction (a replaced bin/, or one an operator created)
+                // still passes Directory.Exists, but recursing into its contents would walk
+                // through to whatever it points at and delete that instead. Directory.Delete
+                // unlinks a symlink without following it regardless of the target's own
+                // contents, so skipping the recursion here and going straight to the delete
+                // below is what keeps this to exactly the link, never the linked-to directory.
+                if (new DirectoryInfo(path).LinkTarget is null)
+                {
+                    DeleteContentsBestEffort(path, lockedUnderThisEntry);
+                }
+
                 try
                 {
                     Directory.Delete(path);
@@ -870,7 +918,12 @@ public sealed class UninstallCommand : Hall9kAsyncCommand<UninstallCommand.Setti
     /// <see cref="RemoveInstallOwnedEntries"/>) to the system temp directory, so it no longer
     /// counts against <c>~/.hall9k</c> even though the locked file inside it survives on disk
     /// under a different path. Reports where it went rather than leaving the operator to search
-    /// for a path <see cref="ReportHomeRemoval"/> no longer names.</summary>
+    /// for a path <see cref="ReportHomeRemoval"/> no longer names. Nothing schedules the actual
+    /// delete: a rename succeeds while the file is still mapped, but there is no OS mechanism
+    /// that reclaims an ordinary temp-directory entry once the handle closes — this is the same
+    /// gap the operator would hit deleting it by hand right after the process exits, just with a
+    /// stable, discoverable path in the meantime instead of the original one inside the removed
+    /// home.</summary>
     [SupportedOSPlatform("windows")]
     private static bool TryRelocateOutsideHome(string path)
     {
@@ -881,7 +934,8 @@ public sealed class UninstallCommand : Hall9kAsyncCommand<UninstallCommand.Setti
             Directory.Move(path, destination);
             AnsiConsole.MarkupLine(
                 $"[dim]{path.EscapeMarkup()} still held a locked file (most likely this very h9k.exe) — moved to "
-                + $"{destination.EscapeMarkup()}, outside ~/.hall9k, for Windows to reclaim once nothing has it open.[/]");
+                + $"{destination.EscapeMarkup()}, outside ~/.hall9k. It is not deleted automatically; remove it "
+                + "by hand once this process has exited.[/]");
             return true;
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
@@ -908,7 +962,13 @@ public sealed class UninstallCommand : Hall9kAsyncCommand<UninstallCommand.Setti
 
             foreach (string subdirectory in Directory.EnumerateDirectories(directory))
             {
-                DeleteContentsBestEffort(subdirectory, stillPresent);
+                // Same guard as the top-level entry point: a nested directory symlink or
+                // junction must be unlinked, never recursed into.
+                if (new DirectoryInfo(subdirectory).LinkTarget is null)
+                {
+                    DeleteContentsBestEffort(subdirectory, stillPresent);
+                }
+
                 try
                 {
                     Directory.Delete(subdirectory);
@@ -936,8 +996,13 @@ public sealed class UninstallCommand : Hall9kAsyncCommand<UninstallCommand.Setti
     /// literal "a removed home is a removed home" case, reached only on a machine where
     /// nothing but install ever wrote there. A home still holding a project, a credential, or
     /// anything else is left exactly as it is; this never removes a non-empty directory.
+    /// <paramref name="stillPresent"/> gains <paramref name="home"/> when this could not confirm
+    /// it empty or could not delete it once confirmed — genuinely unfinished, unlike the
+    /// ordinary "there is real content here" case above, which is not a failure and reports
+    /// nothing — so a caller's exit code reflects the home surviving rather than reading either
+    /// failure as done.
     /// </summary>
-    internal static void TryRemoveIfEmpty(string home)
+    internal static void TryRemoveIfEmpty(string home, List<string> stillPresent)
     {
         if (!Directory.Exists(home))
         {
@@ -955,6 +1020,7 @@ public sealed class UninstallCommand : Hall9kAsyncCommand<UninstallCommand.Setti
             // point-of-no-return call site (bin/ and the PATH link are already gone by here) that
             // made SkillSeeder.ReadManifest's identical read fail this safely rather than throw.
             // Left in place rather than guessed at and deleted.
+            stillPresent.Add(home);
             return;
         }
 
@@ -969,7 +1035,9 @@ public sealed class UninstallCommand : Hall9kAsyncCommand<UninstallCommand.Setti
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
         {
-            // Left as an empty directory; nothing install-owned remains inside it either way.
+            // Confirmed empty but the unlink itself was denied — left as an empty directory,
+            // and recorded rather than swallowed so this run's exit code says so.
+            stillPresent.Add(home);
         }
     }
 
@@ -992,10 +1060,9 @@ public sealed class UninstallCommand : Hall9kAsyncCommand<UninstallCommand.Setti
     /// <paramref name="skillsRemoved"/> as "nothing was ever published".
     /// </summary>
     private static void ReportHomeRemoval(
-        string home, IReadOnlyList<string> stillPresent, IReadOnlyList<string> skillsRemoved, bool skillManifestConfirmed)
+        string home, bool homeExistedBeforeRemoval, IReadOnlyList<string> stillPresent,
+        IReadOnlyList<string> skillsRemoved, bool skillManifestConfirmed)
     {
-        bool homeExistedBeforeRemoval = Directory.Exists(home);
-
         if (stillPresent.Count > 0)
         {
             AnsiConsole.MarkupLine("[yellow]Could not remove everything install owns[/]:");
@@ -1037,8 +1104,6 @@ public sealed class UninstallCommand : Hall9kAsyncCommand<UninstallCommand.Setti
                     + "overrides. Retry once whatever is holding it lets go.");
             }
         }
-
-        TryRemoveIfEmpty(home);
 
         string skillsClause = !skillManifestConfirmed
             ? "the skill set (left untouched — its manifest could not be read this pass, so a published skill "
@@ -1140,13 +1205,22 @@ public sealed class UninstallCommand : Hall9kAsyncCommand<UninstallCommand.Setti
                 DataTierOutcome.ContainerAbsent =>
                     $"[dim]Left in Docker:[/] no {PostgresRuntime.ContainerName} container was found — there was "
                         + "nothing here to stop. This tier does not look for a data volume without a container to "
-                        + "inspect, so a volume left behind by an earlier `docker rm` was not touched either way; "
-                        + "h9k uninstall --purge-data is what finds and removes one.",
-                DataTierOutcome.ContainerAlreadyStopped or DataTierOutcome.ContainerStopped =>
+                        + "inspect, so a volume left behind by an earlier `docker rm` was not touched either way. "
+                        + "Check for one yourself: docker volume ls --filter name=hall9k-pgdata — and once you've "
+                        + "confirmed a name is really this install's, docker volume rm <name> removes it."
+                        + (homeRemovalOutcome != true
+                            ? " h9k uninstall --purge-data does the same confirm-then-destroy, if you'd rather."
+                            : string.Empty),
+                DataTierOutcome.ContainerStopped =>
                     $"[green]Left in Docker:[/] the {PostgresRuntime.ContainerName} container (stopped) and its "
                         + "data volume, untouched. Every task, run, and idea you've recorded is safe there — a "
-                        + "later h9k install reconnects to it. Run h9k uninstall --purge-data if you want that "
-                        + "gone too.",
+                        + $"later h9k install reconnects to it. To remove it yourself: docker rm -f "
+                        + $"{PostgresRuntime.ContainerName} removes the container (never the volume); docker "
+                        + "volume ls --filter name=hall9k-pgdata finds its data volume, and docker volume rm "
+                        + "<name> removes that too, once you've confirmed the name is really this install's."
+                        + (homeRemovalOutcome != true
+                            ? " h9k uninstall --purge-data does the same confirm-then-destroy, if you'd rather."
+                            : string.Empty),
                 DataTierOutcome.ContainerStatusCheckFailed =>
                     $"[yellow]Left in Docker, status unknown:[/] whether {PostgresRuntime.ContainerName} is "
                         + "running, stopped, or absent could not be confirmed — see above for how to check it "
