@@ -3,7 +3,7 @@ namespace Hall9k.Cli.DaemonControl;
 /// <summary>
 /// The cross-platform seam for start-at-login registration (Decisions Log #3, #31).
 /// Strictly opt-in: nothing implements "enable" as a side effect of install or start.
-/// macOS = launchd LaunchAgent; Windows = Task Scheduler logon task, deferred to S1-14.
+/// macOS = launchd LaunchAgent; Windows = Task Scheduler logon task (S1-14).
 /// </summary>
 public interface IDaemonAutostart
 {
