@@ -182,6 +182,16 @@ public sealed class PlatformConfigFileTests : IDisposable
     }
 
     [Fact]
+    public async Task Writing_a_setting_leaves_no_temp_file_behind()
+    {
+        await PlatformConfigFile.WriteOperatingSettingsAsync(
+            s => s.MaxConcurrentAgentSessions = 4, CancellationToken.None);
+
+        Directory.GetFiles(home, "config.json.tmp-*").Should().BeEmpty(
+            "the atomic write stages into a temp file and renames it away; nothing should remain named after it");
+    }
+
+    [Fact]
     public async Task An_explicit_null_model_by_role_reads_back_as_an_empty_instance_rather_than_null()
     {
         await File.WriteAllTextAsync(Hall9kDatabase.ConfigFile, """{"hall9k": {"modelByRole": null}}""");

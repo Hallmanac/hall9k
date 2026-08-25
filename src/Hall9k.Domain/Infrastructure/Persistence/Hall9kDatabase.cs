@@ -104,7 +104,7 @@ public static class Hall9kDatabase
         PlatformConfigDocument document = await ReadExistingDocumentAsync(cancellationToken);
         document.ConnectionString = connectionString;
 
-        await File.WriteAllTextAsync(
+        await AtomicFileWrite.WriteAllTextAsync(
             ConfigFile, JsonSerializer.Serialize(document, SerializerOptions), cancellationToken);
     }
 
