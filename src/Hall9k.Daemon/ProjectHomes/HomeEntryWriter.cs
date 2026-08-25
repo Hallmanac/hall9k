@@ -87,9 +87,12 @@ public static class HomeEntryWriter
                     + "collision); refusing to overwrite it.");
             }
         }
-        else if (FindStale(rootDirectory, directoryName, id, alternateRoots) is { } stale)
+
+        bool moved = false;
+        if (!Directory.Exists(targetDirectory) && FindStale(rootDirectory, directoryName, id, alternateRoots) is { } stale)
         {
             Directory.Move(stale, targetDirectory);
+            moved = true;
         }
 
         Directory.CreateDirectory(targetDirectory);
@@ -103,7 +106,11 @@ public static class HomeEntryWriter
         string? current = File.Exists(filePath) ? File.ReadAllText(filePath) : null;
         if (current == renderedContent)
         {
-            return new HomeEntryWriteResult(false, targetDirectory);
+            // A relocation counts as a change even when the rendered content did not: the
+            // directory itself moved (a task crossing the tasks/_archive/ boundary, most often),
+            // and a sweep that reports that as "unchanged" hides real filesystem work from every
+            // count and log line that reads Changed (adversarial review, backlog 51 cycle 11).
+            return new HomeEntryWriteResult(moved, targetDirectory);
         }
 
         File.WriteAllText(filePath, renderedContent);
