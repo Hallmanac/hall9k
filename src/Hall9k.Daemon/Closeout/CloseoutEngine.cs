@@ -907,8 +907,15 @@ public sealed class CloseoutEngine(
                 // The RESOLVED directory travels into the record, not run.RunDirectory as
                 // recorded at dispatch: BoundForEvent below can name this path in a truncation
                 // note a human reads, and a stale path there would send them somewhere the
-                // render sweep already moved the files away from (backlog 51 cycle 6).
-                authored.Add(new HandoffParser.RunHandoff(run.Id, runDirectory, text));
+                // render sweep already moved the files away from (backlog 51 cycle 6). But the
+                // directory ReadHandoffAsync resolved is where the files sit RIGHT NOW, before
+                // RunCompleted below has even committed — this method is the closeout that makes
+                // this task archived, so the render sweep moves this exact directory into
+                // tasks/_archive/ within one sweep of this transaction landing (adversarial
+                // review, backlog 51 cycle 10). The note has to name where the sweep is about to
+                // put it, not where it happened to be a moment before that was true.
+                authored.Add(new HandoffParser.RunHandoff(
+                    run.Id, RunPaths.AnticipateDirectoryAfterSweep(runDirectory, willArchive: true), text));
                 continue;
             }
 

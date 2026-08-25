@@ -184,4 +184,55 @@ public sealed class RunPathsTests
 
         public void Dispose() => Directory.Delete(_home, recursive: true);
     }
+
+    // AnticipateDirectoryAfterSweep (adversarial review, backlog 51 cycle 10): a directory
+    // ResolveCurrentDirectory just resolved names where the files sit right now, but a caller
+    // composing text for an event that itself moves the task across the tasks/tasks_archive
+    // boundary needs where the sweep is about to put them instead — no disk state involved,
+    // since this never checks whether either side exists.
+    public sealed class AnticipateDirectoryAfterSweepTests
+    {
+        [Fact]
+        public void A_live_directory_composing_text_for_its_own_archiving_event_anticipates_tasks_archive()
+        {
+            string home = Path.Combine(Path.GetTempPath(), "hall9k-anticipate-home");
+            string live = Path.Combine(home, "tasks", "abc12345-some-task", "runs", "some-run");
+
+            RunPaths.AnticipateDirectoryAfterSweep(live, willArchive: true).Should().Be(
+                Path.Combine(home, "tasks", "_archive", "abc12345-some-task", "runs", "some-run"),
+                "this call is the closeout that makes the task archived, so the note must name where the very next sweep puts it");
+        }
+
+        [Fact]
+        public void An_archived_directory_composing_text_for_a_park_that_ends_its_liveness_anticipates_tasks()
+        {
+            string home = Path.Combine(Path.GetTempPath(), "hall9k-anticipate-home");
+            string archived = Path.Combine(home, "tasks", "_archive", "abc12345-some-task", "runs", "some-run");
+
+            RunPaths.AnticipateDirectoryAfterSweep(archived, willArchive: false).Should().Be(
+                Path.Combine(home, "tasks", "abc12345-some-task", "runs", "some-run"),
+                "a parked run is no longer live, so the reopen guard holding this reopened task inside " +
+                "tasks/_archive/ stops applying the moment the park this text is for commits");
+        }
+
+        [Fact]
+        public void A_live_directory_composing_text_for_a_park_is_returned_unchanged()
+        {
+            string home = Path.Combine(Path.GetTempPath(), "hall9k-anticipate-home");
+            string live = Path.Combine(home, "tasks", "abc12345-some-task", "runs", "some-run");
+
+            RunPaths.AnticipateDirectoryAfterSweep(live, willArchive: false).Should().Be(live,
+                "the ordinary case — a task that was never reopened — never touched tasks/_archive/, so parking it moves nothing");
+        }
+
+        [Fact]
+        public void An_archived_directory_composing_text_for_its_own_archiving_event_is_returned_unchanged()
+        {
+            string home = Path.Combine(Path.GetTempPath(), "hall9k-anticipate-home");
+            string archived = Path.Combine(home, "tasks", "_archive", "abc12345-some-task", "runs", "some-run");
+
+            RunPaths.AnticipateDirectoryAfterSweep(archived, willArchive: true).Should().Be(archived,
+                "already archived and staying archived is a no-op in this direction");
+        }
+    }
 }

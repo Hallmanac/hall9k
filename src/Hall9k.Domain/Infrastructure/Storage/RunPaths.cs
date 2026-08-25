@@ -139,6 +139,50 @@ public static class RunPaths
     }
 
     /// <summary>
+    /// Where <paramref name="currentDirectory"/> will sit once the render sweep that follows
+    /// the event a caller is composing text for flips the owning task across the
+    /// <c>tasks/</c>/<c>tasks/_archive/</c> boundary — never where it sits right now
+    /// (adversarial review, backlog 51 cycle 10). A resolved path is a fact only until the next
+    /// sweep runs; a caller that already knows the sweep is about to move the task (this event
+    /// is what makes it Done, or this event is what makes its current run stop being live) needs
+    /// the directory the resulting text will still be honest about, not the one
+    /// <see cref="ResolveCurrentDirectory"/> would hand back a moment before the move.
+    /// <para>
+    /// <paramref name="willArchive"/> says which direction: true when the caller's own event is
+    /// what makes the task archived (a merge closeout composing a handoff before its own
+    /// <c>RunCompleted</c> commits), false when it is what makes the task un-archive (a park
+    /// reason composed for a run that, once parked, is no longer live, and the reopen guard that
+    /// was holding a reopened task's directory inside <c>tasks/_archive/</c> only holds while its
+    /// current run is live). Anchored by segment position from the end, exactly as
+    /// <see cref="ResolveCurrentDirectory"/> is, for the same reason: a project home path can
+    /// itself contain a <c>tasks</c> or <c>tasks/_archive</c> segment.
+    /// </para>
+    /// </summary>
+    public static string AnticipateDirectoryAfterSweep(string currentDirectory, bool willArchive)
+    {
+        string[] segments = currentDirectory.Split(Path.DirectorySeparatorChar);
+
+        if (willArchive)
+        {
+            if (segments.Length < 4 || segments[^4] != "tasks")
+            {
+                return currentDirectory;
+            }
+
+            string home = string.Join(Path.DirectorySeparatorChar, segments[..^4]);
+            return Path.Combine(ProjectHomePaths.ArchivedTasksDirectory(home), segments[^3], segments[^2], segments[^1]);
+        }
+
+        if (segments.Length < 5 || segments[^4] != ProjectHomePaths.ArchiveDirectoryName)
+        {
+            return currentDirectory;
+        }
+
+        string liveHome = string.Join(Path.DirectorySeparatorChar, segments[..^5]);
+        return Path.Combine(ProjectHomePaths.TasksDirectory(liveHome), segments[^3], segments[^2], segments[^1]);
+    }
+
+    /// <summary>
     /// The one directory directly under <paramref name="root"/> whose name starts with
     /// <paramref name="recordedTaskDirectoryName"/>'s own short-id prefix (backlog 51 cycle 9) — the
     /// part of <c>&lt;shortid&gt;-&lt;slug&gt;</c> before the slug, which a rename changes and a
