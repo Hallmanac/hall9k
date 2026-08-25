@@ -29,21 +29,27 @@ public sealed class AtomicFileWriteTests : IDisposable
     {
         await File.WriteAllTextAsync(path, "original");
 
-        // On Windows there is no Unix mode to set or preserve; the assertion below is skipped
-        // there, the same convention CredentialVaultTests uses, so the write itself is still
-        // exercised on both legs of CI.
+        // On Windows there is no Unix mode to set or preserve, so only the permissions assertion
+        // is skipped there — the write itself runs unconditionally on both legs of CI, the same
+        // convention CredentialVaultTests uses. Origin: the cycle-4 pre-PR review found the write
+        // call itself inside the Windows guard, so the Windows leg exercised nothing at all while
+        // this comment claimed otherwise.
         if (!OperatingSystem.IsWindows())
         {
             File.SetUnixFileMode(path, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+        }
 
-            await AtomicFileWrite.WriteAllTextAsync(path, "updated", CancellationToken.None);
+        await AtomicFileWrite.WriteAllTextAsync(path, "updated", CancellationToken.None);
 
+        if (!OperatingSystem.IsWindows())
+        {
             File.GetUnixFileMode(path).Should().Be(
                 UnixFileMode.UserRead | UnixFileMode.UserWrite,
                 "the rename replaces the inode, so the swap must copy the target's existing mode onto the " +
                 "replacement rather than leaving it at whatever a freshly-created temp file gets");
-            (await File.ReadAllTextAsync(path)).Should().Be("updated");
         }
+
+        (await File.ReadAllTextAsync(path)).Should().Be("updated");
     }
 
     /// <summary>
@@ -78,6 +84,42 @@ public sealed class AtomicFileWriteTests : IDisposable
         await AtomicFileWrite.WriteAllTextAsync(path, "new", CancellationToken.None);
 
         (await File.ReadAllTextAsync(path)).Should().Be("new");
+    }
+
+    /// <summary>
+    /// An operator who keeps <c>config.json</c> as a symlink into a separately version-controlled
+    /// dotfiles repo needs the link itself to survive a write: <see cref="File.Replace(string, string, string?)"/>
+    /// unlinks whatever inode sits at its destination path, so swapping in at the symlink's own
+    /// path would replace the link with an ordinary file and orphan whatever it pointed at.
+    /// Origin: the cycle-4 pre-PR review found exactly that regression — the write must land on
+    /// the real file the link resolves to instead.
+    /// </summary>
+    [Fact]
+    public async Task Writing_through_a_symlink_updates_the_real_file_and_leaves_the_link_intact()
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        string realTarget = Path.Combine(Path.GetTempPath(), $"h9k-atomic-target-{Path.GetRandomFileName()}.json");
+        await File.WriteAllTextAsync(realTarget, "original");
+        File.CreateSymbolicLink(path, realTarget);
+
+        try
+        {
+            await AtomicFileWrite.WriteAllTextAsync(path, "updated", CancellationToken.None);
+
+            new FileInfo(path).LinkTarget.Should().Be(
+                realTarget, "the swap must land on the real file rather than replacing the symlink with one");
+            (await File.ReadAllTextAsync(realTarget)).Should().Be(
+                "updated", "the write must reach the file the symlink points at");
+        }
+        finally
+        {
+            File.Delete(path);
+            File.Delete(realTarget);
+        }
     }
 
     [Fact]
