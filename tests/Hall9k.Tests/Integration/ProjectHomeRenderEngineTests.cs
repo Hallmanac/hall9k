@@ -533,6 +533,160 @@ public sealed class ProjectHomeRenderEngineTests(PostgresFixture postgres) : ICl
     }
 
     [Fact]
+    public async Task A_hand_resolved_task_archives_even_though_its_current_run_ended_failed()
+    {
+        // Adversarial review, backlog 51 cycle 2: h9k task resolve is the attestation exit from
+        // Failed (Decisions Log #27) — it ends the task Done without ever touching CurrentRunId
+        // (TaskAggregate.Apply(TaskResolved), unlike TaskRetried, leaves it exactly as it was), so
+        // the current run stays Failed forever. Archiving must be judged against ANY of the
+        // task's runs reaching RunCompleted, not only the current one, or a hand-resolved task
+        // never leaves the top level.
+        using DocumentStore store = NewStore();
+        Guid ownerId = DomainId.New();
+        Guid projectId = DomainId.New();
+        Guid taskId = DomainId.New();
+        Guid nodeId = DomainId.New();
+
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            RegisterProject(session, projectId, ownerId, "hall9k");
+            (TaskAggregate task, object[] lifecycle) = TaskSeed.Start(
+                TaskDecider.Add(
+                    taskId, projectId, "Task resolved by hand after its run died", ["criterion"], TaskType.Feature,
+                    null, null, null, Now, ownerId),
+                ownerId, Now);
+            List<object> taskEvents = [.. lifecycle];
+
+            TaskClaimed claimed = TaskDecider.Claim(task, nodeId, ownerId, DomainId.New(), Now);
+            task.Apply(claimed);
+            taskEvents.Add(claimed);
+            Guid runId = task.CurrentRunId!.Value;
+
+            TaskFailed failed = TaskDecider.Fail(task, runId, "agent crashed", Now);
+            task.Apply(failed);
+            taskEvents.Add(failed);
+
+            TaskResolved resolved = TaskDecider.Resolve(
+                task, "merged by hand", "https://github.com/example/hall9k/pull/9", Now, ownerId);
+            task.Apply(resolved);
+            taskEvents.Add(resolved);
+
+            session.Events.StartStream<TaskAggregate>(taskId, [.. taskEvents]);
+            session.Events.StartStream<RunAggregate>(runId,
+                new RunDispatched(
+                    runId, taskId, nodeId, ownerId, task.LeaseGeneration, DomainId.New(), "/tmp/worktree",
+                    "task/resolved-by-hand", ExecutorMode.Subscription, Now),
+                new RunFailed(runId, "agent crashed", Now));
+            await session.SaveChangesAsync();
+        }
+
+        await NewEngine(store).PollOnceAsync(CancellationToken.None);
+
+        string tasksRoot = ProjectHomePaths.TasksDirectory(_home);
+        string archiveRoot = ProjectHomePaths.ArchivedTasksDirectory(_home);
+        LiveTaskDirectories(tasksRoot).Should().BeEmpty(
+            "a hand-resolved task is terminal by attestation and must not remain at the top level");
+        string archivedDirectory = Directory.EnumerateDirectories(archiveRoot).Should().ContainSingle().Subject;
+        File.ReadAllText(Path.Combine(archivedDirectory, "task.md")).Should().Contain("state: Done");
+    }
+
+    [Fact]
+    public async Task A_task_still_dispatched_into_the_archive_directory_by_a_reopen_is_not_moved_out_from_under_it()
+    {
+        // Adversarial review, backlog 51 cycle 2: RunLauncher dispatches a reopened task's
+        // follow-up run straight into tasks/_archive/ when the render sweep has not yet moved
+        // the directory back out (its own alternate-root search finds the task still archived).
+        // The task's own state already reads non-terminal at that point, so unless the sweep
+        // recognises the current run as still live, it moves the directory back to tasks/ out
+        // from under the run that is writing into it.
+        using DocumentStore store = NewStore();
+        Guid ownerId = DomainId.New();
+        Guid projectId = DomainId.New();
+        Guid taskId = DomainId.New();
+        Guid nodeId = DomainId.New();
+        const string PullRequestUrl = "https://github.com/example/hall9k/pull/10";
+
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            RegisterProject(session, projectId, ownerId, "hall9k");
+            (TaskAggregate task, object[] lifecycle) = TaskSeed.Start(
+                TaskDecider.Add(
+                    taskId, projectId, "Task reopened straight into the archive directory", ["criterion"],
+                    TaskType.Feature, null, null, null, Now, ownerId),
+                ownerId, Now);
+            List<object> taskEvents = [.. lifecycle];
+
+            TaskClaimed claimed = TaskDecider.Claim(task, nodeId, ownerId, DomainId.New(), Now);
+            task.Apply(claimed);
+            taskEvents.Add(claimed);
+
+            TaskCompleted completed = TaskDecider.Complete(task, task.CurrentRunId!.Value, PullRequestUrl, Now);
+            task.Apply(completed);
+            taskEvents.Add(completed);
+
+            Guid firstRunId = task.CurrentRunId!.Value;
+            session.Events.StartStream<TaskAggregate>(taskId, [.. taskEvents]);
+            session.Events.StartStream<RunAggregate>(firstRunId,
+                new RunDispatched(
+                    firstRunId, taskId, nodeId, ownerId, task.LeaseGeneration, DomainId.New(), "/tmp/worktree",
+                    "task/gets-reopened-into-archive", ExecutorMode.Subscription, Now),
+                new RunCompleted(firstRunId, Now));
+            await session.SaveChangesAsync();
+        }
+
+        // The task archives on the first sweep.
+        await NewEngine(store).PollOnceAsync(CancellationToken.None);
+        string tasksRoot = ProjectHomePaths.TasksDirectory(_home);
+        string archiveRoot = ProjectHomePaths.ArchivedTasksDirectory(_home);
+        Directory.EnumerateDirectories(archiveRoot).Should().ContainSingle(
+            "the closed-out task must have archived on the first sweep");
+
+        Guid followUpRunId;
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            TaskAggregate task = await session.Events.AggregateStreamAsync<TaskAggregate>(taskId)
+                ?? throw new InvalidOperationException("task not found");
+            TaskReopened reopened = TaskDecider.Reopen(
+                task, task.CurrentRunId!.Value, "task/gets-reopened-into-archive", "one more look",
+                FollowUpKind.ReviewFeedback, automatic: false, Now, ownerId);
+            task.Apply(reopened);
+            session.Events.Append(taskId, reopened);
+
+            // Mirrors RunLauncher: a follow-up run dispatched straight into the directory as it
+            // is found on disk right now — still under tasks/_archive/, since the render sweep
+            // has not run again yet — and still live (no RunCompleted/RunFailed appended).
+            followUpRunId = DomainId.New();
+            TaskClaimed reclaimed = TaskDecider.Claim(task, nodeId, ownerId, followUpRunId, Now);
+            session.Events.Append(taskId, reclaimed);
+            session.Events.StartStream<RunAggregate>(followUpRunId,
+                new RunDispatched(
+                    followUpRunId, taskId, nodeId, ownerId, task.LeaseGeneration + 1, DomainId.New(),
+                    "/tmp/worktree-followup", "task/gets-reopened-into-archive", ExecutorMode.Subscription, Now));
+            await session.SaveChangesAsync();
+        }
+
+        await NewEngine(store).PollOnceAsync(CancellationToken.None);
+
+        LiveTaskDirectories(tasksRoot).Should().BeEmpty(
+            "the follow-up run is still live inside tasks/_archive/; moving it out now would race that run");
+        Directory.EnumerateDirectories(archiveRoot).Should().ContainSingle(
+            "the task's directory must stay put, runs/ and all, until the follow-up run stops being live");
+
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            session.Events.Append(followUpRunId, new RunFailed(followUpRunId, "agent process died", Now));
+            await session.SaveChangesAsync();
+        }
+
+        await NewEngine(store).PollOnceAsync(CancellationToken.None);
+
+        Directory.EnumerateDirectories(archiveRoot).Should().BeEmpty(
+            "once the run stops being live, the reopened task is free to move back to the top level");
+        LiveTaskDirectories(tasksRoot).Should().ContainSingle(
+            "the reopened task must move back out now that nothing is still writing to its directory");
+    }
+
+    [Fact]
     public async Task A_task_rendered_live_before_it_closes_out_still_archives_once_it_does()
     {
         // Regression, adversarial review cycle 1: every real task renders live under tasks/

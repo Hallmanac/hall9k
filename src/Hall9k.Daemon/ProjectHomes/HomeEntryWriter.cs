@@ -121,10 +121,12 @@ public static class HomeEntryWriter
     /// pass only marks rather than folds in. Resolving against whatever is already on disk instead
     /// keeps every caller pointed at the one directory that actually exists until the sweep itself
     /// performs the move.
-    /// </summary>
+    /// <para>
     /// <paramref name="alternateRoots"/> extends the same search to other roots, exactly as
     /// <see cref="Write"/>'s own does — a caller resolving a task's current directory has to find
     /// it whether it is presently live or archived (<c>RunLauncher</c>, 2026-08-25, backlog 51).
+    /// </para>
+    /// </summary>
     public static string? FindExistingDirectory(
         string rootDirectory, Guid id, IReadOnlyList<string>? alternateRoots = null) =>
         FindStale(rootDirectory, excludingName: null, id, alternateRoots);
