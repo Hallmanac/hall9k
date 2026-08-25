@@ -94,22 +94,9 @@ public static class Hall9kDatabase
     }
 
     /// <summary>
-    /// True only when <see cref="ConfigFile"/> exists, parses, and actually carries a
-    /// non-empty <c>connectionString</c> key — never merely that the file exists. A config
-    /// file this same install writes for an unrelated reason (<c>h9k config set</c>'s
-    /// operating-settings write, which creates the file with only a <c>"hall9k"</c> section
-    /// and no <c>connectionString</c> at all) must not be mistaken for one that supplies a
-    /// connection string, or a caller deciding whether an autostarted daemon has anywhere
-    /// else to find one would stop warning about the one case it exists to catch.
-    /// </summary>
-    public static bool ConfigFileSuppliesConnectionString() =>
-        ConnectionStringStateInConfigFile() == ConfigFileConnectionStringState.Supplied;
-
-    /// <summary>
-    /// The full three-way state <see cref="ConfigFileSuppliesConnectionString"/> collapses to a
-    /// bool — missing, malformed, and present-without-the-key each want their own remedy text,
-    /// so a caller writing a warning needs to tell them apart rather than reporting all three as
-    /// "does not exist".
+    /// Missing, malformed, and present-without-the-key each want their own remedy text (cycle-6
+    /// review), so a caller writing a warning needs to tell them apart rather than reporting all
+    /// three as "does not exist".
     /// </summary>
     public static ConfigFileConnectionStringState ConnectionStringStateInConfigFile()
     {
