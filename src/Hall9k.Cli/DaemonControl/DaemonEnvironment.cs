@@ -65,19 +65,25 @@ public static class DaemonEnvironment
     }
 
     private static bool Resolves(string tool, IReadOnlyList<string> searchDirectories) => Path.IsPathRooted(tool)
-        ? File.Exists(tool)
+        ? ResolvesAsGiven(tool)
         : searchDirectories.Any(directory => ResolvesInDirectory(directory, tool));
 
+    private static bool ResolvesInDirectory(string directory, string tool) =>
+        ResolvesAsGiven(Path.Combine(directory, tool));
+
     /// <summary>
-    /// A bare name resolves the way the platform's own loader resolves it. On Windows,
-    /// <c>gh</c>, <c>git</c>, and the default <c>claude</c> are never literally named that
-    /// on disk — CreateProcess (and cmd.exe) find them by trying each <c>PATHEXT</c>
-    /// extension (<c>gh.exe</c>, <c>claude.cmd</c>). Checking only the bare name would
-    /// report a correctly-installed tool as missing on every Windows registration.
+    /// A name resolves the way the platform's own loader resolves it, whether it is a bare
+    /// name being tried against every search directory or a rooted path a variable like
+    /// <c>HALL9K_CLAUDE_PATH</c> pinned directly. On Windows, <c>gh</c>, <c>git</c>, and the
+    /// default <c>claude</c> — and a pinned path naming any of them without an extension,
+    /// which is how the same path reads on macOS — are never literally named that on disk:
+    /// CreateProcess (and cmd.exe) find them by trying each <c>PATHEXT</c> extension
+    /// (<c>gh.exe</c>, <c>claude.cmd</c>). Checking only the exact name would report a
+    /// correctly-installed tool as missing on every Windows registration.
     /// </summary>
-    private static bool ResolvesInDirectory(string directory, string tool)
+    private static bool ResolvesAsGiven(string path)
     {
-        if (File.Exists(Path.Combine(directory, tool)))
+        if (File.Exists(path))
         {
             return true;
         }
@@ -89,7 +95,7 @@ public static class DaemonEnvironment
 
         string[] extensions = (Environment.GetEnvironmentVariable("PATHEXT") ?? ".COM;.EXE;.BAT;.CMD")
             .Split(';', StringSplitOptions.RemoveEmptyEntries);
-        return extensions.Any(extension => File.Exists(Path.Combine(directory, tool + extension)));
+        return extensions.Any(extension => File.Exists(path + extension));
     }
 
     private static string Value(IReadOnlyList<KeyValuePair<string, string>> environment, string name) =>

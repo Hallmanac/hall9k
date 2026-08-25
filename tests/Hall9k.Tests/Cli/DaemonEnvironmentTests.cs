@@ -100,4 +100,37 @@ public sealed class DaemonEnvironmentTests
             Directory.Delete(searchDirectory, true);
         }
     }
+
+    [Fact]
+    public void On_windows_a_pinned_rooted_path_without_an_extension_resolves_through_pathext()
+    {
+        // The rooted-path branch (a pinned HALL9K_CLAUDE_PATH) needs the same PATHEXT
+        // fallback as the bare-name branch above: an operator points HALL9K_CLAUDE_PATH at
+        // an extensionless path the way it reads on macOS and in the docs, cmd.exe resolves
+        // it fine at spawn time, but a literal File.Exists on the rooted path alone would
+        // report it unresolvable and send the operator to fix a configuration that already
+        // works.
+        if (!OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        string pinned = Path.Combine(
+            Directory.CreateTempSubdirectory("h9k-pathext-rooted-").FullName, "claude");
+        File.WriteAllText(pinned + ".cmd", string.Empty);
+        try
+        {
+            IReadOnlyList<string> unresolved = DaemonEnvironment.UnresolvedTools(
+            [
+                new KeyValuePair<string, string>("PATH", "C:\\nowhere"),
+                new KeyValuePair<string, string>("HALL9K_CLAUDE_PATH", pinned),
+            ]);
+
+            unresolved.Should().NotContain("claude");
+        }
+        finally
+        {
+            Directory.Delete(Path.GetDirectoryName(pinned)!, true);
+        }
+    }
 }
