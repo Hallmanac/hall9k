@@ -40,9 +40,18 @@ public static class RunPaths
     /// </summary>
     public static string ResolveDirectory(ProjectHome home, string taskDirectoryName, Guid runId) =>
         home.HasValue
-            ? Path.Combine(
-                ProjectHomePaths.TaskDirectory(home.Value, taskDirectoryName), "runs", runId.ToString())
+            ? ResolveDirectoryUnderTaskDirectory(ProjectHomePaths.TaskDirectory(home.Value, taskDirectoryName), runId)
             : GlobalDirectory(runId);
+
+    /// <summary>
+    /// Where a run's directory goes underneath a task directory that the caller has already
+    /// resolved on disk — the <c>runs/&lt;run-id&gt;/</c> segment named here rather than at each
+    /// call site, so the layout stays defined in one place even when the caller found the task
+    /// directory itself (a live-vs-archived search, for instance) rather than deriving it from
+    /// <see cref="ProjectHomePaths.TaskDirectory"/>.
+    /// </summary>
+    public static string ResolveDirectoryUnderTaskDirectory(string taskDirectory, Guid runId) =>
+        Path.Combine(taskDirectory, "runs", runId.ToString());
 
     /// <summary>
     /// Where a run's directory actually sits on disk right now, when that may no longer be
