@@ -337,9 +337,22 @@ public sealed class InstallCommand : Hall9kAsyncCommand<InstallCommand.Settings>
         foreach (string file in Directory.EnumerateFiles(staging, "*", SearchOption.AllDirectories))
         {
             cancellationToken.ThrowIfCancellationRequested();
-            if (IsDevelopmentSettingsFile(Path.GetFileName(file)))
+            if (!IsDevelopmentSettingsFile(Path.GetFileName(file)))
+            {
+                continue;
+            }
+
+            try
             {
                 File.Delete(file);
+            }
+            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+            {
+                throw new InvalidOperationException(
+                    $"Could not remove {file} from staging before it could reach {DaemonRuntime.BinDirectory} — "
+                        + "something else has it open (an antivirus scan, an indexer). Close whatever holds it "
+                        + "and retry; nothing has been swapped into place yet.",
+                    exception);
             }
         }
     }
