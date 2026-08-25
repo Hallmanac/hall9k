@@ -268,6 +268,13 @@ public static class SkillSeeder
     /// whether the content it wrote was still there. The hash closes that gap — a name is safe to
     /// overwrite only while the directory still matches what was recorded for it.
     /// </para>
+    /// <para>
+    /// A manifest that exists but could not be read this pass (a Windows antivirus scan or an
+    /// editor holding it open) is not the same fact as no manifest ever existing, and this method
+    /// does nothing at all when it happens rather than guess: see
+    /// <see cref="SkillPublication.ManifestUnconfirmed"/> for why proceeding on an empty reading
+    /// of a manifest that is not actually empty is unsafe in both directions.
+    /// </para>
     /// </summary>
     public static SkillPublication PublishCanonical(string sourceDirectory)
     {
@@ -275,6 +282,19 @@ public static class SkillSeeder
         Directory.CreateDirectory(canonical);
 
         (bool manifestConfirmed, IReadOnlyDictionary<string, string> previously) = TryReadManifest();
+        if (!manifestConfirmed)
+        {
+            // Without the manifest, an already-present shipped skill cannot be told apart from an
+            // operator's own file of the same name — every existing directory would misclassify
+            // into leftAlone, telling the operator their own work is shadowing the platform's when
+            // no such thing was observed. Worse, a skill genuinely new to this source would copy in
+            // cleanly (no existing directory to be ambiguous about) but then have nowhere to record
+            // its hash, since the manifest write below is skipped whenever the read failed — making
+            // it indistinguishable from an operator override on every install from here on, forever.
+            // Doing nothing this pass is the only option that stays honest and reversible: the next
+            // install, once whatever is holding the manifest lets go, publishes normally.
+            return new SkillPublication([], [], [], ManifestUnconfirmed: true);
+        }
 
         List<string> published = [];
         List<string> leftAlone = [];
@@ -330,20 +350,9 @@ public static class SkillSeeder
             retired.Add(name);
         }
 
-        if (manifestConfirmed)
-        {
-            File.WriteAllLines(
-                SkillLibraryPaths.PublishedManifest,
-                published.Select(name => $"{name}\t{hashes[name]}"));
-        }
-        // else: the manifest exists but could not be read this pass (a Windows antivirus scan
-        // or editor holding it) — not the same fact as "no manifest ever existed". previously
-        // above already read as empty for that case, the safe direction for classification (an
-        // already-published skill lands in leftAlone rather than being overwritten), but writing
-        // that empty state back out would destroy the real manifest this pass just failed to
-        // read, permanently reclassifying every install-owned skill as an operator override the
-        // next time this runs. Leaving the file untouched means the next attempt, once the read
-        // succeeds, recovers the record instead of finding it already gone.
+        File.WriteAllLines(
+            SkillLibraryPaths.PublishedManifest,
+            published.Select(name => $"{name}\t{hashes[name]}"));
 
         return new SkillPublication(published, retired, leftAlone);
     }
