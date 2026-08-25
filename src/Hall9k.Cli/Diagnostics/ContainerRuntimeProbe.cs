@@ -111,16 +111,17 @@ public static class ContainerRuntimeProbe
     /// what it actually mounts first and checks that name instead — see that method's own
     /// remarks for why the bare literal cannot be trusted on its own.
     /// <para>
-    /// A failed <c>docker volume ls</c> (nonzero exit — the daemon going away between an earlier
-    /// call and this one, say) is not the same fact as "no such volume", and answering
-    /// <see langword="false"/> for it would read exactly like a confirmed absence to a caller
-    /// that treats "does not exist" as "already gone, nothing left to remove". Answering
-    /// <see langword="true"/> instead is the fail-safe direction: it sends a purge on to actually
-    /// attempt (and, if docker is really unreachable, honestly fail) the removal, rather than
-    /// skip it and report a volume destroyed that nobody observed being destroyed.
+    /// <c>Confirmed</c> is <see langword="false"/> when <c>docker volume ls</c> itself failed
+    /// (nonzero exit — the daemon going away between an earlier call and this one, say), which is
+    /// not the same fact as "no such volume": collapsing the two let a caller read a failed
+    /// <c>docker volume ls</c> as a confirmed fact — "the legacy volume exists" for one caller,
+    /// "the volume is already gone" for another — and report an outcome nobody actually observed,
+    /// the identical stdout-versus-exit-code confusion <see cref="DataVolumeNameAsync"/> is
+    /// hardened against. A caller sees <c>Confirmed: false, Exists: false</c> for that case, and
+    /// must not read the unconfirmed <see langword="false"/> as an observed absence.
     /// </para>
     /// </summary>
-    public static async Task<bool> VolumeExistsAsync(
+    public static async Task<(bool Confirmed, bool Exists)> VolumeExistsAsync(
         ProcessRunner runner, CancellationToken cancellationToken, string? volumeName = null)
     {
         ProcessResult result = await runner(
@@ -128,7 +129,36 @@ public static class ContainerRuntimeProbe
             ["volume", "ls", "--filter", $"name=^{volumeName ?? PostgresRuntime.VolumeName}$", "--format", "{{.Name}}"],
             Directory.GetCurrentDirectory(),
             cancellationToken);
-        return result.ExitCode != 0 || result.StandardOutput.Trim().Length > 0;
+        return result.ExitCode != 0 ? (false, false) : (true, result.StandardOutput.Trim().Length > 0);
+    }
+
+    /// <summary>
+    /// Every docker volume whose name contains <c>hall9k-pgdata</c> — deliberately unanchored and
+    /// not limited to the two literals <see cref="PostgresRuntime.VolumeName"/> and
+    /// <see cref="PostgresRuntime.LegacyVolumeName"/> enumerate, so it also catches a
+    /// checkout-dirname-prefixed volume left behind by a pre-pin <c>docker compose up -d</c> run
+    /// from the repository's own <c>docker-compose.yml</c> (docs/operations.md's Provisioning
+    /// section: <c>&lt;checkout-dirname&gt;_hall9k-pgdata</c>), which neither literal names.
+    /// <c>Confirmed</c> is <see langword="false"/> when <c>docker volume ls</c> itself failed —
+    /// not the same fact as "no matching volume", the identical distinction
+    /// <see cref="VolumeExistsAsync"/> carries.
+    /// </summary>
+    public static async Task<(bool Confirmed, IReadOnlyList<string> Names)> FindDataVolumesAsync(
+        ProcessRunner runner, CancellationToken cancellationToken)
+    {
+        ProcessResult result = await runner(
+            "docker",
+            ["volume", "ls", "--filter", "name=hall9k-pgdata", "--format", "{{.Name}}"],
+            Directory.GetCurrentDirectory(),
+            cancellationToken);
+        if (result.ExitCode != 0)
+        {
+            return (false, []);
+        }
+
+        string[] names = result.StandardOutput
+            .Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        return (true, names);
     }
 
     /// <summary>Removes the named data volume — the other half of <c>h9k uninstall
@@ -157,9 +187,11 @@ public static class ContainerRuntimeProbe
     /// that happens to carry the guessed literal, such as the Aspire dev loop's own
     /// pre-migration <c>hall9k-pgdata</c> (see <see cref="Hall9k.Domain.Infrastructure.Storage.PostgresRuntime.VolumeName"/>'s
     /// own remarks). Returns <see langword="null"/> when the container has no named volume
-    /// mount to report (absent, or an anonymous-volume/bind-mount container), which callers
-    /// must read as "there is no named volume to observe here" — never as licence to fall back
-    /// to the pinned literal, which is exactly the guess this method exists to avoid.
+    /// mount to report — a bind mount, or no volume mount at all; an anonymous volume does not
+    /// land here, since <c>docker inspect</c> reports one under its generated hex name the same
+    /// as any named volume — which callers must read as "there is no named volume to observe
+    /// here" — never as licence to fall back to the pinned literal, which is exactly the guess
+    /// this method exists to avoid.
     /// <para>
     /// <c>Confirmed</c> is <see langword="false"/> when <c>docker inspect</c> itself failed
     /// (nonzero exit — the daemon dropping the connection between an earlier call and this one,

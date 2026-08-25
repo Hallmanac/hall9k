@@ -611,7 +611,7 @@ public sealed class UninstallCommandTests : IDisposable
         RecordingProcessRunner runner = null!;
         runner = new RecordingProcessRunner(() => runner.Calls[^1].Arguments switch
         {
-            ["volume", "ls", "--filter", "name=^postgres_hall9k-pgdata$", ..] => new ProcessResult(0, "postgres_hall9k-pgdata\n", string.Empty),
+            ["volume", "ls", "--filter", "name=hall9k-pgdata", ..] => new ProcessResult(0, "postgres_hall9k-pgdata\n", string.Empty),
             _ => new ProcessResult(0, string.Empty, string.Empty),
         });
 
@@ -624,6 +624,52 @@ public sealed class UninstallCommandTests : IDisposable
             "there is no container to remove, so docker rm is never asked to fail against one");
         runner.Calls.Should().NotContain(call => call.Arguments.SequenceEqual(new[] { "volume", "rm", "postgres_hall9k-pgdata" }),
             "never destroy a volume whose ownership was never observed");
+    }
+
+    [Fact]
+    public async Task An_absent_container_with_a_checkout_dirname_prefixed_volume_is_found_not_declared_absent()
+    {
+        // A contributor's own pre-pin `docker compose up -d` from a repository checkout (before
+        // this branch's compose name: pin existed) leaves Compose's project-name derivation
+        // in the volume's name too — typically <checkout-dirname>_hall9k-pgdata, which is
+        // neither PostgresRuntime.VolumeName nor PostgresRuntime.LegacyVolumeName. Enumerating
+        // only those two literals read this volume's every task, run, and idea as "nothing
+        // here" and reported the machine as already data-free.
+        RecordingProcessRunner runner = null!;
+        runner = new RecordingProcessRunner(() => runner.Calls[^1].Arguments switch
+        {
+            ["volume", "ls", "--filter", "name=hall9k-pgdata", ..] => new ProcessResult(0, "hall9k_platform_hall9k-pgdata\n", string.Empty),
+            _ => new ProcessResult(0, string.Empty, string.Empty),
+        });
+
+        (bool ok, UninstallCommand.DataTierOutcome outcome) = await UninstallCommand.HandleDataTierAsync(purgeData: true, runner.Runner, CancellationToken.None);
+
+        ok.Should().BeFalse("ownership of the checkout-dirname-prefixed volume cannot be confirmed with no container to inspect");
+        outcome.Should().Be(UninstallCommand.DataTierOutcome.PurgeUnconfirmedVolume,
+            "the volume is real and was found — it must not be reported as nothing to purge");
+        runner.Calls.Should().NotContain(call => call.Arguments.SequenceEqual(new[] { "volume", "rm", "hall9k_platform_hall9k-pgdata" }),
+            "never destroy a volume whose ownership was never observed");
+    }
+
+    [Fact]
+    public async Task An_absent_container_whose_volume_check_itself_fails_is_reported_as_unconfirmed_not_absent()
+    {
+        // A failed `docker volume ls` is not the same fact as "no matching volume" — reading it
+        // that way would report a purge complete ("nothing to purge") when it was never actually
+        // observed.
+        RecordingProcessRunner runner = null!;
+        runner = new RecordingProcessRunner(() => runner.Calls[^1].Arguments switch
+        {
+            ["info", ..] => new ProcessResult(0, string.Empty, string.Empty),
+            ["ps", ..] => new ProcessResult(0, string.Empty, string.Empty),
+            ["volume", "ls", ..] => new ProcessResult(1, string.Empty, "Cannot connect to the Docker daemon"),
+            _ => new ProcessResult(0, string.Empty, string.Empty),
+        });
+
+        (bool ok, UninstallCommand.DataTierOutcome outcome) = await UninstallCommand.HandleDataTierAsync(purgeData: true, runner.Runner, CancellationToken.None);
+
+        ok.Should().BeFalse("the volume check itself failed — nothing was confirmed either way");
+        outcome.Should().Be(UninstallCommand.DataTierOutcome.PurgeIncomplete);
     }
 
     [Fact]

@@ -372,9 +372,10 @@ public sealed class UninstallCommand : Hall9kAsyncCommand<UninstallCommand.Setti
                 $"[red]Could not purge[/]: {reason.EscapeMarkup()}, so {PostgresRuntime.ContainerName} could not "
                 + "be reached and which volume it actually mounts cannot be confirmed — a container from before "
                 + $"this branch's compose name: pin, or the pre-migration Aspire dev loop, can carry the "
-                + $"{PostgresRuntime.VolumeName} literal without being this install's volume at all. Start "
-                + "Docker, then run h9k uninstall --purge-data again so the real volume can be confirmed before "
-                + "anything is removed.");
+                + $"{PostgresRuntime.VolumeName} literal without being this install's volume at all. Nothing in "
+                + "Docker was touched. h9kd was already stopped and its autostart registration (if any) already "
+                + "unregistered before this run reached here, though — bin/, the PATH link, and the rest of "
+                + "~/.hall9k were left alone. Start Docker, then run h9k uninstall --purge-data again to finish.");
             return (false, outcome);
         }
 
@@ -386,37 +387,35 @@ public sealed class UninstallCommand : Hall9kAsyncCommand<UninstallCommand.Setti
             {
                 // No container left to docker inspect, so which volume is really this install's
                 // cannot be observed — only guessed at. A container created before this
-                // branch's compose name: pin (or brought up from an unpinned checkout) mounts a
-                // Compose-project-prefixed volume — typically PostgresRuntime.LegacyVolumeName —
-                // not the bare PostgresRuntime.VolumeName literal, and that literal is also the
-                // exact string a pre-migration Aspire dev loop names its own volume
-                // (PostgresRuntime.VolumeName's own remarks). Checking only the pinned literal
-                // would read the ordinary "container removed with docker compose down, volume
-                // kept" sequence on a pre-pin install as "nothing here at all" and declare the
-                // machine data-free while the real volume sits untouched under the other name.
+                // branch's compose name: pin (or brought up from an unpinned checkout, where
+                // Compose derives the project name from the checkout's own directory name) mounts
+                // a Compose-project-prefixed volume instead of the bare PostgresRuntime.VolumeName
+                // literal, and that literal is also the exact string a pre-migration Aspire dev
+                // loop names its own volume (PostgresRuntime.VolumeName's own remarks). Searching
+                // by substring rather than enumerating PostgresRuntime.VolumeName and
+                // PostgresRuntime.LegacyVolumeName as the only two possibilities also catches the
+                // checkout-dirname-prefixed name docs/operations.md's Provisioning section
+                // documents (e.g. hall9k_platform_hall9k-pgdata), which neither literal names.
                 // Guessing which one to destroy is still refused either way — this only widens
                 // what counts as "something to guess wrong about".
-                bool literalVolumeExists = await ContainerRuntimeProbe.VolumeExistsAsync(
-                    runner, cancellationToken, PostgresRuntime.VolumeName);
-                bool legacyVolumeExists = await ContainerRuntimeProbe.VolumeExistsAsync(
-                    runner, cancellationToken, PostgresRuntime.LegacyVolumeName);
-                if (!literalVolumeExists && !legacyVolumeExists)
+                (bool volumesConfirmed, IReadOnlyList<string> foundVolumes) =
+                    await ContainerRuntimeProbe.FindDataVolumesAsync(runner, cancellationToken);
+                if (!volumesConfirmed)
                 {
                     AnsiConsole.MarkupLine(
-                        $"[dim]No {PostgresRuntime.ContainerName} container and no {PostgresRuntime.VolumeName} "
-                        + $"or {PostgresRuntime.LegacyVolumeName} volume — nothing to purge.[/]");
+                        $"[yellow]Purge incomplete[/] — {PostgresRuntime.ContainerName} is absent, and checking "
+                        + "Docker for a data volume left behind (docker volume ls) itself failed, so nothing was "
+                        + "removed. Retry once Docker is answering reliably, or check yourself: docker volume ls "
+                        + "--filter name=hall9k-pgdata");
+                    return (false, DataTierOutcome.PurgeIncomplete);
+                }
+
+                if (foundVolumes.Count == 0)
+                {
+                    AnsiConsole.MarkupLine(
+                        $"[dim]No {PostgresRuntime.ContainerName} container and no volume matching "
+                        + "hall9k-pgdata were found — nothing to purge.[/]");
                     return (true, DataTierOutcome.ContainerAbsent);
-                }
-
-                List<string> foundVolumes = [];
-                if (literalVolumeExists)
-                {
-                    foundVolumes.Add(PostgresRuntime.VolumeName);
-                }
-
-                if (legacyVolumeExists)
-                {
-                    foundVolumes.Add(PostgresRuntime.LegacyVolumeName);
                 }
 
                 string removalCommands = string.Join("; ", foundVolumes.Select(name => $"docker volume rm {name}"));
@@ -424,18 +423,19 @@ public sealed class UninstallCommand : Hall9kAsyncCommand<UninstallCommand.Setti
                     $"[yellow]Purge incomplete[/] — {PostgresRuntime.ContainerName} is absent, so which volume "
                     + $"is really this install's cannot be confirmed by inspecting it. A volume named "
                     + $"{string.Join(" and ", foundVolumes)} exists, but it could belong to something else "
-                    + "entirely (a pre-pin installed-mode Postgres, or the pre-migration Aspire dev loop, can "
-                    + "carry either literal without being this install's volume at all), so it was left "
-                    + $"untouched rather than guessed at and destroyed. If you are sure it is this install's, "
-                    + $"remove it by hand: {removalCommands}");
+                    + "entirely (a pre-pin installed-mode Postgres, a pre-pin checkout-rooted docker compose run, "
+                    + "or the pre-migration Aspire dev loop, can all carry a name like this without being this "
+                    + $"install's volume at all), so it was left untouched rather than guessed at and destroyed. "
+                    + $"If you are sure it is this install's, remove it by hand: {removalCommands}");
                 return (false, DataTierOutcome.PurgeUnconfirmedVolume);
             }
 
             // Asked of the live container rather than assumed: a container brought up with a
-            // bind mount, or an anonymous volume, mounts nothing docker inspect reports a name
-            // for, and falling back to the bare PostgresRuntime.VolumeName literal here would be
-            // the identical guess the absent-container branch above refuses to make — this
-            // container is present, but that does not make the literal its volume.
+            // bind mount, or no volume mount at all, mounts nothing docker inspect reports a
+            // name for (an anonymous volume does get reported, under its generated hex name), and
+            // falling back to the bare PostgresRuntime.VolumeName literal here would be the
+            // identical guess the absent-container branch above refuses to make — this container
+            // is present, but that does not make the literal its volume.
             (bool volumeConfirmed, string? volumeName) = await ContainerRuntimeProbe.DataVolumeNameAsync(runner, cancellationToken);
             if (!volumeConfirmed)
             {
@@ -456,7 +456,7 @@ public sealed class UninstallCommand : Hall9kAsyncCommand<UninstallCommand.Setti
             {
                 AnsiConsole.MarkupLine(containerRemoved
                     ? $"[red]Purged[/]: the {PostgresRuntime.ContainerName} container is gone. It had no named "
-                        + "data volume mounted (a bind mount, or an anonymous volume) for this to observe and "
+                        + "data volume mounted (a bind mount, or no volume mount at all) for this to observe and "
                         + "destroy, so nothing there was touched."
                     : $"[yellow]Purge incomplete[/] — the container could not be removed. It also had no named "
                         + "data volume mounted for this to observe and destroy. Finish by hand: "
@@ -464,7 +464,9 @@ public sealed class UninstallCommand : Hall9kAsyncCommand<UninstallCommand.Setti
                 return (containerRemoved, containerRemoved ? DataTierOutcome.PurgedContainerOnly : DataTierOutcome.PurgeIncomplete);
             }
 
-            bool volumeRemoved = !await ContainerRuntimeProbe.VolumeExistsAsync(runner, cancellationToken, volumeName)
+            (bool volumeCheckConfirmed, bool volumeStillExists) = await ContainerRuntimeProbe.VolumeExistsAsync(
+                runner, cancellationToken, volumeName);
+            bool volumeRemoved = (volumeCheckConfirmed && !volumeStillExists)
                 || await ContainerRuntimeProbe.RemoveVolumeAsync(runner, cancellationToken, volumeName);
             if (containerRemoved && volumeRemoved)
             {
@@ -942,7 +944,10 @@ public sealed class UninstallCommand : Hall9kAsyncCommand<UninstallCommand.Setti
                 "[yellow]Not removed:[/] the purge above could not be completed, so bin/, the PATH link, and "
                     + "everything else h9k install wrote under ~/.hall9k were left exactly as they are — "
                     + "removing them here would strand the remedy above with no h9k left on this machine to "
-                    + "run it with. Follow that remedy, then run h9k uninstall --purge-data again.",
+                    + "run it with. The daemon was already stopped and its autostart registration (if any) "
+                    + "already unregistered before that purge attempt ran, though, so start-at-login is gone "
+                    + "even though this run stopped short. Follow the remedy above, then run h9k uninstall "
+                    + "--purge-data again.",
             true =>
                 "[dim]Removed from this machine:[/] the daemon (if it was running), its autostart registration "
                     + "(if any), the PATH link, and everything h9k install itself wrote under ~/.hall9k — bin/, "
