@@ -109,8 +109,15 @@ public sealed class UninstallCommand : Hall9kAsyncCommand<UninstallCommand.Setti
                 Environment.GetFolderPath(Environment.SpecialFolder.UserProfile));
 
         string home = PlatformPaths.Home;
-        List<string> stillPresent = [.. RemoveInstallOwnedEntries(InstallOwnedEntries(home))];
+
+        // Skills first, deliberately: RemovePublished hashes file contents, which on a
+        // self-contained install can still need to lazily load an assembly this process has not
+        // touched yet — one that lives in bin/, the very directory RemoveInstallOwnedEntries is
+        // about to delete. Hashing before bin/ goes means every assembly this process could ever
+        // need is loaded (or at least still on disk to load) while bin/ still exists.
+        List<string> stillPresent = [];
         IReadOnlyList<string> skillsRemoved = SkillSeeder.RemovePublished(stillPresent);
+        stillPresent.AddRange(RemoveInstallOwnedEntries(InstallOwnedEntries(home)));
         bool homeFullyRemoved = stillPresent.Count == 0 && pathLinkRemoved;
 
         ReportHomeRemoval(home, stillPresent, skillsRemoved);
