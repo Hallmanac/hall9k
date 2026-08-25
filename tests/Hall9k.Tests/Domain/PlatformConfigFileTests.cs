@@ -222,6 +222,35 @@ public sealed class PlatformConfigFileTests : IDisposable
     }
 
     /// <summary>
+    /// <c>JsonConfigurationFileParser</c> — what the daemon actually binds this file through —
+    /// parses with comments skipped and trailing commas allowed, so this type's own read (and the
+    /// merge write's duplicate-key check) must accept exactly what it accepts. Origin: the cycle-2
+    /// pre-PR review found the strict default <see cref="JsonDocument.Parse(string)"/> /
+    /// <see cref="JsonNode.Parse(string, JsonNodeOptions?, JsonDocumentOptions)"/> options used
+    /// here rejecting a file the daemon loads fine as "not valid JSON", and refusing to write to it.
+    /// </summary>
+    [Fact]
+    public async Task A_config_file_with_a_comment_and_a_trailing_comma_reads_and_can_be_written_to()
+    {
+        await File.WriteAllTextAsync(
+            Hall9kDatabase.ConfigFile,
+            """
+            {
+                "hall9k": {
+                    "maxConcurrentAgentSessions": 4, // laptop OOMs above 4
+                },
+            }
+            """);
+
+        OperatingSettings settings = await PlatformConfigFile.ReadOperatingSettingsAsync(CancellationToken.None);
+        settings.MaxConcurrentAgentSessions.Should().Be(4);
+
+        Func<Task> write = () => PlatformConfigFile.WriteOperatingSettingsAsync(
+            s => s.DefaultModel = "sonnet", CancellationToken.None);
+        await write.Should().NotThrowAsync("a file the daemon's own parser loads fine must not block a merge write");
+    }
+
+    /// <summary>
     /// Writing must replace whatever key already names the section rather than adding a second,
     /// differently-cased one beside it: <c>JsonConfigurationFileParser</c>'s keys are also
     /// case-insensitive, so two such keys is a duplicate-key <see cref="FormatException"/> at
@@ -277,7 +306,7 @@ public sealed class PlatformConfigFileTests : IDisposable
         ConfigFileReadResult result = await PlatformConfigFile.TryReadOperatingSettingsAsync(CancellationToken.None);
 
         result.Problem.Should().NotBeNull();
-        result.Problem!.DaemonFailsToStart.Should().BeFalse(
+        result.Problem!.Consequence.Should().Be(ConfigFileProblemConsequence.SettingIsIgnored,
             "ConfigurationBinder has no converter for this complex type, so it binds no children rather than throwing");
     }
 
@@ -298,7 +327,7 @@ public sealed class PlatformConfigFileTests : IDisposable
         ConfigFileReadResult result = await PlatformConfigFile.TryReadOperatingSettingsAsync(CancellationToken.None);
 
         result.Problem.Should().NotBeNull();
-        result.Problem!.DaemonFailsToStart.Should().BeTrue(
+        result.Problem!.Consequence.Should().Be(ConfigFileProblemConsequence.DaemonFailsToStart,
             "ConfigurationBinder's own key comparison is case-insensitive too, so this value crashes the daemon "
             + "exactly like the lowercase-keyed shape does");
     }

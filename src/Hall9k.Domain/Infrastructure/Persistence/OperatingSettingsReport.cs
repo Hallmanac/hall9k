@@ -4,23 +4,56 @@ namespace Hall9k.Domain.Infrastructure.Persistence;
 public sealed record RoleModelSetting(string Role, ResolvedSetting<string?> Model);
 
 /// <summary>
-/// Why <see cref="PlatformConfigFile.TryReadOperatingSettingsAsync"/> could not read the "hall9k"
-/// section, and the true consequence to state alongside the accurate <paramref name="Message"/>
-/// domain layer already built: <see cref="DaemonFailsToStart"/> distinguishes a document-level
-/// failure the daemon already skips gracefully at startup (a syntax error, or valid JSON whose
-/// top level is not an object — environment variables and built-in defaults still apply) from a
-/// value-shape failure inside an otherwise well-formed document, which <c>ConfigurationBinder</c>
-/// has no guard for and crashes the daemon on outright.
+/// The true consequence to state alongside a <see cref="ConfigFileProblem.Message"/>, an
+/// unpersisted in-process outcome rather than a value object: a document-level failure the
+/// daemon already skips gracefully at startup (a syntax error, or valid JSON whose top level is
+/// not an object — environment variables and built-in defaults still apply, none of the file's
+/// settings take effect); a value-shape failure on the one leaf <c>ConfigurationBinder</c> has no
+/// guard for, which crashes the daemon outright; and a value-shape failure on any other leaf,
+/// which <c>ConfigurationBinder</c> silently leaves at its default while binding every sibling
+/// key normally — so the file is still in force, just not for that one setting.
 /// </summary>
-public sealed record ConfigFileProblem(string Message, bool DaemonFailsToStart);
+public enum ConfigFileProblemConsequence
+{
+    DaemonSkipsFile,
+    DaemonFailsToStart,
+    SettingIsIgnored,
+}
+
+/// <summary>
+/// Why <see cref="PlatformConfigFile.TryReadOperatingSettingsAsync"/> could not read the "hall9k"
+/// section (or one setting inside it) cleanly, and the true consequence to state alongside the
+/// accurate <paramref name="Message"/> domain layer already built.
+/// </summary>
+public sealed record ConfigFileProblem(string Message, ConfigFileProblemConsequence Consequence);
 
 /// <summary>The outcome of a non-throwing operating-settings read: the settings, or why not.</summary>
 public sealed record ConfigFileReadResult(OperatingSettings Settings, ConfigFileProblem? Problem)
 {
     public static ConfigFileReadResult Ok(OperatingSettings settings) => new(settings, null);
 
-    public static ConfigFileReadResult Failed(string message, bool daemonFailsToStart) =>
-        new(new OperatingSettings(), new ConfigFileProblem(message, daemonFailsToStart));
+    /// <summary>
+    /// A document-level failure: nothing in the file can be trusted, so every setting falls back
+    /// to the environment variable or built-in default.
+    /// </summary>
+    public static ConfigFileReadResult Failed(string message) =>
+        new(new OperatingSettings(), new ConfigFileProblem(message, ConfigFileProblemConsequence.DaemonSkipsFile));
+
+    /// <summary>
+    /// A value-shape failure on the one leaf <c>ConfigurationBinder</c> crashes the daemon on —
+    /// the document parsed, but nothing in it can be trusted to be what the daemon will actually
+    /// run with, because the daemon will not run at all.
+    /// </summary>
+    public static ConfigFileReadResult DaemonCrashes(string message) =>
+        new(new OperatingSettings(), new ConfigFileProblem(message, ConfigFileProblemConsequence.DaemonFailsToStart));
+
+    /// <summary>
+    /// A value-shape failure on any other leaf: <paramref name="settings"/> is the partial
+    /// recovery with the malformed leaf left at its default, mirroring what
+    /// <c>ConfigurationBinder</c> actually binds for every sibling key.
+    /// </summary>
+    public static ConfigFileReadResult SettingIgnored(OperatingSettings settings, string message) =>
+        new(settings, new ConfigFileProblem(message, ConfigFileProblemConsequence.SettingIsIgnored));
 }
 
 /// <summary>

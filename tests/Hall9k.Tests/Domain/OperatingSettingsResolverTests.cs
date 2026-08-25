@@ -126,7 +126,7 @@ public sealed class OperatingSettingsResolverTests : IDisposable
 
         report.ConfigFileProblem.Should().NotBeNull();
         report.ConfigFileProblem!.Message.Should().Contain("is not valid JSON");
-        report.ConfigFileProblem.DaemonFailsToStart.Should().BeFalse(
+        report.ConfigFileProblem.Consequence.Should().Be(ConfigFileProblemConsequence.DaemonSkipsFile,
             "a syntax error is exactly what PlatformConfigFileSource guards and skips gracefully at daemon startup");
         report.MaxConcurrentAgentSessions.Origin.Should().Be(SettingOrigin.Default);
     }
@@ -149,9 +149,33 @@ public sealed class OperatingSettingsResolverTests : IDisposable
 
         report.ConfigFileProblem.Should().NotBeNull();
         report.ConfigFileProblem!.Message.Should().Contain("wrong shape");
-        report.ConfigFileProblem.DaemonFailsToStart.Should().BeTrue(
+        report.ConfigFileProblem.Consequence.Should().Be(ConfigFileProblemConsequence.DaemonFailsToStart,
             "ConfigurationBinder has no guard for a value-shape problem, so the daemon crashes on it rather than falling back");
         report.MaxConcurrentAgentSessions.Origin.Should().Be(SettingOrigin.Default);
+    }
+
+    /// <summary>
+    /// A value-shape mismatch on a leaf other than <c>maxConcurrentAgentSessions</c> does not
+    /// crash <c>ConfigurationBinder</c> — it has no conversion for the complex
+    /// <c>modelByRole</c> object, so it leaves that one property at its default while binding
+    /// every sibling key normally. Origin: the cycle-2 pre-PR review found this reported as
+    /// "the daemon skips the file for this run", discarding the sibling
+    /// <c>maxConcurrentAgentSessions</c> value the daemon would actually still be running with.
+    /// </summary>
+    [Fact]
+    public async Task A_value_shape_mismatch_on_one_setting_still_resolves_its_sibling_settings()
+    {
+        await File.WriteAllTextAsync(
+            Hall9kDatabase.ConfigFile,
+            """{"hall9k": {"maxConcurrentAgentSessions": 6, "modelByRole": "sonnet"}}""");
+
+        OperatingSettingsReport report = await OperatingSettingsResolver.ResolveAsync(CancellationToken.None);
+
+        report.ConfigFileProblem.Should().NotBeNull();
+        report.ConfigFileProblem!.Consequence.Should().Be(ConfigFileProblemConsequence.SettingIsIgnored);
+        report.MaxConcurrentAgentSessions.Value.Should().Be(6,
+            "the daemon's ConfigurationBinder binds this sibling key fine even though modelByRole fails to convert");
+        report.MaxConcurrentAgentSessions.Origin.Should().Be(SettingOrigin.PlatformConfigFile);
     }
 
     /// <summary>
