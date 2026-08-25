@@ -106,8 +106,13 @@ public sealed class ProjectHomeRenderEngine(IDocumentStore store, ILogger<Projec
                         .Where(run => run.State == RunState.Completed)
                         .Select(run => run.TaskId)
                         .ToHashSet();
-                // The current run's own state is still needed, for two other guards: an Abandoned
-                // task's archiving is deferred while its current run is still live (adversarial
+                // The current run's own state is still needed, for three other guards: a Done
+                // task whose current run has no entry here at all was closed out by RunLauncher's
+                // launch-time merge check, which appends TaskCompleted before RunDispatched ever
+                // commits (conformance review, backlog 51) — no run of that generation will ever
+                // carry RunCompleted either, so IsArchived's Done branch treats a missing entry the
+                // same as taskIdsWithCompletedRun or ResolvedReason. An Abandoned task's archiving
+                // is deferred while its current run is still live (adversarial
                 // review, cycle 1: abandoning does not kill whatever process is running for it, no
                 // daemon-side handler reacts to TaskAbandoned, so archiving unconditionally could
                 // move a live run's runs/<run-id>/ out from under itself), and a task in any other
@@ -259,6 +264,21 @@ public sealed class ProjectHomeRenderEngine(IDocumentStore store, ILogger<Projec
     /// set only by that event and never cleared, is exactly that signal.
     /// </para>
     /// <para>
+    /// A third case reaches Done with no <c>RunCompleted</c> and no <c>ResolvedReason</c> either
+    /// (conformance review, backlog 51): <c>RunLauncher.TryCloseOutMergedPullRequestAsync</c>
+    /// discovers, at launch time and before <c>RunDispatched</c> ever commits, that a requeued
+    /// task's pull request is already merged, and appends <c>TaskCompleted</c> directly — the run
+    /// that actually opened the PR is a different, earlier generation, and this generation's
+    /// <c>CurrentRunId</c> (set by the <c>TaskClaimed</c> that preceded this launch) never gets a
+    /// projection of its own, so it can never satisfy <c>CloseoutEngine</c>'s
+    /// <c>task.CurrentRunId == run.Id</c> gate and no run of this generation will ever carry
+    /// <c>RunCompleted</c> either. <c>TaskCompleted</c> is the ONLY producer of Done that can leave
+    /// <c>CurrentRunId</c> naming a run with no projection at all — every other path to Done
+    /// (<c>PullRequestOpener</c>) runs after its own run's <c>RunDispatched</c> already committed —
+    /// so a Done task whose current run has no entry in <c>currentRunStates</c> is proof of exactly
+    /// this launch-time close-out, never a live run this sweep merely has not seen yet.
+    /// </para>
+    /// <para>
     /// Abandoned does not get the same free pass "run or no run" first gave it (adversarial
     /// review, cycle 1): a human abandoning a task with a live agent does not kill that agent —
     /// no daemon-side handler reacts to <c>TaskAbandoned</c> at all — so a task can sit Abandoned
@@ -313,7 +333,9 @@ public sealed class ProjectHomeRenderEngine(IDocumentStore store, ILogger<Projec
     {
         if (task.State == TaskState.Done)
         {
-            return taskIdsWithCompletedRun.Contains(task.Id) || task.ResolvedReason.IsNotBlank();
+            return taskIdsWithCompletedRun.Contains(task.Id)
+                || task.ResolvedReason.IsNotBlank()
+                || (task.CurrentRunId is { } currentRunId && !currentRunStates.ContainsKey(currentRunId));
         }
 
         if (task.State == TaskState.Abandoned)

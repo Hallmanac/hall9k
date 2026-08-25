@@ -487,6 +487,59 @@ public sealed class ProjectHomeRenderEngineTests(PostgresFixture postgres) : ICl
     }
 
     [Fact]
+    public async Task A_task_closed_out_at_launch_time_before_its_own_run_ever_dispatched_still_archives()
+    {
+        // Conformance review, backlog 51: RunLauncher.TryCloseOutMergedPullRequestAsync discovers,
+        // at launch time, that a requeued task's pull request is already merged, and appends
+        // TaskCompleted directly — before RunDispatched ever commits for this generation. No run
+        // of this generation will ever carry RunCompleted (CloseoutEngine's own merge-watching
+        // sweep can never match task.CurrentRunId against a run that was never dispatched), and
+        // ResolvedReason is never set either, so only IsArchived's "current run has no projection
+        // at all" signal proves this is true closeout rather than a run this sweep has not seen
+        // finish yet.
+        using DocumentStore store = NewStore();
+        Guid ownerId = DomainId.New();
+        Guid projectId = DomainId.New();
+        Guid taskId = DomainId.New();
+        Guid nodeId = DomainId.New();
+        const string PullRequestUrl = "https://github.com/example/hall9k/pull/4";
+
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            RegisterProject(session, projectId, ownerId, "hall9k");
+            (TaskAggregate task, object[] lifecycle) = TaskSeed.Start(
+                TaskDecider.Add(
+                    taskId, projectId, "Task closed out at launch time", ["criterion"], TaskType.Feature, null,
+                    null, null, Now, ownerId),
+                ownerId, Now);
+            List<object> taskEvents = [.. lifecycle];
+
+            TaskClaimed claimed = TaskDecider.Claim(task, nodeId, ownerId, DomainId.New(), Now);
+            task.Apply(claimed);
+            taskEvents.Add(claimed);
+
+            // No RunAggregate stream is ever started for this generation's CurrentRunId: the
+            // launch discovered the merge and closed the task out before RunDispatched committed.
+            TaskCompleted completed = TaskDecider.Complete(task, task.CurrentRunId!.Value, PullRequestUrl, Now);
+            task.Apply(completed);
+            taskEvents.Add(completed);
+
+            session.Events.StartStream<TaskAggregate>(taskId, [.. taskEvents]);
+            await session.SaveChangesAsync();
+        }
+
+        ProjectHomeRenderSweepResult sweep = await NewEngine(store).PollOnceAsync(CancellationToken.None);
+
+        string tasksRoot = ProjectHomePaths.TasksDirectory(_home);
+        string archiveRoot = ProjectHomePaths.ArchivedTasksDirectory(_home);
+        LiveTaskDirectories(tasksRoot).Should().BeEmpty(
+            "this generation will never carry RunCompleted for its own CurrentRunId, which never dispatched");
+        string archivedDirectory = Directory.EnumerateDirectories(archiveRoot).Should().ContainSingle().Subject;
+        Path.GetFileName(archivedDirectory).Should().Contain("task-closed-out-at-launch-time");
+        sweep.TasksRendered.Should().Be(1);
+    }
+
+    [Fact]
     public async Task A_done_task_whose_pull_request_is_still_open_stays_at_the_top_level()
     {
         using DocumentStore store = NewStore();
@@ -516,7 +569,18 @@ public sealed class ProjectHomeRenderEngineTests(PostgresFixture postgres) : ICl
             task.Apply(completed);
             taskEvents.Add(completed);
 
+            // The run that actually opened this PR (PullRequestOpener's own path) always has a
+            // RunDispatched on its stream by the time TaskCompleted lands — recording it here is
+            // what tells IsArchived's "current run has no projection at all" signal (the
+            // launch-time merge-closeout case, backlog 51) apart from this ordinary awaiting-review
+            // case.
+            Guid runId = task.CurrentRunId!.Value;
             session.Events.StartStream<TaskAggregate>(taskId, [.. taskEvents]);
+            session.Events.StartStream<RunAggregate>(runId,
+                new RunDispatched(
+                    runId, taskId, nodeId, ownerId, task.LeaseGeneration, DomainId.New(), "/tmp/worktree",
+                    "task/still-open", ExecutorMode.Subscription, Now));
+
             await session.SaveChangesAsync();
         }
 
