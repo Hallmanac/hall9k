@@ -176,7 +176,7 @@ database that was just destroyed — check it before your next `h9k install` if 
 ## Windows notes
 
 The daemon lifecycle works the same way on Windows as on macOS — `h9k daemon start` / `stop` /
-`status`, and `h9k daemon autostart enable` / `disable` — with two Windows-specific mechanics
+`status`, and `h9k daemon autostart enable` / `disable` — with three Windows-specific mechanics
 worth knowing:
 
 - **Autostart is a Task Scheduler logon task, never a Windows service** (Decisions Log #3): a
