@@ -218,7 +218,17 @@ public static class DatabaseDoctor
         {
             case ContainerRuntimeStatus.Running:
                 AnsiConsole.MarkupLine("[dim]A container runtime (Docker) is running.[/]");
-                container = await ContainerRuntimeProbe.Hall9kContainerStatusAsync(runner, cancellationToken);
+                (bool containerConfirmed, PostgresContainerStatus status) =
+                    await ContainerRuntimeProbe.Hall9kContainerStatusAsync(runner, cancellationToken);
+                if (!containerConfirmed)
+                {
+                    AnsiConsole.MarkupLine(
+                        $"[yellow]Could not confirm {PostgresRuntime.ContainerName}'s status[/] — checking "
+                        + "Docker (docker ps -a) itself failed. Retry once Docker is answering reliably.");
+                    break;
+                }
+
+                container = status;
                 if (container == PostgresContainerStatus.Stopped)
                 {
                     AnsiConsole.MarkupLine(
