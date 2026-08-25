@@ -16,11 +16,14 @@
        file still lands in bin/ for the dev loop that is the only place it is ever meant to be
        read; setting it to Never too (an earlier version of this rule did) silently broke that
        loop instead. The glob is recursive (**) so a settings file nested under a subfolder is
-       still caught, matching the recursive checks already applied to a release payload
-       (InstallCommand.IsDevelopmentSettingsFile, the release workflow's `find -iname`). The
-       lowercase second rule matches on case-sensitive filesystems, where MSBuild's Update
-       comparison does not fold case the way Windows does, so a mistakenly-lowercased
-       *.development.* file is still caught. -->
+       still caught. The lowercase second rule matches on case-sensitive filesystems, where
+       MSBuild's Update comparison does not fold case the way Windows does — but it only adds a
+       second literal casing, not full case-insensitivity, so *.DEVELOPMENT.* or any other mixed
+       casing still slips past this file on such a filesystem. InstallCommand.IsDevelopmentSettingsFile
+       and the release workflow's `find -iname` both match case-insensitively and so catch a wider
+       set than this glob does; InstallCommand.RemoveDevelopmentSettingsFiles running over staging
+       is what actually closes that gap for an installed machine, and this file's job is only to
+       keep the common case out of the publish output in the first place. -->
   <ItemGroup>
     <Content Update="**\*.Development.*" CopyToPublishDirectory="Never" />
     <Content Update="**\*.development.*" CopyToPublishDirectory="Never" />

@@ -127,6 +127,15 @@ public sealed class InstallCommand : Hall9kAsyncCommand<InstallCommand.Settings>
         bool linkOntoPath = true,
         CancellationToken cancellationToken = default)
     {
+        // The actual last point before staging becomes ~/.hall9k/bin, run for every caller —
+        // ExecuteAsync's --repo branch included, which stages straight from `dotnet publish`
+        // and never goes through StageFromRelease's own filtering. Directory.Build.targets is
+        // meant to keep a Development settings file out of that publish output in the first
+        // place, but only for a checkout that carries the fix (an older branch, a stray
+        // worktree, a hand-assembled payload will not), so this is the guard that still holds
+        // when it doesn't (origin incident: found sitting in ~/.hall9k/bin, 2026-08-24).
+        RemoveDevelopmentSettingsFiles(staging);
+
         DaemonProcessDescriptor? runningBefore = DaemonProcess.Probe();
 
         // Ships Hall9k's own Postgres definition into ~/.hall9k (Decisions Log #73), so
@@ -255,9 +264,10 @@ public sealed class InstallCommand : Hall9kAsyncCommand<InstallCommand.Settings>
     /// runtimeconfig, native host, satellite-resource subdirectories — but not the skills/
     /// subdirectory, the VERSION marker, or a Development settings file, none of which belongs
     /// in ~/.hall9k/bin) from an extracted release payload into staging. The Development check
-    /// is defense in depth on top of Directory.Build.targets' own publish exclusion: a payload
-    /// built before that fix, or assembled by hand, can still carry the file, and staging is
-    /// the last point before it would land on an installed machine.
+    /// here is belt-and-suspenders on top of the release workflow's own `find -iname` gate,
+    /// which already refuses to ship a payload carrying one; <see cref="RemoveDevelopmentSettingsFiles"/>,
+    /// run on staging itself by <see cref="FinishAsync"/> regardless of which branch fed it, is
+    /// the actual last point before a file would land on an installed machine.
     /// Checked per file rather than left to run to completion: the payload is a
     /// self-contained publish of two apps, tens of megabytes, and the zip-extraction step
     /// immediately before this one earned its own per-entry cancellation check for the same
@@ -309,13 +319,38 @@ public sealed class InstallCommand : Hall9kAsyncCommand<InstallCommand.Settings>
         }
     }
 
-    /// <summary>Mirrors Directory.Build.targets' own <c>**\*.Development.*</c> exclusion at the
-    /// file-name level, using the same glob semantics: a literal <c>.Development.</c> segment
-    /// bounded by dots anywhere in the name — <c>appsettings.Development.json</c> today,
-    /// whatever sibling gets the same treatment tomorrow. A bare <c>Development.json</c> does
-    /// not match the glob (nothing precedes the dot) and is not treated as a Development
-    /// settings file either, keeping this check and Directory.Build.targets' exclusion
-    /// catching exactly the same files.</summary>
+    /// <summary>The staging-level backstop <see cref="FinishAsync"/> runs before every
+    /// <see cref="SwapIntoPlace"/>, regardless of which branch of <see cref="ExecuteAsync"/> (or
+    /// <see cref="UpdateCommand"/>) produced staging — including the local `dotnet publish`
+    /// path, which never goes through <see cref="StageFromRelease"/>'s own filtering and depends
+    /// on Directory.Build.targets alone to keep the file out in the first place. Recursive
+    /// because a nested project directory can carry its own settings file.</summary>
+    internal static void RemoveDevelopmentSettingsFiles(string staging)
+    {
+        if (!Directory.Exists(staging))
+        {
+            return;
+        }
+
+        foreach (string file in Directory.EnumerateFiles(staging, "*", SearchOption.AllDirectories))
+        {
+            if (IsDevelopmentSettingsFile(Path.GetFileName(file)))
+            {
+                File.Delete(file);
+            }
+        }
+    }
+
+    /// <summary>A literal <c>.Development.</c> segment anywhere in the name, matched without
+    /// regard to case — <c>appsettings.Development.json</c> today, whatever sibling gets the
+    /// same treatment tomorrow, and a stray <c>appsettings.DEVELOPMENT.json</c> alongside it. A
+    /// bare <c>Development.json</c> does not match (nothing precedes the dot) and is not treated
+    /// as a Development settings file either. This is deliberately broader than
+    /// Directory.Build.targets' own <c>**\*.Development.*</c> / <c>**\*.development.*</c> globs,
+    /// which only cover those two literal casings (MSBuild's Update comparison does not fold
+    /// case on a case-sensitive filesystem) — the gap between them is why this check, not that
+    /// one, is what backs <see cref="RemoveDevelopmentSettingsFiles"/>, the layer that actually
+    /// sits closest to ~/.hall9k/bin. It matches the release workflow's `find -iname` exactly.</summary>
     private static bool IsDevelopmentSettingsFile(string fileName) =>
         fileName.Contains(".Development.", StringComparison.OrdinalIgnoreCase);
 
