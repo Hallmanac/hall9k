@@ -25,30 +25,42 @@ public sealed class DaemonAutostartEnableCommand : Hall9kAsyncCommand<DaemonAuto
 
         // Autostart runs whatever the registration points at, so it points at the
         // installed binary — a dev-loop build output would go stale or vanish.
-        string installedBinary = Path.Combine(DaemonRuntime.BinDirectory, "h9kd");
+        string installedBinary = Path.Combine(DaemonRuntime.BinDirectory, InstallCommand.BinaryFileName("h9kd"));
         if (!File.Exists(installedBinary))
         {
             await Console.Error.WriteLineAsync(
-                $"Autostart points launchd at the installed binary ({installedBinary}), which does not exist yet. "
-                + "Run h9k install first.");
+                $"Autostart points {autostart.MechanismDescription} at the installed binary ({installedBinary}), "
+                + "which does not exist yet. Run h9k install first.");
             return ExitCodes.Error;
         }
 
-        // launchd starts the daemon from its own minimal environment, so the
-        // registration carries this shell's PATH (and HALL9K_* overrides) into it —
-        // otherwise an autostarted daemon runs but cannot find claude or gh.
+        // The service manager starts the daemon from its own minimal environment (or, on
+        // Windows, from none of it at all — Task Scheduler's Action has no per-job
+        // environment of its own the way launchd's plist does), so the registration
+        // carries this shell's PATH (and HALL9K_* overrides) into it — otherwise an
+        // autostarted daemon runs but cannot find claude or gh.
         IReadOnlyList<KeyValuePair<string, string>> environment = DaemonEnvironment.Capture();
-        await autostart.EnableAsync(installedBinary, environment, cancellationToken);
+        try
+        {
+            await autostart.EnableAsync(installedBinary, environment, cancellationToken);
+        }
+        catch (InvalidOperationException exception)
+        {
+            await Console.Error.WriteLineAsync(
+                $"Autostart enable failed: {autostart.MechanismDescription} was not registered. {exception.Message}");
+            return ExitCodes.Error;
+        }
+
         AnsiConsole.MarkupLineInterpolated(
-            $"[green]Autostart enabled[/]: launchd LaunchAgent registered at {LaunchdDaemonAutostart.PlistPath}.");
+            $"[green]Autostart enabled[/]: {autostart.MechanismDescription} registered.");
         AnsiConsole.MarkupLine(
             "[dim]h9kd starts at your next login and restarts after a crash (never after a clean stop). "
             + "Nothing was started now — h9k daemon start does that. Undo with h9k daemon autostart disable.[/]");
         string recorded = Markup.Escape(string.Join(", ", environment.Select(variable => variable.Key)));
         AnsiConsole.MarkupLine(
-            $"[dim]Recorded this shell's environment ({recorded}) into the plist: launchd would otherwise start "
-            + "the daemon with a PATH that has no claude, gh, or git on it. Re-run this command after moving any "
-            + "of them.[/]");
+            $"[dim]Recorded this shell's environment ({recorded}) into the registration: {autostart.MechanismDescription} "
+            + "would otherwise start the daemon with a PATH that has no claude, gh, or git on it. Re-run this "
+            + "command after moving any of them.[/]");
 
         IReadOnlyList<string> unresolved = DaemonEnvironment.UnresolvedTools(environment);
         if (unresolved.Count > 0)

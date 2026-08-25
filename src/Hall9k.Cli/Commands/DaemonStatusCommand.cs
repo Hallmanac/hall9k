@@ -31,8 +31,8 @@ public sealed class DaemonStatusCommand : Hall9kAsyncCommand<DaemonStatusCommand
         IDaemonAutostart autostart = DaemonAutostart.ForCurrentPlatform();
         AnsiConsole.MarkupLine(autostart switch
         {
-            { IsSupported: false } => "[dim]autostart: not available on this platform yet[/]",
-            { IsEnabled: true } => "[dim]autostart: enabled (launchd LaunchAgent — starts at login; disable with h9k daemon autostart disable)[/]",
+            { IsSupported: false } => $"[dim]autostart: {autostart.MechanismDescription}[/]",
+            { IsEnabled: true } => $"[dim]autostart: enabled ({autostart.MechanismDescription} — starts at login; disable with h9k daemon autostart disable)[/]",
             _ => "[dim]autostart: disabled (opt in with h9k daemon autostart enable)[/]",
         });
 

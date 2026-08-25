@@ -273,7 +273,8 @@ public static class CliCommandTree
             daemon.AddCommand<DaemonStopCommand>("stop")
                 .WithDescription(
                     "Stop h9kd gracefully: in-flight event appends finish, detached agents keep running and are "
-                    + "adopted on the next start. Goes through launchctl when autostart owns the job, so stopped means stopped.")
+                    + "adopted on the next start. Goes through the service manager (launchctl, Task Scheduler) "
+                    + "when autostart owns the job, so stopped means stopped.")
                 .WithExample("daemon", "stop");
             daemon.AddCommand<DaemonStatusCommand>("status")
                 .WithDescription(
@@ -283,15 +284,15 @@ public static class CliCommandTree
             daemon.AddBranch("autostart", autostart =>
             {
                 autostart.SetDescription(
-                    "Start-at-login, strictly opt-in — never implied by install or start (macOS launchd LaunchAgent; "
-                    + "Windows arrives with S1-14)");
+                    "Start-at-login, strictly opt-in — never implied by install or start (macOS launchd "
+                    + "LaunchAgent; Windows Task Scheduler logon task, never a service)");
                 autostart.AddCommand<DaemonAutostartEnableCommand>("enable")
                     .WithDescription(
-                        "Register the launchd LaunchAgent: h9kd starts at login and restarts after a crash — "
-                        + "never after a clean stop, and h9k daemon stop always still means stopped")
+                        "Register the platform's start-at-login mechanism: h9kd starts at login and restarts "
+                        + "after a crash — never after a clean stop, and h9k daemon stop always still means stopped")
                     .WithExample("daemon", "autostart", "enable");
                 autostart.AddCommand<DaemonAutostartDisableCommand>("disable")
-                    .WithDescription("Fully unregister start-at-login (stops a launchd-owned daemon and says so)")
+                    .WithDescription("Fully unregister start-at-login (stops an autostart-owned daemon and says so)")
                     .WithExample("daemon", "autostart", "disable");
             });
         });
