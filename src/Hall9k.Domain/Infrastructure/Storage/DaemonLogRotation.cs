@@ -11,7 +11,10 @@ namespace Hall9k.Domain.Infrastructure.Storage;
 /// subsequent line would land in the previous generation, invisibly. Truncating the same
 /// inode works with the writer instead of behind it — both the CLI's <c>&gt;&gt;</c>
 /// redirect and launchd's StandardOutPath open with O_APPEND, so the next write lands at
-/// the new end of the emptied file.
+/// the new end of the emptied file. Windows has no equivalent for a plain <c>cmd.exe
+/// &gt;&gt;</c> handle (its write position is cached at open time rather than re-resolved
+/// per write), so h9kd replaces its inherited stdout/stderr with true append-only handles
+/// of its own before it logs anything — see <c>WindowsAppendOnlyLog</c> in Hall9k.Daemon.
 /// </para>
 /// <para>
 /// The trade a copy-truncate makes is a narrow window: lines written between the copy

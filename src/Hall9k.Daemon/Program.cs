@@ -28,6 +28,15 @@ if (instance is null)
     return 0;
 }
 
+// Before anything logs a single line: the inherited stdout/stderr h9kd gets from
+// cmd.exe's own `>>` redirect does not survive a live rotation (WindowsAppendOnlyLog),
+// so every line — not just the ones after the first rotation — needs to go through the
+// replacement handle from the start.
+if (OperatingSystem.IsWindows())
+{
+    WindowsAppendOnlyLog.TakeOverConsoleOutput(DaemonRuntime.LogFile);
+}
+
 HostApplicationBuilder builder = Host.CreateApplicationBuilder(args);
 builder.AddServiceDefaults();
 
