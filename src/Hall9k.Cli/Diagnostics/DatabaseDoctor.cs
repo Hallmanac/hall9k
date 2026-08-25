@@ -288,15 +288,28 @@ public static class DatabaseDoctor
         }
         else
         {
-            switch (await ContainerRuntimeProbe.ComposeUpAsync(runner, cancellationToken))
+            (ComposeUpResult composeResult, IReadOnlyList<string> observedLegacyVolumes) =
+                await ContainerRuntimeProbe.ComposeUpAsync(runner, cancellationToken);
+            switch (composeResult)
             {
                 case ComposeUpResult.LegacyVolumeDetected:
+                    string observedVolumes = string.Join(" and ", observedLegacyVolumes);
                     AnsiConsole.MarkupLine(
-                        $"[red]Not starting[/] — a {PostgresRuntime.LegacyVolumeName} volume exists from before "
-                        + $"this install's compose name: pin. Bringing up a fresh container now would create a "
-                        + $"new, empty {PostgresRuntime.VolumeName} volume alongside it rather than reconnect to "
-                        + "your data. See docs/operations.md's Provisioning section to migrate it forward by "
-                        + "hand, then run h9k doctor again.");
+                        $"[red]Not starting[/] — a volume named {observedVolumes.EscapeMarkup()} exists, and the "
+                        + $"pinned {PostgresRuntime.VolumeName} volume this install's compose file points at does "
+                        + "not, so this looks like data from before this install's compose name: pin that has not "
+                        + $"been migrated forward yet. Bringing up a fresh container now would create a new, "
+                        + $"empty {PostgresRuntime.VolumeName} volume alongside it rather than reconnect to your "
+                        + "data. See docs/operations.md's Provisioning section to migrate it forward by hand, "
+                        + "then run h9k doctor again.");
+                    return false;
+                case ComposeUpResult.LegacyVolumeCheckFailed:
+                    AnsiConsole.MarkupLine(
+                        $"[red]Not starting[/] — whether a volume from before this install's compose name: pin "
+                        + "still exists could not be checked (docker volume ls itself failed), and bringing up a "
+                        + $"fresh container now could create a new, empty {PostgresRuntime.VolumeName} volume "
+                        + "beside real data this could not see to warn about. Retry once Docker is answering "
+                        + "reliably.");
                     return false;
                 case ComposeUpResult.Failed:
                     AnsiConsole.MarkupLine(

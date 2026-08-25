@@ -254,23 +254,27 @@ public sealed class ContainerRuntimeProbeTests : IDisposable
             _ => new ProcessResult(1, string.Empty, "no configuration file provided"),
         });
 
-        ComposeUpResult result = await ContainerRuntimeProbe.ComposeUpAsync(runner.Runner, CancellationToken.None);
+        (ComposeUpResult result, IReadOnlyList<string> legacyVolumes) =
+            await ContainerRuntimeProbe.ComposeUpAsync(runner.Runner, CancellationToken.None);
 
         result.Should().Be(ComposeUpResult.Failed);
+        legacyVolumes.Should().BeEmpty();
     }
 
     [Fact]
-    public async Task Compose_up_refuses_rather_than_guessing_when_the_legacy_volume_check_itself_fails()
+    public async Task Compose_up_reports_the_check_failure_distinctly_rather_than_guessing_a_legacy_volume()
     {
-        // VolumeExistsAsync's own fail-safe direction (its remarks): a failed docker volume ls
-        // is not the same fact as "no such volume", so it answers true rather than false. That
-        // same caution has to survive here — a legacy-volume check that could not actually be
-        // answered must not be read as "confirmed absent, safe to create a fresh volume".
+        // FindDataVolumesAsync's Confirmed flag (its remarks): a failed docker volume ls is not
+        // the same fact as "no such volume" or "a legacy volume exists" — a legacy-volume check
+        // that could not actually be answered must not be read as either "confirmed absent, safe
+        // to create a fresh volume" or "confirmed a legacy volume nobody actually observed".
         RecordingProcessRunner runner = RecordingProcessRunner.Failing("Cannot connect to the Docker daemon");
 
-        ComposeUpResult result = await ContainerRuntimeProbe.ComposeUpAsync(runner.Runner, CancellationToken.None);
+        (ComposeUpResult result, IReadOnlyList<string> legacyVolumes) =
+            await ContainerRuntimeProbe.ComposeUpAsync(runner.Runner, CancellationToken.None);
 
-        result.Should().Be(ComposeUpResult.LegacyVolumeDetected);
+        result.Should().Be(ComposeUpResult.LegacyVolumeCheckFailed);
+        legacyVolumes.Should().BeEmpty();
     }
 
     [Fact]
@@ -282,11 +286,47 @@ public sealed class ContainerRuntimeProbeTests : IDisposable
         // this uninstall feature's own pre-PR review found nothing detecting that transition.
         RecordingProcessRunner runner = new(() => new ProcessResult(0, "postgres_hall9k-pgdata\n", string.Empty));
 
-        ComposeUpResult result = await ContainerRuntimeProbe.ComposeUpAsync(runner.Runner, CancellationToken.None);
+        (ComposeUpResult result, IReadOnlyList<string> legacyVolumes) =
+            await ContainerRuntimeProbe.ComposeUpAsync(runner.Runner, CancellationToken.None);
 
         result.Should().Be(ComposeUpResult.LegacyVolumeDetected);
+        legacyVolumes.Should().Equal(["postgres_hall9k-pgdata"], "the message must name what was actually observed, never a hard-coded literal");
         runner.Calls.Should().NotContain(call => call.Arguments.Count > 0 && call.Arguments[0] == "compose",
             "a legacy volume was detected — nothing should be brought up until it is migrated by hand");
+    }
+
+    [Fact]
+    public async Task Compose_up_refuses_for_a_checkout_dirname_prefixed_legacy_volume_too()
+    {
+        // The doctor's guard must catch any Compose-project-prefixed name, not only the single
+        // postgres_hall9k-pgdata literal — a contributor's own checkout can prefix it with the
+        // checkout directory's name instead (e.g. dev_hall9k-pgdata), which this uninstall
+        // feature's own pre-PR review found the single-literal check blind to.
+        RecordingProcessRunner runner = new(() => new ProcessResult(0, "dev_hall9k-pgdata\n", string.Empty));
+
+        (ComposeUpResult result, IReadOnlyList<string> legacyVolumes) =
+            await ContainerRuntimeProbe.ComposeUpAsync(runner.Runner, CancellationToken.None);
+
+        result.Should().Be(ComposeUpResult.LegacyVolumeDetected);
+        legacyVolumes.Should().Equal("dev_hall9k-pgdata");
+    }
+
+    [Fact]
+    public async Task Compose_up_proceeds_once_the_pinned_volume_already_exists_beside_a_legacy_one()
+    {
+        // docs/operations.md's copy-forward recipe copies rather than moves, so the legacy
+        // volume is still there even after an operator has already migrated. Refusing forever
+        // because the copy's source still exists would leave them with no way past this check —
+        // this uninstall feature's own pre-PR review found the migrated case still refused.
+        RecordingProcessRunner runner = new(() => new ProcessResult(
+            0, $"postgres_hall9k-pgdata\n{PostgresRuntime.VolumeName}\n", string.Empty));
+
+        (ComposeUpResult result, IReadOnlyList<string> legacyVolumes) =
+            await ContainerRuntimeProbe.ComposeUpAsync(runner.Runner, CancellationToken.None);
+
+        result.Should().Be(ComposeUpResult.Started,
+            "the pinned volume already exists, so this is a completed migration, not an unmigrated one");
+        runner.Calls.Should().Contain(call => call.Arguments.Count > 0 && call.Arguments[0] == "compose");
     }
 
     [Fact]
@@ -294,9 +334,11 @@ public sealed class ContainerRuntimeProbeTests : IDisposable
     {
         RecordingProcessRunner runner = new(() => new ProcessResult(0, string.Empty, string.Empty));
 
-        ComposeUpResult result = await ContainerRuntimeProbe.ComposeUpAsync(runner.Runner, CancellationToken.None);
+        (ComposeUpResult result, IReadOnlyList<string> legacyVolumes) =
+            await ContainerRuntimeProbe.ComposeUpAsync(runner.Runner, CancellationToken.None);
 
         result.Should().Be(ComposeUpResult.Started);
+        legacyVolumes.Should().BeEmpty();
         runner.Calls.Should().Contain(call => call.Arguments.Count > 0 && call.Arguments[0] == "compose");
     }
 

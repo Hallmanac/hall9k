@@ -224,22 +224,49 @@ public static class ContainerRuntimeProbe
 
     /// <summary>
     /// Stands up the platform-owned Postgres for the first time — writes the shipped compose
-    /// definition if <c>h9k install</c> never got the chance to, then brings it up. Checks for
-    /// <see cref="PostgresRuntime.LegacyVolumeName"/> first and refuses rather than starting:
-    /// this is the one call site that would otherwise create a fresh, empty, pinned
-    /// <see cref="PostgresRuntime.VolumeName"/> volume alongside a pre-pin installation's real
-    /// data without a live container left to <c>docker inspect</c> and warn from (<see
+    /// definition if <c>h9k install</c> never got the chance to, then brings it up. Looks for
+    /// any volume carrying the <see cref="FindDataVolumesAsync"/> substring first and refuses
+    /// rather than starting whenever one exists that is not itself the pinned
+    /// <see cref="PostgresRuntime.VolumeName"/>: this is the one call site that would otherwise
+    /// create a fresh, empty, pinned volume alongside a pre-pin installation's real data without
+    /// a live container left to <c>docker inspect</c> and warn from (<see
     /// cref="PostgresRuntime.LegacyVolumeName"/>'s own remarks) — silently, since a fresh
-    /// <c>docker compose up</c> against an absent container exits 0 either way. The reverse
-    /// direction (a genuinely fresh machine that happens to have some unrelated volume by that
-    /// name) is not a real risk this pins on: nothing but a pre-pin Hall9k install ever wrote
-    /// data to that specific literal in the first place.
+    /// <c>docker compose up</c> against an absent container exits 0 either way. Searching by
+    /// substring rather than the single <see cref="PostgresRuntime.LegacyVolumeName"/> literal
+    /// also catches a checkout-dirname-prefixed name (e.g. <c>dev_hall9k-pgdata</c>) that neither
+    /// that literal nor the pinned one names — the same reasoning
+    /// <see cref="Hall9k.Cli.Commands.UninstallCommand.HandleDataTierAsync"/> already applies to
+    /// its own absent-container purge path.
+    /// <para>
+    /// The refusal itself is lifted once <see cref="PostgresRuntime.VolumeName"/> already exists
+    /// among what was found: an operator who followed docs/operations.md's copy-forward recipe
+    /// (which copies rather than moves, so the old volume is still there afterwards) has already
+    /// migrated, and refusing forever because the source of a completed copy still exists would
+    /// leave them with no way past this check at all. The reverse direction (a genuinely fresh
+    /// machine that happens to have some unrelated volume by a matching name) is not a real risk
+    /// this pins on: nothing but a pre-pin Hall9k install ever wrote data under this substring in
+    /// the first place.
+    /// </para>
     /// </summary>
-    public static async Task<ComposeUpResult> ComposeUpAsync(ProcessRunner runner, CancellationToken cancellationToken)
+    public static async Task<(ComposeUpResult Result, IReadOnlyList<string> ObservedLegacyVolumes)> ComposeUpAsync(
+        ProcessRunner runner, CancellationToken cancellationToken)
     {
-        if (await VolumeExistsAsync(runner, cancellationToken, PostgresRuntime.LegacyVolumeName))
+        (bool volumesConfirmed, IReadOnlyList<string> foundVolumes) = await FindDataVolumesAsync(runner, cancellationToken);
+        if (!volumesConfirmed)
         {
-            return ComposeUpResult.LegacyVolumeDetected;
+            // docker volume ls itself failed — not the same fact as "confirmed absent". Reading
+            // it that way would let this go on to create a fresh, empty PostgresRuntime.VolumeName
+            // volume while a pre-pin install's real data might be sitting right there, unseen.
+            return (ComposeUpResult.LegacyVolumeCheckFailed, []);
+        }
+
+        bool pinnedVolumeExists = foundVolumes.Contains(PostgresRuntime.VolumeName, StringComparer.Ordinal);
+        IReadOnlyList<string> legacyVolumes = [.. foundVolumes.Where(
+            name => !string.Equals(name, PostgresRuntime.VolumeName, StringComparison.Ordinal))];
+
+        if (legacyVolumes.Count > 0 && !pinnedVolumeExists)
+        {
+            return (ComposeUpResult.LegacyVolumeDetected, legacyVolumes);
         }
 
         if (!File.Exists(PostgresRuntime.ComposeFile))
@@ -249,18 +276,20 @@ public static class ContainerRuntimeProbe
         ProcessResult result = await runner(
             "docker", ["compose", "-f", PostgresRuntime.ComposeFile, "up", "-d"],
             PostgresRuntime.ComposeDirectory, cancellationToken);
-        return result.ExitCode == 0 ? ComposeUpResult.Started : ComposeUpResult.Failed;
+        return (result.ExitCode == 0 ? ComposeUpResult.Started : ComposeUpResult.Failed, []);
     }
 }
 
-/// <summary>What <see cref="ContainerRuntimeProbe.ComposeUpAsync"/> actually did — three
-/// outcomes, not a <see langword="bool"/>, because <see cref="LegacyVolumeDetected"/> is a
-/// refusal a caller must report differently from an ordinary <c>docker compose up</c>
-/// failure: the fix is a manual volume migration (docs/operations.md's Provisioning section),
-/// never a retry of the same command.</summary>
+/// <summary>What <see cref="ContainerRuntimeProbe.ComposeUpAsync"/> actually did — four
+/// outcomes, not a <see langword="bool"/>, because <see cref="LegacyVolumeDetected"/> and
+/// <see cref="LegacyVolumeCheckFailed"/> are both refusals a caller must report differently
+/// from an ordinary <c>docker compose up</c> failure: the first's fix is a manual volume
+/// migration (docs/operations.md's Provisioning section), the second's is simply retrying once
+/// Docker answers reliably — neither is a retry of the same <c>docker compose up</c>.</summary>
 public enum ComposeUpResult
 {
     Started,
     Failed,
     LegacyVolumeDetected,
+    LegacyVolumeCheckFailed,
 }
