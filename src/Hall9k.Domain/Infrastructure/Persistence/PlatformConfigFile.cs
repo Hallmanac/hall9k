@@ -45,6 +45,42 @@ public static class PlatformConfigFile
     }
 
     /// <summary>
+    /// Same read as <see cref="ReadOperatingSettingsAsync"/>, but for a caller that only wants to
+    /// describe the file to an operator rather than merge a write into it (<c>h9k config show</c>,
+    /// <c>h9k daemon status</c>): a failure is reported rather than thrown, and which of the two
+    /// underlying problems it was stays distinguishable. A document-level failure (syntax error,
+    /// or valid JSON whose top level is not an object) is exactly what
+    /// <see cref="PlatformConfigFileSource"/>-shaped daemon startup code already guards and skips
+    /// gracefully, running on environment variables and built-in defaults; a value-shape failure
+    /// inside an otherwise well-formed document is not guarded anywhere, because the daemon reads
+    /// this section through <c>ConfigurationBinder</c>, which has no such skip and throws at
+    /// options-resolution time — a fatal startup crash, not a graceful fallback. Reporting both as
+    /// the same "not valid JSON, defaults still apply" diagnosis (the shape it shipped in) tells an
+    /// operator the wrong cause and the wrong consequence for the second case.
+    /// </summary>
+    public static async Task<ConfigFileReadResult> TryReadOperatingSettingsAsync(CancellationToken cancellationToken)
+    {
+        JsonObject document;
+        try
+        {
+            document = await ReadDocumentAsync(cancellationToken);
+        }
+        catch (DomainValidationException exception)
+        {
+            return ConfigFileReadResult.Failed(exception.Message, daemonFailsToStart: false);
+        }
+
+        try
+        {
+            return ConfigFileReadResult.Ok(DeserializeSection(document));
+        }
+        catch (DomainValidationException exception)
+        {
+            return ConfigFileReadResult.Failed(exception.Message, daemonFailsToStart: true);
+        }
+    }
+
+    /// <summary>
     /// Read-modify-write under the section key: <paramref name="mutate"/> sees the settings as
     /// they stand today (defaults where nothing is configured) and changes only what it means
     /// to. Returns whether this call materialised the file — it did not already exist — so a
