@@ -279,6 +279,31 @@ public sealed class OperatingSettingsResolverTests : IDisposable
             warning => warning.Contains(Hall9kDatabase.ConfigFile) && warning.Contains("floors"));
     }
 
+    /// <summary>
+    /// An explicit JSON <c>null</c> or an empty object for <c>maxConcurrentAgentSessions</c> binds
+    /// to zero on the daemon's own <c>ConfigurationBinder</c> (its explicit-value handling has no
+    /// null to assign a non-nullable <c>int</c>, so it resolves to <see langword="default"/>
+    /// instead) rather than leaving the setting at its built-in default of three the way every
+    /// other shape mismatch does. Reporting "3 (default)" with no warning here would be exactly the
+    /// gap the sibling test above closes for a hand-written zero, just reached through a shape that
+    /// never throws an exception to classify. Origin: cycle-7 pre-PR review.
+    /// </summary>
+    [Theory]
+    [InlineData("null")]
+    [InlineData("{}")]
+    public async Task A_null_or_empty_object_ceiling_in_the_config_file_is_reported_as_floored_rather_than_healthy(string shape)
+    {
+        await File.WriteAllTextAsync(
+            Hall9kDatabase.ConfigFile, "{\"hall9k\": {\"maxConcurrentAgentSessions\": " + shape + "}}");
+
+        OperatingSettingsReport report = await OperatingSettingsResolver.ResolveAsync(CancellationToken.None);
+
+        report.MaxConcurrentAgentSessions.Value.Should().Be(0);
+        report.MaxConcurrentAgentSessions.Origin.Should().Be(SettingOrigin.PlatformConfigFile);
+        report.UnusableEnvironmentVariables.Should().ContainSingle(
+            warning => warning.Contains(Hall9kDatabase.ConfigFile) && warning.Contains("floors"));
+    }
+
     [Fact]
     public async Task A_negative_ceiling_environment_variable_is_reported_as_floored_rather_than_healthy()
     {
