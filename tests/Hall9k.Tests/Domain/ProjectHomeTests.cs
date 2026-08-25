@@ -56,15 +56,20 @@ public sealed class ProjectHomeTests : IDisposable
     }
 
     [Fact]
-    public void The_shape_is_six_entries_and_the_layout_states_all_of_them()
+    public void The_shape_is_seven_entries_and_the_layout_states_all_of_them()
     {
         string home = ProjectHomePaths.DefaultFor("hall9k");
 
+        // tasks/_archive/ (backlog 51) is created up front alongside tasks/ itself, even though
+        // nothing lands there until a task first goes terminal: the render advertises it as part
+        // of the always-there layout, and Directories() is the one list the recipe and the render
+        // both read from, so the two can never drift apart on whether it exists (conformance review).
         ProjectHomePaths.Directories(home).Should().Equal(
             home,
             Path.Combine(home, "repo"),
             Path.Combine(home, "ideas"),
             Path.Combine(home, "tasks"),
+            Path.Combine(home, "tasks", "_archive"),
             Path.Combine(home, "skills"),
             Path.Combine(home, ".claude"),
             Path.Combine(home, ".claude", "skills"));

@@ -57,7 +57,7 @@ public static class ProjectHomeRecipe
 
         steps.Add(existed
             ? ProjectHomeStep.AlreadyThere($"home directory {home} already existed — the shape was completed in place")
-            : ProjectHomeStep.Created($"home directory created at {home} (repo/ ideas/ tasks/ skills/ .claude/)"));
+            : ProjectHomeStep.Created($"home directory created at {home} (repo/ ideas/ tasks/ tasks/_archive/ skills/ .claude/)"));
 
         if (materialiseRepository)
         {
