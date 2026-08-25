@@ -63,7 +63,7 @@ public static class PlatformConfigFile
         mutate(settings);
 
         document[SectionName] = JsonSerializer.SerializeToNode(settings, SerializerOptions);
-        await File.WriteAllTextAsync(
+        await AtomicFileWrite.WriteAllTextAsync(
             Hall9kDatabase.ConfigFile, document.ToJsonString(SerializerOptions), cancellationToken);
         return created;
     }
