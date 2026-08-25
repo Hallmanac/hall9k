@@ -302,4 +302,38 @@ public sealed class PlatformConfigFileTests : IDisposable
             "ConfigurationBinder's own key comparison is case-insensitive too, so this value crashes the daemon "
             + "exactly like the lowercase-keyed shape does");
     }
+
+    /// <summary>
+    /// The daemon's own guard (<c>PlatformConfigFileSource</c>) degrades gracefully when it cannot
+    /// read the file at all — a root-owned file, or one <c>chmod</c>'d by another account on a
+    /// shared box. The CLI side has to match rather than let the raw exception escape, since
+    /// <c>h9k config show</c> and <c>h9k daemon status</c> both call through here unconditionally.
+    /// Origin: the cycle-1 pre-PR review found <c>ReadDocumentAsync</c> with no guard at all around
+    /// <c>File.ReadAllTextAsync</c>, so an unreadable file crashed both diagnostic commands with a
+    /// raw stack trace instead of the reported failure this method promises.
+    /// </summary>
+    [Fact]
+    public async Task An_unreadable_config_file_is_a_diagnosable_exception_rather_than_a_raw_crash()
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        await File.WriteAllTextAsync(Hall9kDatabase.ConfigFile, """{"hall9k": {"maxConcurrentAgentSessions": 4}}""");
+        File.SetUnixFileMode(Hall9kDatabase.ConfigFile, UnixFileMode.None);
+
+        try
+        {
+            Func<Task> read = () => PlatformConfigFile.ReadOperatingSettingsAsync(CancellationToken.None);
+
+            await read.Should().ThrowAsync<DomainValidationException>(
+                "an unreadable file is reported the same way a syntax error is, not left to escape as a raw "
+                + "UnauthorizedAccessException");
+        }
+        finally
+        {
+            File.SetUnixFileMode(Hall9kDatabase.ConfigFile, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+        }
+    }
 }
