@@ -901,10 +901,14 @@ public sealed class CloseoutEngine(
         HandoffOutcome absence = HandoffOutcome.NotCaptured;
         foreach (RunDetails run in await MergedRunsAsync(session, completing, cancellationToken))
         {
-            (HandoffOutcome outcome, string? text) = await ReadHandoffAsync(run.Id, run.RunDirectory, cancellationToken);
+            (HandoffOutcome outcome, string? text, string runDirectory) = await ReadHandoffAsync(run, cancellationToken);
             if (text.IsNotBlank())
             {
-                authored.Add(new HandoffParser.RunHandoff(run.Id, run.RunDirectory, text));
+                // The RESOLVED directory travels into the record, not run.RunDirectory as
+                // recorded at dispatch: BoundForEvent below can name this path in a truncation
+                // note a human reads, and a stale path there would send them somewhere the
+                // render sweep already moved the files away from (backlog 51 cycle 6).
+                authored.Add(new HandoffParser.RunHandoff(run.Id, runDirectory, text));
                 continue;
             }
 
@@ -971,21 +975,22 @@ public sealed class CloseoutEngine(
     /// pretending to know why, which is why a file that exists but cannot be read records
     /// <see cref="HandoffOutcome.Unknown"/> rather than any of the three.
     /// </summary>
-    private async Task<(HandoffOutcome Outcome, string? Handoff)> ReadHandoffAsync(
-        Guid runId, string runDirectory, CancellationToken cancellationToken)
+    private async Task<(HandoffOutcome Outcome, string? Handoff, string RunDirectory)> ReadHandoffAsync(
+        RunDetails run, CancellationToken cancellationToken)
     {
-        string path = RunPaths.HandoffFile(RunPaths.ResolveCurrentDirectory(runDirectory));
+        string runDirectory = RunPaths.ResolveCurrentDirectory(run.RunDirectory);
+        string path = RunPaths.HandoffFile(runDirectory);
         try
         {
             if (!File.Exists(path))
             {
-                return (HandoffOutcome.NotCaptured, null);
+                return (HandoffOutcome.NotCaptured, null, runDirectory);
             }
 
             string handoff = (await File.ReadAllTextAsync(path, cancellationToken)).Trim();
             return handoff.IsBlank()
-                ? (HandoffOutcome.NotAuthored, null)
-                : (HandoffOutcome.Captured, handoff);
+                ? (HandoffOutcome.NotAuthored, null, runDirectory)
+                : (HandoffOutcome.Captured, handoff, runDirectory);
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
         {
@@ -993,8 +998,8 @@ public sealed class CloseoutEngine(
             // handoff was authored — so the ledger says it does not know, rather than
             // asserting the absence NotCaptured would claim. An unread file is not an
             // observed one (the never-guess rule).
-            logger.LogWarning(exception, "Could not read the handoff artifact for run {RunId} at {Path}", runId, path);
-            return (HandoffOutcome.Unknown, null);
+            logger.LogWarning(exception, "Could not read the handoff artifact for run {RunId} at {Path}", run.Id, path);
+            return (HandoffOutcome.Unknown, null, runDirectory);
         }
     }
 

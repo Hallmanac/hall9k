@@ -47,12 +47,24 @@ public sealed class RunSupervisor(
 
     public int ActiveCount => _monitors.Count;
 
+    /// <summary>
+    /// The chokepoint for this whole chain (backlog 51 cycle 6): <paramref name="runDirectory"/>
+    /// is resolved exactly once, here, and the resolved value is what <see cref="MonitorAsync"/>,
+    /// <see cref="CompleteRunAsync"/>, <see cref="CaptureHandoffAsync"/> and
+    /// <see cref="ReadStandardErrorTail"/> all actually use — none of them re-resolves on its
+    /// own. A caller may pass the value <c>RunDispatched</c> recorded once at dispatch (stale for
+    /// a resumed or adopted run whose task has since crossed the <c>tasks/_archive/</c> boundary)
+    /// without thinking about it, exactly like every other reader documented in
+    /// <see cref="Hall9k.Domain.Infrastructure.Storage.RunPaths.ResolveCurrentDirectory"/>'s own
+    /// doc comment and PLAN.md §16 #83.
+    /// </summary>
     public void StartMonitoring(
         Guid runId, string runDirectory, Guid taskId, int processId, DateTimeOffset processStartedAt,
         CancellationToken cancellationToken)
     {
+        string resolvedRunDirectory = RunPaths.ResolveCurrentDirectory(runDirectory);
         _monitors.TryAdd(runId, Task.Run(
-            () => MonitorAsync(runId, runDirectory, taskId, processId, processStartedAt, cancellationToken),
+            () => MonitorAsync(runId, resolvedRunDirectory, taskId, processId, processStartedAt, cancellationToken),
             cancellationToken));
     }
 
@@ -135,7 +147,8 @@ public sealed class RunSupervisor(
             }
 
             bool alive = processManager.IsAlive(run.ProcessId.Value, run.ProcessStartedAt.Value);
-            bool resultOnDisk = await RunResultFile.AlreadyWrittenAsync(run.RunDirectory, cancellationToken);
+            bool resultOnDisk = await RunResultFile.AlreadyWrittenAsync(
+                RunPaths.ResolveCurrentDirectory(run.RunDirectory), cancellationToken);
             if (alive || resultOnDisk)
             {
                 logger.LogInformation(

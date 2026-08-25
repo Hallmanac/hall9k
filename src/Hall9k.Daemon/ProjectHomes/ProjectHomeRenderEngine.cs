@@ -118,11 +118,16 @@ public sealed class ProjectHomeRenderEngine(IDocumentStore store, ILogger<Projec
                 // retry budget — can still have a pull request opened onto its RunDirectory, or a
                 // handoff read from it, once a human resolves the park (adversarial review, backlog
                 // 51 cycles 2 and 4); what makes deferring on liveness alone safe again (cycle 5) is
-                // that every daemon-side reader of a run's recorded RunDirectory
-                // (ClaudeExecutor, PullRequestOpener, CloseoutEngine.ReadHandoffAsync, ReviewEngine)
-                // now re-resolves where the directory actually sits (RunPaths.ResolveCurrentDirectory)
-                // instead of trusting the value RunDispatched carried once at dispatch, so a parked
-                // run finding its directory already moved back to tasks/ still finds its own files.
+                // that every daemon-side reader of a run's recorded RunDirectory now re-resolves
+                // where the directory actually sits (RunPaths.ResolveCurrentDirectory) instead of
+                // trusting the value RunDispatched carried once at dispatch, so a parked run finding
+                // its directory already moved back to tasks/ still finds its own files. The full,
+                // grep-checkable list (cycle 6 closed the last three): ClaudeExecutor, PullRequestOpener,
+                // CloseoutEngine.ReadHandoffAsync, ReviewEngine's CurrentRunDirectory helper,
+                // VerificationRunner.VerifyAsync, DispatchEngine's lease-expiry result-on-disk check,
+                // and RunSupervisor.StartMonitoring — the chokepoint for MonitorAsync, CompleteRunAsync,
+                // CaptureHandoffAsync, ReadStandardErrorTail and AdoptOrphansAsync's own result-on-disk
+                // check, none of which resolve on their own.
                 // Every task's current run is fetched, not only Done/Abandoned's, because the second
                 // guard applies regardless of state.
                 Guid[] currentRunIds = [.. tasks.Select(task => task.CurrentRunId).OfType<Guid>()];
@@ -154,6 +159,7 @@ public sealed class ProjectHomeRenderEngine(IDocumentStore store, ILogger<Projec
                         task, taskIdsWithCompletedRun, currentRunStates, archivedTasksRoot, logger);
                     if (!archived
                         && CurrentRunMightStillTouchDirectory(task, currentRunStates)
+                        && !LaunchDiedBeforeDispatch(task, currentRunStates)
                         && HomeEntryWriter.FindExistingDirectory(archivedTasksRoot, task.Id) is not null)
                     {
                         // The task's own directory is presently inside tasks/_archive/ — a reopen
@@ -168,6 +174,13 @@ public sealed class ProjectHomeRenderEngine(IDocumentStore store, ILogger<Projec
                         // re-resolve the directory rather than trusting a stale recorded path (see
                         // the doc comment above), so this does not need to wait for the run's
                         // terminal state the way it once did (adversarial review, backlog 51 cycle 5).
+                        // The LaunchDiedBeforeDispatch exclusion (cycle 6) is the same escape hatch
+                        // IsArchived's Abandoned branch already has: a reopened task whose follow-up
+                        // run died before RunDispatched ever committed can land Failed rather than
+                        // Abandoned, and without this its "no projection yet" default would read as
+                        // permanently still-live and strand a Failed, needs-you task inside
+                        // tasks/_archive/ forever — nothing will ever produce the projection this
+                        // guard is waiting on.
                         archived = true;
                     }
 
@@ -310,9 +323,7 @@ public sealed class ProjectHomeRenderEngine(IDocumentStore store, ILogger<Projec
                 return true;
             }
 
-            if (task.CurrentRunId is { } currentRunId
-                && !currentRunStates.ContainsKey(currentRunId)
-                && task.FailedRunId == currentRunId)
+            if (task.CurrentRunId is { } currentRunId && LaunchDiedBeforeDispatch(task, currentRunStates))
             {
                 // Logged once, checked against disk rather than kept in memory: the engine is a
                 // pure function of the store's state on every sweep (this class's own doc comment),
@@ -338,6 +349,23 @@ public sealed class ProjectHomeRenderEngine(IDocumentStore store, ILogger<Projec
     }
 
     /// <summary>
+    /// A same-run launch failure recorded on the task's own stream is proof its current run will
+    /// never get a projection at all — <see cref="CurrentRunMightStillTouchDirectory"/>'s "no
+    /// projection yet" default otherwise reads this identically to a run still in flight, which
+    /// is the right caution for a run that might still dispatch but the wrong one for a run that
+    /// provably never will. Shared by <see cref="IsArchived"/>'s Abandoned branch and the sweep's
+    /// own reopen guard (backlog 51 cycle 6): a task whose current run died on launch and was
+    /// then reopened can come back Failed rather than Abandoned, and the reopen guard needs the
+    /// same escape hatch or that Failed, needs-you task sits hidden inside <c>tasks/_archive/</c>
+    /// forever, since nothing will ever produce the projection the guard is waiting on.
+    /// </summary>
+    private static bool LaunchDiedBeforeDispatch(
+        TaskDetails task, IReadOnlyDictionary<Guid, RunState> currentRunStates) =>
+        task.CurrentRunId is { } currentRunId
+        && !currentRunStates.ContainsKey(currentRunId)
+        && task.FailedRunId == currentRunId;
+
+    /// <summary>
     /// Whether the run this task currently hangs on is still live (<see cref="RunState.IsLive"/>)
     /// or cannot yet be proven not to be — no run at all is the only case this returns false for
     /// without a run state to check, since nothing can write to or read from this task's directory
@@ -352,11 +380,16 @@ public sealed class ProjectHomeRenderEngine(IDocumentStore store, ILogger<Projec
     /// run whose task nobody is running a resolve lever on any more — stranded and never archived
     /// (Abandoned) or stranded inside <c>tasks/_archive/</c> through its whole needs-you lifecycle
     /// (the reopen guard below). What makes liveness sufficient again is that every daemon-side
-    /// reader of a run's recorded <c>RunDirectory</c> (<c>ClaudeExecutor</c>, <c>PullRequestOpener</c>,
-    /// <c>CloseoutEngine.ReadHandoffAsync</c>, <c>ReviewEngine</c>) now re-resolves where the
-    /// directory actually sits (<see cref="RunPaths.ResolveCurrentDirectory"/>) rather than trusting
-    /// the value <c>RunDispatched</c> carried once at dispatch, so a parked run finding its
-    /// directory already moved still finds its own files.
+    /// reader of a run's recorded <c>RunDirectory</c> now re-resolves where the directory actually
+    /// sits (<see cref="RunPaths.ResolveCurrentDirectory"/>) rather than trusting the value
+    /// <c>RunDispatched</c> carried once at dispatch, so a parked run finding its directory already
+    /// moved still finds its own files. The full, grep-checkable list (cycle 6 closed the last
+    /// three): <c>ClaudeExecutor</c>, <c>PullRequestOpener</c>, <c>CloseoutEngine.ReadHandoffAsync</c>,
+    /// <c>ReviewEngine</c>'s <c>CurrentRunDirectory</c> helper, <c>VerificationRunner.VerifyAsync</c>,
+    /// <c>DispatchEngine</c>'s lease-expiry result-on-disk check, and
+    /// <c>RunSupervisor.StartMonitoring</c> — the chokepoint for <c>MonitorAsync</c>,
+    /// <c>CompleteRunAsync</c>, <c>CaptureHandoffAsync</c>, <c>ReadStandardErrorTail</c> and
+    /// <c>AdoptOrphansAsync</c>'s own result-on-disk check, none of which resolve on their own.
     /// </para>
     /// <para>
     /// Shared by the Abandoned archive guard above and the render loop's own guard against moving a
