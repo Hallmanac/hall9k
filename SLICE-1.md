@@ -307,7 +307,7 @@ than renaming it. The RunSuperseded-to-FollowedUp persisted rename stays parked 
   registers a logon task; one real task runs end-to-end to a PR on the Windows machine.
 - **Constraints:** no Windows-service mode; Parallels for iteration, tower for validation.
 
-**Lifecycle landed 2026-08-25 (PLAN.md §16 #83); the tower walk is still open.** `IProcessManager`
+**Lifecycle landed 2026-08-25 (PLAN.md §16 #84); the tower walk is still open.** `IProcessManager`
 gained its Windows implementation (`WindowsProcessManager`: spawn via `cmd.exe`, kill-tree and
 reattach shared with macOS in `ProcessManagerBase` since neither turned out to be OS-specific),
 proven by `ProcessManagerParityTests` — one suite, run for real against whichever platform's
