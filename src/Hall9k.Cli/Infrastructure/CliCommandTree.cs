@@ -235,6 +235,20 @@ public static class CliCommandTree
             .WithExample("install", "--restart")
             .WithExample("install", "--from-release", "/tmp/hall9k-osx-arm64");
 
+        config.AddCommand<UninstallCommand>("uninstall")
+            .WithDescription(
+                "Take the platform off this machine without taking the work with it (Decisions Log #82): stop a "
+                + "running daemon, unregister autostart, drop the PATH link, and remove everything h9k install "
+                + "itself wrote under ~/.hall9k — bin/, the skill set, logs — while leaving a registered "
+                + "project's home, config.json, your credentials, and anything else you put there untouched. The "
+                + "hall9k-postgres container is stopped, never removed, and its data volume is never touched, so "
+                + "a later h9k install reconnects to every task, run, and idea exactly as it was. --purge-data is "
+                + "the only path that destroys the container and its volume too, and it asks for confirmation "
+                + "first (--yes skips the prompt for a non-interactive run).")
+            .WithExample("uninstall")
+            .WithExample("uninstall", "--purge-data")
+            .WithExample("uninstall", "--purge-data", "--yes");
+
         config.AddCommand<UpdateCommand>("update")
             .WithDescription(
                 "The one-command path for a machine already installed: fetch the latest GitHub release for "

@@ -436,9 +436,11 @@ public sealed class InstallCommand : Hall9kAsyncCommand<InstallCommand.Settings>
     /// variable changed, the same broadcast <see cref="Environment.SetEnvironmentVariable"/>
     /// sends and that a direct registry write skips. Best-effort: a process that never
     /// answers the broadcast (the two-second timeout) does not fail the install over a
-    /// PATH refresh it was always going to need a new terminal for anyway.</summary>
+    /// PATH refresh it was always going to need a new terminal for anyway.
+    /// <para>Internal rather than private: <see cref="UninstallCommand"/> reverses this same
+    /// registry write and needs the identical broadcast on the way out.</para></summary>
     [SupportedOSPlatform("windows")]
-    private static void BroadcastEnvironmentChange()
+    internal static void BroadcastEnvironmentChange()
     {
         const int HWND_BROADCAST = 0xffff;
         const uint WM_SETTINGCHANGE = 0x001a;

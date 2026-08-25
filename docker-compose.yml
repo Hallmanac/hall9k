@@ -16,3 +16,4 @@ services:
 
 volumes:
   hall9k-pgdata:
+    name: hall9k-pgdata

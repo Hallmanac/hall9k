@@ -337,6 +337,81 @@ public static class SkillSeeder
     }
 
     /// <summary>
+    /// Removes exactly what the last <c>h9k install</c> published into the canonical skill set —
+    /// <c>h9k uninstall</c>'s use of this class, and held to the identical "only what still
+    /// matches the recorded hash is install's" discipline <see cref="PublishCanonical"/> already
+    /// applies to its own retiring pass (see that method's origin incident, 2026-08-23): a
+    /// hand-written skill was never in the manifest to begin with, and one an operator has
+    /// edited since it was published no longer matches its recorded hash, so both are left
+    /// alone here exactly as a later install would leave them. Returns the names actually
+    /// removed. A locked file is recorded into <paramref name="stillPresent"/> rather than
+    /// aborting the rest, the same best-effort discipline
+    /// <see cref="Hall9k.Cli.Commands.UninstallCommand.RemoveInstallOwnedEntries"/> uses — and its
+    /// entry stays in the manifest rather than being dropped with the rest, so a locked skill
+    /// is still recognisable as install-owned on the next uninstall attempt (or the next
+    /// install's own retiring pass) instead of being silently reclassified as an operator
+    /// override once its lock clears.
+    /// </summary>
+    public static IReadOnlyList<string> RemovePublished(List<string> stillPresent)
+    {
+        IReadOnlyDictionary<string, string> previously = ReadManifest();
+        List<string> removed = [];
+        Dictionary<string, string> remaining = [];
+        foreach ((string name, string recordedHash) in previously)
+        {
+            string directory = SkillLibraryPaths.Skill(name);
+            if (!Directory.Exists(directory) || ComputeContentHash(directory) != recordedHash)
+            {
+                continue;
+            }
+
+            try
+            {
+                Directory.Delete(directory, recursive: true);
+                removed.Add(name);
+            }
+            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+            {
+                stillPresent.Add(directory);
+                remaining[name] = recordedHash;
+            }
+        }
+
+        try
+        {
+            if (remaining.Count > 0)
+            {
+                File.WriteAllLines(
+                    SkillLibraryPaths.PublishedManifest,
+                    remaining.Select(entry => $"{entry.Key}\t{entry.Value}"));
+            }
+            else if (File.Exists(SkillLibraryPaths.PublishedManifest))
+            {
+                File.Delete(SkillLibraryPaths.PublishedManifest);
+            }
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            stillPresent.Add(SkillLibraryPaths.PublishedManifest);
+        }
+
+        string canonical = SkillLibraryPaths.CanonicalDirectory;
+        if (Directory.Exists(canonical) && !Directory.EnumerateFileSystemEntries(canonical).Any())
+        {
+            try
+            {
+                Directory.Delete(canonical);
+            }
+            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+            {
+                // Left as an empty directory; nothing install-owned remains inside it either way.
+            }
+        }
+
+        return removed;
+    }
+
+    /// <summary>
     /// What the last install published here, by name, with a content hash of what it wrote — the
     /// discriminator <see cref="PublishCanonical"/> uses to tell "still exactly what this method
     /// shipped" apart from "somebody has edited this since". An absent manifest is read as empty,
