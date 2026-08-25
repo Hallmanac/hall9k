@@ -152,6 +152,9 @@ public static class ProjectAgentsDocument
 
         document.AppendLine("├── ideas/      one directory per idea in discovery");
         document.AppendLine("├── tasks/      one directory per task; a task's runs live under it");
+        document.AppendLine(
+            $"│   └── {Column("_archive/")}terminal tasks only (closed out or abandoned); moved "
+            + "back out automatically if reopened");
         document.AppendLine("├── skills/     skill docs: plain markdown, no vendor framing");
         document.AppendLine("└── .claude/    generated Claude Code plumbing (skills/ symlinked, never copied)");
         document.AppendLine("```");

@@ -121,6 +121,19 @@ startup (backlog 48). The render is one-way: a human edits the file and applies 
 argument), and the store, never the file, decides what happened. An idea with no project yet has
 nowhere to render into, so it stays in its global discovery workspace until assigned.
 
+A task's directory moves to `tasks/_archive/` the moment it is terminal — true closeout, or
+abandoned — and moves back once it isn't any more and its current run is no longer live, so a
+project's `tasks/` folder shows a human only the work still worth their attention, with every
+finished task's history one click away rather than mixed in with it (backlog 51). The liveness
+check is deliberate: moving a reopened task's directory back out from under a follow-up run that
+is still writing into it would race that run, so the render sweep defers the move until the run
+has left its actively-running states, and every daemon-side reader resolves a run's directory
+dynamically (`RunPaths.ResolveCurrentDirectory`) rather than trusting a stale recorded path, so a
+parked run still finds its own files once the sweep does move it back. `Done` alone does not
+qualify: a task reads Done from the moment its pull request opens, and only true closeout — the
+merge the closeout monitor actually observed — moves it to the archive, so a task with an open
+pull request stays exactly where it was.
+
 A new run's directory lands under its owning task's directory (`<home>/tasks/<shortid>-<slug>/
 runs/<run-id>/`) once the project has a home, so browsing the task's directory tells its whole
 story — contract, workspace, every attempt — with no top-level `runs/` inside a home (backlog
