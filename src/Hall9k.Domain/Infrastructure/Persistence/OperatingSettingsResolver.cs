@@ -36,7 +36,9 @@ public static class OperatingSettingsResolver
 
         List<RoleModelSetting> roles = [.. configured.ModelByRole.AsPairs().Select(pair =>
             new RoleModelSetting(
-                pair.Role, ResolveOptionalString($"{EnvironmentPrefix}ModelByRole__{pair.Role}", pair.Model)))];
+                pair.Role,
+                ResolveOptionalString(
+                    $"{EnvironmentPrefix}ModelByRole__{pair.Role}", pair.Model, unusableEnvironmentVariables)))];
 
         return new OperatingSettingsReport(concurrency, defaultModel, roles, read.Problem, unusableEnvironmentVariables);
     }
@@ -60,6 +62,7 @@ public static class OperatingSettingsResolver
         {
             if (int.TryParse(fromEnvironment, out int parsed))
             {
+                WarnIfBelowCeilingFloor(environmentVariable, parsed, unusable);
                 return new ResolvedSetting<int>(parsed, SettingOrigin.EnvironmentVariable, environmentVariable);
             }
 
@@ -68,9 +71,31 @@ public static class OperatingSettingsResolver
                 + "daemon will fail to start on this value rather than fall back to the config file or default.");
         }
 
-        return configured is { } value
-            ? new ResolvedSetting<int>(value, SettingOrigin.PlatformConfigFile, Hall9kDatabase.ConfigFile)
-            : new ResolvedSetting<int>(fallback, SettingOrigin.Default, null);
+        if (configured is { } value)
+        {
+            WarnIfBelowCeilingFloor(Hall9kDatabase.ConfigFile, value, unusable);
+            return new ResolvedSetting<int>(value, SettingOrigin.PlatformConfigFile, Hall9kDatabase.ConfigFile);
+        }
+
+        return new ResolvedSetting<int>(fallback, SettingOrigin.Default, null);
+    }
+
+    /// <summary>
+    /// A ceiling below 1 is not refused the way <c>h9k config set</c> refuses it on the write
+    /// path (a hand-edited file or an environment variable skips that gate entirely) — instead
+    /// <see cref="Hall9k.Daemon.Dispatch.NodeLoad.MaxConcurrentRuns"/> floors it to exactly one
+    /// concurrent run, which contradicts the CLI's own "a ceiling of zero would dispatch nothing"
+    /// refusal message. Reporting the raw value as a healthy in-force setting with no line naming
+    /// that gap would leave an operator believing dispatch has stopped rather than slowed to one.
+    /// </summary>
+    private static void WarnIfBelowCeilingFloor(string source, int value, List<string> unusable)
+    {
+        if (value < 1)
+        {
+            unusable.Add(
+                $"{source} sets max-concurrent-agent-sessions to {value}, which is below 1 — the daemon floors "
+                + "this to exactly one concurrent run rather than dispatching nothing.");
+        }
     }
 
     /// <summary>
@@ -113,38 +138,57 @@ public static class OperatingSettingsResolver
     }
 
     /// <summary>
-    /// Whether <paramref name="candidate"/> is a value <c>AgentModel</c> can actually spawn on —
-    /// the same <see cref="AgentModel.IsWellFormed"/> gate <c>ConfigSetCommand.ApplyModel</c>
+    /// Whether <paramref name="candidate"/> is a value <c>AgentModel</c> actually resolves to and
+    /// runs on — the same <see cref="AgentModel.IsWellFormed"/> gate <c>ConfigSetCommand.ApplyModel</c>
     /// applies on the write path, applied here too because a hand-edited config file or a raw
-    /// environment variable never goes through that gate. This is the platform-wide bottom of the
-    /// resolution chain, so an unusable value here breaks every dispatch on the node
-    /// (<c>ClaudeExecutor.SpawnAsync</c> throws for every fresh spawn) rather than one project or
-    /// task — exactly the consequence naming the mistake in <paramref name="unusable"/> exists to
-    /// surface instead of reporting it as a healthy, in-force setting.
+    /// environment variable never goes through that gate. Unlike an earlier shape of this method,
+    /// <see cref="AgentModel.Unknown"/> is not usable either: it is what <c>AgentModel.FromInput</c>
+    /// maps the literal word <c>"default"</c> and a blank value to, and <c>AgentModel.Resolve</c>
+    /// never returns it — it is a signal to fall through to the next tier, not a spawnable model.
+    /// Reporting either shape as the healthy, in-force value the daemon runs on would be wrong in
+    /// two different ways: <see cref="AgentModel.IsWellFormed"/> false (garbage, spaces, an
+    /// overlong string) means <c>ClaudeExecutor.SpawnAsync</c> throws for every fresh spawn on this
+    /// node; <see cref="AgentModel.Unknown"/> means the daemon quietly runs on the fallback while
+    /// the reported origin points at this environment variable or config file instead.
     /// </summary>
     private static bool IsUsableModel(string candidate, string source, List<string> unusable)
     {
         AgentModel resolved = AgentModel.FromInput(candidate);
-        if (resolved == AgentModel.Unknown || resolved.IsWellFormed)
+        if (resolved.IsWellFormed)
         {
             return true;
         }
 
-        unusable.Add(
-            $"{source} is set to \"{candidate}\", which is not a usable model name — the daemon will fail to "
-            + "spawn every agent session on this node rather than fall back to the config file or default.");
+        string message = resolved == AgentModel.Unknown
+            ? $"{source} is set to \"{candidate}\", which AgentModel treats as unset (\"default\", or a blank "
+                + "value, clears an override rather than naming one) — the daemon falls through to the next "
+                + "tier rather than running on this value, even though it reads back as though it were in force."
+            : $"{source} is set to \"{candidate}\", which is not a usable model name — the daemon will fail to "
+                + "spawn every agent session on this node rather than fall back to the config file or default.";
+        unusable.Add(message);
         return false;
     }
 
-    private static ResolvedSetting<string?> ResolveOptionalString(string environmentVariable, string? configured)
+    private static ResolvedSetting<string?> ResolveOptionalString(
+        string environmentVariable, string? configured, List<string> unusable)
     {
         if (Environment.GetEnvironmentVariable(environmentVariable) is { } fromEnvironment)
         {
+            if (fromEnvironment.Length > 0 && !IsUsableModel(fromEnvironment, environmentVariable, unusable))
+            {
+                return new ResolvedSetting<string?>(null, SettingOrigin.Default, null);
+            }
+
             return new ResolvedSetting<string?>(fromEnvironment, SettingOrigin.EnvironmentVariable, environmentVariable);
         }
 
-        return configured is { Length: > 0 } value
-            ? new ResolvedSetting<string?>(value, SettingOrigin.PlatformConfigFile, Hall9kDatabase.ConfigFile)
-            : new ResolvedSetting<string?>(null, SettingOrigin.Default, null);
+        if (configured is { Length: > 0 } value)
+        {
+            return IsUsableModel(value, Hall9kDatabase.ConfigFile, unusable)
+                ? new ResolvedSetting<string?>(value, SettingOrigin.PlatformConfigFile, Hall9kDatabase.ConfigFile)
+                : new ResolvedSetting<string?>(null, SettingOrigin.Default, null);
+        }
+
+        return new ResolvedSetting<string?>(null, SettingOrigin.Default, null);
     }
 }

@@ -230,6 +230,97 @@ public sealed class OperatingSettingsResolverTests : IDisposable
             warning => warning.Contains("Hall9k__DefaultModel") && warning.Contains("not a real model"));
     }
 
+    /// <summary>
+    /// <c>NodeLoad.MaxConcurrentRuns</c> floors any ceiling below 1 to exactly one concurrent run
+    /// rather than dispatching nothing — the opposite of what <c>h9k config set</c>'s own refusal
+    /// message says a ceiling of zero would do. Origin: the cycle-3 pre-PR review found this
+    /// resolver reporting a zero or negative ceiling as a healthy, in-force setting with no line
+    /// naming that gap.
+    /// </summary>
+    [Fact]
+    public async Task A_zero_ceiling_in_the_config_file_is_reported_as_floored_rather_than_healthy()
+    {
+        await File.WriteAllTextAsync(
+            Hall9kDatabase.ConfigFile, """{"hall9k": {"maxConcurrentAgentSessions": 0}}""");
+
+        OperatingSettingsReport report = await OperatingSettingsResolver.ResolveAsync(CancellationToken.None);
+
+        report.MaxConcurrentAgentSessions.Value.Should().Be(0);
+        report.MaxConcurrentAgentSessions.Origin.Should().Be(SettingOrigin.PlatformConfigFile);
+        report.UnusableEnvironmentVariables.Should().ContainSingle(
+            warning => warning.Contains(Hall9kDatabase.ConfigFile) && warning.Contains("floors"));
+    }
+
+    [Fact]
+    public async Task A_negative_ceiling_environment_variable_is_reported_as_floored_rather_than_healthy()
+    {
+        Environment.SetEnvironmentVariable("Hall9k__MaxConcurrentAgentSessions", "-1");
+
+        OperatingSettingsReport report = await OperatingSettingsResolver.ResolveAsync(CancellationToken.None);
+
+        report.MaxConcurrentAgentSessions.Value.Should().Be(-1);
+        report.MaxConcurrentAgentSessions.Origin.Should().Be(SettingOrigin.EnvironmentVariable);
+        report.UnusableEnvironmentVariables.Should().ContainSingle(
+            warning => warning.Contains("Hall9k__MaxConcurrentAgentSessions") && warning.Contains("floors"));
+    }
+
+    /// <summary>
+    /// <c>ResolveOptionalString</c> is the same bottom-of-the-chain resolution as
+    /// <c>ResolveString</c>, so a per-role model a hand edit or a raw environment variable never
+    /// ran through <c>ConfigSetCommand.ApplyModel</c>'s gate must be caught here too. Origin: the
+    /// cycle-3 pre-PR review found this method reporting a value like this as a healthy, in-force
+    /// per-role model rather than naming the mistake, even though the daemon spawns on it.
+    /// </summary>
+    [Fact]
+    public async Task An_unusable_role_model_in_the_config_file_is_reported_rather_than_presented_as_healthy()
+    {
+        await PlatformConfigFile.WriteOperatingSettingsAsync(
+            s => s.ModelByRole.Build = "claude opus 5", CancellationToken.None);
+
+        OperatingSettingsReport report = await OperatingSettingsResolver.ResolveAsync(CancellationToken.None);
+
+        RoleModelSetting build = report.ModelByRole.Single(role => role.Role == nameof(RoleModelSettings.Build));
+        build.Model.Value.Should().BeNull();
+        build.Model.Origin.Should().Be(SettingOrigin.Default);
+        report.UnusableEnvironmentVariables.Should().ContainSingle(
+            warning => warning.Contains(Hall9kDatabase.ConfigFile) && warning.Contains("claude opus 5"));
+    }
+
+    [Fact]
+    public async Task An_unusable_role_model_in_an_environment_variable_is_reported_rather_than_presented_as_healthy()
+    {
+        Environment.SetEnvironmentVariable("Hall9k__ModelByRole__Build", "claude opus 5");
+
+        OperatingSettingsReport report = await OperatingSettingsResolver.ResolveAsync(CancellationToken.None);
+
+        RoleModelSetting build = report.ModelByRole.Single(role => role.Role == nameof(RoleModelSettings.Build));
+        build.Model.Value.Should().BeNull();
+        build.Model.Origin.Should().Be(SettingOrigin.Default);
+        report.UnusableEnvironmentVariables.Should().ContainSingle(
+            warning => warning.Contains("Hall9k__ModelByRole__Build") && warning.Contains("claude opus 5"));
+    }
+
+    /// <summary>
+    /// <c>AgentModel.FromInput</c> maps the literal word <c>"default"</c> to <see
+    /// cref="AgentModel.Unknown"/>, which <c>AgentModel.Resolve</c> never returns — it is the
+    /// idiom that clears an override, not a spawnable model. Origin: the cycle-3 pre-PR review
+    /// found <c>IsUsableModel</c> treating <c>Unknown</c> as usable, so this value read back as a
+    /// healthy, in-force <c>default-model</c> while the daemon actually ran on the platform
+    /// fallback instead.
+    /// </summary>
+    [Fact]
+    public async Task A_default_model_set_to_the_literal_clearing_word_falls_through_rather_than_reporting_as_healthy()
+    {
+        await PlatformConfigFile.WriteOperatingSettingsAsync(s => s.DefaultModel = "default", CancellationToken.None);
+
+        OperatingSettingsReport report = await OperatingSettingsResolver.ResolveAsync(CancellationToken.None);
+
+        report.DefaultModel.Value.Should().Be(AgentModel.PlatformFallback);
+        report.DefaultModel.Origin.Should().Be(SettingOrigin.Default);
+        report.UnusableEnvironmentVariables.Should().ContainSingle(
+            warning => warning.Contains(Hall9kDatabase.ConfigFile) && warning.Contains("default"));
+    }
+
     [Fact]
     public async Task An_explicit_null_model_by_role_section_does_not_crash_the_resolver()
     {
