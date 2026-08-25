@@ -62,8 +62,11 @@ public sealed class DaemonLogRotationTests : IDisposable
         // line would vanish from the log; truncating the same file keeps it landing.
         if (OperatingSystem.IsWindows())
         {
-            // The daemon lifecycle is Unix-only until S1-14 (Decisions Log #3), and so
-            // is the writer being modelled here.
+            // Models a real O_APPEND descriptor (/bin/sh's own >>), which is the Unix
+            // side of the story. Windows has no shell equivalent to model here — a plain
+            // cmd.exe >> handle does NOT re-resolve end-of-file per write, which is
+            // exactly why h9kd never relies on one; see WindowsAppendOnlyLogTests for the
+            // Windows-side coverage of the handle it uses instead.
             return;
         }
 
