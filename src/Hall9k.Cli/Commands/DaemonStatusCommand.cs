@@ -1,5 +1,6 @@
 using Hall9k.Cli.DaemonControl;
 using Hall9k.Cli.Infrastructure;
+using Hall9k.Domain.Infrastructure.Persistence;
 using Hall9k.Domain.Infrastructure.Storage;
 using Spectre.Console;
 using Spectre.Console.Cli;
@@ -13,7 +14,7 @@ public sealed class DaemonStatusCommand : Hall9kAsyncCommand<DaemonStatusCommand
 
     private const int TailLines = 8;
 
-    protected override Task<int> ExecuteAsync(Settings settings, CancellationToken cancellationToken)
+    protected override async Task<int> ExecuteAsync(Settings settings, CancellationToken cancellationToken)
     {
         DaemonProcessDescriptor? running = DaemonProcess.Probe();
         if (running is null)
@@ -35,6 +36,30 @@ public sealed class DaemonStatusCommand : Hall9kAsyncCommand<DaemonStatusCommand
             _ => "[dim]autostart: disabled (opt in with h9k daemon autostart enable)[/]",
         });
 
+        OperatingSettingsReport report = await OperatingSettingsResolver.ResolveAsync(cancellationToken);
+        if (report.ConfigFileMalformed)
+        {
+            AnsiConsole.MarkupLineInterpolated(
+                $"[red]The platform config file ({Hall9kDatabase.ConfigFile}) is not valid JSON[/] — its operating settings are being ignored; environment variables and built-in defaults still apply.");
+        }
+
+        foreach (string warning in report.UnusableEnvironmentVariables)
+        {
+            AnsiConsole.MarkupLineInterpolated($"[red]{warning}[/]");
+        }
+
+        string settingsHeader = running is null
+            ? "settings a daemon started now would resolve (h9k config show for the full picture, h9k config set to change one):"
+            : $"settings resolved from this shell right now, not observed from pid {running.ProcessId} itself — an "
+              + "autostarted daemon never receives Hall9k__ variables, so an (env: …) origin below may not match "
+              + "what the running daemon actually started with (h9k config show for the full picture, h9k config "
+              + "set to change one):";
+        AnsiConsole.MarkupLineInterpolated($"[dim]{settingsHeader}[/]");
+        foreach ((string label, string value) in OperatingSettingsRendering.Rows(report))
+        {
+            AnsiConsole.MarkupLineInterpolated($"  [dim]{label}: {value}[/]");
+        }
+
         IReadOnlyList<string> tail = DaemonLog.Tail(TailLines);
         AnsiConsole.MarkupLineInterpolated($"[dim]log: {DaemonRuntime.LogFile}[/]");
         foreach (string line in tail)
@@ -42,7 +67,7 @@ public sealed class DaemonStatusCommand : Hall9kAsyncCommand<DaemonStatusCommand
             AnsiConsole.MarkupLineInterpolated($"  [dim]{line}[/]");
         }
 
-        return Task.FromResult(ExitCodes.Ok);
+        return ExitCodes.Ok;
     }
 
     private static string Uptime(TimeSpan uptime) => uptime switch
