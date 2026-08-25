@@ -49,6 +49,7 @@ public sealed class UninstallCommandTests : IDisposable
         File.WriteAllText(Path.Combine(home, "h9kd.log.1"), "rolled-aside log\n");
         File.WriteAllText(Path.Combine(home, "h9kd.pid"), "1234\n");
         File.WriteAllText(Path.Combine(home, "h9kd.lock"), string.Empty);
+        File.WriteAllText(Path.Combine(home, "h9kd.stop"), "1234\n");
 
         List<string> stillPresent = [];
         stillPresent.AddRange(UninstallCommand.RemoveInstallOwnedEntries(
@@ -57,10 +58,22 @@ public sealed class UninstallCommandTests : IDisposable
 
         stillPresent.Should().BeEmpty();
         Directory.Exists(home).Should().BeFalse(
-            "bin/, postgres/, h9kd.log, h9kd.log.1, h9kd.pid, and h9kd.lock are all install-owned, and "
-            + "nothing else was ever there — config.json is never install's to write in the first place, "
+            "bin/, postgres/, h9kd.log, h9kd.log.1, h9kd.pid, h9kd.lock, and h9kd.stop are all install-owned, "
+            + "and nothing else was ever there — config.json is never install's to write in the first place, "
             + "and the canonical skill set is a separate removal path (SkillSeeder.RemovePublished) and is "
             + "not part of this one.");
+    }
+
+    [Fact]
+    public void A_stale_windows_stop_request_file_is_swept_too()
+    {
+        // WindowsStopRequestWatcher normally deletes h9kd.stop within a tick of honoring it,
+        // but it can survive a force-kill, a crash, or a delete that lost to a lock — left
+        // behind, it made a machine that had run nothing but install and uninstall keep a
+        // platform-owned file uninstall never enumerated, misattributed to the operator.
+        string home = Path.Combine(directory, "home");
+
+        UninstallCommand.InstallOwnedEntries(home, []).Should().Contain(Path.Combine(home, "h9kd.stop"));
     }
 
     [Fact]
