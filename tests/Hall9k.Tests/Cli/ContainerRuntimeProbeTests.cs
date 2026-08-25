@@ -180,8 +180,9 @@ public sealed class ContainerRuntimeProbeTests : IDisposable
         // postgres_hall9k-pgdata, and purge has to ask the container rather than guess.
         RecordingProcessRunner runner = RecordingProcessRunner.Succeeding("postgres_hall9k-pgdata\n");
 
-        string? name = await ContainerRuntimeProbe.DataVolumeNameAsync(runner.Runner, CancellationToken.None);
+        (bool confirmed, string? name) = await ContainerRuntimeProbe.DataVolumeNameAsync(runner.Runner, CancellationToken.None);
 
+        confirmed.Should().BeTrue();
         name.Should().Be("postgres_hall9k-pgdata");
         runner.Calls.Should().ContainSingle(call =>
             call.Arguments.Count >= 2 && call.Arguments[0] == "inspect" && call.Arguments[1] == "hall9k-postgres");
@@ -192,19 +193,81 @@ public sealed class ContainerRuntimeProbeTests : IDisposable
     {
         RecordingProcessRunner runner = RecordingProcessRunner.Succeeding(string.Empty);
 
-        string? name = await ContainerRuntimeProbe.DataVolumeNameAsync(runner.Runner, CancellationToken.None);
+        (bool confirmed, string? name) = await ContainerRuntimeProbe.DataVolumeNameAsync(runner.Runner, CancellationToken.None);
 
+        confirmed.Should().BeTrue("docker inspect answered — it just reported no named volume mount");
+        name.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task Data_volume_name_is_unconfirmed_rather_than_null_when_docker_inspect_fails()
+    {
+        // A failed docker inspect (the daemon dropping the connection, a container removed out
+        // from under this call) is not the same fact as "this container mounts no named volume"
+        // — this uninstall feature's own pre-PR review found a purge reading the two the same
+        // way and destroying a container it believed had nothing left to lose.
+        RecordingProcessRunner runner = RecordingProcessRunner.Failing("Error: No such object: hall9k-postgres");
+
+        (bool confirmed, string? name) = await ContainerRuntimeProbe.DataVolumeNameAsync(runner.Runner, CancellationToken.None);
+
+        confirmed.Should().BeFalse("docker inspect itself failed — this is not a confirmed absence");
         name.Should().BeNull();
     }
 
     [Fact]
     public async Task Compose_up_fails_honestly_when_docker_refuses()
     {
-        RecordingProcessRunner runner = RecordingProcessRunner.Failing("no configuration file provided");
+        RecordingProcessRunner runner = null!;
+        runner = new RecordingProcessRunner(() => runner.Calls[^1].Arguments switch
+        {
+            ["volume", "ls", ..] => new ProcessResult(0, string.Empty, string.Empty),
+            _ => new ProcessResult(1, string.Empty, "no configuration file provided"),
+        });
 
-        bool started = await ContainerRuntimeProbe.ComposeUpAsync(runner.Runner, CancellationToken.None);
+        ComposeUpResult result = await ContainerRuntimeProbe.ComposeUpAsync(runner.Runner, CancellationToken.None);
 
-        started.Should().BeFalse();
+        result.Should().Be(ComposeUpResult.Failed);
+    }
+
+    [Fact]
+    public async Task Compose_up_refuses_rather_than_guessing_when_the_legacy_volume_check_itself_fails()
+    {
+        // VolumeExistsAsync's own fail-safe direction (its remarks): a failed docker volume ls
+        // is not the same fact as "no such volume", so it answers true rather than false. That
+        // same caution has to survive here — a legacy-volume check that could not actually be
+        // answered must not be read as "confirmed absent, safe to create a fresh volume".
+        RecordingProcessRunner runner = RecordingProcessRunner.Failing("Cannot connect to the Docker daemon");
+
+        ComposeUpResult result = await ContainerRuntimeProbe.ComposeUpAsync(runner.Runner, CancellationToken.None);
+
+        result.Should().Be(ComposeUpResult.LegacyVolumeDetected);
+    }
+
+    [Fact]
+    public async Task Compose_up_refuses_rather_than_creating_a_fresh_volume_beside_a_legacy_one()
+    {
+        // The one call site that would otherwise silently create a new, empty, pinned
+        // hall9k-pgdata volume while a pre-pin install's real data sits untouched under the
+        // Compose-project-prefixed name docs/operations.md's Provisioning section describes —
+        // this uninstall feature's own pre-PR review found nothing detecting that transition.
+        RecordingProcessRunner runner = new(() => new ProcessResult(0, "postgres_hall9k-pgdata\n", string.Empty));
+
+        ComposeUpResult result = await ContainerRuntimeProbe.ComposeUpAsync(runner.Runner, CancellationToken.None);
+
+        result.Should().Be(ComposeUpResult.LegacyVolumeDetected);
+        runner.Calls.Should().NotContain(call => call.Arguments.Count > 0 && call.Arguments[0] == "compose",
+            "a legacy volume was detected — nothing should be brought up until it is migrated by hand");
+    }
+
+    [Fact]
+    public async Task Compose_up_starts_normally_when_no_legacy_volume_exists()
+    {
+        RecordingProcessRunner runner = new(() => new ProcessResult(0, string.Empty, string.Empty));
+
+        ComposeUpResult result = await ContainerRuntimeProbe.ComposeUpAsync(runner.Runner, CancellationToken.None);
+
+        result.Should().Be(ComposeUpResult.Started);
+        runner.Calls.Should().Contain(call => call.Arguments.Count > 0 && call.Arguments[0] == "compose");
     }
 
     [Fact]

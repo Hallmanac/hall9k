@@ -488,8 +488,9 @@ public sealed class UninstallCommandTests : IDisposable
         (bool ok, UninstallCommand.DataTierOutcome outcome) = await UninstallCommand.HandleDataTierAsync(purgeData: false, runner.Runner, CancellationToken.None);
 
         ok.Should().BeTrue("nothing reachable is not a failure for the default, non-destructive tier");
-        outcome.Should().Be(UninstallCommand.DataTierOutcome.NoContainerRuntime,
-            "this is the non-purge tier — nothing was ever asked to be destroyed, and there was no runtime to ask");
+        outcome.Should().Be(UninstallCommand.DataTierOutcome.ContainerRuntimeNotRunning,
+            "docker info answered with a nonzero exit — Docker is installed, just not running, which is a "
+            + "different fact from no runtime being installed at all");
     }
 
     [Fact]
@@ -500,9 +501,26 @@ public sealed class UninstallCommandTests : IDisposable
         (bool ok, UninstallCommand.DataTierOutcome outcome) = await UninstallCommand.HandleDataTierAsync(purgeData: true, runner.Runner, CancellationToken.None);
 
         ok.Should().BeFalse("--purge-data promises destruction; an unreachable Docker cannot honor that silently");
-        outcome.Should().Be(UninstallCommand.DataTierOutcome.NoContainerRuntime,
+        outcome.Should().Be(UninstallCommand.DataTierOutcome.ContainerRuntimeNotRunning,
             "nothing could be reached, so nothing could have been destroyed");
         runner.Calls.Should().NotContain(call => call.Arguments.Count > 0 && (call.Arguments[0] == "rm" || call.Arguments[0] == "volume"));
+    }
+
+    [Fact]
+    public async Task Docker_not_installed_is_reported_distinctly_from_docker_installed_but_stopped()
+    {
+        // Collapsing the two into one outcome made the final summary tell an operator with
+        // Docker installed but stopped that no container runtime was found on the machine at
+        // all — the opposite diagnosis from what was actually observed, and one that points
+        // them at "install Docker" when their container and volume are sitting right there.
+        RecordingProcessRunner runner = RecordingProcessRunner.Unstartable(
+            new System.ComponentModel.Win32Exception("No such file or directory"));
+
+        (bool ok, UninstallCommand.DataTierOutcome outcome) = await UninstallCommand.HandleDataTierAsync(purgeData: false, runner.Runner, CancellationToken.None);
+
+        ok.Should().BeTrue("nothing reachable is not a failure for the default, non-destructive tier");
+        outcome.Should().Be(UninstallCommand.DataTierOutcome.NoContainerRuntime,
+            "docker itself would not even start — there is no runtime installed to ask");
     }
 
     [Fact]
@@ -583,6 +601,32 @@ public sealed class UninstallCommandTests : IDisposable
     }
 
     [Fact]
+    public async Task An_absent_container_with_only_a_legacy_named_volume_is_left_untouched_not_declared_purged()
+    {
+        // The ordinary "docker compose down" sequence removes the container but keeps the
+        // volume. On a pre-pin install, that volume is the Compose-project-prefixed
+        // PostgresRuntime.LegacyVolumeName, not the bare PostgresRuntime.VolumeName literal —
+        // checking only the literal read every task, run, and idea it holds as "nothing here",
+        // and the purge falsely reported the machine as already data-free.
+        RecordingProcessRunner runner = null!;
+        runner = new RecordingProcessRunner(() => runner.Calls[^1].Arguments switch
+        {
+            ["volume", "ls", "--filter", "name=^postgres_hall9k-pgdata$", ..] => new ProcessResult(0, "postgres_hall9k-pgdata\n", string.Empty),
+            _ => new ProcessResult(0, string.Empty, string.Empty),
+        });
+
+        (bool ok, UninstallCommand.DataTierOutcome outcome) = await UninstallCommand.HandleDataTierAsync(purgeData: true, runner.Runner, CancellationToken.None);
+
+        ok.Should().BeFalse("ownership of the legacy-named volume cannot be confirmed with no container to inspect");
+        outcome.Should().Be(UninstallCommand.DataTierOutcome.PurgeUnconfirmedVolume,
+            "the volume is real and was found — it must not be reported as nothing to purge");
+        runner.Calls.Should().NotContain(call => call.Arguments.Count > 0 && call.Arguments[0] == "rm",
+            "there is no container to remove, so docker rm is never asked to fail against one");
+        runner.Calls.Should().NotContain(call => call.Arguments.SequenceEqual(new[] { "volume", "rm", "postgres_hall9k-pgdata" }),
+            "never destroy a volume whose ownership was never observed");
+    }
+
+    [Fact]
     public async Task A_machine_that_never_created_the_volume_purges_as_a_no_op()
     {
         // Decisions Log #58: install deliberately never starts Postgres, so a fresh install's
@@ -627,6 +671,29 @@ public sealed class UninstallCommandTests : IDisposable
         runner.Calls.Should().Contain(call => call.Arguments.SequenceEqual(new[] { "rm", "-f", "hall9k-postgres" }));
         runner.Calls.Should().NotContain(call => call.Arguments.Count > 0 && call.Arguments[0] == "volume",
             "no named volume was observed, so nothing should ever be asked about a volume, guessed or otherwise");
+    }
+
+    [Fact]
+    public async Task A_container_present_but_uninspectable_leaves_the_container_and_volume_untouched()
+    {
+        // A failed docker inspect between confirming the container is present and asking what
+        // it mounts is not the same fact as "no named volume" — reading it that way used to
+        // let the purge remove the container while believing (and reporting) there had never
+        // been a volume to observe, leaving the real data volume behind while claiming success.
+        RecordingProcessRunner runner = null!;
+        runner = new RecordingProcessRunner(() => runner.Calls[^1].Arguments switch
+        {
+            ["ps", ..] => new ProcessResult(0, "running\n", string.Empty),
+            ["inspect", ..] => new ProcessResult(1, string.Empty, "Error: No such object: hall9k-postgres"),
+            _ => new ProcessResult(0, string.Empty, string.Empty),
+        });
+
+        (bool ok, UninstallCommand.DataTierOutcome outcome) = await UninstallCommand.HandleDataTierAsync(purgeData: true, runner.Runner, CancellationToken.None);
+
+        ok.Should().BeFalse("the volume mount could not be confirmed, so nothing was safe to destroy");
+        outcome.Should().Be(UninstallCommand.DataTierOutcome.PurgeIncomplete);
+        runner.Calls.Should().NotContain(call => call.Arguments.Count > 0 && call.Arguments[0] == "rm",
+            "removing the container now would destroy the one thing that could still answer what it mounts");
     }
 
     [Fact]

@@ -34,6 +34,16 @@ public static class PostgresRuntime
     /// </summary>
     public const string VolumeName = "hall9k-pgdata";
 
+    /// <summary>
+    /// The literal volume name a pre-pin installed-mode compose file leaves behind: Compose's
+    /// own project-name derivation for <see cref="ComposeDirectory"/>'s "postgres" leaf, before
+    /// this branch's <c>name:</c> pin above existed to override it (docs/operations.md's
+    /// Provisioning section has the full migration story). <c>h9k doctor</c>'s bring-up-fresh
+    /// offer checks for this literal before creating a new, empty, pinned <see cref="VolumeName"/>
+    /// volume out from under it — see <c>ContainerRuntimeProbe.ComposeUpAsync</c> in Hall9k.Cli.
+    /// </summary>
+    public const string LegacyVolumeName = "postgres_hall9k-pgdata";
+
     public static string ComposeDirectory => Path.Combine(PlatformPaths.Home, "postgres");
 
     public static string ComposeFile => Path.Combine(ComposeDirectory, "docker-compose.yml");

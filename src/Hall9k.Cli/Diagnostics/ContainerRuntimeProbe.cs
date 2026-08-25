@@ -160,24 +160,56 @@ public static class ContainerRuntimeProbe
     /// mount to report (absent, or an anonymous-volume/bind-mount container), which callers
     /// must read as "there is no named volume to observe here" — never as licence to fall back
     /// to the pinned literal, which is exactly the guess this method exists to avoid.
+    /// <para>
+    /// <c>Confirmed</c> is <see langword="false"/> when <c>docker inspect</c> itself failed
+    /// (nonzero exit — the daemon dropping the connection between an earlier call and this one,
+    /// say), which is not the same fact as "this container mounts no named volume": collapsing
+    /// the two would let a caller read a failed inspect as a confirmed absence and proceed to
+    /// destroy the container while believing there was never a volume to observe, the identical
+    /// stdout-versus-exit-code confusion <see cref="VolumeExistsAsync"/> is hardened against.
+    /// A caller sees <c>Confirmed: false, Name: null</c> for that case, and only ever sees
+    /// <c>Confirmed: true, Name: null</c> when the container was actually inspected and reported
+    /// no named volume mount.
+    /// </para>
     /// </summary>
-    public static async Task<string?> DataVolumeNameAsync(ProcessRunner runner, CancellationToken cancellationToken)
+    public static async Task<(bool Confirmed, string? Name)> DataVolumeNameAsync(ProcessRunner runner, CancellationToken cancellationToken)
     {
         ProcessResult result = await runner(
             "docker",
             ["inspect", PostgresRuntime.ContainerName, "--format", "{{range .Mounts}}{{if eq .Type \"volume\"}}{{.Name}}\n{{end}}{{end}}"],
             Directory.GetCurrentDirectory(),
             cancellationToken);
+        if (result.ExitCode != 0)
+        {
+            return (false, null);
+        }
+
         string name = result.StandardOutput
             .Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
             .FirstOrDefault() ?? string.Empty;
-        return name.Length > 0 ? name : null;
+        return (true, name.Length > 0 ? name : null);
     }
 
-    /// <summary>Stands up the platform-owned Postgres for the first time — writes the shipped
-    /// compose definition if <c>h9k install</c> never got the chance to, then brings it up.</summary>
-    public static async Task<bool> ComposeUpAsync(ProcessRunner runner, CancellationToken cancellationToken)
+    /// <summary>
+    /// Stands up the platform-owned Postgres for the first time — writes the shipped compose
+    /// definition if <c>h9k install</c> never got the chance to, then brings it up. Checks for
+    /// <see cref="PostgresRuntime.LegacyVolumeName"/> first and refuses rather than starting:
+    /// this is the one call site that would otherwise create a fresh, empty, pinned
+    /// <see cref="PostgresRuntime.VolumeName"/> volume alongside a pre-pin installation's real
+    /// data without a live container left to <c>docker inspect</c> and warn from (<see
+    /// cref="PostgresRuntime.LegacyVolumeName"/>'s own remarks) — silently, since a fresh
+    /// <c>docker compose up</c> against an absent container exits 0 either way. The reverse
+    /// direction (a genuinely fresh machine that happens to have some unrelated volume by that
+    /// name) is not a real risk this pins on: nothing but a pre-pin Hall9k install ever wrote
+    /// data to that specific literal in the first place.
+    /// </summary>
+    public static async Task<ComposeUpResult> ComposeUpAsync(ProcessRunner runner, CancellationToken cancellationToken)
     {
+        if (await VolumeExistsAsync(runner, cancellationToken, PostgresRuntime.LegacyVolumeName))
+        {
+            return ComposeUpResult.LegacyVolumeDetected;
+        }
+
         if (!File.Exists(PostgresRuntime.ComposeFile))
         {
             PostgresRuntime.WriteComposeFile();
@@ -185,6 +217,18 @@ public static class ContainerRuntimeProbe
         ProcessResult result = await runner(
             "docker", ["compose", "-f", PostgresRuntime.ComposeFile, "up", "-d"],
             PostgresRuntime.ComposeDirectory, cancellationToken);
-        return result.ExitCode == 0;
+        return result.ExitCode == 0 ? ComposeUpResult.Started : ComposeUpResult.Failed;
     }
+}
+
+/// <summary>What <see cref="ContainerRuntimeProbe.ComposeUpAsync"/> actually did — three
+/// outcomes, not a <see langword="bool"/>, because <see cref="LegacyVolumeDetected"/> is a
+/// refusal a caller must report differently from an ordinary <c>docker compose up</c>
+/// failure: the fix is a manual volume migration (docs/operations.md's Provisioning section),
+/// never a retry of the same command.</summary>
+public enum ComposeUpResult
+{
+    Started,
+    Failed,
+    LegacyVolumeDetected,
 }
