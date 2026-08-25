@@ -38,7 +38,7 @@ public sealed class LaunchdDaemonAutostart : IDaemonAutostart
     public async Task<bool> IsLoadedAsync(CancellationToken cancellationToken) =>
         (await JobStateAsync(cancellationToken)).IsLoaded;
 
-    public async Task EnableAsync(
+    public async Task<IReadOnlyList<string>> EnableAsync(
         string daemonBinaryPath,
         IReadOnlyList<KeyValuePair<string, string>> environment,
         CancellationToken cancellationToken)
@@ -47,6 +47,7 @@ public sealed class LaunchdDaemonAutostart : IDaemonAutostart
         Directory.CreateDirectory(Path.GetDirectoryName(PlistPath)!);
         await File.WriteAllTextAsync(
             PlistPath, PlistContent(daemonBinaryPath, DaemonRuntime.LogFile, environment), cancellationToken);
+        return [.. environment.Select(variable => variable.Key)];
     }
 
     public async Task<DaemonAutostartDisableOutcome> DisableAsync(CancellationToken cancellationToken)

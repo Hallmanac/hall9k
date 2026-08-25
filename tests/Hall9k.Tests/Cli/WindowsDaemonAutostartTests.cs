@@ -260,6 +260,27 @@ public sealed class WindowsDaemonAutostartTests
     }
 
     [Fact]
+    public void The_recorded_variable_names_leave_out_the_connection_string()
+    {
+        // What EnableAsync reports back as actually recorded must match what
+        // InnerCommand/LaunchScriptContent actually embed (proven not to contain the
+        // connection string by The_connection_string_is_left_out_of_the_launch_script_
+        // even_when_captured above) — a caller reporting success reports what happened,
+        // not what it was asked to record. Origin: the enable command's own confirmation
+        // message once named HALL9K_CONNECTION_STRING as recorded when it never was.
+        KeyValuePair<string, string>[] environment =
+        [
+            new("PATH", @"C:\tools"),
+            new(Hall9k.Domain.Infrastructure.Persistence.Hall9kDatabase.EnvironmentVariableName, "Host=localhost"),
+        ];
+
+        IReadOnlyList<string> recorded = WindowsDaemonAutostart.RecordedVariableNames(environment);
+
+        recorded.Should().Contain("PATH");
+        recorded.Should().NotContain(Hall9k.Domain.Infrastructure.Persistence.Hall9kDatabase.EnvironmentVariableName);
+    }
+
+    [Fact]
     public void A_double_quote_in_the_command_line_is_doubled_for_the_vbscript_string_literal()
     {
         // VBScript string literals have no backslash-escape syntax — the only way to carry
