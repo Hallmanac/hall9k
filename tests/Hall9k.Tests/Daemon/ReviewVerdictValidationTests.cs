@@ -483,4 +483,53 @@ public sealed class ReviewVerdictValidationTests
                 objective)
             .Should().BeTrue();
     }
+
+    /// <summary>
+    /// A conformance session that restates one of the task's own acceptance criteria before
+    /// concluding satisfies the location-plus-defect shape without having found anything (cycle-3
+    /// review, `AgentPromptBuilder.cs:813-817`): the criteria bullets are arbitrary per-task text
+    /// printed into the conformance prompt exactly like the objective, and this project's own task
+    /// store shows criteria routinely pairing a filename with a defect word.
+    /// </summary>
+    [Fact]
+    public void Restating_a_tasks_own_acceptance_criterion_does_not_name_a_finding()
+    {
+        const string criterion = "LogsCommand.cs no longer resolves a stale run directory";
+        ReviewVerdictValidation.NamesAFinding(
+                $"Acceptance criterion met: {criterion}.\n\nVERDICT: needs-fixes",
+                taskAcceptanceCriteria: [criterion])
+            .Should().BeFalse();
+    }
+
+    /// <summary>
+    /// The acceptance-criteria echo screen only removes each criterion's own text, so a genuine
+    /// defect stated alongside a restated criterion is still read as naming a finding.
+    /// </summary>
+    [Fact]
+    public void A_real_defect_stated_alongside_a_restated_acceptance_criterion_still_names_a_finding()
+    {
+        const string criterion = "LogsCommand.cs no longer resolves a stale run directory";
+        ReviewVerdictValidation.NamesAFinding(
+                $"Acceptance criterion met: {criterion}. `Auth.cs:42` never resets the limiter after a "
+                + "rejected request.\n\nVERDICT: needs-fixes",
+                taskAcceptanceCriteria: [criterion])
+            .Should().BeTrue();
+    }
+
+    /// <summary>
+    /// The conformance lens's own reporting verbs — "unmet", "departs", "violates", "breaks",
+    /// "lacks", "omits" — name a defect the same way the rest of this vocabulary does (cycle-3
+    /// review): the conformance lens has no structured findings contract, so this prose branch is
+    /// its only path to naming anything, and a correctly located, correctly described finding
+    /// phrased with one of these verbs must not read as naming nothing.
+    /// </summary>
+    [Theory]
+    [InlineData("1. `RunPaths.cs:23` — this class violates the sealed-by-default rule; it is not sealed.\n\nVERDICT: needs-fixes")]
+    [InlineData("1. `RunPaths.cs:23` — this class breaks the sealed-by-default rule.\n\nVERDICT: needs-fixes")]
+    [InlineData("1. `RunPaths.cs:23` — this class lacks the sealed modifier the codebase's own rule requires.\n\nVERDICT: needs-fixes")]
+    [InlineData("1. `RunPaths.cs:23` — this class omits the sealed modifier the codebase's own rule requires.\n\nVERDICT: needs-fixes")]
+    [InlineData("1. `RunPaths.cs:23` — the acceptance criterion is unmet.\n\nVERDICT: needs-fixes")]
+    [InlineData("1. `RunPaths.cs:23` — this class departs from the sealed-by-default rule.\n\nVERDICT: needs-fixes")]
+    public void The_conformance_lenss_own_reporting_verbs_name_a_finding(string output) =>
+        ReviewVerdictValidation.NamesAFinding(output).Should().BeTrue();
 }
