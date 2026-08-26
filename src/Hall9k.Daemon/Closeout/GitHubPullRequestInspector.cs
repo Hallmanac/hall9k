@@ -252,16 +252,17 @@ public sealed class GitHubPullRequestInspector : IPullRequestInspector
             }
         }
 
+        string? headCommit = ReadHeadCommit(pullRequest);
         return new ReviewObservation(
             threadIds.Count,
             humanThreadIds.Count,
             ReadReviewers(pullRequest),
             FindErroredCopilotReview(pullRequest),
-            ReadHeadCommit(pullRequest),
+            headCommit,
             threadIds,
             humanThreadIds,
             ReadPendingReviewRequestLogins(pullRequest),
-            ReadCopilotReviewState(pullRequest),
+            ReadCopilotReviewState(pullRequest, headCommit),
             copilotThreadCount,
             IsConflicting: ReadMergeable(pullRequest) == "CONFLICTING");
     }
@@ -272,7 +273,13 @@ public sealed class GitHubPullRequestInspector : IPullRequestInspector
     /// minutes with a landed Copilot review nobody had read before the merge). An errored
     /// review (<see cref="FindErroredCopilotReview"/>) does not count as landed: a review that
     /// could not read the diff produced no verdict, so the phase this state ultimately writes
-    /// must not tell a reader Copilot has weighed in when it has not.
+    /// must not tell a reader Copilot has weighed in when it has not. A review left on a commit
+    /// other than <paramref name="headCommit"/> does not count as landed either (origin: a
+    /// countersign re-request after a fix push recreates Copilot's review request while its
+    /// earlier review of the pre-fix commit still sits in <c>latestReviews</c> — the same
+    /// staleness <see cref="ReadReviewers"/>/<see cref="ReadReviewedCommit"/> already track for
+    /// the countersign), so a stale review falls through to the pending-request check below
+    /// exactly as if Copilot had not reviewed yet.
     /// <para>
     /// The pending check reads <c>reviewRequests</c> raw, deliberately not through
     /// <see cref="ReadPendingReviewRequestLogins"/> — that method excludes a bot's own request
@@ -281,7 +288,7 @@ public sealed class GitHubPullRequestInspector : IPullRequestInspector
     /// way, is exactly what "awaiting Copilot review" needs to say.
     /// </para>
     /// </summary>
-    private static ExternalReviewState ReadCopilotReviewState(JsonElement pullRequest)
+    private static ExternalReviewState ReadCopilotReviewState(JsonElement pullRequest, string? headCommit)
     {
         if (pullRequest.TryGetProperty("latestReviews", out JsonElement latest))
         {
@@ -293,7 +300,8 @@ public sealed class GitHubPullRequestInspector : IPullRequestInspector
                 }
 
                 string body = review.GetProperty("body").GetString() ?? "";
-                if (!body.Contains(ErroredReviewBodyMarker, StringComparison.OrdinalIgnoreCase))
+                if (!body.Contains(ErroredReviewBodyMarker, StringComparison.OrdinalIgnoreCase)
+                    && string.Equals(ReadReviewedCommit(review), headCommit, StringComparison.OrdinalIgnoreCase))
                 {
                     return ExternalReviewState.Landed;
                 }
