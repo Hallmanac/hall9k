@@ -392,10 +392,15 @@ public sealed class TaskPhaseSurfaceTests
         StatusFixtures.Compose(StatusFixtures.Task(TaskState.Done, runId, pullRequest), pending)
             .Phase.Text.Should().Be("watching PR #24 — awaiting Copilot review");
 
+        // No external review activity is not the same as "only a human's merge is left": the
+        // sweep records this observation ahead of its own checks read, so the line stops short
+        // of naming the human as the last gate while checks may still be reporting.
         RunDetails none = StatusFixtures.Run(runId, RunState.AwaitingReview, sessionProcessId: null, pullRequestNumber: 24);
         none.ExternalReviewState = ExternalReviewState.None;
         StatusFixtures.Compose(StatusFixtures.Task(TaskState.Done, runId, pullRequest), none)
-            .Phase.Text.Should().Be("watching PR #24 — awaiting human review");
+            .Phase.Text.Should().Be("watching PR #24");
+        StatusFixtures.Compose(StatusFixtures.Task(TaskState.Done, runId, pullRequest), none)
+            .Phase.Detail.Should().Be("no external review activity observed; its checks may still be reporting");
 
         // A run recorded before this observation existed (or a sweep that has not run yet)
         // reads exactly as the original silent line rather than asserting a state nobody
