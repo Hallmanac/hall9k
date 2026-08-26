@@ -403,6 +403,22 @@ public sealed class AttentionSurfaceTests
         reviewLanded.Attention.NeedsYou.Should().BeTrue("Copilot has weighed in; nothing else will read it");
         reviewLanded.Attention.Cause.Should().Contain("Copilot's review landed");
         reviewLanded.Attention.Cause.Should().Contain("the merge is yours");
+
+        // Recorded while the CI picture was still incomplete: the sweep never got to
+        // re-checking for new unresolved threads, so the cause must not claim the merge is
+        // the only thing left (independent pre-PR review, cycle 3).
+        RunDetails landedChecksPending = StatusFixtures.Run(
+            runId, RunState.AwaitingReview, sessionProcessId: null, pullRequestNumber: 24);
+        landedChecksPending.ExternalReviewState = ExternalReviewState.Landed;
+        landedChecksPending.ExternalReviewChecksPending = true;
+        TaskStatusRow reviewLandedChecksPending = StatusFixtures.Compose(
+            StatusFixtures.Task(TaskState.Done, runId, pullRequest), landedChecksPending);
+
+        reviewLandedChecksPending.Attention.NeedsYou.Should().BeTrue("Copilot has weighed in even though checks are still out");
+        reviewLandedChecksPending.Attention.Cause.Should().Contain("Copilot's review landed");
+        reviewLandedChecksPending.Attention.Cause.Should().Contain("checks may still be reporting");
+        reviewLandedChecksPending.Attention.Cause.Should().NotContain(
+            "landed — read it, then the merge is yours", "checks pending must not read as the unconditional all-clear");
     }
 
     /// <summary>

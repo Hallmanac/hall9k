@@ -206,6 +206,16 @@ internal static class AttentionComposer
     {
         "RequestedPending" => new TaskAttention(AttentionLevel.WaitingHandled,
             "Copilot's review is requested but not submitted yet — nothing for you until it lands"),
+        // A landed review recorded while checks were still incomplete has not been read
+        // against a settled CI result, and its threads have not been re-checked for new
+        // unresolved ones this sweep either (RunDetails.ExternalReviewChecksPending) — the
+        // unconditional claim below is only true once a sweep got past both reads without
+        // moving the run off AwaitingReview, so a run still carrying the caveat gets the same
+        // "read its checks first" hedge the None arm below already gives a quiet pull request.
+        "Landed" when run.ExternalReviewChecksPending => new TaskAttention(AttentionLevel.NeedsYou,
+            "Copilot's review landed, but its checks may still be reporting and its threads are not yet "
+            + "confirmed resolved — read its checks, then the merge is yours",
+            run.PullRequestUrl ?? string.Empty),
         "Landed" => new TaskAttention(AttentionLevel.NeedsYou,
             "Copilot's review landed — read it, then the merge is yours", run.PullRequestUrl ?? string.Empty),
         // "None" and Unknown both mean no external review activity has been observed, which is

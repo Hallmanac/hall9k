@@ -229,10 +229,11 @@ public sealed class RunCloseoutProjectionTests
         RunDetails view = AwaitingReviewRun(projection, id);
 
         projection.Apply(new FakeEvent<ExternalReviewObserved>(
-            new ExternalReviewObserved(id, ExternalReviewState.Landed, 3, Now.AddMinutes(5))), view);
+            new ExternalReviewObserved(id, ExternalReviewState.Landed, 3, ChecksPending: false, Now.AddMinutes(5))), view);
 
         view.ExternalReviewState.Should().Be(ExternalReviewState.Landed);
         view.ExternalReviewThreadCount.Should().Be(3);
+        view.ExternalReviewChecksPending.Should().BeFalse();
         view.State.Should().Be(RunState.AwaitingReview, "the observation is informational only");
 
         RunAggregate run = new();
@@ -240,10 +241,11 @@ public sealed class RunCloseoutProjectionTests
             id, DomainId.New(), DomainId.New(), DomainId.New(), 1, DomainId.New(),
             "/tmp/wt", "task/abc", ExecutorMode.Subscription, Now));
         run.Apply(new PullRequestOpened(id, PullRequestUrl, 7, Now));
-        run.Apply(new ExternalReviewObserved(id, ExternalReviewState.RequestedPending, 0, Now.AddMinutes(5)));
+        run.Apply(new ExternalReviewObserved(id, ExternalReviewState.RequestedPending, 0, ChecksPending: true, Now.AddMinutes(5)));
 
         run.ExternalReviewState.Should().Be(ExternalReviewState.RequestedPending);
         run.ExternalReviewThreadCount.Should().Be(0);
+        run.ExternalReviewChecksPending.Should().BeTrue();
         run.State.Should().Be(RunState.AwaitingReview);
     }
 

@@ -423,6 +423,13 @@ public sealed class CloseoutEngine(
     /// when it actually moved, so a quiet pull request does not grow a same-state event every
     /// sweep (mirrors the errored-review dedup in RerequestReviewOrParkAsync). Read only by
     /// the Delivered phase line — never a task lifecycle status, never a driver of RunState.
+    /// <para>
+    /// <c>ChecksPending</c> is included in the dedup comparison as its own axis (independent
+    /// pre-PR review, cycle 3): a sweep where only the CI picture completed — same review state,
+    /// same thread count — is exactly the transition the Delivered surfaces need in order to
+    /// stop caveating a landed review, so it must land its own event even when nothing else
+    /// changed.
+    /// </para>
     /// </summary>
     private async Task RecordExternalReviewObservationAsync(
         IDocumentSession session,
@@ -432,13 +439,15 @@ public sealed class CloseoutEngine(
         CancellationToken cancellationToken)
     {
         if (snapshot.CopilotReviewState == run.ExternalReviewState
-            && snapshot.CopilotReviewThreadCount == run.ExternalReviewThreadCount)
+            && snapshot.CopilotReviewThreadCount == run.ExternalReviewThreadCount
+            && snapshot.HasPendingChecks == run.ExternalReviewChecksPending)
         {
             return;
         }
 
         session.Events.Append(run.Id, new ExternalReviewObserved(
-            run.Id, snapshot.CopilotReviewState, snapshot.CopilotReviewThreadCount, now));
+            run.Id, snapshot.CopilotReviewState, snapshot.CopilotReviewThreadCount,
+            snapshot.HasPendingChecks, now));
         await session.SaveChangesAsync(cancellationToken);
     }
 
