@@ -48,11 +48,5 @@ public static class MartenConfiguration
         opts.Projections.Add<TaskListItemProjection>(ProjectionLifecycle.Inline);
         opts.Projections.Add<RunDetailsProjection>(ProjectionLifecycle.Inline);
         opts.Projections.Add<RunListItemProjection>(ProjectionLifecycle.Inline);
-
-        // ProjectHomeRenderEngine's archive sweep filters every project's runs by TaskId on
-        // every pass, with a parameter array that only grows as the project accumulates Done
-        // tasks (backlog 51) — without this, that query is a sequential scan of the whole runs
-        // table rather than an index lookup.
-        opts.Schema.For<RunListItem>().Duplicate(item => item.TaskId);
     }
 }
