@@ -271,8 +271,13 @@ internal static class TaskPhaseComposer
             SessionLiveness.NotApplicable, CopilotThreadsDetail(run)),
         "RequestedPending" => new TaskPhase($"watching {pullRequest} — awaiting Copilot review",
             SessionLiveness.NotApplicable, "requested but not yet submitted"),
-        "None" => new TaskPhase($"watching {pullRequest} — awaiting human review",
-            SessionLiveness.NotApplicable, "no external review activity observed"),
+        // No external review activity does not mean a human's merge is the only thing left:
+        // the closeout sweep records this observation ahead of its own checks read, so a run
+        // still building or testing reads identically to one that is genuinely idle. Naming
+        // the human as the last gate here would assert an all-clear nobody made, so this stays
+        // as unresolved as the silent line it replaced for every other AwaitingReview row.
+        "None" => new TaskPhase($"watching {pullRequest}",
+            SessionLiveness.NotApplicable, "no external review activity observed; its checks may still be reporting"),
         _ => new TaskPhase($"watching {pullRequest} — waiting on your merge",
             SessionLiveness.NotApplicable, "no finding recorded; its checks may still be reporting"),
     };
