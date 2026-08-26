@@ -59,18 +59,19 @@ public sealed class ReviewFindingParserTests
     }
 
     /// <summary>
-    /// The two conservative readings, stated as behaviour rather than left implicit: an ungraded
-    /// finding still forces another cycle (it has not been shown safe to wave through), and an
-    /// untagged one is fixed here rather than routed away (routing is the irreversible half).
+    /// Two readings that no longer agree the way they once did (Decisions Log #87): an ungraded
+    /// finding still forces the adversarial track's own multi-cycle gate once it applies (it has
+    /// not been shown safe to wave through that one), but it no longer earns a fix session of
+    /// its own this cycle — the platform cannot tell a lazy omission from genuine polish once
+    /// both lenses are told to grade everything, so it rides along exactly as a stated Low would.
     /// </summary>
     [Fact]
-    public void An_untagged_finding_is_fixed_here_and_still_forces_a_cycle()
+    public void An_untagged_finding_rides_along_but_still_forces_the_adversarial_gate()
     {
         ReviewFinding finding = ReviewResultParser.ParseFindings("FINDING: at=A.cs:1\nDefect: something.")
             .Should().ContainSingle().Subject;
 
-        finding.IsFixedHere.Should().BeTrue();
-        finding.Disposition.Should().Be(ReviewFindingDisposition.Fix);
+        finding.Disposition.Should().Be(ReviewFindingDisposition.RideAlong);
         finding.Severity.ForcesAnotherCycle.Should().BeTrue();
     }
 

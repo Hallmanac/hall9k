@@ -69,12 +69,30 @@ public static class ReviewTrackPolicy
     {
         if (verdict == ReviewVerdict.MergeReady)
         {
-            return new ReviewTrackPlan(lens, Continues: false, ReviewSettlement.Clean, [], [], []);
+            // A merge-ready pass never forces another cycle, whatever it attached (Decisions Log
+            // #87): route and ride-along findings still split out of it exactly as they would
+            // from a needs-fixes one, but nothing here is ever a Fix — RecordReviewPassAsync
+            // only ever hands this method a merge-ready verdict once it has already confirmed no
+            // finding meets the fix bar. Settlement reflects what was actually attached: a pass
+            // that carried nothing really did find nothing (Clean), one that carried a route or
+            // a ride-along did not (Settled), the same distinction a needs-fixes cycle draws.
+            List<ReviewFinding> mergeReadyRoute = [.. findings.Where(finding => finding.Disposition == ReviewFindingDisposition.Route)];
+            List<ReviewFinding> mergeReadyRideAlong = [.. findings.Where(finding => finding.Disposition == ReviewFindingDisposition.RideAlong)];
+            ReviewSettlement mergeReadySettlement = mergeReadyRoute.Count > 0 || mergeReadyRideAlong.Count > 0
+                ? ReviewSettlement.Settled
+                : ReviewSettlement.Clean;
+            return new ReviewTrackPlan(lens, Continues: false, mergeReadySettlement, [], mergeReadyRoute, mergeReadyRideAlong, []);
         }
 
+        // Stated()'s placeholder for a needs-fixes verdict the parser could read nothing
+        // structured out of is always Fix (ReviewFinding.Disposition's own blank-Location-and-
+        // Text case), so it lands in `fix` below exactly as before rather than joining the
+        // ride-along split (Decisions Log #87) — that split only ever applies to a genuinely
+        // parsed finding, never to the placeholder standing in for one the platform could not read.
         IReadOnlyList<ReviewFinding> stated = Stated(findings);
-        List<ReviewFinding> fix = [.. stated.Where(finding => finding.IsFixedHere)];
-        List<ReviewFinding> route = [.. stated.Where(finding => !finding.IsFixedHere)];
+        List<ReviewFinding> fix = [.. stated.Where(finding => finding.Disposition == ReviewFindingDisposition.Fix)];
+        List<ReviewFinding> route = [.. stated.Where(finding => finding.Disposition == ReviewFindingDisposition.Route)];
+        List<ReviewFinding> rideAlong = [.. stated.Where(finding => finding.Disposition == ReviewFindingDisposition.RideAlong)];
         bool gated = GateApplies(lens, cycle, options);
         // Before the gate, a needs-fixes verdict always runs the track again: every finding of
         // every grade forces the next cycle, and a cycle that only routed still leaves the
@@ -82,8 +100,8 @@ public static class ReviewTrackPolicy
         bool forcesAnotherCycle = !gated || fix.Any(finding => finding.Severity.ForcesAnotherCycle);
 
         return forcesAnotherCycle
-            ? new ReviewTrackPlan(lens, Continues: true, Settlement: null, fix, route, [])
-            : new ReviewTrackPlan(lens, Continues: false, ReviewSettlement.Settled, fix, route,
+            ? new ReviewTrackPlan(lens, Continues: true, Settlement: null, fix, route, rideAlong, [])
+            : new ReviewTrackPlan(lens, Continues: false, ReviewSettlement.Settled, fix, route, rideAlong,
                 [.. fix.Select(finding => Residual(lens, cycle, finding, ReviewResidualDisposition.FixedUnreviewed))]);
     }
 
@@ -127,7 +145,12 @@ public static class ReviewTrackPolicy
     private static bool GateApplies(ReviewLens lens, int cycle, DaemonOptions options) =>
         lens == ReviewLens.Adversarial && cycle >= options.AdversarialSeverityGateFromCycle;
 
-    private static ReviewResidual Residual(
+    /// <summary>
+    /// Internal rather than private (Decisions Log #87): <c>ReviewEngine.RecordReviewPassAsync</c>
+    /// builds the identical shape of residual for a ride-along a cycle's own fix session swept
+    /// up for free, and the two must never drift into constructing it two different ways.
+    /// </summary>
+    internal static ReviewResidual Residual(
         ReviewLens lens, int cycle, ReviewFinding finding, ReviewResidualDisposition disposition) =>
         new(lens, cycle, finding.Severity, finding.Scope, disposition, finding.Location);
 }

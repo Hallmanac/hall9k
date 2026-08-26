@@ -30,25 +30,32 @@ public sealed class ReviewTrackPolicyTests
     /// <summary>
     /// Before the gate cycle, every grade forces the next cycle. The early cycles get full
     /// rigor on purpose: the code is still converging, and the gate is for the nit-churn tail.
+    /// A Low no longer joins <see cref="ReviewTrackPlan.Fix"/> at any cycle, gate or no gate
+    /// (Decisions Log #87) — it rides along instead — but the pre-gate cycle still looks again
+    /// regardless: nothing here forces it via the fix bucket, the unconditional pre-gate rule
+    /// does that on its own (<see cref="ReviewTrackPolicy.Decide"/>'s own <c>!gated</c> branch).
     /// </summary>
     [Theory]
     [InlineData(1)]
     [InlineData(2)]
     [InlineData(3)]
-    public void Before_the_gate_a_low_still_forces_another_adversarial_cycle(int cycle)
+    public void Before_the_gate_a_needs_fixes_verdict_still_forces_another_adversarial_cycle_even_over_a_low(int cycle)
     {
         ReviewTrackPlan plan = Decide(
             ReviewLens.Adversarial, cycle, ReviewVerdict.NeedsFixes,
             Finding(ReviewSeverity.Low, ReviewFindingScope.InScope, "A.cs:1"));
 
         plan.Continues.Should().BeTrue();
-        plan.Fix.Should().ContainSingle();
+        plan.Fix.Should().BeEmpty("a Low never earns a fix session of its own, gate or no gate (Decisions Log #87)");
+        plan.RideAlong.Should().ContainSingle();
         plan.Residuals.Should().BeEmpty("a track that runs again leaves nothing behind yet");
     }
 
     /// <summary>
-    /// From the gate cycle, mediums and lows are still fixed — they simply stop re-triggering
-    /// the loop — and what ships unread is recorded as a residual rather than forgotten.
+    /// From the gate cycle, a Medium is still fixed and still stops re-triggering the loop —
+    /// unchanged by Decisions Log #87, which only touches findings below the fix bar. A Low in
+    /// the same cycle no longer joins the fix session at all; it rides along instead, and what
+    /// ships unread past the gate is still recorded as a residual for the Medium.
     /// </summary>
     [Fact]
     public void From_the_gate_cycle_only_a_high_forces_another_cycle()
@@ -60,7 +67,8 @@ public sealed class ReviewTrackPolicyTests
 
         settled.Continues.Should().BeFalse();
         settled.Settlement.Should().Be(ReviewSettlement.Settled);
-        settled.Fix.Should().HaveCount(2, "mediums and lows are still fixed, just not re-reviewed");
+        settled.Fix.Should().ContainSingle("the medium is still fixed; the low rides along instead (Decisions Log #87)");
+        settled.RideAlong.Should().ContainSingle();
         settled.Residuals.Should().OnlyContain(
             residual => residual.Disposition == ReviewResidualDisposition.FixedUnreviewed);
 
@@ -72,13 +80,23 @@ public sealed class ReviewTrackPolicyTests
         forced.Continues.Should().BeTrue("one high past the gate is enough");
     }
 
-    /// <summary>An ungraded finding is not waved through the gate: unknown is not low.</summary>
+    /// <summary>
+    /// An ungraded finding is not waved through the adversarial track's own multi-cycle gate:
+    /// unknown is not low there. It IS read the same as low for the separate fix-bar question
+    /// Decisions Log #87 introduces, though — the platform cannot tell a lazy omission from
+    /// genuine polish once both lenses are told to grade everything, and a whole cycle is too
+    /// much to spend on the chance it was the former. This is a deliberate, documented trade-off
+    /// against this type's usual Unknown-is-conservative reading, not a regression of it.
+    /// </summary>
     [Fact]
-    public void An_ungraded_finding_still_forces_a_cycle_past_the_gate()
+    public void An_ungraded_finding_rides_along_but_no_longer_forces_a_cycle_past_the_gate()
     {
-        Decide(ReviewLens.Adversarial, cycle: 6, ReviewVerdict.NeedsFixes,
-                Finding(ReviewSeverity.Unknown, ReviewFindingScope.InScope, "A.cs:1"))
-            .Continues.Should().BeTrue();
+        ReviewTrackPlan plan = Decide(ReviewLens.Adversarial, cycle: 6, ReviewVerdict.NeedsFixes,
+            Finding(ReviewSeverity.Unknown, ReviewFindingScope.InScope, "A.cs:1"));
+
+        plan.Continues.Should().BeFalse("nothing here meets the fix bar, so nothing forces another look past the gate");
+        plan.Fix.Should().BeEmpty();
+        plan.RideAlong.Should().ContainSingle();
     }
 
     /// <summary>
@@ -228,7 +246,10 @@ public sealed class ReviewTrackPolicyTests
     /// The cap and the gate both take a cycle number and they are deliberately not the same
     /// number. A human's needs-fixes resolution re-grants the cap (log #22), but the gate is a
     /// statement about how converged the diff is by cycle eleven — re-opening full rigor there
-    /// would restart the nit-churn tail exactly where the gate exists to end it.
+    /// would restart the nit-churn tail exactly where the gate exists to end it. Uses a Medium
+    /// rather than the old Low here (Decisions Log #87 moved Low off the fix bucket entirely,
+    /// which would leave this test unable to tell "still fixed, not re-reviewed" apart from
+    /// "rides along" — the point this test is actually making is about the gate, not the bar).
     /// </summary>
     [Fact]
     public void A_human_grant_re_measures_the_cap_but_never_re_opens_the_severity_gate()
@@ -238,10 +259,26 @@ public sealed class ReviewTrackPolicyTests
 
         ReviewTrackPlan plan = Decide(
             ReviewLens.Adversarial, cycle: 11, ReviewVerdict.NeedsFixes,
+            Finding(ReviewSeverity.Medium, ReviewFindingScope.InScope, "Auth.cs:9"));
+
+        plan.Continues.Should().BeFalse("past the gate a medium is fixed without forcing another cycle");
+        plan.Fix.Should().ContainSingle("it is still fixed — the gate stops re-review, not the fixing");
+    }
+
+    /// <summary>
+    /// A Low is no longer fixed at all on its own past the gate (Decisions Log #87): it rides
+    /// along instead, regardless of how many cycles the track's own budget has left.
+    /// </summary>
+    [Fact]
+    public void Past_the_gate_a_low_rides_along_rather_than_being_fixed_on_its_own()
+    {
+        ReviewTrackPlan plan = Decide(
+            ReviewLens.Adversarial, cycle: 11, ReviewVerdict.NeedsFixes,
             Finding(ReviewSeverity.Low, ReviewFindingScope.InScope, "Auth.cs:9"));
 
-        plan.Continues.Should().BeFalse("past the gate a low is fixed without forcing another cycle");
-        plan.Fix.Should().ContainSingle("it is still fixed — the gate stops re-review, not the fixing");
+        plan.Continues.Should().BeFalse();
+        plan.Fix.Should().BeEmpty();
+        plan.RideAlong.Should().ContainSingle();
     }
 
     private static ReviewTrackPlan Decide(

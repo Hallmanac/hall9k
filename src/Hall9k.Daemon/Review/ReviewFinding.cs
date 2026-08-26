@@ -19,19 +19,49 @@ public sealed record ReviewFinding(
     string Text)
 {
     /// <summary>
-    /// Whether this finding is fixed in this pull request rather than routed away. Everything
-    /// in the branch's own code is, and so is an out-of-scope High — cleanup-as-you-touch, in
-    /// its own commit. Routing needs both tags stated: an out-of-scope tag on a finding the
-    /// reviewer graded Medium or Low. An untagged scope and an ungraded severity alike take the
-    /// reversible path and stay here, which is the same reading the gate gives an ungraded
-    /// finding — routing a defect nobody graded would export it out of the pull request AND
-    /// spend none of the cycle it would otherwise have forced.
+    /// How the loop records what it decided to do with this finding (Decisions Log #63, #87).
+    /// Route needs both tags stated: an out-of-scope tag on a finding the reviewer graded Medium
+    /// or Low — an untagged scope and an ungraded severity alike take the reversible path rather
+    /// than being routed away, exactly as before. Everything else out-of-scope (a High, or one
+    /// the reviewer never graded) is fixed here — cleanup-as-you-touch for the High, and the
+    /// conservative reading for the ungraded one: routing a defect nobody graded would export it
+    /// out of the pull request on no evidence it is safe to.
+    /// <para>
+    /// In-scope is where <see cref="ReviewSeverity.MeetsFixBar"/> now decides instead of
+    /// automatically fixing everything here regardless of grade (Decisions Log #87): a Medium or
+    /// High is still fixed this cycle, same as always, but a Low or an ungraded finding rides
+    /// along instead of earning its own fix-and-re-review cycle. Unlike the out-of-scope branch,
+    /// an ungraded in-scope finding is deliberately NOT read the conservative way here — see
+    /// <see cref="ReviewSeverity.MeetsFixBar"/>'s own doc for why.
+    /// </para>
+    /// <para>
+    /// <see cref="ReviewTrackPolicy.Stated"/>'s placeholder for a needs-fixes verdict the parser
+    /// could not structure at all — blank <see cref="Location"/> and blank <see cref="Text"/>,
+    /// the one shape no genuinely parsed finding ever has — is always Fix, never RideAlong: it is
+    /// unplaced and ungraded because nothing about it could be read, never because it was graded
+    /// Low, and demoting it on the strength of a grade nobody actually gave would reopen the gap
+    /// Decisions Log #86 closed for a needs-fixes verdict naming something unstructured.
+    /// </para>
     /// </summary>
-    public bool IsFixedHere => !Scope.IsRoutable || !Severity.IsStatedBelowHigh;
+    public ReviewFindingDisposition Disposition
+    {
+        get
+        {
+            if (Location.IsBlank() && Text.IsBlank())
+            {
+                return ReviewFindingDisposition.Fix;
+            }
 
-    /// <summary>How the loop records what it decided to do with this finding.</summary>
-    public ReviewFindingDisposition Disposition =>
-        IsFixedHere ? ReviewFindingDisposition.Fix : ReviewFindingDisposition.Route;
+            if (Scope.IsRoutable && Severity.IsStatedBelowHigh)
+            {
+                return ReviewFindingDisposition.Route;
+            }
+
+            return !Scope.IsRoutable && !Severity.MeetsFixBar
+                ? ReviewFindingDisposition.RideAlong
+                : ReviewFindingDisposition.Fix;
+        }
+    }
 
     /// <summary>The stream's record of this finding: its classification, never its text (log #6).</summary>
     public ReviewFindingRecord ToRecord() => new(Severity, Scope, Location, Disposition);
