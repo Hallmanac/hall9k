@@ -1630,6 +1630,133 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
     }
 
     /// <summary>
+    /// A second fix round dispatched over the same finding location the previous fix round was
+    /// already given escalates to the review role's model (task: a second fix round over the same
+    /// findings, origin: task 60 generation 2's Sonnet fix session dodged a flaky-test race by
+    /// restructuring the test instead of fixing it). The first round over that same defect never
+    /// escalates — there is no previous round yet — and once a later round moves on to a genuinely
+    /// different defect, de-escalation is automatic: nothing resets it by hand.
+    /// </summary>
+    [Fact]
+    public async Task A_second_fix_round_over_the_same_finding_escalates_and_a_fresh_defect_de_escalates()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        using DocumentStore store = NewStore();
+        (Guid taskId, Guid runId, _) = await SeedVerifiedRunAsync(store, cts.Token);
+
+        DaemonOptions options = new()
+        {
+            DefaultModel = "claude-opus-5",
+            ModelByRole = new RoleModelDefaults { Review = "sonnet", Fix = "haiku" },
+            // High enough that this scenario's four conformance cycles never hit the cap — the
+            // point here is the escalation trigger, not the cap.
+            MaxComplianceReviewCycles = 10,
+        };
+        ScriptedExecutor executor = new(
+            // Cycle 1: conformance finds a defect; adversarial is clean and goes dormant.
+            "FINDING: severity=high; scope=in-scope; at=src/Auth.cs:42\n"
+                + "Defect: the limiter never resets.\nScenario: the second request always 429s.\n\n"
+                + "VERDICT: needs-fixes",
+            "Nothing of my own.\n\nVERDICT: merge-ready",
+            // Fix round 1 over src/Auth.cs:42 — the first round, nothing to repeat yet.
+            "Reset the limiter.\n\nRESOLUTION: fixed",
+            // Cycle 2: conformance (alone now) finds the SAME location again.
+            "FINDING: severity=high; scope=in-scope; at=src/Auth.cs:42\n"
+                + "Defect: still never resets.\nScenario: still 429s.\n\nVERDICT: needs-fixes",
+            // Fix round 2 over src/Auth.cs:42 again — a repeat of round 1's own finding.
+            "Reset it for real this time.\n\nRESOLUTION: fixed",
+            // Cycle 3: conformance finds a genuinely different defect.
+            "FINDING: severity=high; scope=in-scope; at=src/Other.cs:99\n"
+                + "Defect: a descriptor leaks.\nScenario: descriptors pile up.\n\nVERDICT: needs-fixes",
+            // Fix round 3 over src/Other.cs:99 — fresh, not a repeat of round 2's location.
+            "Closed the descriptor.\n\nRESOLUTION: fixed",
+            "Fixed for real.\n\nVERDICT: merge-ready");
+
+        bool mergeReady = await NewEngine(store, executor, options).ReviewAsync(runId, taskId, cts.Token);
+
+        mergeReady.Should().BeTrue();
+        executor.Spawns.Select(spawn => spawn.Model.Value).Should().Equal(
+            ["sonnet", "sonnet", "haiku", "sonnet", "sonnet", "sonnet", "haiku", "sonnet"],
+            "fix round 1 (index 2) is a first round, fix round 2 (index 4) repeats round 1's own "
+                + "location and escalates, and fix round 3 (index 6) moves to a fresh defect and "
+                + "de-escalates automatically");
+
+        await using IQuerySession query = store.QuerySession();
+        List<object> events = [.. (await query.Events.FetchStreamAsync(runId, token: cts.Token)).Select(e => e.Data)];
+        List<ReviewFixDispatched> fixDispatches = [.. events.OfType<ReviewFixDispatched>()];
+        fixDispatches.Should().HaveCount(3);
+        fixDispatches.Select(e => e.Escalated).Should().Equal([false, true, false]);
+        fixDispatches[0].EscalationReason.Should().BeNull();
+        fixDispatches[1].EscalationReason.Should().NotBeNull().And.Contain("src/Auth.cs:42");
+        fixDispatches[2].EscalationReason.Should().BeNull();
+
+        RunDetails run = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
+        run.LastFixSessionEscalated.Should().BeFalse(
+            "the run's last fix round was the de-escalated one over the fresh defect");
+        run.LastFixSessionEscalationReason.Should().BeNull();
+    }
+
+    /// <summary>
+    /// A human's own needs-fixes verdict, resolving a dispute at the same cycle the disputed
+    /// finding was found on, is a genuinely new round — not the mechanical redispatch a budget
+    /// retry would be — and gets its own fresh escalation check rather than inheriting the
+    /// disputed round's (non-escalated) decision. It escalates here because the redispatch is
+    /// still over the very location the first round was already given.
+    /// </summary>
+    [Fact]
+    public async Task A_human_resolving_a_dispute_with_needs_fixes_over_the_same_location_escalates_the_redispatch()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        using DocumentStore store = NewStore();
+        (Guid taskId, Guid runId, _) = await SeedVerifiedRunAsync(store, cts.Token);
+
+        DaemonOptions options = new()
+        {
+            DefaultModel = "claude-opus-5",
+            ModelByRole = new RoleModelDefaults { Review = "sonnet", Fix = "haiku" },
+        };
+        ScriptedExecutor executor = new(
+            "FINDING: severity=high; scope=in-scope; at=src/Api.cs:7\n"
+                + "Defect: envelope type differs from spec.\nScenario: clients break.\n\nVERDICT: needs-fixes",
+            "No defects of my own.\n\nVERDICT: merge-ready",
+            // Fix round 1 disputes rather than fixing — the first round, so no escalation applies.
+            "That envelope change is the task's stated design; changing it back is a scope decision.\n\n"
+                + "RESOLUTION: disputed",
+            // Fix round 2 — the human's redispatch, still over src/Api.cs:7.
+            "Fixed it as originally reported.\n\nRESOLUTION: fixed",
+            "Fixed for real.\n\nVERDICT: merge-ready");
+
+        bool disputedPass = await NewEngine(store, executor, options).ReviewAsync(runId, taskId, cts.Token);
+        disputedPass.Should().BeFalse("the disputed finding parks for the human");
+
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            session.Events.Append(runId, new ReviewParkResolved(
+                runId, ReviewVerdict.NeedsFixes,
+                "Still a real bug in src/Api.cs:7 — fix it as originally reported.", Now, DomainId.New()));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        bool mergeReady = await NewEngine(store, executor, options).ReviewAsync(runId, taskId, cts.Token);
+        mergeReady.Should().BeTrue();
+
+        executor.Spawns.Select(spawn => spawn.Model.Value).Should().Equal(
+            ["sonnet", "sonnet", "haiku", "sonnet", "sonnet"],
+            "the disputed round (index 2) never escalates, but the human's own redispatch (index 3) "
+                + "is a fresh round over the same location and escalates");
+
+        await using IQuerySession query = store.QuerySession();
+        List<object> events = [.. (await query.Events.FetchStreamAsync(runId, token: cts.Token)).Select(e => e.Data)];
+        List<ReviewFixDispatched> fixDispatches = [.. events.OfType<ReviewFixDispatched>()];
+        fixDispatches.Should().HaveCount(2);
+        fixDispatches.Select(e => e.Escalated).Should().Equal([false, true]);
+        fixDispatches[1].EscalationReason.Should().NotBeNull().And.Contain("src/Api.cs:7");
+
+        RunDetails run = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
+        run.LastFixSessionEscalated.Should().BeTrue("the last fix round dispatched was the escalated one");
+    }
+
+    /// <summary>
     /// A resumed session keeps the model it started with, so the re-prompt records that
     /// model rather than re-resolving the chain, which is visible here because the role
     /// default changes between the legs, exactly as a config edit mid-run would. The pass
