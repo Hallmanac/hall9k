@@ -343,4 +343,58 @@ public sealed class ReviewVerdictValidationTests
                 + "construct one for any of the six findings I reported above.\r\n\r\nVERDICT: needs-fixes")
             .Should().BeFalse();
     }
+
+    /// <summary>
+    /// A `FINDING:` header at the contract's own placeholder path, followed by the worked example
+    /// and then still more echoed contract prose with no blank line separating any of it, does not
+    /// name a finding (cycle-9 finding #1): the exact-example paragraph check that used to be the
+    /// only placeholder guard on this shape only ever matched a paragraph whose body was the
+    /// two-line example and nothing else, so appending anything past it — with no blank line to
+    /// split the extra text into a paragraph of its own — defeated that exact match while leaving
+    /// the `Defect:`/`Scenario:` structural-marker branch free to fire on text that only ever names
+    /// the prompt's own placeholder, `src/Some/File.cs`, dispatching a fix session against an
+    /// example no repository contains.
+    /// </summary>
+    [Fact]
+    public void A_placeholder_header_with_the_example_and_more_echoed_prose_on_one_paragraph_does_not_name_a_finding()
+    {
+        ReviewVerdictValidation.NamesAFinding(
+                "FINDING: severity=high; scope=in-scope; at=src/Some/File.cs:123\n"
+                + "Defect: one sentence saying what is wrong.\n"
+                + "Scenario: the input or state that makes it misbehave, and what goes wrong.\n"
+                + "**severity** — grade against these anchors, not against your own sense of importance:\n"
+                + "\nVERDICT: needs-fixes")
+            .Should().BeFalse();
+    }
+
+    /// <summary>
+    /// A sentence that names the review mechanics' placeholder path first and a real location
+    /// second still names a finding (cycle-9 finding #2): the prose heuristic reads only the first
+    /// <c>LocationPattern</c> match in a sentence, so when that first match was the placeholder the
+    /// old code discarded the whole sentence — real location, defect language and all — rather than
+    /// looking past the placeholder for the one that actually points somewhere, and a human was
+    /// parked over a named finding as though nothing had been named.
+    /// </summary>
+    [Fact]
+    public void A_sentence_naming_the_placeholder_before_a_real_location_still_names_a_finding()
+    {
+        ReviewVerdictValidation.NamesAFinding(
+                "Compare it against `path/to/file.cs:123`, but `src/Auth.cs:42` never resets the "
+                + "limiter after a rejected request.\n\nVERDICT: needs-fixes")
+            .Should().BeTrue();
+    }
+
+    /// <summary>
+    /// Prose whose only location is one of this file's own prompt placeholders still names nothing
+    /// (cycle-9 finding): stripping the placeholder out of the text before either the structured or
+    /// the prose branch runs must not accidentally leave behind residue — punctuation, a stray
+    /// article — that some other branch misreads as a location or a defect of its own.
+    /// </summary>
+    [Fact]
+    public void Prose_whose_only_location_is_a_placeholder_still_does_not_name_a_finding()
+    {
+        ReviewVerdictValidation.NamesAFinding(
+                "The mechanics bullet cites `path/to/file.cs:123`, but nothing here is wrong.\n\nVERDICT: needs-fixes")
+            .Should().BeFalse();
+    }
 }
