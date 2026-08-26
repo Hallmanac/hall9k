@@ -29,12 +29,24 @@ namespace Hall9k.Daemon.Closeout;
 /// <param name="Failures">
 /// How many inspections this sweep caught an exception from — almost always <c>gh</c> itself
 /// (a rate limit, a network blip, an outage), since that is the one remote call each inspection
-/// makes. <see cref="PullRequestMonitor"/> reads this to widen its own poll interval rather than
-/// re-hitting a failing <c>gh</c> every tick forever (independent pre-PR review, cycle 3); it is
-/// not itself a retry signal here — the run stays in the watch set and the very next sweep tries
-/// it again regardless of what this count says.
+/// makes. It is not itself a retry signal here — the run stays in the watch set and the very
+/// next sweep tries it again regardless of what this count says. <see cref="PullRequestMonitor"/>
+/// reads it alongside <paramref name="RunsInspected"/> and <paramref name="Skipped"/>
+/// (<c>IsSweepFailure</c>) to widen its own poll interval only when EVERY run this sweep looked
+/// at failed (independent pre-PR review, cycle 4) — a lone permanently-broken pull request must
+/// not pin the interval at the ceiling and delay every other healthy one this node also watches.
 /// </param>
-public sealed record CloseoutSweepResult(int RunsInspected, int MergesObserved, int Failures = 0);
+/// <param name="Skipped">
+/// How many watched or orphaned runs this sweep passed over without ever calling <c>gh</c> — a
+/// stale fence, a superseded run, a task that has not reached Done, a mid-sweep task-stream
+/// advance. A skip says nothing about whether <c>gh</c> is healthy, but it is not gh trouble
+/// either, so <c>IsSweepFailure</c> (independent pre-PR review, cycle 5) must not count it as
+/// evidence that every attempted inspection failed: a sweep containing only a broken pull
+/// request and otherwise-skipped ones — a Done task reopened and then unassigned sits in the
+/// watch set returning Skipped forever — pinned the interval at the ceiling even though nothing
+/// else in the watch set was ever gh's fault.
+/// </param>
+public sealed record CloseoutSweepResult(int RunsInspected, int MergesObserved, int Failures = 0, int Skipped = 0);
 
 /// <summary>
 /// The closeout core (Decisions Log #18/#22), extracted from the monitor loop so it
@@ -116,6 +128,7 @@ public sealed class CloseoutEngine(
         int inspected = 0;
         int merges = 0;
         int failures = 0;
+        int skipped = 0;
         foreach (RunDetails run in watched)
         {
             try
@@ -128,6 +141,9 @@ public sealed class CloseoutEngine(
                         break;
                     case InspectionOutcome.Inspected:
                         inspected++;
+                        break;
+                    case InspectionOutcome.Skipped:
+                        skipped++;
                         break;
                 }
             }
@@ -156,6 +172,9 @@ public sealed class CloseoutEngine(
                     case InspectionOutcome.Inspected:
                         inspected++;
                         break;
+                    case InspectionOutcome.Skipped:
+                        skipped++;
+                        break;
                 }
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -171,7 +190,7 @@ public sealed class CloseoutEngine(
             }
         }
 
-        return new CloseoutSweepResult(inspected, merges, failures);
+        return new CloseoutSweepResult(inspected, merges, failures, skipped);
     }
 
     /// <summary>
