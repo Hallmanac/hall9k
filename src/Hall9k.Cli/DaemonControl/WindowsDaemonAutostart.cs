@@ -256,6 +256,15 @@ public sealed class WindowsDaemonAutostart : IDaemonAutostart
         return !DaemonProcess.IsAlive(processId, startedAt);
     }
 
+    // Redirected and drained before WaitForExit, the same discipline every other schtasks
+    // call in this file gets from Exec.RunAsync — this one stays synchronous (IsEnabled is a
+    // sync property on IDaemonAutostart) so it cannot reuse that helper directly, but an
+    // unredirected child still inherits h9k's own console and prints a single task's /Query
+    // output straight into it: a spurious ERROR line ahead of a succeeding `h9k daemon
+    // status` when autostart is off, or the whole schtasks table dumped into it when on
+    // (cycle-3 pre-PR review finding). A single task's /Query output is far under the pipe
+    // buffer, so reading it synchronously here carries none of the full-buffer deadlock risk
+    // commit 8b44e6c avoided for QueryExists' own call site.
     private static bool QueryExists()
     {
         using Process process = new();
@@ -264,6 +273,8 @@ public sealed class WindowsDaemonAutostart : IDaemonAutostart
             FileName = "schtasks.exe",
             UseShellExecute = false,
             CreateNoWindow = true,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
         };
         process.StartInfo.ArgumentList.Add("/Query");
         process.StartInfo.ArgumentList.Add("/TN");
@@ -281,6 +292,8 @@ public sealed class WindowsDaemonAutostart : IDaemonAutostart
             return false;
         }
 
+        process.StandardOutput.ReadToEnd();
+        process.StandardError.ReadToEnd();
         process.WaitForExit();
         return process.ExitCode == 0;
     }
