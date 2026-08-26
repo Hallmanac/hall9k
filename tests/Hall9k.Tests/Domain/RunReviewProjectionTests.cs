@@ -144,7 +144,6 @@ public sealed class RunReviewProjectionTests
 
         projection.Apply(new FakeEvent<ReviewParked>(
             new ReviewParked(id, "A follow-up disputed a review thread.", Now)), view);
-        view.ParkedFromState.Should().Be(RunState.Verifying, "the park caught the run before the gates");
 
         projection.Apply(new FakeEvent<ReviewParkResolved>(new ReviewParkResolved(
             id, ReviewVerdict.MergeReady, "the thread is about the retry loop; I already checked it, leave it",
@@ -184,7 +183,7 @@ public sealed class RunReviewProjectionTests
     /// <summary>
     /// A resumed dispute that disputes again reaches its second park from UnderReview, not
     /// Verifying (<see cref="ReviewFixDispatched"/> moves <c>State</c> there before the resumed
-    /// session ever parks again), so keying the exclusion on <c>ParkedFromState</c> would misread
+    /// session ever parks again), so keying the exclusion on State-at-park-time would misread
     /// the re-dispute's resolution as a settled review ruling (cycle-6 human triage). ReviewCycle
     /// stays 0 for the whole round trip regardless, which is what the fix keys on instead.
     /// </summary>
@@ -211,8 +210,6 @@ public sealed class RunReviewProjectionTests
 
         projection.Apply(new FakeEvent<ReviewParked>(
             new ReviewParked(id, "The resumed follow-up still disputed the thread.", Now)), view);
-        view.ParkedFromState.Should().Be(
-            RunState.UnderReview, "ReviewFixDispatched already moved State off Verifying");
 
         projection.Apply(new FakeEvent<ReviewParkResolved>(new ReviewParkResolved(
             id, ReviewVerdict.MergeReady, "checked again; still not a defect", Now, DomainId.New())), view);
@@ -220,7 +217,7 @@ public sealed class RunReviewProjectionTests
         view.ReviewCycle.Should().Be(0, "no ordinary review pass ever ran over this diff");
         view.ReviewParkResolutions.Should().BeEmpty(
             "the re-dispute's resolution is still deciding the disputed thread, not a review finding, " +
-            "even though ParkedFromState no longer reads Verifying the second time");
+            "even though State was UnderReview rather than Verifying the second time it parked");
     }
 
     [Fact]

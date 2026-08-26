@@ -1001,7 +1001,9 @@ cycles is the ruling, not the reviewer's memory. `ReviewEngine.LoadPriorRulingsA
 every `ReviewParkResolved` recorded across every run the task has ever had
 (`RunDetails.ReviewParkResolutions`, oldest first, so a retry's fresh run stream still inherits
 rulings from an earlier one), except a thread-dispute park's resolution (log #62,
-`ParkedFromState == RunState.Verifying`): that park caught the run before any gate or reviewer
+`ReviewCycle == 0` — not `ParkedFromState == RunState.Verifying`, which reads `UnderReview` rather
+than `Verifying` on every dispute past the first and so would misclassify a second-or-later
+resolve as a settled ruling): that park caught the run before any gate or reviewer
 ever read the diff, so the human resolved a disputed thread, not a review finding, and it is not
 recorded as a settled ruling. `AgentPromptBuilder.AppendSettledRulings` renders the newest 8
 rulings, each reason summarized to 500 characters, under a heading telling the reviewer these
