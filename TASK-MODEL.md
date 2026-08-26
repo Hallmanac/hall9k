@@ -707,7 +707,9 @@ public sealed record ReviewCompleted(    // the CYCLE's merged verdict over ever
     int Cycle,                           // ReviewPassCompleted. Merged findings artifact:
     ReviewVerdict Verdict,               // review-<cycle>-findings.md in the run directory.
     DateTimeOffset CompletedAt);         // MergeReady needs EVERY lens clean; Unknown (any lens left
-                                         //   no parseable verdict) -> one re-prompt, then park (log #28)
+                                         //   no parseable verdict, OR a needs-fixes verdict naming
+                                         //   nothing the platform could read as a finding, log #86)
+                                         //   -> one re-prompt, then park (log #28)
 public sealed record ReviewVerdictReprompted( // verdict-less pass resumed ONCE in the same session
     Guid Id,                             // (claude -p --resume, log #5) and told to conclude (log #28)
     Guid SessionId,                      // this leg's artifact identity — never the resumed transcript's
@@ -928,7 +930,11 @@ into one inert draft per cycle. Two reports are the same defect when they name t
 collapsing by file would swallow a second, genuinely different defect.
 
 **What stays per cycle rather than per track**: one fix session over every live track's
-findings, and one verdict re-prompt however many passes ended without a `VERDICT:` line.
+findings, and one verdict re-prompt however many passes ended without a `VERDICT:` line or
+with a needs-fixes verdict naming nothing the platform could read as a finding
+(`ReviewVerdictValidation.NamesAFinding`, Decisions Log #86) — recorded as `ReviewVerdict.Unknown`
+the same as a missing line, so it takes the same re-prompt-then-park path rather than parking a
+human or spending a fix session over content that was never stated.
 Two tracks do not double the fixing or the parking math.
 
 **The terminal verdict stays MergeReady; `ReviewSettlement` says how it was reached.**

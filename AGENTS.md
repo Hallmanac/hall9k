@@ -343,7 +343,10 @@ The checkpoints, in the order the window sees them:
    track goes dormant at cycle 2 while the adversarial one keeps finding things alone at cycle 5.
    Differing cycle counts on one run are the design rather than a fault, and that is the sentence
    a human needs when they ask why. A finding the loop cannot settle parks the run, which is where
-   `review resolve` comes in.
+   `review resolve` comes in. A needs-fixes verdict that names no finding is recorded the same as
+   a missing verdict, not accepted as a real answer (Decisions Log #86): it gets the cycle's one
+   same-session re-prompt before parking, exactly like a pass that ended with no `VERDICT:` line
+   at all.
 4. **The daemon opens the pull request.** Agents never do, and there is deliberately no create-pr
    skill. The task reaches **Done** here, when the pull request opens, so Done means "the work is
    on a PR and waiting on review" rather than "merged".
