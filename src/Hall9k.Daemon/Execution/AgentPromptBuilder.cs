@@ -943,7 +943,12 @@ public static class AgentPromptBuilder
     /// produced the finding. Origin incidents: the config.json survival ruling was re-litigated
     /// three times across one task's twelve review cycles, and a finding dismissed with
     /// git-ancestry evidence was re-raised verbatim by the next fresh-context reviewer, forcing a
-    /// second park over the same question.</item>
+    /// second park over the same question. A <c>--merge-ready</c> ruling and a
+    /// <c>--needs-fixes</c> ruling are told apart rather than rendered under one framing: the
+    /// former is a dismissal the reviewer should not re-raise without new evidence, but the
+    /// latter is the human confirming the defect is real and ordering it fixed — telling a fresh
+    /// pass to suppress a re-raise of that same wording would ship an incompletely-fixed defect
+    /// the human already confirmed straight past the reviewer that would otherwise catch it.</item>
     /// <item>The v0 Decisions Log (PLAN.md §16), named unconditionally rather than quoted: the
     /// log itself is long-lived and outside this prompt's bound, so the reviewer is told to check
     /// it rather than handed a snapshot of it that would go stale the next time §16 grows.</item>
@@ -959,13 +964,21 @@ public static class AgentPromptBuilder
     {
         if (priorRulings is { Count: > 0 })
         {
-            prompt.AppendLine("## Settled rulings on this task — do not re-raise these without new evidence");
+            prompt.AppendLine("## Settled rulings on this task");
             prompt.AppendLine();
             prompt.AppendLine("A human already resolved the review park(s) below on this task (h9k review");
-            prompt.AppendLine("resolve). Each is a settled ruling, not a suggestion: if your own reading lands on");
-            prompt.AppendLine("the same question, say so and move on rather than reporting it again as a new");
-            prompt.AppendLine("finding. Only raise it again if you can point to something that changed since the");
-            prompt.AppendLine("ruling — a different line, a different behavior — and say what that is.");
+            prompt.AppendLine("resolve). The two verdicts mean opposite things, so read which one each ruling");
+            prompt.AppendLine("carries before deciding what it asks of you:");
+            prompt.AppendLine();
+            prompt.AppendLine("- **merge-ready** is a dismissal: the human decided the finding was not a real");
+            prompt.AppendLine("  defect, or accepted it on purpose. Do not re-raise it without new evidence — if");
+            prompt.AppendLine("  your own reading lands on the same question, say so and move on rather than");
+            prompt.AppendLine("  reporting it again as a new finding. Only raise it again if you can point to a");
+            prompt.AppendLine("  changed line or behavior since the ruling, and say what changed.");
+            prompt.AppendLine("- **needs-fixes** is the opposite of a dismissal: the human confirmed the defect");
+            prompt.AppendLine("  was real and ordered it fixed. Do not read it as settled the same way — check");
+            prompt.AppendLine("  whether the fix actually landed. If the same defect is still there, report it;");
+            prompt.AppendLine("  an incomplete fix is not a question already answered, it is unfinished work.");
             prompt.AppendLine();
             foreach (ReviewParkResolution ruling in priorRulings.TakeLast(MaxPriorRulings))
             {
