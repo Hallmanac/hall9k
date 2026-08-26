@@ -951,8 +951,8 @@ public static class AgentPromptBuilder
     /// the human already confirmed straight past the reviewer that would otherwise catch it.</item>
     /// <item>This project's own repo doctrine, named unconditionally rather than quoted and
     /// deliberately generic (the daemon serves whatever project registered it, the same reason
-    /// <see cref="AppendReviewMechanics"/>'s own doctrine bullet hedges "AGENTS.md or CLAUDE.md,
-    /// and whatever they point at" rather than naming a file): a project's doctrine can settle a
+    /// this method's own doctrine sentence hedges "AGENTS.md or CLAUDE.md, and whatever they
+    /// point at" rather than naming a file): a project's doctrine can settle a
     /// question at a wider scope than this one task, so the reviewer is told to check whatever
     /// record the project's own AGENTS.md/CLAUDE.md points at (a decisions log, if it keeps one)
     /// rather than assuming this task's project is the platform's own and hardcoding its
@@ -1007,9 +1007,8 @@ public static class AgentPromptBuilder
         }
 
         prompt.AppendLine("This project's own repo doctrine can settle a question at a wider scope than this");
-        prompt.AppendLine("one task, the same AGENTS.md or CLAUDE.md the review mechanics above already point");
-        prompt.AppendLine("you at (and whatever decisions log they in turn document, if this project keeps");
-        prompt.AppendLine("one).");
+        prompt.AppendLine("one task: check its own AGENTS.md or CLAUDE.md (and whatever decisions log they in");
+        prompt.AppendLine("turn document, if this project keeps one).");
         prompt.AppendLine();
         prompt.AppendLine("A deviation from a house rule already recorded there can be a deliberate, ratified");
         prompt.AppendLine("choice rather than an oversight nobody caught. Before you report a finding that");
