@@ -525,22 +525,24 @@ public sealed class AgentPromptBuilderTests : IDisposable
     /// The re-prompt's merge-ready option is not a plain alternative to restating (independent
     /// pre-PR review, cycle 2, adversarial finding): the heuristic behind a demotion to Unknown
     /// is a keyword-and-proximity check with a disclosed, permanent vocabulary gap, so the
-    /// demotion is not proof the original finding was hollow. The old wording ("or state that
-    /// none stand and return merge-ready") read as an equally legitimate second option; the
-    /// reprompt now tells the session plainly that a demotion is not a verdict on the finding's
-    /// truth, and only offers merge-ready for genuine reconsideration.
+    /// demotion is not proof the original finding was hollow. The old wording — "or state that
+    /// none stand." for the prose lens, "If none stand, say so." for the structured one — read
+    /// merge-ready as an equally legitimate second option; the reprompt now tells the session
+    /// plainly that a demotion is not a verdict on the finding's truth, and only offers
+    /// merge-ready for genuine reconsideration.
     /// </summary>
     [Theory]
-    [InlineData("Conformance")]
-    [InlineData("Adversarial")]
-    public void Verdict_reprompt_does_not_offer_merge_ready_as_a_plain_alternative_to_restating(string lens)
+    [InlineData("Conformance", "or state that none stand.")]
+    [InlineData("Adversarial", "If none stand, say so.")]
+    public void Verdict_reprompt_does_not_offer_merge_ready_as_a_plain_alternative_to_restating(
+        string lens, string oldWording)
     {
         string prompt = AgentPromptBuilder.BuildReviewVerdictReprompt(SomeProject(), lens, cycle: 3);
 
         prompt.Should().Contain("does not mean a finding you", "a demotion is not proof the finding was hollow");
         prompt.Should().Contain("If you still believe a finding stands, restate it");
         prompt.Should().Contain("reconsideration, you no longer believe any defect stands");
-        prompt.Should().NotContain("or state that none stand and return merge-ready");
+        prompt.Should().NotContain(oldWording, "the old wording read merge-ready as a plain alternative");
     }
 
     [Fact]
