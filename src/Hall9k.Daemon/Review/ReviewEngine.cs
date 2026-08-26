@@ -733,11 +733,30 @@ public sealed class ReviewEngine(
             // force-concludes never had any to lose — is what lets that straggler's ride-along
             // survive as a residual instead of vanishing: there is no later cycle for anything to
             // claim it in either way, so its residual is written the instant the run stops looking.
-            bool cycleDispatchesFixNow = plans.Any(plan => plan.Fix.Count > 0);
-            IReadOnlyList<ReviewTrackPlan> concludingNow = cycleDispatchesFixNow
+            bool anyFixFinding = plans.Any(plan => plan.Fix.Count > 0);
+            IReadOnlyList<ReviewTrackPlan> concludingNow = anyFixFinding
                 ? [.. plans.Where(plan => !plan.Continues)]
                 : plans;
-            ReviewResidualDisposition rideAlongDisposition = cycleDispatchesFixNow
+            // A Fix finding is not by itself a promise that a fix session is coming (cycle-2
+            // review, adversarial finding): ReviewTrackPolicy.Decide grades severity and the gate,
+            // never the cap, so a track can carry Continues: true and a real Fix finding while
+            // already at CappedTrack's own cap — the next DriveAsync iteration then hits
+            // `ReviewPhase.FixNeeded when CappedTrack(run) is { } capped` and parks instead of
+            // reaching DispatchFixSessionAsync. Recording FixedUnreviewed for this cycle's
+            // ride-alongs in that case would assert a fix session read them when none is ever
+            // dispatched, so that disposition is additionally gated on no continuing track already
+            // being capped — the lens whose Fix finding survives park-or-dispatch is always one
+            // still saying Continues: true (a concluding plan's Fix already became its own residual
+            // above), so checking the cap only against continuing plans is exactly the set
+            // CappedTrack itself will see next. This gate deliberately does NOT feed back into
+            // `concludingNow` above: a continuing, capped track is still parked rather than
+            // concluded here — CappedTrack's own park is what ends it honestly, on the reason it
+            // ran out of cycles, rather than this method quietly retiring it early over a cycle
+            // whose fix was never dispatched.
+            bool fixSessionWillDispatch = anyFixFinding
+                && !plans.Any(plan => plan.Continues
+                    && ReviewTrackPolicy.CapReached(plan.Lens, run.ReviewCycle, run.ReviewBudgetBaseCycle, _options));
+            ReviewResidualDisposition rideAlongDisposition = fixSessionWillDispatch
                 ? ReviewResidualDisposition.FixedUnreviewed
                 : ReviewResidualDisposition.RideAlong;
             foreach (ReviewTrackPlan plan in concludingNow)
