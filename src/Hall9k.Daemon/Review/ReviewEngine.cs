@@ -609,9 +609,19 @@ public sealed class ReviewEngine(
         string output = result.Summary ?? string.Empty;
         await File.WriteAllTextAsync(LensFindingsFile(runDirectory, cycle, pass.Lens), output, cancellationToken);
 
+        // The objective and acceptance criteria are only ever printed into the conformance
+        // lens's own prompt (AgentPromptBuilder.BuildConformanceReview); the adversarial lens is
+        // deliberately never told either, so it has nothing of that shape to echo, and screening
+        // its output for the same text risks deleting a genuine finding that happens to phrase
+        // itself the way the task's own text does (cycle-4 adversarial finding,
+        // ReviewEngine.cs:614).
+        bool sawTaskContext = pass.Lens.Covers(ReviewLens.Conformance);
         ReviewVerdict verdict = ReviewResultParser.ParseVerdict(output);
         if (verdict == ReviewVerdict.NeedsFixes
-            && !ReviewVerdictValidation.NamesAFinding(output, context.Task.Objective, context.Task.AcceptanceCriteria))
+            && !ReviewVerdictValidation.NamesAFinding(
+                output,
+                sawTaskContext ? context.Task.Objective : null,
+                sawTaskContext ? context.Task.AcceptanceCriteria : null))
         {
             // A needs-fixes verdict that names nothing is not a real answer (origin: ten
             // occurrences filed 2026-08-25): recording it as Unknown routes it through the exact

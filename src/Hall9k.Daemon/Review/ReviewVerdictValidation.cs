@@ -72,6 +72,22 @@ public static partial class ReviewVerdictValidation
     /// "omits" a real reviewer used for the same shapes, was in this list, so a correctly located,
     /// correctly described finding phrased with any of them read as naming nothing.
     /// </para>
+    /// <para>
+    /// Cycle-4 review (independent pre-PR pass, conformance finding): a guard described as one
+    /// that "refuses to finish" after other work has already run was rejected — "refuses" is the
+    /// same class of affirmative defect verb "drops" and "overwrites" already cover, just for a
+    /// guard that fires too late rather than data that is lost or clobbered.
+    /// </para>
+    /// <para>
+    /// Cycle-5 review (independent pre-PR pass, conformance finding #2): prescriptive doctrine
+    /// phrasing ("`RunPaths.cs:23` should be sealed per AGENTS.md") carried no word in this
+    /// vocabulary, even though the modal form is how a house-rule departure is most often
+    /// written in a repository whose own coding standards are themselves a list of prescriptions
+    /// ("seal by default", "every new async method takes a `CancellationToken`"). "delete" was
+    /// added alongside it for the same reason a defect can also read as content the diff removes
+    /// outright, the same class of gap "drops" and "loses" already cover for content the diff
+    /// merely fails to keep.
+    /// </para>
     /// <see cref="StructuralMarkerPattern"/> covers the structured contract's own "Defect:" /
     /// "Scenario:" labels, checked at paragraph scope instead of this pattern's sentence scope,
     /// because the two-line `FINDING:` block puts the label on the line after the location.
@@ -79,9 +95,10 @@ public static partial class ReviewVerdictValidation
     [GeneratedRegex(
         @"\b(not|no|never|missing|fails?|failing|failed|wrong|incorrect|broken|defect|bug|"
         + @"cannot|can't|won't|doesn't|does not|didn't|no longer|without|unhandled|vulnerable|leaks?|"
-        + @"crashes?|throws?|silently|drops?|dropped|overwrit(?:ten|es)|duplicat(?:es?|ed)|double-counts?|"
+        + @"crashes?|throws?|refuses?|silently|drops?|dropped|overwrit(?:ten|es)|duplicat(?:es?|ed)|double-counts?|"
         + @"stale|ignor(?:es|ed)|skips?|skipped|corrupts?|corrupted|loses|lost|mismatch(?:ed)?|inconsistent|"
-        + @"deadlocks?|hangs?|stuck|overflows?|unmet|departs?|violat(?:es?|ed)|breaks?|lacks?|omits?)\b",
+        + @"deadlocks?|hangs?|stuck|overflows?|unmet|departs?|violat(?:es?|ed)|breaks?|lacks?|omits?|"
+        + @"should|delet(?:es?|ed))\b",
         RegexOptions.IgnoreCase)]
     private static partial Regex DefectLanguagePattern();
 
@@ -121,8 +138,17 @@ public static partial class ReviewVerdictValidation
     /// exact affirming-review shape this check exists to reject — so only a sentence that
     /// grammatically carries on from the location's own sentence is allowed to supply the
     /// defect language for it.
+    /// <para>
+    /// "A reader" / "the reader" was added for the same reason (cycle-4 conformance finding): a
+    /// reviewer describing what a located comment or doc string fails to convey routinely
+    /// continues with "A reader following either pointer lands on unrelated text and never
+    /// reaches the rule…" rather than a bare pronoun, and that sentence is exactly as much a
+    /// continuation of the location's own sentence as "It is never reset" is — it names no new
+    /// location and no new claim of its own, only what the location fails to do for whoever reads
+    /// it.
+    /// </para>
     /// </summary>
-    [GeneratedRegex(@"^\s*(it|this|that|these|those|which)\b", RegexOptions.IgnoreCase)]
+    [GeneratedRegex(@"^\s*(it|this|that|these|those|which|(?:a|the) readers?)\b", RegexOptions.IgnoreCase)]
     private static partial Regex ContinuationPattern();
 
     /// <summary>
@@ -151,13 +177,32 @@ public static partial class ReviewVerdictValidation
     private static partial Regex BackwardPointerPattern();
 
     /// <summary>
+    /// Whether a paragraph opens with a markdown heading marker (`#` through `######`) or is
+    /// nothing but a bold lead-in on its own line, the two shapes a reviewer uses to title a
+    /// finding before describing it in the paragraph that follows (cycle-5 conformance finding
+    /// #1, `ReviewVerdictValidation.cs:262`): "### 1. `ReviewEngine.cs:614` — the adversarial
+    /// pass is over-screened" states only a location and a label, with the actual defect
+    /// ("Stripping the objective … deletes the only location it named") in the next paragraph,
+    /// which the paragraph-scoped location-plus-defect check below cannot see on its own —
+    /// markdown always puts a heading or a bold lead-in in a paragraph by itself, separated from
+    /// its own body by the same blank line <see cref="ParagraphBoundary"/> splits on. Checked
+    /// only at the very start of the paragraph, not with <see cref="RegexOptions.Multiline"/>,
+    /// so an ordinary sentence paragraph that merely mentions a `#` or `**` partway through —
+    /// the shape the platform's own hollow-verdict tests exist to keep rejected — is never
+    /// mistaken for a heading.
+    /// </summary>
+    [GeneratedRegex(@"^\s*(?:#{1,6}[ \t]|\*\*[^\n*]+\*\*[ \t]*(?=\n|$))")]
+    private static partial Regex HeadingLikeLeadInPattern();
+
+    /// <summary>
     /// Whether a needs-fixes pass's own output states at least one finding, once the verdict
     /// line itself is set aside: a location the platform can point a human or a fix session at,
     /// paired with defect language close enough to it to plausibly describe what is wrong
     /// there — the same sentence, a sentence that visibly continues it, a sentence before it when
-    /// the location's own sentence is only a backward pointer to it, or (for the structured
-    /// contract's `Defect:`/`Scenario:` labels) the same paragraph. An output with nothing left
-    /// after its verdict line, prose that never points anywhere concrete, or a location mentioned
+    /// the location's own sentence is only a backward pointer to it, the same paragraph (for the
+    /// structured contract's `Defect:`/`Scenario:` labels), or the very next paragraph (when the
+    /// location's own paragraph is nothing but a heading or bold lead-in naming it). An output
+    /// with nothing left after its verdict line, prose that never points anywhere concrete, or a location mentioned
     /// in one sentence with unrelated defect language confined to another, has not named
     /// anything — the two filed origin incidents (an unenumerated needs-fixes and a bare verdict)
     /// read this way, and so do the affirming-review and "findings reported above" shapes the
@@ -218,6 +263,20 @@ public static partial class ReviewVerdictValidation
     /// restates one before concluding satisfies the location-plus-defect shape below the same way
     /// restating the objective does. Stripped the same way, one criterion at a time.
     /// </para>
+    /// <para>
+    /// A paragraph that is itself only a heading or bold lead-in — the numbered `###` title a
+    /// reviewer gives a finding before describing it below — borrows defect language from the
+    /// very next paragraph rather than requiring both in its own paragraph (cycle-5 conformance
+    /// finding #1, `ReviewVerdictValidation.cs:262`): the paragraph-scoped check below could not
+    /// see this shape at all, because markdown always separates a heading from its own body with
+    /// the same blank line <see cref="ParagraphBoundary"/> splits paragraphs on, so the location
+    /// lands in one paragraph and the defect in the next and neither on its own satisfies the
+    /// same-paragraph rule. Gated on <see cref="HeadingLikeLeadInPattern"/> rather than applied
+    /// to every location-bearing paragraph, the same discipline <see cref="ContinuationPattern"/>
+    /// and <see cref="BackwardPointerPattern"/> already apply at sentence scope: an ordinary
+    /// affirming paragraph that merely happens to precede a paragraph using defect vocabulary for
+    /// something else must not borrow language meant for a different subject.
+    /// </para>
     /// </summary>
     public static bool NamesAFinding(
         string? output, string? taskObjective = null, IReadOnlyList<string>? taskAcceptanceCriteria = null)
@@ -244,9 +303,41 @@ public static partial class ReviewVerdictValidation
             .Select(line => line.TrimEnd('\r'))
             .Where(line => !line.TrimStart().StartsWith(VerdictMarker, StringComparison.OrdinalIgnoreCase)));
 
-        return ParagraphBoundary().Split(body)
-            .Where(paragraph => LocationPattern().IsMatch(paragraph) && !IsFindingContractExampleEcho(paragraph))
-            .Any(paragraph => StructuralMarkerPattern().IsMatch(paragraph) || NamesFindingInProse(paragraph));
+        return NamesFindingAcrossParagraphs(ParagraphBoundary().Split(body));
+    }
+
+    /// <summary>
+    /// The paragraph-scoped half of the prose heuristic: a location-bearing paragraph (not the
+    /// finding contract's own worked-example echo) that either states a defect itself — a
+    /// `Defect:`/`Scenario:` label or <see cref="NamesFindingInProse"/>'s sentence-level check —
+    /// or is itself only a heading or bold lead-in immediately followed by a paragraph that
+    /// states one (see <see cref="HeadingLikeLeadInPattern"/>).
+    /// </summary>
+    private static bool NamesFindingAcrossParagraphs(string[] paragraphs)
+    {
+        for (int index = 0; index < paragraphs.Length; index++)
+        {
+            string paragraph = paragraphs[index];
+            if (!LocationPattern().IsMatch(paragraph) || IsFindingContractExampleEcho(paragraph))
+            {
+                continue;
+            }
+
+            if (StructuralMarkerPattern().IsMatch(paragraph) || NamesFindingInProse(paragraph))
+            {
+                return true;
+            }
+
+            string? next = index + 1 < paragraphs.Length ? paragraphs[index + 1] : null;
+            if (next is not null
+                && HeadingLikeLeadInPattern().IsMatch(paragraph)
+                && DefectLanguagePattern().IsMatch(next))
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /// <summary>
@@ -320,10 +411,20 @@ public static partial class ReviewVerdictValidation
     /// own reprompt prose, most often — used to defeat the exact-match check below while every
     /// word of the echo it let through was still the contract's own, never the reviewer's.
     /// </para>
+    /// <para>
+    /// The header's <c>at=</c> tag has to read as a real <see cref="LocationPattern"/> location,
+    /// not merely a non-blank one (cycle-4 adversarial finding,
+    /// `ReviewVerdictValidation.cs:326`): a half-filled reprompt template like
+    /// <c>at=the review loop</c> / <c>Defect: findings are reported above.</c> has a non-blank
+    /// header tag and a non-blank body, so the blank check alone let it through as a stated
+    /// defect — the exact hollow shape this whole class exists to reject — while the prose branch
+    /// below would have rejected the identical text because a bare "the review loop" is not one
+    /// of this file's own recognized location shapes.
+    /// </para>
     /// </summary>
     private static bool HasStatedDefect(ReviewFinding finding)
     {
-        if (finding.Location.IsBlank())
+        if (finding.Location.IsBlank() || !LocationPattern().IsMatch(finding.Location))
         {
             return false;
         }

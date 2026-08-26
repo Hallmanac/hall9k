@@ -532,4 +532,105 @@ public sealed class ReviewVerdictValidationTests
     [InlineData("1. `RunPaths.cs:23` — this class departs from the sealed-by-default rule.\n\nVERDICT: needs-fixes")]
     public void The_conformance_lenss_own_reporting_verbs_name_a_finding(string output) =>
         ReviewVerdictValidation.NamesAFinding(output).Should().BeTrue();
+
+    /// <summary>
+    /// A structured `FINDING:` header whose `at=` tag is not a real location — a half-filled
+    /// reprompt template like "at=the review loop" — does not name a finding just because the
+    /// tag and the body are both non-blank (cycle-4 adversarial finding,
+    /// `ReviewVerdictValidation.cs:326`): trusting any non-blank header tag let this exact hollow
+    /// shape through the structured branch even though the prose branch would have rejected the
+    /// identical text for naming no real location at all.
+    /// </summary>
+    [Fact]
+    public void A_structured_header_whose_at_tag_is_not_a_real_location_does_not_name_a_finding()
+    {
+        ReviewVerdictValidation.NamesAFinding(
+                "FINDING: severity=high; scope=in-scope; at=the review loop\n"
+                + "Defect: findings are reported above.\n\nVERDICT: needs-fixes")
+            .Should().BeFalse();
+    }
+
+    /// <summary>
+    /// Plain prose that describes what a located comment fails to convey for a reader, rather
+    /// than for the comment itself, still names a finding (cycle-4 conformance finding): the
+    /// sentence that carries the defect language opens with "A reader", not one of the pronouns
+    /// <see cref="Prose_with_the_defect_in_the_next_sentence_still_names_a_finding"/> already
+    /// covers, and the same-sentence-only rule rejected it even though it is exactly as much a
+    /// continuation of the location's own sentence.
+    /// </summary>
+    [Fact]
+    public void Prose_describing_what_a_reader_never_reaches_still_names_a_finding()
+    {
+        ReviewVerdictValidation.NamesAFinding(
+                "The comment at `Auth.cs:10` references `Auth.cs:40`. A reader following either "
+                + "pointer lands on unrelated text and never reaches the rule the comment is "
+                + "explaining.\n\nVERDICT: needs-fixes")
+            .Should().BeTrue();
+    }
+
+    /// <summary>
+    /// The affirmative verb "refuses" names a defect the same way "drops" and "overwrites"
+    /// already do (cycle-4 conformance finding): a guard checked too late, so it "refuses to
+    /// finish" after other work already ran, is a real defect that the pre-affirmative-verb
+    /// vocabulary read as naming nothing.
+    /// </summary>
+    [Fact]
+    public void The_verb_refuses_names_a_finding()
+    {
+        ReviewVerdictValidation.NamesAFinding(
+                "`AGENTS.md`'s guard in `BuildAsync` is checked last, after the recipe has already "
+                + "written the whole home, so it refuses to finish only once the damage is already "
+                + "done.\n\nVERDICT: needs-fixes")
+            .Should().BeTrue();
+    }
+
+    /// <summary>
+    /// A markdown heading that names only a location, with the defect described in the paragraph
+    /// that follows it, still names a finding (cycle-5 conformance finding #1,
+    /// `ReviewVerdictValidation.cs:262`): a heading and its own body are always split by the same
+    /// blank line that separates any two paragraphs, so neither paragraph alone satisfied the
+    /// old same-paragraph rule even though together they plainly name a location and a defect.
+    /// </summary>
+    [Theory]
+    [InlineData("### 1. `src/Hall9k.Daemon/Review/ReviewEngine.cs:614` — the adversarial pass is over-screened\n"
+        + "\n"
+        + "Stripping the objective from an adversarial pass's output deletes the only location it "
+        + "named.\n\nVERDICT: needs-fixes")]
+    [InlineData("**1. `src/Hall9k.Daemon/Review/ReviewEngine.cs:614`**\n"
+        + "\n"
+        + "Stripping the objective from an adversarial pass's output deletes the only location it "
+        + "named.\n\nVERDICT: needs-fixes")]
+    public void A_heading_naming_a_location_with_the_defect_in_the_next_paragraph_still_names_a_finding(string output) =>
+        ReviewVerdictValidation.NamesAFinding(output).Should().BeTrue();
+
+    /// <summary>
+    /// The heading-lead-in borrow is gated on the location's own paragraph actually being a
+    /// heading or bold lead-in, not on mere paragraph adjacency: an ordinary sentence paragraph
+    /// that mentions a location only in passing, followed by an unrelated paragraph that happens
+    /// to use defect vocabulary about something else, must not borrow that language — the same
+    /// CRLF-authored shape <see cref="A_crlf_authored_hollow_verdict_still_does_not_name_a_finding"/>
+    /// already guards against paragraph boundaries collapsing unrelated text together.
+    /// </summary>
+    [Fact]
+    public void An_ordinary_paragraph_does_not_borrow_defect_language_from_the_next_paragraph()
+    {
+        ReviewVerdictValidation.NamesAFinding(
+                "Every criterion is met, and Program.cs proves it.\n\n"
+                + "Nothing else here is wrong.\n\nVERDICT: needs-fixes")
+            .Should().BeFalse();
+    }
+
+    /// <summary>
+    /// Prescriptive doctrine phrasing ("should …") names a defect the same way the rest of this
+    /// vocabulary does (cycle-5 conformance finding #2, `ReviewVerdictValidation.cs:86`): a
+    /// house-rule departure is most often written as a "should" statement, and this repository's
+    /// own coding standards are themselves a list of prescriptions, so a correctly located,
+    /// correctly described finding phrased this way must not read as naming nothing.
+    /// </summary>
+    [Theory]
+    [InlineData("`RunPaths.cs:23` should be sealed per AGENTS.md.\n\nVERDICT: needs-fixes")]
+    [InlineData("The new async method at `ReviewEngine.cs:1530` should take a CancellationToken as "
+        + "its last parameter.\n\nVERDICT: needs-fixes")]
+    public void Prescriptive_should_phrasing_names_a_finding(string output) =>
+        ReviewVerdictValidation.NamesAFinding(output).Should().BeTrue();
 }
