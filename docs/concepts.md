@@ -293,8 +293,10 @@ Per poll, in priority order:
 - **Closed without merge.** The run fails honestly. The worktree goes; the branch stays, because
   it still holds unmerged work.
 - **Copilot's review state, recorded every sweep the pull request is still open.** Landed,
-  requested-but-pending, or absent, together with whether the provider's CI picture is still
-  incomplete — informational only, never a `RunState` transition, and appended ahead of every
+  requested-but-pending, reviewed-an-earlier-commit (a real review that happened, just against
+  a commit the pull request has since moved past), or absent, together with whether the
+  provider's CI picture is still incomplete — informational only, never a `RunState` transition,
+  and appended ahead of every
   branch below (including the checks-pending short circuit and a parked run's merge/close-only
   handling), so it lands on the run stream even when nothing else acts this sweep.
 - **Conflicting with its base branch.** GitHub's own `mergeable` read, never inferred from how
