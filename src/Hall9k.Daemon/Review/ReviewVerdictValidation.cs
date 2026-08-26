@@ -57,16 +57,22 @@ public static partial class ReviewVerdictValidation
     /// this check's own purpose. The list grows opportunistically as a real reviewer's phrasing
     /// files a gap, the same way the codebase's other origin-incident vocabularies do; it is not
     /// meant to close on every way of saying something is wrong.
+    /// <para>
+    /// Cycle-2 review (independent pre-PR pass, adversarial finding): the bare word "no" was
+    /// missing even though every neighboring negation ("not", "never", "no longer") was already
+    /// in the list, so a plainly stated finding like "There is no test for the archived path"
+    /// read as naming nothing.
+    /// </para>
     /// <see cref="StructuralMarkerPattern"/> covers the structured contract's own "Defect:" /
     /// "Scenario:" labels, checked at paragraph scope instead of this pattern's sentence scope,
     /// because the two-line `FINDING:` block puts the label on the line after the location.
     /// </summary>
     [GeneratedRegex(
-        @"\b(not|never|missing|fails?|failing|failed|wrong|incorrect|broken|defect|bug|cannot|can't|won't|"
-        + @"doesn't|does not|didn't|no longer|without|unhandled|vulnerable|leaks?|crashes?|throws?|silently|"
-        + @"drops?|dropped|overwrit(?:ten|es)|duplicat(?:es?|ed)|double-counts?|stale|ignor(?:es|ed)|"
-        + @"skips?|skipped|corrupts?|corrupted|loses|lost|mismatch(?:ed)?|inconsistent|deadlocks?|hangs?|"
-        + @"stuck|overflows?)\b",
+        @"\b(not|no|never|missing|fails?|failing|failed|wrong|incorrect|broken|defect|bug|"
+        + @"cannot|can't|won't|doesn't|does not|didn't|no longer|without|unhandled|vulnerable|leaks?|"
+        + @"crashes?|throws?|silently|drops?|dropped|overwrit(?:ten|es)|duplicat(?:es?|ed)|double-counts?|"
+        + @"stale|ignor(?:es|ed)|skips?|skipped|corrupts?|corrupted|loses|lost|mismatch(?:ed)?|inconsistent|"
+        + @"deadlocks?|hangs?|stuck|overflows?)\b",
         RegexOptions.IgnoreCase)]
     private static partial Regex DefectLanguagePattern();
 
@@ -179,15 +185,30 @@ public static partial class ReviewVerdictValidation
     /// the screening once, before any branch runs, means no branch — present or a future one —
     /// can ever match a placeholder, because none survives long enough to be matched.
     /// </para>
+    /// <para>
+    /// <paramref name="taskObjective"/> screens a different echo the fixed placeholders above
+    /// cannot (adversarial cycle-2 finding, `ReviewVerdictValidation.cs:190`): the conformance
+    /// lens's own prompt (<c>AgentPromptBuilder.BuildConformanceReview</c>) prints the task's
+    /// objective into the reviewer's context, and an ordinary objective names a real file using
+    /// real defect vocabulary ("Stop LogsCommand.cs from resolving a stale run directory"). A
+    /// session that restates the objective before concluding satisfies the location-plus-defect
+    /// shape below without having found anything, and no fixed placeholder list can catch it,
+    /// because the text is arbitrary per-task content rather than this file's own boilerplate.
+    /// Stripping a verbatim (case-insensitive) occurrence of the objective before either branch
+    /// runs closes the same gap the fixed placeholders close for this file's own prompt text —
+    /// narrowly, the same way the rest of this method is a keyword-and-proximity check rather
+    /// than a semantic one: a paraphrase or a reflowed quotation of the objective still slips
+    /// through, the same class of gap already documented above.
+    /// </para>
     /// </summary>
-    public static bool NamesAFinding(string? output)
+    public static bool NamesAFinding(string? output, string? taskObjective = null)
     {
         if (output.IsBlank())
         {
             return false;
         }
 
-        string sanitized = StripPlaceholderLocations(output);
+        string sanitized = StripObjectiveEcho(StripPlaceholderLocations(output), taskObjective);
 
         IReadOnlyList<ReviewFinding> structuredFindings = ReviewResultParser.ParseFindings(sanitized);
         if (structuredFindings.Any(HasStatedDefect))
@@ -210,12 +231,13 @@ public static partial class ReviewVerdictValidation
 
     /// <summary>
     /// Whether a paragraph is a structured header carrying a real (non-placeholder) location
-    /// glued to the finding contract's own worked-example body, verbatim (adversarial cycle-1
-    /// finding, `ReviewVerdictValidation.cs:208`): a resumed session that half-fills the
-    /// reprompt's template — a genuine <c>at=</c> tag, but <c>Defect:</c>/<c>Scenario:</c> left
-    /// as the literal example text — is exactly the shape <see cref="HasStatedDefect"/> already
-    /// rejects for a well-formed structured block (<see cref="IsFindingContractExample"/>), but
-    /// only <see cref="StripPlaceholderLocations"/> screens for the placeholder path
+    /// glued to the finding contract's own worked-example body (adversarial cycle-1 finding,
+    /// `ReviewVerdictValidation.cs:208`; cycle-2 review, conformance finding #1): a resumed
+    /// session that half-fills the reprompt's template — a genuine <c>at=</c> tag, but
+    /// <c>Defect:</c>/<c>Scenario:</c> left as the literal example text, with or without
+    /// something else appended past it — is exactly the shape <see cref="HasStatedDefect"/>
+    /// already rejects for a well-formed structured block (<see cref="BeginsWithFindingContractExample"/>),
+    /// but only <see cref="StripPlaceholderLocations"/> screens for the placeholder path
     /// (<c>src/Some/File.cs</c>); a real path was never a placeholder, so it survives to the
     /// paragraph scan below untouched. Both of that scan's branches then wrongly read it as a
     /// finding: <see cref="StructuralMarkerPattern"/> because the literal `Defect:`/`Scenario:`
@@ -224,7 +246,11 @@ public static partial class ReviewVerdictValidation
     /// sentence with the header's location. Filtering the paragraph out before either branch
     /// runs — rather than trying to patch each one — closes both at once, the same way
     /// <see cref="StripPlaceholderLocations"/> already does for the placeholder-path shape of
-    /// this same echo.
+    /// this same echo. A prefix match, not an exact one (cycle-2 review): an exact match only
+    /// ever caught the two-line example standing completely alone, so a session that quoted
+    /// further into the contract's own prose before answering — reprinting the example verbatim
+    /// and then continuing to echo the reprompt around it — defeated the exact match while
+    /// leaving the example's own words fully intact to trip both branches below anyway.
     /// </summary>
     private static bool IsFindingContractExampleEcho(string paragraph)
     {
@@ -234,7 +260,7 @@ public static partial class ReviewVerdictValidation
             return false;
         }
 
-        return IsFindingContractExample(paragraph[defectIndex..].Trim());
+        return BeginsWithFindingContractExample(paragraph[defectIndex..].Trim());
     }
 
     /// <summary>
@@ -268,7 +294,11 @@ public static partial class ReviewVerdictValidation
     /// <c>ReviewEngine.RepromptForVerdictAsync</c> reprints <c>AppendFindingContract</c> in full,
     /// so a session that quotes its own instructions before answering reproduces the example
     /// `Defect:`/`Scenario:` lines verbatim, and a blank-body check alone would read that echo as
-    /// a real finding's body.
+    /// a real finding's body. Nor is it "something past the header line" when the example is
+    /// merely how the body OPENS (cycle-2 review, conformance finding #1): a real, non-placeholder
+    /// location glued to the example with anything else appended past it — more of the contract's
+    /// own reprompt prose, most often — used to defeat the exact-match check below while every
+    /// word of the echo it let through was still the contract's own, never the reviewer's.
     /// </para>
     /// </summary>
     private static bool HasStatedDefect(ReviewFinding finding)
@@ -280,7 +310,7 @@ public static partial class ReviewVerdictValidation
 
         int headerEnd = finding.Text.IndexOf('\n');
         string body = headerEnd < 0 ? string.Empty : finding.Text[(headerEnd + 1)..].Trim();
-        if (IsFindingContractExample(body))
+        if (BeginsWithFindingContractExample(body))
         {
             return false;
         }
@@ -291,16 +321,20 @@ public static partial class ReviewVerdictValidation
     }
 
     /// <summary>
-    /// Whether a finding block's body is nothing but the finding contract's own worked example,
-    /// each line trimmed before comparing so the example's per-line indentation (preserved by
+    /// Whether a finding block's body is nothing but the finding contract's own worked example —
+    /// or opens with it and continues into more echoed prose past it (cycle-2 review) — each line
+    /// trimmed before comparing so the example's per-line indentation (preserved by
     /// <see cref="ReviewResultParser.ParseFindings"/>, which only trims the header line) does not
-    /// hide a verbatim echo from an exact match.
+    /// hide a verbatim echo from the match. A prefix check rather than an exact-equality one: the
+    /// two-line example is peculiar enough phrasing ("one sentence saying what is wrong", "the
+    /// input or state that makes it misbehave, and what goes wrong") that no genuine finding ever
+    /// reproduces it verbatim, so whatever a session appends after quoting it is never a real
+    /// defect description standing on its own — it is either nothing, or more of this same
+    /// prompt's own boilerplate.
     /// </summary>
-    private static bool IsFindingContractExample(string body) =>
-        string.Equals(
-            string.Join('\n', body.Split('\n').Select(line => line.Trim())),
-            FindingContractExampleBody,
-            StringComparison.OrdinalIgnoreCase);
+    private static bool BeginsWithFindingContractExample(string body) =>
+        string.Join('\n', body.Split('\n').Select(line => line.Trim()))
+            .StartsWith(FindingContractExampleBody, StringComparison.OrdinalIgnoreCase);
 
     /// <summary>
     /// The literal placeholder paths this file's own prompts write into an agent's context:
@@ -349,6 +383,26 @@ public static partial class ReviewVerdictValidation
     /// </summary>
     private static string StripPlaceholderLocations(string text) =>
         LocationPattern().Replace(text, match => IsPlaceholderLocation(match.Value) ? string.Empty : match.Value);
+
+    /// <summary>
+    /// <paramref name="text"/> with every verbatim (case-insensitive) occurrence of
+    /// <paramref name="taskObjective"/> removed (adversarial cycle-2 finding,
+    /// `ReviewVerdictValidation.cs:190`): unlike <see cref="PlaceholderLocations"/>, the objective
+    /// is not a fixed string this file can list in advance — it is whatever the task says, printed
+    /// into the conformance lens's own prompt by <c>AgentPromptBuilder.BuildConformanceReview</c>.
+    /// A session that restates it before concluding reproduces its own file references and defect
+    /// vocabulary right back at the platform, so the objective is treated the same way a
+    /// placeholder is: read, not found. A no-op when there is no objective to strip, which is
+    /// every call outside the conformance lens (the adversarial lens is deliberately never told
+    /// the objective, so it has nothing of this shape to echo).
+    /// </summary>
+    private static string StripObjectiveEcho(string text, string? taskObjective)
+    {
+        string needle = (taskObjective ?? string.Empty).Trim();
+        return needle.IsBlank()
+            ? text
+            : Regex.Replace(text, Regex.Escape(needle), string.Empty, RegexOptions.IgnoreCase);
+    }
 
     /// <summary>
     /// The sentence-scoped half of the prose heuristic: a location and defect language in the

@@ -420,4 +420,67 @@ public sealed class ReviewVerdictValidationTests
                 "The mechanics bullet cites `path/to/file.cs:123`, but nothing here is wrong.\n\nVERDICT: needs-fixes")
             .Should().BeFalse();
     }
+
+    /// <summary>
+    /// The bare word "no" names a finding the same way its neighboring negation words ("not",
+    /// "never", "no longer") already did (cycle-2 adversarial finding, `ReviewVerdictValidation.cs:65`).
+    /// </summary>
+    [Theory]
+    [InlineData("There is no test for the archived path in `RunPathsTests.cs`.\n\nVERDICT: needs-fixes")]
+    [InlineData("`src/Hall9k.Cli/Commands/LogsCommand.cs:50` has no cancellation token on the read.\n\nVERDICT: needs-fixes")]
+    public void The_bare_word_no_names_a_finding(string output) =>
+        ReviewVerdictValidation.NamesAFinding(output).Should().BeTrue();
+
+    /// <summary>
+    /// A structured `FINDING:` header carrying a REAL location, followed by the finding contract's
+    /// own worked example, followed by yet more of the contract's own reprompt prose glued on with
+    /// no blank line, still does not name a finding (cycle-2 conformance finding #1): the exact
+    /// two-line match that closed this gap for a placeholder location
+    /// (<see cref="A_structured_header_with_a_real_location_followed_by_the_finding_contracts_own_example_does_not_name_a_finding"/>)
+    /// stopped matching as soon as anything was appended past the example, at which point the
+    /// structural-marker branch fired on the literal `Defect:`/`Scenario:` labels anyway.
+    /// </summary>
+    [Fact]
+    public void A_real_location_followed_by_the_example_and_more_echoed_prose_still_does_not_name_a_finding()
+    {
+        ReviewVerdictValidation.NamesAFinding(
+                "FINDING: severity=high; scope=in-scope; at=src/Hall9k.Daemon/Review/ReviewEngine.cs:612\n"
+                + "Defect: one sentence saying what is wrong.\n"
+                + "Scenario: the input or state that makes it misbehave, and what goes wrong.\n"
+                + "**severity** — grade against these anchors, not against your own sense of importance:\n"
+                + "\nVERDICT: needs-fixes")
+            .Should().BeFalse();
+    }
+
+    /// <summary>
+    /// A conformance session that restates the task's own objective before concluding satisfies the
+    /// location-plus-defect shape without having found anything (cycle-2 adversarial finding,
+    /// `ReviewVerdictValidation.cs:190`): the objective is arbitrary per-task content the fixed
+    /// placeholder list can never anticipate, so it has to be screened by value, passed in from the
+    /// task that prompted this review pass.
+    /// </summary>
+    [Fact]
+    public void Restating_the_tasks_own_objective_does_not_name_a_finding()
+    {
+        const string objective = "Stop LogsCommand.cs from resolving a stale run directory";
+        ReviewVerdictValidation.NamesAFinding(
+                $"The task was to {objective}, and the diff does this correctly.\n\nVERDICT: needs-fixes",
+                objective)
+            .Should().BeFalse();
+    }
+
+    /// <summary>
+    /// The objective-echo screen only removes the objective's own text, so a genuine defect stated
+    /// alongside a restated objective is still read as naming a finding.
+    /// </summary>
+    [Fact]
+    public void A_real_defect_stated_alongside_a_restated_objective_still_names_a_finding()
+    {
+        const string objective = "Stop LogsCommand.cs from resolving a stale run directory";
+        ReviewVerdictValidation.NamesAFinding(
+                $"The task was to {objective}. `Auth.cs:42` never resets the limiter after a rejected "
+                + "request.\n\nVERDICT: needs-fixes",
+                objective)
+            .Should().BeTrue();
+    }
 }
