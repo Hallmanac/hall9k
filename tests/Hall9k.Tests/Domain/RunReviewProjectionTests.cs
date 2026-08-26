@@ -123,6 +123,64 @@ public sealed class RunReviewProjectionTests
         view.ReviewResidualsRouted.Should().Be(1);
     }
 
+    /// <summary>
+    /// A thread-dispute park (Decisions Log #62) lands from Verifying, before any review pass has
+    /// read the diff — the human resolving it decided the disputed THREAD, not a review finding,
+    /// so it must not ride into a later review prompt as though a fresh-context reviewer's own
+    /// finding had already been settled (adversarial cycle-4 finding, `RunDetails.cs:344`): a
+    /// reviewer instructed "the human already dismissed this" over a defect nobody has ever
+    /// actually reviewed would suppress a real finding on no evidence at all.
+    /// </summary>
+    [Fact]
+    public void Run_details_does_not_record_a_thread_dispute_park_resolution_as_a_settled_ruling()
+    {
+        RunDetailsProjection projection = new();
+        Guid id = DomainId.New();
+        RunDetails view = projection.Create(new FakeEvent<RunDispatched>(new RunDispatched(
+            id, DomainId.New(), DomainId.New(), DomainId.New(), 1, DomainId.New(),
+            "/wt/x", "task/x", ExecutorMode.Subscription, Now, IsFollowUp: true)));
+        projection.Apply(new FakeEvent<RunProcessStarted>(new RunProcessStarted(id, 4484, Now)), view);
+        projection.Apply(new FakeEvent<AgentSessionCompleted>(new AgentSessionCompleted(id, Now)), view);
+
+        projection.Apply(new FakeEvent<ReviewParked>(
+            new ReviewParked(id, "A follow-up disputed a review thread.", Now)), view);
+        view.ParkedFromState.Should().Be(RunState.Verifying, "the park caught the run before the gates");
+
+        projection.Apply(new FakeEvent<ReviewParkResolved>(new ReviewParkResolved(
+            id, ReviewVerdict.MergeReady, "the thread is about the retry loop; I already checked it, leave it",
+            Now, DomainId.New())), view);
+
+        view.State.Should().Be(RunState.UnderReview);
+        view.ReviewParkResolutions.Should().BeEmpty(
+            "no review pass ever ran over this diff, so there is nothing settled to hand a later reviewer");
+    }
+
+    /// <summary>
+    /// The same discriminator applies whichever verdict the human gives a dispute park: a
+    /// needs-fixes resolution of a rebase-conflict dispute (backlog 44) is the human deciding
+    /// which side of the conflict to take, not confirming a review finding as real.
+    /// </summary>
+    [Fact]
+    public void Run_details_does_not_record_a_needs_fixes_thread_dispute_resolution_either()
+    {
+        RunDetailsProjection projection = new();
+        Guid id = DomainId.New();
+        RunDetails view = projection.Create(new FakeEvent<RunDispatched>(new RunDispatched(
+            id, DomainId.New(), DomainId.New(), DomainId.New(), 1, DomainId.New(),
+            "/wt/x", "task/x", ExecutorMode.Subscription, Now, IsFollowUp: true)));
+        projection.Apply(new FakeEvent<RunProcessStarted>(new RunProcessStarted(id, 4484, Now)), view);
+        projection.Apply(new FakeEvent<AgentSessionCompleted>(new AgentSessionCompleted(id, Now)), view);
+
+        projection.Apply(new FakeEvent<ReviewParked>(
+            new ReviewParked(id, "A rebase follow-up hit an unresolvable conflict.", Now)), view);
+
+        projection.Apply(new FakeEvent<ReviewParkResolved>(new ReviewParkResolved(
+            id, ReviewVerdict.NeedsFixes, "take theirs for the ReviewEngine.cs hunk", Now, DomainId.New())), view);
+
+        view.ReviewParkResolutions.Should().BeEmpty(
+            "resolving a rebase dispute is not a human confirming a review finding as real");
+    }
+
     [Fact]
     public void Run_list_item_walks_under_review_and_review_parked()
     {
