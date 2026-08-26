@@ -195,14 +195,12 @@ internal static class TaskPhaseComposer
 
         return run.State.Value switch
         {
-            // What is recorded here is an absence, and the line says so in those words. The
-            // closeout monitor writes a finding — failing checks, unresolved threads — and writes
-            // nothing at all while a check is still reporting, since it waits for the whole CI
-            // picture rather than acting on half of one. So silence covers both a quiet pull
-            // request and one whose gates have not answered yet, and the line says which it
-            // cannot tell rather than reporting an all-clear nobody made.
-            "AwaitingReview" => new TaskPhase($"watching {pullRequest} — waiting on your merge",
-                SessionLiveness.NotApplicable, "no finding recorded; its checks may still be reporting"),
+            // A checks-or-threads finding would already have moved the run off AwaitingReview
+            // (ChecksFailing, ReviewPending), so what distinguishes one AwaitingReview row from
+            // another here is only the post-PR review watcher's own read of Copilot: landed,
+            // requested but still pending, or neither observed yet (origin: PR #50 sat Delivered
+            // for 23 minutes with a landed Copilot review nobody had read before the merge).
+            "AwaitingReview" => AwaitingReviewPhase(pullRequest, run),
             "ChecksFailing" => new TaskPhase($"watching {pullRequest}", SessionLiveness.NotApplicable,
                 ChecksDetail(run)),
             "ReviewPending" => new TaskPhase($"watching {pullRequest}", SessionLiveness.NotApplicable, Threads(run)),
@@ -259,6 +257,37 @@ internal static class TaskPhaseComposer
             ? $"PR #{number}"
             : "the pull request";
     }
+
+    /// <summary>
+    /// What the post-PR review watcher has observed about Copilot's review, while nothing else
+    /// has moved the run off AwaitingReview (Decisions Log — post-PR review observability).
+    /// Unknown is a run recorded before this observation existed, or the sweep that would have
+    /// recorded it has not run yet, and reads as the original silent line rather than asserting
+    /// a state nobody has watched for.
+    /// </summary>
+    private static TaskPhase AwaitingReviewPhase(string pullRequest, RunDetails run) => run.ExternalReviewState.Value switch
+    {
+        "Landed" => new TaskPhase($"watching {pullRequest} — Copilot review landed",
+            SessionLiveness.NotApplicable, CopilotThreadsDetail(run)),
+        "RequestedPending" => new TaskPhase($"watching {pullRequest} — awaiting Copilot review",
+            SessionLiveness.NotApplicable, "requested but not yet submitted"),
+        "None" => new TaskPhase($"watching {pullRequest} — awaiting human review",
+            SessionLiveness.NotApplicable, "no external review activity observed"),
+        _ => new TaskPhase($"watching {pullRequest} — waiting on your merge",
+            SessionLiveness.NotApplicable, "no finding recorded; its checks may still be reporting"),
+    };
+
+    /// <summary>
+    /// The comment-thread count a landed Copilot review left, resolved or not — distinct from
+    /// <see cref="Threads"/>'s unresolved-only count, which only ever renders once a finding has
+    /// moved the run to ReviewPending.
+    /// </summary>
+    private static string CopilotThreadsDetail(RunDetails run) => run.ExternalReviewThreadCount switch
+    {
+        0 => "no comment threads",
+        1 => "1 comment thread",
+        _ => $"{run.ExternalReviewThreadCount} comment threads",
+    };
 
     /// <summary>
     /// The failing checks, named when the observation named them. A finding recorded without the

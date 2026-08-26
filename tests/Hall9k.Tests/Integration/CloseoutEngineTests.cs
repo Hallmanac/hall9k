@@ -193,6 +193,44 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
     }
 
     /// <summary>
+    /// The post-PR review watcher's own read (origin: PR #50 sat Delivered for 23 minutes with
+    /// a landed Copilot review nobody had read before the merge) lands on the run without
+    /// moving its state, and a quiet pull request does not grow a same-state event every sweep.
+    /// </summary>
+    [Fact]
+    public async Task External_review_state_is_recorded_and_only_appends_when_it_changes()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        (DocumentStore store, NodeContext node, GitWorktreeManager worktrees, _, string repoPath) =
+            await SetUpAsync(cts.Token);
+        using IDisposable storeLifetime = store;
+
+        (_, Guid runId, _) = await SeedAwaitingReviewAsync(store, node, worktrees, repoPath, cts.Token);
+
+        FakeInspector inspector = new()
+        {
+            Snapshot = FakeInspector.Quiet() with
+            {
+                CopilotReviewState = ExternalReviewState.Landed,
+                CopilotReviewThreadCount = 2,
+            },
+        };
+        CloseoutEngine engine = NewEngine(store, node, inspector, worktrees);
+        await engine.PollOnceAsync(cts.Token);
+        await engine.PollOnceAsync(cts.Token);
+
+        await using IQuerySession query = store.QuerySession();
+        RunDetails run = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
+        run.ExternalReviewState.Should().Be(ExternalReviewState.Landed);
+        run.ExternalReviewThreadCount.Should().Be(2);
+        run.State.Should().Be(RunState.AwaitingReview, "the observation is informational only");
+
+        (await query.Events.FetchStreamAsync(runId, token: cts.Token))
+            .Count(e => e.Data is ExternalReviewObserved)
+            .Should().Be(1, "a quiet pull request does not grow a same-state event every sweep");
+    }
+
+    /// <summary>
     /// The three artifact states are three observations, and each closes out honestly: an
     /// empty file means the session's result was read and carried no handoff, an absent file
     /// means there was no session-end capture at all (a park resolved by hand, a historical
