@@ -699,4 +699,86 @@ public sealed class ReviewVerdictValidationTests
     [InlineData("1. `install.ps1:40` — this never checks the download hash.\n\nVERDICT: needs-fixes")]
     public void A_lowercase_extension_location_still_names_a_finding(string output) =>
         ReviewVerdictValidation.NamesAFinding(output).Should().BeTrue();
+
+    /// <summary>
+    /// A heading naming a real location, immediately followed by the finding contract's own
+    /// worked example, does not name a finding (cycle-10 conformance finding #1,
+    /// `ReviewVerdictValidation.cs:368`): the heading-lead-in borrow has to be screened against
+    /// the contract's own example the same way the structured header-to-body shape already is,
+    /// or a half-filled reprompt template dispatches a fix session against text the platform
+    /// wrote, not text the reviewer found.
+    /// </summary>
+    [Fact]
+    public void A_heading_followed_by_the_finding_contracts_own_example_does_not_name_a_finding()
+    {
+        ReviewVerdictValidation.NamesAFinding(
+                "### `src/Auth.cs:42`\n"
+                + "\n"
+                + "Defect: one sentence saying what is wrong.\n"
+                + "Scenario: the input or state that makes it misbehave, and what goes wrong.\n"
+                + "\nVERDICT: needs-fixes")
+            .Should().BeFalse();
+    }
+
+    /// <summary>
+    /// A markdown heading immediately followed by unrelated body text on the very next line, with
+    /// no blank line separating them, is not a bare heading lead-in — it is one ordinary paragraph
+    /// that merely opens with a `#` (cycle-10 conformance finding #2,
+    /// `ReviewVerdictValidation.cs:231`): the old `#` alternative matched on the marker alone,
+    /// with nothing checking that the heading was the whole paragraph, so this shape let an
+    /// affirming review borrow "broken" for a location the reviewer's own heading named for
+    /// something else entirely.
+    /// </summary>
+    [Fact]
+    public void A_heading_immediately_followed_by_body_text_on_the_same_paragraph_does_not_borrow_defect_language()
+    {
+        ReviewVerdictValidation.NamesAFinding(
+                "## Conformance review of `ReviewEngine.cs`\n"
+                + "Everything checks out; I verified each criterion.\n"
+                + "\n"
+                + "The daemon's own dispatch loop is broken elsewhere, but that is pre-existing.\n"
+                + "\nVERDICT: needs-fixes")
+            .Should().BeFalse();
+    }
+
+    /// <summary>
+    /// A heading naming a real location, followed by a paragraph that denies rather than asserts a
+    /// defect, does not name a finding (cycle-10 adversarial finding #2,
+    /// `ReviewVerdictValidation.cs:371`): "Nothing is wrong; no defect stands." trips
+    /// <see cref="ReviewVerdictValidation"/>'s defect vocabulary purely because "wrong", "no" and
+    /// "defect" are all in it, even though every one of them is being used to deny a problem — the
+    /// same affirming-review shape <see cref="An_affirming_sentence_does_not_borrow_defect_language_from_a_preceding_sentence"/>
+    /// already guards against at sentence scope, now closed for the heading-lead-in branch too.
+    /// </summary>
+    [Fact]
+    public void A_heading_followed_by_a_denial_paragraph_does_not_name_a_finding()
+    {
+        ReviewVerdictValidation.NamesAFinding(
+                "## Findings for `ReviewEngine.cs`\n"
+                + "\n"
+                + "Nothing is wrong; no defect stands.\n"
+                + "\nVERDICT: needs-fixes")
+            .Should().BeFalse();
+    }
+
+    /// <summary>
+    /// A genuine finding that restates an acceptance criterion's own wording still names a finding
+    /// from the location the criterion and the finding share (cycle-10 adversarial finding,
+    /// `ReviewVerdictValidation.cs:326`): the conformance lens's most ordinary phrasing restates
+    /// each criterion and marks it, so blanking the whole matched span used to delete the only
+    /// location the reviewer stated along with the criterion's own wording, leaving the reviewer's
+    /// own defect language ("UNMET", "still joins a literal…") with nothing left to point at.
+    /// </summary>
+    [Fact]
+    public void A_criterion_restated_as_part_of_a_genuine_finding_still_names_a_finding()
+    {
+        const string criterion = "LogsCommand.cs resolves an archived task's run directory";
+        ReviewVerdictValidation.NamesAFinding(
+                "## Acceptance criteria\n"
+                + "\n"
+                + $"- {criterion} — UNMET. The command still joins a literal \"runs\" segment.\n"
+                + "\nVERDICT: needs-fixes",
+                taskAcceptanceCriteria: [criterion])
+            .Should().BeTrue();
+    }
 }
