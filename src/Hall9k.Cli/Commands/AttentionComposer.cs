@@ -195,7 +195,7 @@ internal static class AttentionComposer
 
     /// <summary>
     /// The AwaitingReview attention cause, split by the post-PR review watcher's own read of
-    /// Copilot (Decisions Log #88) — the same three readings <c>TaskPhaseComposer</c>'s phase
+    /// Copilot (Decisions Log #88) — the same readings <c>TaskPhaseComposer</c>'s phase
     /// line already draws, so the pane's cause never contradicts the line printed directly above
     /// it (pre-PR review, cycle 2: the two used to disagree — "awaiting Copilot review" on the
     /// phase line, "read its checks, then the merge is yours" on the attention line right under
@@ -218,6 +218,14 @@ internal static class AttentionComposer
             run.PullRequestUrl ?? string.Empty),
         "Landed" => new TaskAttention(AttentionLevel.NeedsYou,
             "Copilot's review landed — read it, then the merge is yours", run.PullRequestUrl ?? string.Empty),
+        // A stale review is review activity that happened, just against a commit that is no
+        // longer the head (independent pre-PR review, cycle 6) — it must not collapse into the
+        // "nothing has been recorded" cause below, which would tell the reader Copilot never
+        // looked at all.
+        "Stale" => new TaskAttention(AttentionLevel.NeedsYou,
+            $"Copilot reviewed an earlier commit and the review is stale ({StaleThreadCountText(run)}) "
+            + "— read its checks, then the merge is yours",
+            run.PullRequestUrl ?? string.Empty),
         // "None" and Unknown both mean no external review activity has been observed, which is
         // not the same as a clean pull request: the closeout monitor records this observation
         // ahead of its own checks read, so a run whose CI is still running reads identically to
@@ -227,6 +235,18 @@ internal static class AttentionComposer
         _ => new TaskAttention(AttentionLevel.NeedsYou,
             "nothing has been recorded against this pull request yet — read its checks, then the merge is yours",
             run.PullRequestUrl ?? string.Empty),
+    };
+
+    /// <summary>
+    /// The comment-thread count a stale Copilot review left, resolved or not — the same count
+    /// <c>TaskPhaseComposer.CopilotThreadsDetail</c> renders on the phase line directly above
+    /// this cause, so the two never disagree about how many threads a stale review is worth.
+    /// </summary>
+    private static string StaleThreadCountText(RunDetails run) => run.ExternalReviewThreadCount switch
+    {
+        0 => "no comment threads",
+        1 => "1 comment thread",
+        _ => $"{run.ExternalReviewThreadCount} comment threads",
     };
 
     /// <summary>

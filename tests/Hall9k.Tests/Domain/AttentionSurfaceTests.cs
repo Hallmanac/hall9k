@@ -419,6 +419,20 @@ public sealed class AttentionSurfaceTests
         reviewLandedChecksPending.Attention.Cause.Should().Contain("checks may still be reporting");
         reviewLandedChecksPending.Attention.Cause.Should().NotContain(
             "landed — read it, then the merge is yours", "checks pending must not read as the unconditional all-clear");
+
+        // A stale review is review activity that happened, just against a commit that is no
+        // longer the head — the cause must say that, with its thread count, never fall back to
+        // the "nothing has been recorded" text the None/Unknown arm renders (independent pre-PR
+        // review, cycle 6).
+        RunDetails stale = StatusFixtures.Run(runId, RunState.AwaitingReview, sessionProcessId: null, pullRequestNumber: 24);
+        stale.ExternalReviewState = ExternalReviewState.Stale;
+        stale.ExternalReviewThreadCount = 1;
+        TaskStatusRow reviewStale = StatusFixtures.Compose(StatusFixtures.Task(TaskState.Done, runId, pullRequest), stale);
+
+        reviewStale.Attention.NeedsYou.Should().BeTrue("a stale review still leaves the checks and merge for a human to read");
+        reviewStale.Attention.Cause.Should().Contain("Copilot reviewed an earlier commit and the review is stale");
+        reviewStale.Attention.Cause.Should().Contain("1 comment thread");
+        reviewStale.Attention.Cause.Should().NotContain("nothing has been recorded against this pull request yet");
     }
 
     /// <summary>

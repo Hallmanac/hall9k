@@ -367,18 +367,20 @@ public sealed class GitHubPullRequestInspectorTests
     }
 
     /// <summary>
-    /// A stale review with no pending request behind it is not outstanding either — nothing
-    /// currently asks Copilot for anything, so this reads as no external review activity rather
-    /// than a landed review that no longer applies.
+    /// A stale review with no pending request behind it is not outstanding, but it is not
+    /// nothing either: Copilot did review the diff, just against a commit that is no longer the
+    /// head. Collapsing this into <see cref="ExternalReviewState.None"/> told a reader Copilot
+    /// never looked at all, so it gets its own reading instead (independent pre-PR review,
+    /// cycle 6).
     /// </summary>
     [Fact]
-    public void A_stale_Copilot_review_with_no_pending_request_reads_as_none()
+    public void A_stale_Copilot_review_with_no_pending_request_reads_as_stale()
     {
         string json = Payload(
             Actor("hallmanac", "User"), "cafe2", "",
             Review(Actor("copilot-pull-request-reviewer", "Bot"), "cafe1", "Looks good."));
 
-        GitHubPullRequestInspector.ParseReviews(json).CopilotReviewState.Should().Be(ExternalReviewState.None);
+        GitHubPullRequestInspector.ParseReviews(json).CopilotReviewState.Should().Be(ExternalReviewState.Stale);
     }
 
     [Fact]
@@ -449,5 +451,24 @@ public sealed class GitHubPullRequestInspectorTests
         observation.CopilotReviewState.Should().Be(ExternalReviewState.Landed);
         observation.CopilotReviewThreadCount.Should().Be(
             0, "the landed review is a fresh, clean approval — the earlier review's resolved threads are not its own");
+    }
+
+    /// <summary>
+    /// A stale review's own thread count is what a reader needs, the same way a landed review's
+    /// is — scoped to the stale review's id so a thread an even-older, doubly-superseded review
+    /// left does not inflate it (independent pre-PR review, cycle 6).
+    /// </summary>
+    [Fact]
+    public void Stale_thread_count_is_scoped_to_the_stale_review_that_reported_it()
+    {
+        string json = Payload(
+            Actor("hallmanac", "User"), "cafe2",
+            Thread(resolved: true, Actor("copilot-pull-request-reviewer", "Bot"), "thread-1", reviewId: "review-stale"),
+            Review(Actor("copilot-pull-request-reviewer", "Bot"), "cafe1", id: "review-stale"));
+
+        GitHubPullRequestInspector.ReviewObservation observation = GitHubPullRequestInspector.ParseReviews(json);
+
+        observation.CopilotReviewState.Should().Be(ExternalReviewState.Stale);
+        observation.CopilotReviewThreadCount.Should().Be(1, "the stale review's own thread counts toward it");
     }
 }

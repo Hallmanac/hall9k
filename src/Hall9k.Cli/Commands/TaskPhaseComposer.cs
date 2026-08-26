@@ -273,6 +273,11 @@ internal static class TaskPhaseComposer
             SessionLiveness.NotApplicable, CopilotThreadsDetail(run)),
         "RequestedPending" => new TaskPhase($"watching {pullRequest} — awaiting Copilot review",
             SessionLiveness.NotApplicable, "requested but not yet submitted"),
+        // A stale review is review activity that happened, just against a commit that is no
+        // longer the head — it must not read as "nothing recorded" (independent pre-PR review,
+        // cycle 6), so it gets its own text and the same thread-count detail a landed review gets.
+        "Stale" => new TaskPhase($"watching {pullRequest} — Copilot reviewed an earlier commit",
+            SessionLiveness.NotApplicable, $"the review is stale; {CopilotThreadsDetail(run)}"),
         // No external review activity does not mean a human's merge is the only thing left:
         // the closeout sweep records this observation ahead of its own checks read, so a run
         // still building or testing reads identically to one that is genuinely idle. Naming

@@ -27,7 +27,17 @@ public sealed record ExternalReviewState
     /// <summary>Copilot currently has a pending review request that has not been answered yet.</summary>
     public static readonly ExternalReviewState RequestedPending = new("RequestedPending");
 
-    /// <summary>Neither a landed nor a requested Copilot review is on the pull request right now.</summary>
+    /// <summary>
+    /// Copilot reviewed a commit that is no longer the pull request's head, and nothing is
+    /// currently asking it to look again (a re-request in flight reads as
+    /// <see cref="RequestedPending"/> instead, not this). Distinct from <see cref="None"/>
+    /// because a stale review is review activity that happened, just against a superseded
+    /// commit — collapsing it into "nothing recorded" hid that Copilot has read the diff at
+    /// all (independent pre-PR review, cycle 6).
+    /// </summary>
+    public static readonly ExternalReviewState Stale = new("Stale");
+
+    /// <summary>Neither a landed, requested, nor stale Copilot review is on the pull request right now.</summary>
     public static readonly ExternalReviewState None = new("None");
 
     /// <summary>Not recognized, or a run recorded before this observation existed. Serializes as an empty string.</summary>

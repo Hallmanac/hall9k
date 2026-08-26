@@ -210,7 +210,7 @@ public sealed class GitHubPullRequestInspector : IPullRequestInspector
             .GetProperty("data").GetProperty("repository").GetProperty("pullRequest");
 
         string? headCommit = ReadHeadCommit(pullRequest);
-        (ExternalReviewState copilotReviewState, string? landedCopilotReviewId) =
+        (ExternalReviewState copilotReviewState, string? reportedCopilotReviewId) =
             ReadCopilotReviewState(pullRequest, headCommit);
 
         // Every unresolved thread counts, whoever started it (Decisions Log #62). The
@@ -225,15 +225,15 @@ public sealed class GitHubPullRequestInspector : IPullRequestInspector
         foreach (JsonElement thread in pullRequest.GetProperty("reviewThreads").GetProperty("nodes").EnumerateArray())
         {
             // Read once and reused below: the resolved-or-not count needs it for the "landed
-            // with its comment-thread count" phase text, so it is read ahead of the
+            // (or stale) with its comment-thread count" phase text, so it is read ahead of the
             // unresolved-only filtering the rest of this loop applies. Scoped to the review
-            // that is actually landed (Decisions Log #88) — Copilot's login alone is not
-            // enough, since a stale review superseded by a fresh countersign left threads too,
-            // and those are not what the currently-landed review left.
+            // that is actually reported (Decisions Log #88, independent pre-PR review cycle 6)
+            // — Copilot's login alone is not enough, since a stale review superseded by a fresh
+            // countersign left threads too, and those are not what the reported review left.
             PullRequestReviewer? starter = ThreadStarter(thread);
-            if (landedCopilotReviewId is not null
+            if (reportedCopilotReviewId is not null
                 && starter is not null && IsCopilotLogin(starter.Login)
-                && ThreadReviewId(thread) == landedCopilotReviewId)
+                && ThreadReviewId(thread) == reportedCopilotReviewId)
             {
                 copilotThreadCount++;
             }
@@ -296,15 +296,24 @@ public sealed class GitHubPullRequestInspector : IPullRequestInspector
     /// way, is exactly what "awaiting Copilot review" needs to say.
     /// </para>
     /// <para>
-    /// Also returns the landed review's own GraphQL id, or null when nothing landed — what
+    /// A non-errored Copilot review that does not match <paramref name="headCommit"/> is kept as
+    /// a stale candidate rather than discarded: if the loop finds no landed review and no pending
+    /// re-request follows, that stale review is what gets reported (<see cref="ExternalReviewState.Stale"/>)
+    /// instead of the state falling all the way through to <see cref="ExternalReviewState.None"/>,
+    /// which would tell a reader Copilot never looked at all (independent pre-PR review, cycle 6).
+    /// </para>
+    /// <para>
+    /// Also returns the reported review's own GraphQL id (the landed one, or the stale one when
+    /// that is what gets reported), or null when nothing was recorded — what
     /// <see cref="ParseReviews"/> scopes <c>CopilotReviewThreadCount</c> against, so a thread a
     /// now-superseded review left does not inflate the count of a fresh, clean countersign
     /// (Decisions Log #88).
     /// </para>
     /// </summary>
-    private static (ExternalReviewState State, string? LandedReviewId) ReadCopilotReviewState(
+    private static (ExternalReviewState State, string? ReviewId) ReadCopilotReviewState(
         JsonElement pullRequest, string? headCommit)
     {
+        string? staleReviewId = null;
         if (pullRequest.TryGetProperty("latestReviews", out JsonElement latest))
         {
             foreach (JsonElement review in latest.GetProperty("nodes").EnumerateArray())
@@ -315,12 +324,18 @@ public sealed class GitHubPullRequestInspector : IPullRequestInspector
                 }
 
                 string body = review.GetProperty("body").GetString() ?? "";
-                if (!body.Contains(ErroredReviewBodyMarker, StringComparison.OrdinalIgnoreCase)
-                    && string.Equals(ReadReviewedCommit(review), headCommit, StringComparison.OrdinalIgnoreCase))
+                if (body.Contains(ErroredReviewBodyMarker, StringComparison.OrdinalIgnoreCase))
                 {
-                    string? reviewId = review.TryGetProperty("id", out JsonElement idElement) ? idElement.GetString() : null;
+                    continue;
+                }
+
+                string? reviewId = review.TryGetProperty("id", out JsonElement idElement) ? idElement.GetString() : null;
+                if (string.Equals(ReadReviewedCommit(review), headCommit, StringComparison.OrdinalIgnoreCase))
+                {
                     return (ExternalReviewState.Landed, reviewId);
                 }
+
+                staleReviewId = reviewId;
             }
         }
 
@@ -338,7 +353,9 @@ public sealed class GitHubPullRequestInspector : IPullRequestInspector
             }
         }
 
-        return (ExternalReviewState.None, null);
+        return staleReviewId is not null
+            ? (ExternalReviewState.Stale, staleReviewId)
+            : (ExternalReviewState.None, null);
     }
 
     /// <summary>
