@@ -412,11 +412,14 @@ legible from the run's own history too.
 
 **Display composition** (`h9k status`, log #66 and §2.4): everything here reads as
 **Delivered** until a merge is observed, and the current run's state composes the phase line
-beneath it - "watching PR #24, waiting on your merge" while nothing is recorded against it, the
-failing checks or the unresolved thread count when observed, "automatic follow-ups stopped" when
-parked. The quiet reading says "no finding recorded; its checks may still be reporting" rather than
-claiming a clean pull request, because the monitor writes nothing at all while CI is still
-reporting and an absence of findings is not an observation. A
+beneath it - the post-PR review watcher's own three readings of Copilot (log #88): "watching
+PR #24 — Copilot review landed" with its comment-thread count, "watching PR #24 — awaiting
+Copilot review · requested but not yet submitted", or plain "watching PR #24" with "no external
+review activity observed; its checks may still be reporting" when nothing has happened yet -
+plus the failing checks or the unresolved thread count when those are what is observed instead,
+and "automatic follow-ups stopped" when parked. The quiet reading never claims a clean pull
+request or names the human as the last gate, because the monitor writes nothing at all while CI
+is still reporting and an absence of findings is not an observation. A
 Queued/Claimed task still carrying a pull-request URL is a follow-up in flight and says so
 ("follow-up on PR #24: building"), which is the distinction the old single `ClosingOut` bucket
 could not make. **Done** appears only once the merge is observed; a run that ended without one stays
@@ -574,7 +577,8 @@ guard needs) - a list, because a review cycle runs one pass per active track at 
 gone. A phase never claims a session is doing something without observing the process:
 a session on another node, or one whose start time was never recorded, reads as "liveness not
 observed here" rather than as either answer. The two meanings of the old `ClosingOut` separate here
-- "follow-up on PR #24: building, session alive" against "watching PR #24, waiting on your merge" -
+- "follow-up on PR #24: building, session alive" against "watching PR #24 — Copilot review landed"
+(or awaiting Copilot, or plain "watching PR #24" when nothing has been observed yet, log #88) -
 so "is it my turn?" never needs a log dive.
 
 **Attention** is `AttentionComposer`, the single owner of the mapping from recorded facts to a
