@@ -436,6 +436,18 @@ public static partial class ReviewVerdictValidation
     /// restating the objective does. Stripped the same way, one criterion at a time.
     /// </para>
     /// <para>
+    /// <paramref name="priorRulingReasons"/> screens the same class of echo for a human's own
+    /// <c>h9k review resolve --reason</c> text, printed into both lenses' prompts by
+    /// <c>AgentPromptBuilder.AppendSettledRulings</c> (task: review prompts carry prior rulings):
+    /// that text is exactly as arbitrary as the objective or a criterion, and this codebase's own
+    /// recorded review-park reasons routinely pair a real location with real defect vocabulary
+    /// ("`config.json` is not reset across restarts") for the same reason a criterion does.
+    /// Stripped the same way, one ruling's printed reason at a time — the exact text the prompt
+    /// shows, already truncated and reduced to one line by <c>AgentPromptBuilder.RulingReasonsShown</c>,
+    /// not the human's full untruncated reason, so the strip matches what a reviewer could
+    /// actually have echoed.
+    /// </para>
+    /// <para>
     /// A paragraph that is itself only a heading or bold lead-in — the numbered `###` title a
     /// reviewer gives a finding before describing it below — borrows defect language from a later
     /// paragraph rather than requiring both in its own paragraph (cycle-5 conformance finding #1,
@@ -452,15 +464,18 @@ public static partial class ReviewVerdictValidation
     /// </para>
     /// </summary>
     public static bool NamesAFinding(
-        string? output, string? taskObjective = null, IReadOnlyList<string>? taskAcceptanceCriteria = null)
+        string? output, string? taskObjective = null, IReadOnlyList<string>? taskAcceptanceCriteria = null,
+        IReadOnlyList<string>? priorRulingReasons = null)
     {
         if (output.IsBlank())
         {
             return false;
         }
 
-        string sanitized = StripAcceptanceCriteriaEcho(
-            StripObjectiveEcho(StripPlaceholderLocations(output), taskObjective), taskAcceptanceCriteria);
+        string sanitized = StripVerbatimEchoes(
+            StripVerbatimEchoes(
+                StripObjectiveEcho(StripPlaceholderLocations(output), taskObjective), taskAcceptanceCriteria),
+            priorRulingReasons);
 
         IReadOnlyList<ReviewFinding> structuredFindings = ReviewResultParser.ParseFindings(sanitized);
         if (structuredFindings.Any(HasStatedDefect))
@@ -785,25 +800,28 @@ public static partial class ReviewVerdictValidation
 
     /// <summary>
     /// <paramref name="text"/> with every verbatim (case-insensitive) occurrence of each of
-    /// <paramref name="taskAcceptanceCriteria"/> removed, the same way <see cref="StripObjectiveEcho"/>
-    /// strips the objective (cycle-3 review, `AgentPromptBuilder.cs:813-817`): the criteria bullets
-    /// are the identical class of arbitrary per-task text
-    /// <c>AgentPromptBuilder.BuildConformanceReview</c> prints into the conformance lens's own
-    /// prompt, so a session that restates one before concluding reproduces its own file references
-    /// and defect vocabulary right back at the platform the same way restating the objective does.
-    /// A no-op when there are no criteria to strip.
+    /// <paramref name="snippets"/> removed, the same way <see cref="StripObjectiveEcho"/> strips
+    /// the objective (cycle-3 review, `AgentPromptBuilder.cs:813-817`; extended to prior-ruling
+    /// reasons, task: review prompts carry prior rulings): an acceptance-criteria bullet and a
+    /// human's own review-park <c>--reason</c> text are the identical class of arbitrary per-task
+    /// text this file's own prompts print — <c>AgentPromptBuilder.BuildConformanceReview</c> for
+    /// the former, <c>AgentPromptBuilder.AppendSettledRulings</c> for the latter — so a session
+    /// that restates one before concluding reproduces its own file references and defect
+    /// vocabulary right back at the platform the same way restating the objective does. Generic
+    /// over which per-task text is being screened rather than named for one caller, because both
+    /// need the identical strip. A no-op when there is nothing to strip.
     /// </summary>
-    private static string StripAcceptanceCriteriaEcho(string text, IReadOnlyList<string>? taskAcceptanceCriteria)
+    private static string StripVerbatimEchoes(string text, IReadOnlyList<string>? snippets)
     {
-        if (taskAcceptanceCriteria is null || taskAcceptanceCriteria.Count == 0)
+        if (snippets is null || snippets.Count == 0)
         {
             return text;
         }
 
         string sanitized = text;
-        foreach (string criterion in taskAcceptanceCriteria)
+        foreach (string snippet in snippets)
         {
-            sanitized = StripObjectiveEcho(sanitized, criterion);
+            sanitized = StripObjectiveEcho(sanitized, snippet);
         }
 
         return sanitized;
