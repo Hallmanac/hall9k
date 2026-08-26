@@ -17,4 +17,12 @@ public static class DaemonLogEvents
 {
     /// <summary>A pull request opened (or a follow-up pushed to an existing one) — the moment closeout starts watching.</summary>
     public static readonly EventId PullRequestOpened = new(2001, nameof(PullRequestOpened));
+
+    /// <summary>
+    /// A branch pushed with no pull request opened, because the origin is not GitHub — closeout
+    /// starts watching nothing, so this is deliberately a distinct id from <see cref="PullRequestOpened"/>
+    /// rather than sharing it: a monitor keyed on 2001 expecting a PR URL must not wake for a
+    /// push that carries none.
+    /// </summary>
+    public static readonly EventId BranchPushedWithNoPullRequest = new(2002, nameof(BranchPushedWithNoPullRequest));
 }
