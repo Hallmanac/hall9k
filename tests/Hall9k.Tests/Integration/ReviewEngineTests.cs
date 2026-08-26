@@ -424,7 +424,7 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
         (Guid taskId, Guid runId, _) = await SeedVerifiedRunAsync(store, cts.Token);
 
         Guid preLensSession = DomainId.New();
-        const string prose = "The second acceptance criterion is not met: nothing records the observation.";
+        const string prose = "The second acceptance criterion is not met: `Observer.cs` records nothing.";
         await WriteScriptedResultAsync(
             runId, $"review-1-{preLensSession.ToString("N")[..8]}",
             $"{prose}\n\nVERDICT: needs-fixes", cts.Token);
@@ -643,7 +643,7 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
         (Guid taskId, Guid runId, _) = await SeedVerifiedRunAsync(store, cts.Token);
 
         ScriptedExecutor executor = new(
-            "The third acceptance criterion is not met.\n\nVERDICT: needs-fixes",
+            "`Program.cs` — the third acceptance criterion is not met.\n\nVERDICT: needs-fixes",
             "FINDING: severity=medium; scope=out-of-scope; at=Legacy.cs:12\nDefect: pre-existing, and real.\n\n"
             + "VERDICT: needs-fixes",
             "Met the criterion; left the pre-existing one alone.\n\nRESOLUTION: fixed",
@@ -835,7 +835,7 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
         (Guid taskId, Guid runId, _) = await SeedVerifiedRunAsync(store, cts.Token);
 
         // No FINDING header at all, so nothing carries a grade the platform can read.
-        const string ungraded = "The spawner's failure path looks wrong to me.\n\nVERDICT: needs-fixes";
+        const string ungraded = "`Spawner.cs` — the failure path looks wrong to me.\n\nVERDICT: needs-fixes";
         ScriptedExecutor executor = new(
             "Criteria met.\n\nVERDICT: merge-ready",
             ungraded,
@@ -1048,6 +1048,86 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
         run.ParkedReason.Should().Contain("no parseable verdict").And.Contain("re-prompt");
 
         List<object> events = [.. (await query.Events.FetchStreamAsync(runId, token: cts.Token)).Select(e => e.Data)];
+        events.OfType<ReviewVerdictReprompted>().Should().ContainSingle();
+    }
+
+    /// <summary>
+    /// A needs-fixes verdict that names nothing is not a real answer (task filed 2026-08-25, ten
+    /// occurrences — a conformance lens that said needs-fixes over findings it never enumerated,
+    /// and an adversarial lens that returned a bare "VERDICT: needs-fixes"). The engine reads it
+    /// the same as an unparseable verdict: the cycle's one re-prompt fires, quoting the
+    /// requirement, and — naming nothing a second time — the run parks through the exact same
+    /// path a genuinely verdict-less pass takes, rather than the hollow verdict being recorded as
+    /// findings that were never stated.
+    /// </summary>
+    [Fact]
+    public async Task A_needs_fixes_verdict_naming_nothing_is_reprompted_then_parks_if_it_still_names_nothing()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        using DocumentStore store = NewStore();
+        (Guid taskId, Guid runId, _) = await SeedVerifiedRunAsync(store, cts.Token);
+
+        const string hollow = "I found six verified findings, reported above.\n\nVERDICT: needs-fixes";
+        ScriptedExecutor executor = new(
+            hollow,
+            "Hunted; nothing stands.\n\nVERDICT: merge-ready",
+            hollow);
+        bool mergeReady = await NewEngine(store, executor).ReviewAsync(runId, taskId, cts.Token);
+
+        mergeReady.Should().BeFalse("a needs-fixes verdict naming nothing is never treated as real findings");
+        executor.Spawns.Should().HaveCount(3, "two passes and the cycle's one re-prompt");
+        executor.Spawns[2].ResumeSessionId.Should().Be(
+            executor.Spawns[0].SessionId, "the re-prompt resumes the pass that claimed needs-fixes and named nothing");
+        executor.Spawns[2].Prompt.Should().Contain(
+            "must name at least one finding", "the re-prompt quotes the requirement it failed");
+
+        await using IQuerySession query = store.QuerySession();
+        RunDetails run = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
+        run.State.Should().Be(RunState.ReviewParked);
+        run.ParkedReason.Should().Contain("needs-fixes naming nothing").And.Contain("re-prompt");
+
+        List<object> events = [.. (await query.Events.FetchStreamAsync(runId, token: cts.Token)).Select(e => e.Data)];
+        events.OfType<ReviewPassCompleted>().Where(pass => pass.Lens == ReviewLens.Conformance).Should().OnlyContain(
+            pass => pass.Verdict == ReviewVerdict.Unknown && pass.Findings!.Count == 0,
+            "a needs-fixes verdict that named nothing is recorded as no findings, never as a placeholder it never stated");
+        events.OfType<ReviewVerdictReprompted>().Should().ContainSingle();
+
+        File.ReadAllText(RunPaths.ReviewLensFindingsFile(RunPaths.GlobalDirectory(runId), 1, ReviewLens.Conformance.Slug))
+            .Should().Contain(hollow, "the malformed output is preserved verbatim for a human to read at the park");
+    }
+
+    /// <summary>
+    /// The requirement applies to both lenses identically (task filed 2026-08-25): a bare
+    /// "VERDICT: needs-fixes" with nothing above it — the adversarial lens's exact origin shape —
+    /// is reprompted the same way a missing verdict is, and a reviewer that names something real
+    /// on the re-prompt gets to conclude normally rather than being parked over its first, hollow
+    /// answer.
+    /// </summary>
+    [Fact]
+    public async Task A_bare_needs_fixes_verdict_is_reprompted_and_may_still_conclude_with_a_real_finding()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        using DocumentStore store = NewStore();
+        (Guid taskId, Guid runId, _) = await SeedVerifiedRunAsync(store, cts.Token);
+
+        ScriptedExecutor executor = new(
+            "Criteria met.\n\nVERDICT: merge-ready",
+            "VERDICT: needs-fixes",
+            "On reflection: `Auth.cs:42` — the limiter never resets.\n\nVERDICT: needs-fixes",
+            "Reset the limiter.\n\nRESOLUTION: fixed",
+            "Hunted again; the boundary holds.\n\nVERDICT: merge-ready");
+        bool mergeReady = await NewEngine(store, executor).ReviewAsync(runId, taskId, cts.Token);
+
+        mergeReady.Should().BeTrue("the adversarial lens named a real finding on its one re-prompt");
+        executor.Spawns.Should().HaveCount(5, "two passes, one re-prompt, one fix, and the surviving track's final pass");
+        executor.Spawns[2].ResumeSessionId.Should().Be(
+            executor.Spawns[1].SessionId, "the re-prompt resumes the adversarial pass, not its clean sibling");
+
+        await using IQuerySession query = store.QuerySession();
+        List<object> events = [.. (await query.Events.FetchStreamAsync(runId, token: cts.Token)).Select(e => e.Data)];
+        events.OfType<ReviewPassCompleted>().Should().Contain(
+            pass => pass.Lens == ReviewLens.Adversarial && pass.Cycle == 1 && pass.Verdict == ReviewVerdict.NeedsFixes,
+            "the resumed leg's real finding is what the platform ultimately reads for this pass");
         events.OfType<ReviewVerdictReprompted>().Should().ContainSingle();
     }
 
