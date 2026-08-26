@@ -189,10 +189,14 @@ public static class CliCommandTree
             review.SetDescription("Work with the pre-PR review loop (PLAN.md log #24)");
             review.AddCommand<ReviewResolveCommand>("resolve")
                 .WithDescription(
-                    "Record your verdict on a review-parked run: --merge-ready proceeds to the pull request, "
+                    "Record your verdict on a review-parked run: --merge-ready proceeds to the pull request "
+                    + "(pair it with --reason to say why, e.g. the evidence that dismissed a finding), "
                     + "--needs-fixes <reason> dispatches a fix session (and, like pr resolve, restores the "
-                    + "automatic fix budget). The park reason and findings files name what needs judging.")
+                    + "automatic fix budget). Either way the verdict and reason are recorded on the task, so "
+                    + "a later fresh-context review pass is told the question was already settled instead of "
+                    + "re-raising it. The park reason and findings files name what needs judging.")
                 .WithExample("review", "resolve", "28b19893", "--merge-ready")
+                .WithExample("review", "resolve", "28b19893", "--merge-ready", "--reason", "\"False positive - confirmed via git log\"")
                 .WithExample("review", "resolve", "28b19893", "--needs-fixes", "\"The limiter reset finding is real; fix it as the reviewer described\"");
         });
 

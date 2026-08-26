@@ -73,13 +73,30 @@ public sealed class ReviewResolveCommand : Hall9kAsyncCommand<ReviewResolveComma
         [Description("Your verdict: the stated defects are real — a fix session is dispatched with this reason as its findings")]
         public string? NeedsFixes { get; init; }
 
-        public override ValidationResult Validate() =>
-            MergeReady == NeedsFixes.IsNotBlank()
-                ? ValidationResult.Error(
+        [CommandOption("--reason <TEXT>")]
+        [Description(
+            "Why the diff is sound despite the finding — e.g. the evidence that dismissed it. Only valid "
+            + "with --merge-ready (--needs-fixes already takes its reason as its own argument). Recorded on "
+            + "the task so a later fresh-context review pass is told this was already settled, rather than "
+            + "re-raising the same question (PLAN.md log #24, task: review prompts carry prior rulings).")]
+        public string? Reason { get; init; }
+
+        public override ValidationResult Validate()
+        {
+            if (MergeReady == NeedsFixes.IsNotBlank())
+            {
+                return ValidationResult.Error(
                     "Pass exactly one verdict: --merge-ready, or --needs-fixes <reason>. " +
                     "The park exists because the platform refused to guess; this command records " +
-                    "YOUR judgment (PLAN.md log #24).")
+                    "YOUR judgment (PLAN.md log #24).");
+            }
+
+            return Reason.IsNotBlank() && NeedsFixes.IsNotBlank()
+                ? ValidationResult.Error(
+                    "Pass --reason only with --merge-ready; --needs-fixes already takes its reason as its " +
+                    "own argument.")
                 : ValidationResult.Success();
+        }
     }
 
     protected override async Task<int> ExecuteAsync(Settings settings, CancellationToken cancellationToken)
@@ -123,8 +140,12 @@ public sealed class ReviewResolveCommand : Hall9kAsyncCommand<ReviewResolveComma
 
         BootstrapContext context = await NodeBootstrap.EnsureAsync(session, cancellationToken);
         ReviewVerdict verdict = settings.MergeReady ? ReviewVerdict.MergeReady : ReviewVerdict.NeedsFixes;
+        // Normalized so the stored event agrees with how the rest of the pipeline reads it:
+        // prompt rendering and echo-stripping both treat a blank reason as "none recorded".
+        string? reason = settings.MergeReady ? settings.Reason : settings.NeedsFixes;
+        reason = string.IsNullOrWhiteSpace(reason) ? null : reason.Trim();
         session.Events.Append(runId, expectedVersion: fence.Version + 1, new ReviewParkResolved(
-            runId, verdict, settings.NeedsFixes, DateTimeOffset.UtcNow, context.OwnerId));
+            runId, verdict, reason, DateTimeOffset.UtcNow, context.OwnerId));
 
         // The run is no longer parked, so the sweep's parked-run shield no longer covers
         // this lease; a fresh heartbeat holds the task while the daemon wakes.
