@@ -1006,8 +1006,14 @@ than `Verifying` on every dispute past the first and so would misclassify a seco
 resolve as a settled ruling): that park caught the run before any gate or reviewer
 ever read the diff, so the human resolved a disputed thread, not a review finding, and it is not
 recorded as a settled ruling. `AgentPromptBuilder.AppendSettledRulings` renders the newest 8
-rulings, each reason summarized to 500 characters, under a heading telling the reviewer these
-are settled and re-raising one needs a stated reason something changed; it is appended to both
+rulings, each reason summarized to 500 characters, under a heading that reads the two verdicts
+differently: a merge-ready ruling is settled and re-raising it needs a stated reason something
+changed, while a needs-fixes ruling is a human-confirmed defect the reviewer checks for and
+reports again if the ordered fix never landed. Only a merge-ready ruling's reason is echo-stripped
+before `ReviewVerdictValidation.NamesAFinding` reads the reviewer's output (a dismissal echoed
+back must not count as naming a finding); a needs-fixes reason is left alone, because its defect
+vocabulary is exactly what a legitimate re-raise of a still-unfixed confirmed defect would use.
+The rendered block is appended to both
 lenses, unconditionally paired with a pointer at whatever doctrine the project's own
 AGENTS.md/CLAUDE.md documents (a decisions log among them, if it keeps one) — deliberately
 generic rather than naming this platform's own PLAN.md by path, since `AgentPromptBuilder`

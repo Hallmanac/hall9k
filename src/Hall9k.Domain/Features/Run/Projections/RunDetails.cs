@@ -350,8 +350,10 @@ public sealed class RunDetailsProjection : SingleStreamProjection<RunDetails, Gu
         // UnderReview, not Verifying, on every dispute past the first — ReviewFixDispatched moves
         // State to UnderReview before the resumed session ever parks again, so a second-or-later
         // resolve keyed on that would wrongly record the resolution as a settled ruling.
-        // ReviewCommand.cs uses the identical ReviewCycle == 0 discriminator for the same
-        // distinction. (This mirrors RunAggregate.Apply, which still keys its own
+        // ReviewResolveCommand.cs keys its rebase-conflict refusal on the same ReviewCycle == 0
+        // fact, though its guard is narrower (MergeReady on a Rebase follow-up); the shared
+        // precedent is only that cycle 0 is the reliable "before any reviewer read the diff"
+        // discriminator, not the surrounding condition. (This mirrors RunAggregate.Apply, which still keys its own
         // Reverify-vs-ordinary-resolution branch on its own ParkedFromState field — a pre-existing
         // divergence this task did not introduce and is not fixing here; see the deferred draft
         // 5cd7917e.)
