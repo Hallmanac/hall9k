@@ -147,6 +147,16 @@ public sealed class RunDetails
     public int ReviewResidualsRoutingFailed { get; set; }
     /// <summary>Ride-alongs never folded into a fix session the run dispatched for another reason (Decisions Log #87).</summary>
     public int ReviewResidualsRideAlong { get; set; }
+    /// <summary>
+    /// Whether the most recently dispatched fix session ran on the review role's model instead
+    /// of the fix role's, because it repeated the immediately preceding fix round's own findings
+    /// (task: a second fix round over the same findings). Automatic once the repeated findings
+    /// clear: the next fix round's own comparison simply stops matching, so this reads false
+    /// again with no separate reset.
+    /// </summary>
+    public bool LastFixSessionEscalated { get; set; }
+    /// <summary>Non-null exactly when <see cref="LastFixSessionEscalated"/> is true.</summary>
+    public string? LastFixSessionEscalationReason { get; set; }
     public string? FailureReason { get; set; }
 
     /// <summary>
@@ -287,6 +297,8 @@ public sealed class RunDetailsProjection : SingleStreamProjection<RunDetails, Gu
     public void Apply(IEvent<ReviewFixDispatched> @event, RunDetails view)
     {
         view.ReviewModel = @event.Data.Model ?? AgentModel.Unknown;
+        view.LastFixSessionEscalated = @event.Data.Escalated;
+        view.LastFixSessionEscalationReason = @event.Data.EscalationReason;
         StartSession(view, AgentRole.Fix, ReviewLens.Unknown, @event.Data.ProcessId, @event.Data.ProcessStartedAt);
         // Mirrors RunAggregate: a fix session redispatched over a budget park (backlog 40)
         // is the one path that needs this stated, since nothing else moves State off BudgetParked.

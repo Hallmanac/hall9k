@@ -3,6 +3,7 @@ using Hall9k.Domain.Features.Run;
 using Hall9k.Domain.Features.Run.Events;
 using Hall9k.Domain.Features.Run.Projections;
 using Hall9k.Domain.Infrastructure.Ids;
+using Hall9k.Domain.Shared.ValueObjects;
 using Hall9k.Tests.Fakes;
 using Xunit;
 
@@ -218,6 +219,33 @@ public sealed class RunReviewProjectionTests
         view.ReviewParkResolutions.Should().BeEmpty(
             "the re-dispute's resolution is still deciding the disputed thread, not a review finding, " +
             "even though State was UnderReview rather than Verifying the second time it parked");
+    }
+
+    /// <summary>
+    /// Escalation (task: a second fix round over the same findings) is a fact about the fix
+    /// session that dispatched, so it rides on the same event the model does and reads back the
+    /// same way — visible for a reader of <c>h9k task show</c> while the escalated round is the
+    /// most recent, and cleared the moment a later fix round de-escalates.
+    /// </summary>
+    [Fact]
+    public void Run_details_records_the_most_recent_fix_dispatchs_escalation()
+    {
+        RunDetailsProjection projection = new();
+        Guid id = DomainId.New();
+        RunDetails view = VerifiedRun(projection, id);
+
+        projection.Apply(new FakeEvent<ReviewFixDispatched>(new ReviewFixDispatched(
+            id, DomainId.New(), 1, 4485, Now, Now, AgentModel.Sonnet,
+            Escalated: true, EscalationReason: "repeat round over the same findings (src/Auth.cs:42)")), view);
+
+        view.LastFixSessionEscalated.Should().BeTrue();
+        view.LastFixSessionEscalationReason.Should().Be("repeat round over the same findings (src/Auth.cs:42)");
+
+        projection.Apply(new FakeEvent<ReviewFixDispatched>(new ReviewFixDispatched(
+            id, DomainId.New(), 2, 4486, Now, Now, AgentModel.Haiku)), view);
+
+        view.LastFixSessionEscalated.Should().BeFalse("the later round de-escalated");
+        view.LastFixSessionEscalationReason.Should().BeNull();
     }
 
     [Fact]
