@@ -34,6 +34,17 @@ public sealed record ReviewResidualDisposition
     /// </summary>
     public static readonly ReviewResidualDisposition RoutingFailed = new("RoutingFailed");
 
+    /// <summary>
+    /// A ride-along (Decisions Log #87) still unclaimed when the run's review concluded: never
+    /// folded into a fix session the run happened to dispatch anyway, so it ships — or does not
+    /// ship — with nobody having spent a cycle on it either way. Counted the same way
+    /// <see cref="Routed"/> already is (per distinct location, whenever the run settles), not
+    /// deduplicated against the other three dispositions for the same reason
+    /// <see cref="ReviewResidualTally"/>'s own doc explains: a finding that both rode along and,
+    /// separately, got exported really did meet both ends.
+    /// </summary>
+    public static readonly ReviewResidualDisposition RideAlong = new("RideAlong");
+
     /// <summary>Not recognized. Serializes as an empty string.</summary>
     public static readonly ReviewResidualDisposition Unknown = new("");
 

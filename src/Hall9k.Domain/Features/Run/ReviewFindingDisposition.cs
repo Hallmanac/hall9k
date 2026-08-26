@@ -22,6 +22,16 @@ public sealed record ReviewFindingDisposition
     /// </summary>
     public static readonly ReviewFindingDisposition Route = new("Route");
 
+    /// <summary>
+    /// Not dispatched to a fix session this cycle (Decisions Log #87): an in-scope finding that
+    /// does not meet <see cref="ReviewSeverity.MeetsFixBar"/> — polish, or a grade the platform
+    /// could not read. Never discarded: it is written into the run's findings artifacts and
+    /// either folded into the next fix session the run actually dispatches on its own track, or
+    /// left recorded if none ever does — the whole point is that no cycle is spent earning one
+    /// just for this.
+    /// </summary>
+    public static readonly ReviewFindingDisposition RideAlong = new("RideAlong");
+
     /// <summary>Not recognized, or a pass recorded before dispositions existed. Serializes as an empty string.</summary>
     public static readonly ReviewFindingDisposition Unknown = new("");
 

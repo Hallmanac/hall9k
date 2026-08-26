@@ -20,6 +20,12 @@ namespace Hall9k.Domain.Features.Run.Events;
 /// would report a defect as exported to a task a human can find when it exists nowhere but this
 /// stream. It is normally zero, and when it is not it is the number that most needs saying.
 /// </para>
+/// <para>
+/// <see cref="ResidualsRideAlong"/> (Decisions Log #87) is a ride-along still unclaimed at this
+/// point — never folded into a fix session the run dispatched for another reason. It defaults to
+/// zero for the same reason the rest of this event's counts are always present rather than
+/// optional: a run whose stream predates ride-alongs genuinely had none.
+/// </para>
 /// </summary>
 public sealed record ReviewSettled(
     Guid Id,
@@ -28,4 +34,5 @@ public sealed record ReviewSettled(
     int ResidualsFixed,
     int ResidualsRouted,
     int ResidualsRoutingFailed,
-    DateTimeOffset SettledAt);
+    DateTimeOffset SettledAt,
+    int ResidualsRideAlong = 0);

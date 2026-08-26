@@ -118,6 +118,8 @@ public sealed class RunDetails
     public int ReviewResidualsRouted { get; set; }
     /// <summary>Residual findings meant for a draft bug task that could not be created — no draft exists for these (log #63).</summary>
     public int ReviewResidualsRoutingFailed { get; set; }
+    /// <summary>Ride-alongs never folded into a fix session the run dispatched for another reason (Decisions Log #87).</summary>
+    public int ReviewResidualsRideAlong { get; set; }
     public string? FailureReason { get; set; }
 
     /// <summary>
@@ -319,6 +321,7 @@ public sealed class RunDetailsProjection : SingleStreamProjection<RunDetails, Gu
         view.ReviewResidualsFixed = @event.Data.ResidualsFixed;
         view.ReviewResidualsRouted = @event.Data.ResidualsRouted;
         view.ReviewResidualsRoutingFailed = @event.Data.ResidualsRoutingFailed;
+        view.ReviewResidualsRideAlong = @event.Data.ResidualsRideAlong;
     }
 
     public void Apply(IEvent<ReviewParked> @event, RunDetails view)

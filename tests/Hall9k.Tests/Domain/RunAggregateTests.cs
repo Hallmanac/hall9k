@@ -309,6 +309,40 @@ public sealed class RunAggregateTests
     }
 
     /// <summary>
+    /// A ride-along (Decisions Log #87) recorded in one cycle and never picked up by a later fix
+    /// session is a residual once the run's review concludes — nothing fixed it, and the tally
+    /// says so rather than staying silent about it.
+    /// </summary>
+    [Fact]
+    public void A_ride_along_never_carried_into_a_fix_session_is_a_residual_once_settled()
+    {
+        RunAggregate run = Dispatched(out Guid id);
+        run.Apply(new ReviewFindingRideAlong(id, ReviewLens.Conformance, 1, Count: 2, Now));
+
+        run.PendingRideAlongFindings.Should().ContainSingle()
+            .Which.Should().Be(new ReviewPendingRideAlong(ReviewLens.Conformance, 1, 2));
+        run.DeriveSettlement().Should().Be(
+            ReviewSettlement.Settled, "a ride-along still pending is not a clean tip either");
+        run.DeriveResidualTally().RideAlong.Should().Be(2, "both findings from that cycle are still unclaimed");
+    }
+
+    /// <summary>
+    /// A fix session the run dispatches for another reason folds an earlier cycle's ride-alongs
+    /// in (Decisions Log #87) — the "next naturally-occurring fix run on that track" — and once
+    /// it does, that cycle's entry is gone from the pending list and never counted as a residual.
+    /// </summary>
+    [Fact]
+    public void A_ride_along_carried_into_a_later_fix_session_is_no_longer_pending_or_a_residual()
+    {
+        RunAggregate run = Dispatched(out Guid id);
+        run.Apply(new ReviewFindingRideAlong(id, ReviewLens.Conformance, 1, Count: 1, Now));
+        run.Apply(new ReviewFindingRideAlongCarried(id, ReviewLens.Conformance, OriginalCycle: 1, Cycle: 3, Now));
+
+        run.PendingRideAlongFindings.Should().BeEmpty();
+        run.DeriveResidualTally().RideAlong.Should().Be(0, "the fix session claimed it, so it is not a residual");
+    }
+
+    /// <summary>
     /// A place can be fixed unreviewed twice over by two roads: the tracks conclude separately,
     /// so both lenses can end on the same defect, and one terminal cycle can state that place in
     /// two finding blocks. Either way it is one defect shipped without a second read, and the
