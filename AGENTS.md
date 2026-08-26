@@ -370,7 +370,13 @@ The checkpoints, in the order the window sees them:
    names no platform file by name, since `AgentPromptBuilder` serves every registered project,
    not just this one), so a deviation already ratified there — or a finding a human already
    dismissed with evidence — is not re-raised verbatim by the next fresh-context reviewer without
-   it stating what changed since the ruling.
+   it stating what changed since the ruling. A fix session dispatched over the same findings its
+   immediately preceding fix round already tried — the same location an automated pass keeps
+   returning, or a human's own `--needs-fixes` reason restating it — escalates to the review
+   role's model instead of the fix role's (Decisions Log #89, origin: a Sonnet fix session dodged
+   a flaky-test race by restructuring the test rather than fixing the race the review kept
+   finding), visible on `h9k task show` and the daemon log line; de-escalation is automatic the
+   moment a later round moves on to a genuinely different finding.
 4. **The daemon opens the pull request.** Agents never do, and there is deliberately no create-pr
    skill. The task reaches **Done** here, when the pull request opens, so Done means "the work is
    on a PR and waiting on review" rather than "merged".
