@@ -383,6 +383,30 @@ public sealed class AgentPromptBuilderTests : IDisposable
     }
 
     /// <summary>
+    /// The conformance prompt's own "How to review" bullet names two real doctrine files
+    /// (AGENTS.md, CLAUDE.md) right beside the words it uses to describe what the reviewer
+    /// should be looking for (adversarial cycle-1 finding, `ReviewVerdictValidation.cs:284`): a
+    /// session that quotes that bullet back before answering — the same echo shape
+    /// <see cref="ReviewVerdictValidation"/> already hardens against for the placeholder paths
+    /// and the finding contract's worked example — must not accidentally satisfy
+    /// <see cref="ReviewVerdictValidation.NamesAFinding"/>, or the echo is read as a real
+    /// needs-fixes finding against a location nothing was ever found at.
+    /// </summary>
+    [Fact]
+    public void Echoing_the_conformance_how_to_review_bullet_does_not_name_a_finding()
+    {
+        string prompt = AgentPromptBuilder.BuildReview(
+            SomeTask(), SomeProject(), "task/1-slug", cycle: 1, ReviewLens.Conformance);
+
+        int start = prompt.IndexOf("## How to review", StringComparison.Ordinal);
+        int end = prompt.IndexOf("## ", start + 1, StringComparison.Ordinal);
+        string howToReviewSection = prompt[start..(end < 0 ? prompt.Length : end)];
+
+        ReviewVerdictValidation.NamesAFinding($"{howToReviewSection}\n\nVERDICT: needs-fixes")
+            .Should().BeFalse("the reviewer's own instructions are not a finding just because it quoted them back");
+    }
+
+    /// <summary>
     /// A run dispatched before lenses existed has passes recorded without one; that reviewer
     /// was the conformance reviewer, so its prompt is the conformance prompt.
     /// </summary>

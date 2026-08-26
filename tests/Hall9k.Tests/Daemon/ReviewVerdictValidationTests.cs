@@ -178,6 +178,29 @@ public sealed class ReviewVerdictValidationTests
     }
 
     /// <summary>
+    /// A structured `FINDING:` header carrying a REAL (non-placeholder) location, followed by
+    /// the finding contract's own worked example quoted verbatim, still does not name a finding
+    /// (adversarial cycle-1 finding, `ReviewVerdictValidation.cs:208`): a resumed session that
+    /// half-fills the reprompt's template — genuinely locating the header, but leaving
+    /// `Defect:`/`Scenario:` as the literal example text — is the same echo as the placeholder-path
+    /// case above, and a real path was never a placeholder <see cref="StripPlaceholderLocations"/>
+    /// would strip, so it has to be caught on the body being the unanswered example instead. Before
+    /// this was fixed, the paragraph's own structural markers and the example body's own defect
+    /// vocabulary ("what is wrong", twice) both independently read this as naming a finding at
+    /// `ReviewEngine.cs:612`, even though nothing was ever said about that line.
+    /// </summary>
+    [Fact]
+    public void A_structured_header_with_a_real_location_followed_by_the_finding_contracts_own_example_does_not_name_a_finding()
+    {
+        ReviewVerdictValidation.NamesAFinding(
+                "FINDING: severity=high; scope=in-scope; at=src/Hall9k.Daemon/Review/ReviewEngine.cs:612\n"
+                + "Defect: one sentence saying what is wrong.\n"
+                + "Scenario: the input or state that makes it misbehave, and what goes wrong.\n"
+                + "\nVERDICT: needs-fixes")
+            .Should().BeFalse();
+    }
+
+    /// <summary>
     /// A structured `FINDING:` header followed by the worked example and then still more of the
     /// finding contract's own prose — not just the fixed `Defect:`/`Scenario:` pair — is the same
     /// echo wearing a longer disguise (cycle-8 conformance finding,

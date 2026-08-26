@@ -204,8 +204,37 @@ public static partial class ReviewVerdictValidation
             .Where(line => !line.TrimStart().StartsWith(VerdictMarker, StringComparison.OrdinalIgnoreCase)));
 
         return ParagraphBoundary().Split(body)
-            .Where(paragraph => LocationPattern().IsMatch(paragraph))
+            .Where(paragraph => LocationPattern().IsMatch(paragraph) && !IsFindingContractExampleEcho(paragraph))
             .Any(paragraph => StructuralMarkerPattern().IsMatch(paragraph) || NamesFindingInProse(paragraph));
+    }
+
+    /// <summary>
+    /// Whether a paragraph is a structured header carrying a real (non-placeholder) location
+    /// glued to the finding contract's own worked-example body, verbatim (adversarial cycle-1
+    /// finding, `ReviewVerdictValidation.cs:208`): a resumed session that half-fills the
+    /// reprompt's template — a genuine <c>at=</c> tag, but <c>Defect:</c>/<c>Scenario:</c> left
+    /// as the literal example text — is exactly the shape <see cref="HasStatedDefect"/> already
+    /// rejects for a well-formed structured block (<see cref="IsFindingContractExample"/>), but
+    /// only <see cref="StripPlaceholderLocations"/> screens for the placeholder path
+    /// (<c>src/Some/File.cs</c>); a real path was never a placeholder, so it survives to the
+    /// paragraph scan below untouched. Both of that scan's branches then wrongly read it as a
+    /// finding: <see cref="StructuralMarkerPattern"/> because the literal `Defect:`/`Scenario:`
+    /// labels are still there, and <see cref="NamesFindingInProse"/> independently, because the
+    /// example body's own words ("what is wrong", twice) are defect vocabulary sharing a
+    /// sentence with the header's location. Filtering the paragraph out before either branch
+    /// runs — rather than trying to patch each one — closes both at once, the same way
+    /// <see cref="StripPlaceholderLocations"/> already does for the placeholder-path shape of
+    /// this same echo.
+    /// </summary>
+    private static bool IsFindingContractExampleEcho(string paragraph)
+    {
+        int defectIndex = paragraph.IndexOf("Defect:", StringComparison.OrdinalIgnoreCase);
+        if (defectIndex < 0)
+        {
+            return false;
+        }
+
+        return IsFindingContractExample(paragraph[defectIndex..].Trim());
     }
 
     /// <summary>
@@ -333,8 +362,7 @@ public static partial class ReviewVerdictValidation
         string[] sentences = SentenceBoundary().Split(paragraph);
         for (int index = 0; index < sentences.Length; index++)
         {
-            Match locationMatch = LocationPattern().Match(sentences[index]);
-            if (!locationMatch.Success)
+            if (!LocationPattern().IsMatch(sentences[index]))
             {
                 continue;
             }
