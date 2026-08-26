@@ -128,7 +128,8 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
         public static PullRequestSnapshot Quiet() => new(
             IsMerged: false, IsClosed: false, MergedAt: null, ClosedAt: null,
             FailingChecks: [], HasPendingChecks: false, UnresolvedReviewThreadCount: 0,
-            UnresolvedHumanThreadCount: 0, Reviewers: [], ErroredReview: null);
+            UnresolvedHumanThreadCount: 0, Reviewers: [], ErroredReview: null,
+            CopilotReviewState: ExternalReviewState.None, CopilotReviewThreadCount: 0);
     }
 
     /// <summary>

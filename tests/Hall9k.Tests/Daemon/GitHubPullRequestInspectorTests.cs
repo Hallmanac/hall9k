@@ -1,5 +1,6 @@
 using FluentAssertions;
 using Hall9k.Daemon.Closeout;
+using Hall9k.Domain.Features.Run;
 using Xunit;
 
 namespace Hall9k.Tests.Daemon;
@@ -304,5 +305,88 @@ public sealed class GitHubPullRequestInspectorTests
 
         GitHubPullRequestInspector.ParseReviews(unknown).IsConflicting.Should().BeFalse();
         GitHubPullRequestInspector.ParseReviews(absent).IsConflicting.Should().BeFalse();
+    }
+
+    /// <summary>
+    /// The post-PR review watcher's own read (origin: PR #50 sat Delivered for 23 minutes with
+    /// a landed Copilot review nobody had read before the merge): a real, non-errored Copilot
+    /// review on the pull request is "landed", whatever else it also carries.
+    /// </summary>
+    [Fact]
+    public void A_landed_Copilot_review_is_observed()
+    {
+        string json = Payload(
+            Actor("hallmanac", "User"), "cafe1", "",
+            Review(Actor("copilot-pull-request-reviewer", "Bot"), "cafe1", "Looks good."));
+
+        GitHubPullRequestInspector.ParseReviews(json).CopilotReviewState.Should().Be(ExternalReviewState.Landed);
+    }
+
+    /// <summary>
+    /// Read raw, deliberately unlike <see cref="ReadPendingReviewRequestLogins"/>'s human-
+    /// engagement filter: whether Copilot is currently outstanding at all — including GitHub's
+    /// own "review new commits automatically" recreating the request — is what "awaiting
+    /// Copilot review" needs to say, even though the same request does not count as a human's
+    /// re-request for the closeout budget's own purposes.
+    /// </summary>
+    [Fact]
+    public void A_pending_Copilot_review_request_is_observed_even_without_a_human_re_request()
+    {
+        string json = Payload(
+            Actor("hallmanac", "User"), "cafe1", "", "",
+            reviewRequests: RequestedReviewer("copilot-pull-request-reviewer", "Bot"));
+
+        GitHubPullRequestInspector.ReviewObservation observation = GitHubPullRequestInspector.ParseReviews(json);
+
+        observation.CopilotReviewState.Should().Be(ExternalReviewState.RequestedPending);
+        observation.PendingReviewRequestLogins.Should().BeEmpty(
+            "the human-engagement signal still excludes Copilot's own automatic re-request");
+    }
+
+    [Fact]
+    public void No_Copilot_review_activity_reads_as_none()
+    {
+        string json = Payload(Actor("hallmanac", "User"), "cafe1", "", "");
+
+        GitHubPullRequestInspector.ParseReviews(json).CopilotReviewState.Should().Be(ExternalReviewState.None);
+    }
+
+    /// <summary>
+    /// An error placeholder (Decisions Log #62, origin: PR #6, 2026-08-17) produced no verdict,
+    /// so it must not read as Copilot having weighed in — the same conservatism
+    /// <see cref="FindErroredCopilotReview"/> already applies to the errored-review re-request.
+    /// </summary>
+    [Fact]
+    public void An_errored_Copilot_review_does_not_read_as_landed()
+    {
+        string json = Payload(
+            Actor("hallmanac", "User"), "cafe1", "",
+            Review(Actor("copilot-pull-request-reviewer", "Bot"), "cafe1",
+                "Copilot encountered an error and was unable to review this pull request."));
+
+        GitHubPullRequestInspector.ParseReviews(json).CopilotReviewState.Should().NotBe(
+            ExternalReviewState.Landed, "a review that could not read the diff produced no verdict");
+    }
+
+    /// <summary>
+    /// "Landed with its comment-thread count" names every thread the review opened, not only
+    /// the ones still unresolved — distinct from <see cref="ReviewObservation.UnresolvedThreads"/>,
+    /// which only ever renders once a finding has moved the run off AwaitingReview.
+    /// </summary>
+    [Fact]
+    public void Copilot_thread_count_includes_resolved_threads_it_started()
+    {
+        string json = Payload(
+            Actor("hallmanac", "User"), "cafe1",
+            string.Join(",",
+                Thread(resolved: true, Actor("copilot-pull-request-reviewer", "Bot"), "thread-1"),
+                Thread(resolved: false, Actor("copilot-pull-request-reviewer", "Bot"), "thread-2"),
+                Thread(resolved: false, Actor("teammate", "User"), "thread-3")),
+            "");
+
+        GitHubPullRequestInspector.ReviewObservation observation = GitHubPullRequestInspector.ParseReviews(json);
+
+        observation.CopilotReviewThreadCount.Should().Be(2, "both Copilot threads count, resolved or not");
+        observation.UnresolvedThreads.Should().Be(2, "one of Copilot's and the teammate's are still open");
     }
 }
