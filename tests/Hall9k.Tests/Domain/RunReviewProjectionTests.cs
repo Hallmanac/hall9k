@@ -181,6 +181,48 @@ public sealed class RunReviewProjectionTests
             "resolving a rebase dispute is not a human confirming a review finding as real");
     }
 
+    /// <summary>
+    /// A resumed dispute that disputes again reaches its second park from UnderReview, not
+    /// Verifying (<see cref="ReviewFixDispatched"/> moves <c>State</c> there before the resumed
+    /// session ever parks again), so keying the exclusion on <c>ParkedFromState</c> would misread
+    /// the re-dispute's resolution as a settled review ruling (cycle-6 human triage). ReviewCycle
+    /// stays 0 for the whole round trip regardless, which is what the fix keys on instead.
+    /// </summary>
+    [Fact]
+    public void Run_details_does_not_record_a_second_thread_dispute_resolution_as_a_settled_ruling()
+    {
+        RunDetailsProjection projection = new();
+        Guid id = DomainId.New();
+        RunDetails view = projection.Create(new FakeEvent<RunDispatched>(new RunDispatched(
+            id, DomainId.New(), DomainId.New(), DomainId.New(), 1, DomainId.New(),
+            "/wt/x", "task/x", ExecutorMode.Subscription, Now, IsFollowUp: true)));
+        projection.Apply(new FakeEvent<RunProcessStarted>(new RunProcessStarted(id, 4484, Now)), view);
+        projection.Apply(new FakeEvent<AgentSessionCompleted>(new AgentSessionCompleted(id, Now)), view);
+
+        projection.Apply(new FakeEvent<ReviewParked>(
+            new ReviewParked(id, "A follow-up disputed a review thread.", Now)), view);
+        projection.Apply(new FakeEvent<ReviewParkResolved>(new ReviewParkResolved(
+            id, ReviewVerdict.NeedsFixes, "the thread is real; take their side", Now, DomainId.New())), view);
+
+        // The resumed fix session over the dispute — DispatchFixSessionAsync's cycle-0 resume —
+        // moves State to UnderReview before the resumed session ever parks again.
+        projection.Apply(new FakeEvent<ReviewFixDispatched>(
+            new ReviewFixDispatched(id, DomainId.New(), 0, 4485, Now, Now)), view);
+
+        projection.Apply(new FakeEvent<ReviewParked>(
+            new ReviewParked(id, "The resumed follow-up still disputed the thread.", Now)), view);
+        view.ParkedFromState.Should().Be(
+            RunState.UnderReview, "ReviewFixDispatched already moved State off Verifying");
+
+        projection.Apply(new FakeEvent<ReviewParkResolved>(new ReviewParkResolved(
+            id, ReviewVerdict.MergeReady, "checked again; still not a defect", Now, DomainId.New())), view);
+
+        view.ReviewCycle.Should().Be(0, "no ordinary review pass ever ran over this diff");
+        view.ReviewParkResolutions.Should().BeEmpty(
+            "the re-dispute's resolution is still deciding the disputed thread, not a review finding, " +
+            "even though ParkedFromState no longer reads Verifying the second time");
+    }
+
     [Fact]
     public void Run_list_item_walks_under_review_and_review_parked()
     {
