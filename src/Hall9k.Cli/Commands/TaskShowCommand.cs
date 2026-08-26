@@ -212,6 +212,7 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
 
             AnsiConsole.Write(runsTable);
             await WriteReviewOutcomeAsync(session, runs[^1].Id, cancellationToken);
+            await WriteFixEscalationAsync(session, runs[^1].Id, cancellationToken);
         }
 
         await WriteHandoffAsync(session, details, runs, cancellationToken);
@@ -318,6 +319,28 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
         };
 
         AnsiConsole.MarkupLine($"\n[bold]Pre-PR review[/]  {outcome}");
+    }
+
+    /// <summary>
+    /// Whether the newest run's most recently dispatched fix session ran on the review role's
+    /// model instead of the fix role's (task: a second fix round over the same findings) — shown
+    /// regardless of where the review loop currently stands, since the escalation matters most
+    /// while a human is deciding whether to trust a still-running loop, not only once it settles.
+    /// De-escalation is automatic once the repeated findings clear, so this line simply stops
+    /// appearing the next time the newest run's fix dispatch resolves the ordinary fix role.
+    /// </summary>
+    private static async Task WriteFixEscalationAsync(
+        IQuerySession session, Guid runId, CancellationToken cancellationToken)
+    {
+        RunDetails? run = await session.LoadAsync<RunDetails>(runId, cancellationToken);
+        if (run is not { LastFixSessionEscalated: true })
+        {
+            return;
+        }
+
+        AnsiConsole.MarkupLine(
+            $"\n[bold]Fix escalation[/]  [yellow]cycle {run.ReviewCycle} dispatched on the review role's model[/] "
+            + $"[dim]— {(run.LastFixSessionEscalationReason ?? "reason not recorded").EscapeMarkup()}[/]");
     }
 
     /// <summary>
