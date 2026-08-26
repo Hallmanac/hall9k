@@ -178,6 +178,48 @@ public sealed class ReviewVerdictValidationTests
     }
 
     /// <summary>
+    /// A structured `FINDING:` header followed by the worked example and then still more of the
+    /// finding contract's own prose — not just the fixed `Defect:`/`Scenario:` pair — is the same
+    /// echo wearing a longer disguise (cycle-8 conformance finding,
+    /// `ReviewVerdictValidation.cs:268`): <c>ParseFindings</c> runs the block from the header to
+    /// the next `FINDING:` or `VERDICT:` marker regardless of blank lines, so a session that
+    /// quotes further into `AppendFindingContract`'s severity guidance before answering produces a
+    /// block whose body is no longer an exact match for the two-line example, and an exact-match
+    /// check alone would read the extra echoed prose as a real finding's body. The location tag
+    /// is still the contract's own placeholder path, `src/Some/File.cs`, which no genuine finding
+    /// is ever placed at.
+    /// </summary>
+    [Fact]
+    public void A_structured_header_followed_by_the_example_and_more_echoed_contract_prose_does_not_name_a_finding()
+    {
+        ReviewVerdictValidation.NamesAFinding(
+                "FINDING: severity=high; scope=in-scope; at=src/Some/File.cs:123\n"
+                + "Defect: one sentence saying what is wrong.\n"
+                + "Scenario: the input or state that makes it misbehave, and what goes wrong.\n"
+                + "\n"
+                + "**severity** — grade against these anchors, not against your own sense of importance:\n"
+                + "\nVERDICT: needs-fixes")
+            .Should().BeFalse();
+    }
+
+    /// <summary>
+    /// Quoting the review mechanics' own bullet about how to cite a location — which puts the
+    /// placeholder path `path/to/file.cs:123` and the word "defect" in one sentence — must not be
+    /// read as a real finding just because it satisfies the prose heuristic's location-plus-defect-
+    /// language shape (cycle-8 conformance finding, `ReviewVerdictValidation.cs:268`): the path is
+    /// `AppendReviewMechanics`' own instructional placeholder, not anywhere in a real repository.
+    /// </summary>
+    [Fact]
+    public void Quoting_the_review_mechanics_bullet_about_locations_does_not_name_a_finding()
+    {
+        ReviewVerdictValidation.NamesAFinding(
+                "- Each finding must carry: the file and line (`path/to/file.cs:123`), a one-sentence\n"
+                + "  statement of the defect, and a concrete failure scenario.\n"
+                + "\nVERDICT: needs-fixes")
+            .Should().BeFalse();
+    }
+
+    /// <summary>
     /// Plain prose (no `FINDING:` header) that puts the location in one sentence and the defect
     /// in the very next one, which visibly continues it, still names a finding (cycle-3
     /// conformance finding #1, `ReviewVerdictValidation.cs:119`) — the same-sentence-only rule
@@ -257,8 +299,8 @@ public sealed class ReviewVerdictValidationTests
 
     /// <summary>
     /// The backward-pointer guard is asymmetric on purpose: it only ever looks backward from a
-    /// sentence that is itself nothing but a pointer ("See", "This is at", "Here", "It is in").
-    /// An affirming sentence like "Every criterion is met, and Program.cs proves it." does not
+    /// sentence that is itself nothing but a pointer ("See", "This is at", "It is in"). An
+    /// affirming sentence like "Every criterion is met, and Program.cs proves it." does not
     /// open with one of those words, so it must not borrow defect language from whatever
     /// happened to precede it in the output (cycle-6 finding, `ReviewVerdictValidation.cs:612`).
     /// </summary>

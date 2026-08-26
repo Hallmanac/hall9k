@@ -253,7 +253,7 @@ public static partial class ReviewVerdictValidation
     /// </summary>
     private static bool HasStatedDefect(ReviewFinding finding)
     {
-        if (finding.Location.IsBlank())
+        if (finding.Location.IsBlank() || IsPlaceholderLocation(finding.Location))
         {
             return false;
         }
@@ -283,6 +283,33 @@ public static partial class ReviewVerdictValidation
             StringComparison.OrdinalIgnoreCase);
 
     /// <summary>
+    /// The literal placeholder paths this file's own prompts write into an agent's context:
+    /// <c>AppendFindingContract</c>'s header example (<c>src/Some/File.cs:123</c>) and
+    /// <c>AppendReviewMechanics</c>' bullet describing how to cite a location
+    /// (<c>path/to/file.cs:123</c>). Neither names anywhere in any real repository, so a
+    /// location this file's own <see cref="LocationPattern"/> reads as "stated" is read as
+    /// nothing of the kind when it is one of these two strings.
+    /// </summary>
+    private static readonly string[] PlaceholderLocations = ["src/Some/File.cs", "path/to/file.cs"];
+
+    /// <summary>
+    /// Whether a location a reviewer's output points at is one of this file's own prompts'
+    /// placeholder paths rather than something it actually found (cycle-8 conformance finding,
+    /// `ReviewVerdictValidation.cs:268`): a session that quotes its own instructions — whether the
+    /// whole `FINDING:` header-to-`Defect:`/`Scenario:` example, more of the contract's prose
+    /// beyond that fixed pair of lines, or a single mechanics bullet in isolation — reproduces one
+    /// of these two placeholders verbatim, and no genuine finding is ever placed at a path this
+    /// literal and this generic. Checking the placeholder itself, rather than how much
+    /// surrounding prompt text came back with it, closes the echo gap regardless of exactly where
+    /// the echo stops.
+    /// </summary>
+    private static bool IsPlaceholderLocation(string location)
+    {
+        string path = location.Split(':')[0].Trim().Trim('`');
+        return PlaceholderLocations.Any(placeholder => string.Equals(path, placeholder, StringComparison.OrdinalIgnoreCase));
+    }
+
+    /// <summary>
     /// The sentence-scoped half of the prose heuristic: a location and defect language in the
     /// same sentence, a location whose very next sentence both continues it (per
     /// <see cref="ContinuationPattern"/>) and carries the defect language itself, or a location
@@ -294,7 +321,8 @@ public static partial class ReviewVerdictValidation
         string[] sentences = SentenceBoundary().Split(paragraph);
         for (int index = 0; index < sentences.Length; index++)
         {
-            if (!LocationPattern().IsMatch(sentences[index]))
+            Match locationMatch = LocationPattern().Match(sentences[index]);
+            if (!locationMatch.Success || IsPlaceholderLocation(locationMatch.Value))
             {
                 continue;
             }
