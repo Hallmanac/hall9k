@@ -52,7 +52,7 @@ public static class AtomicFileWrite
             // follows; the target's exact mode — whatever it narrows down to, including no
             // owner-write bit — is applied once there is content to protect and before the swap
             // makes it visible under the real name.
-            if (targetExists && !OperatingSystem.IsWindows())
+            if (!OperatingSystem.IsWindows())
             {
                 using (File.Create(tempPath))
                 {
@@ -65,7 +65,20 @@ public static class AtomicFileWrite
 
             if (targetExists && !OperatingSystem.IsWindows())
             {
-                File.SetUnixFileMode(tempPath, File.GetUnixFileMode(resolvedPath));
+                try
+                {
+                    File.SetUnixFileMode(tempPath, File.GetUnixFileMode(resolvedPath));
+                }
+                catch (FileNotFoundException)
+                {
+                    // The existence check above and this mode copy are not one atomic step: a
+                    // concurrent writer that claims the target in between (the same race the
+                    // Replace fallback below is hardened against) leaves nothing here to copy a
+                    // mode from. Leave the temp file at the UserRead|UserWrite mode already
+                    // applied before the write above — the Replace call below hits this same
+                    // FileNotFoundException and falls back to a plain move, which is exactly the
+                    // !targetExists case.
+                }
             }
 
             if (!targetExists)

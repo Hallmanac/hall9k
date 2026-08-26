@@ -87,6 +87,28 @@ public sealed class AtomicFileWriteTests : IDisposable
     }
 
     /// <summary>
+    /// There is no target mode to copy on a first write, so the temp file must already be
+    /// narrowed before the content write rather than left at the process umask's default —
+    /// otherwise <c>config.json</c>'s first write (no prior <c>chmod 600</c> to preserve) would be
+    /// world-readable until an operator noticed and locked it down by hand. Origin: the cycle-4
+    /// pre-PR review found the narrowing gated on the target already existing, so this path
+    /// exercised nothing at all.
+    /// </summary>
+    [Fact]
+    public async Task Writing_a_file_that_does_not_exist_yet_is_created_with_a_private_mode()
+    {
+        await AtomicFileWrite.WriteAllTextAsync(path, "new", CancellationToken.None);
+
+        if (!OperatingSystem.IsWindows())
+        {
+            File.GetUnixFileMode(path).Should().Be(
+                UnixFileMode.UserRead | UnixFileMode.UserWrite,
+                "a first write has no prior mode to preserve, so it must land at a private mode rather than " +
+                "the process umask's default");
+        }
+    }
+
+    /// <summary>
     /// An operator who keeps <c>config.json</c> as a symlink into a separately version-controlled
     /// dotfiles repo needs the link itself to survive a write: <see cref="File.Replace(string, string, string?)"/>
     /// unlinks whatever inode sits at its destination path, so swapping in at the symlink's own
