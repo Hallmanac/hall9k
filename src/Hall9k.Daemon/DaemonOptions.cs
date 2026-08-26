@@ -55,6 +55,17 @@ public sealed class DaemonOptions
     public TimeSpan PullRequestPollInterval { get; set; } = TimeSpan.FromMinutes(3);
 
     /// <summary>
+    /// The ceiling a widening backoff may reach while <c>gh</c> keeps failing (independent
+    /// pre-PR review, cycle 3, an explicit acceptance criterion the first cut shipped without):
+    /// each sweep <see cref="PullRequestMonitor"/> catches an inspection exception from doubles
+    /// the wait until the next one, up to this bound, so a rate limit or an outage does not
+    /// spend a call every <see cref="PullRequestPollInterval"/> forever. A sweep that completes
+    /// with no failures resets the wait to <see cref="PullRequestPollInterval"/> immediately —
+    /// the widening answers gh's own trouble, not a standing posture.
+    /// </summary>
+    public TimeSpan PullRequestPollBackoffMaxInterval { get; set; } = TimeSpan.FromMinutes(30);
+
+    /// <summary>
     /// The absolute lifetime ceiling of automatic closeout actions (reopen dispatches, plus
     /// errored-review re-requests) one task's pull request may spend, whatever obstruction
     /// each one answered — the true runaway backstop (log #11 spirit, backlog 45), separate

@@ -280,6 +280,44 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
     }
 
     /// <summary>
+    /// A gh failure on one run's inspection is caught and logged per run (the existing
+    /// try/catch in <c>PollOnceAsync</c>) so one bad pull request never stops the sweep from
+    /// reaching the rest — but the sweep's own result must still say a failure happened, since
+    /// that is the signal <c>PullRequestMonitor</c> needs to widen its poll interval instead of
+    /// re-hitting a failing gh every tick forever (independent pre-PR review, cycle 3).
+    /// </summary>
+    [Fact]
+    public async Task A_gh_failure_is_caught_and_reported_on_the_sweep_result()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        (DocumentStore store, NodeContext node, GitWorktreeManager worktrees, _, string repoPath) =
+            await SetUpAsync(cts.Token);
+        using IDisposable storeLifetime = store;
+        await DrainPriorSweepStateAsync(store, node, cts.Token);
+
+        (_, Guid runId, _) = await SeedAwaitingReviewAsync(store, node, worktrees, repoPath, cts.Token);
+
+        FakeInspector inspector = new()
+        {
+            OnInspect = () => throw new InvalidOperationException(
+                "gh pr view exited 1: API rate limit exceeded"),
+        };
+        CloseoutSweepResult sweep = await NewEngine(store, node, inspector, worktrees).PollOnceAsync(cts.Token);
+
+        sweep.Should().Be(new CloseoutSweepResult(RunsInspected: 0, MergesObserved: 0, Failures: 1),
+            "the one watched run's inspection threw and never reached a recorded outcome");
+
+        await using IQuerySession query = store.QuerySession();
+        RunDetails run = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
+        run.State.Should().Be(RunState.AwaitingReview, "a failed inspection changes nothing; the next sweep retries it");
+
+        // This run stays AwaitingReview by design, so it would otherwise keep matching every
+        // later test's watched-run query on this shared node/database (see RetireWatchAsync's
+        // own note).
+        await RetireWatchAsync(store, runId, cts.Token);
+    }
+
+    /// <summary>
     /// The three artifact states are three observations, and each closes out honestly: an
     /// empty file means the session's result was read and carried no handoff, an absent file
     /// means there was no session-end capture at all (a park resolved by hand, a historical
