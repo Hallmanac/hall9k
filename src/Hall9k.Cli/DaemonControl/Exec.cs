@@ -1,3 +1,4 @@
+using System.ComponentModel;
 using System.Diagnostics;
 
 namespace Hall9k.Cli.DaemonControl;
@@ -26,7 +27,20 @@ public static class Exec
             process.StartInfo.ArgumentList.Add(argument);
         }
 
-        process.Start();
+        try
+        {
+            process.Start();
+        }
+        catch (Exception exception) when (exception is Win32Exception or InvalidOperationException)
+        {
+            // The class's own contract is "never throw on a nonzero exit" — a launch that
+            // never got a process at all is the same kind of failure to a caller checking
+            // Succeeded, not a reason to let a raw framework exception escape instead
+            // (cycle-1 pre-PR review finding: IsLoadedAsync had no degradation path here,
+            // unlike every other probe in WindowsDaemonAutostart).
+            return new ExecResult(-1, string.Empty, exception.Message);
+        }
+
         Task<string> standardOutput = process.StandardOutput.ReadToEndAsync(cancellationToken);
         Task<string> standardError = process.StandardError.ReadToEndAsync(cancellationToken);
         await process.WaitForExitAsync(cancellationToken);
