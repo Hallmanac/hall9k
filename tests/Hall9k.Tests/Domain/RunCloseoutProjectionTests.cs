@@ -216,6 +216,37 @@ public sealed class RunCloseoutProjectionTests
         run.HumanGrantedAt.Should().Be(Now.AddHours(1));
     }
 
+    /// <summary>
+    /// The post-PR review watcher's observation (origin: PR #50 sat Delivered for 23 minutes
+    /// with a landed Copilot review nobody had read before the merge) replays onto both read
+    /// models without moving the run's own state — it is read only by the Delivered phase line.
+    /// </summary>
+    [Fact]
+    public void An_external_review_observation_replays_without_moving_the_run_state()
+    {
+        RunDetailsProjection projection = new();
+        Guid id = DomainId.New();
+        RunDetails view = AwaitingReviewRun(projection, id);
+
+        projection.Apply(new FakeEvent<ExternalReviewObserved>(
+            new ExternalReviewObserved(id, ExternalReviewState.Landed, 3, Now.AddMinutes(5))), view);
+
+        view.ExternalReviewState.Should().Be(ExternalReviewState.Landed);
+        view.ExternalReviewThreadCount.Should().Be(3);
+        view.State.Should().Be(RunState.AwaitingReview, "the observation is informational only");
+
+        RunAggregate run = new();
+        run.Apply(new RunDispatched(
+            id, DomainId.New(), DomainId.New(), DomainId.New(), 1, DomainId.New(),
+            "/tmp/wt", "task/abc", ExecutorMode.Subscription, Now));
+        run.Apply(new PullRequestOpened(id, PullRequestUrl, 7, Now));
+        run.Apply(new ExternalReviewObserved(id, ExternalReviewState.RequestedPending, 0, Now.AddMinutes(5)));
+
+        run.ExternalReviewState.Should().Be(ExternalReviewState.RequestedPending);
+        run.ExternalReviewThreadCount.Should().Be(0);
+        run.State.Should().Be(RunState.AwaitingReview);
+    }
+
     private static RunDetails AwaitingReviewRun(RunDetailsProjection projection, Guid id)
     {
         RunDetails view = projection.Create(new FakeEvent<RunDispatched>(new RunDispatched(

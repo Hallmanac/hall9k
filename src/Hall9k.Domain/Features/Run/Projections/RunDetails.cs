@@ -66,6 +66,16 @@ public sealed class RunDetails
     public int? UnresolvedHumanReviewThreads { get; set; }
     /// <summary>The last errored review observed — the monitor's dedup key: one re-request per errored review.</summary>
     public string? ErroredReviewUrl { get; set; }
+    /// <summary>
+    /// The post-PR review watcher's latest read of Copilot's review state (Landed,
+    /// RequestedPending, None) — what the Delivered phase line names as "awaiting Copilot
+    /// review", "Copilot review landed", or "awaiting human review". Unknown for a run
+    /// recorded before this observation existed, which the phase reads as no different from
+    /// a quiet pull request.
+    /// </summary>
+    public ExternalReviewState ExternalReviewState { get; set; } = ExternalReviewState.Unknown;
+    /// <summary>Every review thread Copilot's review opened, resolved or not, as of the last observation.</summary>
+    public int ExternalReviewThreadCount { get; set; }
     /// <summary>When a human last granted this run's task a fresh closeout budget (h9k pr resolve, Decisions Log #80, backlog 45); null until one lands.</summary>
     public DateTimeOffset? HumanGrantedAt { get; set; }
     /// <summary>Errored-review re-requests issued for this run; adds to the task's CloseoutAttempts against the shared budget.</summary>
@@ -402,6 +412,13 @@ public sealed class RunDetailsProjection : SingleStreamProjection<RunDetails, Gu
     {
         view.ErroredReviewUrl = @event.Data.ReviewUrl;
         view.State = RunState.ReviewPending;
+    }
+
+    // Informational only — see RunAggregate.Apply(ExternalReviewObserved).
+    public void Apply(IEvent<ExternalReviewObserved> @event, RunDetails view)
+    {
+        view.ExternalReviewState = @event.Data.State;
+        view.ExternalReviewThreadCount = @event.Data.ThreadCount;
     }
 
     public void Apply(IEvent<PullRequestConflictObserved> @event, RunDetails view)

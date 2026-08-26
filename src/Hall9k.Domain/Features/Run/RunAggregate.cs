@@ -51,6 +51,16 @@ public sealed class RunAggregate
     /// <summary>The last errored review observed — the monitor's dedup key: one re-request per errored review.</summary>
     public string? ErroredReviewUrl { get; private set; }
 
+    /// <summary>
+    /// The post-PR review watcher's latest read of Copilot's review state (Landed,
+    /// RequestedPending, None) — read only by the Delivered phase line, never a lifecycle
+    /// status and never a driver of <see cref="State"/>.
+    /// </summary>
+    public ExternalReviewState ExternalReviewState { get; private set; } = ExternalReviewState.Unknown;
+
+    /// <summary>Every review thread Copilot's review opened, resolved or not, as of the last observation.</summary>
+    public int ExternalReviewThreadCount { get; private set; }
+
     /// <summary>When a human last granted this run's task a fresh closeout budget (h9k pr resolve, Decisions Log #80, backlog 45); null until one lands.</summary>
     public DateTimeOffset? HumanGrantedAt { get; private set; }
 
@@ -637,6 +647,15 @@ public sealed class RunAggregate
     {
         ErroredReviewUrl = @event.ReviewUrl;
         State = RunState.ReviewPending;
+    }
+
+    // Informational only: the phase line reads these two fields, but the run's own state
+    // machine never branches on them — the events that do (ReviewFeedbackReceived,
+    // ReviewErrored) already carry their own state transitions.
+    public void Apply(ExternalReviewObserved @event)
+    {
+        ExternalReviewState = @event.State;
+        ExternalReviewThreadCount = @event.ThreadCount;
     }
 
     public void Apply(PullRequestConflictObserved @event)
