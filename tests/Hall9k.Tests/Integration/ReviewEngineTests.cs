@@ -1138,6 +1138,45 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
         events.OfType<ReviewVerdictReprompted>().Should().ContainSingle();
     }
 
+    /// <summary>
+    /// The objective and acceptance-criteria echo screens must never run over an adversarial
+    /// pass's output (cycle-4 adversarial finding, `ReviewEngine.cs:614`):
+    /// <c>AgentPromptBuilder.BuildAdversarialReview</c> never prints either into that lens's own
+    /// prompt, so an adversarial finding that happens to coincide with the task's own wording is
+    /// independent phrasing, not an echo — stripping it anyway can delete the finding's only
+    /// location and defect language, downgrading a real needs-fixes to Unknown over content the
+    /// adversarial pass never read in the first place.
+    /// </summary>
+    [Fact]
+    public async Task An_adversarial_finding_that_coincides_with_the_tasks_own_criterion_still_names_a_finding()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        using DocumentStore store = NewStore();
+        const string criterion = "Auth.cs:42 no longer drops the token";
+        (Guid taskId, Guid runId, _) = await SeedVerifiedRunAsync(store, [criterion], cts.Token);
+
+        ScriptedExecutor executor = new(
+            "Criteria met.\n\nVERDICT: merge-ready",
+            $"{criterion}.\n\nVERDICT: needs-fixes",
+            "Reset the limiter.\n\nRESOLUTION: fixed",
+            "Hunted again; the boundary holds.\n\nVERDICT: merge-ready");
+        bool mergeReady = await NewEngine(store, executor).ReviewAsync(runId, taskId, cts.Token);
+
+        mergeReady.Should().BeTrue(
+            "the adversarial finding survives its own cycle and the fix session clears it");
+        executor.Spawns.Should().HaveCount(4, "two passes, one fix, and the surviving track's final pass — no " +
+            "re-prompt, because the adversarial pass's finding was never stripped");
+
+        await using IQuerySession query = store.QuerySession();
+        List<object> events = [.. (await query.Events.FetchStreamAsync(runId, token: cts.Token)).Select(e => e.Data)];
+        events.OfType<ReviewPassCompleted>().Should().Contain(
+            pass => pass.Lens == ReviewLens.Adversarial && pass.Cycle == 1
+                && pass.Verdict == ReviewVerdict.NeedsFixes && pass.Findings!.Count == 1,
+            "the adversarial pass's own wording, coinciding with the task's criterion, is still a real finding");
+        events.OfType<ReviewVerdictReprompted>().Should().BeEmpty(
+            "a wrongly stripped finding would have driven the same hollow-verdict re-prompt path");
+    }
+
     [Fact]
     public async Task A_park_resolved_merge_ready_proceeds_straight_to_the_pull_request()
     {
@@ -1725,8 +1764,12 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
     /// (no verify commands, so re-verification auto-passes), run stream ending in
     /// VerificationPassed — exactly where the review loop takes over.
     /// </summary>
+    private Task<(Guid TaskId, Guid RunId, Guid MainSessionId)> SeedVerifiedRunAsync(
+        DocumentStore store, CancellationToken cancellationToken) =>
+        SeedVerifiedRunAsync(store, ["reviewed"], cancellationToken);
+
     private async Task<(Guid TaskId, Guid RunId, Guid MainSessionId)> SeedVerifiedRunAsync(
-        DocumentStore store, CancellationToken cancellationToken)
+        DocumentStore store, IReadOnlyList<string> acceptanceCriteria, CancellationToken cancellationToken)
     {
         NodeContext node = new();
         await node.InitializeAsync(store, cancellationToken);
@@ -1746,7 +1789,7 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
 
         TaskAggregate task = new();
         (task, object[] lifecycle) = TaskSeed.Start(
-            TaskDecider.Add(taskId, projectId, "Review me before the PR", ["reviewed"],
+            TaskDecider.Add(taskId, projectId, "Review me before the PR", acceptanceCriteria,
                 TaskType.Chore, null, null, null, Now, node.OwnerId),
             node.OwnerId, Now);
         var claimed = TaskDecider.Claim(task, node.NodeId, node.OwnerId, runId, Now);
