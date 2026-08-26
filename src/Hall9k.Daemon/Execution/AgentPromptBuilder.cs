@@ -1054,6 +1054,17 @@ public static class AgentPromptBuilder
     /// severity and scope tags off every one of them, and the loop would then read a graded,
     /// placed set of findings as one ungraded, unplaced stand-in.
     /// </para>
+    /// <para>
+    /// The merge-ready path stated here is deliberately not offered as a plain alternative to
+    /// restating (independent pre-PR review, cycle 2, adversarial finding): the heuristic this
+    /// reprompt exists downstream of is a keyword-and-proximity check with a disclosed,
+    /// permanent vocabulary gap, so a demotion to Unknown is not proof the original finding was
+    /// hollow — it may just be phrased outside the words the platform recognizes. Framing
+    /// merge-ready as available "if none stand" invited a session to read its own rejection as
+    /// license to drop a finding it still believed, so the wording now says plainly that a
+    /// demotion is not a verdict on the finding's truth and gates merge-ready on genuine
+    /// reconsideration rather than restatement fatigue.
+    /// </para>
     /// </summary>
     public static string BuildReviewVerdictReprompt(ProjectDetails project, ReviewLens lens, int cycle)
     {
@@ -1061,21 +1072,27 @@ public static class AgentPromptBuilder
         StringBuilder prompt = new();
         prompt.AppendLine("Your review session ended without the required VERDICT line, or with a");
         prompt.AppendLine("needs-fixes verdict naming nothing the platform could read as a finding — either");
-        prompt.AppendLine("way, the platform could not read your judgment. Conclude now:");
+        prompt.AppendLine("way, the platform could not read your judgment. This does not mean a finding you");
+        prompt.AppendLine("stated was wrong: it means the platform's automatic reader could not recognize a");
+        prompt.AppendLine("location and a defect in how you wrote it. Conclude now:");
         prompt.AppendLine();
         prompt.AppendLine("- If any checks or commands are still unfinished, wait for them and fold the");
         prompt.AppendLine("  results into your judgment.");
         if (structured)
         {
-            prompt.AppendLine("- Restate every verified finding that still stands, in full and in the header");
-            prompt.AppendLine("  contract below — the platform reads this message in place of your earlier one,");
-            prompt.AppendLine("  so a finding restated without its FINDING header arrives ungraded and unplaced,");
-            prompt.AppendLine("  and its severity and scope are lost. If none stand, say so and return merge-ready.");
+            prompt.AppendLine("- If you still believe a finding stands, restate it in full and in the header");
+            prompt.AppendLine("  contract below, as plainly as you can — the platform reads this message in place");
+            prompt.AppendLine("  of your earlier one, so a finding restated without its FINDING header arrives");
+            prompt.AppendLine("  ungraded and unplaced, and its severity and scope are lost. Only return");
+            prompt.AppendLine("  merge-ready if, on reconsideration, you no longer believe any defect stands —");
+            prompt.AppendLine("  not merely because restating it once more feels repetitive.");
         }
         else
         {
-            prompt.AppendLine("- Restate your verified findings (file:line, defect, failure scenario), or state");
-            prompt.AppendLine("  that none stand and return merge-ready.");
+            prompt.AppendLine("- If you still believe a finding stands, restate it as plainly as you can");
+            prompt.AppendLine("  (file:line, defect, failure scenario). Only return merge-ready if, on");
+            prompt.AppendLine("  reconsideration, you no longer believe any defect stands — not merely because");
+            prompt.AppendLine("  restating it once more feels repetitive.");
         }
 
         prompt.AppendLine("- A needs-fixes verdict must name at least one finding: a stated location (a file,");

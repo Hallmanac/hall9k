@@ -516,8 +516,31 @@ public sealed class AgentPromptBuilderTests : IDisposable
         string prompt = AgentPromptBuilder.BuildReviewVerdictReprompt(
             SomeProject(), ReviewLens.Conformance, cycle: 3);
 
-        prompt.Should().Contain("Restate your verified findings (file:line, defect, failure scenario)");
+        prompt.Should().Contain("restate it as plainly as you can")
+            .And.Contain("(file:line, defect, failure scenario)");
         prompt.Should().NotContain(ReviewResultParser.FindingMarker);
+    }
+
+    /// <summary>
+    /// The re-prompt's merge-ready option is not a plain alternative to restating (independent
+    /// pre-PR review, cycle 2, adversarial finding): the heuristic behind a demotion to Unknown
+    /// is a keyword-and-proximity check with a disclosed, permanent vocabulary gap, so the
+    /// demotion is not proof the original finding was hollow. The old wording ("or state that
+    /// none stand and return merge-ready") read as an equally legitimate second option; the
+    /// reprompt now tells the session plainly that a demotion is not a verdict on the finding's
+    /// truth, and only offers merge-ready for genuine reconsideration.
+    /// </summary>
+    [Theory]
+    [InlineData("Conformance")]
+    [InlineData("Adversarial")]
+    public void Verdict_reprompt_does_not_offer_merge_ready_as_a_plain_alternative_to_restating(string lens)
+    {
+        string prompt = AgentPromptBuilder.BuildReviewVerdictReprompt(SomeProject(), lens, cycle: 3);
+
+        prompt.Should().Contain("does not mean a finding you", "a demotion is not proof the finding was hollow");
+        prompt.Should().Contain("If you still believe a finding stands, restate it");
+        prompt.Should().Contain("reconsideration, you no longer believe any defect stands");
+        prompt.Should().NotContain("or state that none stand and return merge-ready");
     }
 
     [Fact]
