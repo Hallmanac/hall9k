@@ -169,6 +169,16 @@ public static partial class ReviewVerdictValidation
     /// both in this method's vocabulary and share that sentence with the location. Closing that
     /// gap needs reading comprehension a regex cannot do.
     /// </para>
+    /// <para>
+    /// Every branch below runs over <see cref="StripPlaceholderLocations"/>'s output, never the
+    /// raw one (cycle-9 finding): screening for this file's own prompt placeholders used to be
+    /// each branch's own job, and the structural-marker branch never did its share — a paragraph
+    /// that echoed the finding contract's own worked example with anything extra appended around
+    /// it (so the exact-match screen that used to guard only that branch could not fire) still
+    /// tripped `Defect:`/`Scenario:` and named a finding against a path no repository has. Doing
+    /// the screening once, before any branch runs, means no branch — present or a future one —
+    /// can ever match a placeholder, because none survives long enough to be matched.
+    /// </para>
     /// </summary>
     public static bool NamesAFinding(string? output)
     {
@@ -177,7 +187,9 @@ public static partial class ReviewVerdictValidation
             return false;
         }
 
-        IReadOnlyList<ReviewFinding> structuredFindings = ReviewResultParser.ParseFindings(output);
+        string sanitized = StripPlaceholderLocations(output);
+
+        IReadOnlyList<ReviewFinding> structuredFindings = ReviewResultParser.ParseFindings(sanitized);
         if (structuredFindings.Any(HasStatedDefect))
         {
             return true;
@@ -186,35 +198,14 @@ public static partial class ReviewVerdictValidation
         // Normalized the same way ParseFindings normalizes this exact data (line 47 there): a
         // CRLF-authored pass otherwise leaves a stray '\r' between the two '\n's ParagraphBoundary
         // needs to see a blank line, collapsing every paragraph in the body into one.
-        string body = string.Join('\n', output
+        string body = string.Join('\n', sanitized
             .Split('\n')
             .Select(line => line.TrimEnd('\r'))
             .Where(line => !line.TrimStart().StartsWith(VerdictMarker, StringComparison.OrdinalIgnoreCase)));
 
         return ParagraphBoundary().Split(body)
             .Where(paragraph => LocationPattern().IsMatch(paragraph))
-            .Where(paragraph => !IsFindingContractExampleParagraph(paragraph))
             .Any(paragraph => StructuralMarkerPattern().IsMatch(paragraph) || NamesFindingInProse(paragraph));
-    }
-
-    /// <summary>
-    /// Whether a paragraph is a `FINDING:`-headered block whose body is nothing but the finding
-    /// contract's own worked example (cycle-7 conformance finding,
-    /// `ReviewVerdictValidation.cs:202`). <see cref="HasStatedDefect"/> already screens this shape
-    /// out of the structured-finding fast path, but this prose fallback re-scans the whole raw
-    /// output — header line included — so without this check the same echoed `Defect:`/`Scenario:`
-    /// text would still trip <see cref="StructuralMarkerPattern"/> here and be counted twice.
-    /// </summary>
-    private static bool IsFindingContractExampleParagraph(string paragraph)
-    {
-        string trimmed = paragraph.Trim();
-        int headerEnd = trimmed.IndexOf('\n');
-        if (headerEnd < 0 || !trimmed[..headerEnd].StartsWith(ReviewResultParser.FindingMarker, StringComparison.OrdinalIgnoreCase))
-        {
-            return false;
-        }
-
-        return IsFindingContractExample(trimmed[(headerEnd + 1)..]);
     }
 
     /// <summary>
@@ -253,7 +244,7 @@ public static partial class ReviewVerdictValidation
     /// </summary>
     private static bool HasStatedDefect(ReviewFinding finding)
     {
-        if (finding.Location.IsBlank() || IsPlaceholderLocation(finding.Location))
+        if (finding.Location.IsBlank())
         {
             return false;
         }
@@ -294,20 +285,41 @@ public static partial class ReviewVerdictValidation
 
     /// <summary>
     /// Whether a location a reviewer's output points at is one of this file's own prompts'
-    /// placeholder paths rather than something it actually found (cycle-8 conformance finding,
-    /// `ReviewVerdictValidation.cs:268`): a session that quotes its own instructions — whether the
-    /// whole `FINDING:` header-to-`Defect:`/`Scenario:` example, more of the contract's prose
-    /// beyond that fixed pair of lines, or a single mechanics bullet in isolation — reproduces one
-    /// of these two placeholders verbatim, and no genuine finding is ever placed at a path this
-    /// literal and this generic. Checking the placeholder itself, rather than how much
-    /// surrounding prompt text came back with it, closes the echo gap regardless of exactly where
-    /// the echo stops.
+    /// placeholder paths rather than something it actually found: a session that quotes its own
+    /// instructions — whether the whole `FINDING:` header-to-`Defect:`/`Scenario:` example, more
+    /// of the contract's prose beyond that fixed pair of lines, or a single mechanics bullet in
+    /// isolation — reproduces one of these two placeholders verbatim, and no genuine finding is
+    /// ever placed at a path this literal and this generic. Checking the placeholder itself,
+    /// rather than how much surrounding prompt text came back with it, closes the echo gap
+    /// regardless of exactly where the echo stops. Used only by <see cref="StripPlaceholderLocations"/>
+    /// now (cycle-9 finding): every other branch reads text that has already had a placeholder
+    /// match this same check would have rejected removed from it, so this is the single place
+    /// that check still runs.
     /// </summary>
     private static bool IsPlaceholderLocation(string location)
     {
         string path = location.Split(':')[0].Trim().Trim('`');
         return PlaceholderLocations.Any(placeholder => string.Equals(path, placeholder, StringComparison.OrdinalIgnoreCase));
     }
+
+    /// <summary>
+    /// <paramref name="text"/> with every <see cref="LocationPattern"/> match that
+    /// <see cref="IsPlaceholderLocation"/> recognizes removed, leaving every other match — every
+    /// real location a reviewer named — untouched (cycle-9 finding,
+    /// `ReviewVerdictValidation.cs:256` and `ReviewVerdictValidation.cs:325`). Run once, before
+    /// <see cref="NamesAFinding"/>'s branches see the text, rather than inside each branch: a
+    /// per-branch check only screens the branch it is written into, which is how the
+    /// structural-marker branch went unscreened while the structured-finding and prose branches
+    /// were guarded, and how a placeholder that opened a sentence could swallow a real location
+    /// stated later in that same sentence — <see cref="NamesFindingInProse"/> takes only the
+    /// first <see cref="LocationPattern"/> match per sentence, so a sentence like "Compare it
+    /// against `path/to/file.cs:123`, but `src/Auth.cs:42` never resets the limiter." used to
+    /// have its one real location discarded along with the placeholder that preceded it and be
+    /// read as naming nothing. With the placeholder gone before either branch runs, the first
+    /// match left standing is always a real one.
+    /// </summary>
+    private static string StripPlaceholderLocations(string text) =>
+        LocationPattern().Replace(text, match => IsPlaceholderLocation(match.Value) ? string.Empty : match.Value);
 
     /// <summary>
     /// The sentence-scoped half of the prose heuristic: a location and defect language in the
@@ -322,7 +334,7 @@ public static partial class ReviewVerdictValidation
         for (int index = 0; index < sentences.Length; index++)
         {
             Match locationMatch = LocationPattern().Match(sentences[index]);
-            if (!locationMatch.Success || IsPlaceholderLocation(locationMatch.Value))
+            if (!locationMatch.Success)
             {
                 continue;
             }
