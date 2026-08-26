@@ -995,6 +995,25 @@ resumes the loop exactly where the events left off, including a cycle whose pass
 only half dispatched: the missing lenses are topped up rather than the finished ones
 re-run.
 
+**A review lens prompt carries the task's prior human review-park rulings forward (log #88).**
+Fresh context per cycle (log #59) stays the independence guarantee — what travels between
+cycles is the ruling, not the reviewer's memory. `ReviewEngine.LoadPriorRulingsAsync` reads
+every `ReviewParkResolved` recorded across every run the task has ever had
+(`RunDetails.ReviewParkResolutions`, oldest first, so a retry's fresh run stream still inherits
+rulings from an earlier one), except a thread-dispute park's resolution (log #62,
+`ParkedFromState == RunState.Verifying`): that park caught the run before any gate or reviewer
+ever read the diff, so the human resolved a disputed thread, not a review finding, and it is not
+recorded as a settled ruling. `AgentPromptBuilder.AppendSettledRulings` renders the newest 8
+rulings, each reason summarized to 500 characters, under a heading telling the reviewer these
+are settled and re-raising one needs a stated reason something changed; it is appended to both
+lenses, unconditionally paired with a pointer at whatever doctrine the project's own
+AGENTS.md/CLAUDE.md documents (a decisions log among them, if it keeps one) — deliberately
+generic rather than naming this platform's own PLAN.md by path, since `AgentPromptBuilder`
+serves every registered project, not just this one. `h9k review resolve`'s `--merge-ready` gained
+an optional `--reason <TEXT>` for the same reason: a human dismissing a finding as a false
+positive can say why and have it reach the next fresh-context pass instead of vanishing the
+moment the park cleared.
+
 ### 3.2 Context routing along dependency edges (log #36)
 
 A `BlockedBy` edge does double duty. It was declared for scheduling, but "this could not

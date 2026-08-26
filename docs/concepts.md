@@ -266,7 +266,18 @@ Clean means a reviewer read the final tip and found nothing, Settled means the s
 routing, or a human's resolution ended it, with the residuals recorded. A settled ending never
 reads like a clean one.
 
-Depth: [TASK-MODEL.md §3.1](../TASK-MODEL.md), Decisions Log #24, #59, #63.
+**Fresh context does not mean no memory (Decisions Log #88).** Each cycle's reviewers are new
+sessions with no memory of the task's earlier cycles, but the prompt they are handed carries
+forward what a human already settled on this task: every prior `h9k review resolve` verdict and
+reason, so a finding a human already dismissed with evidence, or one they confirmed as a real
+defect, is not re-raised or re-litigated as though the question were new. The project's own
+doctrine (AGENTS.md/CLAUDE.md, and any decisions log it documents) rides along the same way, so a
+deviation already ratified there reads as a deliberate choice rather than an oversight the
+reviewer just caught. A thread-dispute park (Decisions Log #62) is the one park that plays no
+part in this: it settles a disputed comment thread before any reviewer ever reads the diff, not a
+review finding, so its resolution is not carried forward as a settled ruling.
+
+Depth: [TASK-MODEL.md §3.1](../TASK-MODEL.md), Decisions Log #24, #59, #62, #63, #88.
 
 ## Closeout
 

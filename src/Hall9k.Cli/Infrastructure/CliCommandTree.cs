@@ -194,7 +194,9 @@ public static class CliCommandTree
                     + "--needs-fixes <reason> dispatches a fix session (and, like pr resolve, restores the "
                     + "automatic fix budget). Either way the verdict and reason are recorded on the task, so "
                     + "a later fresh-context review pass is told the question was already settled instead of "
-                    + "re-raising it. The park reason and findings files name what needs judging.")
+                    + "re-raising it — except on a thread-dispute park, which settles a disputed thread rather "
+                    + "than a review finding and is not carried forward this way. The park reason and findings "
+                    + "files name what needs judging.")
                 .WithExample("review", "resolve", "28b19893", "--merge-ready")
                 .WithExample("review", "resolve", "28b19893", "--merge-ready", "--reason", "\"False positive - confirmed via git log\"")
                 .WithExample("review", "resolve", "28b19893", "--needs-fixes", "\"The limiter reset finding is real; fix it as the reviewer described\"");

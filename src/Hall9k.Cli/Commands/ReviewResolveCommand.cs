@@ -78,7 +78,9 @@ public sealed class ReviewResolveCommand : Hall9kAsyncCommand<ReviewResolveComma
             "Why the diff is sound despite the finding — e.g. the evidence that dismissed it. Only valid "
             + "with --merge-ready (--needs-fixes already takes its reason as its own argument). Recorded on "
             + "the task so a later fresh-context review pass is told this was already settled, rather than "
-            + "re-raising the same question (PLAN.md log #24, task: review prompts carry prior rulings).")]
+            + "re-raising the same question — except on a thread-dispute park, which settles a disputed "
+            + "thread rather than a review finding and is not carried forward this way "
+            + "(PLAN.md log #24, task: review prompts carry prior rulings).")]
         public string? Reason { get; init; }
 
         public override ValidationResult Validate()
