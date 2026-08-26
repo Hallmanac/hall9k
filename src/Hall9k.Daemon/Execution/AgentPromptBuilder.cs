@@ -1024,7 +1024,9 @@ public static class AgentPromptBuilder
         prompt.AppendLine("Open every finding with a header line of exactly this shape, then write the finding");
         prompt.AppendLine("underneath it in prose:");
         prompt.AppendLine();
-        prompt.AppendLine($"    {ReviewResultParser.FindingMarker} severity=high; scope=in-scope; at=src/Some/File.cs:123");
+        prompt.AppendLine(
+            $"    {ReviewResultParser.FindingMarker} severity=high; scope=in-scope; " +
+            $"at={ReviewResultParser.ExampleLocationPlaceholder}");
         prompt.AppendLine("    Defect: one sentence saying what is wrong.");
         prompt.AppendLine("    Scenario: the input or state that makes it misbehave, and what goes wrong.");
         prompt.AppendLine();

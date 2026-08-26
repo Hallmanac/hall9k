@@ -20,6 +20,18 @@ public static class ReviewResultParser
     /// <summary>The header line that opens one structured finding block.</summary>
     public const string FindingMarker = "FINDING:";
 
+    /// <summary>
+    /// The exact `at=` value in the finding contract's own worked example
+    /// (<c>AgentPromptBuilder.AppendFindingContract</c>). A pass that quotes the contract before
+    /// answering — the same observed habit <see cref="LastMarkerValue"/> already tolerates for
+    /// VERDICT — echoes this header back verbatim; unlike a verdict line, where the last one
+    /// wins, a finding block has no "last one wins" rule, so an echoed example would otherwise
+    /// stand as a second, fabricated finding alongside whatever the pass actually reported.
+    /// <see cref="Close"/> drops any block whose location matches this placeholder exactly,
+    /// rather than dispatching a fix session at a file that was never touched.
+    /// </summary>
+    public const string ExampleLocationPlaceholder = "src/Some/File.cs:123";
+
     private const string VerdictMarker = "VERDICT:";
 
     /// <summary>
@@ -70,10 +82,16 @@ public static class ReviewResultParser
         }
 
         Dictionary<string, string> header = HeaderTags(block[0][FindingMarker.Length..]);
+        string location = Tag(header, "at") ?? Tag(header, "file") ?? Tag(header, "location") ?? string.Empty;
+        if (location.Equals(ExampleLocationPlaceholder, StringComparison.OrdinalIgnoreCase))
+        {
+            return;
+        }
+
         findings.Add(new ReviewFinding(
             ReviewSeverity.Parse(Tag(header, "severity")),
             ReviewFindingScope.Parse(Tag(header, "scope")),
-            Tag(header, "at") ?? Tag(header, "file") ?? Tag(header, "location") ?? string.Empty,
+            location,
             string.Join('\n', block).Trim()));
     }
 

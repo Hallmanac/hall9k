@@ -94,4 +94,27 @@ public sealed class ReviewFindingParserTests
     public void Prose_without_headers_reads_as_no_readable_findings(string? summary) =>
         ReviewResultParser.ParseFindings(summary).Should().BeEmpty(
             "that is 'nothing this parser can read', and only the caller knows whether the verdict said there were any");
+
+    /// <summary>
+    /// A pass that quotes the finding contract's own worked example before answering — the same
+    /// habit already tolerated for VERDICT lines — must not have that quoted example counted as
+    /// a real finding. Unlike a verdict, a finding block has no "last one wins" rule, so an
+    /// echoed example would otherwise stand alongside the pass's actual finding.
+    /// </summary>
+    [Fact]
+    public void An_echoed_example_header_is_not_read_as_a_real_finding()
+    {
+        string summary =
+            "The contract says to open each finding like this:\n" +
+            "    FINDING: severity=high; scope=in-scope; at=src/Some/File.cs:123\n" +
+            "    Defect: one sentence saying what is wrong.\n" +
+            "    Scenario: the input or state that makes it misbehave, and what goes wrong.\n\n" +
+            "FINDING: severity=high; scope=in-scope; at=src/Auth.cs:42\n" +
+            "Defect: the limiter never resets.\n" +
+            "Scenario: the second request always 429s.\n\n" +
+            "VERDICT: needs-fixes";
+
+        ReviewFinding finding = ReviewResultParser.ParseFindings(summary).Should().ContainSingle().Subject;
+        finding.Location.Should().Be("src/Auth.cs:42");
+    }
 }
