@@ -222,7 +222,7 @@ Then the loop from the section above: `h9k task add`, `h9k task publish --assign
 Start-at-login is a separate opt-in that is never implied by anything else:
 
 ```bash
-h9k daemon autostart enable   # macOS launchd LaunchAgent
+h9k daemon autostart enable   # macOS launchd LaunchAgent / Windows Task Scheduler logon task
 h9k daemon autostart disable
 ```
 
