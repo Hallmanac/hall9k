@@ -1046,6 +1046,13 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
         RunDetails run = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
         run.State.Should().Be(RunState.ReviewParked);
         run.ParkedReason.Should().Contain("no parseable verdict").And.Contain("re-prompt");
+        run.ParkedReason.Should().Contain(
+            "conformance review returned no parseable verdict, even after this cycle's re-prompt",
+            "the conformance pass is the one RepromptForVerdictAsync actually resumed");
+        run.ParkedReason.Should().Contain(
+            "adversarial review returned no parseable verdict, and this lens was never itself re-prompted this cycle",
+            "the adversarial pass was never itself resumed, so the reason must not credit it with the cycle's re-prompt "
+                + "(adversarial cycle-1 finding, ReviewEngine.cs:174)");
 
         List<object> events = [.. (await query.Events.FetchStreamAsync(runId, token: cts.Token)).Select(e => e.Data)];
         events.OfType<ReviewVerdictReprompted>().Should().ContainSingle();
