@@ -24,8 +24,13 @@ public abstract class ProcessManagerBase : IProcessManager
     /// Reads a just-started process's start time, tolerating the same race
     /// <see cref="TryGet"/> already tolerates on the read side: a command that exits before
     /// this runs (an <c>exec</c>'d one-liner, or cmd.exe racing a trivial child) leaves the OS
-    /// with nothing left to report. "Now" is recorded instead — precision does not matter for
-    /// a process that is already gone, since <see cref="IsAlive"/> will find it gone too.
+    /// with nothing left to report. <see cref="DateTimeOffset.MinValue"/> is recorded instead
+    /// of a plausible-looking guess — AGENTS.md's "never guess at unobserved facts" applies
+    /// directly here, since this value becomes the process identity <see cref="TryGet"/> and
+    /// every later liveness check key off. Stamping "now" would risk a false match if the OS
+    /// recycled the pid within <see cref="StartTimeTolerance"/> before the next read; the
+    /// sentinel instead guarantees <see cref="TryGet"/> never matches a real process's start
+    /// time, so a process that was already gone at spawn time stays reported as gone.
     /// </summary>
     protected static DateTimeOffset ReadStartedAt(Process process)
     {
@@ -35,7 +40,7 @@ public abstract class ProcessManagerBase : IProcessManager
         }
         catch (Exception exception) when (exception is InvalidOperationException or Win32Exception)
         {
-            return DateTimeOffset.UtcNow;
+            return DateTimeOffset.MinValue;
         }
     }
 
