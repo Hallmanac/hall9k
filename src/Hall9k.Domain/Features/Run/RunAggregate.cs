@@ -155,6 +155,15 @@ public sealed class RunAggregate
     public AgentModel ActiveFixSessionModel { get; private set; } = AgentModel.Unknown;
     /// <summary>The highest cycle whose verdict re-prompt was already spent (0 = never). One re-prompt per CYCLE, then park.</summary>
     public int VerdictRepromptedCycle { get; private set; }
+    /// <summary>
+    /// Which lens actually received <see cref="VerdictRepromptedCycle"/>'s one re-prompt
+    /// (<see cref="ReviewLens.Unknown"/> if none yet). A cycle can end its budget with more than
+    /// one verdict-less pass, and only this one of them was ever resumed — the rest reach the
+    /// park having never themselves been re-prompted, which the park reason needs to say
+    /// accurately rather than crediting every verdict-less lens with a re-prompt only one of
+    /// them got.
+    /// </summary>
+    public ReviewLens VerdictRepromptedLens { get; private set; } = ReviewLens.Unknown;
     /// <summary>Human findings from a needs-fixes park resolution, consumed by the next fix dispatch.</summary>
     public string? PendingHumanFindings { get; private set; }
 
@@ -347,6 +356,7 @@ public sealed class RunAggregate
             @event.Lens ?? ReviewLens.Unknown, @event.SessionId, @event.ResumedSessionId,
             @event.ProcessId, @event.ProcessStartedAt, @event.Model ?? AgentModel.Unknown);
         VerdictRepromptedCycle = @event.Cycle;
+        VerdictRepromptedLens = @event.Lens ?? ReviewLens.Unknown;
         ReviewPhase = ReviewPhase.AwaitingVerdict;
     }
 

@@ -170,8 +170,7 @@ public sealed class ReviewEngine(
                     // The cycle's one re-prompt is spent; guessing what the reviewer meant
                     // would be worse than asking (never guess at unobserved facts).
                     await ParkAsync(context.RunId, context.TaskId,
-                        $"Review cycle {run.ReviewCycle}: {await VerdictMissingCauseAsync(run, cancellationToken)}, " +
-                        "even after this cycle's re-prompt. " +
+                        $"Review cycle {run.ReviewCycle}: {await VerdictMissingCauseAsync(run, cancellationToken)}. " +
                         $"Its output: {RunPaths.ReviewFindingsFile(ParkedRunDirectory(run), run.ReviewCycle)}. " +
                         "Judge the diff yourself, then resolve with h9k review resolve or abandon the task.",
                         cancellationToken);
@@ -1528,6 +1527,16 @@ public sealed class ReviewEngine(
     /// only one of them ever said "needs-fixes". Re-reads each pass's own preserved output
     /// rather than trusting a remembered reason, since the output on disk is the fact and this
     /// is what decides the honest label over it.
+    /// <para>
+    /// Only one pass per cycle ever receives <see cref="RunAggregate.VerdictRepromptedCycle"/>'s
+    /// one re-prompt (<see cref="RepromptForVerdictAsync"/> picks a single verdict-less pass), so
+    /// a cycle that ends this method's call with more than one still-verdict-less pass has one
+    /// pass that was actually resumed and one or more that were never touched again — a park
+    /// reason that says "even after this cycle's re-prompt" about all of them credits a re-prompt
+    /// to a lens that never received it (adversarial cycle-1 finding, `ReviewEngine.cs:174`).
+    /// Checked against <see cref="RunAggregate.VerdictRepromptedLens"/> per pass instead of
+    /// stating it once for the whole cycle.
+    /// </para>
     /// </summary>
     private async Task<string> VerdictMissingCauseAsync(RunAggregate run, CancellationToken cancellationToken)
     {
@@ -1535,7 +1544,7 @@ public sealed class ReviewEngine(
             .Where(pass => pass.Verdict == ReviewVerdict.Unknown)];
         if (verdictless.Count == 0)
         {
-            return "a review pass returned no parseable verdict";
+            return "a review pass returned no parseable verdict, even after this cycle's re-prompt";
         }
 
         List<string> causes = [];
@@ -1544,9 +1553,13 @@ public sealed class ReviewEngine(
         {
             string path = LensFindingsFile(runDirectory, run.ReviewCycle, pass.Lens);
             string raw = File.Exists(path) ? await File.ReadAllTextAsync(path, cancellationToken) : string.Empty;
-            causes.Add(ReviewResultParser.ParseVerdict(raw) == ReviewVerdict.NeedsFixes
+            string outcome = ReviewResultParser.ParseVerdict(raw) == ReviewVerdict.NeedsFixes
                 ? $"the {LensLabel(pass.Lens)} returned needs-fixes naming nothing the platform could read as a finding"
-                : $"the {LensLabel(pass.Lens)} returned no parseable verdict");
+                : $"the {LensLabel(pass.Lens)} returned no parseable verdict";
+            string repromptState = run.VerdictRepromptedCycle == run.ReviewCycle && pass.Lens == run.VerdictRepromptedLens
+                ? "even after this cycle's re-prompt"
+                : "and this lens was never itself re-prompted this cycle — the cycle's one re-prompt went to another lens";
+            causes.Add($"{outcome}, {repromptState}");
         }
 
         return string.Join("; ", causes);
