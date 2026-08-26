@@ -130,7 +130,7 @@ public sealed record ErroredReview(string Reviewer, string Url);
 /// watching for. CopilotReviewThreadCount is every thread the currently-landed review itself
 /// opened, resolved or not — not every thread Copilot has ever opened across the pull request's
 /// history, since a superseded review's threads are not what "landed" now names alongside itself
-/// (Decisions Log #88).
+/// (Decisions Log #89).
 /// </para>
 /// </summary>
 public sealed record PullRequestSnapshot(

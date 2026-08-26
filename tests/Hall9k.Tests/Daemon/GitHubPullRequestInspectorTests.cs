@@ -476,7 +476,7 @@ public sealed class GitHubPullRequestInspectorTests
 
     /// <summary>
     /// A countersigned review that lands clean must not inherit the thread count of a review it
-    /// superseded (Decisions Log #88): Copilot reviews commit A leaving threads, a fix resolves
+    /// superseded (Decisions Log #89): Copilot reviews commit A leaving threads, a fix resolves
     /// them and pushes commit B, the countersign re-requests Copilot, and it re-reviews B with no
     /// comments at all. Without scoping by review id, the next sweep still reads "landed · 3
     /// comment threads" for a review that opened none.
