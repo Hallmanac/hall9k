@@ -290,14 +290,24 @@ internal static class TaskPhaseComposer
     /// <summary>
     /// The comment-thread count a landed Copilot review left, resolved or not — distinct from
     /// <see cref="Threads"/>'s unresolved-only count, which only ever renders once a finding has
-    /// moved the run to ReviewPending.
+    /// moved the run to ReviewPending. While <see cref="RunDetails.ExternalReviewChecksPending"/>
+    /// is still true, this count has not been re-checked for new unresolved threads this sweep
+    /// (the same ordering gap <c>AttentionComposer.Delivered</c>'s Landed arm hedges against), so
+    /// the detail says that rather than reading as an all-clear.
     /// </summary>
-    private static string CopilotThreadsDetail(RunDetails run) => run.ExternalReviewThreadCount switch
+    private static string CopilotThreadsDetail(RunDetails run)
     {
-        0 => "no comment threads",
-        1 => "1 comment thread",
-        _ => $"{run.ExternalReviewThreadCount} comment threads",
-    };
+        string threads = run.ExternalReviewThreadCount switch
+        {
+            0 => "no comment threads",
+            1 => "1 comment thread",
+            _ => $"{run.ExternalReviewThreadCount} comment threads",
+        };
+
+        return run.ExternalReviewChecksPending
+            ? $"{threads}, not yet confirmed resolved; its checks may still be reporting"
+            : threads;
+    }
 
     /// <summary>
     /// The failing checks, named when the observation named them. A finding recorded without the

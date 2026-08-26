@@ -61,6 +61,13 @@ public sealed class RunAggregate
     /// <summary>Every review thread Copilot's review opened, resolved or not, as of the last observation.</summary>
     public int ExternalReviewThreadCount { get; private set; }
 
+    /// <summary>
+    /// Whether the provider's CI picture was still incomplete as of the last observation
+    /// (<see cref="Events.ExternalReviewObserved"/>) — false only once a sweep got past both the
+    /// checks and unresolved-thread reads without moving the run off <see cref="RunState.AwaitingReview"/>.
+    /// </summary>
+    public bool ExternalReviewChecksPending { get; private set; }
+
     /// <summary>When a human last granted this run's task a fresh closeout budget (h9k pr resolve, Decisions Log #80, backlog 45); null until one lands.</summary>
     public DateTimeOffset? HumanGrantedAt { get; private set; }
 
@@ -656,6 +663,7 @@ public sealed class RunAggregate
     {
         ExternalReviewState = @event.State;
         ExternalReviewThreadCount = @event.ThreadCount;
+        ExternalReviewChecksPending = @event.ChecksPending;
     }
 
     public void Apply(PullRequestConflictObserved @event)

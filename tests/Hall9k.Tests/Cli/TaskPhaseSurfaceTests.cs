@@ -387,6 +387,21 @@ public sealed class TaskPhaseSurfaceTests
         StatusFixtures.Compose(StatusFixtures.Task(TaskState.Done, runId, pullRequest), landed)
             .Phase.Detail.Should().Be("2 comment threads");
 
+        // A landed review recorded while the CI picture was still incomplete has not been
+        // re-checked for new unresolved threads this sweep either (CloseoutEngine records the
+        // review-state observation ahead of that read), so the detail must not read as the
+        // all-clear the case above renders once checks settle (independent pre-PR review,
+        // cycle 3).
+        RunDetails landedChecksPending = StatusFixtures.Run(
+            runId, RunState.AwaitingReview, sessionProcessId: null, pullRequestNumber: 24);
+        landedChecksPending.ExternalReviewState = ExternalReviewState.Landed;
+        landedChecksPending.ExternalReviewThreadCount = 2;
+        landedChecksPending.ExternalReviewChecksPending = true;
+        StatusFixtures.Compose(StatusFixtures.Task(TaskState.Done, runId, pullRequest), landedChecksPending)
+            .Phase.Text.Should().Be("watching PR #24 — Copilot review landed");
+        StatusFixtures.Compose(StatusFixtures.Task(TaskState.Done, runId, pullRequest), landedChecksPending)
+            .Phase.Detail.Should().Be("2 comment threads, not yet confirmed resolved; its checks may still be reporting");
+
         RunDetails pending = StatusFixtures.Run(runId, RunState.AwaitingReview, sessionProcessId: null, pullRequestNumber: 24);
         pending.ExternalReviewState = ExternalReviewState.RequestedPending;
         StatusFixtures.Compose(StatusFixtures.Task(TaskState.Done, runId, pullRequest), pending)

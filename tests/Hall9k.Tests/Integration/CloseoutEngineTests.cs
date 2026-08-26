@@ -231,6 +231,55 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
     }
 
     /// <summary>
+    /// A landed review observed while the CI picture is still incomplete must not read as the
+    /// clean, human's-turn state the Delivered surfaces render once checks settle (independent
+    /// pre-PR review, cycle 3) — the CI picture completing with nothing else changing is its own
+    /// axis of change, so it gets its own event rather than being swallowed by the review-state
+    /// dedup.
+    /// </summary>
+    [Fact]
+    public async Task Checks_still_pending_is_recorded_and_clearing_it_alone_still_appends()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        (DocumentStore store, NodeContext node, GitWorktreeManager worktrees, _, string repoPath) =
+            await SetUpAsync(cts.Token);
+        using IDisposable storeLifetime = store;
+
+        (_, Guid runId, _) = await SeedAwaitingReviewAsync(store, node, worktrees, repoPath, cts.Token);
+
+        FakeInspector inspector = new()
+        {
+            Snapshot = FakeInspector.Quiet() with
+            {
+                CopilotReviewState = ExternalReviewState.Landed,
+                CopilotReviewThreadCount = 2,
+                HasPendingChecks = true,
+            },
+        };
+        CloseoutEngine engine = NewEngine(store, node, inspector, worktrees);
+        await engine.PollOnceAsync(cts.Token);
+
+        await using IQuerySession firstQuery = store.QuerySession();
+        RunDetails afterPending = (await firstQuery.LoadAsync<RunDetails>(runId, cts.Token))!;
+        afterPending.ExternalReviewState.Should().Be(ExternalReviewState.Landed);
+        afterPending.ExternalReviewChecksPending.Should().BeTrue(
+            "the CI picture was incomplete, so this sweep never re-checked for unresolved threads");
+        afterPending.State.Should().Be(RunState.AwaitingReview);
+
+        inspector.Snapshot = inspector.Snapshot with { HasPendingChecks = false };
+        await engine.PollOnceAsync(cts.Token);
+
+        await using IQuerySession secondQuery = store.QuerySession();
+        RunDetails afterSettled = (await secondQuery.LoadAsync<RunDetails>(runId, cts.Token))!;
+        afterSettled.ExternalReviewChecksPending.Should().BeFalse(
+            "checks completed and no failure or unresolved thread moved the run off AwaitingReview");
+
+        (await secondQuery.Events.FetchStreamAsync(runId, token: cts.Token))
+            .Count(e => e.Data is ExternalReviewObserved)
+            .Should().Be(2, "the CI picture completing is its own change even though the review state did not move");
+    }
+
+    /// <summary>
     /// The three artifact states are three observations, and each closes out honestly: an
     /// empty file means the session's result was read and carried no handoff, an absent file
     /// means there was no session-end capture at all (a park resolved by hand, a historical
