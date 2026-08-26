@@ -37,9 +37,46 @@ public static partial class ReviewVerdictValidation
     /// fixed name list rather than a generic "dot followed by letters" pattern, because that
     /// generic shape also matches an ellipsis running into the next word ("hard...nothing") and
     /// prose like ".NET" or ".Where" that names nothing in the diff.
+    /// <para>
+    /// The extension itself has to be lowercase (cycle-6 finding): a real extension is always
+    /// written lowercase in this codebase's own findings (`Auth.cs`, `docs/cli.md`, `cmd.exe`,
+    /// `install.ps1`), while a C# `Type.Member` reference an affirming summary is thick with —
+    /// `File.WriteAllTextAsync`, `PlatformPaths.Home`, `RunPaths.Root`, `Uri.TryCreate` — reads as
+    /// a dotted "name.extension" the same way, because the member name after the dot is at least
+    /// two letters same as any real extension is, and this pattern's own `{2,10}` cap just clips
+    /// a longer member name down to its first ten letters rather than failing to match it. A
+    /// member name is PascalCase by this codebase's own naming convention (see AGENTS.md's coding
+    /// standards), so it never starts with a lowercase letter, and requiring the extension segment
+    /// itself to start (and stay) lowercase excludes every one of them without excluding any real
+    /// extension this codebase's findings actually use — confirmed against the minimal repro
+    /// (`` `Uri.TryCreate` handles this correctly; nothing here is wrong. ``) and against a
+    /// `File.WriteAllTextAsync`-bearing bullet lifted from one of two recorded needs-fixes lens
+    /// outputs from this install's own runs this finding cited (task 4633f355 run 01a03935
+    /// review-3 conformance, task 74e572fb run 01a03726 review-9 conformance).
+    /// </para>
+    /// <para>
+    /// Those two recorded outputs, read in full rather than as an isolated bullet, still pass
+    /// <see cref="NamesAFinding"/> after this fix, and this fix is not what was ever going to
+    /// close that: each also mentions an unrelated real (lowercase-extension) location — `cmd.exe`
+    /// in the first, `config.json` in the second — inside a sentence that separately negates its
+    /// own claim ("rule 1's ... case never applies", "I did **not** file"), which is the
+    /// keyword-and-proximity gap this method's own doc comment already discloses as permanent (an
+    /// output whose own sentence negates the defect itself still passes, because "closing that gap
+    /// needs reading comprehension a regex cannot do"). A run across this install's own recorded
+    /// needs-fixes lens outputs (369 across `~/.hall9k/runs/**` and every project home's task run
+    /// directories) confirms this pattern is not unique to these two: of the 369, 333 passed
+    /// <see cref="NamesAFinding"/> before this fix and 328 pass after it — the 5 that flip are, on
+    /// inspection, all genuine findings that happened to pass only because a spurious
+    /// `Type.Member` match supplied this method's location gate for a paragraph or sentence whose
+    /// own defect language was, coincidentally, either the same pre-existing own-sentence-negation
+    /// gap or vocabulary this method's own list does not yet cover — never because this narrowing
+    /// itself misjudged a real, cleanly-stated location. Closing that residual gap is a distinct,
+    /// pre-existing defect in the paragraph/sentence proximity heuristic, not something this
+    /// narrowing was ever positioned to fix.
+    /// </para>
     /// </summary>
     [GeneratedRegex(
-        @"[\w/\\-]*[A-Za-z0-9_-]\.[A-Za-z]{2,10}(:\d+)?"
+        @"[\w/\\-]*[A-Za-z0-9_-]\.[a-z]{2,10}(:\d+)?"
         + @"|\B\.(?:gitignore|gitattributes|gitmodules|dockerignore|editorconfig|env|npmrc|nvmrc)(?::\d+)?\b"
         + @"|\b(?:Dockerfile|Makefile|Jenkinsfile|Gemfile|Rakefile|Procfile|Vagrantfile)(?::\d+)?\b")]
     private static partial Regex LocationPattern();

@@ -33,6 +33,7 @@ public sealed class ReviewVerdictValidationTests
     [InlineData("FINDING: severity=high; scope=in-scope; at=Dockerfile:12\n"
         + "Defect: the base image is unpinned.\n\nVERDICT: needs-fixes")]
     [InlineData("1. `.gitignore` — the build output directory is never excluded.\n\nVERDICT: needs-fixes")]
+    [InlineData("1. `.github/workflows/ci.yml:22` — the release job never sets a timeout.\n\nVERDICT: needs-fixes")]
     public void An_output_naming_a_location_and_a_defect_names_a_finding(string output) =>
         ReviewVerdictValidation.NamesAFinding(output).Should().BeTrue();
 
@@ -632,5 +633,70 @@ public sealed class ReviewVerdictValidationTests
     [InlineData("The new async method at `ReviewEngine.cs:1530` should take a CancellationToken as "
         + "its last parameter.\n\nVERDICT: needs-fixes")]
     public void Prescriptive_should_phrasing_names_a_finding(string output) =>
+        ReviewVerdictValidation.NamesAFinding(output).Should().BeTrue();
+
+    /// <summary>
+    /// A capitalized `Type.Member` reference must not be read as a file location (cycle-6
+    /// finding, minimal repro): <c>Uri.TryCreate</c> reads exactly like a dotted
+    /// "name.extension" pair the same way a real path does, so an affirming summary built out of
+    /// such references, paired with a plain negation word ("not"), used to pass
+    /// <see cref="ReviewVerdictValidation.NamesAFinding"/> despite naming no real location at
+    /// all.
+    /// </summary>
+    [Fact]
+    public void A_capitalized_type_member_reference_is_not_mistaken_for_a_location()
+    {
+        ReviewVerdictValidation.NamesAFinding(
+                "`Uri.TryCreate` handles this correctly; nothing here is wrong.\n\nVERDICT: needs-fixes")
+            .Should().BeFalse();
+    }
+
+    /// <summary>
+    /// The Type.Member shape of the two recorded hollow verdicts this fix was written against
+    /// (cycle-6 finding, task 4633f355 run 01a03935 review-3 conformance and task 74e572fb run
+    /// 01a03726 review-9 conformance): a bullet from each, reporting something the reviewer says
+    /// it checked and cleared rather than something it found wrong, used to pass
+    /// <see cref="ReviewVerdictValidation.NamesAFinding"/> purely because it is dense with
+    /// capitalized `Type.Member` references (`File.WriteAllTextAsync`, `PlatformPaths.Home`,
+    /// `RunPaths.Root`) sitting near a negation word used to describe what did NOT need fixing.
+    /// Each recorded output in full still passes even after this fix, for a reason this fix does
+    /// not touch and is not meant to: both also mention an unrelated real (lowercase-extension)
+    /// location — `cmd.exe`, `config.json` — inside a sentence that separately negates its own
+    /// claim ("never applies", "I did **not** file"), which is the keyword-and-proximity gap
+    /// <see cref="ReviewVerdictValidation.NamesAFinding"/>'s own doc comment already discloses as
+    /// permanent ("closing that gap needs reading comprehension a regex cannot do"). Isolating
+    /// just the `Type.Member`-bearing bullet from each recorded output, the way this test does,
+    /// is what isolates the mechanism this fix actually closes from that pre-existing, separately
+    /// documented one.
+    /// </summary>
+    [Theory]
+    [InlineData(
+        "Six verified findings, reported above.\n\n"
+        + "What I checked and found sound, so it does not need re-examining:\n\n"
+        + "- **The stop-request path.** The read/write race is safe on Windows specifically "
+        + "because `File.WriteAllTextAsync`'s `FileShare.Read` makes a concurrent reader fail "
+        + "with `IOException` (already handled) rather than see truncated content.\n\n"
+        + "VERDICT: needs-fixes")]
+    [InlineData(
+        "Findings reported above. Notes on what I checked and cleared, so the fix run does not "
+        + "re-litigate it:\n\n"
+        + "- **The install/uninstall mirror is faithful.** I grepped every "
+        + "`PlatformPaths.Home`/`RunPaths.Root` consumer; nothing install writes is missed, and "
+        + "nothing it does not write is listed.\n\n"
+        + "VERDICT: needs-fixes")]
+    public void A_recorded_hollow_verdict_dense_with_type_member_references_does_not_name_a_finding(string output) =>
+        ReviewVerdictValidation.NamesAFinding(output).Should().BeFalse();
+
+    /// <summary>
+    /// A legitimate lowercase-extension location is unaffected by the lowercase requirement the
+    /// cycle-6 fix added: `cmd.exe`, `docs/cli.md` and `install.ps1` are exactly the shapes the
+    /// two recorded hollow verdicts above also mention in passing, but each still names a
+    /// finding when paired with real defect language of its own.
+    /// </summary>
+    [Theory]
+    [InlineData("1. `cmd.exe:12` — the quoting is wrong for arguments with embedded quotes.\n\nVERDICT: needs-fixes")]
+    [InlineData("1. `docs/cli.md` — this omits the new flag entirely.\n\nVERDICT: needs-fixes")]
+    [InlineData("1. `install.ps1:40` — this never checks the download hash.\n\nVERDICT: needs-fixes")]
+    public void A_lowercase_extension_location_still_names_a_finding(string output) =>
         ReviewVerdictValidation.NamesAFinding(output).Should().BeTrue();
 }
