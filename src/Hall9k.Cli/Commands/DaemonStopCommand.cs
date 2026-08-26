@@ -5,9 +5,10 @@ using Spectre.Console.Cli;
 namespace Hall9k.Cli.Commands;
 
 /// <summary>
-/// Graceful shutdown: SIGTERM (or launchctl bootout when autostart owns the job, so
-/// crash-restart cannot resurrect it) — in-flight event appends finish, detached agents
-/// keep running for adoption on the next start (Decisions Log #31).
+/// Graceful shutdown: SIGTERM on Unix (or launchctl bootout when autostart owns the job,
+/// so crash-restart cannot resurrect it), or a stop-request file on Windows, where there
+/// is no SIGTERM to send to an arbitrary process — in-flight event appends finish,
+/// detached agents keep running for adoption on the next start (Decisions Log #31).
 /// </summary>
 public sealed class DaemonStopCommand : Hall9kAsyncCommand<DaemonStopCommand.Settings>
 {

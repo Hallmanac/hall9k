@@ -75,8 +75,9 @@ public sealed record AgentModel
 
     /// <summary>
     /// Whether the value is safe to hand to the executor's shell. The spawn command is
-    /// assembled as a /bin/sh string, so a model value carrying shell metacharacters would
-    /// be a command-injection seam; model ids are plain identifiers, so the safe set is
+    /// assembled as a shell command line (/bin/sh on Unix, cmd.exe on Windows), so a model
+    /// value carrying shell metacharacters would be a command-injection seam on either
+    /// platform; model ids are plain identifiers, so the safe set is
     /// letters, digits, and <c>. _ - : / @ [ ]</c>. Unknown is not well-formed: an absent
     /// model is never spawnable.
     /// </summary>

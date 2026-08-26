@@ -125,7 +125,7 @@ public sealed class ConfigSetCommand : Hall9kAsyncCommand<ConfigSetCommand.Setti
     /// every other --model option documents (h9k project set --model) applies here with no special case.
     /// Anything else must be spawnable: the same <see cref="AgentModel.IsWellFormed"/> gate
     /// <c>ProjectDecider</c> and <c>TaskDecider</c> apply to a project- or task-level model, because
-    /// this value reaches the executor's /bin/sh command line the same way theirs do — and this is
+    /// this value reaches the executor's shell command line the same way theirs do — and this is
     /// the platform-wide bottom of the resolution chain, so an unusable value here breaks every
     /// dispatch on the node rather than one project or task.
     /// </summary>

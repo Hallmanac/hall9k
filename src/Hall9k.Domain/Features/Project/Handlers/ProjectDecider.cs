@@ -92,7 +92,7 @@ public static class ProjectDecider
         }
 
         // Unknown clears the project override, exactly as it does for CommitStyle. Anything
-        // else must be spawnable: the value reaches the executor's /bin/sh command line, so a
+        // else must be spawnable: the value reaches the executor's shell command line, so a
         // model carrying shell metacharacters is rejected here rather than quoted and hoped for.
         if (model.HasValue && model.Value is { } chosen && chosen != AgentModel.Unknown && !chosen.IsWellFormed)
         {
