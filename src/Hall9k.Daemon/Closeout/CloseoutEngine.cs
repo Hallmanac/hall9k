@@ -26,7 +26,15 @@ namespace Hall9k.Daemon.Closeout;
 /// orphaned ones the sweep also checks (Decisions Log #72) — a reader of this number
 /// does not need to know which pass found a merge, only that one did.
 /// </summary>
-public sealed record CloseoutSweepResult(int RunsInspected, int MergesObserved);
+/// <param name="Failures">
+/// How many inspections this sweep caught an exception from — almost always <c>gh</c> itself
+/// (a rate limit, a network blip, an outage), since that is the one remote call each inspection
+/// makes. <see cref="PullRequestMonitor"/> reads this to widen its own poll interval rather than
+/// re-hitting a failing <c>gh</c> every tick forever (independent pre-PR review, cycle 3); it is
+/// not itself a retry signal here — the run stays in the watch set and the very next sweep tries
+/// it again regardless of what this count says.
+/// </param>
+public sealed record CloseoutSweepResult(int RunsInspected, int MergesObserved, int Failures = 0);
 
 /// <summary>
 /// The closeout core (Decisions Log #18/#22), extracted from the monitor loop so it
@@ -107,6 +115,7 @@ public sealed class CloseoutEngine(
 
         int inspected = 0;
         int merges = 0;
+        int failures = 0;
         foreach (RunDetails run in watched)
         {
             try
@@ -128,6 +137,7 @@ public sealed class CloseoutEngine(
             }
             catch (Exception exception)
             {
+                failures++;
                 logger.LogWarning(exception, "Closeout poll failed for run {RunId} ({Url}); will retry next sweep",
                     run.Id, run.PullRequestUrl);
             }
@@ -154,13 +164,14 @@ public sealed class CloseoutEngine(
             }
             catch (Exception exception)
             {
+                failures++;
                 logger.LogWarning(
                     exception, "Closeout orphan sweep failed for run {RunId} ({Url}); will retry next sweep",
                     run.Id, run.PullRequestUrl);
             }
         }
 
-        return new CloseoutSweepResult(inspected, merges);
+        return new CloseoutSweepResult(inspected, merges, failures);
     }
 
     /// <summary>
