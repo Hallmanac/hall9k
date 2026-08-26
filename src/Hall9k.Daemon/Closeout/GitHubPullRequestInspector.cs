@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Text.Json;
+using Hall9k.Domain.Features.Run;
 
 namespace Hall9k.Daemon.Closeout;
 
@@ -107,6 +108,8 @@ public sealed class GitHubPullRequestInspector : IPullRequestInspector
             UnresolvedHumanThreadCount: reviews.UnresolvedHumanThreads,
             Reviewers: reviews.Reviewers,
             ErroredReview: reviews.ErroredReview,
+            CopilotReviewState: reviews.CopilotReviewState,
+            CopilotReviewThreadCount: reviews.CopilotReviewThreadCount,
             HeadCommit: reviews.HeadCommit,
             UnresolvedReviewThreadIds: reviews.UnresolvedThreadIds,
             UnresolvedHumanThreadIds: reviews.UnresolvedHumanThreadIds,
@@ -171,9 +174,11 @@ public sealed class GitHubPullRequestInspector : IPullRequestInspector
         IReadOnlyList<string> UnresolvedThreadIds,
         IReadOnlyList<string> UnresolvedHumanThreadIds,
         IReadOnlyList<string> PendingReviewRequestLogins,
+        ExternalReviewState CopilotReviewState,
+        int CopilotReviewThreadCount,
         bool IsConflicting = false)
     {
-        public static readonly ReviewObservation None = new(0, 0, [], null, null, [], [], []);
+        public static readonly ReviewObservation None = new(0, 0, [], null, null, [], [], [], ExternalReviewState.None, 0);
     }
 
     private static async Task<ReviewObservation> InspectReviewsAsync(
@@ -212,8 +217,18 @@ public sealed class GitHubPullRequestInspector : IPullRequestInspector
         // poll diffs to recognize a newly opened human thread.
         List<string> threadIds = [];
         List<string> humanThreadIds = [];
+        int copilotThreadCount = 0;
         foreach (JsonElement thread in pullRequest.GetProperty("reviewThreads").GetProperty("nodes").EnumerateArray())
         {
+            // Read once and reused below: the resolved-or-not count needs it for the "landed
+            // with its comment-thread count" phase text, so it is read ahead of the
+            // unresolved-only filtering the rest of this loop applies.
+            PullRequestReviewer? starter = ThreadStarter(thread);
+            if (starter is not null && IsCopilotLogin(starter.Login))
+            {
+                copilotThreadCount++;
+            }
+
             if (thread.GetProperty("isResolved").GetBoolean())
             {
                 continue;
@@ -231,7 +246,7 @@ public sealed class GitHubPullRequestInspector : IPullRequestInspector
             }
 
             threadIds.Add(id);
-            if (ThreadStarter(thread) is { IsHuman: true })
+            if (starter is { IsHuman: true })
             {
                 humanThreadIds.Add(id);
             }
@@ -246,7 +261,60 @@ public sealed class GitHubPullRequestInspector : IPullRequestInspector
             threadIds,
             humanThreadIds,
             ReadPendingReviewRequestLogins(pullRequest),
+            ReadCopilotReviewState(pullRequest),
+            copilotThreadCount,
             IsConflicting: ReadMergeable(pullRequest) == "CONFLICTING");
+    }
+
+    /// <summary>
+    /// Whether Copilot's review has landed, is requested but not yet submitted, or the pull
+    /// request carries no Copilot review activity at all (origin: PR #50 sat Delivered for 23
+    /// minutes with a landed Copilot review nobody had read before the merge). An errored
+    /// review (<see cref="FindErroredCopilotReview"/>) does not count as landed: a review that
+    /// could not read the diff produced no verdict, so the phase this state ultimately writes
+    /// must not tell a reader Copilot has weighed in when it has not.
+    /// <para>
+    /// The pending check reads <c>reviewRequests</c> raw, deliberately not through
+    /// <see cref="ReadPendingReviewRequestLogins"/> — that method excludes a bot's own request
+    /// unless a human is shown to have re-asked for it (the human-engagement signal this
+    /// question is not). Whether Copilot is currently outstanding at all, however it got that
+    /// way, is exactly what "awaiting Copilot review" needs to say.
+    /// </para>
+    /// </summary>
+    private static ExternalReviewState ReadCopilotReviewState(JsonElement pullRequest)
+    {
+        if (pullRequest.TryGetProperty("latestReviews", out JsonElement latest))
+        {
+            foreach (JsonElement review in latest.GetProperty("nodes").EnumerateArray())
+            {
+                if (ReadActor(review) is not { } reviewer || !IsCopilotLogin(reviewer.Login))
+                {
+                    continue;
+                }
+
+                string body = review.GetProperty("body").GetString() ?? "";
+                if (!body.Contains(ErroredReviewBodyMarker, StringComparison.OrdinalIgnoreCase))
+                {
+                    return ExternalReviewState.Landed;
+                }
+            }
+        }
+
+        if (pullRequest.TryGetProperty("reviewRequests", out JsonElement requests))
+        {
+            foreach (JsonElement request in requests.GetProperty("nodes").EnumerateArray())
+            {
+                if (request.TryGetProperty("requestedReviewer", out JsonElement reviewer)
+                    && reviewer.ValueKind == JsonValueKind.Object
+                    && reviewer.TryGetProperty("login", out JsonElement login)
+                    && IsCopilotLogin(login.GetString()))
+                {
+                    return ExternalReviewState.RequestedPending;
+                }
+            }
+        }
+
+        return ExternalReviewState.None;
     }
 
     /// <summary>

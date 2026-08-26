@@ -1,3 +1,5 @@
+using Hall9k.Domain.Features.Run;
+
 namespace Hall9k.Daemon.Closeout;
 
 /// <summary>
@@ -118,6 +120,16 @@ public sealed record ErroredReview(string Reviewer, string Url);
 /// review field here has; a merely-behind-but-mergeable branch is deliberately not this
 /// field's concern (GitHub merges those fine on its own).
 /// </para>
+/// <para>
+/// CopilotReviewState is the post-PR review watcher's own read (origin: PR #50 sat Delivered
+/// for 23 minutes with a landed Copilot review nobody had read before the merge): whether
+/// Copilot's review has landed (a real, non-errored review is on the pull request),
+/// is requested but not yet submitted, or neither. It answers a narrower question than
+/// Reviewers/ErroredReview above — those exist for the countersign and the errored-review
+/// re-request, this exists only so the Delivered phase line can say which of the three it is
+/// watching for. CopilotReviewThreadCount is every thread Copilot's review opened, resolved or
+/// not, which is what "landed" names alongside itself.
+/// </para>
 /// </summary>
 public sealed record PullRequestSnapshot(
     bool IsMerged,
@@ -130,6 +142,8 @@ public sealed record PullRequestSnapshot(
     int UnresolvedHumanThreadCount,
     IReadOnlyList<PullRequestReviewer> Reviewers,
     ErroredReview? ErroredReview,
+    ExternalReviewState CopilotReviewState,
+    int CopilotReviewThreadCount,
     string? HeadCommit = null,
     IReadOnlyList<string>? UnresolvedReviewThreadIds = null,
     IReadOnlyList<string>? UnresolvedHumanThreadIds = null,
