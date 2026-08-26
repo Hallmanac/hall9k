@@ -191,8 +191,7 @@ public sealed class ReviewEngine(
                     return false;
 
                 case ReviewPhase.FixNeeded:
-                    if (!await DispatchFixSessionAsync(
-                        context, run.ReviewCycle, run.PendingHumanFindings, cancellationToken))
+                    if (!await DispatchFixSessionAsync(context, run, cancellationToken))
                     {
                         return false;
                     }
@@ -511,10 +510,23 @@ public sealed class ReviewEngine(
     /// resolving a dispute park, so the pairing is redundant with <c>cycle == 0</c> in practice but
     /// documents the same intent the check had before.
     /// </para>
+    /// <para>
+    /// Escalation (task: a second fix round over the same findings) is decided here too, once,
+    /// before the model resolves: <see cref="ReviewFixEscalation.Reason"/> compares this round's
+    /// own findings against <see cref="RunAggregate.LastFixRoundFindingLocations"/> — the
+    /// immediately preceding fix round's, not the whole run's history, which is what makes
+    /// de-escalation automatic once a repeated defect actually clears. A mechanical redispatch of
+    /// the very same round (a budget-exhaustion retry re-enters FixNeeded with the cycle and
+    /// <paramref name="run"/>'s <see cref="RunAggregate.PendingHumanFindings"/> both unchanged)
+    /// reuses whatever that round already decided instead of asking the question again over
+    /// content that has not actually changed.
+    /// </para>
     /// </summary>
     private async Task<bool> DispatchFixSessionAsync(
-        ReviewContext context, int cycle, string? humanFindings, CancellationToken cancellationToken)
+        ReviewContext context, RunAggregate run, CancellationToken cancellationToken)
     {
+        int cycle = run.ReviewCycle;
+        string? humanFindings = run.PendingHumanFindings;
         string runDirectory = CurrentRunDirectory(context.Run);
         // A cycle's own ride-alongs are already inside this text (a cycle that dispatches a fix
         // session writes every track's ride-alongs into its own merged findings document, Decisions
@@ -542,9 +554,27 @@ public sealed class ReviewEngine(
                 context.Task, context.Project, context.Run.Branch, context.Task.PullRequestUrl!, commitStyle, findings)
             : AgentPromptBuilder.BuildReviewFix(context.Task, context.Run.Branch, findings, cycle);
         ExecutorMode mode = context.Run.ExecutorMode;
-        // Fix is its own role: applying findings someone else reasoned out is a different
-        // shape of work from producing them, so it resolves separately (log #33).
-        AgentModel model = _options.ResolveModel(AgentRole.Fix, context.Task.Model, context.Project.Model);
+
+        // A retry of the very same round reuses whatever it already decided rather than asking
+        // ReviewFixEscalation a second question over content that has not changed (see this
+        // method's own doc comment, and RunAggregate.LastFixRoundCycle's, for why the pairing
+        // with humanFindings — not the cycle number alone — is what tells a retry apart from a
+        // human granting a genuinely fresh round at the same cycle number, e.g. resolving a
+        // dispute with new guidance).
+        bool retryOfSameRound = cycle == run.LastFixRoundCycle && humanFindings == run.LastFixRoundHumanFindings;
+        string? escalationReason = retryOfSameRound
+            ? run.LastFixSessionEscalationReason
+            : ReviewFixEscalation.Reason(
+                run.LastFixRoundFindingLocations, run.CurrentCycleFixFindingLocations, humanFindings);
+        bool escalated = retryOfSameRound ? run.LastFixSessionEscalated : escalationReason is not null;
+
+        // Fix is its own role: applying findings someone else reasoned out is a different shape
+        // of work from producing them, so it resolves separately (log #33) — unless this round
+        // repeats the previous one's findings (task: a second fix round over the same findings),
+        // in which case it resolves the Review role's model instead: the observed dodge-and-redo
+        // failure mode gets a stronger model exactly where it recurs.
+        AgentModel model = _options.ResolveModel(
+            escalated ? AgentRole.Review : AgentRole.Fix, context.Task.Model, context.Project.Model);
         SpawnedAgent agent = await executor.SpawnAsync(new AgentSpawnRequest(
             context.RunId, sessionId, context.Run.WorktreePath, context.Run.RunDirectory, prompt, mode, model,
             context.Project.SkipPermissions, FixArtifactName(cycle, sessionId)), cancellationToken);
@@ -552,12 +582,23 @@ public sealed class ReviewEngine(
         DateTimeOffset dispatchedAt = DateTimeOffset.UtcNow;
         await using IDocumentSession session = store.LightweightSession();
         session.Events.Append(context.RunId, new ReviewFixDispatched(
-            context.RunId, sessionId, cycle, agent.ProcessId, agent.StartedAt, dispatchedAt, model));
+            context.RunId, sessionId, cycle, agent.ProcessId, agent.StartedAt, dispatchedAt, model,
+            escalated, escalationReason));
 
         await session.SaveChangesAsync(cancellationToken);
-        logger.LogInformation(
-            "Run {RunId}: fix run dispatched over the cycle-{Cycle} findings (session {SessionId}, pid {ProcessId}, model {Model})",
-            context.RunId, cycle, sessionId, agent.ProcessId, model.Value);
+        if (escalated)
+        {
+            logger.LogInformation(
+                "Run {RunId}: fix run dispatched over the cycle-{Cycle} findings (session {SessionId}, pid {ProcessId}, model {Model}) — escalated to the review role's model: {Reason}",
+                context.RunId, cycle, sessionId, agent.ProcessId, model.Value, escalationReason);
+        }
+        else
+        {
+            logger.LogInformation(
+                "Run {RunId}: fix run dispatched over the cycle-{Cycle} findings (session {SessionId}, pid {ProcessId}, model {Model})",
+                context.RunId, cycle, sessionId, agent.ProcessId, model.Value);
+        }
+
         return true;
     }
 
