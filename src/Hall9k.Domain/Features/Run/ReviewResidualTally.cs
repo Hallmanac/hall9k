@@ -17,4 +17,8 @@ namespace Hall9k.Domain.Features.Run;
 /// <param name="FixedUnreviewed">Distinct defects fixed in a track's terminal cycle that no reviewer read again.</param>
 /// <param name="Routed">Distinct defects exported to a draft bug task.</param>
 /// <param name="RoutingFailed">Distinct defects whose draft bug task could not be created, and never was.</param>
-public sealed record ReviewResidualTally(int FixedUnreviewed, int Routed, int RoutingFailed);
+/// <param name="RideAlong">
+/// Distinct ride-alongs (Decisions Log #87) never folded into a fix session the run happened to
+/// dispatch for another reason — recorded, and never fixed in this pull request.
+/// </param>
+public sealed record ReviewResidualTally(int FixedUnreviewed, int Routed, int RoutingFailed, int RideAlong);

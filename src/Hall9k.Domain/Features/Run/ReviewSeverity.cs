@@ -10,9 +10,11 @@ namespace Hall9k.Domain.Features.Run;
 /// the loop. The anchors are stated to the reviewer in the prompt rather than left to its
 /// intuition, because a grade every reviewer invents for itself is not a gate.
 /// <para>
-/// The conformance track grades nothing: its findings are all "the work does not match what
-/// it promised", which has no useful severity ordering, so a conformance finding is recorded
-/// <see cref="Unknown"/> by design rather than assigned a grade nobody asked for.
+/// Both lenses grade every finding (Decisions Log #87): conformance's own convergence rule
+/// (Decisions Log #63) still runs on a plain clean-or-not basis, with no multi-cycle severity
+/// gate of its own, but its findings now carry a real grade the same way adversarial's do,
+/// because the fix-bar this type also defines (<see cref="MeetsFixBar"/>) reads every lens's
+/// output the same way.
 /// </para>
 /// </summary>
 [JsonConverter(typeof(ReviewSeverityJsonConverter))]
@@ -55,6 +57,29 @@ public sealed record ReviewSeverity
 
     /// <summary>Whether this severity forces another adversarial cycle once the gate applies.</summary>
     public bool ForcesAnotherCycle => !IsStatedBelowHigh;
+
+    /// <summary>
+    /// Whether a finding graded this way earns a fix session of its own <i>this cycle</i>
+    /// (Decisions Log #87) — the bar behind "a review pass records needs-fixes only when at
+    /// least one finding is graded medium or higher". This is a different question from
+    /// <see cref="IsStatedBelowHigh"/>/<see cref="ForcesAnotherCycle"/>, which govern the
+    /// adversarial track's own multi-cycle severity gate and are untouched by this bar: a Medium
+    /// still never forces another adversarial cycle past the gate, and a High still always does,
+    /// exactly as before. This bar sits in front of that one, deciding whether a finding is fixed
+    /// at all right now rather than how many more times it gets looked at once it is.
+    /// <para>
+    /// Deliberately does not treat <see cref="Unknown"/> the conservative way the rest of this
+    /// type does: origin (2026-08-25 token telemetry) found the conformance lens issuing a
+    /// needs-fixes verdict over a single trivial finding 59 times in one day, and once both
+    /// lenses are told to grade every finding explicitly (Decisions Log #87 also closes
+    /// conformance's own gap here), a finding that still comes back ungraded is read the same as
+    /// one graded Low — the platform cannot tell a lazy omission from genuine polish, and
+    /// spending a whole fix-and-re-review cycle on the chance it was the former is exactly the
+    /// waste this bar exists to stop. It is not lost either way: see
+    /// <see cref="ReviewFindingDisposition.RideAlong"/>.
+    /// </para>
+    /// </summary>
+    public bool MeetsFixBar => this == High || this == Medium;
 
     /// <summary>
     /// Reads a reviewer's own word for the grade. Anything unrecognized is
