@@ -292,6 +292,11 @@ Per poll, in priority order:
   branch is deleted locally, remotely, and in remote-tracking refs.
 - **Closed without merge.** The run fails honestly. The worktree goes; the branch stays, because
   it still holds unmerged work.
+- **Copilot's review state, recorded every sweep the pull request is still open.** Landed,
+  requested-but-pending, or absent, together with whether the provider's CI picture is still
+  incomplete — informational only, never a `RunState` transition, and appended ahead of every
+  branch below (including the checks-pending short circuit and a parked run's merge/close-only
+  handling), so it lands on the run stream even when nothing else acts this sweep.
 - **Conflicting with its base branch.** GitHub's own `mergeable` read, never inferred from how
   long the branch has sat open. Checked ahead of checks and threads because both readings are
   moot against a diff about to be superseded by a rebase, and every merge into the base makes
@@ -307,9 +312,11 @@ Per poll, in priority order:
 
 Two silences are worth knowing about. GitHub hides an unsubmitted (`PENDING`) review's comments
 from the API entirely, so a pull request can look quiet while feedback is being written: never
-read silence as "the reviewer had nothing to say". And the monitor writes nothing at all while CI
-is still reporting, which is why the quiet phase line says "no external review activity observed;
-its checks may still be reporting" rather than claiming a clean pull request.
+read silence as "the reviewer had nothing to say". And the monitor does not act on checks or
+review threads while CI is still reporting — the pending-checks read short-circuits ahead of both
+— even though it still records what it saw of Copilot's review state on the run stream that same
+sweep; which is why the quiet phase line says "no external review activity observed; its checks
+may still be reporting" rather than claiming a clean pull request.
 
 Automatic follow-ups are bounded by two counters, not one. A **progress cap**
 (`MaxCloseoutLapsPerObstruction`, default 2) counts consecutive laps spent on the *same*

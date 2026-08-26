@@ -658,7 +658,7 @@ public sealed class RunAggregate
         State = RunState.ReviewPending;
     }
 
-    // Informational only: the phase line reads these two fields, but the run's own state
+    // Informational only: the phase line reads all three fields, but the run's own state
     // machine never branches on them — the events that do (ReviewFeedbackReceived,
     // ReviewErrored) already carry their own state transitions.
     public void Apply(ExternalReviewObserved @event)

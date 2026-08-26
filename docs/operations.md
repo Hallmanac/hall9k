@@ -348,6 +348,7 @@ ones worth knowing:
 | `Hall9k__LeaseTimeout` | 60s | How long a lease survives without a heartbeat before the sweep requeues it |
 | `Hall9k__VerifyGateTimeout` | 15m | Per gate |
 | `Hall9k__PullRequestPollInterval` | 3m | How often the closeout monitor polls an open pull request |
+| `Hall9k__PullRequestPollBackoffMaxInterval` | 30m | The ceiling the poll interval backs off to when every attempted inspection in a sweep fails (e.g. `gh` rate-limited); resets on the next successful sweep |
 | `Hall9k__MaxAutomaticCloseoutRuns` | 6 | The lifetime ceiling: automatic closeout actions a pull request may spend across every obstruction before closeout parks and asks for you, whatever it grants along the way |
 | `Hall9k__MaxCloseoutLapsPerObstruction` | 2 | The progress cap: consecutive automatic laps closeout may spend on the SAME obstruction (the same failing check, the same unresolved threads) before parking — a lap that clears its obstruction resets this one, and a human re-engaging with the pull request grants one more lap past it |
 | `Hall9k__MaxComplianceReviewCycles` | 3 | The conformance track's cap |

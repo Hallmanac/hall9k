@@ -418,8 +418,10 @@ Copilot review · requested but not yet submitted", or plain "watching PR #24" w
 review activity observed; its checks may still be reporting" when nothing has happened yet -
 plus the failing checks or the unresolved thread count when those are what is observed instead,
 and "automatic follow-ups stopped" when parked. The quiet reading never claims a clean pull
-request or names the human as the last gate, because the monitor writes nothing at all while CI
-is still reporting and an absence of findings is not an observation. A
+request or names the human as the last gate, because the monitor does not act on checks or review
+threads while CI is still reporting — it still records what it saw of Copilot's review state that
+same sweep, but an absence of findings beyond that recorded observation is not itself an
+observation of a clean pull request. A
 Queued/Claimed task still carrying a pull-request URL is a follow-up in flight and says so
 ("follow-up on PR #24: building"), which is the distinction the old single `ClosingOut` bucket
 could not make. **Done** appears only once the merge is observed; a run that ended without one stays
