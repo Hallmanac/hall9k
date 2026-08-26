@@ -781,4 +781,117 @@ public sealed class ReviewVerdictValidationTests
                 taskAcceptanceCriteria: [criterion])
             .Should().BeTrue();
     }
+
+    /// <summary>
+    /// Plain prose that states what the located code does in the sentence right after the
+    /// location, and only says what is wrong with it a second sentence later, still names a
+    /// finding (cycle-2 review, conformance finding #1, a recorded output at
+    /// `~/.hall9k/runs/01a02984-.../review-1-conformance-findings.md`): the old one-sentence,
+    /// pronoun-gated lookahead could reach neither "Every failure branch…" (no continuation
+    /// pronoun) nor the sentence past it, so a correctly located, correctly described defect
+    /// ("the subject is wrong") was demoted to a missing verdict.
+    /// </summary>
+    [Fact]
+    public void Prose_with_the_defect_two_sentences_after_the_location_still_names_a_finding()
+    {
+        ReviewVerdictValidation.NamesAFinding(
+                "`src/Foo/Bar.cs:143` — `VerifyAccessAsync` passes the wrong argument to `SendAsync`. "
+                + "Every failure branch in `Explain` interpolates it into the message, so all five "
+                + "reachable messages render the wrong subject. The corrective guidance in each "
+                + "message is still right, but the subject is wrong in the first command a new user "
+                + "runs.\n\nVERDICT: needs-fixes")
+            .Should().BeTrue();
+    }
+
+    /// <summary>
+    /// The lookahead past a location's own sentence is bounded, not run to the end of the
+    /// paragraph (see <c>ReviewVerdictValidation.DefectLookaheadSentences</c>): a defect word
+    /// three sentences after the location, with two intervening sentences that are themselves
+    /// silent on the subject, is still outside the two real recorded gaps this bound was written
+    /// to close and stays unread, the same narrowing the rest of this file's vocabulary accepts.
+    /// </summary>
+    [Fact]
+    public void A_defect_word_three_sentences_after_the_location_stays_outside_the_lookahead()
+    {
+        ReviewVerdictValidation.NamesAFinding(
+                "`src/Foo/Bar.cs:143` is where the handler lives. It has three branches. Each one "
+                + "does its own thing. Something here is wrong.\n\nVERDICT: needs-fixes")
+            .Should().BeFalse();
+    }
+
+    /// <summary>
+    /// A bold lead-in whose own emphasis uses a single asterisk still reads as a lead-in, with
+    /// the defect in a later paragraph (cycle-2 review, conformance finding #2, a recorded output
+    /// at `~/.hall9k/runs/01a02a91-.../review-1-conformance-findings.md`): the old
+    /// <c>\*\*[^\n*]+\*\*</c> read the inner <c>*before*</c> as the closing marker, so the whole
+    /// paragraph matched neither heading alternative and the borrow never fired.
+    /// </summary>
+    [Fact]
+    public void A_bold_lead_in_with_an_embedded_italic_run_still_borrows_the_defect_that_follows()
+    {
+        ReviewVerdictValidation.NamesAFinding(
+                "**1. `src/Foo/Bar.cs:277` — the sweep logs the count measured *before* its own "
+                + "claims.**\n\n"
+                + "`MeasureLoadAsync` runs, and only then does the claim loop run.\n\n"
+                + "Failure scenario: the log then contradicts itself and reads wrong.\n\n"
+                + "VERDICT: needs-fixes")
+            .Should().BeTrue();
+    }
+
+    /// <summary>
+    /// A bold location followed by a short same-line label, with the defect two paragraphs later
+    /// behind a neutral mechanism paragraph, still names a finding (cycle-2 review, conformance
+    /// finding #2 and #3, recorded outputs at
+    /// `~/.hall9k/runs/01a029e6-.../review-3-adversarial-findings.md` and
+    /// `~/.hall9k/runs/01a02a91-.../review-1-conformance-findings.md`): the old bold alternative's
+    /// `$` anchor refused a marker that did not consume the whole paragraph, so this shape matched
+    /// no heading alternative at all, and even when it did, the old check only ever looked at the
+    /// single next paragraph — never the one past a neutral mechanism paragraph in between.
+    /// </summary>
+    [Fact]
+    public void A_same_line_bold_label_still_borrows_the_defect_two_paragraphs_later()
+    {
+        ReviewVerdictValidation.NamesAFinding(
+                "**`src/Foo/Bar.cs:274`** — the adoption path records the caution twice.\n\n"
+                + "`WaitAsync` already returns the caution once; `Stranded` appends it again.\n\n"
+                + "Failure scenario: the operator-facing sentence repeats itself and reads wrong.\n\n"
+                + "VERDICT: needs-fixes")
+            .Should().BeTrue();
+    }
+
+    /// <summary>
+    /// Two consecutive lead-ins that are each genuinely hollow — a mechanism paragraph with no
+    /// vocabulary word between them and after the last one — do not name a finding just because
+    /// the multi-paragraph borrow now walks past a single next paragraph: the walk still has to
+    /// land on real defect language, or a stated denial, or another lead-in, before it finds
+    /// anything, and none of this output has any.
+    /// </summary>
+    [Fact]
+    public void Two_hollow_lead_ins_in_a_row_still_do_not_name_a_finding()
+    {
+        ReviewVerdictValidation.NamesAFinding(
+                "**1. `src/Foo/Bar.cs:10`** — first finding's label.\n\n"
+                + "A neutral mechanism sentence carrying nothing else worth naming.\n\n"
+                + "**2. `src/Foo/Baz.cs:20`** — second finding's label.\n\n"
+                + "Another neutral mechanism sentence carrying nothing else worth naming.\n\n"
+                + "VERDICT: needs-fixes")
+            .Should().BeFalse();
+    }
+
+    /// <summary>
+    /// A same-line bold label that already denies its own location — even with the denial too far
+    /// past the location for the sentence-scoped check's own bounded lookahead to see it — is not
+    /// a lead-in needing to borrow from whatever unrelated defect language happens to sit in a
+    /// later paragraph.
+    /// </summary>
+    [Fact]
+    public void A_same_line_bold_label_that_already_denies_a_defect_does_not_borrow_from_a_later_paragraph()
+    {
+        ReviewVerdictValidation.NamesAFinding(
+                "**`src/Foo/Bar.cs:10`** — checked. Reviewed twice. Confirmed clean. Nothing about "
+                + "it stands as a defect.\n\n"
+                + "Something unrelated elsewhere in the diff is broken.\n\n"
+                + "VERDICT: needs-fixes")
+            .Should().BeFalse();
+    }
 }
