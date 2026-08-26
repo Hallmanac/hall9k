@@ -525,6 +525,46 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
     }
 
     /// <summary>
+    /// The core of Decisions Log #87: a needs-fixes verdict whose only finding is graded low is
+    /// downgraded to merge-ready before it ever costs a fix session — the platform's own
+    /// safety net behind the prompt instruction telling the lens to do this itself. Both lenses
+    /// answer needs-fixes here so the demotion is exercised on conformance too, the population
+    /// the origin telemetry actually named.
+    /// </summary>
+    [Fact]
+    public async Task A_pass_whose_only_finding_is_graded_low_is_demoted_to_merge_ready_with_a_ride_along_and_no_fix_session()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        using DocumentStore store = NewStore();
+        (Guid taskId, Guid runId, _) = await SeedVerifiedRunAsync(store, cts.Token);
+
+        ScriptedExecutor executor = new(
+            "FINDING: severity=low; scope=in-scope; at=Docs.md:3\nDefect: the comment is stale.\n\n"
+            + "VERDICT: needs-fixes",
+            "Criteria met.\n\nVERDICT: merge-ready");
+        bool mergeReady = await NewEngine(store, executor).ReviewAsync(runId, taskId, cts.Token);
+
+        mergeReady.Should().BeTrue();
+        executor.Spawns.Should().HaveCount(2, "only the two review passes — no fix session was ever owed one");
+
+        await using IQuerySession query = store.QuerySession();
+        List<object> events = [.. (await query.Events.FetchStreamAsync(runId, token: cts.Token)).Select(e => e.Data)];
+        events.OfType<ReviewFixDispatched>().Should().BeEmpty(
+            "a low-only verdict earns no fix-and-re-review cycle of its own (Decisions Log #87)");
+        ReviewPassCompleted conformancePass = events.OfType<ReviewPassCompleted>()
+            .Single(pass => pass.Lens == ReviewLens.Conformance);
+        conformancePass.Verdict.Should().Be(
+            ReviewVerdict.MergeReady, "the platform's own bar overrides the lens's literal VERDICT line");
+        conformancePass.Findings.Should().ContainSingle()
+            .Which.Disposition.Should().Be(ReviewFindingDisposition.RideAlong);
+
+        RunDetails run = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
+        run.LastReviewVerdict.Should().Be(ReviewVerdict.MergeReady);
+        run.ReviewSettlement.Should().Be(ReviewSettlement.Settled, "the low finding is a residual, not a clean tip");
+        run.ReviewResidualsRideAlong.Should().Be(1, "recorded, never fixed — no cycle was ever spent earning it one");
+    }
+
+    /// <summary>
     /// An out-of-scope non-High is not this pull request's work (Decisions Log #63): the daemon
     /// turns it into a draft bug task carrying the provenance the observation-gates doctrine
     /// asks for, and the merged findings tell the fix session to leave it alone.

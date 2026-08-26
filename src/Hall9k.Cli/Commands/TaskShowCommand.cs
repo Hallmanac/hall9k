@@ -312,7 +312,7 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
                 "[green]merge-ready (clean)[/] [dim]— a reviewer read the final diff and found nothing[/]",
             var settlement when settlement == ReviewSettlement.Settled =>
                 $"[yellow]merge-ready (settled[/] [yellow]— {run.ReviewResidualsFixed} residual(s) fixed, "
-                + $"{run.ReviewResidualsRouted} routed{UnroutedClause(run)})[/] "
+                + $"{run.ReviewResidualsRouted} routed{RideAlongClause(run)}{UnroutedClause(run)})[/] "
                 + "[dim]— the loop ended without a clean re-read[/]",
             _ => "[green]merge-ready[/] [dim]— how it was reached was not recorded[/]",
         };
@@ -329,6 +329,16 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
     /// </summary>
     private static string UnroutedClause(RunDetails run) => run.ReviewResidualsRoutingFailed > 0
         ? $", {run.ReviewResidualsRoutingFailed} not routed — creating the draft bug task failed"
+        : string.Empty;
+
+    /// <summary>
+    /// Ride-alongs (Decisions Log #87) never folded into a fix session this run happened to
+    /// dispatch for another reason — below the fix bar on their own, so no cycle was spent
+    /// earning them one, and recorded rather than fixed. Normally there are none and the line
+    /// says nothing extra.
+    /// </summary>
+    private static string RideAlongClause(RunDetails run) => run.ReviewResidualsRideAlong > 0
+        ? $", {run.ReviewResidualsRideAlong} ride-along(s) never claimed"
         : string.Empty;
 
     /// <summary>

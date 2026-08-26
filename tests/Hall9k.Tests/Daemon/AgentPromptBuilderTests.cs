@@ -357,7 +357,7 @@ public sealed class AgentPromptBuilderTests : IDisposable
             "the header the platform parses is shown, not described");
         prompt.Should().Contain("correctness, security, or data-integrity defect reachable in realistic use");
         prompt.Should().Contain("bounded or unlikely impact, or a doctrine violation");
-        prompt.Should().Contain("`low` — polish.");
+        prompt.Should().Contain("`low` — polish:");
         prompt.Should().Contain("counts as no grade at all",
             "a reviewer that writes `critical` should learn the platform reads it as ungraded");
         prompt.Should().Contain("the defective line lives in code this branch added or changed");
@@ -368,17 +368,21 @@ public sealed class AgentPromptBuilderTests : IDisposable
     }
 
     /// <summary>
-    /// The conformance track grades nothing (Decisions Log #63): a criterion is met or it is
-    /// not, so handing it a severity vocabulary would invite grades nobody reads.
+    /// Conformance now carries the same structured finding contract adversarial always has
+    /// (Decisions Log #87): its own multi-cycle convergence is still ungated by severity (#63),
+    /// but grading every finding is what lets the platform tell a genuine defect apart from a
+    /// docs-phrasing nit, whatever this track's own convergence rule does with the cycle count.
     /// </summary>
     [Fact]
-    public void Conformance_review_prompt_carries_no_severity_vocabulary()
+    public void Conformance_review_prompt_now_carries_the_same_severity_vocabulary_as_adversarial()
     {
         string prompt = AgentPromptBuilder.BuildReview(
             SomeTask(), SomeProject(), "task/1-slug", cycle: 1, ReviewLens.Conformance);
 
-        prompt.Should().NotContain("severity=");
-        prompt.Should().NotContain("out-of-scope");
+        prompt.Should().Contain("severity=");
+        prompt.Should().Contain("out-of-scope");
+        prompt.Should().Contain("graded medium or high",
+            "conformance is told the same fix bar adversarial is, not just handed the tags");
         prompt.Should().Contain("acceptance criteria", "conformance is the pass that measures against them");
     }
 
@@ -473,12 +477,10 @@ public sealed class AgentPromptBuilderTests : IDisposable
         prompt.Should().Contain("a promise to deliver the verdict later is not a");
     }
 
-    [Theory]
-    [InlineData("Conformance")]
-    [InlineData("Adversarial")]
-    public void Verdict_reprompt_tells_the_resumed_session_to_conclude_and_that_this_is_the_only_retry(string lens)
+    [Fact]
+    public void Verdict_reprompt_tells_the_resumed_session_to_conclude_and_that_this_is_the_only_retry()
     {
-        string prompt = AgentPromptBuilder.BuildReviewVerdictReprompt(SomeProject(), lens, cycle: 3);
+        string prompt = AgentPromptBuilder.BuildReviewVerdictReprompt(SomeProject(), cycle: 3);
 
         prompt.Should().Contain("without the required VERDICT line");
         prompt.Should().Contain("wait for them", "unfinished checks get waited on, then judged");
@@ -490,15 +492,15 @@ public sealed class AgentPromptBuilderTests : IDisposable
 
     /// <summary>
     /// The resumed leg's output replaces what the platform read from the first one, so the
-    /// re-prompt has to restate the contract the lens answers in. Asking an adversarial pass
-    /// for prose would strip every finding's severity and scope on the way back in, and the
-    /// loop would read a graded, placed set as one ungraded, unplaced stand-in.
+    /// re-prompt has to restate the contract every lens now answers in (Decisions Log #87 gave
+    /// conformance the same structured contract adversarial always had). Asking a pass for prose
+    /// would strip every finding's severity and scope on the way back in, and the loop would
+    /// read a graded, placed set as one ungraded, unplaced stand-in.
     /// </summary>
     [Fact]
-    public void The_adversarial_reprompt_restates_the_finding_contract_it_will_be_parsed_by()
+    public void The_reprompt_restates_the_finding_contract_it_will_be_parsed_by()
     {
-        string prompt = AgentPromptBuilder.BuildReviewVerdictReprompt(
-            SomeProject(), ReviewLens.Adversarial, cycle: 3);
+        string prompt = AgentPromptBuilder.BuildReviewVerdictReprompt(SomeProject(), cycle: 3);
 
         prompt.Should().Contain("FINDING: severity=high; scope=in-scope; at=");
         prompt.Should().Contain("FINDING header", "the shape is named where the findings are asked for");
@@ -507,42 +509,31 @@ public sealed class AgentPromptBuilderTests : IDisposable
     }
 
     /// <summary>
-    /// The conformance track grades nothing and routes nothing, so its re-prompt asks for what
-    /// it was asked for originally rather than a contract it was never given.
-    /// </summary>
-    [Fact]
-    public void The_conformance_reprompt_asks_for_findings_in_the_shape_that_lens_was_given()
-    {
-        string prompt = AgentPromptBuilder.BuildReviewVerdictReprompt(
-            SomeProject(), ReviewLens.Conformance, cycle: 3);
-
-        prompt.Should().Contain("restate it as plainly as you can")
-            .And.Contain("(file:line, defect, failure scenario)");
-        prompt.Should().NotContain(ReviewResultParser.FindingMarker);
-    }
-
-    /// <summary>
     /// The re-prompt's merge-ready option is not a plain alternative to restating (independent
     /// pre-PR review, cycle 2, adversarial finding): the heuristic behind a demotion to Unknown
     /// is a keyword-and-proximity check with a disclosed, permanent vocabulary gap, so the
-    /// demotion is not proof the original finding was hollow. The old wording — "or state that
-    /// none stand." for the prose lens, "If none stand, say so." for the structured one — read
-    /// merge-ready as an equally legitimate second option; the reprompt now tells the session
+    /// demotion is not proof the original finding was hollow. The reprompt tells the session
     /// plainly that a demotion is not a verdict on the finding's truth, and only offers
     /// merge-ready for genuine reconsideration.
     /// </summary>
-    [Theory]
-    [InlineData("Conformance", "or state that none stand.")]
-    [InlineData("Adversarial", "If none stand, say so.")]
-    public void Verdict_reprompt_does_not_offer_merge_ready_as_a_plain_alternative_to_restating(
-        string lens, string oldWording)
+    [Fact]
+    public void Verdict_reprompt_does_not_offer_merge_ready_as_a_plain_alternative_to_restating()
     {
-        string prompt = AgentPromptBuilder.BuildReviewVerdictReprompt(SomeProject(), lens, cycle: 3);
+        string prompt = AgentPromptBuilder.BuildReviewVerdictReprompt(SomeProject(), cycle: 3);
 
         prompt.Should().Contain("does not mean a finding you", "a demotion is not proof the finding was hollow");
         prompt.Should().Contain("If you still believe a finding stands, restate it");
         prompt.Should().Contain("reconsideration, you no longer believe any defect stands");
-        prompt.Should().NotContain(oldWording, "the old wording read merge-ready as a plain alternative");
+        prompt.Should().NotContain("If none stand, say so.", "the old wording read merge-ready as a plain alternative");
+    }
+
+    /// <summary>Decisions Log #87: the bar for needs-fixes is stated where a reprompted session can still see it.</summary>
+    [Fact]
+    public void The_reprompt_still_states_the_fix_bar_for_a_needs_fixes_verdict()
+    {
+        string prompt = AgentPromptBuilder.BuildReviewVerdictReprompt(SomeProject(), cycle: 3);
+
+        prompt.Should().Contain("graded medium or high");
     }
 
     [Fact]

@@ -192,7 +192,7 @@ public sealed class ReviewEngine(
 
                 case ReviewPhase.FixNeeded:
                     if (!await DispatchFixSessionAsync(
-                        context, run.ReviewCycle, run.PendingHumanFindings, cancellationToken))
+                        context, run, run.ReviewCycle, run.PendingHumanFindings, cancellationToken))
                     {
                         return false;
                     }
@@ -437,10 +437,9 @@ public sealed class ReviewEngine(
         }
 
         Guid artifactId = DomainId.New();
-        // The re-prompt is the pass's own contract restated: its lens decides whether the
-        // findings come back structured, and the resumed output replaces what was read before.
-        string prompt = AgentPromptBuilder.BuildReviewVerdictReprompt(
-            context.Project, verdictless.Lens, run.ReviewCycle);
+        // The re-prompt is the pass's own contract restated — every lens answers in it now
+        // (Decisions Log #87) — and the resumed output replaces what was read before.
+        string prompt = AgentPromptBuilder.BuildReviewVerdictReprompt(context.Project, run.ReviewCycle);
         // The resumed session keeps the model it was dispatched on: the chain is NOT
         // re-resolved here, or the milestone would record a model the session never ran on
         // (log #33). An older stream that recorded no model stays honestly Unknown.
@@ -514,12 +513,25 @@ public sealed class ReviewEngine(
     /// </para>
     /// </summary>
     private async Task<bool> DispatchFixSessionAsync(
-        ReviewContext context, int cycle, string? humanFindings, CancellationToken cancellationToken)
+        ReviewContext context, RunAggregate run, int cycle, string? humanFindings, CancellationToken cancellationToken)
     {
+        string runDirectory = CurrentRunDirectory(context.Run);
         string findings = humanFindings.IsNotBlank()
             ? $"Human review verdict (h9k review resolve): needs fixes.\n\n{humanFindings}"
-            : await File.ReadAllTextAsync(
-                RunPaths.ReviewFindingsFile(CurrentRunDirectory(context.Run), cycle), cancellationToken);
+            : await File.ReadAllTextAsync(RunPaths.ReviewFindingsFile(runDirectory, cycle), cancellationToken);
+
+        // The next naturally-occurring fix session on a track is what a ride-along was always
+        // waiting for (Decisions Log #87): this cycle's own are already inside the findings text
+        // just read (a cycle that dispatches a fix session writes every track's ride-alongs into
+        // its own merged findings document), so only earlier cycles' still-pending ones need
+        // folding in here — read whole, straight from the cycle they were recorded in, since
+        // nothing but their count and location ever left that file for the stream (log #6).
+        List<ReviewPendingRideAlong> carriedIn = [.. run.PendingRideAlongFindings.Where(pending => pending.Cycle < cycle)];
+        if (carriedIn.Count > 0)
+        {
+            findings += await RideAlongCarryInSectionAsync(runDirectory, carriedIn, cancellationToken);
+        }
+
         if (!await EnsureCurrentGenerationAsync(context, cancellationToken))
         {
             return false;
@@ -543,14 +555,54 @@ public sealed class ReviewEngine(
             context.RunId, sessionId, context.Run.WorktreePath, context.Run.RunDirectory, prompt, mode, model,
             context.Project.SkipPermissions, FixArtifactName(cycle, sessionId)), cancellationToken);
 
+        DateTimeOffset dispatchedAt = DateTimeOffset.UtcNow;
         await using IDocumentSession session = store.LightweightSession();
         session.Events.Append(context.RunId, new ReviewFixDispatched(
-            context.RunId, sessionId, cycle, agent.ProcessId, agent.StartedAt, DateTimeOffset.UtcNow, model));
+            context.RunId, sessionId, cycle, agent.ProcessId, agent.StartedAt, dispatchedAt, model));
+        foreach (ReviewPendingRideAlong carried in carriedIn)
+        {
+            session.Events.Append(context.RunId, new ReviewFindingRideAlongCarried(
+                context.RunId, carried.Lens, carried.Cycle, cycle, dispatchedAt));
+        }
+
         await session.SaveChangesAsync(cancellationToken);
         logger.LogInformation(
-            "Run {RunId}: fix run dispatched over the cycle-{Cycle} findings (session {SessionId}, pid {ProcessId}, model {Model})",
-            context.RunId, cycle, sessionId, agent.ProcessId, model.Value);
+            "Run {RunId}: fix run dispatched over the cycle-{Cycle} findings (session {SessionId}, pid {ProcessId}, model {Model}){CarriedIn}",
+            context.RunId, cycle, sessionId, agent.ProcessId, model.Value,
+            carriedIn.Count == 0 ? string.Empty : $", carrying {carriedIn.Count} earlier ride-along cycle(s) forward");
         return true;
+    }
+
+    /// <summary>
+    /// The prose section appended to a fix session's findings for whatever earlier cycles' still-
+    /// pending ride-alongs (Decisions Log #87) it is carrying in — read whole, straight from each
+    /// cycle's own lens findings file, best-effort: a file this method cannot read is skipped and
+    /// noted rather than failing the whole dispatch over an artifact read (the same posture every
+    /// other artifact read in this loop already takes).
+    /// </summary>
+    private static async Task<string> RideAlongCarryInSectionAsync(
+        string runDirectory, IReadOnlyList<ReviewPendingRideAlong> carriedIn, CancellationToken cancellationToken)
+    {
+        StringBuilder section = new();
+        section.AppendLine();
+        section.AppendLine();
+        section.AppendLine("## Ride-along findings carried forward (Decisions Log #87)");
+        section.AppendLine();
+        section.AppendLine("Below are findings from earlier review cycles that were graded below the fix bar on");
+        section.AppendLine("their own and so were not dispatched a fix session of their own at the time. This fix");
+        section.AppendLine("session is already running for other reasons, so resolve these too while you are here.");
+        foreach (ReviewPendingRideAlong pending in carriedIn)
+        {
+            string path = LensFindingsFile(runDirectory, pending.Cycle, pending.Lens);
+            section.AppendLine();
+            section.AppendLine($"### From cycle {pending.Cycle}'s {LensLabel(pending.Lens)} pass");
+            section.AppendLine();
+            section.AppendLine(File.Exists(path)
+                ? (await File.ReadAllTextAsync(path, cancellationToken)).Trim()
+                : $"(the recorded findings file for this cycle is no longer readable: `{path}`)");
+        }
+
+        return section.ToString();
     }
 
     /// <summary>
@@ -630,12 +682,40 @@ public sealed class ReviewEngine(
             verdict = ReviewVerdict.Unknown;
         }
 
-        // A merge-ready pass reports no findings by contract; anything it listed anyway is not
-        // turned into work behind its own verdict. A needs-fixes pass always carries at least
-        // one, even when nothing structured could be read out of it.
-        IReadOnlyList<ReviewFinding> findings = verdict == ReviewVerdict.NeedsFixes
-            ? ReviewTrackPolicy.Stated(ReviewResultParser.ParseFindings(output))
-            : [];
+        // The structured findings, read whatever the verdict said — a merge-ready pass can still
+        // attach ride-alongs (Decisions Log #87), and the demotion right below needs to see them
+        // before findings is ever assigned.
+        IReadOnlyList<ReviewFinding> parsedFindings = ReviewResultParser.ParseFindings(output);
+        if (verdict == ReviewVerdict.NeedsFixes
+            && parsedFindings.Count > 0
+            && !parsedFindings.Any(finding => finding.Severity.MeetsFixBar))
+        {
+            // Decisions Log #87: a needs-fixes verdict earns a fix-and-re-review cycle only when
+            // something in it is actually graded medium or higher. Checked on severity alone,
+            // never on the finding's own Disposition: an out-of-scope Medium routes rather than
+            // getting fixed here, but it is still a real defect being exported, not polish — the
+            // routing-in-progress cycle it is part of still owes the rewritten tip a look before
+            // the adversarial gate applies (ReviewTrackPolicy.Decide's own pre-gate rule), and
+            // demoting the verdict here would short-circuit that gate-aware decision before it
+            // ever runs. Gated on parsedFindings being genuinely non-empty rather than applied
+            // whenever `findings` ends up with nothing Fix-disposed: an unreadable needs-fixes
+            // verdict (parsedFindings empty, the Stated() placeholder standing in below) is a
+            // defect the platform could not structure, never evidence it was trivial, and
+            // demoting that would reopen exactly
+            // the gap Decisions Log #86 closed. Findings survive this demotion exactly as
+            // parsed — nothing here is discarded, only recorded as not earning its own cycle.
+            verdict = ReviewVerdict.MergeReady;
+        }
+
+        // A needs-fixes pass always carries at least one finding, even when nothing structured
+        // could be read out of it; a merge-ready pass carries whatever it attached, ride-alongs
+        // included, never a placeholder; an unread (Unknown) pass carries nothing.
+        IReadOnlyList<ReviewFinding> findings = verdict switch
+        {
+            _ when verdict == ReviewVerdict.Unknown => [],
+            _ when verdict == ReviewVerdict.NeedsFixes => ReviewTrackPolicy.Stated(parsedFindings),
+            _ => parsedFindings,
+        };
 
         List<ReviewPassResult> completed = MergeCompleted(
             run.CompletedReviewPasses,
@@ -665,13 +745,34 @@ public sealed class ReviewEngine(
         {
             await WriteMergedFindingsAsync(runDirectory, cycle, completed, plans, routed, cancellationToken);
             session.Events.Append(runId, new ReviewCompleted(runId, cycle, cycleVerdict, now));
+
+            // A cycle that dispatches its own fix session already sweeps up every track's
+            // ride-alongs for free (DispatchFixSessionAsync reads this cycle's own merged
+            // findings file whole): a track that concludes here shipped them the same way it
+            // shipped its own Fix findings, unreviewed, so they join the same residual bucket
+            // rather than the cross-cycle pending one — otherwise a ride-along fixed here, same
+            // cycle, would sit in RunAggregate.PendingRideAlongFindings forever with nothing
+            // ever there to carry it out (Decisions Log #87).
+            bool cycleDispatchesFixNow = plans.Any(plan => plan.Fix.Count > 0);
             foreach (ReviewTrackPlan plan in plans.Where(plan => !plan.Continues))
             {
+                IReadOnlyList<ReviewResidual> residuals = cycleDispatchesFixNow
+                    ? [.. plan.Residuals, .. plan.RideAlong.Select(finding =>
+                        ReviewTrackPolicy.Residual(plan.Lens, cycle, finding, ReviewResidualDisposition.FixedUnreviewed))]
+                    : plan.Residuals;
                 session.Events.Append(runId, new ReviewTrackConcluded(
-                    runId, plan.Lens, cycle, plan.Settlement ?? ReviewSettlement.Unknown, plan.Residuals, now));
+                    runId, plan.Lens, cycle, plan.Settlement ?? ReviewSettlement.Unknown, residuals, now));
                 logger.LogInformation(
                     "Run {RunId}: the {Lens} track concluded at cycle {Cycle} — {Settlement}, {Residuals} residual(s)",
-                    runId, LensLabel(plan.Lens), cycle, plan.Settlement?.Value ?? "unknown", plan.Residuals.Count);
+                    runId, LensLabel(plan.Lens), cycle, plan.Settlement?.Value ?? "unknown", residuals.Count);
+            }
+
+            if (!cycleDispatchesFixNow)
+            {
+                foreach (ReviewTrackPlan plan in plans.Where(plan => plan.RideAlong.Count > 0))
+                {
+                    session.Events.Append(runId, new ReviewFindingRideAlong(runId, plan.Lens, cycle, plan.RideAlong.Count, now));
+                }
             }
         }
 
@@ -708,8 +809,13 @@ public sealed class ReviewEngine(
     private static async Task<IReadOnlyList<ReviewFinding>> ReadFindingsAsync(
         string runDirectory, int cycle, ReviewPassResult pass, CancellationToken cancellationToken)
     {
+        // Read for either verdict a pass can carry here (PlanCycleAsync only ever runs once the
+        // cycle's merged verdict is not Unknown, which makes every individual pass's own verdict
+        // either NeedsFixes or MergeReady too — never Unknown — so this is not itself a third
+        // branch, only the two real ones). A merge-ready pass can carry ride-alongs (Decisions
+        // Log #87) exactly as a needs-fixes one can carry findings.
         string path = LensFindingsFile(runDirectory, cycle, pass.Lens);
-        return pass.Verdict == ReviewVerdict.NeedsFixes && File.Exists(path)
+        return File.Exists(path)
             ? ReviewResultParser.ParseFindings(await File.ReadAllTextAsync(path, cancellationToken))
             : [];
     }
@@ -925,12 +1031,12 @@ public sealed class ReviewEngine(
         session.Events.Append(run.Id, new ReviewSettled(
             run.Id, run.ReviewCycle, settlement,
             residuals.FixedUnreviewed, residuals.Routed, residuals.RoutingFailed,
-            now));
+            now, residuals.RideAlong));
         await session.SaveChangesAsync(cancellationToken);
         logger.LogInformation(
-            "Run {RunId}: review settled {Settlement} at cycle {Cycle} — {Fixed} residual(s) fixed unreviewed, {Routed} routed, {Unrouted} left unrouted",
+            "Run {RunId}: review settled {Settlement} at cycle {Cycle} — {Fixed} residual(s) fixed unreviewed, {Routed} routed, {Unrouted} left unrouted, {RideAlong} ride-along(s) never claimed",
             run.Id, settlement.Value, run.ReviewCycle,
-            residuals.FixedUnreviewed, residuals.Routed, residuals.RoutingFailed);
+            residuals.FixedUnreviewed, residuals.Routed, residuals.RoutingFailed, residuals.RideAlong);
     }
 
     private async Task RecordFixResultAsync(
@@ -1036,7 +1142,9 @@ public sealed class ReviewEngine(
     {
         List<(ReviewLens Lens, ReviewFinding Finding)> here =
             [.. plans.SelectMany(plan => plan.Fix.Select(finding => (plan.Lens, Finding: finding)))];
-        if (here.Count == 0 && routed.Count == 0)
+        List<(ReviewLens Lens, ReviewFinding Finding)> rideAlong =
+            [.. plans.SelectMany(plan => plan.RideAlong.Select(finding => (plan.Lens, Finding: finding)))];
+        if (here.Count == 0 && routed.Count == 0 && rideAlong.Count == 0)
         {
             return;
         }
@@ -1053,6 +1161,11 @@ public sealed class ReviewEngine(
             "These defects are pre-existing. Cleaning them up while you are here is right, and keeping "
             + "each in its own commit is what keeps the branch's real work separable in the history.",
             [.. here.Where(entry => entry.Finding.Scope.IsRoutable)]);
+        AppendDispositionGroup(merged, ReviewFindingDispositions.RideAlong,
+            "Below the fix bar (Decisions Log #87) on their own, so no cycle was spent earning these a fix "
+            + "session of their own. Fix them here only if a fix session is already running for another "
+            + "reason and reads this document; otherwise leave them for the next one that does.",
+            rideAlong);
 
         if (routed.Count == 0)
         {

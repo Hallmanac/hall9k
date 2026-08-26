@@ -789,10 +789,13 @@ public static class AgentPromptBuilder
     /// the acceptance criteria are the measuring stick, and repo doctrine (AGENTS.md and the
     /// documents it points at) is the rest of it.
     /// <para>
-    /// This track grades nothing (Decisions Log #63). A criterion is met or it is not, so there
-    /// is no severity ordering to gate on and no structured-finding contract here — the
-    /// adversarial pass carries that. Conformance converges the plain way: clean ends it, and
-    /// still finding things at its cycle cap parks the run.
+    /// This track's own convergence stays ungated by severity (Decisions Log #63): a criterion
+    /// is met or it is not, so there is no severity ordering for the multi-cycle question —
+    /// clean ends the track, and still finding things at its cycle cap parks the run, exactly as
+    /// before. It now carries the same structured-finding contract the adversarial pass always
+    /// has, though (Decisions Log #87): grading every finding is what lets the platform tell a
+    /// genuine defect apart from the docs-phrasing and comment-anchoring nits that used to cost
+    /// this lens a full fix-and-re-review cycle each, whatever their actual weight.
     /// </para>
     /// </summary>
     private static string BuildConformanceReview(TaskDetails task, ProjectDetails project, string branch, int cycle)
@@ -831,7 +834,13 @@ public static class AgentPromptBuilder
         }
 
         AppendReviewMechanics(prompt, project, branch);
+        AppendFindingContract(prompt, project);
         AppendVerdictContract(prompt, cycle);
+        prompt.AppendLine();
+        prompt.AppendLine("Hunting hard and finding nothing is a real outcome: if the work genuinely meets its");
+        prompt.AppendLine("objective and acceptance criteria, say so plainly and return merge-ready. Inventing a");
+        prompt.AppendLine("finding to look thorough spends a fix session on nothing and teaches everyone to");
+        prompt.AppendLine("discount this pass.");
 
         return prompt.ToString();
     }
@@ -905,11 +914,11 @@ public static class AgentPromptBuilder
     }
 
     /// <summary>
-    /// The structured-finding contract the adversarial pass answers in (Decisions Log #63).
+    /// The structured-finding contract every review lens answers in (Decisions Log #63, #87).
     /// Two tags ride on every finding and the platform reads both: a severity, which decides
-    /// whether the finding forces another review cycle once the gate applies, and a scope tag,
-    /// which decides whether the fix belongs in this pull request or in a draft bug task of its
-    /// own.
+    /// whether the finding forces another review cycle once the adversarial gate applies AND
+    /// whether it earns a fix session of its own this cycle at all, and a scope tag, which
+    /// decides whether the fix belongs in this pull request or in a draft bug task of its own.
     /// <para>
     /// The severity anchors are spelled out rather than left to the reviewer's intuition,
     /// because a grade every reviewer invents for itself is not a gate. The scope anchor is
@@ -934,10 +943,18 @@ public static class AgentPromptBuilder
         prompt.AppendLine("- `high` — a correctness, security, or data-integrity defect reachable in realistic use.");
         prompt.AppendLine("- `medium` — a real defect with bounded or unlikely impact, or a doctrine violation");
         prompt.AppendLine("  that misleads a reader without corrupting anything.");
-        prompt.AppendLine("- `low` — polish.");
+        prompt.AppendLine("- `low` — polish: phrasing, comment or doc-string wording, a stale reference that");
+        prompt.AppendLine("  misleads nobody, a style nit.");
         prompt.AppendLine();
         prompt.AppendLine("Use one of those three words exactly. A grade in any other word is one the platform");
-        prompt.AppendLine("cannot read, and it counts as no grade at all rather than as the nearest word to it.");
+        prompt.AppendLine("cannot read, and it counts as no grade at all rather than as the nearest word to it —");
+        prompt.AppendLine("grade every finding you report; do not leave the tag off.");
+        prompt.AppendLine();
+        prompt.AppendLine("**The bar for needs-fixes:** if every finding you have is graded low, or a grade you");
+        prompt.AppendLine("could not confidently make, return merge-ready and attach the finding anyway — do not");
+        prompt.AppendLine("manufacture a needs-fixes verdict to make sure it gets read. The platform still records");
+        prompt.AppendLine("it and decides on its own whether it is worth a session; a needs-fixes verdict costs a");
+        prompt.AppendLine("whole fix-and-re-review cycle and is reserved for at least one medium or high finding.");
         prompt.AppendLine();
         prompt.AppendLine("**scope** — decide it against the diff, not against your judgment of whose problem it is:");
         prompt.AppendLine();
@@ -1021,14 +1038,15 @@ public static class AgentPromptBuilder
         prompt.AppendLine();
         prompt.AppendLine("    VERDICT: merge-ready");
         prompt.AppendLine();
-        prompt.AppendLine("when you confirmed no defects, or");
+        prompt.AppendLine("when you confirmed no defects, or when every finding you have is graded low (attach");
+        prompt.AppendLine("it anyway — see \"the bar for needs-fixes\" above), or");
         prompt.AppendLine();
         prompt.AppendLine("    VERDICT: needs-fixes");
         prompt.AppendLine();
-        prompt.AppendLine("when at least one verified finding stands. A needs-fixes verdict must name at least");
-        prompt.AppendLine("one finding: a stated location (a file, or a file and line) and a description of the");
-        prompt.AppendLine("defect there. A needs-fixes verdict with nothing named this way is read the same as");
-        prompt.AppendLine("no verdict at all. You may not end this session without a");
+        prompt.AppendLine("when at least one verified finding graded medium or high stands. A needs-fixes");
+        prompt.AppendLine("verdict must name at least one finding: a stated location (a file, or a file and");
+        prompt.AppendLine("line) and a description of the defect there. A needs-fixes verdict with nothing");
+        prompt.AppendLine("named this way is read the same as no verdict at all. You may not end this session without a");
         prompt.AppendLine("VERDICT line. If checks or commands you started are still running, WAIT for them");
         prompt.AppendLine("to finish, then conclude — a promise to deliver the verdict later is not a");
         prompt.AppendLine("verdict, and nobody returns to keep it. The platform parses this line; a missing");
@@ -1049,8 +1067,8 @@ public static class AgentPromptBuilder
     /// <para>
     /// The resumed leg's output <i>replaces</i> what the platform read from the first one
     /// (<c>ReviewEngine.RecordReviewPassAsync</c> re-parses it and overwrites the lens's
-    /// findings file), so a lens that answers in the structured contract is told the contract
-    /// again here. Asking an adversarial pass to restate its findings as prose would strip the
+    /// findings file), so the structured contract every lens now answers in (Decisions Log #87)
+    /// is told again here. Asking a pass to restate its findings as plain prose would strip the
     /// severity and scope tags off every one of them, and the loop would then read a graded,
     /// placed set of findings as one ungraded, unplaced stand-in.
     /// </para>
@@ -1066,9 +1084,8 @@ public static class AgentPromptBuilder
     /// reconsideration rather than restatement fatigue.
     /// </para>
     /// </summary>
-    public static string BuildReviewVerdictReprompt(ProjectDetails project, ReviewLens lens, int cycle)
+    public static string BuildReviewVerdictReprompt(ProjectDetails project, int cycle)
     {
-        bool structured = lens == ReviewLens.Adversarial;
         StringBuilder prompt = new();
         prompt.AppendLine("Your review session ended without the required VERDICT line, or with a");
         prompt.AppendLine("needs-fixes verdict naming nothing the platform could read as a finding — either");
@@ -1078,33 +1095,19 @@ public static class AgentPromptBuilder
         prompt.AppendLine();
         prompt.AppendLine("- If any checks or commands are still unfinished, wait for them and fold the");
         prompt.AppendLine("  results into your judgment.");
-        if (structured)
-        {
-            prompt.AppendLine("- If you still believe a finding stands, restate it in full and in the header");
-            prompt.AppendLine("  contract below, as plainly as you can — the platform reads this message in place");
-            prompt.AppendLine("  of your earlier one, so a finding restated without its FINDING header arrives");
-            prompt.AppendLine("  ungraded and unplaced, and its severity and scope are lost. Only return");
-            prompt.AppendLine("  merge-ready if, on reconsideration, you no longer believe any defect stands —");
-            prompt.AppendLine("  not merely because restating it once more feels repetitive.");
-        }
-        else
-        {
-            prompt.AppendLine("- If you still believe a finding stands, restate it as plainly as you can");
-            prompt.AppendLine("  (file:line, defect, failure scenario). Only return merge-ready if, on");
-            prompt.AppendLine("  reconsideration, you no longer believe any defect stands — not merely because");
-            prompt.AppendLine("  restating it once more feels repetitive.");
-        }
-
+        prompt.AppendLine("- If you still believe a finding stands, restate it in full and in the header");
+        prompt.AppendLine("  contract below, as plainly as you can — the platform reads this message in place");
+        prompt.AppendLine("  of your earlier one, so a finding restated without its FINDING header arrives");
+        prompt.AppendLine("  ungraded and unplaced, and its severity and scope are lost. Only return");
+        prompt.AppendLine("  merge-ready if, on reconsideration, you no longer believe any defect stands —");
+        prompt.AppendLine("  not merely because restating it once more feels repetitive.");
         prompt.AppendLine("- A needs-fixes verdict must name at least one finding: a stated location (a file,");
-        prompt.AppendLine("  or a file and line) and a description of the defect there. A needs-fixes verdict");
-        prompt.AppendLine("  with nothing named this way is read the same as no verdict at all.");
+        prompt.AppendLine("  or a file and line) and a description of the defect there, graded medium or high —");
+        prompt.AppendLine("  a low-only or ungraded finding still belongs in your answer, attached under a");
+        prompt.AppendLine("  merge-ready verdict rather than a needs-fixes one.");
         prompt.AppendLine("- End your final message with exactly one verdict line, nothing after it:");
         prompt.AppendLine("  `VERDICT: merge-ready` or `VERDICT: needs-fixes`.");
-        if (structured)
-        {
-            AppendFindingContract(prompt, project);
-        }
-
+        AppendFindingContract(prompt, project);
         prompt.AppendLine();
         prompt.AppendLine("This is the only re-prompt this review cycle receives; ending without a verdict");
         prompt.AppendLine($"again hands the run to a human. This is still review cycle {cycle} for this run.");

@@ -25,4 +25,10 @@ public static class ReviewFindingDispositions
 
     /// <summary>The group holding the findings routed away to draft bug tasks.</summary>
     public const string DoNotFixHere = "Do NOT fix here — routed to draft bug tasks";
+
+    /// <summary>
+    /// The group holding ride-alongs (Decisions Log #87): in-scope findings graded below the fix
+    /// bar, not dispatched to a fix session of their own this cycle.
+    /// </summary>
+    public const string RideAlong = "Ride-along — not dispatched this cycle";
 }
