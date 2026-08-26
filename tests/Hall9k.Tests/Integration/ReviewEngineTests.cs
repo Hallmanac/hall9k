@@ -565,6 +565,53 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
     }
 
     /// <summary>
+    /// The other direction of Decisions Log #87's reclassification: a lens that answers
+    /// <c>VERDICT: merge-ready</c> but still attaches a Fix-dispositioned finding (an out-of-scope
+    /// High, here — the shape both independent reviewers actually hit) is not taken at its word.
+    /// Before this reclassification checked Disposition in both directions, a pass like this one
+    /// slipped past untouched: the fix it owed was never dispatched, and the run settled clean
+    /// over a defect nobody read again.
+    /// </summary>
+    [Fact]
+    public async Task A_merge_ready_verdict_carrying_a_fix_disposed_finding_is_not_taken_at_its_word()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        using DocumentStore store = NewStore();
+        (Guid taskId, Guid runId, _) = await SeedVerifiedRunAsync(store, cts.Token);
+
+        ScriptedExecutor executor = new(
+            "Criteria met.\n\nVERDICT: merge-ready",
+            "FINDING: severity=high; scope=out-of-scope; at=src/Legacy.cs:40\n"
+            + "Defect: a pre-existing null dereference.\n\nVERDICT: merge-ready",
+            "Guarded the null case.\n\nRESOLUTION: fixed",
+            "Clean now.\n\nVERDICT: merge-ready");
+        bool mergeReady = await NewEngine(store, executor).ReviewAsync(runId, taskId, cts.Token);
+
+        mergeReady.Should().BeTrue();
+        executor.Spawns.Should().HaveCount(
+            4, "the lens's own merge-ready line does not excuse the fix its attached finding owes");
+
+        await using IQuerySession query = store.QuerySession();
+        List<object> events = [.. (await query.Events.FetchStreamAsync(runId, token: cts.Token)).Select(e => e.Data)];
+        events.OfType<ReviewFixDispatched>().Should().ContainSingle(
+            "the out-of-scope high is Fix-dispositioned whatever the reviewer's own VERDICT line said");
+        ReviewPassCompleted adversarialPass = events.OfType<ReviewPassCompleted>()
+            .Single(pass => pass.Lens == ReviewLens.Adversarial && pass.Cycle == 1);
+        adversarialPass.Verdict.Should().Be(
+            ReviewVerdict.NeedsFixes, "the attached finding overrides the lens's literal merge-ready line");
+        adversarialPass.Findings.Should().ContainSingle()
+            .Which.Disposition.Should().Be(ReviewFindingDisposition.Fix);
+        executor.Spawns[2].Prompt.Should().Contain(
+            "Legacy.cs:40", "the fix session reads the very finding the merge-ready line tried to skip past");
+
+        RunDetails run = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
+        run.LastReviewVerdict.Should().Be(ReviewVerdict.MergeReady);
+        run.ReviewSettlement.Should().Be(
+            ReviewSettlement.Clean, "a fresh adversarial pass read the fix and found nothing left");
+        run.ReviewResidualsFixed.Should().Be(0, "the fix was re-reviewed, not shipped unread");
+    }
+
+    /// <summary>
     /// An out-of-scope non-High is not this pull request's work (Decisions Log #63): the daemon
     /// turns it into a draft bug task carrying the provenance the observation-gates doctrine
     /// asks for, and the merged findings tell the fix session to leave it alone.

@@ -19,8 +19,14 @@ namespace Hall9k.Daemon.Review;
 /// <param name="Residuals">
 /// What the track leaves unconfirmed if it ended here, and only the fixed-unreviewed half of
 /// it: a routed finding's residual is recorded by the routing event, in whatever cycle it was
-/// routed, and a ride-along's residual (if it is never claimed) is recorded once the whole
-/// run's review concludes. Empty while the track continues, because a fix is re-read next cycle.
+/// routed, and a ride-along's residual is recorded by <c>ReviewEngine.RecordReviewPassAsync</c>
+/// alongside this plan — as <see cref="ReviewResidualDisposition.RideAlong"/> when nothing
+/// anywhere in the cycle is dispatching a fix session (the empty terminal case, Decisions Log
+/// #63: every active track concludes there regardless of what <see cref="Continues"/> says here,
+/// because there is no later cycle left for one to claim it in), or folded in as
+/// <see cref="ReviewResidualDisposition.FixedUnreviewed"/> when something else is dispatching one
+/// (Decisions Log #87). This field itself is empty while the track continues on its own terms,
+/// because a fix is re-read next cycle.
 /// </param>
 public sealed record ReviewTrackPlan(
     ReviewLens Lens,
