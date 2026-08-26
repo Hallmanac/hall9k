@@ -216,12 +216,12 @@ public static class DaemonLifecycle
         {
             // Stopped must mean stopped: stopping through the service manager keeps its
             // own crash-restart policy from resurrecting a daemon the human just killed.
-            AnsiConsole.MarkupLineInterpolated($"[dim]Autostart owns the job — stopping through {autostart.MechanismDescription}.[/]");
+            AnsiConsole.MarkupLineInterpolated($"[dim]Autostart owns the job — stopping through {autostart.StopMechanismDescription}.[/]");
             stoppedThroughAutostart = await autostart.StopAsync(cancellationToken);
             if (!stoppedThroughAutostart)
             {
                 await Console.Error.WriteLineAsync(
-                    $"{autostart.MechanismDescription} could not stop the daemon — signaling it directly.");
+                    $"{autostart.StopMechanismDescription} could not stop the daemon — signaling it directly.");
             }
         }
 

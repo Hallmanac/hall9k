@@ -19,6 +19,18 @@ public interface IDaemonAutostart
     /// </summary>
     string MechanismDescription { get; }
 
+    /// <summary>
+    /// What <see cref="StopAsync"/> itself actually does, for the message printed when
+    /// stopping routes through it — distinct from <see cref="MechanismDescription"/>
+    /// because that name is the *registration* mechanism, and stopping does not always
+    /// go through it: launchd's stop really does invoke launchctl against the LaunchAgent,
+    /// but Task Scheduler has no per-job stop verb, so Windows's <c>StopAsync</c> writes
+    /// the same graceful stop-request file the non-autostart path uses, never touching
+    /// schtasks. Naming that here (rather than reusing <see cref="MechanismDescription"/>)
+    /// keeps the stop message honest about which mechanism actually ran.
+    /// </summary>
+    string StopMechanismDescription { get; }
+
     /// <summary>The registration exists (survives reboots), whether or not the job is loaded right now.</summary>
     bool IsEnabled { get; }
 

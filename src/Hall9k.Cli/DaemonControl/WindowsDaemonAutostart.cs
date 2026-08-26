@@ -67,6 +67,13 @@ public sealed class WindowsDaemonAutostart : IDaemonAutostart
 
     public string MechanismDescription => "Task Scheduler logon task";
 
+    // Task Scheduler has no per-job stop verb, so StopAsync below never touches schtasks —
+    // it writes the same graceful stop-request file DaemonLifecycle's own direct-signal
+    // fallback does (see the type-level doc). Naming that honestly here, rather than
+    // reusing MechanismDescription, is what keeps DaemonLifecycle.StopAsync's message from
+    // claiming a Task Scheduler stop that never happened (cycle-2 pre-PR review finding).
+    public string StopMechanismDescription => "a graceful stop request";
+
     public bool IsEnabled => QueryExists();
 
     public async Task<bool> IsLoadedAsync(CancellationToken cancellationToken)
