@@ -72,10 +72,20 @@ public static class ReviewTrackPolicy
             // A merge-ready pass never forces another cycle, whatever it attached (Decisions Log
             // #87): route and ride-along findings still split out of it exactly as they would
             // from a needs-fixes one, but nothing here is ever a Fix — RecordReviewPassAsync
-            // only ever hands this method a merge-ready verdict once it has already confirmed no
-            // finding meets the fix bar. Settlement reflects what was actually attached: a pass
-            // that carried nothing really did find nothing (Clean), one that carried a route or
-            // a ride-along did not (Settled), the same distinction a needs-fixes cycle draws.
+            // reclassifies verdict against Disposition, not severity, before this method ever
+            // sees it, in both directions: a pass is only ever recorded merge-ready when EVERY
+            // stated finding is RideAlong-disposed (a needs-fixes pass that meets that bar is
+            // demoted; a merge-ready pass that does not — because it still carries a Fix, or even
+            // just a Route, a mis-graded or ungraded one included — is promoted to needs-fixes),
+            // so by the time a verdict reaches here as merge-ready, `mergeReadyRoute` below is
+            // always empty in practice and no attached finding is ever Fix. A Route finding is
+            // deliberately NOT treated like a Fix finding for that reclassification, only kept
+            // out of a merge-ready verdict the same way Fix is: a route-only needs-fixes pass
+            // stays needs-fixes so this method's own pre-gate rule below can still keep the track
+            // alive for a tip the OTHER track's fix session may yet rewrite. Settlement reflects
+            // what was actually attached: a pass that carried nothing really did find nothing
+            // (Clean), one that carried a route or a ride-along did not (Settled), the same
+            // distinction a needs-fixes cycle draws.
             List<ReviewFinding> mergeReadyRoute = [.. findings.Where(finding => finding.Disposition == ReviewFindingDisposition.Route)];
             List<ReviewFinding> mergeReadyRideAlong = [.. findings.Where(finding => finding.Disposition == ReviewFindingDisposition.RideAlong)];
             ReviewSettlement mergeReadySettlement = mergeReadyRoute.Count > 0 || mergeReadyRideAlong.Count > 0

@@ -105,15 +105,6 @@ public sealed class RunAggregate
     /// <summary>Every finding the tracks ended on without a reviewer confirming it resolved (log #63).</summary>
     public IReadOnlyList<ReviewResidual> ReviewResiduals => _reviewResiduals;
 
-    private readonly List<ReviewPendingRideAlong> _pendingRideAlongFindings = [];
-    /// <summary>
-    /// Ride-along findings (Decisions Log #87) not yet folded into a fix session the run has
-    /// dispatched, one entry per pass that carried any — the working list
-    /// <c>ReviewEngine.DispatchFixSessionAsync</c> reads to fold them into the next fix session it
-    /// actually dispatches, and that <c>SettleAsync</c> reads to know what never got claimed.
-    /// </summary>
-    public IReadOnlyList<ReviewPendingRideAlong> PendingRideAlongFindings => _pendingRideAlongFindings;
-
     /// <summary>
     /// How the review ended, once it has (log #63). Unknown while the loop is still running, and
     /// unknown forever for a run whose review was already in flight before tracks existed —
@@ -348,24 +339,6 @@ public sealed class RunAggregate
                 : ReviewResidualDisposition.Routed,
             @event.Location ?? string.Empty));
 
-    /// <summary>
-    /// One pass's ride-alongs join the run's pending list (Decisions Log #87), keyed on lens and
-    /// cycle rather than location: unlike routing, folding them into a later fix session reads a
-    /// whole cycle's lens findings file rather than one finding's own text (log #6 — nothing but
-    /// the count travels on this event), so "still pending" is tracked at that same granularity.
-    /// </summary>
-    public void Apply(ReviewFindingRideAlong @event) =>
-        _pendingRideAlongFindings.Add(new ReviewPendingRideAlong(@event.Lens ?? ReviewLens.Unknown, @event.Cycle, @event.Count));
-
-    /// <summary>
-    /// A cycle's ride-alongs were folded into a fix session dispatched for another reason
-    /// (Decisions Log #87) — removed from the pending list so the next fix session never hands
-    /// them out a second time.
-    /// </summary>
-    public void Apply(ReviewFindingRideAlongCarried @event) =>
-        _pendingRideAlongFindings.RemoveAll(pending =>
-            pending.Lens == (@event.Lens ?? ReviewLens.Unknown) && pending.Cycle == @event.OriginalCycle);
-
     public void Apply(ReviewSettled @event)
     {
         // The terminal verdict is MergeReady however the loop got here; the settlement is what
@@ -553,7 +526,6 @@ public sealed class RunAggregate
     public ReviewSettlement DeriveSettlement() =>
         _humanEndedTheLoop
         || _reviewResiduals.Count > 0
-        || _pendingRideAlongFindings.Count > 0
         || _concludedReviewTracks.Any(track => track.Settlement == ReviewSettlement.Settled)
             ? ReviewSettlement.Settled
             : ReviewSettlement.Clean;
@@ -581,10 +553,13 @@ public sealed class RunAggregate
     /// one on no evidence at all — the same reading the placed dedup gives an unplaced finding.
     /// </para>
     /// <para>
-    /// The three counts are deliberately not deduplicated against each other. Only the routing
+    /// The four counts are deliberately not deduplicated against each other. Only the routing
     /// pair is, because a failed routing and its retry are one export attempted twice. A defect
     /// one track fixed unreviewed and another exported really did meet both ends, and a human
-    /// deciding how far to trust this pull request should be told about both.
+    /// deciding how far to trust this pull request should be told about both — the same reading
+    /// applies to a ride-along (Decisions Log #87): it collapses per distinct location within
+    /// itself, exactly as <see cref="ReviewResidualDisposition.RideAlong"/>'s own doc says, but
+    /// never against the other three.
     /// </para>
     /// </summary>
     public ReviewResidualTally DeriveResidualTally()
@@ -598,7 +573,7 @@ public sealed class RunAggregate
             PerDefect(ReviewResidualDisposition.FixedUnreviewed).Count,
             routed.Count,
             failed.Count,
-            _pendingRideAlongFindings.Sum(pending => pending.Count));
+            PerDefect(ReviewResidualDisposition.RideAlong).Count);
     }
 
     /// <summary>This disposition's residuals with every repeat of a place already seen dropped.</summary>

@@ -349,11 +349,19 @@ The checkpoints, in the order the window sees them:
    at all. A needs-fixes verdict earns a fix-and-re-review cycle only when a finding is graded
    medium or high (Decisions Log #87): both lenses now grade every finding, and a pass whose
    findings are all low or ungraded is recorded merge-ready instead, with its findings carried
-   along as **ride-alongs** rather than dropped or spent on a cycle of their own — folded into
-   the next fix session the track dispatches for a real reason, or left recorded as a residual
-   if none ever does. `h9k task show` prints the ride-along count alongside the fixed/routed
-   ones; nothing about the cycle cap or the park-for-human behavior changes for anything graded
-   medium or higher.
+   along as **ride-alongs** rather than dropped or spent on a cycle of their own. A verdict is
+   only ever recorded merge-ready when *every* stated finding is a ride-along — not a lens's
+   literal `VERDICT:` line, and not a Route finding either: a pass that says merge-ready but still
+   attaches a finding graded medium or high is not taken at its word, and neither is a needs-fixes
+   pass whose only finding is routing to a draft bug task, which stays needs-fixes so its track
+   can keep watching a tip the *other* track's fix session may still rewrite. A ride-along is
+   folded into a fix session already dispatching *this same cycle* for another reason (shipping
+   unreviewed alongside whatever earned that session its cycle); when nothing in the cycle earns
+   one, every active track concludes right there regardless of what its own convergence rule
+   would otherwise have said (the empty terminal case), and each one's ride-along is a residual
+   the moment it does — there is no later cycle left for a fix session to claim it in. `h9k task
+   show` prints the ride-along count alongside the fixed/routed ones; nothing about the cycle cap
+   or the park-for-human behavior changes for anything graded medium or higher.
 4. **The daemon opens the pull request.** Agents never do, and there is deliberately no create-pr
    skill. The task reaches **Done** here, when the pull request opens, so Done means "the work is
    on a PR and waiting on review" rather than "merged".

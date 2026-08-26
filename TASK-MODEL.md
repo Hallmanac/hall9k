@@ -900,12 +900,23 @@ same transaction as that last pass event. **MergeReady requires every lens clean
   artifacts) rather than looping on judgment.
 
 **Each lens is a track with its own cycle count and its own convergence rule** (log #63).
-Since Decisions Log #87 both lenses grade every finding, and a needs-fixes verdict earns a
-fix session only when something in it clears the **fix bar** (`ReviewSeverity.MeetsFixBar`:
-`high` or `medium`) — `ReviewEngine.RecordReviewPassAsync` rewrites a needs-fixes verdict
-whose parsed findings clear none of it to merge-ready before either track's own convergence
-rule ever runs, so a below-the-bar finding **rides along** (`ReviewFindingDisposition.RideAlong`)
-rather than forcing a cycle. Conformance ends the moment nothing it found meets the fix bar;
+Since Decisions Log #87 both lenses grade every finding, and a pass earns a fix session only
+when one of its findings is **Fix-dispositioned** (`ReviewFinding.Disposition`, not severity
+alone — an out-of-scope finding nobody graded is `Fix` too, the conservative reading that
+never routes an ungraded defect away on no evidence it is safe to). `ReviewEngine.
+RecordReviewPassAsync` reclassifies the recorded verdict against `Disposition` in **both**
+directions before either track's own convergence rule ever runs: a verdict is only ever
+recorded merge-ready when **every** stated finding is `RideAlong`-dispositioned — a needs-fixes
+verdict that clears that bar is demoted, and a verdict the lens itself already answered
+merge-ready is promoted back to needs-fixes the moment it carries anything else, so a
+mis-graded or ungraded `Fix` finding attached to a literal `VERDICT: merge-ready` line cannot
+skip the fix it owes. A `Route` finding is deliberately not treated like a `Fix` finding here,
+only kept from earning a merge-ready verdict the same way: a route-only pass stays needs-fixes
+so `ReviewTrackPolicy.Decide`'s own pre-gate rule (below) can still keep that track alive for a
+tip the *other* track's fix session may yet rewrite — demoting it would retire the track before
+it ever reads that rewrite. A below-the-bar finding **rides along**
+(`ReviewFindingDisposition.RideAlong`) rather than forcing a cycle.
+Conformance ends the moment nothing it found meets the fix bar;
 still finding something that does at `MaxComplianceReviewCycles` (3) parks the run, because
 nothing automated is left to try. Adversarial runs under a **severity gate**: through
 `AdversarialSeverityGateFromCycle - 1` any finding of any grade forces the next cycle, and
@@ -935,19 +946,25 @@ into one inert draft per cycle. Two reports are the same defect when they name t
 `./Legacy.cs:40` match; a different stated line in the same file deliberately does not, because
 collapsing by file would swallow a second, genuinely different defect.
 
-**A ride-along (Decisions Log #87) is never lost, only deferred.** It lands in the cycle's own
-merged findings artifact under its own disposition group, and `ReviewFindingRideAlong` records
-it on the stream by lens and cycle — never by finding text, which stays artifact-only (log #6).
-`RunAggregate.PendingRideAlongFindings` is the run's own working list of what a later fix
-session still owes a look at: `ReviewEngine.DispatchFixSessionAsync` folds an earlier cycle's
-still-pending ride-alongs into the next fix session the run dispatches *for another reason* on
-that track (reading that cycle's own lens findings file whole and appending it under a "carried
-forward" heading), and `ReviewFindingRideAlongCarried` removes the entry once claimed. A cycle
-that dispatches its own fix session for a genuine medium or high sweeps up that same cycle's
-ride-alongs for free, no tracking needed. Whatever is still pending when the run's whole review
-concludes becomes a residual, `ReviewResidualDisposition.RideAlong`, on `ReviewSettled` and
-`h9k task show` alongside the existing fixed/routed counts — recorded, never fixed, no cycle
-ever spent earning it one.
+**A ride-along (Decisions Log #87) is settled within its own cycle, never carried into a later
+one.** It lands in the cycle's own merged findings artifact under its own disposition group.
+`ReviewEngine.RecordReviewPassAsync` decides its fate the moment the cycle concludes, from
+whether *any* track's plan in that same cycle carries a `Fix` finding: if one does, a fix
+session is already dispatching for that real reason, and it reads the whole merged findings
+document — ride-alongs included — so every *concluding* track's ride-alongs are folded in and
+recorded as `ReviewResidualDisposition.FixedUnreviewed`, exactly like a genuine fix shipped
+without a second read (a track still saying `Continues: true` gets a fresh look at the fix
+commits next cycle instead, so its own ride-alongs wait). If nothing in the cycle carries a
+`Fix` finding, no fix session dispatches at all — the empty terminal case (log #63) — and the
+run settles right there whatever any individual track's own convergence rule said (a route-only
+pass kept alive pre-gate, say, in case the other track's fix session rewrote the branch — which
+now nothing will): so every active track concludes THIS cycle regardless of its own `Continues`,
+and a ride-along here has no later cycle to wait for either way — it is a residual,
+`ReviewResidualDisposition.RideAlong`, the instant its track concludes. Either way
+`RunAggregate.DeriveResidualTally` collapses ride-along residuals
+per distinct location the same way it already does for `Routed` and `FixedUnreviewed`, and
+`ReviewSettled` and `h9k task show` report the count alongside the existing fixed/routed ones —
+recorded, never fixed, no cycle ever spent earning it one.
 
 **What stays per cycle rather than per track**: one fix session over every live track's
 findings, and one verdict re-prompt however many passes ended without a `VERDICT:` line or

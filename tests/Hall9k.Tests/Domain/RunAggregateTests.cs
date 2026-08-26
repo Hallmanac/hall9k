@@ -309,38 +309,45 @@ public sealed class RunAggregateTests
     }
 
     /// <summary>
-    /// A ride-along (Decisions Log #87) recorded in one cycle and never picked up by a later fix
-    /// session is a residual once the run's review concludes — nothing fixed it, and the tally
-    /// says so rather than staying silent about it.
+    /// A ride-along (Decisions Log #87) is a residual the moment its track concludes with
+    /// nothing else in the cycle earning a fix session — there is no later cycle left for one to
+    /// claim it in (RecordReviewPassAsync's own reasoning), so nothing about it is left pending.
     /// </summary>
     [Fact]
-    public void A_ride_along_never_carried_into_a_fix_session_is_a_residual_once_settled()
+    public void A_ride_along_is_a_residual_the_moment_its_track_concludes_with_nothing_to_fix()
     {
         RunAggregate run = Dispatched(out Guid id);
-        run.Apply(new ReviewFindingRideAlong(id, ReviewLens.Conformance, 1, Count: 2, Now));
+        run.Apply(new ReviewTrackConcluded(
+            id, ReviewLens.Conformance, 1, ReviewSettlement.Settled,
+            [RideAlong(ReviewLens.Conformance, "Docs.md:3"), RideAlong(ReviewLens.Conformance, "Docs.md:9")],
+            Now));
 
-        run.PendingRideAlongFindings.Should().ContainSingle()
-            .Which.Should().Be(new ReviewPendingRideAlong(ReviewLens.Conformance, 1, 2));
         run.DeriveSettlement().Should().Be(
-            ReviewSettlement.Settled, "a ride-along still pending is not a clean tip either");
-        run.DeriveResidualTally().RideAlong.Should().Be(2, "both findings from that cycle are still unclaimed");
+            ReviewSettlement.Settled, "a ride-along residual is not a clean tip either");
+        run.DeriveResidualTally().RideAlong.Should().Be(2, "both findings from that cycle are unclaimed");
     }
 
     /// <summary>
-    /// A fix session the run dispatches for another reason folds an earlier cycle's ride-alongs
-    /// in (Decisions Log #87) — the "next naturally-occurring fix run on that track" — and once
-    /// it does, that cycle's entry is gone from the pending list and never counted as a residual.
+    /// A place two ride-alongs land on — both tracks reporting the same pre-existing line, say —
+    /// is one unclaimed defect, not two, the same per-defect collapsing <see cref="ReviewResidualDisposition.Routed"/>
+    /// and <see cref="ReviewResidualDisposition.FixedUnreviewed"/> already get.
     /// </summary>
     [Fact]
-    public void A_ride_along_carried_into_a_later_fix_session_is_no_longer_pending_or_a_residual()
+    public void A_place_two_ride_alongs_land_on_is_one_unclaimed_defect()
     {
         RunAggregate run = Dispatched(out Guid id);
-        run.Apply(new ReviewFindingRideAlong(id, ReviewLens.Conformance, 1, Count: 1, Now));
-        run.Apply(new ReviewFindingRideAlongCarried(id, ReviewLens.Conformance, OriginalCycle: 1, Cycle: 3, Now));
+        run.Apply(new ReviewTrackConcluded(
+            id, ReviewLens.Conformance, 1, ReviewSettlement.Settled,
+            [RideAlong(ReviewLens.Conformance, "Docs.md:3")], Now));
+        run.Apply(new ReviewTrackConcluded(
+            id, ReviewLens.Adversarial, 1, ReviewSettlement.Settled,
+            [RideAlong(ReviewLens.Adversarial, "./Docs.md:3")], Now));
 
-        run.PendingRideAlongFindings.Should().BeEmpty();
-        run.DeriveResidualTally().RideAlong.Should().Be(0, "the fix session claimed it, so it is not a residual");
+        run.DeriveResidualTally().RideAlong.Should().Be(1, "both tracks reported the same place");
     }
+
+    private static ReviewResidual RideAlong(ReviewLens lens, string location) =>
+        new(lens, 1, ReviewSeverity.Low, ReviewFindingScope.InScope, ReviewResidualDisposition.RideAlong, location);
 
     /// <summary>
     /// A place can be fixed unreviewed twice over by two roads: the tracks conclude separately,
