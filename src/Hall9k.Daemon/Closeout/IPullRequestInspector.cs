@@ -127,8 +127,10 @@ public sealed record ErroredReview(string Reviewer, string Url);
 /// is requested but not yet submitted, or neither. It answers a narrower question than
 /// Reviewers/ErroredReview above — those exist for the countersign and the errored-review
 /// re-request, this exists only so the Delivered phase line can say which of the three it is
-/// watching for. CopilotReviewThreadCount is every thread Copilot's review opened, resolved or
-/// not, which is what "landed" names alongside itself.
+/// watching for. CopilotReviewThreadCount is every thread the currently-landed review itself
+/// opened, resolved or not — not every thread Copilot has ever opened across the pull request's
+/// history, since a superseded review's threads are not what "landed" now names alongside itself
+/// (Decisions Log #88).
 /// </para>
 /// </summary>
 public sealed record PullRequestSnapshot(

@@ -27,9 +27,11 @@ public sealed class GitHubPullRequestInspectorTests
             + $"'latestReviews':{{'nodes':[{reviews}]}}"
             + "}}}}").Replace('\'', '"');
 
-    private static string Thread(bool resolved, string author, string id = "thread-1") =>
+    private static string Thread(bool resolved, string author, string id = "thread-1", string? reviewId = null) =>
         $"{{'id':'{id}',"
-            + $"'isResolved':{(resolved ? "true" : "false")},'comments':{{'nodes':[{{'author':{author}}}]}}}}";
+            + $"'isResolved':{(resolved ? "true" : "false")},'comments':{{'nodes':[{{'author':{author}"
+            + (reviewId is null ? "" : $",'pullRequestReview':{{'id':'{reviewId}'}}")
+            + "}]}}";
 
     private static string ThreadWithNullId(bool resolved, string author) =>
         "{'id':null,"
@@ -38,8 +40,8 @@ public sealed class GitHubPullRequestInspectorTests
     private static string Actor(string login, string typeName) =>
         $"{{'login':'{login}','__typename':'{typeName}'}}";
 
-    private static string Review(string author, string oid, string body = "") =>
-        $"{{'author':{author},'body':'{body}','url':'https://x/y/pull/7#r1','commit':{{'oid':'{oid}'}}}}";
+    private static string Review(string author, string oid, string body = "", string id = "review-1") =>
+        $"{{'id':'{id}','author':{author},'body':'{body}','url':'https://x/y/pull/7#r1','commit':{{'oid':'{oid}'}}}}";
 
     private static string RequestedReviewer(string login, string typeName) =>
         $"{{'requestedReviewer':{{'__typename':'{typeName}','login':'{login}'}}}}";
@@ -405,24 +407,47 @@ public sealed class GitHubPullRequestInspectorTests
     }
 
     /// <summary>
-    /// "Landed with its comment-thread count" names every thread the review opened, not only
-    /// the ones still unresolved — distinct from <see cref="ReviewObservation.UnresolvedThreads"/>,
-    /// which only ever renders once a finding has moved the run off AwaitingReview.
+    /// "Landed with its comment-thread count" names every thread the currently-landed review
+    /// itself opened, not only the ones still unresolved — distinct from
+    /// <see cref="ReviewObservation.UnresolvedThreads"/>, which only ever renders once a finding
+    /// has moved the run off AwaitingReview.
     /// </summary>
     [Fact]
-    public void Copilot_thread_count_includes_resolved_threads_it_started()
+    public void Copilot_thread_count_includes_resolved_threads_the_landed_review_started()
     {
         string json = Payload(
             Actor("hallmanac", "User"), "cafe1",
             string.Join(",",
-                Thread(resolved: true, Actor("copilot-pull-request-reviewer", "Bot"), "thread-1"),
-                Thread(resolved: false, Actor("copilot-pull-request-reviewer", "Bot"), "thread-2"),
+                Thread(resolved: true, Actor("copilot-pull-request-reviewer", "Bot"), "thread-1", reviewId: "review-landed"),
+                Thread(resolved: false, Actor("copilot-pull-request-reviewer", "Bot"), "thread-2", reviewId: "review-landed"),
                 Thread(resolved: false, Actor("teammate", "User"), "thread-3")),
-            "");
+            Review(Actor("copilot-pull-request-reviewer", "Bot"), "cafe1", id: "review-landed"));
 
         GitHubPullRequestInspector.ReviewObservation observation = GitHubPullRequestInspector.ParseReviews(json);
 
-        observation.CopilotReviewThreadCount.Should().Be(2, "both Copilot threads count, resolved or not");
+        observation.CopilotReviewThreadCount.Should().Be(2, "both threads the landed review opened count, resolved or not");
         observation.UnresolvedThreads.Should().Be(2, "one of Copilot's and the teammate's are still open");
+    }
+
+    /// <summary>
+    /// A countersigned review that lands clean must not inherit the thread count of a review it
+    /// superseded (Decisions Log #88): Copilot reviews commit A leaving threads, a fix resolves
+    /// them and pushes commit B, the countersign re-requests Copilot, and it re-reviews B with no
+    /// comments at all. Without scoping by review id, the next sweep still reads "landed · 3
+    /// comment threads" for a review that opened none.
+    /// </summary>
+    [Fact]
+    public void Copilot_thread_count_excludes_threads_a_superseded_review_left()
+    {
+        string json = Payload(
+            Actor("hallmanac", "User"), "cafe2",
+            Thread(resolved: true, Actor("copilot-pull-request-reviewer", "Bot"), "thread-old", reviewId: "review-old"),
+            Review(Actor("copilot-pull-request-reviewer", "Bot"), "cafe2", id: "review-new"));
+
+        GitHubPullRequestInspector.ReviewObservation observation = GitHubPullRequestInspector.ParseReviews(json);
+
+        observation.CopilotReviewState.Should().Be(ExternalReviewState.Landed);
+        observation.CopilotReviewThreadCount.Should().Be(
+            0, "the landed review is a fresh, clean approval — the earlier review's resolved threads are not its own");
     }
 }
