@@ -387,23 +387,83 @@ public sealed class AgentPromptBuilderTests : IDisposable
     }
 
     /// <summary>
-    /// The v0 Decisions Log is named unconditionally, whether or not this particular task has
-    /// ever parked (task: review prompts carry prior rulings) — a reviewer needs to know to check
-    /// it before it reports its first finding, not only after a human has already had to correct
-    /// one. The task-specific rulings section, by contrast, has nothing to say for a task with no
-    /// park history and stays out of the prompt entirely.
+    /// The project's own repo doctrine is named unconditionally, whether or not this particular
+    /// task has ever parked (task: review prompts carry prior rulings) — a reviewer needs to know
+    /// to check it before it reports its first finding, not only after a human has already had to
+    /// correct one. The task-specific rulings section, by contrast, has nothing to say for a task
+    /// with no park history and stays out of the prompt entirely.
     /// </summary>
     [Theory]
     [InlineData("Conformance")]
     [InlineData("Adversarial")]
-    public void Every_lens_names_the_decisions_log_even_with_no_prior_rulings_on_this_task(string lens)
+    public void Every_lens_names_project_doctrine_even_with_no_prior_rulings_on_this_task(string lens)
     {
         string prompt = AgentPromptBuilder.BuildReview(SomeTask(), SomeProject(), "task/1-slug", cycle: 1, lens);
 
-        prompt.Should().Contain("PLAN.md §16");
-        prompt.Should().Contain("ratified decision, not an oversight nobody caught");
-        prompt.Should().Contain("stating what changed since the ruling");
+        prompt.Should().Contain("AGENTS.md or CLAUDE.md");
+        prompt.Should().Contain("deliberate, ratified");
+        prompt.Should().Contain("stating what changed since");
         prompt.Should().NotContain("Settled rulings on this task", "there is no park history to summarize");
+    }
+
+    /// <summary>
+    /// The trailer used to hardcode "the platform's own v0 Decisions Log (PLAN.md §16)" into
+    /// every project's review prompt (adversarial cycle-4 finding,
+    /// `AgentPromptBuilder.cs:996`), even though <see cref="AgentPromptBuilder"/> is the daemon's
+    /// generic prompt builder for whatever project registered via <c>h9k project add</c> — most of
+    /// which have no `PLAN.md` at all. It now points at the project's own doctrine files instead,
+    /// the same generic hedge <c>AppendReviewMechanics</c> already uses.
+    /// </summary>
+    [Fact]
+    public void Settled_rulings_trailer_does_not_hardcode_the_platforms_own_decisions_log()
+    {
+        string prompt = AgentPromptBuilder.BuildReview(
+            SomeTask(), SomeProject(), "task/1-slug", cycle: 1, ReviewLens.Conformance);
+
+        prompt.Should().NotContain("PLAN.md", "this project's own doctrine file is not every project's");
+        prompt.Should().NotContain("v0 Decisions Log", "the platform's own decisions log is hall9k-specific");
+    }
+
+    /// <summary>
+    /// The unconditional settled-rulings trailer names a file-shaped location (`AGENTS.md`) and
+    /// uses defect vocabulary ("not", "departs") within the same handful of sentences (adversarial
+    /// cycle-4 finding, `AgentPromptBuilder.cs:996`): a reviewer that quotes or restates this
+    /// paragraph before concluding must not thereby satisfy
+    /// <see cref="ReviewVerdictValidation.NamesAFinding"/>, or a bare needs-fixes verdict over
+    /// nothing described reopens exactly the gap Decisions Log #86 closed.
+    /// </summary>
+    [Fact]
+    public void Echoing_the_settled_rulings_trailer_does_not_name_a_finding()
+    {
+        string prompt = AgentPromptBuilder.BuildReview(
+            SomeTask(), SomeProject(), "task/1-slug", cycle: 1, ReviewLens.Conformance);
+
+        int start = prompt.IndexOf("## How to review", StringComparison.Ordinal);
+        string trailer = prompt[..start];
+
+        ReviewVerdictValidation.NamesAFinding($"{trailer}\n\nVERDICT: needs-fixes")
+            .Should().BeFalse("the settled-rulings trailer is not a finding just because it quoted it back");
+    }
+
+    /// <summary>
+    /// A human's own review-park <c>--reason</c> text is exactly as arbitrary as the task's
+    /// objective or an acceptance criterion, and this file already screens both of those out of a
+    /// reviewer's output before deciding whether it named a finding
+    /// (<see cref="ReviewVerdictValidation.NamesAFinding"/>). A reason that pairs a real file with
+    /// real defect vocabulary — the shape this codebase's own recorded review-park reasons
+    /// actually take — must not let a reviewer that quotes it back manufacture a "named" finding
+    /// out of text the platform injected rather than something the reviewer itself found.
+    /// </summary>
+    [Fact]
+    public void Echoing_a_prior_rulings_reason_does_not_name_a_finding()
+    {
+        const string reason = "`config.json` is not reset across restarts — see Decisions Log #83";
+        string output = $"I reviewed the settled rulings below.\n\n{reason}\n\nVERDICT: needs-fixes";
+
+        ReviewVerdictValidation.NamesAFinding(
+                output, priorRulingReasons: AgentPromptBuilder.RulingReasonsShown(
+                    [new ReviewParkResolution(3, ReviewVerdict.MergeReady, reason, new DateTimeOffset(2026, 8, 24, 0, 0, 0, TimeSpan.Zero))]))
+            .Should().BeFalse("a human's own reason, echoed back, is not the reviewer naming a new finding");
     }
 
     /// <summary>

@@ -669,7 +669,11 @@ public sealed class ReviewEngine(
             && !ReviewVerdictValidation.NamesAFinding(
                 output,
                 sawTaskContext ? context.Task.Objective : null,
-                sawTaskContext ? context.Task.AcceptanceCriteria : null))
+                sawTaskContext ? context.Task.AcceptanceCriteria : null,
+                // Unlike the objective and acceptance criteria, settled rulings are printed into
+                // BOTH lenses' prompts (AgentPromptBuilder.AppendSettledRulings), so this strip is
+                // never gated on sawTaskContext.
+                AgentPromptBuilder.RulingReasonsShown(context.PriorRulings)))
         {
             // A needs-fixes verdict that names nothing is not a real answer (origin: ten
             // occurrences filed 2026-08-25): recording it as Unknown routes it through the exact

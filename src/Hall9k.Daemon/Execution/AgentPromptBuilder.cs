@@ -949,9 +949,14 @@ public static class AgentPromptBuilder
     /// latter is the human confirming the defect is real and ordering it fixed — telling a fresh
     /// pass to suppress a re-raise of that same wording would ship an incompletely-fixed defect
     /// the human already confirmed straight past the reviewer that would otherwise catch it.</item>
-    /// <item>The v0 Decisions Log (PLAN.md §16), named unconditionally rather than quoted: the
-    /// log itself is long-lived and outside this prompt's bound, so the reviewer is told to check
-    /// it rather than handed a snapshot of it that would go stale the next time §16 grows.</item>
+    /// <item>This project's own repo doctrine, named unconditionally rather than quoted and
+    /// deliberately generic (the daemon serves whatever project registered it, the same reason
+    /// <see cref="AppendReviewMechanics"/>'s own doctrine bullet hedges "AGENTS.md or CLAUDE.md,
+    /// and whatever they point at" rather than naming a file): a project's doctrine can settle a
+    /// question at a wider scope than this one task, so the reviewer is told to check whatever
+    /// record the project's own AGENTS.md/CLAUDE.md points at (a decisions log, if it keeps one)
+    /// rather than assuming this task's project is the platform's own and hardcoding its
+    /// PLAN.md §16 into every project's review prompt.</item>
     /// </list>
     /// Appended to BOTH lenses. The adversarial lens is deliberately withheld the task's objective
     /// and acceptance criteria (<see cref="BuildAdversarialReview"/>) so it reads for defects
@@ -959,6 +964,17 @@ public static class AgentPromptBuilder
     /// kind of fact: it says a question was already asked and answered, not what the change was
     /// trying to do, so handing it to both lenses does not reopen the boundary that method exists
     /// to hold.
+    /// <para>
+    /// Every sentence that names a file-shaped location (`AGENTS.md`, `CLAUDE.md`) is kept apart
+    /// from every sentence that uses defect vocabulary ("not", "departs") — its own paragraph, in
+    /// the final trailer below — because <see cref="ReviewVerdictValidation.NamesAFinding"/> reads
+    /// the two sharing a sentence (or a location's paragraph immediately followed by one using
+    /// defect language) as a reviewer naming a finding. A reviewer that quotes or restates this
+    /// prompt text before concluding must not thereby manufacture a "named" finding out of the
+    /// platform's own boilerplate — the same class of gap <c>StripPlaceholderLocations</c> and the
+    /// objective/criteria strippers already close for this file's other injected text (Decisions
+    /// Log #86 origin incident: ten bare needs-fixes verdicts filed 2026-08-25).
+    /// </para>
     /// </summary>
     private static void AppendSettledRulings(StringBuilder prompt, IReadOnlyList<ReviewParkResolution>? priorRulings)
     {
@@ -983,25 +999,49 @@ public static class AgentPromptBuilder
             foreach (ReviewParkResolution ruling in priorRulings.TakeLast(MaxPriorRulings))
             {
                 string verdict = ruling.Verdict == ReviewVerdict.MergeReady ? "merge-ready" : "needs-fixes";
-                string reason = ruling.Reason.IsNotBlank()
-                    ? RelayedText.Truncate(RelayedText.OneLine(ruling.Reason).Trim(), MaxRulingReasonLength)
-                    : "no reason recorded";
                 prompt.AppendLine(
-                    $"- Cycle {ruling.Cycle}, resolved {ruling.ResolvedAt:yyyy-MM-dd} as {verdict}: {reason}");
+                    $"- Cycle {ruling.Cycle}, resolved {ruling.ResolvedAt:yyyy-MM-dd} as {verdict}: {PrintedReason(ruling)}");
             }
 
             prompt.AppendLine();
         }
 
-        prompt.AppendLine("The platform's own v0 Decisions Log (PLAN.md §16) is a settled ruling at a wider");
-        prompt.AppendLine("scope than this one task: a deviation from a house rule recorded there was a");
-        prompt.AppendLine("deliberate, ratified decision, not an oversight nobody caught. Before you report a");
-        prompt.AppendLine("finding that amounts to \"this departs from doctrine,\" check whether §16 already");
-        prompt.AppendLine("settled that departure on purpose. Re-raising a decision already ratified there");
-        prompt.AppendLine("requires stating what changed since the ruling — not restating the objection it");
-        prompt.AppendLine("already answered.");
+        prompt.AppendLine("This project's own repo doctrine can settle a question at a wider scope than this");
+        prompt.AppendLine("one task, the same AGENTS.md or CLAUDE.md the review mechanics above already point");
+        prompt.AppendLine("you at (and whatever decisions log they in turn document, if this project keeps");
+        prompt.AppendLine("one).");
+        prompt.AppendLine();
+        prompt.AppendLine("A deviation from a house rule already recorded there can be a deliberate, ratified");
+        prompt.AppendLine("choice rather than an oversight nobody caught. Before you report a finding that");
+        prompt.AppendLine("amounts to \"this departs from doctrine,\" check whether that record already settled");
+        prompt.AppendLine("the departure on purpose. Re-raising something already ratified there requires");
+        prompt.AppendLine("stating what changed since — not restating the objection it already answered.");
         prompt.AppendLine();
     }
+
+    /// <summary>The human's own reason text exactly as this prompt prints it — summarized, never blank.</summary>
+    private static string PrintedReason(ReviewParkResolution ruling) =>
+        ruling.Reason.IsNotBlank()
+            ? RelayedText.Truncate(RelayedText.OneLine(ruling.Reason).Trim(), MaxRulingReasonLength)
+            : "no reason recorded";
+
+    /// <summary>
+    /// The prior-ruling reason text this prompt actually prints (the newest
+    /// <see cref="MaxPriorRulings"/>, truncated exactly as <see cref="AppendSettledRulings"/>
+    /// prints it) — handed to <see cref="ReviewVerdictValidation.NamesAFinding"/> so a reviewer's
+    /// verbatim echo of a human's own <c>--reason</c> text is stripped before validation the same
+    /// way an echoed task objective or acceptance criterion already is. A human's reason is
+    /// exactly as arbitrary as either of those: it routinely pairs a real location with real
+    /// defect vocabulary ("`config.json` is not reset — see the parked reason"), and a reviewer
+    /// that restates it before concluding must not thereby manufacture a "named" finding out of
+    /// text the platform injected rather than something the reviewer itself found.
+    /// </summary>
+    internal static IReadOnlyList<string> RulingReasonsShown(IReadOnlyList<ReviewParkResolution>? priorRulings) =>
+        priorRulings is null
+            ? []
+            : [.. priorRulings.TakeLast(MaxPriorRulings)
+                .Where(ruling => ruling.Reason.IsNotBlank())
+                .Select(PrintedReason)];
 
     /// <summary>
     /// The structured-finding contract every review lens answers in (Decisions Log #63, #87).
