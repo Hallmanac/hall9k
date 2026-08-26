@@ -977,9 +977,11 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
     }
 
     /// <summary>
-    /// The conformance track grades nothing, so its bound is simply how many times a machine
-    /// may be told the same thing (Decisions Log #63). Still returning findings at its cap parks
-    /// the run, and the reason says why: nothing automated is left to try.
+    /// This track's findings are plain prose with no structured `FINDING:` header, so nothing
+    /// survives to grade: the needs-fixes placeholder that stands in for an unstructured pass
+    /// (Decisions Log #86) is always Fix, never a ride-along, regardless of grade (Decisions Log
+    /// #87). Still returning findings at its cap parks the run, and the reason says why: nothing
+    /// automated is left to try.
     /// </summary>
     [Fact]
     public async Task A_conformance_track_still_finding_things_at_its_cap_parks_the_run()

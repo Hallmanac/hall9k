@@ -1038,6 +1038,10 @@ public static class AgentPromptBuilder
         prompt.AppendLine("- `low` — polish: phrasing, comment or doc-string wording, a stale reference that");
         prompt.AppendLine("  misleads nobody, a style nit.");
         prompt.AppendLine();
+        prompt.AppendLine("An unmet acceptance criterion, or work that solves a different problem than the one");
+        prompt.AppendLine("stated, is never `low` and never left ungraded: grade it `medium` at minimum. It");
+        prompt.AppendLine("always meets the fix bar and must never be demoted into a ride-along.");
+        prompt.AppendLine();
         prompt.AppendLine("Use one of those three words exactly. A grade in any other word is one the platform");
         prompt.AppendLine("cannot read, and it counts as no grade at all rather than as the nearest word to it —");
         prompt.AppendLine("grade every finding you report; do not leave the tag off.");

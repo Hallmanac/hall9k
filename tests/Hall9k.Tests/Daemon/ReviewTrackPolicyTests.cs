@@ -202,8 +202,10 @@ public sealed class ReviewTrackPolicyTests
     }
 
     /// <summary>
-    /// The conformance track has no grades to gate on, so a low keeps it running at any cycle;
-    /// it is the cap, not the severity, that ends it.
+    /// Conformance findings are graded the same way adversarial's are (Decisions Log #87), but
+    /// <see cref="ReviewTrackPolicy.Decide"/> itself never gates the conformance track on that
+    /// grade: a needs-fixes verdict that reaches here keeps the track running at any cycle, low
+    /// finding or not. Only the cap ends it.
     /// </summary>
     [Fact]
     public void The_conformance_track_is_never_gated_by_severity()

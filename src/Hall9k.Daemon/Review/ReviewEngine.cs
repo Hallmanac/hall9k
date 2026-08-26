@@ -625,18 +625,6 @@ public sealed class ReviewEngine(
         // ReviewEngine.cs:614).
         bool sawTaskContext = pass.Lens.Covers(ReviewLens.Conformance);
         ReviewVerdict verdict = ReviewResultParser.ParseVerdict(output);
-        if (verdict == ReviewVerdict.NeedsFixes
-            && !ReviewVerdictValidation.NamesAFinding(
-                output,
-                sawTaskContext ? context.Task.Objective : null,
-                sawTaskContext ? context.Task.AcceptanceCriteria : null))
-        {
-            // A needs-fixes verdict that names nothing is not a real answer (origin: ten
-            // occurrences filed 2026-08-25): recording it as Unknown routes it through the exact
-            // same one-reprompt-then-park path an unparseable VERDICT line already takes, rather
-            // than parking a human or spending a fix session on content that does not exist.
-            verdict = ReviewVerdict.Unknown;
-        }
 
         // The structured findings, read whatever the verdict said — a merge-ready pass can still
         // attach ride-alongs (Decisions Log #87), and the reclassification right below needs to
@@ -675,6 +663,27 @@ public sealed class ReviewEngine(
             verdict = parsedFindings.All(finding => finding.Disposition == ReviewFindingDisposition.RideAlong)
                 ? ReviewVerdict.MergeReady
                 : ReviewVerdict.NeedsFixes;
+        }
+
+        if (verdict == ReviewVerdict.NeedsFixes
+            && !ReviewVerdictValidation.NamesAFinding(
+                output,
+                sawTaskContext ? context.Task.Objective : null,
+                sawTaskContext ? context.Task.AcceptanceCriteria : null))
+        {
+            // A needs-fixes verdict that names nothing is not a real answer (origin: ten
+            // occurrences filed 2026-08-25): recording it as Unknown routes it through the exact
+            // same one-reprompt-then-park path an unparseable VERDICT line already takes, rather
+            // than parking a human or spending a fix session on content that does not exist.
+            // Checked here, after the disposition reclassification above, rather than only on the
+            // verdict as it arrived (cycle-3 adversarial finding): a merge-ready pass whose only
+            // attached finding echoed the finding contract's own placeholder used to slip past a
+            // weaker placeholder screen with a fabricated in-scope High, get promoted to
+            // needs-fixes by the reclassification above without ever passing through this gate,
+            // and spend a fix session and an extra adversarial cycle on a file the pass never
+            // actually touched. A verdict promoted to needs-fixes this way now gets the identical
+            // scrutiny an arriving needs-fixes verdict always has.
+            verdict = ReviewVerdict.Unknown;
         }
 
         // A needs-fixes pass always carries at least one finding, even when nothing structured

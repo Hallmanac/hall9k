@@ -709,12 +709,17 @@ public static partial class ReviewVerdictValidation
     /// isolation — reproduces one of these two placeholders verbatim, and no genuine finding is
     /// ever placed at a path this literal and this generic. Checking the placeholder itself,
     /// rather than how much surrounding prompt text came back with it, closes the echo gap
-    /// regardless of exactly where the echo stops. Used only by <see cref="StripPlaceholderLocations"/>
-    /// now (cycle-9 finding): every other branch reads text that has already had a placeholder
-    /// match this same check would have rejected removed from it, so this is the single place
-    /// that check still runs.
+    /// regardless of exactly where the echo stops. Used by <see cref="StripPlaceholderLocations"/>
+    /// (cycle-9 finding): every other branch in this file reads text that has already had a
+    /// placeholder match this same check would have rejected removed from it, so this is the
+    /// single place that check still runs here. Also internal so
+    /// <see cref="ReviewResultParser.Close"/> can screen a structured finding's own `at=` tag the
+    /// identical path-first way, rather than the narrower exact-literal match it used to use
+    /// (cycle-3 adversarial finding): a line number dropped or adapted from
+    /// <see cref="ReviewResultParser.ExampleLocationPlaceholder"/> defeated that exact match while
+    /// still pointing at a path no repository has.
     /// </summary>
-    private static bool IsPlaceholderLocation(string location)
+    internal static bool IsPlaceholderLocation(string location)
     {
         string path = location.Split(':')[0].Trim().Trim('`');
         return PlaceholderLocations.Any(placeholder => string.Equals(path, placeholder, StringComparison.OrdinalIgnoreCase));
