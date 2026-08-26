@@ -172,6 +172,52 @@ public sealed class RunAggregate
     public DateTimeOffset? ActiveFixProcessStartedAt { get; private set; }
     /// <summary>The model the in-flight fix session was spawned on.</summary>
     public AgentModel ActiveFixSessionModel { get; private set; } = AgentModel.Unknown;
+
+    /// <summary>
+    /// The cycle of the most recently dispatched fix round (task: a second fix round over the
+    /// same findings), null before this run's first fix session ever dispatches. Paired with
+    /// <see cref="LastFixRoundHumanFindings"/> to tell a genuinely new round from a mechanical
+    /// redispatch of the very same one (a budget-exhaustion retry re-enters FixNeeded with the
+    /// cycle and <see cref="PendingHumanFindings"/> both unchanged) — the escalation trigger is
+    /// evaluated fresh only for the former.
+    /// </summary>
+    public int? LastFixRoundCycle { get; private set; }
+
+    /// <summary>The <see cref="PendingHumanFindings"/> value in force when <see cref="LastFixRoundCycle"/>'s round dispatched — see that field's own doc for why this pairing matters.</summary>
+    public string? LastFixRoundHumanFindings { get; private set; }
+
+    private readonly List<string> _lastFixRoundFindingLocations = [];
+    /// <summary>
+    /// The finding locations <see cref="LastFixRoundCycle"/>'s fix round was dispatched over —
+    /// what the NEXT fix round is compared against to detect a repeat (task: a second fix round
+    /// over the same findings). Carries forward only the immediately preceding round, not the
+    /// whole history, which is what makes de-escalation automatic: a round whose findings clear
+    /// this list simply stops matching the next time a comparison is made, with no separate reset.
+    /// </summary>
+    public IReadOnlyList<string> LastFixRoundFindingLocations => _lastFixRoundFindingLocations;
+
+    /// <summary>Whether the most recently dispatched fix session ran on the review role's model instead of the fix role's, and why (task: a second fix round over the same findings).</summary>
+    public bool LastFixSessionEscalated { get; private set; }
+
+    /// <summary>Non-null exactly when <see cref="LastFixSessionEscalated"/> is true.</summary>
+    public string? LastFixSessionEscalationReason { get; private set; }
+
+    /// <summary>
+    /// This cycle's findings dispositioned <see cref="ReviewFindingDisposition.Fix"/>, by
+    /// location, with an unplaced finding (blank location — an unstructured needs-fixes verdict,
+    /// or the placeholder <see cref="ReviewFindingRecord"/> a fix session's prompt still carries
+    /// even then) excluded: it names nowhere and cannot be shown to repeat, or fail to repeat,
+    /// anything (the same reading <see cref="ReviewFindingLocations.SamePlace"/> already applies
+    /// everywhere else in the loop). What a fix session dispatched over this cycle's own
+    /// automated findings is actually being asked to fix, and so the basis for detecting the NEXT
+    /// round repeating it.
+    /// </summary>
+    public IReadOnlyList<string> CurrentCycleFixFindingLocations =>
+        [.. _completedReviewPasses
+            .SelectMany(pass => pass.Findings)
+            .Where(finding => finding.Disposition == ReviewFindingDisposition.Fix && finding.Location.IsNotBlank())
+            .Select(finding => finding.Location)
+            .Distinct(StringComparer.OrdinalIgnoreCase)];
     /// <summary>The highest cycle whose verdict re-prompt was already spent (0 = never). One re-prompt per CYCLE, then park.</summary>
     public int VerdictRepromptedCycle { get; private set; }
     /// <summary>
@@ -395,6 +441,19 @@ public sealed class RunAggregate
         // dispatched to redispatch over a budget park (backlog 40) left State at BudgetParked,
         // and nothing else in this event's normal firing would move it off that.
         State = RunState.UnderReview;
+
+        // Recorded unconditionally, including on a mechanical redispatch (the engine's own
+        // ReviewEngine.DispatchFixSessionAsync already reused the prior decision when it decided
+        // Escalated/EscalationReason, so overwriting here with the same values a retry carries is
+        // harmless) — CurrentCycleFixFindingLocations is read fresh rather than trusted from
+        // before this event, but it re-derives the identical set on a same-cycle retry, since
+        // nothing about this cycle's own completed passes changed in between.
+        LastFixSessionEscalated = @event.Escalated;
+        LastFixSessionEscalationReason = @event.EscalationReason;
+        _lastFixRoundFindingLocations.Clear();
+        _lastFixRoundFindingLocations.AddRange(CurrentCycleFixFindingLocations);
+        LastFixRoundCycle = @event.Cycle;
+        LastFixRoundHumanFindings = PendingHumanFindings;
     }
 
     public void Apply(ReviewFixCompleted @event)
