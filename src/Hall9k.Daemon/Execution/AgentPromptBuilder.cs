@@ -1029,17 +1029,20 @@ public static class AgentPromptBuilder
     /// <see cref="MaxPriorRulings"/>, truncated exactly as <see cref="AppendSettledRulings"/>
     /// prints it) — handed to <see cref="ReviewVerdictValidation.NamesAFinding"/> so a reviewer's
     /// verbatim echo of a human's own <c>--reason</c> text is stripped before validation the same
-    /// way an echoed task objective or acceptance criterion already is. A human's reason is
-    /// exactly as arbitrary as either of those: it routinely pairs a real location with real
-    /// defect vocabulary ("`config.json` is not reset — see the parked reason"), and a reviewer
-    /// that restates it before concluding must not thereby manufacture a "named" finding out of
-    /// text the platform injected rather than something the reviewer itself found.
+    /// way an echoed task objective or acceptance criterion already is. Restricted to
+    /// <see cref="ReviewVerdict.MergeReady"/> rulings: that reason is a dismissal the reviewer is
+    /// told not to re-raise, so echoing it back manufactures no new finding. A
+    /// <see cref="ReviewVerdict.NeedsFixes"/> reason is the opposite — the human confirming the
+    /// defect is real and ordering it fixed — so <see cref="AppendSettledRulings"/> tells the
+    /// reviewer to check whether the fix landed and report it again if not; stripping that same
+    /// wording out of the reviewer's own re-report would erase the defect language the prompt
+    /// just asked for and turn a confirmed, still-unfixed defect into a hollow verdict instead.
     /// </summary>
     internal static IReadOnlyList<string> RulingReasonsShown(IReadOnlyList<ReviewParkResolution>? priorRulings) =>
         priorRulings is null
             ? []
             : [.. priorRulings.TakeLast(MaxPriorRulings)
-                .Where(ruling => ruling.Reason.IsNotBlank())
+                .Where(ruling => ruling.Verdict == ReviewVerdict.MergeReady && ruling.Reason.IsNotBlank())
                 .Select(PrintedReason)];
 
     /// <summary>

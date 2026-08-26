@@ -412,7 +412,8 @@ public sealed class AgentPromptBuilderTests : IDisposable
     /// `AgentPromptBuilder.cs:996`), even though <see cref="AgentPromptBuilder"/> is the daemon's
     /// generic prompt builder for whatever project registered via <c>h9k project add</c> — most of
     /// which have no `PLAN.md` at all. It now points at the project's own doctrine files instead,
-    /// the same generic hedge <c>AppendReviewMechanics</c> already uses.
+    /// the same generic hedge <c>BuildConformanceReview</c>'s own "How to review" bullet already
+    /// uses.
     /// </summary>
     [Fact]
     public void Settled_rulings_trailer_does_not_hardcode_the_platforms_own_decisions_log()
@@ -464,6 +465,27 @@ public sealed class AgentPromptBuilderTests : IDisposable
                 output, priorRulingReasons: AgentPromptBuilder.RulingReasonsShown(
                     [new ReviewParkResolution(3, ReviewVerdict.MergeReady, reason, new DateTimeOffset(2026, 8, 24, 0, 0, 0, TimeSpan.Zero))]))
             .Should().BeFalse("a human's own reason, echoed back, is not the reviewer naming a new finding");
+    }
+
+    /// <summary>
+    /// A needs-fixes ruling is the opposite of a dismissal: the human confirmed the defect was
+    /// real and ordered it fixed, and the settled-rulings trailer tells the reviewer to check
+    /// whether the fix landed and report it again if not. Stripping that reason's own defect
+    /// vocabulary out of the reviewer's re-report the same way a merge-ready dismissal is
+    /// stripped would erase the very wording the prompt just asked the reviewer to use,
+    /// converting a human-confirmed, still-unfixed defect into a hollow verdict instead of a
+    /// fix session (cycle-8 conformance finding, `AgentPromptBuilder.cs:1042`).
+    /// </summary>
+    [Fact]
+    public void Echoing_a_needs_fixes_rulings_reason_still_names_a_finding()
+    {
+        const string reason = "ReviewEngine.cs:520 drops the cancellation token";
+        string output = $"The cycle-3 ruling still stands: {reason}.\n\nVERDICT: needs-fixes";
+
+        ReviewVerdictValidation.NamesAFinding(
+                output, priorRulingReasons: AgentPromptBuilder.RulingReasonsShown(
+                    [new ReviewParkResolution(3, ReviewVerdict.NeedsFixes, reason, new DateTimeOffset(2026, 8, 24, 0, 0, 0, TimeSpan.Zero))]))
+            .Should().BeTrue("a needs-fixes ruling's reason is a confirmed defect, not a dismissal to suppress");
     }
 
     /// <summary>
