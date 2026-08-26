@@ -43,6 +43,9 @@ public sealed class GitHubPullRequestInspectorTests
     private static string Review(string author, string oid, string body = "", string id = "review-1") =>
         $"{{'id':'{id}','author':{author},'body':'{body}','url':'https://x/y/pull/7#r1','commit':{{'oid':'{oid}'}}}}";
 
+    private static string ReviewWithoutCommit(string author, string body = "", string id = "review-1") =>
+        $"{{'id':'{id}','author':{author},'body':'{body}','url':'https://x/y/pull/7#r1'}}";
+
     private static string RequestedReviewer(string login, string typeName) =>
         $"{{'requestedReviewer':{{'__typename':'{typeName}','login':'{login}'}}}}";
 
@@ -381,6 +384,46 @@ public sealed class GitHubPullRequestInspectorTests
             Review(Actor("copilot-pull-request-reviewer", "Bot"), "cafe1", "Looks good."));
 
         GitHubPullRequestInspector.ParseReviews(json).CopilotReviewState.Should().Be(ExternalReviewState.Stale);
+    }
+
+    /// <summary>
+    /// A Copilot review whose commit the provider did not report is not read as stale: it is not
+    /// observed to be on a superseded commit, only unobserved altogether. Reading it as Stale
+    /// anyway would assert the review is superseded on no evidence, the mirror of the same "never
+    /// guess at unobserved facts" gap the null/null case below covers (independent pre-PR review,
+    /// cycle 7).
+    /// </summary>
+    [Fact]
+    public void A_Copilot_review_with_no_reported_commit_does_not_read_as_stale()
+    {
+        string json = Payload(
+            Actor("hallmanac", "User"), "cafe1", "",
+            ReviewWithoutCommit(Actor("copilot-pull-request-reviewer", "Bot"), "Looks good."));
+
+        GitHubPullRequestInspector.ParseReviews(json).CopilotReviewState.Should().Be(
+            ExternalReviewState.None,
+            "an unreported review commit is 'cannot tell', never a positive claim either way");
+    }
+
+    /// <summary>
+    /// The provider not reporting the pull request's own head must not turn an unrelated review
+    /// into a false Landed: <c>string.Equals(null, null)</c> is true, so comparing an unreported
+    /// review commit against an unreported head compared equal on no observation at all before
+    /// this fix (independent pre-PR review, cycle 7).
+    /// </summary>
+    [Fact]
+    public void An_unreported_head_commit_does_not_let_an_unrelated_review_read_as_landed()
+    {
+        string json = ("{'data':{'repository':{'pullRequest':{"
+            + $"'author':{Actor("hallmanac", "User")},'headRefOid':null,"
+            + "'reviewThreads':{'nodes':[]},"
+            + "'reviewRequests':{'nodes':[]},"
+            + "'timelineItems':{'nodes':[]},"
+            + $"'latestReviews':{{'nodes':[{Review(Actor("copilot-pull-request-reviewer", "Bot"), "cafe1")}]}}"
+            + "}}}}").Replace('\'', '"');
+
+        GitHubPullRequestInspector.ParseReviews(json).CopilotReviewState.Should().NotBe(
+            ExternalReviewState.Landed, "the head commit was never observed, so no review can be confirmed current");
     }
 
     [Fact]

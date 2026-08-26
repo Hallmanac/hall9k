@@ -330,12 +330,26 @@ public sealed class GitHubPullRequestInspector : IPullRequestInspector
                 }
 
                 string? reviewId = review.TryGetProperty("id", out JsonElement idElement) ? idElement.GetString() : null;
-                if (string.Equals(ReadReviewedCommit(review), headCommit, StringComparison.OrdinalIgnoreCase))
+                string? reviewedCommit = ReadReviewedCommit(review);
+
+                // Both sides have to be actually observed before this review can be compared at
+                // all: a null reviewedCommit already means "cannot tell" per ReadReviewedCommit's
+                // own contract, and a null headCommit means the provider did not report a head
+                // either. string.Equals(null, null) is true, so comparing unconditionally turned
+                // two unobserved values into a positive Landed claim on evidence nobody read, and
+                // a null reviewedCommit against a real head into a positive Stale claim the same
+                // way (independent pre-PR review, cycle 7). Neither claim is made when either
+                // side is unobserved; the review is left unclassified for this pass instead.
+                bool commitObserved = reviewedCommit is not null && headCommit is not null;
+                if (commitObserved && string.Equals(reviewedCommit, headCommit, StringComparison.OrdinalIgnoreCase))
                 {
                     return (ExternalReviewState.Landed, reviewId);
                 }
 
-                staleReviewId = reviewId;
+                if (commitObserved)
+                {
+                    staleReviewId = reviewId;
+                }
             }
         }
 
