@@ -367,13 +367,13 @@ public sealed class TaskPhaseSurfaceTests
     }
 
     /// <summary>
-    /// The post-PR review watcher's own three readings (origin: PR #50 sat Delivered for 23
+    /// The post-PR review watcher's own readings (origin: PR #50 sat Delivered for 23
     /// minutes with a landed Copilot review nobody had read before the merge), each rendered on
     /// the Delivered phase line — never as a new task lifecycle status. AttentionComposer draws
     /// the identical distinction on its own cause line (Decisions Log #88), covered separately.
     /// </summary>
     [Fact]
-    public void The_post_PR_review_watcher_s_three_readings_are_the_delivered_phase()
+    public void The_post_PR_review_watcher_s_readings_are_the_delivered_phase()
     {
         Guid runId = DomainId.New();
         RunDetails landed = StatusFixtures.Run(runId, RunState.AwaitingReview, sessionProcessId: null, pullRequestNumber: 24);
@@ -406,6 +406,19 @@ public sealed class TaskPhaseSurfaceTests
         pending.ExternalReviewState = ExternalReviewState.RequestedPending;
         StatusFixtures.Compose(StatusFixtures.Task(TaskState.Done, runId, pullRequest), pending)
             .Phase.Text.Should().Be("watching PR #24 — awaiting Copilot review");
+
+        // A stale review is review activity that happened, just against a commit that is no
+        // longer the head — it must render honestly as that, with its own thread count, never
+        // collapsed into the "no external review activity observed" text the None arm below
+        // renders for a pull request Copilot has genuinely never looked at (independent pre-PR
+        // review, cycle 6).
+        RunDetails stale = StatusFixtures.Run(runId, RunState.AwaitingReview, sessionProcessId: null, pullRequestNumber: 24);
+        stale.ExternalReviewState = ExternalReviewState.Stale;
+        stale.ExternalReviewThreadCount = 1;
+        StatusFixtures.Compose(StatusFixtures.Task(TaskState.Done, runId, pullRequest), stale)
+            .Phase.Text.Should().Be("watching PR #24 — Copilot reviewed an earlier commit");
+        StatusFixtures.Compose(StatusFixtures.Task(TaskState.Done, runId, pullRequest), stale)
+            .Phase.Detail.Should().Be("the review is stale; 1 comment thread");
 
         // No external review activity is not the same as "only a human's merge is left": the
         // sweep records this observation ahead of its own checks read, so the line stops short
