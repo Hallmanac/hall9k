@@ -229,7 +229,7 @@ public sealed class TaskPhaseSurfaceTests
         followUp.State.Should().Be(yours.State, "both are Delivered — the state is not what tells them apart");
         followUp.Phase.Text.Should().Be("follow-up on PR #24: building");
         followUp.Phase.Liveness.Should().Be(SessionLiveness.Alive);
-        yours.Phase.Text.Should().Be("watching PR #24 — waiting on your merge");
+        yours.Phase.Text.Should().Be("watching PR #24");
         yours.Phase.Liveness.Should().Be(SessionLiveness.NotApplicable, "nothing is running, so nothing is claimed");
     }
 
@@ -369,8 +369,8 @@ public sealed class TaskPhaseSurfaceTests
     /// <summary>
     /// The post-PR review watcher's own three readings (origin: PR #50 sat Delivered for 23
     /// minutes with a landed Copilot review nobody had read before the merge), each rendered on
-    /// the Delivered phase line — never as a new task lifecycle status, and never changing
-    /// AttentionComposer's NeedsYou verdict for AwaitingReview either way.
+    /// the Delivered phase line — never as a new task lifecycle status. AttentionComposer draws
+    /// the identical distinction on its own cause line (Decisions Log #88), covered separately.
     /// </summary>
     [Fact]
     public void The_post_PR_review_watcher_s_three_readings_are_the_delivered_phase()
@@ -403,11 +403,13 @@ public sealed class TaskPhaseSurfaceTests
             .Phase.Detail.Should().Be("no external review activity observed; its checks may still be reporting");
 
         // A run recorded before this observation existed (or a sweep that has not run yet)
-        // reads exactly as the original silent line rather than asserting a state nobody
-        // watched for — the never-guess rule.
+        // carries even less information than "None" (a sweep that looked and found nothing),
+        // so it must not claim more than None does either — the never-guess rule.
         RunDetails unobserved = StatusFixtures.Run(runId, RunState.AwaitingReview, sessionProcessId: null, pullRequestNumber: 24);
         StatusFixtures.Compose(StatusFixtures.Task(TaskState.Done, runId, pullRequest), unobserved)
-            .Phase.Text.Should().Be("watching PR #24 — waiting on your merge");
+            .Phase.Text.Should().Be("watching PR #24");
+        StatusFixtures.Compose(StatusFixtures.Task(TaskState.Done, runId, pullRequest), unobserved)
+            .Phase.Detail.Should().Be("no external review observation recorded yet; its checks may still be reporting");
     }
 
     [Fact]

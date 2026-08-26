@@ -366,14 +366,43 @@ public sealed class AttentionSurfaceTests
         row.State.Should().Be(LifecycleState.Delivered);
         row.Attention.NeedsYou.Should().BeTrue();
         row.Attention.Cause.Should().Contain("the merge is yours");
-        row.Phase.Text.Should().Contain("waiting on your merge");
 
         // The monitor records findings and records nothing at all while a check is still
         // reporting, so this row is what an absence of records looks like — not an observation
         // that the pull request is clean. Saying "observed" here would claim a look nobody took
         // on every pull request the platform opens, since CI is pending the moment one does.
         row.Attention.Cause.Should().NotContain("observed");
-        row.Phase.Detail.Should().Be("no finding recorded; its checks may still be reporting");
+        row.Phase.Text.Should().Be("watching PR #24");
+        row.Phase.Detail.Should().Be("no external review observation recorded yet; its checks may still be reporting");
+    }
+
+    /// <summary>
+    /// The post-PR review watcher's own read of Copilot (Decisions Log #88) splits this same
+    /// AwaitingReview row three ways, matching the phase line above it exactly (pre-PR review,
+    /// cycle 2: the two used to disagree — the phase said "awaiting Copilot review" while the
+    /// cause right under it still claimed "read its checks, then the merge is yours").
+    /// </summary>
+    [Fact]
+    public void A_pending_Copilot_review_is_not_the_human_s_turn_and_a_landed_one_is()
+    {
+        Guid runId = DomainId.New();
+        string pullRequest = "https://github.com/x/y/pull/24";
+
+        RunDetails pending = StatusFixtures.Run(runId, RunState.AwaitingReview, sessionProcessId: null, pullRequestNumber: 24);
+        pending.ExternalReviewState = ExternalReviewState.RequestedPending;
+        TaskStatusRow awaitingCopilot = StatusFixtures.Compose(StatusFixtures.Task(TaskState.Done, runId, pullRequest), pending);
+
+        awaitingCopilot.Attention.Level.Should().Be(AttentionLevel.WaitingHandled,
+            "Copilot has not answered yet, so it is not the human's turn");
+        awaitingCopilot.Attention.NeedsYou.Should().BeFalse();
+
+        RunDetails landed = StatusFixtures.Run(runId, RunState.AwaitingReview, sessionProcessId: null, pullRequestNumber: 24);
+        landed.ExternalReviewState = ExternalReviewState.Landed;
+        TaskStatusRow reviewLanded = StatusFixtures.Compose(StatusFixtures.Task(TaskState.Done, runId, pullRequest), landed);
+
+        reviewLanded.Attention.NeedsYou.Should().BeTrue("Copilot has weighed in; nothing else will read it");
+        reviewLanded.Attention.Cause.Should().Contain("Copilot's review landed");
+        reviewLanded.Attention.Cause.Should().Contain("the merge is yours");
     }
 
     /// <summary>
