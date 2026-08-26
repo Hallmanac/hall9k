@@ -52,8 +52,15 @@ public static class DaemonRuntime
     /// Set to <c>"1"</c> only by the two Windows launch paths that redirect h9kd's
     /// stdout/stderr through cmd.exe's own <c>&gt;&gt;</c> append before h9kd ever starts
     /// (<c>DaemonLifecycle.SpawnDetachedWindows</c> and <c>WindowsDaemonAutostart</c>'s
-    /// launch script) — never by a human's shell, and never inherited from one, since
-    /// neither path forwards the parent's own environment for this name. Program.cs reads
+    /// launch script) — never by a human's shell. Both paths set this through
+    /// <c>ProcessStartInfo.Environment</c>, which is seeded from the current process's own
+    /// environment, so this name IS forwarded like every other if a parent shell happens to
+    /// have it set; what actually keeps this safe is that no supported path ever sets it,
+    /// not that inheritance is somehow blocked. An operator exporting this variable by hand
+    /// before running h9kd from a terminal would see their own console output silently
+    /// redirected into the installed daemon's log — the exact failure this gate exists to
+    /// prevent — which is why the name stays internal and undocumented rather than a
+    /// supported override. Program.cs reads
     /// it to decide whether swapping in <c>WindowsAppendOnlyLog</c>'s replacement
     /// handles is even applicable: without this gate, every other way of running h9kd on
     /// Windows (a bare terminal invocation, the <c>dotnet run --project Hall9k.AppHost</c>
