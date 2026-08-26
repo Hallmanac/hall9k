@@ -346,7 +346,14 @@ The checkpoints, in the order the window sees them:
    `review resolve` comes in. A needs-fixes verdict that names no finding is recorded the same as
    a missing verdict, not accepted as a real answer (Decisions Log #86): it gets the cycle's one
    same-session re-prompt before parking, exactly like a pass that ended with no `VERDICT:` line
-   at all.
+   at all. A needs-fixes verdict earns a fix-and-re-review cycle only when a finding is graded
+   medium or high (Decisions Log #87): both lenses now grade every finding, and a pass whose
+   findings are all low or ungraded is recorded merge-ready instead, with its findings carried
+   along as **ride-alongs** rather than dropped or spent on a cycle of their own — folded into
+   the next fix session the track dispatches for a real reason, or left recorded as a residual
+   if none ever does. `h9k task show` prints the ride-along count alongside the fixed/routed
+   ones; nothing about the cycle cap or the park-for-human behavior changes for anything graded
+   medium or higher.
 4. **The daemon opens the pull request.** Agents never do, and there is deliberately no create-pr
    skill. The task reaches **Done** here, when the pull request opens, so Done means "the work is
    on a PR and waiting on review" rather than "merged".
