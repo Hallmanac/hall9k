@@ -6,7 +6,9 @@ namespace Hall9k.Domain.Features.Run;
 /// <summary>
 /// The independent pre-PR review agent's judgment on a run's diff (Decisions Log #23).
 /// MergeReady lets PullRequestOpener proceed; NeedsFixes dispatches a fix run. Unknown
-/// records a reviewer that returned no parseable verdict — the run parks rather than
+/// records a reviewer whose verdict the platform could not honestly act on: either it
+/// returned no parseable verdict at all, or it returned needs-fixes naming nothing the
+/// platform could read as a finding (Decisions Log #86) — the run parks rather than
 /// guessing at what the reviewer meant.
 /// </summary>
 [JsonConverter(typeof(ReviewVerdictJsonConverter))]
