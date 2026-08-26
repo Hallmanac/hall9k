@@ -56,12 +56,14 @@ public sealed class DaemonOptions
 
     /// <summary>
     /// The ceiling a widening backoff may reach while <c>gh</c> keeps failing (independent
-    /// pre-PR review, cycle 3, an explicit acceptance criterion the first cut shipped without):
-    /// each sweep <see cref="PullRequestMonitor"/> catches an inspection exception from doubles
-    /// the wait until the next one, up to this bound, so a rate limit or an outage does not
-    /// spend a call every <see cref="PullRequestPollInterval"/> forever. A sweep that completes
-    /// with no failures resets the wait to <see cref="PullRequestPollInterval"/> immediately —
-    /// the widening answers gh's own trouble, not a standing posture.
+    /// pre-PR review, cycles 3 and 4, an explicit acceptance criterion the first cut shipped
+    /// without): a sweep where every attempted inspection failed doubles the wait until the next
+    /// one, up to this bound, so a rate limit or an outage does not spend a call every
+    /// <see cref="PullRequestPollInterval"/> forever. A sweep where at least one inspection
+    /// succeeded resets the wait to <see cref="PullRequestPollInterval"/> immediately, so one
+    /// permanently broken pull request never pins every other healthy one this node watches to
+    /// the backoff ceiling (see <see cref="PullRequestMonitor.IsSweepFailure"/>) — the widening
+    /// answers gh's own trouble, not a standing posture.
     /// </summary>
     public TimeSpan PullRequestPollBackoffMaxInterval { get; set; } = TimeSpan.FromMinutes(30);
 
