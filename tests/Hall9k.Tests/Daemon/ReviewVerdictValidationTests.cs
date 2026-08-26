@@ -337,6 +337,20 @@ public sealed class ReviewVerdictValidationTests
     }
 
     /// <summary>
+    /// A bare pointer sentence does not borrow defect language from a preceding sentence that
+    /// denies a defect rather than asserting one (cycle-11 adversarial finding,
+    /// `ReviewVerdictValidation.cs:810`): "no defect stands" and "nothing here is wrong" carry
+    /// the same denial idiom the forward-looking branches already screen for, and the
+    /// backward-pointer branch had no equivalent screen, so a hollow verdict that denies a defect
+    /// and then merely points at a location was credited as naming one.
+    /// </summary>
+    [Theory]
+    [InlineData("I checked every branch and no defect stands. See ReviewEngine.cs:612.\n\nVERDICT: needs-fixes")]
+    [InlineData("Nothing here is wrong. See ReviewEngine.cs:612.\n\nVERDICT: needs-fixes")]
+    public void A_bare_pointer_does_not_borrow_defect_language_from_a_preceding_denial(string output) =>
+        ReviewVerdictValidation.NamesAFinding(output).Should().BeFalse();
+
+    /// <summary>
     /// "Here" opening a sentence that merely summarizes rather than pointing at a defect must not
     /// borrow defect language from an unrelated preceding sentence (cycle-7 conformance finding,
     /// `ReviewVerdictValidation.cs:126`): "Nothing I checked failed." states no defect about the
@@ -699,6 +713,30 @@ public sealed class ReviewVerdictValidationTests
     [InlineData("1. `install.ps1:40` — this never checks the download hash.\n\nVERDICT: needs-fixes")]
     public void A_lowercase_extension_location_still_names_a_finding(string output) =>
         ReviewVerdictValidation.NamesAFinding(output).Should().BeTrue();
+
+    /// <summary>
+    /// The lowercase-extension narrowing's known, accepted cost (cycle-11 conformance finding,
+    /// `ReviewVerdictValidation.cs:58`; recorded output
+    /// <c>~/.hall9k/runs/01a031db-ae49-73a3-a8d3-e3117796f0ba/review-2-conformance-findings.md</c>):
+    /// a genuine, cleanly-stated finding whose only location is a backticked `Type.Member` symbol
+    /// rather than a file path has no real (lowercase-extension) location anywhere in its text, so
+    /// this narrowing — which cannot tell a real symbol-only location apart from the spurious
+    /// `Type.Member` mentions <see cref="A_recorded_hollow_verdict_dense_with_type_member_references_does_not_name_a_finding"/>
+    /// covers — currently reads it as naming nothing. This documents the tradeoff rather than
+    /// asserting it should pass: recovering it needs a distinct location grammar for symbol-only
+    /// pointers, not a loosening of the extension-casing rule cycle-6 added.
+    /// </summary>
+    [Fact]
+    public void A_finding_located_only_by_a_type_member_symbol_is_not_currently_recognized()
+    {
+        ReviewVerdictValidation.NamesAFinding(
+                "One confirmed defect found: `ProjectHomeRenderEngine.RenderIdea` creates a decoy "
+                + "`workspace/` directory when an idea is reassigned across two projects that both "
+                + "have materialised homes, because it checks `idea.WorkspaceHome.HasValue` instead "
+                + "of whether `WorkspaceHome` matches the project currently being rendered.\n\n"
+                + "VERDICT: needs-fixes")
+            .Should().BeFalse();
+    }
 
     /// <summary>
     /// A heading naming a real location, immediately followed by the finding contract's own

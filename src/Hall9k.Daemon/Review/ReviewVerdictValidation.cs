@@ -65,14 +65,27 @@ public static partial class ReviewVerdictValidation
     /// needs reading comprehension a regex cannot do"). A run across this install's own recorded
     /// needs-fixes lens outputs (369 across `~/.hall9k/runs/**` and every project home's task run
     /// directories) confirms this pattern is not unique to these two: of the 369, 333 passed
-    /// <see cref="NamesAFinding"/> before this fix and 328 pass after it — the 5 that flip are, on
-    /// inspection, all genuine findings that happened to pass only because a spurious
+    /// <see cref="NamesAFinding"/> before this fix and 328 pass after it. Most of the 5 that flip
+    /// are, on inspection, genuine findings that happened to pass only because a spurious
     /// `Type.Member` match supplied this method's location gate for a paragraph or sentence whose
     /// own defect language was, coincidentally, either the same pre-existing own-sentence-negation
-    /// gap or vocabulary this method's own list does not yet cover — never because this narrowing
-    /// itself misjudged a real, cleanly-stated location. Closing that residual gap is a distinct,
-    /// pre-existing defect in the paragraph/sentence proximity heuristic, not something this
-    /// narrowing was ever positioned to fix.
+    /// gap or vocabulary this method's own list does not yet cover. But this narrowing does have a
+    /// real cost, confirmed against a sixth recorded output outside that count of 369
+    /// (`~/.hall9k/runs/01a031db-ae49-73a3-a8d3-e3117796f0ba/review-2-conformance-findings.md`,
+    /// cycle-11 conformance finding): a genuine, cleanly-stated finding whose only location is a backticked
+    /// `Type.Member` symbol rather than a file path — "`ProjectHomeRenderEngine.RenderIdea`
+    /// creates a decoy `workspace/` directory when …" — has no real (lowercase-extension) location
+    /// anywhere in its text, so this narrowing costs `NamesAFinding` its only location gate and
+    /// the finding flips from named to unnamed. This narrowing cannot tell that shape apart from
+    /// the spurious match it exists to exclude, because both read as a dotted PascalCase name with
+    /// no file path in the sentence — trading a known amount of recall (a real finding that names
+    /// only a symbol) for the precision cycle-6 fixed (a hollow verdict wrongly credited by an
+    /// incidental symbol mention) is what this narrowing does, not a change with no real finding on
+    /// either side of it. Recovering that recall needs a distinct location grammar for symbol-only
+    /// pointers, not a loosening of the extension-casing rule, which would reopen the cycle-6 gap
+    /// this narrowing exists to close. Closing the residual own-sentence-negation and vocabulary
+    /// gaps the other flips share is a distinct, pre-existing defect in the paragraph/sentence
+    /// proximity heuristic, not something this narrowing was ever positioned to fix.
     /// </para>
     /// </summary>
     [GeneratedRegex(
@@ -250,6 +263,20 @@ public static partial class ReviewVerdictValidation
     /// before a plain summary sentence, and treating "Here" as a defect-free pointer wrongly
     /// borrowed that defect language for a location the summary sentence never actually
     /// implicated.
+    /// </para>
+    /// <para>
+    /// The backward-pointer branch in <see cref="NamesFindingInProse"/> also screens the
+    /// sentence it borrows from against <see cref="HeadingDenialPattern"/> now (cycle-11
+    /// adversarial finding,
+    /// `ReviewVerdictValidation.cs:810`): every other branch that borrows defect language from a
+    /// neighbouring sentence or paragraph — <see cref="StatesDefectWithinLookahead"/>,
+    /// <see cref="StatesDefectInLaterParagraph"/>, the lead-in gate in
+    /// <see cref="NamesFindingAcrossParagraphs"/> — already stops on the denial idiom, but this
+    /// branch looks backward instead of forward and had no equivalent stop. A reviewer writing "I
+    /// checked every branch and no defect stands. See ReviewEngine.cs:612." puts the denial idiom
+    /// in the sentence before a bare pointer, and without this screen "no" and "defect" — there to
+    /// deny a problem, not assert one — supplied the pointer's location with defect language it
+    /// never earned.
     /// </para>
     /// </summary>
     [GeneratedRegex(@"^\s*(see|this is at|it is in)\b", RegexOptions.IgnoreCase)]
@@ -809,7 +836,8 @@ public static partial class ReviewVerdictValidation
             string? previous = index > 0 ? sentences[index - 1] : null;
             if (previous is not null
                 && BackwardPointerPattern().IsMatch(sentences[index])
-                && DefectLanguagePattern().IsMatch(previous))
+                && DefectLanguagePattern().IsMatch(previous)
+                && !HeadingDenialPattern().IsMatch(previous))
             {
                 return true;
             }
