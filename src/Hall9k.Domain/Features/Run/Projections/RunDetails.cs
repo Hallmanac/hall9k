@@ -112,6 +112,15 @@ public sealed class RunDetails
     /// </summary>
     public List<ReviewParkResolution> ReviewParkResolutions { get; set; } = [];
     /// <summary>
+    /// Where the pipeline stood when the current (or most recent) park interrupted it, mirroring
+    /// <see cref="RunAggregate.ParkedFromState"/>: <c>Verifying</c> for a thread-dispute park
+    /// (Decisions Log #62), which lands before any reviewer or gate has run, and something else
+    /// (typically <c>UnderReview</c>) for the review loop's own park. <see cref="Apply(IEvent{ReviewParkResolved}, RunDetails)"/>
+    /// reads this to tell a real settled review verdict apart from a dispute the human decided
+    /// without a review pass ever running.
+    /// </summary>
+    public RunState ParkedFromState { get; set; } = RunState.Unknown;
+    /// <summary>
     /// How the review loop ended (Decisions Log #63): Clean when a reviewer read the final tip
     /// and found nothing, Settled when the severity gate, scope routing, or a human's park
     /// resolution ended it. Unknown while the loop runs, and Unknown forever for a run whose
@@ -333,6 +342,10 @@ public sealed class RunDetailsProjection : SingleStreamProjection<RunDetails, Gu
 
     public void Apply(IEvent<ReviewParked> @event, RunDetails view)
     {
+        // Captured before the overwrite, mirroring RunAggregate: State still holds where the
+        // park caught the run, which is how the resolution below tells a dispute park apart
+        // from the review loop's own.
+        view.ParkedFromState = view.State;
         view.ParkedReason = @event.Data.Reason;
         EndSessions(view);
         view.State = RunState.ReviewParked;
@@ -341,8 +354,17 @@ public sealed class RunDetailsProjection : SingleStreamProjection<RunDetails, Gu
     public void Apply(IEvent<ReviewParkResolved> @event, RunDetails view)
     {
         view.LastReviewVerdict = @event.Data.Verdict;
-        view.ReviewParkResolutions.Add(new ReviewParkResolution(
-            view.ReviewCycle, @event.Data.Verdict, @event.Data.Reason, @event.Data.ResolvedAt));
+        // A thread-dispute park (Decisions Log #62) lands from Verifying, before any reviewer
+        // read the diff — the human decided the disputed thread, not a review finding, so it is
+        // not a settled ruling a later review prompt should be handed (RunAggregate.Apply
+        // applies the identical discriminator to decide whether the pipeline re-enters at
+        // Reverify instead of treating this as an ordinary review-loop resolution).
+        if (view.ParkedFromState != RunState.Verifying)
+        {
+            view.ReviewParkResolutions.Add(new ReviewParkResolution(
+                view.ReviewCycle, @event.Data.Verdict, @event.Data.Reason, @event.Data.ResolvedAt));
+        }
+
         view.ParkedReason = null;
         // The resume sweep re-dispatches; until it does, nothing is running.
         EndSessions(view);
