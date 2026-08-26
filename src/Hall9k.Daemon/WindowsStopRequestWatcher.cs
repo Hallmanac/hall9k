@@ -109,19 +109,33 @@ public sealed class WindowsStopRequestWatcher(
         // is empty by then, so a fresh move would just fail with "no file yet".
         if (!File.Exists(ClaimPath))
         {
+            // Checked before the move rather than relying on the catch below for the "no
+            // file yet" case: that is every tick of the daemon's entire lifetime bar the
+            // rare one where a stop was actually requested, and throwing (then catching) a
+            // FileNotFoundException four times a second for as long as h9kd runs floods
+            // first-chance-exception tooling with nothing to show for it. The move stays
+            // the only thing that ever reads the file, so the atomic-claim property this
+            // method's own doc comment describes is unaffected — a fresh write landing
+            // between this check and the move below still gets claimed by it.
+            if (!File.Exists(DaemonRuntime.StopRequestFile))
+            {
+                return false;
+            }
+
             try
             {
                 File.Move(DaemonRuntime.StopRequestFile, ClaimPath, overwrite: true);
             }
             catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
             {
-                // IOException covers both "no file yet" (FileNotFoundException/
-                // DirectoryNotFoundException are IOException subtypes) and a rename racing a
-                // write still landing at the source path; UnauthorizedAccessException covers a
-                // path that exists but is unreadable (a directory in its place, a denying ACL).
-                // Either way this BackgroundService never lets an escaping exception take the
-                // whole host down via the default StopHost behavior — nothing to act on yet;
-                // the next tick tries again.
+                // IOException covers both "no file yet" (a write landing between the check
+                // above and this move — the check narrows the common case, not the race)
+                // and a rename racing a write still landing at the source path;
+                // UnauthorizedAccessException covers a path that exists but is unreadable
+                // (a directory in its place, a denying ACL). Either way this
+                // BackgroundService never lets an escaping exception take the whole host
+                // down via the default StopHost behavior — nothing to act on yet; the next
+                // tick tries again.
                 return false;
             }
         }
