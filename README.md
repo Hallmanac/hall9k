@@ -79,10 +79,10 @@ Working — a run owns it and has not pushed yet
 Delivered — pushed; the merge has not been observed
 983ee6ec  Delivered  hall9k  Brian Hall  The platform recognizes…  needs you
 added 24h ago  #31
-    ↳ watching PR #31 — waiting on your merge · no finding recorded; its checks
-may still be reporting
-    ↳ nothing has been recorded against this pull request — read its checks,
-then the merge is yours → https://github.com/Hallmanac/hall9k/pull/31
+    ↳ watching PR #31 · no external review activity observed; its checks may
+still be reporting
+    ↳ nothing has been recorded against this pull request yet — read its
+checks, then the merge is yours → https://github.com/Hallmanac/hall9k/pull/31
 
 Queued — the node is at its concurrency ceiling; each of these starts as a run
 finishes. Run h9k config set --max-concurrent-agent-sessions <n> and restart the

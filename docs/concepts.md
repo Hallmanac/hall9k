@@ -308,8 +308,8 @@ Per poll, in priority order:
 Two silences are worth knowing about. GitHub hides an unsubmitted (`PENDING`) review's comments
 from the API entirely, so a pull request can look quiet while feedback is being written: never
 read silence as "the reviewer had nothing to say". And the monitor writes nothing at all while CI
-is still reporting, which is why the quiet phase line says "no finding recorded; its checks may
-still be reporting" rather than claiming a clean pull request.
+is still reporting, which is why the quiet phase line says "no external review activity observed;
+its checks may still be reporting" rather than claiming a clean pull request.
 
 Automatic follow-ups are bounded by two counters, not one. A **progress cap**
 (`MaxCloseoutLapsPerObstruction`, default 2) counts consecutive laps spent on the *same*

@@ -302,9 +302,9 @@ own: a comment on the card when the task's pull request merges.
 
 **Never guess at an unobserved fact.** Audit fields, history, and identifiers record what was
 actually observed, and the unobserved is represented as explicitly unknown. A quiet pull request
-reads as "no finding recorded" rather than "clean". A session whose process cannot be seen reads
-as "liveness not observed here" rather than as either answer. An agent that needs a decision
-parks with the question rather than picking an answer that looks plausible.
+reads as "no external review activity observed" rather than "clean". A session whose process
+cannot be seen reads as "liveness not observed here" rather than as either answer. An agent that
+needs a decision parks with the question rather than picking an answer that looks plausible.
 
 **Not a work tracker.** Jira and GitHub already do that. Once work is published, the external
 item is the source of truth for its content, and the task carries the operational depth.
