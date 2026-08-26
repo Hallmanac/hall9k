@@ -610,7 +610,7 @@ public sealed class ReviewEngine(
         await File.WriteAllTextAsync(LensFindingsFile(runDirectory, cycle, pass.Lens), output, cancellationToken);
 
         ReviewVerdict verdict = ReviewResultParser.ParseVerdict(output);
-        if (verdict == ReviewVerdict.NeedsFixes && !ReviewVerdictValidation.NamesAFinding(output))
+        if (verdict == ReviewVerdict.NeedsFixes && !ReviewVerdictValidation.NamesAFinding(output, context.Task.Objective))
         {
             // A needs-fixes verdict that names nothing is not a real answer (origin: ten
             // occurrences filed 2026-08-25): recording it as Unknown routes it through the exact
