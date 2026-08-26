@@ -228,8 +228,11 @@ public sealed class WindowsStopRequestWatcher(
         }
     }
 
-    private static DateTimeOffset CurrentProcessStartedAt() =>
-        new DateTimeOffset(Process.GetCurrentProcess().StartTime.ToUniversalTime(), TimeSpan.Zero);
+    private static DateTimeOffset CurrentProcessStartedAt()
+    {
+        using Process current = Process.GetCurrentProcess();
+        return new DateTimeOffset(current.StartTime.ToUniversalTime(), TimeSpan.Zero);
+    }
 
     private static async Task<bool> NextTickAsync(PeriodicTimer timer, CancellationToken cancellationToken)
     {
