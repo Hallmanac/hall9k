@@ -77,10 +77,11 @@ public sealed class RunDetails
     /// <summary>Every review thread Copilot's review opened, resolved or not, as of the last observation.</summary>
     public int ExternalReviewThreadCount { get; set; }
     /// <summary>
-    /// Whether the provider's CI picture was still incomplete as of the last observation — false
-    /// only once a sweep got past both the checks and unresolved-thread reads without moving the
-    /// run off <see cref="RunState.AwaitingReview"/>, which is what lets the Delivered phase and
-    /// attention lines name the human as the last gate (Decisions Log #88, pre-PR review cycle 3).
+    /// Whether the provider's CI picture was still incomplete as of the last observation
+    /// (Decisions Log #88, pre-PR review cycle 3). False means only that the provider had a
+    /// complete CI answer at that moment (pre-PR review, cycle 4) — not that the sweep went on to
+    /// read past failing checks or unresolved threads, or that none were found: a parked run
+    /// records this and returns before ever reaching those reads.
     /// </summary>
     public bool ExternalReviewChecksPending { get; set; }
     /// <summary>When a human last granted this run's task a fresh closeout budget (h9k pr resolve, Decisions Log #80, backlog 45); null until one lands.</summary>

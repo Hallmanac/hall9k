@@ -63,8 +63,10 @@ public sealed class RunAggregate
 
     /// <summary>
     /// Whether the provider's CI picture was still incomplete as of the last observation
-    /// (<see cref="Events.ExternalReviewObserved"/>) — false only once a sweep got past both the
-    /// checks and unresolved-thread reads without moving the run off <see cref="RunState.AwaitingReview"/>.
+    /// (<see cref="Events.ExternalReviewObserved"/>). False means only that the provider had a
+    /// complete CI answer at that moment — not that the sweep went on to read past failing
+    /// checks or unresolved threads, or that none were found: a parked run records this and
+    /// returns before ever reaching those reads.
     /// </summary>
     public bool ExternalReviewChecksPending { get; private set; }
 
