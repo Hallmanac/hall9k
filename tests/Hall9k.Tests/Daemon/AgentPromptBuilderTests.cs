@@ -387,6 +387,108 @@ public sealed class AgentPromptBuilderTests : IDisposable
     }
 
     /// <summary>
+    /// The v0 Decisions Log is named unconditionally, whether or not this particular task has
+    /// ever parked (task: review prompts carry prior rulings) — a reviewer needs to know to check
+    /// it before it reports its first finding, not only after a human has already had to correct
+    /// one. The task-specific rulings section, by contrast, has nothing to say for a task with no
+    /// park history and stays out of the prompt entirely.
+    /// </summary>
+    [Theory]
+    [InlineData("Conformance")]
+    [InlineData("Adversarial")]
+    public void Every_lens_names_the_decisions_log_even_with_no_prior_rulings_on_this_task(string lens)
+    {
+        string prompt = AgentPromptBuilder.BuildReview(SomeTask(), SomeProject(), "task/1-slug", cycle: 1, lens);
+
+        prompt.Should().Contain("PLAN.md §16");
+        prompt.Should().Contain("ratified decision, not an oversight nobody caught");
+        prompt.Should().Contain("stating what changed since the ruling");
+        prompt.Should().NotContain("Settled rulings on this task", "there is no park history to summarize");
+    }
+
+    /// <summary>
+    /// A human's past verdicts on this task's own review parks are handed to a fresh reviewer as
+    /// settled rulings, not left for it to rediscover and re-litigate (origin incidents: the
+    /// config.json survival ruling re-litigated three times across one task's twelve cycles, and
+    /// a finding dismissed with git-ancestry evidence re-raised verbatim by the next fresh-context
+    /// reviewer). A verdict with no reason recorded (a bare --merge-ready) still shows up, honestly
+    /// labeled, rather than silently dropped.
+    /// </summary>
+    [Theory]
+    [InlineData("Conformance")]
+    [InlineData("Adversarial")]
+    public void Every_lens_lists_prior_park_resolutions_as_settled_rulings_not_to_relitigate(string lens)
+    {
+        ReviewParkResolution[] priorRulings =
+        [
+            new ReviewParkResolution(2, ReviewVerdict.MergeReady, null, new DateTimeOffset(2026, 8, 24, 0, 0, 0, TimeSpan.Zero)),
+            new ReviewParkResolution(
+                7, ReviewVerdict.NeedsFixes, "config.json survives on purpose — see Decisions Log #83",
+                new DateTimeOffset(2026, 8, 25, 0, 0, 0, TimeSpan.Zero)),
+        ];
+
+        string prompt = AgentPromptBuilder.BuildReview(
+            SomeTask(), SomeProject(), "task/1-slug", cycle: 12, lens, priorRulings);
+
+        prompt.Should().Contain("Settled rulings on this task");
+        prompt.Should().Contain("do not re-raise these without new evidence");
+        prompt.Should().Contain("Cycle 2, resolved 2026-08-24 as merge-ready: no reason recorded");
+        prompt.Should().Contain(
+            "Cycle 7, resolved 2026-08-25 as needs-fixes: config.json survives on purpose — see Decisions Log #83");
+        prompt.Should().Contain("point to something that changed since the");
+    }
+
+    /// <summary>
+    /// Bounded rather than an ever-growing transcript (the task's own acceptance criteria):
+    /// only the newest rulings ride into the prompt, and a long reason is summarized rather than
+    /// pasted whole — a settled ruling is a nudge, not a second history to read past.
+    /// </summary>
+    [Fact]
+    public void Prior_rulings_are_bounded_to_the_newest_few_with_reasons_summarized()
+    {
+        ReviewParkResolution[] priorRulings =
+        [
+            .. Enumerable.Range(1, 10).Select(cycle => new ReviewParkResolution(
+                cycle, ReviewVerdict.MergeReady, $"ruling number {cycle}",
+                new DateTimeOffset(2026, 8, cycle, 0, 0, 0, TimeSpan.Zero))),
+            new ReviewParkResolution(
+                11, ReviewVerdict.NeedsFixes, new string('x', 600), new DateTimeOffset(2026, 8, 26, 0, 0, 0, TimeSpan.Zero)),
+        ];
+
+        string prompt = AgentPromptBuilder.BuildReview(
+            SomeTask(), SomeProject(), "task/1-slug", cycle: 12, ReviewLens.Conformance, priorRulings);
+
+        prompt.Should().NotContain("Cycle 1,", "the oldest rulings are dropped once the bound is reached");
+        prompt.Should().NotContain("Cycle 2,", "only the newest handful ride into the prompt");
+        prompt.Should().NotContain("Cycle 3,");
+        prompt.Should().Contain("Cycle 4,", "the newest rulings are the ones kept");
+        prompt.Should().Contain("Cycle 11,");
+        prompt.Should().Contain(new string('x', 499) + "…", "a long reason is summarized, not pasted in full");
+        prompt.Should().NotContain(new string('x', 500), "the full 600-character reason never appears verbatim");
+    }
+
+    /// <summary>
+    /// The adversarial lens stays blind to the task's objective and acceptance criteria
+    /// (Decisions Log #59) — but a settled park ruling is a different fact than intent, so it
+    /// still reaches this lens without reopening that boundary.
+    /// </summary>
+    [Fact]
+    public void Adversarial_review_prompt_receives_settled_rulings_without_leaking_the_objective()
+    {
+        ReviewParkResolution[] priorRulings =
+        [
+            new ReviewParkResolution(3, ReviewVerdict.NeedsFixes, "false positive, confirmed via git log", new DateTimeOffset(2026, 8, 24, 0, 0, 0, TimeSpan.Zero)),
+        ];
+
+        string prompt = AgentPromptBuilder.BuildReview(
+            SomeTask(), SomeProject(), "task/1-slug", cycle: 4, ReviewLens.Adversarial, priorRulings);
+
+        prompt.Should().Contain("false positive, confirmed via git log");
+        prompt.Should().NotContain("Add rate limiting to auth endpoints", "the objective stays withheld from this lens");
+        prompt.Should().NotContain("Acceptance criteria");
+    }
+
+    /// <summary>
     /// The conformance prompt's own "How to review" bullet names two real doctrine files
     /// (AGENTS.md, CLAUDE.md) right beside the words it uses to describe what the reviewer
     /// should be looking for (adversarial cycle-1 finding, `ReviewVerdictValidation.cs:284`): a
