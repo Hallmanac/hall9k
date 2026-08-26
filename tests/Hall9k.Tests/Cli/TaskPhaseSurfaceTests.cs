@@ -420,15 +420,29 @@ public sealed class TaskPhaseSurfaceTests
         StatusFixtures.Compose(StatusFixtures.Task(TaskState.Done, runId, pullRequest), stale)
             .Phase.Detail.Should().Be("the review is stale; 1 comment thread");
 
-        // No external review activity is not the same as "only a human's merge is left": the
-        // sweep records this observation ahead of its own checks read, so the line stops short
-        // of naming the human as the last gate while checks may still be reporting.
+        // No external review activity while checks may still be reporting is not the same as
+        // "only a human's merge is left": the sweep records this observation ahead of its own
+        // checks read, so the line stops short of naming the human as the last gate while checks
+        // may still be reporting (the same distinction the landed/landedChecksPending pair above
+        // draws, independent pre-PR review, cycle 7).
+        RunDetails noneChecksPending = StatusFixtures.Run(runId, RunState.AwaitingReview, sessionProcessId: null, pullRequestNumber: 24);
+        noneChecksPending.ExternalReviewState = ExternalReviewState.None;
+        noneChecksPending.ExternalReviewChecksPending = true;
+        StatusFixtures.Compose(StatusFixtures.Task(TaskState.Done, runId, pullRequest), noneChecksPending)
+            .Phase.Text.Should().Be("watching PR #24");
+        StatusFixtures.Compose(StatusFixtures.Task(TaskState.Done, runId, pullRequest), noneChecksPending)
+            .Phase.Detail.Should().Be("no external review activity observed; its checks may still be reporting");
+
+        // Once the provider's CI picture is complete and still no external review activity is
+        // recorded, nothing is left unresolved on this row but the human's own merge, so the
+        // phase says that instead of repeating the checks-pending hedge on a row where checks
+        // are not, in fact, still pending (independent pre-PR review, cycle 7).
         RunDetails none = StatusFixtures.Run(runId, RunState.AwaitingReview, sessionProcessId: null, pullRequestNumber: 24);
         none.ExternalReviewState = ExternalReviewState.None;
         StatusFixtures.Compose(StatusFixtures.Task(TaskState.Done, runId, pullRequest), none)
-            .Phase.Text.Should().Be("watching PR #24");
+            .Phase.Text.Should().Be("watching PR #24 — awaiting human review");
         StatusFixtures.Compose(StatusFixtures.Task(TaskState.Done, runId, pullRequest), none)
-            .Phase.Detail.Should().Be("no external review activity observed; its checks may still be reporting");
+            .Phase.Detail.Should().Be("no external review activity observed");
 
         // A run recorded before this observation existed (or a sweep that has not run yet)
         // carries even less information than "None" (a sweep that looked and found nothing),
