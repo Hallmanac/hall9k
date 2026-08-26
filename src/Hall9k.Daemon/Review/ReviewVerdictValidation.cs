@@ -214,22 +214,58 @@ public static partial class ReviewVerdictValidation
     private static partial Regex BackwardPointerPattern();
 
     /// <summary>
-    /// Whether a paragraph opens with a markdown heading marker (`#` through `######`) or is
-    /// nothing but a bold lead-in on its own line, the two shapes a reviewer uses to title a
-    /// finding before describing it in the paragraph that follows (cycle-5 conformance finding
-    /// #1, `ReviewVerdictValidation.cs:262`): "### 1. `ReviewEngine.cs:614` — the adversarial
-    /// pass is over-screened" states only a location and a label, with the actual defect
-    /// ("Stripping the objective … deletes the only location it named") in the next paragraph,
-    /// which the paragraph-scoped location-plus-defect check below cannot see on its own —
-    /// markdown always puts a heading or a bold lead-in in a paragraph by itself, separated from
-    /// its own body by the same blank line <see cref="ParagraphBoundary"/> splits on. Checked
-    /// only at the very start of the paragraph, not with <see cref="RegexOptions.Multiline"/>,
-    /// so an ordinary sentence paragraph that merely mentions a `#` or `**` partway through —
-    /// the shape the platform's own hollow-verdict tests exist to keep rejected — is never
-    /// mistaken for a heading.
+    /// Whether a paragraph is nothing but a markdown heading marker (`#` through `######`) or a
+    /// bold lead-in on its own line, the two shapes a reviewer uses to title a finding before
+    /// describing it in the paragraph that follows (cycle-5 conformance finding #1,
+    /// `ReviewVerdictValidation.cs:262`): "### 1. `ReviewEngine.cs:614` — the adversarial pass is
+    /// over-screened" states only a location and a label, with the actual defect ("Stripping the
+    /// objective … deletes the only location it named") in the next paragraph, which the
+    /// paragraph-scoped location-plus-defect check below cannot see on its own.
+    /// <para>
+    /// Anchored to the end of the paragraph, not just the end of the heading's own line (cycle-10
+    /// conformance finding #2, `ReviewVerdictValidation.cs:231`): the doc comment's premise —
+    /// "markdown always puts a heading … in a paragraph by itself" — only holds when a blank line
+    /// actually separates the heading from its body. A reviewer who titles a finding with
+    /// "## Conformance review of `ReviewEngine.cs`" and continues describing something unrelated
+    /// on the very next line, with no blank line between them, keeps both lines in one
+    /// <see cref="ParagraphBoundary"/>-delimited paragraph, and the old `#` alternative — which
+    /// only required the marker and a space, with nothing checking what followed — read that
+    /// whole two-line paragraph as a bare lead-in anyway, letting the heading branch below borrow
+    /// defect language from body text that belongs to an entirely different paragraph's worth of
+    /// prose. The bold alternative's existing <c>(?=\n|$)</c> has the identical gap for the same
+    /// reason (it only ever checks the position right after the closing <c>**</c>, not whether
+    /// anything follows later in the paragraph), so both alternatives now require the marker to
+    /// consume the rest of the paragraph, not just the rest of its own line.
+    /// </para>
     /// </summary>
-    [GeneratedRegex(@"^\s*(?:#{1,6}[ \t]|\*\*[^\n*]+\*\*[ \t]*(?=\n|$))")]
+    [GeneratedRegex(@"^\s*(?:#{1,6}[ \t][^\n]*|\*\*[^\n*]+\*\*[ \t]*)$")]
     private static partial Regex HeadingLikeLeadInPattern();
+
+    /// <summary>
+    /// The specific denial idiom a reviewer uses to say a heading's location has nothing wrong
+    /// with it — "Nothing is wrong", "no defect(s) stand" — rather than to name a defect (cycle-10
+    /// adversarial finding #2, `ReviewVerdictValidation.cs:371`): the sentence-scoped branches
+    /// guard against an unrelated affirming sentence borrowing defect vocabulary by restricting
+    /// <see cref="ContinuationPattern"/> to a fixed list of genuine continuation openers, which is
+    /// exactly why "Nothing here is wrong." can never supply defect language for a preceding
+    /// sentence there. The heading-lead-in branch below had no equivalent restriction: it accepted
+    /// any <see cref="DefectLanguagePattern"/> match anywhere in the next paragraph, so a reviewer
+    /// who titles an empty verdict with a filename ("## Findings for `ReviewEngine.cs`") and
+    /// concludes "Nothing is wrong; no defect stands." tripped the heading branch purely because
+    /// "wrong", "no" and "defect" are all defect vocabulary, even though every one of them is
+    /// being used to deny a problem rather than assert one. Deliberately narrow and literal, the
+    /// same discipline the rest of this file's opportunistic vocabulary follows: this does not
+    /// attempt the general "is this defect language negated" question <see cref="NamesAFinding"/>'s
+    /// own doc comment already discloses as a permanent, out-of-scope gap for defect language
+    /// sharing a sentence with its location — it only screens the heading branch's much weaker
+    /// signal (defect vocabulary anywhere in an unrelated following paragraph) against the two
+    /// concrete denial shapes a reviewer plausibly writes to close out a hollow needs-fixes.
+    /// </summary>
+    [GeneratedRegex(
+        @"\b(?:nothing|none)\b[^.!?]{0,40}\b(?:wrong|broken|amiss|defects?|bugs?|issues?|problems?)\b"
+        + @"|\bno\b[^.!?]{0,10}\b(?:defects?|bugs?|issues?|problems?)\s+(?:stands?|remains?|exists?|found)\b",
+        RegexOptions.IgnoreCase)]
+    private static partial Regex HeadingDenialPattern();
 
     /// <summary>
     /// Whether a needs-fixes pass's own output states at least one finding, once the verdict
@@ -348,7 +384,13 @@ public static partial class ReviewVerdictValidation
     /// finding contract's own worked-example echo) that either states a defect itself — a
     /// `Defect:`/`Scenario:` label or <see cref="NamesFindingInProse"/>'s sentence-level check —
     /// or is itself only a heading or bold lead-in immediately followed by a paragraph that
-    /// states one (see <see cref="HeadingLikeLeadInPattern"/>).
+    /// states one (see <see cref="HeadingLikeLeadInPattern"/>), that following paragraph itself
+    /// screened the same two ways the header-to-body shape already is: it must not be the finding
+    /// contract's own worked example quoted rather than answered (cycle-10 conformance finding
+    /// #1, `ReviewVerdictValidation.cs:368` — the heading-only paragraph borrowed the example
+    /// body's own "what is wrong" the same way an unscreened structured header once did), and it
+    /// must not be a bare denial of the kind <see cref="HeadingDenialPattern"/> recognizes
+    /// (cycle-10 adversarial finding #2).
     /// </summary>
     private static bool NamesFindingAcrossParagraphs(string[] paragraphs)
     {
@@ -368,7 +410,9 @@ public static partial class ReviewVerdictValidation
             string? next = index + 1 < paragraphs.Length ? paragraphs[index + 1] : null;
             if (next is not null
                 && HeadingLikeLeadInPattern().IsMatch(paragraph)
-                && DefectLanguagePattern().IsMatch(next))
+                && !IsFindingContractExampleEcho(next)
+                && DefectLanguagePattern().IsMatch(next)
+                && !HeadingDenialPattern().IsMatch(next))
             {
                 return true;
             }
@@ -544,7 +588,8 @@ public static partial class ReviewVerdictValidation
 
     /// <summary>
     /// <paramref name="text"/> with every verbatim (case-insensitive) occurrence of
-    /// <paramref name="taskObjective"/> removed (adversarial cycle-2 finding,
+    /// <paramref name="taskObjective"/> reduced to whatever <see cref="LocationPattern"/> matches
+    /// it contains, everything else in that span removed (adversarial cycle-2 finding,
     /// `ReviewVerdictValidation.cs:190`): unlike <see cref="PlaceholderLocations"/>, the objective
     /// is not a fixed string this file can list in advance — it is whatever the task says, printed
     /// into the conformance lens's own prompt by <c>AgentPromptBuilder.BuildConformanceReview</c>.
@@ -553,13 +598,31 @@ public static partial class ReviewVerdictValidation
     /// placeholder is: read, not found. A no-op when there is no objective to strip, which is
     /// every call outside the conformance lens (the adversarial lens is deliberately never told
     /// the objective, so it has nothing of this shape to echo).
+    /// <para>
+    /// Blanking the whole matched span used to delete the location along with everything else
+    /// (adversarial cycle-10 finding, `ReviewVerdictValidation.cs:326`): this codebase's own
+    /// acceptance criteria routinely pair a filename with a defect word — the doc comment below
+    /// cites exactly that shape — so a conformance session that restates a criterion as part of a
+    /// genuine finding ("`LogsCommand.cs` resolves an archived task's run directory — UNMET.")
+    /// lost its only stated location the instant the criterion text was blanked, even though the
+    /// reviewer's own added words ("UNMET", or whatever came after) were real defect language the
+    /// stripping was never meant to touch. Keeping the location and discarding only the rest of
+    /// the echoed span closes the same restated-objective/criterion hole (no defect vocabulary
+    /// from the objective itself survives to falsely pair with a location the reviewer never
+    /// actually analyzed) without also erasing a location a real finding legitimately shares with
+    /// the task's own wording.
+    /// </para>
     /// </summary>
     private static string StripObjectiveEcho(string text, string? taskObjective)
     {
         string needle = (taskObjective ?? string.Empty).Trim();
         return needle.IsBlank()
             ? text
-            : Regex.Replace(text, Regex.Escape(needle), string.Empty, RegexOptions.IgnoreCase);
+            : Regex.Replace(
+                text,
+                Regex.Escape(needle),
+                match => string.Join(' ', LocationPattern().Matches(match.Value).Select(m => m.Value)),
+                RegexOptions.IgnoreCase);
     }
 
     /// <summary>
