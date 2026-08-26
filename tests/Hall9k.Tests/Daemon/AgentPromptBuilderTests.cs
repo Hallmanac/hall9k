@@ -431,11 +431,15 @@ public sealed class AgentPromptBuilderTests : IDisposable
             SomeTask(), SomeProject(), "task/1-slug", cycle: 12, lens, priorRulings);
 
         prompt.Should().Contain("Settled rulings on this task");
-        prompt.Should().Contain("do not re-raise these without new evidence");
+        prompt.Should().Contain("Do not re-raise it without new evidence");
+        prompt.Should().Contain(
+            "check", "a needs-fixes ruling is told apart from a merge-ready dismissal");
+        prompt.Should().Contain("whether the fix actually landed");
         prompt.Should().Contain("Cycle 2, resolved 2026-08-24 as merge-ready: no reason recorded");
         prompt.Should().Contain(
             "Cycle 7, resolved 2026-08-25 as needs-fixes: config.json survives on purpose — see Decisions Log #83");
-        prompt.Should().Contain("point to something that changed since the");
+        prompt.Should().Contain("point to a");
+        prompt.Should().Contain("changed line or behavior since the ruling");
     }
 
     /// <summary>
