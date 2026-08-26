@@ -40,7 +40,24 @@ if (instance is null)
 if (OperatingSystem.IsWindows()
     && Environment.GetEnvironmentVariable(DaemonRuntime.AppendOnlyLogEnvironmentVariable) == "1")
 {
-    WindowsAppendOnlyLog.TakeOverConsoleOutput(DaemonRuntime.LogFile);
+    try
+    {
+        WindowsAppendOnlyLog.TakeOverConsoleOutput(DaemonRuntime.LogFile);
+    }
+    catch (IOException exception)
+    {
+        // Losing the replacement handle only costs rotation fidelity — the log may read
+        // back padded with NULs if DaemonLogRotation truncates it out from under the
+        // inherited cmd.exe handle mid-run (see WindowsAppendOnlyLog's own doc comment).
+        // That is strictly better than the alternative of letting this throw unhandled
+        // above the host builder and above DaemonLogging.Configure: nothing would catch
+        // it, the process would exit before logging its own diagnosis, and an autostarted
+        // daemon would burn its whole RestartOnFailure budget leaving the machine with no
+        // daemon at all. The inherited handles still work for this fallback line itself.
+        Console.Error.WriteLine(
+            $"Could not open {DaemonRuntime.LogFile} for append-only logging ({exception.Message}); "
+            + "continuing on the inherited console handles. The log may be padded with NULs after the next rotation.");
+    }
 
     // Cleared from this process's own environment the moment it has been acted on: a
     // child process spawned later (an agent session, a verify-gate command) inherits
