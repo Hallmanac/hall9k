@@ -28,7 +28,7 @@ namespace Hall9k.Cli.DaemonControl;
 /// <para>
 /// "Stopped means stopped" (Decisions Log #31) needs no explicit unload step here the way
 /// launchd's KeepAlive does: <c>RestartOnFailure</c> below only restarts on a NONZERO exit,
-/// and h9kd's graceful shutdown (<see cref="WindowsStopRequestWatcher"/> in the daemon,
+/// and h9kd's graceful shutdown (<c>WindowsStopRequestWatcher</c> in the daemon,
 /// triggered by <see cref="DaemonLifecycle"/>'s stop-request file) already exits 0 —
 /// indistinguishable from the task simply not having anything left to do. So
 /// <see cref="StopAsync"/> just performs the same graceful request
