@@ -168,14 +168,7 @@ internal static class AttentionComposer
 
         return run.State.Value switch
         {
-            // What the closeout monitor records is a finding: failing checks, unresolved threads,
-            // an errored review. Silence here is therefore an absence of records and not an
-            // observation of a clean pull request — the monitor writes nothing at all while a
-            // check is still reporting — so the cause says what is recorded and sends the reader
-            // to the pull request's own checks rather than handing them an all-clear nobody made.
-            "AwaitingReview" => new TaskAttention(AttentionLevel.NeedsYou,
-                "nothing has been recorded against this pull request — read its checks, then the merge is yours",
-                run.PullRequestUrl ?? string.Empty),
+            "AwaitingReview" => AwaitingReviewAttention(run),
             // The closeout monitor dispatches a follow-up or parks; while it is neither parked
             // nor out of budget, this is being handled and the reader can leave it alone.
             // Conflicting joins this arm for the identical reason: a rebase follow-up is
@@ -199,6 +192,32 @@ internal static class AttentionComposer
             _ => TaskAttention.None,
         };
     }
+
+    /// <summary>
+    /// The AwaitingReview attention cause, split by the post-PR review watcher's own read of
+    /// Copilot (Decisions Log #88) — the same three readings <c>TaskPhaseComposer</c>'s phase
+    /// line already draws, so the pane's cause never contradicts the line printed directly above
+    /// it (pre-PR review, cycle 2: the two used to disagree — "awaiting Copilot review" on the
+    /// phase line, "read its checks, then the merge is yours" on the attention line right under
+    /// it). Copilot outstanding is not the human's turn yet, so it renders waiting-but-handled
+    /// rather than red.
+    /// </summary>
+    private static TaskAttention AwaitingReviewAttention(RunDetails run) => run.ExternalReviewState.Value switch
+    {
+        "RequestedPending" => new TaskAttention(AttentionLevel.WaitingHandled,
+            "Copilot's review is requested but not submitted yet — nothing for you until it lands"),
+        "Landed" => new TaskAttention(AttentionLevel.NeedsYou,
+            "Copilot's review landed — read it, then the merge is yours", run.PullRequestUrl ?? string.Empty),
+        // "None" and Unknown both mean no external review activity has been observed, which is
+        // not the same as a clean pull request: the closeout monitor records this observation
+        // ahead of its own checks read, so a run whose CI is still running reads identically to
+        // one that is genuinely idle. The cause says what is actually recorded — nothing — and
+        // sends the reader to the pull request's own checks rather than handing them an all-clear
+        // nobody made.
+        _ => new TaskAttention(AttentionLevel.NeedsYou,
+            "nothing has been recorded against this pull request yet — read its checks, then the merge is yours",
+            run.PullRequestUrl ?? string.Empty),
+    };
 
     /// <summary>
     /// What actually moves a Done task whose run ended with no merge observed. <c>h9k pr resolve</c>
