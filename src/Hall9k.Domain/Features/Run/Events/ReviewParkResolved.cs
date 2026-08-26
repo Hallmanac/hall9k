@@ -13,6 +13,12 @@ namespace Hall9k.Domain.Features.Run.Events;
 /// gates — re-enters at Reverify instead, so gates and a review cycle run over commits no
 /// gate and no reviewer has seen. The human decided the disputed thread there, not the diff.
 /// </para>
+/// <para>
+/// Reason is required on NeedsFixes; optional on MergeReady (<c>--reason</c>) — a human
+/// dismissing a finding can say why (e.g. the evidence that dismissed it) so a later
+/// fresh-context review pass is told the question was already settled rather than re-raising it
+/// (task: review prompts carry prior rulings). Null on a MergeReady resolve that recorded none.
+/// </para>
 /// </summary>
 public sealed record ReviewParkResolved(
     Guid Id,

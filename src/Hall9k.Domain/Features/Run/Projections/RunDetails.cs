@@ -105,6 +105,13 @@ public sealed class RunDetails
     public int ReviewCycle { get; set; }
     public ReviewVerdict LastReviewVerdict { get; set; } = ReviewVerdict.Unknown;
     /// <summary>
+    /// Every human verdict this run's review park has ever taken, oldest first — kept as history
+    /// rather than overwritten the way <see cref="LastReviewVerdict"/> is, so a later review pass
+    /// can be handed what was already settled instead of re-raising it fresh (task: review
+    /// prompts carry prior rulings). A run can park and resolve more than once.
+    /// </summary>
+    public List<ReviewParkResolution> ReviewParkResolutions { get; set; } = [];
+    /// <summary>
     /// How the review loop ended (Decisions Log #63): Clean when a reviewer read the final tip
     /// and found nothing, Settled when the severity gate, scope routing, or a human's park
     /// resolution ended it. Unknown while the loop runs, and Unknown forever for a run whose
@@ -334,6 +341,8 @@ public sealed class RunDetailsProjection : SingleStreamProjection<RunDetails, Gu
     public void Apply(IEvent<ReviewParkResolved> @event, RunDetails view)
     {
         view.LastReviewVerdict = @event.Data.Verdict;
+        view.ReviewParkResolutions.Add(new ReviewParkResolution(
+            view.ReviewCycle, @event.Data.Verdict, @event.Data.Reason, @event.Data.ResolvedAt));
         view.ParkedReason = null;
         // The resume sweep re-dispatches; until it does, nothing is running.
         EndSessions(view);
