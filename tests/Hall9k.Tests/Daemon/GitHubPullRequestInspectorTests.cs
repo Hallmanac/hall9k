@@ -343,6 +343,42 @@ public sealed class GitHubPullRequestInspectorTests
             "the human-engagement signal still excludes Copilot's own automatic re-request");
     }
 
+    /// <summary>
+    /// A Copilot review left on a commit that is no longer the head does not read as landed
+    /// (origin: a countersign re-request after a fix push recreates Copilot's review request
+    /// while its earlier review of the pre-fix commit still sits in <c>latestReviews</c> — the
+    /// same staleness <see cref="ReadReviewedCommit"/> already tracks for the countersign, PR
+    /// review, 2026-08-26). Without this check a stale review pinned the state to "landed" for
+    /// the whole re-review window, masking that Copilot has not read the current head.
+    /// </summary>
+    [Fact]
+    public void A_stale_Copilot_review_falls_through_to_the_pending_request()
+    {
+        string json = Payload(
+            Actor("hallmanac", "User"), "cafe2", "",
+            Review(Actor("copilot-pull-request-reviewer", "Bot"), "cafe1", "Looks good."),
+            reviewRequests: RequestedReviewer("copilot-pull-request-reviewer", "Bot"));
+
+        GitHubPullRequestInspector.ParseReviews(json).CopilotReviewState.Should().Be(
+            ExternalReviewState.RequestedPending,
+            "Copilot's review of the pre-fix commit does not speak for the current head");
+    }
+
+    /// <summary>
+    /// A stale review with no pending request behind it is not outstanding either — nothing
+    /// currently asks Copilot for anything, so this reads as no external review activity rather
+    /// than a landed review that no longer applies.
+    /// </summary>
+    [Fact]
+    public void A_stale_Copilot_review_with_no_pending_request_reads_as_none()
+    {
+        string json = Payload(
+            Actor("hallmanac", "User"), "cafe2", "",
+            Review(Actor("copilot-pull-request-reviewer", "Bot"), "cafe1", "Looks good."));
+
+        GitHubPullRequestInspector.ParseReviews(json).CopilotReviewState.Should().Be(ExternalReviewState.None);
+    }
+
     [Fact]
     public void No_Copilot_review_activity_reads_as_none()
     {
