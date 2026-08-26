@@ -184,9 +184,51 @@ public static partial class ReviewVerdictValidation
     /// location and no new claim of its own, only what the location fails to do for whoever reads
     /// it.
     /// </para>
+    /// <para>
+    /// One of two alternative "still on the same subject" signals <see cref="StatesDefectWithinLookahead"/>
+    /// accepts, the other being <see cref="CodeReferencePattern"/>: this one is a strict grammatical
+    /// continuation, that one is a topical one (still quoting the same kind of code artifact the
+    /// located sentence did).
+    /// </para>
     /// </summary>
     [GeneratedRegex(@"^\s*(it|this|that|these|those|which|(?:a|the) readers?)\b", RegexOptions.IgnoreCase)]
     private static partial Regex ContinuationPattern();
+
+    /// <summary>
+    /// Whether a sentence quotes at least one backtick-delimited code reference — a file, a
+    /// symbol, a command — the way this codebase's own recorded reviewer prose almost always does
+    /// when it is still describing the located code rather than moving on to something else
+    /// (cycle-2 review, conformance finding #1): the two real recorded intervening sentences that
+    /// motivated <see cref="DefectLookaheadSentences"/> ("Every failure branch in `Explain`
+    /// interpolates `{verb} {key}`…", "the 29 `Decisions Log #77` pointers this branch adds
+    /// across `TaskAggregate.cs`, `CloseoutEngine.cs`…") are both dense with these, while the
+    /// counter-example that first exposed the risk of dropping <see cref="ContinuationPattern"/>'s
+    /// gate entirely — the conformance prompt's own "How to review" bullet, "Judge the work
+    /// against the objective … doctrine (AGENTS.md or CLAUDE.md …). Report criteria the diff
+    /// leaves unmet …" — has none: its second sentence is a fresh instruction to the reviewer, not
+    /// a continued description of `AGENTS.md`/`CLAUDE.md`, and quoting neither backtick nor a
+    /// continuation pronoun is exactly what tells the two apart.
+    /// </summary>
+    [GeneratedRegex(@"`[^`\n]+`")]
+    private static partial Regex CodeReferencePattern();
+
+    /// <summary>
+    /// A markdown list marker starting a new line inside what <see cref="SentenceBoundary"/> read
+    /// as a single sentence (found verifying the fix above against this file's own conformance
+    /// prompt, `AgentPromptBuilder.BuildConformanceReview`): that splitter has no notion of a
+    /// bullet list, so a bullet with no terminal-punctuation-plus-capital-letter break — "…any
+    /// house rule it departs from.\n- You are in the implementation's git worktree on branch
+    /// `task/1-slug`." — reads as one sentence spanning two unrelated list items. Without this
+    /// guard, the second item's own backtick-quoted branch name satisfied
+    /// <see cref="CodeReferencePattern"/> for the whole merged "sentence", so the platform's own
+    /// prompt text — "doctrine (AGENTS.md or CLAUDE.md …). Report criteria the diff leaves
+    /// unmet…" glued to the next bullet's `task/1-slug` — read as a stated finding against
+    /// AGENTS.md. A candidate that contains this shape cannot be trusted for either signal, code
+    /// reference or defect vocabulary alike, because there is no way to tell which list item
+    /// either one actually belongs to.
+    /// </summary>
+    [GeneratedRegex(@"\n[ \t]*[-*][ \t]")]
+    private static partial Regex EmbeddedListMarkerPattern();
 
     /// <summary>
     /// A sentence's opening words when the sentence itself is nothing but a pointer back at a
@@ -237,8 +279,29 @@ public static partial class ReviewVerdictValidation
     /// anything follows later in the paragraph), so both alternatives now require the marker to
     /// consume the rest of the paragraph, not just the rest of its own line.
     /// </para>
+    /// <para>
+    /// The bold alternative tolerates one embedded, single-asterisk italic run, and — like the
+    /// `#` alternative always has — a trailing label on the same line past the closing marker
+    /// (cycle-2 review, two findings): a reviewer's own emphasis inside a bold lead-in ("the
+    /// live-run count measured *before* its own claims") broke the old
+    /// <c>\*\*[^\n*]+\*\*</c>, which read any inner <c>*</c> as the closing marker and then found
+    /// no matching close for the rest of the line, so the paragraph matched neither alternative at
+    /// all. And a bold location immediately followed by a short dash-led label on the very same
+    /// line ("**`CardPublicationEngine.cs:274`** — the adoption path records the caution twice.")
+    /// isn't the finding contract's own worked-example shape either, but the old bold alternative's
+    /// <c>$</c> anchor — added for the cycle-10 gap above — refused it the identical way it refused
+    /// a genuine multi-sentence heading-plus-body paragraph, because both anchor at the very end of
+    /// the paragraph and neither distinguished "one more short label" from "an entire second
+    /// paragraph's worth of unrelated prose glued on." What actually tells them apart is a line
+    /// break: the cycle-10 shape only ever reads as one paragraph because its body starts on a new
+    /// line with no blank line before it, while a same-line label never contains one, so requiring
+    /// the whole match to end at <c>$</c> without ever crossing a <c>\n</c> (<c>[^\n]</c> never
+    /// matches one, and <c>$</c> without <see cref="RegexOptions.Multiline"/> only matches true
+    /// end-of-string) keeps the cycle-10 paragraph excluded while finally letting a same-line
+    /// label through.
+    /// </para>
     /// </summary>
-    [GeneratedRegex(@"^\s*(?:#{1,6}[ \t][^\n]*|\*\*[^\n*]+\*\*[ \t]*)$")]
+    [GeneratedRegex(@"^\s*(?:#{1,6}[ \t][^\n]*|\*\*(?:[^\n*]|\*(?!\*))+\*\*[ \t]*[^\n]*)$")]
     private static partial Regex HeadingLikeLeadInPattern();
 
     /// <summary>
@@ -246,20 +309,26 @@ public static partial class ReviewVerdictValidation
     /// with it — "Nothing is wrong", "no defect(s) stand" — rather than to name a defect (cycle-10
     /// adversarial finding #2, `ReviewVerdictValidation.cs:371`): the sentence-scoped branches
     /// guard against an unrelated affirming sentence borrowing defect vocabulary by restricting
-    /// <see cref="ContinuationPattern"/> to a fixed list of genuine continuation openers, which is
-    /// exactly why "Nothing here is wrong." can never supply defect language for a preceding
-    /// sentence there. The heading-lead-in branch below had no equivalent restriction: it accepted
-    /// any <see cref="DefectLanguagePattern"/> match anywhere in the next paragraph, so a reviewer
-    /// who titles an empty verdict with a filename ("## Findings for `ReviewEngine.cs`") and
-    /// concludes "Nothing is wrong; no defect stands." tripped the heading branch purely because
-    /// "wrong", "no" and "defect" are all defect vocabulary, even though every one of them is
-    /// being used to deny a problem rather than assert one. Deliberately narrow and literal, the
-    /// same discipline the rest of this file's opportunistic vocabulary follows: this does not
-    /// attempt the general "is this defect language negated" question <see cref="NamesAFinding"/>'s
-    /// own doc comment already discloses as a permanent, out-of-scope gap for defect language
-    /// sharing a sentence with its location — it only screens the heading branch's much weaker
-    /// signal (defect vocabulary anywhere in an unrelated following paragraph) against the two
-    /// concrete denial shapes a reviewer plausibly writes to close out a hollow needs-fixes.
+    /// the forward search in <see cref="NamesFindingInProse"/> to a bounded lookahead that stops
+    /// at the first sentence this pattern recognizes as a denial, which is exactly why "Nothing
+    /// here is wrong." can never supply defect language for a preceding sentence there. The
+    /// heading-lead-in branch below had no equivalent restriction: it accepted any
+    /// <see cref="DefectLanguagePattern"/> match anywhere in a later paragraph, so a reviewer who
+    /// titles an empty verdict with a filename ("## Findings for `ReviewEngine.cs`") and concludes
+    /// "Nothing is wrong; no defect stands." tripped the heading branch purely because "wrong",
+    /// "no" and "defect" are all defect vocabulary, even though every one of them is being used to
+    /// deny a problem rather than assert one. Deliberately narrow and literal, the same discipline
+    /// the rest of this file's opportunistic vocabulary follows: this does not attempt the general
+    /// "is this defect language negated" question <see cref="NamesAFinding"/>'s own doc comment
+    /// already discloses as a permanent, out-of-scope gap for defect language sharing a sentence
+    /// with its location — it only screens the heading branch's much weaker signal (defect
+    /// vocabulary anywhere in an unrelated later paragraph) against the two concrete denial shapes
+    /// a reviewer plausibly writes to close out a hollow needs-fixes. Also screened against the
+    /// lead-in paragraph's own text now that <see cref="HeadingLikeLeadInPattern"/> can match a
+    /// bold lead-in with a same-line trailing label (cycle-2 review): a label that already denies
+    /// its own location ("**`Foo.cs:10`** — nothing wrong here.") must not be read as a heading
+    /// needing to borrow from whatever unrelated defect language happens to sit in the next
+    /// paragraph.
     /// </summary>
     [GeneratedRegex(
         @"\b(?:nothing|none)\b[^.!?]{0,40}\b(?:wrong|broken|amiss|defects?|bugs?|issues?|problems?)\b"
@@ -271,9 +340,9 @@ public static partial class ReviewVerdictValidation
     /// Whether a needs-fixes pass's own output states at least one finding, once the verdict
     /// line itself is set aside: a location the platform can point a human or a fix session at,
     /// paired with defect language close enough to it to plausibly describe what is wrong
-    /// there — the same sentence, a sentence that visibly continues it, a sentence before it when
-    /// the location's own sentence is only a backward pointer to it, the same paragraph (for the
-    /// structured contract's `Defect:`/`Scenario:` labels), or the very next paragraph (when the
+    /// there — the same sentence, a sentence within a short lookahead of it, a sentence before it
+    /// when the location's own sentence is only a backward pointer to it, the same paragraph (for
+    /// the structured contract's `Defect:`/`Scenario:` labels), or a later paragraph (when the
     /// location's own paragraph is nothing but a heading or bold lead-in naming it). An output
     /// with nothing left after its verdict line, prose that never points anywhere concrete, or a location mentioned
     /// in one sentence with unrelated defect language confined to another, has not named
@@ -338,17 +407,18 @@ public static partial class ReviewVerdictValidation
     /// </para>
     /// <para>
     /// A paragraph that is itself only a heading or bold lead-in — the numbered `###` title a
-    /// reviewer gives a finding before describing it below — borrows defect language from the
-    /// very next paragraph rather than requiring both in its own paragraph (cycle-5 conformance
-    /// finding #1, `ReviewVerdictValidation.cs:262`): the paragraph-scoped check below could not
-    /// see this shape at all, because markdown always separates a heading from its own body with
-    /// the same blank line <see cref="ParagraphBoundary"/> splits paragraphs on, so the location
-    /// lands in one paragraph and the defect in the next and neither on its own satisfies the
-    /// same-paragraph rule. Gated on <see cref="HeadingLikeLeadInPattern"/> rather than applied
-    /// to every location-bearing paragraph, the same discipline <see cref="ContinuationPattern"/>
-    /// and <see cref="BackwardPointerPattern"/> already apply at sentence scope: an ordinary
-    /// affirming paragraph that merely happens to precede a paragraph using defect vocabulary for
-    /// something else must not borrow language meant for a different subject.
+    /// reviewer gives a finding before describing it below — borrows defect language from a later
+    /// paragraph rather than requiring both in its own paragraph (cycle-5 conformance finding #1,
+    /// `ReviewVerdictValidation.cs:262`; extended to more than one paragraph ahead, cycle-2
+    /// review): the paragraph-scoped check below could not see this shape at all, because markdown
+    /// always separates a heading from its own body with the same blank line
+    /// <see cref="ParagraphBoundary"/> splits paragraphs on, so the location lands in one paragraph
+    /// and the defect in a later one and neither on its own satisfies the same-paragraph rule.
+    /// Gated on <see cref="HeadingLikeLeadInPattern"/> rather than applied to every
+    /// location-bearing paragraph, the same discipline <see cref="BackwardPointerPattern"/> already
+    /// applies at sentence scope: an ordinary affirming paragraph that merely happens to precede a
+    /// paragraph using defect vocabulary for something else must not borrow language meant for a
+    /// different subject.
     /// </para>
     /// </summary>
     public static bool NamesAFinding(
@@ -383,14 +453,33 @@ public static partial class ReviewVerdictValidation
     /// The paragraph-scoped half of the prose heuristic: a location-bearing paragraph (not the
     /// finding contract's own worked-example echo) that either states a defect itself — a
     /// `Defect:`/`Scenario:` label or <see cref="NamesFindingInProse"/>'s sentence-level check —
-    /// or is itself only a heading or bold lead-in immediately followed by a paragraph that
-    /// states one (see <see cref="HeadingLikeLeadInPattern"/>), that following paragraph itself
-    /// screened the same two ways the header-to-body shape already is: it must not be the finding
+    /// or is itself only a heading or bold lead-in, in which case the defect is looked for in the
+    /// paragraphs that follow it (see <see cref="HeadingLikeLeadInPattern"/>), each one screened
+    /// the same two ways the header-to-body shape already is: it must not be the finding
     /// contract's own worked example quoted rather than answered (cycle-10 conformance finding
     /// #1, `ReviewVerdictValidation.cs:368` — the heading-only paragraph borrowed the example
     /// body's own "what is wrong" the same way an unscreened structured header once did), and it
     /// must not be a bare denial of the kind <see cref="HeadingDenialPattern"/> recognizes
     /// (cycle-10 adversarial finding #2).
+    /// <para>
+    /// The search past the lead-in is not limited to the single paragraph right after it
+    /// (cycle-2 review, two findings): the dominant shape in this codebase's own recorded
+    /// conformance output is lead-in, then a neutral paragraph describing the mechanism with no
+    /// vocabulary word of its own, then a `Failure scenario:` paragraph that actually states what
+    /// goes wrong — three paragraphs, not two — and a check that only ever looked at
+    /// <c>paragraphs[index + 1]</c> could never reach the third. The scan instead walks forward
+    /// until it finds one it can use, or hits a reason to stop: another lead-in (a different
+    /// finding starting; its own defect language belongs to it, not this one), a paragraph the
+    /// finding contract's own example would produce (screened the same as before), or a denial.
+    /// A later paragraph that itself carries a real <see cref="LocationPattern"/> match also ends
+    /// the search — a fresh location is the surest sign this lead-in's own text has run out and a
+    /// different point is being made — but only a real one: the finding-contract example is
+    /// screened first so its own placeholder path can never be read as that fresh location. The
+    /// lead-in paragraph's own text is screened against <see cref="HeadingDenialPattern"/> too,
+    /// now that <see cref="HeadingLikeLeadInPattern"/> can match a same-line trailing label: a
+    /// lead-in that already denies its own location in that label must not go looking for defect
+    /// language belonging to something else entirely.
+    /// </para>
     /// </summary>
     private static bool NamesFindingAcrossParagraphs(string[] paragraphs)
     {
@@ -407,12 +496,42 @@ public static partial class ReviewVerdictValidation
                 return true;
             }
 
-            string? next = index + 1 < paragraphs.Length ? paragraphs[index + 1] : null;
-            if (next is not null
-                && HeadingLikeLeadInPattern().IsMatch(paragraph)
-                && !IsFindingContractExampleEcho(next)
-                && DefectLanguagePattern().IsMatch(next)
-                && !HeadingDenialPattern().IsMatch(next))
+            if (HeadingLikeLeadInPattern().IsMatch(paragraph)
+                && !HeadingDenialPattern().IsMatch(paragraph)
+                && StatesDefectInLaterParagraph(paragraphs, index))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// The forward walk <see cref="NamesFindingAcrossParagraphs"/>'s heading branch runs past a
+    /// lead-in, looking for the paragraph that actually states the defect it named.
+    /// </summary>
+    private static bool StatesDefectInLaterParagraph(string[] paragraphs, int leadInIndex)
+    {
+        for (int ahead = leadInIndex + 1; ahead < paragraphs.Length; ahead++)
+        {
+            string candidate = paragraphs[ahead];
+            if (IsFindingContractExampleEcho(candidate))
+            {
+                continue;
+            }
+
+            if (HeadingLikeLeadInPattern().IsMatch(candidate) || LocationPattern().IsMatch(candidate))
+            {
+                return false;
+            }
+
+            if (HeadingDenialPattern().IsMatch(candidate))
+            {
+                return false;
+            }
+
+            if (StructuralMarkerPattern().IsMatch(candidate) || DefectLanguagePattern().IsMatch(candidate))
             {
                 return true;
             }
@@ -652,11 +771,25 @@ public static partial class ReviewVerdictValidation
     }
 
     /// <summary>
+    /// How far past a location's own sentence <see cref="NamesFindingInProse"/> looks for defect
+    /// language that belongs to it (cycle-2 review, conformance finding #1): two of this
+    /// codebase's own recorded conformance findings state exactly what the located code does in
+    /// the sentence right after the location — "Every failure branch in `Explain` interpolates
+    /// `{verb} {key}`…" — and only say what is wrong with it a second sentence later ("the subject
+    /// is **wrong** in the first command…"), so a lookahead of one sentence, even a pronoun-gated
+    /// one, could not reach it. Bounded rather than run to the end of the paragraph: an
+    /// unrelated affirming sentence sharing the paragraph with a genuine defect elsewhere in it is
+    /// exactly the shape this whole heuristic exists to avoid over-crediting, and the two filed
+    /// findings this bound was written to close both land within it.
+    /// </summary>
+    private const int DefectLookaheadSentences = 2;
+
+    /// <summary>
     /// The sentence-scoped half of the prose heuristic: a location and defect language in the
-    /// same sentence, a location whose very next sentence both continues it (per
-    /// <see cref="ContinuationPattern"/>) and carries the defect language itself, or a location
-    /// whose own sentence is only a backward pointer (per <see cref="BackwardPointerPattern"/>),
-    /// in which case the defect language is looked for in the sentence before it instead.
+    /// same sentence, defect language within <see cref="DefectLookaheadSentences"/> sentences
+    /// after it (see <see cref="StatesDefectWithinLookahead"/>), or a location whose own sentence
+    /// is only a backward pointer (per <see cref="BackwardPointerPattern"/>), in which case the
+    /// defect language is looked for in the sentence before it instead.
     /// </summary>
     private static bool NamesFindingInProse(string paragraph)
     {
@@ -668,13 +801,7 @@ public static partial class ReviewVerdictValidation
                 continue;
             }
 
-            if (DefectLanguagePattern().IsMatch(sentences[index]))
-            {
-                return true;
-            }
-
-            string? next = index + 1 < sentences.Length ? sentences[index + 1] : null;
-            if (next is not null && ContinuationPattern().IsMatch(next) && DefectLanguagePattern().IsMatch(next))
+            if (DefectLanguagePattern().IsMatch(sentences[index]) || StatesDefectWithinLookahead(sentences, index))
             {
                 return true;
             }
@@ -683,6 +810,59 @@ public static partial class ReviewVerdictValidation
             if (previous is not null
                 && BackwardPointerPattern().IsMatch(sentences[index])
                 && DefectLanguagePattern().IsMatch(previous))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// Whether a sentence within <see cref="DefectLookaheadSentences"/> sentences after
+    /// <paramref name="sentences"/>[<paramref name="locationIndex"/>] states the defect (cycle-2
+    /// review, conformance finding #1): neither of the two filed findings' intervening sentences
+    /// ("Every failure branch in `Explain` interpolates…", "the 29 `Decisions Log #77` pointers
+    /// this branch adds across `TaskAggregate.cs`…") opens with a <see cref="ContinuationPattern"/>
+    /// pronoun, so the walk cannot be gated on that alone the way the single-sentence check used to
+    /// be. It is gated instead on either that pronoun OR <see cref="CodeReferencePattern"/> — the
+    /// walk stops the moment a sentence has neither, rather than reading through it hoping a later
+    /// one reconnects, because a sentence with neither signal is exactly what let this same
+    /// broadening regress a passing case caught verifying the fix: the conformance prompt's own
+    /// "How to review" bullet locates `AGENTS.md`/`CLAUDE.md` in one sentence and, with no gate at
+    /// all, would have credited the next one ("Report criteria the diff leaves unmet…") purely
+    /// because "unmet" is defect vocabulary. <see cref="EmbeddedListMarkerPattern"/> guards a
+    /// second way that same regression surfaced: that "unmet" sentence has no pronoun of its own,
+    /// but <see cref="SentenceBoundary"/> does not recognize a markdown bullet as a sentence break,
+    /// so it reads on into the NEXT bullet ("- You are in the implementation's git worktree on
+    /// branch `task/1-slug`.") as the same sentence, and that bullet's own backtick would satisfy
+    /// <see cref="CodeReferencePattern"/> for content having nothing to do with it. <see cref="HeadingDenialPattern"/>
+    /// still stops the walk on the documented affirming-review idiom ("Every criterion is met, and
+    /// Program.cs proves it. Nothing here is wrong.") even on a sentence that would otherwise pass
+    /// the topic gate. This narrows, rather than closes, the same keyword-and-proximity gap
+    /// <see cref="NamesAFinding"/>'s own doc comment already discloses — an on-topic intervening
+    /// sentence that uses defect vocabulary about something other than the located subject can
+    /// still supply a false credit, the same class of gap the rest of this file's vocabulary
+    /// already accepts.
+    /// </summary>
+    private static bool StatesDefectWithinLookahead(string[] sentences, int locationIndex)
+    {
+        int limit = Math.Min(sentences.Length, locationIndex + 1 + DefectLookaheadSentences);
+        for (int ahead = locationIndex + 1; ahead < limit; ahead++)
+        {
+            string candidate = sentences[ahead];
+            if (EmbeddedListMarkerPattern().IsMatch(candidate)
+                || (!ContinuationPattern().IsMatch(candidate) && !CodeReferencePattern().IsMatch(candidate)))
+            {
+                return false;
+            }
+
+            if (HeadingDenialPattern().IsMatch(candidate))
+            {
+                return false;
+            }
+
+            if (DefectLanguagePattern().IsMatch(candidate))
             {
                 return true;
             }
