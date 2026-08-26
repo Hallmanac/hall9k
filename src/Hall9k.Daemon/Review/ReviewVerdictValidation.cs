@@ -12,12 +12,13 @@ namespace Hall9k.Daemon.Review;
 /// looking for a defect that was never described. This is the judgment call
 /// <see cref="ReviewResultParser"/>'s own doctrine assigns to the engine, never the parser.
 /// <para>
-/// The check is deliberately lens-agnostic and format-agnostic: the adversarial lens's
-/// <c>FINDING:</c> header and the conformance lens's plain-prose pointer (Decisions Log #63 —
-/// conformance "grades nothing" and was never given the structured contract) both read as a
-/// stated location the same way, because whether the reviewer used a header is not what this
-/// checks — whether it named a place is. A verdict is validated on its raw output, before any
-/// parsing decides what to do with what it found.
+/// The check is deliberately lens-agnostic and format-agnostic: both lenses are handed the same
+/// <c>FINDING:</c> structured contract now (<c>AgentPromptBuilder.AppendFindingContract</c>,
+/// Decisions Log #87), but a conformance pass still sometimes answers in plain prose rather than
+/// the header shape, and that prose pointer reads as a stated location the same way a structured
+/// one does, because whether the reviewer used a header is not what this checks — whether it
+/// named a place is. A verdict is validated on its raw output, before any parsing decides what to
+/// do with what it found.
 /// </para>
 /// </summary>
 public static partial class ReviewVerdictValidation
@@ -688,13 +689,17 @@ public static partial class ReviewVerdictValidation
 
     /// <summary>
     /// The literal placeholder paths this file's own prompts write into an agent's context:
-    /// <c>AppendFindingContract</c>'s header example (<c>src/Some/File.cs:123</c>) and
-    /// <c>AppendReviewMechanics</c>' bullet describing how to cite a location
+    /// <see cref="ReviewResultParser.ExampleLocationPlaceholder"/>'s path half, the same
+    /// worked example <c>AppendFindingContract</c> interpolates it into, and
+    /// <c>AppendReviewMechanics</c>' own bullet describing how to cite a location
     /// (<c>path/to/file.cs:123</c>). Neither names anywhere in any real repository, so a
     /// location this file's own <see cref="LocationPattern"/> reads as "stated" is read as
-    /// nothing of the kind when it is one of these two strings.
+    /// nothing of the kind when it is one of these two strings. The first is read off
+    /// <see cref="ReviewResultParser.ExampleLocationPlaceholder"/> rather than copied as its own
+    /// literal, so the two can never drift apart the way they did before this line existed.
     /// </summary>
-    private static readonly string[] PlaceholderLocations = ["src/Some/File.cs", "path/to/file.cs"];
+    private static readonly string[] PlaceholderLocations =
+        [ReviewResultParser.ExampleLocationPlaceholder.Split(':')[0], "path/to/file.cs"];
 
     /// <summary>
     /// Whether a location a reviewer's output points at is one of this file's own prompts'
