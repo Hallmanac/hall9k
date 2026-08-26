@@ -4,11 +4,12 @@ using System.Text.Json.Serialization;
 namespace Hall9k.Domain.Features.Run;
 
 /// <summary>
-/// How much an adversarial review finding matters (Decisions Log #63). The three grades are
-/// what the severity gate reads: from the gate cycle onward only a High forces another
-/// adversarial cycle, while Mediums and Lows are still fixed and simply stop re-triggering
-/// the loop. The anchors are stated to the reviewer in the prompt rather than left to its
-/// intuition, because a grade every reviewer invents for itself is not a gate.
+/// How much a review finding matters (Decisions Log #63). The three grades are what the
+/// adversarial severity gate reads: from the gate cycle onward only a High forces another
+/// adversarial cycle, while a Medium is still fixed that cycle without forcing another, and a
+/// Low stops being fixed on its own entirely — see <see cref="MeetsFixBar"/>. The anchors are
+/// stated to the reviewer in the prompt rather than left to its intuition, because a grade every
+/// reviewer invents for itself is not a gate.
 /// <para>
 /// Both lenses grade every finding (Decisions Log #87): conformance's own convergence rule
 /// (Decisions Log #63) still runs on a plain clean-or-not basis, with no multi-cycle severity
@@ -30,15 +31,16 @@ public sealed record ReviewSeverity
     public static readonly ReviewSeverity Low = new("Low");
 
     /// <summary>
-    /// Not graded: a reviewer that stated no severity, a conformance finding (that track has no
-    /// grades), or a needs-fixes verdict whose findings could not be read as structured blocks.
-    /// Serializes as an empty string.
+    /// Not graded: a reviewer (either lens, since Decisions Log #87) that stated no severity, or
+    /// a needs-fixes verdict whose findings could not be read as structured blocks. Serializes as
+    /// an empty string.
     /// <para>
-    /// Ungraded is treated as gate-forcing wherever the gate is consulted, and as not-routable
-    /// wherever the scope tag is. That is the conservative reading rather than a guess at what
-    /// the reviewer meant: a finding nobody graded has not been shown to be safe to wave
-    /// through, and the alternative — quietly scoring it Low — is exactly the self-downgrade
-    /// the gate exists to prevent.
+    /// Ungraded is treated as gate-forcing wherever the adversarial severity gate is consulted,
+    /// and as not-routable wherever the scope tag is. That is the conservative reading rather
+    /// than a guess at what the reviewer meant: a finding nobody graded has not been shown to be
+    /// safe to wave through, and the alternative — quietly scoring it Low — is exactly the
+    /// self-downgrade the gate exists to prevent. <see cref="MeetsFixBar"/> deliberately reads
+    /// Unknown the other way around — see its own doc for why.
     /// </para>
     /// </summary>
     public static readonly ReviewSeverity Unknown = new("");

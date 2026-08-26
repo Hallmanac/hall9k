@@ -8,19 +8,26 @@ namespace Hall9k.Daemon.Review;
 /// aggregate records it) and out of the engine (which owns dispatching, waiting, and writing
 /// the stream).
 /// <para>
-/// <b>Conformance</b> has no grades to reason about: a criterion is met or it is not. It ends
-/// the moment it comes back clean, and otherwise runs until <see cref="DaemonOptions.MaxComplianceReviewCycles"/>,
+/// <b>Conformance</b> now grades every finding the same way adversarial does (Decisions Log
+/// #87): <see cref="ReviewFinding.Disposition"/> reads <see cref="ReviewSeverity.MeetsFixBar"/>
+/// on either lens, and <c>ReviewEngine.RecordReviewPassAsync</c> demotes a needs-fixes verdict to
+/// merge-ready the moment every finding it attached is RideAlong-dispositioned — so this track
+/// ends on "nothing that meets the fix bar" whether that means it came back clean or came back
+/// with polish alone. <see cref="Decide"/> itself never gates conformance on severity: a
+/// needs-fixes verdict that survives that reclassification always sets <c>Continues: true</c>
+/// below, so the track otherwise runs until <see cref="DaemonOptions.MaxComplianceReviewCycles"/>,
 /// where the run parks because nothing automated is left to try.
 /// </para>
 /// <para>
-/// <b>Adversarial</b> runs under the severity gate. Before
-/// <see cref="DaemonOptions.AdversarialSeverityGateFromCycle"/> every finding of every grade is
-/// fixed and forces a fresh re-review — early cycles get full rigor while the code is still
-/// converging. From that cycle onward only a High forces the next one; Mediums and Lows are
-/// still fixed, they simply stop re-triggering the loop, which is the nit-churn tail the gate
-/// exists for. Its cap is <see cref="DaemonOptions.MaxAdversarialReviewCycles"/>, and reaching
-/// it is not a budget quietly running out: it means the machine kept finding real high-severity
-/// problems, and the park says so.
+/// <b>Adversarial</b> runs under the severity gate on top of the same fix bar. Before
+/// <see cref="DaemonOptions.AdversarialSeverityGateFromCycle"/> every finding of every grade
+/// forces a fresh re-review — early cycles get full rigor while the code is still converging.
+/// From that cycle onward only a High forces the next one; a Medium is still fixed this cycle
+/// without forcing another, and a Low or an ungraded finding rides along instead of being fixed
+/// at all, which is the nit-churn tail the gate exists for. Its cap is
+/// <see cref="DaemonOptions.MaxAdversarialReviewCycles"/>, and reaching it is not a budget
+/// quietly running out: it means the machine kept finding real high-severity problems, and the
+/// park says so.
 /// </para>
 /// <para>
 /// The cap is measured from the run's budget base and the gate is not, because they are not the
