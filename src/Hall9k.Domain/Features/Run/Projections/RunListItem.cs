@@ -20,10 +20,13 @@ public sealed class RunListItem
     public DateTimeOffset DispatchedAt { get; set; }
     public DateTimeOffset? FinishedAt { get; set; }
     /// <summary>
-    /// Where this run's artifacts live, as recorded on <see cref="RunDispatched"/>. A stream
-    /// written before the field existed falls back to <see cref="RunPaths.GlobalDirectory"/> —
-    /// the same place its files have always actually been — so every reader can use this
-    /// property directly with no fallback of its own to remember.
+    /// Where this run's artifacts lived at dispatch, as recorded on <see cref="RunDispatched"/>.
+    /// A task's directory can move across the <c>tasks</c>/<c>tasks/_archive</c> boundary and
+    /// back after dispatch (backlog 51, PLAN.md §16 #84), so this is a dispatch-time record, not
+    /// a live pointer — resolve it through <see cref="RunPaths.ResolveCurrentDirectory"/> before
+    /// use rather than trusting it verbatim. A stream written before the field existed falls back
+    /// to <see cref="RunPaths.GlobalDirectory"/> — the same place its files have always actually
+    /// been.
     /// </summary>
     public string RunDirectory { get; set; } = string.Empty;
 }
