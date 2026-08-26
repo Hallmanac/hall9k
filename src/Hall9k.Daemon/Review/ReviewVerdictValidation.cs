@@ -63,6 +63,15 @@ public static partial class ReviewVerdictValidation
     /// in the list, so a plainly stated finding like "There is no test for the archived path"
     /// read as naming nothing.
     /// </para>
+    /// <para>
+    /// Cycle-3 review (independent pre-PR pass, two conformance findings): the conformance
+    /// lens's own "How to review" prose (<c>AgentPromptBuilder.BuildConformanceReview</c>) reports
+    /// "unmet" criteria and doctrine a diff "departs" from, and the lens has no structured
+    /// findings contract to fall back on — the prose branch below is its only path to naming
+    /// anything — yet neither verb, nor the plainly synonymous "violates", "breaks", "lacks" and
+    /// "omits" a real reviewer used for the same shapes, was in this list, so a correctly located,
+    /// correctly described finding phrased with any of them read as naming nothing.
+    /// </para>
     /// <see cref="StructuralMarkerPattern"/> covers the structured contract's own "Defect:" /
     /// "Scenario:" labels, checked at paragraph scope instead of this pattern's sentence scope,
     /// because the two-line `FINDING:` block puts the label on the line after the location.
@@ -72,7 +81,7 @@ public static partial class ReviewVerdictValidation
         + @"cannot|can't|won't|doesn't|does not|didn't|no longer|without|unhandled|vulnerable|leaks?|"
         + @"crashes?|throws?|silently|drops?|dropped|overwrit(?:ten|es)|duplicat(?:es?|ed)|double-counts?|"
         + @"stale|ignor(?:es|ed)|skips?|skipped|corrupts?|corrupted|loses|lost|mismatch(?:ed)?|inconsistent|"
-        + @"deadlocks?|hangs?|stuck|overflows?)\b",
+        + @"deadlocks?|hangs?|stuck|overflows?|unmet|departs?|violat(?:es?|ed)|breaks?|lacks?|omits?)\b",
         RegexOptions.IgnoreCase)]
     private static partial Regex DefectLanguagePattern();
 
@@ -200,15 +209,26 @@ public static partial class ReviewVerdictValidation
     /// than a semantic one: a paraphrase or a reflowed quotation of the objective still slips
     /// through, the same class of gap already documented above.
     /// </para>
+    /// <para>
+    /// <paramref name="taskAcceptanceCriteria"/> screens the identical class of echo for the same
+    /// prompt's acceptance-criteria bullets (cycle-3 review, `AgentPromptBuilder.cs:813-817`):
+    /// each criterion is arbitrary per-task text exactly like the objective, filed reviewer
+    /// findings from this project's own task store show criteria routinely pairing a filename
+    /// with a defect word ("LogsCommand.cs resolves a stale run directory"), and a session that
+    /// restates one before concluding satisfies the location-plus-defect shape below the same way
+    /// restating the objective does. Stripped the same way, one criterion at a time.
+    /// </para>
     /// </summary>
-    public static bool NamesAFinding(string? output, string? taskObjective = null)
+    public static bool NamesAFinding(
+        string? output, string? taskObjective = null, IReadOnlyList<string>? taskAcceptanceCriteria = null)
     {
         if (output.IsBlank())
         {
             return false;
         }
 
-        string sanitized = StripObjectiveEcho(StripPlaceholderLocations(output), taskObjective);
+        string sanitized = StripAcceptanceCriteriaEcho(
+            StripObjectiveEcho(StripPlaceholderLocations(output), taskObjective), taskAcceptanceCriteria);
 
         IReadOnlyList<ReviewFinding> structuredFindings = ReviewResultParser.ParseFindings(sanitized);
         if (structuredFindings.Any(HasStatedDefect))
@@ -373,13 +393,13 @@ public static partial class ReviewVerdictValidation
     /// <see cref="NamesAFinding"/>'s branches see the text, rather than inside each branch: a
     /// per-branch check only screens the branch it is written into, which is how the
     /// structural-marker branch went unscreened while the structured-finding and prose branches
-    /// were guarded, and how a placeholder that opened a sentence could swallow a real location
-    /// stated later in that same sentence — <see cref="NamesFindingInProse"/> takes only the
-    /// first <see cref="LocationPattern"/> match per sentence, so a sentence like "Compare it
-    /// against `path/to/file.cs:123`, but `src/Auth.cs:42` never resets the limiter." used to
-    /// have its one real location discarded along with the placeholder that preceded it and be
-    /// read as naming nothing. With the placeholder gone before either branch runs, the first
-    /// match left standing is always a real one.
+    /// were guarded. <see cref="NamesFindingInProse"/> only ever tests whether a sentence
+    /// contains a location at all, not which one, so the risk this step closes for that branch is
+    /// narrower than it once was: a sentence naming both a placeholder and a real location, like
+    /// "Compare it against `path/to/file.cs:123`, but `src/Auth.cs:42` never resets the limiter.",
+    /// is found by the real location either way, but a sentence whose only location is the
+    /// placeholder still has to have it removed, or the sentence would be misread as pointing
+    /// somewhere.
     /// </summary>
     private static string StripPlaceholderLocations(string text) =>
         LocationPattern().Replace(text, match => IsPlaceholderLocation(match.Value) ? string.Empty : match.Value);
@@ -402,6 +422,32 @@ public static partial class ReviewVerdictValidation
         return needle.IsBlank()
             ? text
             : Regex.Replace(text, Regex.Escape(needle), string.Empty, RegexOptions.IgnoreCase);
+    }
+
+    /// <summary>
+    /// <paramref name="text"/> with every verbatim (case-insensitive) occurrence of each of
+    /// <paramref name="taskAcceptanceCriteria"/> removed, the same way <see cref="StripObjectiveEcho"/>
+    /// strips the objective (cycle-3 review, `AgentPromptBuilder.cs:813-817`): the criteria bullets
+    /// are the identical class of arbitrary per-task text
+    /// <c>AgentPromptBuilder.BuildConformanceReview</c> prints into the conformance lens's own
+    /// prompt, so a session that restates one before concluding reproduces its own file references
+    /// and defect vocabulary right back at the platform the same way restating the objective does.
+    /// A no-op when there are no criteria to strip.
+    /// </summary>
+    private static string StripAcceptanceCriteriaEcho(string text, IReadOnlyList<string>? taskAcceptanceCriteria)
+    {
+        if (taskAcceptanceCriteria is null || taskAcceptanceCriteria.Count == 0)
+        {
+            return text;
+        }
+
+        string sanitized = text;
+        foreach (string criterion in taskAcceptanceCriteria)
+        {
+            sanitized = StripObjectiveEcho(sanitized, criterion);
+        }
+
+        return sanitized;
     }
 
     /// <summary>

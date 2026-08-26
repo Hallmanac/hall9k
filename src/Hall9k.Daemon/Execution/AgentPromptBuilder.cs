@@ -820,9 +820,9 @@ public static class AgentPromptBuilder
         prompt.AppendLine("## How to review");
         prompt.AppendLine();
         prompt.AppendLine("- Judge the work against the objective, the acceptance criteria, and the repo's own");
-        prompt.AppendLine("  doctrine (AGENTS.md or CLAUDE.md, and whatever they point at): unmet criteria,");
-        prompt.AppendLine("  work that solves a different problem than the one stated, and any house rule the");
-        prompt.AppendLine("  diff departs from.");
+        prompt.AppendLine("  doctrine (AGENTS.md or CLAUDE.md, and whatever they point at). Report criteria the");
+        prompt.AppendLine("  diff leaves unmet, work that solves a different problem than the one stated, and");
+        prompt.AppendLine("  any house rule it departs from.");
         if (project.VerifyCommands.Count > 0)
         {
             prompt.AppendLine("- A criterion that asks for a passing build or test suite is already answered by the");
