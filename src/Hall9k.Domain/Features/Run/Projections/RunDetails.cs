@@ -115,9 +115,12 @@ public sealed class RunDetails
     /// Where the pipeline stood when the current (or most recent) park interrupted it, mirroring
     /// <see cref="RunAggregate.ParkedFromState"/>: <c>Verifying</c> for a thread-dispute park
     /// (Decisions Log #62), which lands before any reviewer or gate has run, and something else
-    /// (typically <c>UnderReview</c>) for the review loop's own park. <see cref="Apply(IEvent{ReviewParkResolved}, RunDetails)"/>
-    /// reads this to tell a real settled review verdict apart from a dispute the human decided
-    /// without a review pass ever running.
+    /// (typically <c>UnderReview</c>) for the review loop's own park. History only, kept for
+    /// display: <see cref="Apply(IEvent{ReviewParkResolved}, RunDetails)"/> used to read this to
+    /// tell a real settled review verdict apart from a dispute the human decided without a review
+    /// pass ever running, but it goes stale past a run's first dispute (a redispatched fix session
+    /// moves <see cref="RunState"/> to <c>UnderReview</c> before a re-disputed session ever parks
+    /// again), so that check now keys on <see cref="ReviewCycle"/> instead (cycle-6 human triage).
     /// </summary>
     public RunState ParkedFromState { get; set; } = RunState.Unknown;
     /// <summary>
@@ -354,12 +357,21 @@ public sealed class RunDetailsProjection : SingleStreamProjection<RunDetails, Gu
     public void Apply(IEvent<ReviewParkResolved> @event, RunDetails view)
     {
         view.LastReviewVerdict = @event.Data.Verdict;
-        // A thread-dispute park (Decisions Log #62) lands from Verifying, before any reviewer
-        // read the diff — the human decided the disputed thread, not a review finding, so it is
-        // not a settled ruling a later review prompt should be handed (RunAggregate.Apply
-        // applies the identical discriminator to decide whether the pipeline re-enters at
-        // Reverify instead of treating this as an ordinary review-loop resolution).
-        if (view.ParkedFromState != RunState.Verifying)
+        // A thread-dispute park (Decisions Log #62) lands before any reviewer read the diff — the
+        // human decided the disputed thread, not a review finding, so it is not a settled ruling a
+        // later review prompt should be handed. Keyed on ReviewCycle == 0 rather than
+        // ParkedFromState (cycle-6 human triage): ReviewCycle stays 0 for the entire dispute-and-
+        // resolve round trip no matter how many times the resumed session disputes again (cycle
+        // numbers start at 1, at the first ordinary ReviewDispatched), while ParkedFromState is
+        // captured from State at park time and reads UnderReview, not Verifying, on every dispute
+        // past the first — ReviewFixDispatched moves State to UnderReview before the resumed
+        // session ever parks again, so a second-or-later resolve keyed on ParkedFromState would
+        // wrongly record the resolution as a settled ruling. ReviewCommand.cs uses the identical
+        // ReviewCycle == 0 discriminator for the same distinction. (This mirrors RunAggregate.Apply,
+        // which still keys its own Reverify-vs-ordinary-resolution branch on ParkedFromState — a
+        // pre-existing divergence this task did not introduce and is not fixing here; see the
+        // deferred draft 5cd7917e.)
+        if (view.ReviewCycle != 0)
         {
             view.ReviewParkResolutions.Add(new ReviewParkResolution(
                 view.ReviewCycle, @event.Data.Verdict, @event.Data.Reason, @event.Data.ResolvedAt));
