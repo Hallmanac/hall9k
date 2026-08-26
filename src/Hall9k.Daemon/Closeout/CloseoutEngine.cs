@@ -335,6 +335,12 @@ public sealed class CloseoutEngine(
             return InspectionOutcome.Inspected;
         }
 
+        // Recorded every sweep the pull request is still open, ahead of every branch below:
+        // the Delivered phase line reads this regardless of which finding (or none) the rest
+        // of this method goes on to act on (origin: PR #50 sat Delivered for 23 minutes with a
+        // landed Copilot review nobody had read before the merge).
+        await RecordExternalReviewObservationAsync(session, run, snapshot, now, cancellationToken);
+
         // A parked run gets merge/close detection only; dispatch decisions were handed
         // to the human when the automatic budget ran out.
         if (run.State == RunState.CloseoutParked)
@@ -410,6 +416,30 @@ public sealed class CloseoutEngine(
             snapshot, now, cancellationToken);
 
         return InspectionOutcome.Inspected;
+    }
+
+    /// <summary>
+    /// One append per change: the post-PR review watcher's fact only lands on the run stream
+    /// when it actually moved, so a quiet pull request does not grow a same-state event every
+    /// sweep (mirrors the errored-review dedup in RerequestReviewOrParkAsync). Read only by
+    /// the Delivered phase line — never a task lifecycle status, never a driver of RunState.
+    /// </summary>
+    private async Task RecordExternalReviewObservationAsync(
+        IDocumentSession session,
+        RunDetails run,
+        PullRequestSnapshot snapshot,
+        DateTimeOffset now,
+        CancellationToken cancellationToken)
+    {
+        if (snapshot.CopilotReviewState == run.ExternalReviewState
+            && snapshot.CopilotReviewThreadCount == run.ExternalReviewThreadCount)
+        {
+            return;
+        }
+
+        session.Events.Append(run.Id, new ExternalReviewObserved(
+            run.Id, snapshot.CopilotReviewState, snapshot.CopilotReviewThreadCount, now));
+        await session.SaveChangesAsync(cancellationToken);
     }
 
     /// <summary>

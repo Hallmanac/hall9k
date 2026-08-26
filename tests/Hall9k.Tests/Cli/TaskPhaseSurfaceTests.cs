@@ -366,6 +366,45 @@ public sealed class TaskPhaseSurfaceTests
         row.Phase.Detail.Should().Contain("has not landed yet");
     }
 
+    /// <summary>
+    /// The post-PR review watcher's own three readings (origin: PR #50 sat Delivered for 23
+    /// minutes with a landed Copilot review nobody had read before the merge), each rendered on
+    /// the Delivered phase line — never as a new task lifecycle status, and never changing
+    /// AttentionComposer's NeedsYou verdict for AwaitingReview either way.
+    /// </summary>
+    [Fact]
+    public void The_post_PR_review_watcher_s_three_readings_are_the_delivered_phase()
+    {
+        Guid runId = DomainId.New();
+        RunDetails landed = StatusFixtures.Run(runId, RunState.AwaitingReview, sessionProcessId: null, pullRequestNumber: 24);
+        landed.ExternalReviewState = ExternalReviewState.Landed;
+        landed.ExternalReviewThreadCount = 2;
+
+        string pullRequest = "https://github.com/x/y/pull/24";
+
+        StatusFixtures.Compose(StatusFixtures.Task(TaskState.Done, runId, pullRequest), landed)
+            .Phase.Text.Should().Be("watching PR #24 — Copilot review landed");
+        StatusFixtures.Compose(StatusFixtures.Task(TaskState.Done, runId, pullRequest), landed)
+            .Phase.Detail.Should().Be("2 comment threads");
+
+        RunDetails pending = StatusFixtures.Run(runId, RunState.AwaitingReview, sessionProcessId: null, pullRequestNumber: 24);
+        pending.ExternalReviewState = ExternalReviewState.RequestedPending;
+        StatusFixtures.Compose(StatusFixtures.Task(TaskState.Done, runId, pullRequest), pending)
+            .Phase.Text.Should().Be("watching PR #24 — awaiting Copilot review");
+
+        RunDetails none = StatusFixtures.Run(runId, RunState.AwaitingReview, sessionProcessId: null, pullRequestNumber: 24);
+        none.ExternalReviewState = ExternalReviewState.None;
+        StatusFixtures.Compose(StatusFixtures.Task(TaskState.Done, runId, pullRequest), none)
+            .Phase.Text.Should().Be("watching PR #24 — awaiting human review");
+
+        // A run recorded before this observation existed (or a sweep that has not run yet)
+        // reads exactly as the original silent line rather than asserting a state nobody
+        // watched for — the never-guess rule.
+        RunDetails unobserved = StatusFixtures.Run(runId, RunState.AwaitingReview, sessionProcessId: null, pullRequestNumber: 24);
+        StatusFixtures.Compose(StatusFixtures.Task(TaskState.Done, runId, pullRequest), unobserved)
+            .Phase.Text.Should().Be("watching PR #24 — waiting on your merge");
+    }
+
     [Fact]
     public void Rows_with_no_live_machinery_carry_no_phase_at_all()
     {
