@@ -70,7 +70,21 @@ public static class AtomicFileWrite
 
             if (!targetExists)
             {
-                File.Move(tempPath, resolvedPath);
+                try
+                {
+                    File.Move(tempPath, resolvedPath);
+                }
+                catch (IOException) when (File.Exists(resolvedPath))
+                {
+                    // The existence check above and the move below are not one atomic step: a
+                    // concurrent writer that claims the target in between (for example, two
+                    // `h9k daemon stop` invocations racing to write the same file) leaves a
+                    // target here that File.Move refuses to overwrite. That target now exists,
+                    // which is exactly the targetExists case, so finishing the write is a
+                    // Replace instead.
+                    File.Replace(tempPath, resolvedPath, destinationBackupFileName: null);
+                }
+
                 return;
             }
 
