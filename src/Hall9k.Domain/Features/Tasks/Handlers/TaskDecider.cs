@@ -54,7 +54,7 @@ public static class TaskDecider
     }
 
     /// <summary>
-    /// The override reaches the executor's /bin/sh command line, so it is vetted here rather
+    /// The override reaches the executor's shell command line, so it is vetted here rather
     /// than quoted and hoped for; Unknown simply states no preference (Decisions Log #33).
     /// <para>
     /// Public because a caller may need the answer before it has an event to build: h9k task add
