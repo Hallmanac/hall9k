@@ -334,11 +334,13 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
     /// <summary>
     /// Ride-alongs (Decisions Log #87) never folded into a fix session this run happened to
     /// dispatch for another reason — below the fix bar on their own, so no cycle was spent
-    /// earning them one, and recorded rather than fixed. Normally there are none and the line
-    /// says nothing extra.
+    /// earning them one, and recorded rather than fixed. Names the bar itself, not only the
+    /// count: a reader asking why a cycle did not dispatch a fix run over these should not have
+    /// to read the raw stream to learn that "below medium" is the rule that decided it.
+    /// Normally there are none and the line says nothing extra.
     /// </summary>
     private static string RideAlongClause(RunDetails run) => run.ReviewResidualsRideAlong > 0
-        ? $", {run.ReviewResidualsRideAlong} ride-along(s) never claimed"
+        ? $", {run.ReviewResidualsRideAlong} ride-along(s) graded below the fix bar (medium/high) and never claimed"
         : string.Empty;
 
     /// <summary>
