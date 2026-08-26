@@ -84,6 +84,10 @@ public sealed class RunReviewProjectionTests
         view.State.Should().Be(RunState.UnderReview, "a resolved park no longer needs the human");
         view.ParkedReason.Should().BeNull("the reason is answered; h9k status must stop showing it");
         view.LastReviewVerdict.Should().Be(ReviewVerdict.MergeReady, "the human's verdict is the run's verdict now");
+        view.ReviewParkResolutions.Should().ContainSingle().Which.Should().BeEquivalentTo(
+            new ReviewParkResolution(1, ReviewVerdict.MergeReady, null, Now),
+            "the resolution is kept as history, not just folded into LastReviewVerdict, so a later " +
+            "review pass can be told what a human already settled");
     }
 
     /// <summary>
