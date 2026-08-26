@@ -316,7 +316,7 @@ actually failed*.
 | `h9k task resolve <id> --reason "…"` | The task is **Failed** but the objective was met anyway: the work merged, or you finished it by hand, and only the bookkeeping died. | Ends the task Done on your attestation. `--reason` is required (an attestation without a why is a guess) and `--pr` records where the work landed (#27). |
 | `h9k task abandon <id> --reason "…"` | You have stopped believing in the work. Reaches every non-terminal state, drafts and published tasks included. | Terminal. Releases any lease. Nothing is deleted: the reason is the record. |
 | `h9k pr resolve <id> [--checks \| --rebase]` | The task is **Done**, its pull request is open, and review feedback, failing CI, or a conflict with its base branch needs another pass, either because the monitor spent its budget or because you want one now (`--rebase` is for when you spot the conflict before the monitor's next inspection does, backlog 44). | Dispatches a follow-up run onto the existing PR branch and resets the monitor's automatic retry budget (#20, #22). |
-| `h9k review resolve <id> --merge-ready [--reason "…"]` / `--needs-fixes "<why>"` | A run parked **before** its PR, in the internal review loop, and is waiting on your verdict. | `--merge-ready` proceeds to the pull request; `--needs-fixes` dispatches a fix session with your reason as its findings and restores the fix budget (#24). `--merge-ready` is refused when the park is a disputed rebase conflict (nothing has been rebased yet, so there is nothing ready to merge) — only `--needs-fixes` applies there. Either verdict's reason is recorded on the task and carried into every later review pass as a settled ruling (#88), so pair `--merge-ready` with `--reason` when you dismiss a finding — e.g. the evidence that dismissed it — rather than leaving the next fresh-context reviewer to rediscover it. |
+| `h9k review resolve <id> --merge-ready [--reason "…"]` / `--needs-fixes "<why>"` | A run parked **before** its PR, in the internal review loop, and is waiting on your verdict. | `--merge-ready` proceeds to the pull request; `--needs-fixes` dispatches a fix session with your reason as its findings and restores the fix budget (#24). `--merge-ready` is refused when the park is a disputed rebase conflict (nothing has been rebased yet, so there is nothing ready to merge) — only `--needs-fixes` applies there. Either verdict's reason is recorded on the task and carried into every later review pass as a settled ruling (#88) — except on a thread-dispute park (#62), which settles a disputed thread before any reviewer ever read the diff and so is not recorded as a review ruling — so pair `--merge-ready` with `--reason` when you dismiss a finding — e.g. the evidence that dismissed it — rather than leaving the next fresh-context reviewer to rediscover it. |
 
 Two distinctions worth keeping straight, because they are the ones that get confused:
 
@@ -365,9 +365,12 @@ The checkpoints, in the order the window sees them:
    cycle is the independence guarantee and stays, but a human's past verdict on this task's own
    parks travels forward as a settled ruling every later pass is shown (Decisions Log #88): each
    review lens prompt is handed the task's prior `review resolve` verdicts and reasons, summarized
-   and bounded, and told the v0 Decisions Log (§16) is authoritative too, so a deviation already
-   ratified there — or a finding a human already dismissed with evidence — is not re-raised
-   verbatim by the next fresh-context reviewer without it stating what changed since the ruling.
+   and bounded, and pointed at whatever doctrine this project's own AGENTS.md or CLAUDE.md
+   documents — a decisions log among them, if it keeps one — as authoritative too (the prompt
+   names no platform file by name, since `AgentPromptBuilder` serves every registered project,
+   not just this one), so a deviation already ratified there — or a finding a human already
+   dismissed with evidence — is not re-raised verbatim by the next fresh-context reviewer without
+   it stating what changed since the ruling.
 4. **The daemon opens the pull request.** Agents never do, and there is deliberately no create-pr
    skill. The task reaches **Done** here, when the pull request opens, so Done means "the work is
    on a PR and waiting on review" rather than "merged".
