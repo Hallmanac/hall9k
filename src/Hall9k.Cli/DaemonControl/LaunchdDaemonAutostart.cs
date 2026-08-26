@@ -33,6 +33,8 @@ public sealed class LaunchdDaemonAutostart : IDaemonAutostart
 
     public string MechanismDescription => "launchd LaunchAgent";
 
+    public string StopMechanismDescription => MechanismDescription;
+
     public bool IsEnabled => File.Exists(PlistPath);
 
     public async Task<bool> IsLoadedAsync(CancellationToken cancellationToken) =>

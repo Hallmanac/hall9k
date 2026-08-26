@@ -108,11 +108,15 @@ variables travel as `set` prefixes scoped to the one `cmd.exe` invocation that t
 never as a registry mutation — nothing outside that one task is touched.
 
 A launchd- or Task-Scheduler-owned daemon restarts after a crash but never after a clean stop
-(`RestartOnFailure` on Windows mirrors launchd's `KeepAlive SuccessfulExit=false`), and
-`h9k daemon stop` routes through whichever service manager owns the job, so stopped means
-stopped either way. Windows registers the task at `\Hall9k\h9kd` in Task Scheduler's own library —
-never a Windows service, which would run as a different identity and lose your Claude Code, git,
-and `gh` credentials (Decisions Log #3).
+(`RestartOnFailure` on Windows mirrors launchd's `KeepAlive SuccessfulExit=false`), so stopped
+means stopped either way — but the two platforms get there differently. On macOS, `h9k daemon
+stop` routes through launchd itself (`launchctl bootout`), unloading the job so its restart
+policy cannot resurrect the daemon you just killed. Task Scheduler has no equivalent per-job stop
+verb, so on Windows `h9k daemon stop` sends the same graceful stop-request file the non-autostart
+path always uses; the task registration itself is untouched and stays `Ready` until the next
+logon. Windows registers the task at `\Hall9k\h9kd` in Task Scheduler's own library — never a
+Windows service, which would run as a different identity and lose your Claude Code, git, and `gh`
+credentials (Decisions Log #3).
 
 ## Postgres
 
