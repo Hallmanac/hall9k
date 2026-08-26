@@ -241,13 +241,15 @@ Findings must be verified: read the surrounding code, confirm the defect, discar
 unconfirmed. Each carries a `file:line`, a defect statement, and a concrete failure scenario.
 
 **Each lens is a track with its own cycle count and its own convergence rule.** Conformance ends
-the moment nothing it found meets the fix bar, and parks the run if something still does at its
-cap. Adversarial runs under a severity gate: early cycles re-trigger on any finding, later ones
-only on a high, so a medium is still fixed there but stops keeping the loop alive, while a low
-rides along instead of being fixed at all. A track that concludes goes dormant and is never
-reawakened by the other track's fix sessions. **Differing cycle counts on one run are the
-design, not a fault** (a clean conformance track can be dormant at cycle 2 while adversarial is
-still working at cycle 5).
+only once everything it found rides along instead of earning its own fix — an out-of-scope
+finding still routes elsewhere and keeps the track running even though it never meets the fix bar
+itself — and reaching its cap parks the run only when a fix is still owed there; with nothing left
+to fix, the cap settles the run quietly instead. Adversarial runs under a severity gate: early
+cycles re-trigger on any finding, later ones only on a high, so a medium is still fixed there but
+stops keeping the loop alive, while a low rides along instead of being fixed at all. A track that
+concludes goes dormant and is never reawakened by the other track's fix sessions. **Differing
+cycle counts on one run are the design, not a fault** (a clean conformance track can be dormant
+at cycle 2 while adversarial is still working at cycle 5).
 
 When a cycle needs fixes, **one** fix session runs in the same worktree with the merged findings
 of every live track, the gates re-run, and a fresh set of reviewers looks again. A finding the

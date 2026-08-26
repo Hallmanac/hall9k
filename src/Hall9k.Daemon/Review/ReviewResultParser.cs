@@ -27,8 +27,12 @@ public static class ReviewResultParser
     /// VERDICT — echoes this header back verbatim; unlike a verdict line, where the last one
     /// wins, a finding block has no "last one wins" rule, so an echoed example would otherwise
     /// stand as a second, fabricated finding alongside whatever the pass actually reported.
-    /// <see cref="Close"/> drops any block whose location matches this placeholder exactly,
-    /// rather than dispatching a fix session at a file that was never touched.
+    /// <see cref="Close"/> drops any block whose location's path matches this placeholder's path
+    /// — the same path-first check <see cref="ReviewVerdictValidation.IsPlaceholderLocation"/>
+    /// uses, not an exact match against the full `path:line` string (cycle-3 adversarial
+    /// finding): a pass that drops or adapts the line number while echoing this example still
+    /// points at a path no repository has, and an exact-literal comparison let that survive as a
+    /// fabricated finding rather than dispatching a fix session at a file that was never touched.
     /// </summary>
     public const string ExampleLocationPlaceholder = "src/Some/File.cs:123";
 
@@ -83,7 +87,7 @@ public static class ReviewResultParser
 
         Dictionary<string, string> header = HeaderTags(block[0][FindingMarker.Length..]);
         string location = Tag(header, "at") ?? Tag(header, "file") ?? Tag(header, "location") ?? string.Empty;
-        if (location.Equals(ExampleLocationPlaceholder, StringComparison.OrdinalIgnoreCase))
+        if (location.IsNotBlank() && ReviewVerdictValidation.IsPlaceholderLocation(location))
         {
             return;
         }

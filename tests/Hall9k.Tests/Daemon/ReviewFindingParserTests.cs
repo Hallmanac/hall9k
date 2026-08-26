@@ -117,4 +117,28 @@ public sealed class ReviewFindingParserTests
         ReviewFinding finding = ReviewResultParser.ParseFindings(summary).Should().ContainSingle().Subject;
         finding.Location.Should().Be("src/Auth.cs:42");
     }
+
+    /// <summary>
+    /// The placeholder screen matches on path, not the full literal (cycle-3 adversarial
+    /// finding): a pass that drops or adapts the example's line number while echoing it, or
+    /// echoes the mechanics bullet's own <c>path/to/file.cs</c> placeholder instead, still points
+    /// at a path no repository has, and an exact-literal comparison against
+    /// <see cref="ReviewResultParser.ExampleLocationPlaceholder"/> alone let those through as a
+    /// fabricated finding.
+    /// </summary>
+    [Theory]
+    [InlineData("src/Some/File.cs:45")]
+    [InlineData("src/Some/File.cs")]
+    [InlineData("path/to/file.cs:123")]
+    [InlineData("path/to/file.cs")]
+    public void A_placeholder_path_is_screened_even_with_an_adapted_line_number_or_no_line_at_all(string location)
+    {
+        string summary =
+            $"FINDING: severity=high; scope=in-scope; at={location}\n" +
+            "Defect: one sentence saying what is wrong.\n" +
+            "Scenario: the input or state that makes it misbehave, and what goes wrong.\n\n" +
+            "VERDICT: merge-ready";
+
+        ReviewResultParser.ParseFindings(summary).Should().BeEmpty();
+    }
 }
