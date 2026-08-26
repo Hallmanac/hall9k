@@ -227,7 +227,7 @@ public sealed class GitHubPullRequestInspector : IPullRequestInspector
             // Read once and reused below: the resolved-or-not count needs it for the "landed
             // (or stale) with its comment-thread count" phase text, so it is read ahead of the
             // unresolved-only filtering the rest of this loop applies. Scoped to the review
-            // that is actually reported (Decisions Log #88, independent pre-PR review cycle 6)
+            // that is actually reported (Decisions Log #89, independent pre-PR review cycle 6)
             // — Copilot's login alone is not enough, since a stale review superseded by a fresh
             // countersign left threads too, and those are not what the reported review left.
             PullRequestReviewer? starter = ThreadStarter(thread);
@@ -307,7 +307,7 @@ public sealed class GitHubPullRequestInspector : IPullRequestInspector
     /// that is what gets reported), or null when nothing was recorded — what
     /// <see cref="ParseReviews"/> scopes <c>CopilotReviewThreadCount</c> against, so a thread a
     /// now-superseded review left does not inflate the count of a fresh, clean countersign
-    /// (Decisions Log #88).
+    /// (Decisions Log #89).
     /// </para>
     /// </summary>
     private static (ExternalReviewState State, string? ReviewId) ReadCopilotReviewState(
@@ -582,7 +582,7 @@ public sealed class GitHubPullRequestInspector : IPullRequestInspector
     /// carries none (a standalone pull-request comment, never part of a review). What
     /// <see cref="ParseReviews"/> compares against the currently-landed review's own id to scope
     /// <c>CopilotReviewThreadCount</c> to that review specifically, rather than to every thread
-    /// Copilot has ever opened across the pull request's history (Decisions Log #88).
+    /// Copilot has ever opened across the pull request's history (Decisions Log #89).
     /// </summary>
     private static string? ThreadReviewId(JsonElement thread)
     {

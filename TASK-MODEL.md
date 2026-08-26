@@ -412,7 +412,7 @@ legible from the run's own history too.
 
 **Display composition** (`h9k status`, log #66 and §2.4): everything here reads as
 **Delivered** until a merge is observed, and the current run's state composes the phase line
-beneath it - the post-PR review watcher's own four readings of Copilot (log #88): "watching
+beneath it - the post-PR review watcher's own four readings of Copilot (log #89): "watching
 PR #24 — Copilot review landed" with its comment-thread count, "watching PR #24 — awaiting
 Copilot review · requested but not yet submitted", "watching PR #24 — Copilot reviewed an
 earlier commit" with the same thread count and its own stale-review hedge (a real review that
@@ -584,7 +584,7 @@ gone. A phase never claims a session is doing something without observing the pr
 a session on another node, or one whose start time was never recorded, reads as "liveness not
 observed here" rather than as either answer. The two meanings of the old `ClosingOut` separate here
 - "follow-up on PR #24: building, session alive" against "watching PR #24 — Copilot review landed"
-(or awaiting Copilot, or plain "watching PR #24" when nothing has been observed yet, log #88) -
+(or awaiting Copilot, or plain "watching PR #24" when nothing has been observed yet, log #89) -
 so "is it my turn?" never needs a log dive.
 
 **Attention** is `AttentionComposer`, the single owner of the mapping from recorded facts to a
