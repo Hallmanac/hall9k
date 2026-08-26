@@ -64,10 +64,12 @@ public sealed class ProjectHomeRenderLoop(
 
     /// <summary>
     /// NOTIFY carries no payload (log #8): every write on the shared "hall9k" channel wakes this
-    /// loop too, and a sweep that finds nothing new to render costs one query per project. Not
-    /// every task or idea command rings the doorbell today (a draft revise does not, since nothing
-    /// dispatches from it) — the poll interval is the backstop that catches those within a bounded
-    /// wait rather than this loop depending on every write path remembering to ring it.
+    /// loop too, and a sweep that finds nothing new to render costs a handful of queries per
+    /// project (one for its tasks and ideas, plus the archive sweep's own run lookups, backlog
+    /// 51) rather than a per-event handler's zero-when-idle cost. Not every task or idea command
+    /// rings the doorbell today (a draft revise does not, since nothing dispatches from it) — the
+    /// poll interval is the backstop that catches those within a bounded wait rather than this
+    /// loop depending on every write path remembering to ring it.
     /// </summary>
     private async Task ListenForDoorbellAsync(CancellationToken cancellationToken)
     {
