@@ -28,7 +28,10 @@ namespace Hall9k.Daemon.Review;
 /// saw the implementation reasoning — read the run's diff; a needs-fixes verdict
 /// dispatches a fix session in the same worktree, gates re-run, and fresh reviewers
 /// look again. A disputed finding parks the run for the human, and a missing verdict gets
-/// ONE same-session re-prompt before parking. A park is resolved with h9k review resolve
+/// ONE same-session re-prompt before parking — and a needs-fixes verdict that names no
+/// finding (<see cref="ReviewVerdictValidation"/>) is recorded as missing for exactly this
+/// purpose, so it takes the same re-prompt-then-park path rather than being accepted as
+/// findings that were never stated. A park is resolved with h9k review resolve
 /// (ReviewParkResolved re-enters the loop here). The loop is a state machine over the run
 /// stream, so a restarted daemon resumes it exactly where the events left off.
 /// <para>
@@ -167,8 +170,8 @@ public sealed class ReviewEngine(
                     // The cycle's one re-prompt is spent; guessing what the reviewer meant
                     // would be worse than asking (never guess at unobserved facts).
                     await ParkAsync(context.RunId, context.TaskId,
-                        $"A review pass (cycle {run.ReviewCycle}, {VerdictlessLensList(run)}) returned no parseable " +
-                        "verdict, even after this cycle's re-prompt. " +
+                        $"Review cycle {run.ReviewCycle}: {await VerdictMissingCauseAsync(run, cancellationToken)}, " +
+                        "even after this cycle's re-prompt. " +
                         $"Its output: {RunPaths.ReviewFindingsFile(ParkedRunDirectory(run), run.ReviewCycle)}. " +
                         "Judge the diff yourself, then resolve with h9k review resolve or abandon the task.",
                         cancellationToken);
@@ -608,6 +611,15 @@ public sealed class ReviewEngine(
         await File.WriteAllTextAsync(LensFindingsFile(runDirectory, cycle, pass.Lens), output, cancellationToken);
 
         ReviewVerdict verdict = ReviewResultParser.ParseVerdict(output);
+        if (verdict == ReviewVerdict.NeedsFixes && !ReviewVerdictValidation.NamesAFinding(output))
+        {
+            // A needs-fixes verdict that names nothing is not a real answer (origin: ten
+            // occurrences filed 2026-08-25): recording it as Unknown routes it through the exact
+            // same one-reprompt-then-park path an unparseable VERDICT line already takes, rather
+            // than parking a human or spending a fix session on content that does not exist.
+            verdict = ReviewVerdict.Unknown;
+        }
+
         // A merge-ready pass reports no findings by contract; anything it listed anyway is not
         // turned into work behind its own verdict. A needs-fixes pass always carries at least
         // one, even when nothing structured could be read out of it.
@@ -993,7 +1005,7 @@ public sealed class ReviewEngine(
                 ? await File.ReadAllTextAsync(path, cancellationToken)
                 : string.Empty;
             merged.AppendLine();
-            merged.AppendLine($"## {LensHeading(pass.Lens)} — verdict: {VerdictLabel(pass.Verdict)}");
+            merged.AppendLine($"## {LensHeading(pass.Lens)} — verdict: {VerdictLabel(pass.Verdict, text)}");
             merged.AppendLine();
             merged.AppendLine(text.IsBlank() ? "(this pass recorded no output)" : text.Trim());
         }
@@ -1488,19 +1500,56 @@ public sealed class ReviewEngine(
         _ => "Review pass (no lens recorded)",
     };
 
-    private static string VerdictLabel(ReviewVerdict verdict) =>
-        verdict == ReviewVerdict.Unknown ? "(none stated)" : verdict.Value;
+    /// <summary>
+    /// The label a human reads beside a pass's raw output. An <see cref="ReviewVerdict.Unknown"/>
+    /// pass is not one fact but two different ones (task filed 2026-08-25): a needs-fixes
+    /// verdict that named nothing the platform could read as a finding, still visible in the
+    /// preserved text right below this heading, versus a pass that truly ended without a
+    /// parseable verdict line at all. Reporting both as "(none stated)" contradicts the very
+    /// text it introduces when the cause was the former.
+    /// </summary>
+    private static string VerdictLabel(ReviewVerdict verdict, string rawText) => verdict switch
+    {
+        _ when verdict != ReviewVerdict.Unknown => verdict.Value,
+        _ when ReviewResultParser.ParseVerdict(rawText) == ReviewVerdict.NeedsFixes =>
+            "needs-fixes (named nothing the platform could read as a finding)",
+        _ => "(none stated)",
+    };
 
     private static string SettlementLabel(RunAggregate run) => run.ReviewSettlement == ReviewSettlement.Unknown
         ? "settlement not recorded"
         : run.ReviewSettlement.Value.ToLowerInvariant();
 
-    private static string VerdictlessLensList(RunAggregate run)
+    /// <summary>
+    /// Why the cycle has no readable verdict, per verdict-less pass: a needs-fixes verdict that
+    /// named nothing the platform could read as a finding is a different observed fact from a
+    /// pass that ended with no VERDICT line at all, and the human parked over it needs to be
+    /// told which one actually happened (task filed 2026-08-25) — both routes land here, but
+    /// only one of them ever said "needs-fixes". Re-reads each pass's own preserved output
+    /// rather than trusting a remembered reason, since the output on disk is the fact and this
+    /// is what decides the honest label over it.
+    /// </summary>
+    private async Task<string> VerdictMissingCauseAsync(RunAggregate run, CancellationToken cancellationToken)
     {
-        List<string> lenses = [.. run.CompletedReviewPasses
-            .Where(pass => pass.Verdict == ReviewVerdict.Unknown)
-            .Select(pass => LensLabel(pass.Lens))];
-        return lenses.Count == 0 ? "lens not recorded" : string.Join(", ", lenses);
+        List<ReviewPassResult> verdictless = [.. run.CompletedReviewPasses
+            .Where(pass => pass.Verdict == ReviewVerdict.Unknown)];
+        if (verdictless.Count == 0)
+        {
+            return "a review pass returned no parseable verdict";
+        }
+
+        List<string> causes = [];
+        string runDirectory = CurrentRunDirectory(run);
+        foreach (ReviewPassResult pass in verdictless)
+        {
+            string path = LensFindingsFile(runDirectory, run.ReviewCycle, pass.Lens);
+            string raw = File.Exists(path) ? await File.ReadAllTextAsync(path, cancellationToken) : string.Empty;
+            causes.Add(ReviewResultParser.ParseVerdict(raw) == ReviewVerdict.NeedsFixes
+                ? $"the {LensLabel(pass.Lens)} returned needs-fixes naming nothing the platform could read as a finding"
+                : $"the {LensLabel(pass.Lens)} returned no parseable verdict");
+        }
+
+        return string.Join("; ", causes);
     }
 
     /// <summary>

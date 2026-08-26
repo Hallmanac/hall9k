@@ -1024,7 +1024,10 @@ public static class AgentPromptBuilder
         prompt.AppendLine();
         prompt.AppendLine("    VERDICT: needs-fixes");
         prompt.AppendLine();
-        prompt.AppendLine("when at least one verified finding stands. You may not end this session without a");
+        prompt.AppendLine("when at least one verified finding stands. A needs-fixes verdict must name at least");
+        prompt.AppendLine("one finding: a stated location (a file, or a file and line) and a description of the");
+        prompt.AppendLine("defect there. A needs-fixes verdict with nothing named this way is read the same as");
+        prompt.AppendLine("no verdict at all. You may not end this session without a");
         prompt.AppendLine("VERDICT line. If checks or commands you started are still running, WAIT for them");
         prompt.AppendLine("to finish, then conclude — a promise to deliver the verdict later is not a");
         prompt.AppendLine("verdict, and nobody returns to keep it. The platform parses this line; a missing");
@@ -1033,11 +1036,15 @@ public static class AgentPromptBuilder
     }
 
     /// <summary>
-    /// The one same-session retry for a reviewer that ended without a VERDICT line: the
-    /// session resumes (it already read the diff) and is told to conclude now. One
-    /// re-prompt only — a second verdict-less ending parks the run (log #11 spirit).
-    /// Origin incident (2026-08-18): the first live review ended with a promise to
-    /// deliver the verdict "when it completes" and parked a correct implementation.
+    /// The one same-session retry for a reviewer whose verdict the engine could not honestly
+    /// act on: no VERDICT line at all, or a needs-fixes verdict naming nothing
+    /// (<see cref="Hall9k.Daemon.Review.ReviewVerdictValidation"/>). The session resumes (it
+    /// already read the diff) and is told to conclude now. One re-prompt only — a second
+    /// verdict-less ending parks the run (log #11 spirit). Origin incidents: 2026-08-18, the
+    /// first live review ended with a promise to deliver the verdict "when it completes" and
+    /// parked a correct implementation; 2026-08-25, ten occurrences of a needs-fixes verdict
+    /// that named no finding either parked a human or burned a fix session on content that did
+    /// not exist.
     /// <para>
     /// The resumed leg's output <i>replaces</i> what the platform read from the first one
     /// (<c>ReviewEngine.RecordReviewPassAsync</c> re-parses it and overwrites the lens's
@@ -1051,8 +1058,9 @@ public static class AgentPromptBuilder
     {
         bool structured = lens == ReviewLens.Adversarial;
         StringBuilder prompt = new();
-        prompt.AppendLine("Your review session ended without the required VERDICT line, so the platform");
-        prompt.AppendLine("could not read your judgment. Conclude now:");
+        prompt.AppendLine("Your review session ended without the required VERDICT line, or with a");
+        prompt.AppendLine("needs-fixes verdict naming nothing the platform could read as a finding — either");
+        prompt.AppendLine("way, the platform could not read your judgment. Conclude now:");
         prompt.AppendLine();
         prompt.AppendLine("- If any checks or commands are still unfinished, wait for them and fold the");
         prompt.AppendLine("  results into your judgment.");
@@ -1061,14 +1069,17 @@ public static class AgentPromptBuilder
             prompt.AppendLine("- Restate every verified finding that still stands, in full and in the header");
             prompt.AppendLine("  contract below — the platform reads this message in place of your earlier one,");
             prompt.AppendLine("  so a finding restated without its FINDING header arrives ungraded and unplaced,");
-            prompt.AppendLine("  and its severity and scope are lost. If none stand, say so.");
+            prompt.AppendLine("  and its severity and scope are lost. If none stand, say so and return merge-ready.");
         }
         else
         {
             prompt.AppendLine("- Restate your verified findings (file:line, defect, failure scenario), or state");
-            prompt.AppendLine("  that none stand.");
+            prompt.AppendLine("  that none stand and return merge-ready.");
         }
 
+        prompt.AppendLine("- A needs-fixes verdict must name at least one finding: a stated location (a file,");
+        prompt.AppendLine("  or a file and line) and a description of the defect there. A needs-fixes verdict");
+        prompt.AppendLine("  with nothing named this way is read the same as no verdict at all.");
         prompt.AppendLine("- End your final message with exactly one verdict line, nothing after it:");
         prompt.AppendLine("  `VERDICT: merge-ready` or `VERDICT: needs-fixes`.");
         if (structured)
