@@ -551,6 +551,24 @@ public sealed class ReviewVerdictValidationTests
     }
 
     /// <summary>
+    /// A human's own review-park <c>--reason</c> text can be as short as a single word (cycle-6
+    /// human triage, task: review prompts carry prior rulings). "no" is also
+    /// <c>DefectLanguagePattern</c>'s own bare negation word, so stripping every occurrence of it
+    /// verbatim would blank the "no" out of a genuine reviewer's "has no timeout guard" the same
+    /// way it blanks the echoed reason — there is no telling the two apart from the needle alone.
+    /// Below the strip's minimum needle length, a two-letter reason is left alone entirely, so the
+    /// real finding survives to be read.
+    /// </summary>
+    [Fact]
+    public void A_two_letter_ruling_reason_does_not_mangle_a_real_finding()
+    {
+        ReviewVerdictValidation.NamesAFinding(
+                "`Auth.cs:42` has no timeout guard on the retry loop.\n\nVERDICT: needs-fixes",
+                priorRulingReasons: ["no"])
+            .Should().BeTrue();
+    }
+
+    /// <summary>
     /// The conformance lens's own reporting verbs — "unmet", "departs", "violates", "breaks",
     /// "lacks", "omits" — name a defect the same way the rest of this vocabulary does (cycle-3
     /// review): the conformance lens has no structured findings contract, so this prose branch is

@@ -785,18 +785,42 @@ public static partial class ReviewVerdictValidation
     /// actually analyzed) without also erasing a location a real finding legitimately shares with
     /// the task's own wording.
     /// </para>
+    /// <para>
+    /// Below <see cref="MinEchoNeedleLength"/>, the strip is skipped entirely rather than matched
+    /// on word boundaries (cycle-6 human triage, task: review prompts carry prior rulings): a
+    /// human's own <c>h9k review resolve --reason</c> text can be as short as "no", which is also
+    /// <see cref="DefectLanguagePattern"/>'s own bare negation word, so even a boundary-respecting
+    /// match would still blank a genuine reviewer's "has no timeout guard" the same way it blanks
+    /// the echoed reason — there is no way to tell the two apart from the needle alone. An
+    /// objective or acceptance criterion this short has never been observed in practice, so the
+    /// guard costs nothing there. Above the minimum, the match is bounded with <c>\b</c> on
+    /// whichever edge is itself a word character, so a needle like "no" cannot mangle the middle
+    /// of an unrelated word ("Notify", "cannot") the way an unbounded substring match would.
+    /// </para>
     /// </summary>
     private static string StripObjectiveEcho(string text, string? taskObjective)
     {
         string needle = (taskObjective ?? string.Empty).Trim();
-        return needle.IsBlank()
-            ? text
-            : Regex.Replace(
-                text,
-                Regex.Escape(needle),
-                match => string.Join(' ', LocationPattern().Matches(match.Value).Select(m => m.Value)),
-                RegexOptions.IgnoreCase);
+        if (needle.Length < MinEchoNeedleLength)
+        {
+            return text;
+        }
+
+        string pattern =
+            (char.IsLetterOrDigit(needle[0]) ? @"\b" : string.Empty) + Regex.Escape(needle)
+            + (char.IsLetterOrDigit(needle[^1]) ? @"\b" : string.Empty);
+        return Regex.Replace(
+            text,
+            pattern,
+            match => string.Join(' ', LocationPattern().Matches(match.Value).Select(m => m.Value)),
+            RegexOptions.IgnoreCase);
     }
+
+    /// <summary>
+    /// Below this many characters, <see cref="StripObjectiveEcho"/> skips the strip rather than
+    /// risk it — see that method's own doc comment for why.
+    /// </summary>
+    private const int MinEchoNeedleLength = 4;
 
     /// <summary>
     /// <paramref name="text"/> with every verbatim (case-insensitive) occurrence of each of
