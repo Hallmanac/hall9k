@@ -348,14 +348,16 @@ public static partial class ReviewVerdictValidation
     /// the rest of this file's opportunistic vocabulary follows: this does not attempt the general
     /// "is this defect language negated" question <see cref="NamesAFinding"/>'s own doc comment
     /// already discloses as a permanent, out-of-scope gap for defect language sharing a sentence
-    /// with its location — it only screens the heading branch's much weaker signal (defect
-    /// vocabulary anywhere in an unrelated later paragraph) against the two concrete denial shapes
-    /// a reviewer plausibly writes to close out a hollow needs-fixes. Also screened against the
-    /// lead-in paragraph's own text now that <see cref="HeadingLikeLeadInPattern"/> can match a
-    /// bold lead-in with a same-line trailing label (cycle-2 review): a label that already denies
-    /// its own location ("**`Foo.cs:10`** — nothing wrong here.") must not be read as a heading
-    /// needing to borrow from whatever unrelated defect language happens to sit in the next
-    /// paragraph.
+    /// with its location — it screens each branch that borrows defect language from text other
+    /// than the location's own sentence against these two concrete denial shapes a reviewer
+    /// plausibly writes to close out a hollow needs-fixes: the heading branch's much weaker signal
+    /// (defect vocabulary anywhere in an unrelated later paragraph), <see cref="StatesDefectWithinLookahead"/>'s
+    /// forward lookahead, and <see cref="NamesFindingInProse"/>'s backward-pointer branch. Also
+    /// screened against the lead-in paragraph's own text now that <see cref="HeadingLikeLeadInPattern"/>
+    /// can match a bold lead-in with a same-line trailing label (cycle-2 review): a label that
+    /// already denies its own location ("**`Foo.cs:10`** — nothing wrong here.") must not be read
+    /// as a heading needing to borrow from whatever unrelated defect language happens to sit in
+    /// the next paragraph.
     /// </summary>
     [GeneratedRegex(
         @"\b(?:nothing|none)\b[^.!?]{0,40}\b(?:wrong|broken|amiss|defects?|bugs?|issues?|problems?)\b"
@@ -817,6 +819,17 @@ public static partial class ReviewVerdictValidation
     /// after it (see <see cref="StatesDefectWithinLookahead"/>), or a location whose own sentence
     /// is only a backward pointer (per <see cref="BackwardPointerPattern"/>), in which case the
     /// defect language is looked for in the sentence before it instead.
+    /// <para>
+    /// The same-sentence check is guarded by <see cref="EmbeddedListMarkerPattern"/> too
+    /// (independent pre-PR review, cycle 2, adversarial finding), not only the lookahead
+    /// candidates <see cref="StatesDefectWithinLookahead"/> already guards: <see cref="SentenceBoundary"/>
+    /// cannot split at a bare markdown bullet, so two adjacent list items — a location in one, a
+    /// coincidentally-worded closing remark in the next — arrive here as a single merged
+    /// "sentence" and, without this guard, credited each other directly rather than through the
+    /// lookahead this pattern already screens. The same doc comment on <see cref="EmbeddedListMarkerPattern"/>
+    /// already states the rule: a candidate containing this shape cannot be trusted for either
+    /// signal, because there is no way to tell which list item either one actually belongs to.
+    /// </para>
     /// </summary>
     private static bool NamesFindingInProse(string paragraph)
     {
@@ -828,7 +841,9 @@ public static partial class ReviewVerdictValidation
                 continue;
             }
 
-            if (DefectLanguagePattern().IsMatch(sentences[index]) || StatesDefectWithinLookahead(sentences, index))
+            if ((DefectLanguagePattern().IsMatch(sentences[index])
+                    && !EmbeddedListMarkerPattern().IsMatch(sentences[index]))
+                || StatesDefectWithinLookahead(sentences, index))
             {
                 return true;
             }

@@ -351,6 +351,25 @@ public sealed class ReviewVerdictValidationTests
         ReviewVerdictValidation.NamesAFinding(output).Should().BeFalse();
 
     /// <summary>
+    /// A location in one bullet and defect vocabulary in an unrelated next bullet do not credit
+    /// each other (independent pre-PR review, cycle 2, adversarial finding,
+    /// `ReviewVerdictValidation.cs:831`): <see cref="ReviewVerdictValidation"/>'s sentence
+    /// splitter cannot break at a bare markdown bullet, so two adjacent list items with no
+    /// terminal-punctuation-plus-capital-letter break between them arrive as one merged
+    /// "sentence", and the same-sentence check used to trust that merged text directly instead of
+    /// running it through the lookahead's own list-marker guard.
+    /// </summary>
+    [Fact]
+    public void A_location_in_one_bullet_does_not_borrow_defect_language_from_an_unrelated_next_bullet()
+    {
+        ReviewVerdictValidation.NamesAFinding(
+                "- I traced every path through `ReviewEngine.cs` and each one behaves as its doc "
+                + "comment says.\n- No acceptance criterion is left unmet.\n\nMy findings are "
+                + "reported above.\n\nVERDICT: needs-fixes")
+            .Should().BeFalse();
+    }
+
+    /// <summary>
     /// "Here" opening a sentence that merely summarizes rather than pointing at a defect must not
     /// borrow defect language from an unrelated preceding sentence (cycle-7 conformance finding,
     /// `ReviewVerdictValidation.cs:126`): "Nothing I checked failed." states no defect about the
