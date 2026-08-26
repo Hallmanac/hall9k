@@ -59,7 +59,7 @@ public static class WindowsAppendOnlyLog
         Console.SetError(OpenAppendWriter(logFilePath));
     }
 
-    /// <summary>Internal for direct unit coverage against a real truncate race, the same way <see cref="WindowsDaemonAutostart.RecordedVariableNames"/> is tested without going through a live schtasks registration.</summary>
+    /// <summary>Internal for direct unit coverage against a real truncate race, the same way <c>WindowsDaemonAutostart.RecordedVariableNames</c> is tested without going through a live schtasks registration.</summary>
     internal static StreamWriter OpenAppendWriter(string logFilePath)
     {
         SafeFileHandle handle = CreateFileW(
