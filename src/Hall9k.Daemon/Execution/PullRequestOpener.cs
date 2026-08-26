@@ -122,14 +122,19 @@ public sealed class PullRequestOpener(
                 return;
             }
 
+            // DaemonLogEvents.PullRequestOpened is the structural hook (Decisions Log — post-PR
+            // review observability, origin: PR #50 sat Delivered for 23 minutes with no signal):
+            // an operator's monitor can wake on this EventId plus the RunId/TaskId/Url fields
+            // without matching the prose below, which is free to reword.
             logger.LogInformation(
+                DaemonLogEvents.PullRequestOpened,
                 (followUp, pullRequestUrl) switch
                 {
-                    (true, _) => "Run {RunId}: follow-up pushed to existing PR {Url} — task complete, awaiting review",
-                    (false, not null) => "Run {RunId}: PR opened at {Url} — task complete, awaiting review",
-                    _ => "Run {RunId}: branch pushed (origin is not GitHub; no PR) — task complete",
+                    (true, _) => "Run {RunId} task {TaskId}: follow-up pushed to existing PR {Url} — task complete, awaiting review",
+                    (false, not null) => "Run {RunId} task {TaskId}: PR opened at {Url} — task complete, awaiting review",
+                    _ => "Run {RunId} task {TaskId}: branch pushed (origin is not GitHub; no PR) — task complete",
                 },
-                runId, pullRequestUrl);
+                runId, taskId, pullRequestUrl);
         }
         catch (Exception exception) when (exception is not OperationCanceledException)
         {
