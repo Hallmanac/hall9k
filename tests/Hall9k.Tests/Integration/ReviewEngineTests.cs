@@ -1315,6 +1315,45 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
     }
 
     /// <summary>
+    /// Task: review prompts carry prior rulings. The human's needs-fixes resolve above is not
+    /// only the fix session's own findings text (the test above) — it also has to reach the
+    /// FRESH review passes the fix triggers, since a fresh-context reviewer that never saw the
+    /// park would otherwise re-raise the same question the human already settled (origin
+    /// incidents: the config.json survival ruling re-litigated across a task's twelve cycles, and
+    /// a finding dismissed with evidence re-raised verbatim by the next fresh-context reviewer).
+    /// </summary>
+    [Fact]
+    public async Task A_fresh_review_pass_after_a_human_resolve_is_told_it_as_a_settled_ruling()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        using DocumentStore store = NewStore();
+        (Guid taskId, Guid runId, _) = await SeedVerifiedRunAsync(store, cts.Token);
+        await SeedParkedReviewAsync(store, runId, cts.Token);
+
+        const string humanFindings = "The limiter reset finding is real; fix it as the reviewer described.";
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            session.Events.Append(runId, new ReviewParkResolved(
+                runId, ReviewVerdict.NeedsFixes, humanFindings, Now, DomainId.New()));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        ScriptedExecutor executor = new(
+            "Fixed as instructed.\n\nRESOLUTION: fixed",
+            "Criteria met.\n\nVERDICT: merge-ready",
+            "Nothing stands.\n\nVERDICT: merge-ready");
+        bool mergeReady = await NewEngine(store, executor).ReviewAsync(runId, taskId, cts.Token);
+
+        mergeReady.Should().BeTrue();
+        executor.Spawns.Should().HaveCount(3, "fix over the human findings, then a fresh pass per lens");
+        executor.Spawns[1].Prompt.Should().Contain("Settled rulings on this task")
+            .And.Contain(humanFindings, "the fresh pass sees the human's own resolution, not just the fix session")
+            .And.Contain("Cycle 1, resolved", "the ruling names which cycle it was decided at");
+        executor.Spawns[2].Prompt.Should().Contain("Settled rulings on this task",
+            "both lenses' fresh passes are told the settled ruling, not just the one that first raised it");
+    }
+
+    /// <summary>
     /// A rebase-conflict dispute parks through the same mechanism a review-thread dispute does
     /// (<c>RunSupervisor.ParkedOnThreadDisputeAsync</c>), from <c>RunState.Verifying</c>
     /// (<c>RunAggregate.ParkedFromState</c>) before any gate or review pass ran, so it resumes

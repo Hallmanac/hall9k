@@ -395,7 +395,7 @@ public sealed class ReviewEngine(
 
         Guid sessionId = DomainId.New();
         string prompt = AgentPromptBuilder.BuildReview(
-            context.Task, context.Project, context.Run.Branch, cycle, lens);
+            context.Task, context.Project, context.Run.Branch, cycle, lens, context.PriorRulings);
         ExecutorMode mode = context.Run.ExecutorMode;
         // Every lens is review work, so they resolve the same role in the chain (log #33) —
         // and each dispatch records the model it actually got, per pass.
@@ -1453,7 +1453,28 @@ public sealed class ReviewEngine(
             return null;
         }
 
-        return new ReviewContext(runId, taskId, run, task, project);
+        IReadOnlyList<ReviewParkResolution> priorRulings = await LoadPriorRulingsAsync(query, taskId, cancellationToken);
+        return new ReviewContext(runId, taskId, run, task, project, priorRulings);
+    }
+
+    /// <summary>
+    /// Every human verdict this TASK's review park has ever taken, oldest first, across every run
+    /// it has had (a retry starts a fresh run stream, so a single run's own history is not
+    /// enough) — handed to a fresh review pass so it does not re-raise a question a human already
+    /// settled (task: review prompts carry prior rulings). Queried by <c>TaskId</c> off the
+    /// <see cref="RunDetails"/> document the way <c>BlockerHandoffQuery.ClosedOutRunsAsync</c>
+    /// already reads a task's run history, rather than looping <c>FetchStreamAsync</c> per run id.
+    /// </summary>
+    private static async Task<IReadOnlyList<ReviewParkResolution>> LoadPriorRulingsAsync(
+        IQuerySession query, Guid taskId, CancellationToken cancellationToken)
+    {
+        IReadOnlyList<RunDetails> taskRuns = await query.Query<RunDetails>()
+            .Where(run => run.TaskId == taskId)
+            .ToListAsync(cancellationToken);
+
+        return [.. taskRuns
+            .SelectMany(run => run.ReviewParkResolutions)
+            .OrderBy(ruling => ruling.ResolvedAt)];
     }
 
     private async Task<RunAggregate> LoadRunAsync(Guid runId, CancellationToken cancellationToken)
@@ -1678,5 +1699,7 @@ public sealed class ReviewEngine(
         ReviewLens Lens, ReviewFinding Finding, Guid? DraftTaskId, string? FailureReason,
         int? AlreadyRoutedInCycle = null);
 
-    private sealed record ReviewContext(Guid RunId, Guid TaskId, RunDetails Run, TaskDetails Task, ProjectDetails Project);
+    private sealed record ReviewContext(
+        Guid RunId, Guid TaskId, RunDetails Run, TaskDetails Task, ProjectDetails Project,
+        IReadOnlyList<ReviewParkResolution> PriorRulings);
 }

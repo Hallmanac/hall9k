@@ -1,4 +1,5 @@
 using System.Text;
+using Hall9k.Connectors.Text;
 using Hall9k.Connectors.WorkItems;
 using Hall9k.Daemon.Review;
 using Hall9k.Domain.Features.Project;
@@ -778,11 +779,19 @@ public static class AgentPromptBuilder
     /// stated lens is exactly what the conformance pass has always been.
     /// </para>
     /// </summary>
+    /// <param name="priorRulings">
+    /// The task's settled human rulings on earlier review parks (task: review prompts carry
+    /// prior rulings), oldest first; null or empty when the task has never parked. Handed to
+    /// BOTH lenses: the adversarial lens stays blind to the task's objective and acceptance
+    /// criteria, but a settled park ruling is not that withheld information — it exists solely so
+    /// neither lens re-raises a question a human already answered.
+    /// </param>
     public static string BuildReview(
-        TaskDetails task, ProjectDetails project, string branch, int cycle, ReviewLens lens) =>
+        TaskDetails task, ProjectDetails project, string branch, int cycle, ReviewLens lens,
+        IReadOnlyList<ReviewParkResolution>? priorRulings = null) =>
         lens == ReviewLens.Adversarial
-            ? BuildAdversarialReview(project, branch, cycle)
-            : BuildConformanceReview(task, project, branch, cycle);
+            ? BuildAdversarialReview(project, branch, cycle, priorRulings)
+            : BuildConformanceReview(task, project, branch, cycle, priorRulings);
 
     /// <summary>
     /// The conformance lens: does the diff do what the task said it would? The objective and
@@ -798,7 +807,9 @@ public static class AgentPromptBuilder
     /// this lens a full fix-and-re-review cycle each, whatever their actual weight.
     /// </para>
     /// </summary>
-    private static string BuildConformanceReview(TaskDetails task, ProjectDetails project, string branch, int cycle)
+    private static string BuildConformanceReview(
+        TaskDetails task, ProjectDetails project, string branch, int cycle,
+        IReadOnlyList<ReviewParkResolution>? priorRulings)
     {
         StringBuilder prompt = new();
         prompt.AppendLine("# Independent review: verify this diff before its pull request opens");
@@ -820,6 +831,7 @@ public static class AgentPromptBuilder
         }
 
         prompt.AppendLine();
+        AppendSettledRulings(prompt, priorRulings);
         prompt.AppendLine("## How to review");
         prompt.AppendLine();
         prompt.AppendLine("- Judge the work against the objective, the acceptance criteria, and the repo's own");
@@ -857,7 +869,8 @@ public static class AgentPromptBuilder
     /// checklist becomes the next blind spot, which is the failure this lens exists to fix.
     /// </para>
     /// </summary>
-    private static string BuildAdversarialReview(ProjectDetails project, string branch, int cycle)
+    private static string BuildAdversarialReview(
+        ProjectDetails project, string branch, int cycle, IReadOnlyList<ReviewParkResolution>? priorRulings)
     {
         StringBuilder prompt = new();
         prompt.AppendLine("# Adversarial review: assume this diff is wrong somewhere, and find where");
@@ -898,6 +911,7 @@ public static class AgentPromptBuilder
         prompt.AppendLine("Those are where the last incident's defects were, not where the next one will be.");
         prompt.AppendLine("Work through them, then keep going where they do not point.");
         prompt.AppendLine();
+        AppendSettledRulings(prompt, priorRulings);
         prompt.AppendLine("## How to review");
         prompt.AppendLine();
         prompt.AppendLine("- Read the changed code in its surroundings, not as isolated hunks: a defect is often");
@@ -911,6 +925,69 @@ public static class AgentPromptBuilder
         prompt.AppendLine("thorough spends a fix session on nothing and teaches everyone to discount this pass.");
 
         return prompt.ToString();
+    }
+
+    /// <summary>How many prior rulings ride into a review prompt — the newest, since they are the ones most likely still relevant.</summary>
+    private const int MaxPriorRulings = 8;
+
+    /// <summary>How much of a human's own reason text rides in per ruling — a summary, not the reason restated in full.</summary>
+    private const int MaxRulingReasonLength = 500;
+
+    /// <summary>
+    /// What a fresh-context review pass is told about questions this task has already settled
+    /// (task: review prompts carry prior rulings). Two sources, always in this order:
+    /// <list type="number">
+    /// <item>This task's own prior <c>h9k review resolve</c> verdicts, if any — bounded to the
+    /// newest <see cref="MaxPriorRulings"/> and each reason summarized to
+    /// <see cref="MaxRulingReasonLength"/> characters, never the full session transcript that
+    /// produced the finding. Origin incidents: the config.json survival ruling was re-litigated
+    /// three times across one task's twelve review cycles, and a finding dismissed with
+    /// git-ancestry evidence was re-raised verbatim by the next fresh-context reviewer, forcing a
+    /// second park over the same question.</item>
+    /// <item>The v0 Decisions Log (PLAN.md §16), named unconditionally rather than quoted: the
+    /// log itself is long-lived and outside this prompt's bound, so the reviewer is told to check
+    /// it rather than handed a snapshot of it that would go stale the next time §16 grows.</item>
+    /// </list>
+    /// Appended to BOTH lenses. The adversarial lens is deliberately withheld the task's objective
+    /// and acceptance criteria (<see cref="BuildAdversarialReview"/>) so it reads for defects
+    /// rather than alignment with intent — but a settled ruling on a review park is a different
+    /// kind of fact: it says a question was already asked and answered, not what the change was
+    /// trying to do, so handing it to both lenses does not reopen the boundary that method exists
+    /// to hold.
+    /// </summary>
+    private static void AppendSettledRulings(StringBuilder prompt, IReadOnlyList<ReviewParkResolution>? priorRulings)
+    {
+        if (priorRulings is { Count: > 0 })
+        {
+            prompt.AppendLine("## Settled rulings on this task — do not re-raise these without new evidence");
+            prompt.AppendLine();
+            prompt.AppendLine("A human already resolved the review park(s) below on this task (h9k review");
+            prompt.AppendLine("resolve). Each is a settled ruling, not a suggestion: if your own reading lands on");
+            prompt.AppendLine("the same question, say so and move on rather than reporting it again as a new");
+            prompt.AppendLine("finding. Only raise it again if you can point to something that changed since the");
+            prompt.AppendLine("ruling — a different line, a different behavior — and say what that is.");
+            prompt.AppendLine();
+            foreach (ReviewParkResolution ruling in priorRulings.TakeLast(MaxPriorRulings))
+            {
+                string verdict = ruling.Verdict == ReviewVerdict.MergeReady ? "merge-ready" : "needs-fixes";
+                string reason = ruling.Reason.IsNotBlank()
+                    ? RelayedText.Truncate(RelayedText.OneLine(ruling.Reason).Trim(), MaxRulingReasonLength)
+                    : "no reason recorded";
+                prompt.AppendLine(
+                    $"- Cycle {ruling.Cycle}, resolved {ruling.ResolvedAt:yyyy-MM-dd} as {verdict}: {reason}");
+            }
+
+            prompt.AppendLine();
+        }
+
+        prompt.AppendLine("The platform's own v0 Decisions Log (PLAN.md §16) is a settled ruling at a wider");
+        prompt.AppendLine("scope than this one task: a deviation from a house rule recorded there was a");
+        prompt.AppendLine("deliberate, ratified decision, not an oversight nobody caught. Before you report a");
+        prompt.AppendLine("finding that amounts to \"this departs from doctrine,\" check whether §16 already");
+        prompt.AppendLine("settled that departure on purpose. Re-raising a decision already ratified there");
+        prompt.AppendLine("requires stating what changed since the ruling — not restating the objection it");
+        prompt.AppendLine("already answered.");
+        prompt.AppendLine();
     }
 
     /// <summary>
