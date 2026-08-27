@@ -1762,6 +1762,77 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
             0, "it must not also be counted as an unclaimed ride-along");
     }
 
+    /// <summary>
+    /// Adversarial review finding (cycle 1): a fix session dispatched over a human's own
+    /// <c>h9k review resolve --needs-fixes</c> reason reads only that text
+    /// (<see cref="DispatchFixSessionAsync"/>'s <c>humanFindings.IsNotBlank()</c> branch) — it
+    /// never opens the cycle's merged findings document, so it never sees a ride-along the same
+    /// cycle's completed passes attached. Unlike the sibling test above (a fix session dispatched
+    /// from an ordinary needs-fixes verdict, which DOES read the merged document), this round
+    /// must not settle the ride-along as fixed-unreviewed: nobody ever showed it to anyone.
+    /// </summary>
+    [Fact]
+    public async Task A_ride_along_never_shown_to_a_human_resolved_fix_session_settles_as_a_ride_along()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        using DocumentStore store = NewStore();
+        (Guid taskId, Guid runId, _) = await SeedVerifiedRunAsync(store, cts.Token);
+
+        const string mixedFindings =
+            "FINDING: severity=medium; scope=in-scope; at=A.cs:1\n"
+            + "Defect: the criterion is not met.\n\n"
+            + "FINDING: severity=low; scope=in-scope; at=Shared.cs:9\n"
+            + "Defect: a nit nobody asked for.\n\nVERDICT: needs-fixes";
+        ScriptedExecutor executor = new(
+            mixedFindings,
+            "Nothing of my own.\n\nVERDICT: merge-ready");
+        bool mergeReady = await NewEngine(
+            store, executor, new DaemonOptions { MaxComplianceReviewCycles = 1 })
+            .ReviewAsync(runId, taskId, cts.Token);
+
+        mergeReady.Should().BeFalse("conformance is still continuing but already at its one-cycle cap");
+
+        const string humanFindings = "The medium finding at A.cs:1 is real; fix it as the reviewer described.";
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            session.Events.Append(runId, new ReviewParkResolved(
+                runId, ReviewVerdict.NeedsFixes, humanFindings, Now, DomainId.New()));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        ScriptedExecutor disputeExecutor = new(
+            "That criterion reading is wrong; the code already meets it.\n\nRESOLUTION: disputed");
+        mergeReady = await NewEngine(store, disputeExecutor).ReviewAsync(runId, taskId, cts.Token);
+
+        mergeReady.Should().BeFalse("the fix session disputed the human's finding");
+        disputeExecutor.Spawns.Should().ContainSingle().Which.Prompt
+            .Should().Contain(humanFindings, "the dispatch reads the human's own reason")
+            .And.NotContain("Shared.cs:9", "the human-findings round never opens the merged " +
+                "findings document, so it never shows this fix session the ride-along at all");
+
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            session.Events.Append(runId, new ReviewParkResolved(
+                runId, ReviewVerdict.MergeReady, null, Now, DomainId.New()));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        ScriptedExecutor resumeExecutor = new();
+        mergeReady = await NewEngine(store, resumeExecutor).ReviewAsync(runId, taskId, cts.Token);
+
+        mergeReady.Should().BeTrue();
+        resumeExecutor.Spawns.Should().BeEmpty("no further session second-guesses the human");
+
+        await using IQuerySession query = store.QuerySession();
+        RunDetails run = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
+        run.ReviewResidualsRideAlong.Should().Be(
+            1, "the low finding at Shared.cs:9 was never inside anything the human-findings fix " +
+                "session read, so it must not settle as fixed-unreviewed");
+        run.ReviewResidualsFixed.Should().Be(
+            0, "no fix session ever saw this finding — claiming fixed-unreviewed would assert " +
+                "one did on no evidence");
+    }
+
     [Fact]
     public async Task A_disputed_finding_parks_with_both_positions_recorded()
     {

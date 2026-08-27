@@ -1439,14 +1439,21 @@ public sealed class ReviewEngine(
     /// <see cref="ReviewSettled.ResidualsFixed"/>, see next) always equals what a fresh
     /// <c>DeriveResidualTally</c> returns once these very events are rehydrated. Second, it is
     /// not always a ride-along: this cycle's merged findings document (<c>WriteMergedFindingsAsync</c>)
-    /// writes every active lens's ride-alongs into the SAME file a dispatched fix session reads,
-    /// concluding or not, so a track still-active here that a fix session actually ran over this
-    /// exact cycle (the dispute path — a fix session runs, disputes, and a human then ends the
-    /// loop with merge-ready) already handed this finding to that session exactly as
+    /// writes every active lens's ride-alongs into the SAME file a dispatched fix session reads —
+    /// but only when that round dispatches over the file at all.
+    /// <see cref="DispatchFixSessionAsync"/> skips it entirely for a round that consumes
+    /// <see cref="RunAggregate.PendingHumanFindings"/> instead (a dispute-resolution round: the
+    /// human ran <c>h9k review resolve --needs-fixes</c>, that fix session disputed, and a human
+    /// then ended the loop with merge-ready), so that round never saw this cycle's ride-alongs no
+    /// matter which cycle it ran on. <see cref="RunAggregate.LastFixRoundHumanFindings"/> records
+    /// which kind this cycle's round was, so a track still-active here that a fix session actually
+    /// ran over this exact cycle counts as having handed this finding to that session — exactly as
     /// <c>RecordReviewPassAsync</c>'s own <c>fixSessionWillDispatch</c> distinction records for a
     /// normally-concluding track, so it ships as fixed-unreviewed rather than as a ride-along
-    /// nobody read. A track force-concluded with no fix session ever dispatched this cycle (the
-    /// capped-park path) never handed anything to anyone, so it stays a ride-along.
+    /// nobody read — only when that round's <c>LastFixRoundHumanFindings</c> is blank. A track
+    /// force-concluded with no fix session ever dispatched this cycle (the capped-park path), or
+    /// whose only fix session this cycle ran over a human's findings text rather than the merged
+    /// document, never handed this finding to anyone, so it stays a ride-along.
     /// </para>
     /// </summary>
     private async Task SettleAsync(RunAggregate run, CancellationToken cancellationToken)
@@ -1467,12 +1474,19 @@ public sealed class ReviewEngine(
         ReviewResidualTally residuals = run.DeriveResidualTally();
 
         // A fix session dispatches over the exact cycle it is dispatched at (DispatchFixSessionAsync
-        // reads run.ReviewCycle at spawn time), so this equality is "did a fix session run over
-        // THIS cycle's merged findings document" — the same question fixSessionWillDispatch answers
-        // for a normally-concluding track, asked here in terms the aggregate alone can answer.
-        ReviewResidualDisposition forcedDisposition = run.LastFixRoundCycle == run.ReviewCycle
-            ? ReviewResidualDisposition.FixedUnreviewed
-            : ReviewResidualDisposition.RideAlong;
+        // reads run.ReviewCycle at spawn time), so the cycle equality alone is "did a fix session
+        // run over THIS cycle" — but DispatchFixSessionAsync only reads this cycle's merged
+        // findings document (the one place a RideAlong-dispositioned finding is written) when
+        // that round had no human findings to dispatch over; a dispute-resolution round
+        // (PendingHumanFindings non-blank, e.g. `h9k review resolve --needs-fixes`) dispatches
+        // over the human's reason alone and never opens that file. LastFixRoundHumanFindings
+        // records which case this cycle's round was, so checking it here is the same question
+        // fixSessionWillDispatch answers for a normally-concluding track, asked in terms the
+        // aggregate alone can answer.
+        ReviewResidualDisposition forcedDisposition =
+            run.LastFixRoundCycle == run.ReviewCycle && run.LastFixRoundHumanFindings.IsBlank()
+                ? ReviewResidualDisposition.FixedUnreviewed
+                : ReviewResidualDisposition.RideAlong;
         IReadOnlyList<ReviewResidual> alreadyOnStream =
             [.. run.ReviewResiduals.Where(residual => residual.Disposition == forcedDisposition)];
 
@@ -2339,9 +2353,26 @@ public sealed class ReviewEngine(
     /// parseable verdict line at all — each still visible in the preserved text right below this
     /// heading. Reporting any of the first two as "(none stated)" contradicts the very text it
     /// introduces, exactly as <see cref="VerdictMissingCauseAsync"/> already distinguishes them.
+    /// <para>
+    /// A non-<c>Unknown</c> <paramref name="verdict"/> can equally disagree with the pass's own
+    /// text (Decisions Log #87's reclassification in <c>RecordReviewPassAsync</c>): a needs-fixes
+    /// pass whose findings are all RideAlong-dispositioned is demoted to merge-ready, and a
+    /// merge-ready pass that attached a Fix or Route finding is promoted to needs-fixes. Left
+    /// unlabeled, the heading this method writes would name the platform's reclassified verdict
+    /// immediately above the pass's own text ending in its original, disagreeing <c>VERDICT:</c>
+    /// line — the same contradiction the Unknown cases above exist to avoid, so it gets the same
+    /// treatment: name the reclassification and why, rather than the reclassified verdict alone.
+    /// </para>
     /// </summary>
     private static string VerdictLabel(ReviewVerdict verdict, string rawText) => verdict switch
     {
+        _ when verdict != ReviewVerdict.Unknown && ReviewResultParser.ParseVerdict(rawText) is var stated
+            && stated != ReviewVerdict.Unknown && stated != verdict =>
+            $"{verdict.Value} (reclassified from {stated.Value}: "
+                + (verdict == ReviewVerdict.MergeReady
+                    ? "every attached finding was RideAlong-dispositioned, below the fix bar on its own"
+                    : "it attached a finding beyond ride-alongs, which earns its own fix-and-re-review cycle")
+                + " — Decisions Log #87)",
         _ when verdict != ReviewVerdict.Unknown => verdict.Value,
         _ when ReviewResultParser.ParseVerdict(rawText) == ReviewVerdict.NeedsFixes =>
             "needs-fixes (named nothing the platform could read as a finding)",
