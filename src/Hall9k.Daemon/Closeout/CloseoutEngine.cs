@@ -892,9 +892,10 @@ public sealed class CloseoutEngine(
     /// should move an item to is one team's workflow rather than a fact about software — "Done"
     /// on one board is "Ready for QA" on the next, and GitHub's own closing keywords (Fixes #42)
     /// would auto-close an issue at merge, which is exactly the guess this repo refuses to make.
-    /// That is why the platform strips closing keywords from everything it writes toward GitHub
-    /// (task objectives seeding issue titles, pull-request bodies) rather than ever emitting one:
-    /// the comment below mentions the pull request without ever asking GitHub to act on it.
+    /// The comment below is a fixed template (<see cref="MergeComment"/>) naming only the pull
+    /// request's URL, the task id, and the project name — none of them free text a closing
+    /// keyword could hide in — so it mentions the pull request without ever asking GitHub to act
+    /// on it.
     /// </para>
     /// <para>
     /// Best-effort, and loudly so. The merge is already recorded and the dependents are already

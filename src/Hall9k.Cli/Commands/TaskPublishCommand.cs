@@ -115,6 +115,14 @@ public sealed class TaskPublishCommand : Hall9kAsyncCommand<TaskPublishCommand.S
     }
 
     /// <summary>
+    /// GitHub refuses an issue title over 256 characters. Unlike an adopted title — already
+    /// bounded, because it came from GitHub itself — a task's own objective is unbounded prose
+    /// this repository routinely writes multi-clause descriptions into (this task's own objective
+    /// is 307 characters), so it is truncated rather than left to make gh refuse the whole create.
+    /// </summary>
+    private const int GitHubIssueTitleMaxLength = 256;
+
+    /// <summary>
     /// Backlog: every published task is tracked automatically, per the project's own setting
     /// (h9k project set --backlog). Both branches run in their own store session, after the
     /// publish transaction has already committed — jira dispatches an agent session and cannot
@@ -170,7 +178,7 @@ public sealed class TaskPublishCommand : Hall9kAsyncCommand<TaskPublishCommand.S
         {
             issue = await provider.CreateAsync(
                 new GitHubIssueCreateRequest(
-                    RelayedText.WithoutClosingKeywords(ExternalText.OneLine(task.Objective)),
+                    RelayedText.Truncate(ExternalText.OneLine(task.Objective), GitHubIssueTitleMaxLength),
                     GitHubIssueBody.Compose(task.AgentContext, task.AcceptanceCriteria),
                     GitHubIssueBody.Labels(project.BacklogRoutingGuidance),
                     project.RepositoryPath),
