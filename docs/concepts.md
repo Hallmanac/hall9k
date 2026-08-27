@@ -244,9 +244,11 @@ unconfirmed. Each carries a `file:line`, a defect statement, and a concrete fail
 only once everything it found rides along instead of earning its own fix — an out-of-scope
 finding still routes elsewhere and keeps the track running even though it never meets the fix bar
 itself — and reaching its cap parks the run only when a fix is still owed there; with nothing left
-to fix, the cap settles the run quietly instead. Adversarial runs under a severity gate: early
-cycles re-trigger on any finding, later ones only on a high, so a medium is still fixed there but
-stops keeping the loop alive, while a low rides along instead of being fixed at all. A track that
+to fix, the cap settles the run quietly instead. A low or ungraded finding rides along instead of
+being fixed on its own at every cycle, gate or no gate — what the severity gate actually changes
+is whether the track is forced into another cycle regardless of severity: early cycles re-trigger
+on any finding, including a pass that is entirely ride-alongs, while later cycles re-trigger only
+on a high, and a medium is still fixed there but stops keeping the loop alive on its own. A track that
 concludes goes dormant and is never reawakened by the other track's fix sessions. **Differing
 cycle counts on one run are the design, not a fault** (a clean conformance track can be dormant
 at cycle 2 while adversarial is still working at cycle 5).

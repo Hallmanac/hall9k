@@ -125,13 +125,16 @@ public sealed class DaemonOptions
     public int MaxAdversarialReviewCycles { get; set; } = 10;
 
     /// <summary>
-    /// The first adversarial cycle the severity gate applies to (Decisions Log #63). Before it,
-    /// every finding of every grade is fixed and forces a fresh re-review; from it onward only
-    /// a High forces the next cycle, a Medium is still fixed that cycle without forcing another,
-    /// and a Low rides along instead of being fixed on its own (Decisions Log #87). The early
-    /// cycles get full rigor on purpose — the code is still converging there — and the gate
-    /// exists for the nit-churn tail, which is where the conformance-only loop used to park work
-    /// that would have converged one or two cycles later.
+    /// The first adversarial cycle the severity gate applies to (Decisions Log #63). A Low or an
+    /// ungraded finding rides along instead of being fixed on its own at every cycle, gate or no
+    /// gate (Decisions Log #87) — the gate does not turn that rule on. What the gate changes is
+    /// whether the track is forced into another cycle regardless of severity: before it, a
+    /// needs-fixes verdict always runs the track again even when every finding attached is a
+    /// ride-along, because the early cycles get full rigor on purpose while the code is still
+    /// converging; from it onward only a High still forces the next cycle, and a Medium is fixed
+    /// that cycle without forcing another. The gate exists for the nit-churn tail, which is where
+    /// the conformance-only loop used to park work that would have converged one or two cycles
+    /// later.
     /// </summary>
     public int AdversarialSeverityGateFromCycle { get; set; } = 4;
 
