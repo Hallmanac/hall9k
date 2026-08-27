@@ -57,8 +57,14 @@ public static partial class ReviewFixEscalation
     /// the location, plus a proximity read for whether defect language actually belongs to it
     /// (see <see cref="RestatesLocation"/>) — narrower than a semantic read, the same discipline
     /// this codebase's other free-text "did this restate known content" checks
-    /// (<c>ReviewVerdictValidation</c>) already apply, and the conservative default here is still
-    /// a missed restatement, never an invented one.
+    /// (<c>ReviewVerdictValidation</c>) already apply. The proximity read's actual bound: defect
+    /// credit is only ever pulled away from the candidate location by a NEARER, DIFFERENT
+    /// location in the same reason, so a reason naming a single location escalates on any defect
+    /// vocabulary anywhere in it — a negation included ("X is not a defect; what is missing is
+    /// test coverage" still reads as restating X, because no proximity or sentence-scope rule can
+    /// separate a negation sitting in the same clause as the location it negates). The scan can
+    /// therefore invent a restatement in that one shape; the cost is one review-model fix round,
+    /// and the alternative — parsing negation — is a semantic read this check deliberately is not.
     /// </para>
     /// </summary>
     public static string? Reason(
