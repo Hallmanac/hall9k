@@ -517,6 +517,43 @@ public sealed class GitHubWorkItemProviderTests
     }
 
     [Fact]
+    public async Task Creating_an_issue_writes_the_body_to_a_temp_file_instead_of_the_command_line()
+    {
+        // The same idiom PullRequestOpener uses for the same call shape: a body on the raw
+        // command line can exceed Windows' roughly 32K limit, which fails the spawn itself and
+        // CouldNotStartGh then misreports as a missing gh install.
+        int calls = 0;
+        string? bodyFileContentsAtCallTime = null;
+        string? bodyFilePathUsed = null;
+        List<string>? createArgumentsUsed = null;
+
+        // A hand-written ProcessRunner rather than RecordingProcessRunner, since the temp file
+        // only survives until CreateAsync's own finally block runs: its contents and path have to
+        // be captured here, mid-call, rather than after CreateAsync returns.
+        Task<ProcessResult> Runner(string fileName, IReadOnlyList<string> arguments, string workingDirectory, CancellationToken cancellationToken)
+        {
+            if (++calls == 1)
+            {
+                createArgumentsUsed = [.. arguments];
+                bodyFilePathUsed = arguments[arguments.ToList().IndexOf("--body-file") + 1];
+                bodyFileContentsAtCallTime = File.ReadAllText(bodyFilePathUsed);
+                return Task.FromResult(new ProcessResult(0, "https://github.com/o/r/issues/1\n", string.Empty));
+            }
+
+            return Task.FromResult(new ProcessResult(
+                0, """{"number":1,"title":"t","body":"","state":"OPEN","url":"https://github.com/o/r/issues/1"}""", string.Empty));
+        }
+
+        await new GitHubWorkItemProvider(Runner).CreateAsync(
+            new GitHubIssueCreateRequest("t", "Body text with detail", [], "/repos/hall9k"), CancellationToken.None);
+
+        createArgumentsUsed.Should().NotContain("--body", "the body no longer travels on the command line");
+        createArgumentsUsed.Should().Contain("--body-file");
+        bodyFileContentsAtCallTime.Should().Be("Body text with detail");
+        File.Exists(bodyFilePathUsed).Should().BeFalse("the temp file is cleaned up once gh has read it");
+    }
+
+    [Fact]
     public async Task Creating_an_issue_passes_every_label_through()
     {
         int calls = 0;
@@ -590,6 +627,42 @@ public sealed class GitHubWorkItemProviderTests
         (await create.Should().ThrowAsync<DomainConflictException>()).Which.Message
             .Should().Contain("https://github.com/Hallmanac/hall9k/issues/42")
             .And.Contain("h9k task link-issue");
+    }
+
+    /// <summary>
+    /// gh issue create can exit 0 — a real success — and then have its own answer swallowed by
+    /// the drain-grace timeout (ExternalProcess.DrainGrace) before Hall9k ever reads the URL it
+    /// printed. That is exactly the same "a real issue exists, do not file another" situation as
+    /// a read-back failure on a returned URL, so it must land on the same DomainConflictException
+    /// rather than the generic import-flavoured "gh stopped answering" text, which talks about
+    /// stopping an import rather than a create.
+    /// </summary>
+    [Fact]
+    public async Task A_create_that_exits_zero_but_loses_the_drain_race_is_not_read_as_a_create_failure()
+    {
+        RecordingProcessRunner gh = RecordingProcessRunner.ExitedButOutputStuck(exitCode: 0);
+
+        Func<Task> create = () => new GitHubWorkItemProvider(gh.Runner).CreateAsync(
+            new GitHubIssueCreateRequest("Track this work", null, [], "/repos/hall9k"), CancellationToken.None);
+
+        (await create.Should().ThrowAsync<DomainConflictException>()).Which.Message
+            .Should().Contain("Track this work")
+            .And.Contain("h9k task link-issue", "the recovery is to link the issue that likely exists")
+            .And.Contain("likely created")
+            .And.NotContain("import again", "this is the create path, not an import that can simply be retried");
+    }
+
+    [Fact]
+    public async Task A_create_that_never_exits_at_all_still_gets_the_generic_stopped_answering_refusal()
+    {
+        // The deadline-never-answered case (no exit code observed at all) is a real "did this even
+        // run" unknown, unlike the exit-0-then-stuck case above, so it keeps the ordinary refusal.
+        RecordingProcessRunner gh = RecordingProcessRunner.NeverAnswering();
+
+        Func<Task> create = () => new GitHubWorkItemProvider(gh.Runner).CreateAsync(
+            new GitHubIssueCreateRequest("Track this work", null, [], "/repos/hall9k"), CancellationToken.None);
+
+        await create.Should().ThrowAsync<DomainValidationException>();
     }
 
     [Fact]

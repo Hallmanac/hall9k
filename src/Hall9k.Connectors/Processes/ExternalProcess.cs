@@ -8,6 +8,20 @@ namespace Hall9k.Connectors.Processes;
 public sealed record ProcessResult(int ExitCode, string StandardOutput, string StandardError);
 
 /// <summary>
+/// The tool itself exited, but something it started was still holding its output pipe open when
+/// <see cref="ExternalProcess.DrainGrace"/> expired — distinct from the plain
+/// <see cref="TimeoutException"/> thrown when the tool never answered at all, because here an
+/// exit code was actually observed. A caller for whom the call being timed can have a real,
+/// externally-visible effect (creating something, not just reading it) can use
+/// <see cref="ExitCode"/> to tell a genuine success (0), whose result was merely never read, from
+/// a genuine failure.
+/// </summary>
+public sealed class ProcessOutputStuckException(int exitCode, string message) : TimeoutException(message)
+{
+    public int ExitCode { get; } = exitCode;
+}
+
+/// <summary>
 /// How a connector reaches a command-line tool. It is a delegate rather than an interface
 /// because a connector needs exactly one verb from the operating system, and a seam this small
 /// is what lets the provider tests assert mapping and refusal behaviour against recorded tool
@@ -149,7 +163,8 @@ public static class ExternalProcess
         {
             int exitCode = process.ExitCode;
             await TerminateAsync(process);
-            throw new TimeoutException(
+            throw new ProcessOutputStuckException(
+                exitCode,
                 $"{fileName} exited with code {exitCode.ToString(CultureInfo.InvariantCulture)}, but "
                 + $"{DrainGrace.TotalSeconds.ToString("F0", CultureInfo.InvariantCulture)} seconds later "
                 + "something it started was still holding its output open, so Hall9k never received the "
