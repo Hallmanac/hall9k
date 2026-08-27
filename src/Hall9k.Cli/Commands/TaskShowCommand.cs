@@ -211,8 +211,9 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
             }
 
             AnsiConsole.Write(runsTable);
-            await WriteReviewOutcomeAsync(session, runs[^1].Id, cancellationToken);
-            await WriteFixEscalationAsync(session, runs[^1].Id, cancellationToken);
+            RunDetails? newestRun = await session.LoadAsync<RunDetails>(runs[^1].Id, cancellationToken);
+            WriteReviewOutcome(newestRun);
+            WriteFixEscalation(newestRun);
         }
 
         await WriteHandoffAsync(session, details, runs, cancellationToken);
@@ -296,10 +297,8 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
     /// A reader deciding how much to trust a pull request should not have to dig through the run
     /// stream to learn which of those happened.
     /// </summary>
-    private static async Task WriteReviewOutcomeAsync(
-        IQuerySession session, Guid runId, CancellationToken cancellationToken)
+    private static void WriteReviewOutcome(RunDetails? run)
     {
-        RunDetails? run = await session.LoadAsync<RunDetails>(runId, cancellationToken);
         if (run is null || run.LastReviewVerdict != ReviewVerdict.MergeReady)
         {
             return;
@@ -329,10 +328,8 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
     /// De-escalation is automatic once the repeated findings clear, so this line simply stops
     /// appearing the next time the newest run's fix dispatch resolves the ordinary fix role.
     /// </summary>
-    private static async Task WriteFixEscalationAsync(
-        IQuerySession session, Guid runId, CancellationToken cancellationToken)
+    private static void WriteFixEscalation(RunDetails? run)
     {
-        RunDetails? run = await session.LoadAsync<RunDetails>(runId, cancellationToken);
         if (run is not { LastFixSessionEscalated: true })
         {
             return;
@@ -340,7 +337,7 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
 
         AnsiConsole.MarkupLine(
             $"\n[bold]Fix escalation[/]  [yellow]cycle {run.LastFixSessionEscalationCycle} dispatched on the review role's model[/] "
-            + $"[dim]— {(run.LastFixSessionEscalationReason ?? "reason not recorded").EscapeMarkup()}[/]");
+            + $"[dim]— {ExternalText.OneLineMarkup(run.LastFixSessionEscalationReason ?? "reason not recorded")}[/]");
     }
 
     /// <summary>
