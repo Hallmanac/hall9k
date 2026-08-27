@@ -179,19 +179,23 @@ public sealed class PullRequestMonitor(
     /// Refuses a configured base interval <see cref="PeriodicTimer"/>'s constructor would throw
     /// on, outside this loop's own try/catch — a misconfigured
     /// <see cref="DaemonOptions.PullRequestPollInterval"/> would otherwise crash the monitor
-    /// (and, unguarded here, the daemon) before a single sweep ever ran. Zero or negative falls
-    /// back to <see cref="DaemonOptions.PullRequestPollInterval"/>'s shipped default rather than
-    /// refusing to start: the same "refuse loudly, keep the node up" posture as
-    /// <see cref="RefuseUnreadableReviewRerequestDefault"/>. Above <see cref="MaxSupportedInterval"/>
-    /// clamps down to it instead (independent pre-PR review, cycle 2): the same bare-integer
-    /// misconfiguration <see cref="ApplyBackoff"/> already clamps its own ceiling against
-    /// (<c>PullRequestPollInterval=60</c> meaning minutes, landing as 60 days once bound) would
-    /// otherwise reach the constructor unclamped, since this method previously guarded only the
-    /// lower half of the range the constructor accepts.
+    /// (and, unguarded here, the daemon) before a single sweep ever ran. Zero, negative, or
+    /// below the one-millisecond floor <see cref="PeriodicTimer"/>'s constructor itself requires
+    /// falls back to <see cref="DaemonOptions.PullRequestPollInterval"/>'s shipped default rather
+    /// than refusing to start: the same "refuse loudly, keep the node up" posture as
+    /// <see cref="RefuseUnreadableReviewRerequestDefault"/>. A positive sub-millisecond value
+    /// (independent pre-PR review, cycle 2's adversarial lens) truncates to zero milliseconds and
+    /// would otherwise reach the constructor unclamped exactly like zero or negative does, since
+    /// this method's own lower-bound check previously excluded it. Above
+    /// <see cref="MaxSupportedInterval"/> clamps down to it instead (independent pre-PR review,
+    /// cycle 2): the same bare-integer misconfiguration <see cref="ApplyBackoff"/> already clamps
+    /// its own ceiling against (<c>PullRequestPollInterval=60</c> meaning minutes, landing as 60
+    /// days once bound) would otherwise reach the constructor unclamped, since this method
+    /// previously guarded only the lower half of the range the constructor accepts.
     /// </summary>
     internal static TimeSpan ClampPollInterval(TimeSpan configured, ILogger logger)
     {
-        if (configured <= TimeSpan.Zero)
+        if (configured < TimeSpan.FromMilliseconds(1))
         {
             TimeSpan fallback = new DaemonOptions().PullRequestPollInterval;
             logger.LogWarning(

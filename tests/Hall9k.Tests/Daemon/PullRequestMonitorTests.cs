@@ -131,6 +131,15 @@ public sealed class PullRequestMonitorTests
     }
 
     [Fact]
+    public void A_positive_sub_millisecond_configured_interval_falls_back_to_the_shipped_default()
+    {
+        PullRequestMonitor.ClampPollInterval(TimeSpan.FromTicks(1), NullLogger.Instance)
+            .Should().Be(Base, "a positive interval below one millisecond truncates to zero once handed " +
+                "to PeriodicTimer's constructor, which rejects it exactly like zero or negative would, " +
+                "crashing the monitor before a single sweep ran");
+    }
+
+    [Fact]
     public void A_configured_interval_above_what_PeriodicTimer_accepts_is_clamped_down_to_it()
     {
         PullRequestMonitor.ClampPollInterval(TimeSpan.FromDays(60), NullLogger.Instance)
