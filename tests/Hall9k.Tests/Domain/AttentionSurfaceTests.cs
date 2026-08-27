@@ -377,7 +377,7 @@ public sealed class AttentionSurfaceTests
     }
 
     /// <summary>
-    /// The post-PR review watcher's own read of Copilot (Decisions Log #90) splits this same
+    /// The post-PR review watcher's own read of Copilot (Decisions Log #89) splits this same
     /// AwaitingReview row three ways, matching the phase line above it exactly (pre-PR review,
     /// cycle 2: the two used to disagree — the phase said "awaiting Copilot review" while the
     /// cause right under it still claimed "read its checks, then the merge is yours").
