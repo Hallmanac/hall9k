@@ -62,6 +62,40 @@ public sealed class AgentPromptBuilderTests : IDisposable
         prompt.Should().Contain("- End with a short summary: what you did, decisions made, assumptions, open questions.");
     }
 
+    /// <summary>
+    /// Backlog 57: the dispatched runtime kills the process at the final message, so every
+    /// prompt that does real work in the worktree — build, follow-up, fix-checks, rebase, and
+    /// the review-fix loop — has to say plainly that a backgrounded command, a scheduled
+    /// wakeup, or a monitor left running never fires, and that verification and commits both
+    /// have to land before that final message.
+    /// </summary>
+    [Fact]
+    public void Every_working_prompt_forbids_backgrounded_verification_and_end_of_session_wakeups()
+    {
+        string[] prompts =
+        [
+            AgentPromptBuilder.Build(SomeTask(), SomeProject(), "task/1-slug", _worktreePath),
+            AgentPromptBuilder.BuildFollowUp(
+                SomeTask(), SomeProject(), "task/1-slug", "https://github.com/x/y/pull/7", CommitStyle.Append),
+            AgentPromptBuilder.BuildFixChecks(
+                SomeTask(), SomeProject(), "task/1-slug", "https://github.com/x/y/pull/7", CommitStyle.Append),
+            AgentPromptBuilder.BuildRebase(
+                SomeTask(), SomeProject(), "task/1-slug", "https://github.com/x/y/pull/7", CommitStyle.Append),
+            AgentPromptBuilder.BuildReviewFix(SomeTask(), "task/1-slug", "findings go here", cycle: 1),
+        ];
+
+        foreach (string prompt in prompts)
+        {
+            prompt.Should().Contain("This session ends at your final message");
+            prompt.Should().Contain("backgrounded");
+            prompt.Should().Contain("scheduled wakeup");
+            prompt.Should().Contain("monitor");
+            prompt.Should().Contain("foreground");
+            prompt.Should().Contain(
+                "stranded there", "the prompt must match VerificationRunner's own failure wording");
+        }
+    }
+
     [Fact]
     public void Skills_are_omitted_when_the_skills_directory_holds_no_manifests()
     {

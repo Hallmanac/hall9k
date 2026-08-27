@@ -353,6 +353,91 @@ public sealed class VerificationRunnerTests(PostgresFixture postgres) : IClassFi
         (await query.LoadAsync<RunDetails>(runId, cts.Token))!.State.Value.Should().Be("Verifying");
     }
 
+    /// <summary>
+    /// Backlog 57: a run whose branch carries zero commits AND still holds a modified file in
+    /// the worktree gets the file named alongside the no-commits reason, not "produced no
+    /// commits" alone — the file is what tells a human or a retry session finished work is
+    /// sitting there instead of missing entirely.
+    /// </summary>
+    [Fact]
+    public async Task Zero_commits_with_a_modified_file_names_the_file_alongside_the_no_commits_reason()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        using DocumentStore store = NewStore();
+        await InitGitWorktreeAsync(withTaskCommit: false, cts.Token, trackedFile: "stranded.txt");
+        await File.WriteAllTextAsync(Path.Combine(_worktree, "stranded.txt"), "left behind", cts.Token);
+        (Guid taskId, Guid runId) = await SeedAsync(store,
+            [new VerifyCommand("never", "echo should-not-run")], cts.Token);
+
+        bool passed = await NewRunner(store).VerifyAsync(runId, taskId, cts.Token);
+
+        passed.Should().BeFalse();
+        await using IQuerySession query = store.QuerySession();
+        RunDetails run = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
+        run.State.Value.Should().Be("Failed");
+        run.FailureReason.Should().Contain("produced no commits");
+        run.FailureReason.Should().Contain("stranded.txt", "the stranded file must be named, not just implied");
+        run.FailedGates.Should().BeEmpty("no gate ever ran");
+    }
+
+    /// <summary>
+    /// The shape the zero-commit check alone always missed (origin incident, PR #53's cycle-3
+    /// fix round, 2026-08-26): some commits landed, but the session still ended with
+    /// modified-but-uncommitted files sitting in the worktree. Gates on that tree would test
+    /// content the pull request never actually carries, so this fails before any gate runs and
+    /// names every file left behind.
+    /// </summary>
+    [Fact]
+    public async Task Committed_work_with_an_uncommitted_file_still_fails_before_the_gates()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        using DocumentStore store = NewStore();
+        await InitGitWorktreeAsync(withTaskCommit: true, cts.Token, trackedFile: "half-done.cs");
+        await File.WriteAllTextAsync(Path.Combine(_worktree, "half-done.cs"), "left behind", cts.Token);
+        (Guid taskId, Guid runId) = await SeedAsync(store,
+            [new VerifyCommand("never", "echo should-not-run")], cts.Token);
+
+        bool passed = await NewRunner(store).VerifyAsync(runId, taskId, cts.Token);
+
+        passed.Should().BeFalse("finished work left uncommitted never reaches the pull request");
+        await using IQuerySession query = store.QuerySession();
+        RunDetails run = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
+        run.State.Value.Should().Be("Failed");
+        run.FailureReason.Should().Contain("modified-but-uncommitted");
+        run.FailureReason.Should().Contain("half-done.cs");
+        run.FailureReason.Should().NotContain("produced no commits", "this branch has commits; only files are stranded");
+        run.FailedGates.Should().BeEmpty("no gate ever ran");
+
+        (await query.LoadAsync<TaskListItem>(taskId, cts.Token))!.State.Value.Should().Be("Failed");
+        File.Exists(Path.Combine(RunPaths.GlobalDirectory(runId), "verify-never.log"))
+            .Should().BeFalse("the failure lands before the gates, not after");
+    }
+
+    /// <summary>
+    /// An untracked file is not stranded agent work — it is as likely to be a gate's own
+    /// byproduct (a coverage report, a lint cache) that the project's `.gitignore` does not yet
+    /// name, and failing a run on it would be a defect a retry can never clear, since the next
+    /// session's gates regenerate the same file (independent pre-PR review, adversarial finding).
+    /// The uncommitted-files check separates untracked entries out of `git status --porcelain -z`
+    /// for exactly this reason, and only warns about them (independent pre-PR review, cycle 2
+    /// conformance finding) rather than failing the run.
+    /// </summary>
+    [Fact]
+    public async Task An_untracked_file_left_in_the_worktree_does_not_fail_the_run()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        using DocumentStore store = NewStore();
+        await InitGitWorktreeAsync(withTaskCommit: true, cts.Token);
+        await File.WriteAllTextAsync(Path.Combine(_worktree, "TestResults.trx"), "gate byproduct", cts.Token);
+        (Guid taskId, Guid runId) = await SeedAsync(store, [new VerifyCommand("truth", "true")], cts.Token);
+
+        bool passed = await NewRunner(store).VerifyAsync(runId, taskId, cts.Token);
+
+        passed.Should().BeTrue("an untracked file is not stranded agent work");
+        await using IQuerySession query = store.QuerySession();
+        (await query.LoadAsync<RunDetails>(runId, cts.Token))!.State.Value.Should().Be("Verifying");
+    }
+
     [Fact]
     public async Task A_research_task_may_legitimately_end_with_zero_commits()
     {
@@ -365,6 +450,30 @@ public sealed class VerificationRunnerTests(PostgresFixture postgres) : IClassFi
         bool passed = await NewRunner(store).VerifyAsync(runId, taskId, cts.Token);
 
         passed.Should().BeTrue("a research task's deliverable is its transcript, not commits");
+    }
+
+    /// <summary>
+    /// The no-commit exemption for Research tasks is about commits specifically — their
+    /// deliverable is the transcript. It says nothing about a modified file left uncommitted:
+    /// that is stranded work regardless of task type, so the exemption does not extend to it.
+    /// </summary>
+    [Fact]
+    public async Task A_research_tasks_uncommitted_file_still_fails_before_the_gates()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        using DocumentStore store = NewStore();
+        await InitGitWorktreeAsync(withTaskCommit: false, cts.Token, trackedFile: "notes.md");
+        await File.WriteAllTextAsync(Path.Combine(_worktree, "notes.md"), "left behind", cts.Token);
+        (Guid taskId, Guid runId) = await SeedAsync(store,
+            [new VerifyCommand("truth", "true")], cts.Token, TaskType.Research);
+
+        bool passed = await NewRunner(store).VerifyAsync(runId, taskId, cts.Token);
+
+        passed.Should().BeFalse("a research task can still strand a modified file, exempt or not");
+        await using IQuerySession query = store.QuerySession();
+        RunDetails run = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
+        run.FailureReason.Should().Contain("modified-but-uncommitted");
+        run.FailureReason.Should().Contain("notes.md");
     }
 
     /// <summary>
@@ -414,13 +523,21 @@ public sealed class VerificationRunnerTests(PostgresFixture postgres) : IClassFi
 
     /// <summary>
     /// Turns the seeded worktree into a real repo: base branch `main`, task branch
-    /// checked out — with or without a commit of its own past the base.
+    /// checked out — with or without a commit of its own past the base. <paramref name="trackedFile"/>,
+    /// when given, is committed on the base branch so a test can later overwrite it to produce
+    /// a tracked, modified-but-uncommitted file — the shape the real origin incidents were
+    /// (PLAN.md §16 #90), as opposed to a brand-new untracked one.
     /// </summary>
-    private async Task InitGitWorktreeAsync(bool withTaskCommit, CancellationToken cancellationToken)
+    private async Task InitGitWorktreeAsync(
+        bool withTaskCommit, CancellationToken cancellationToken, string? trackedFile = null)
     {
         Directory.CreateDirectory(_worktree);
+        string seedTrackedFile = trackedFile is null
+            ? string.Empty
+            : $"echo original > {trackedFile} && git add {trackedFile} && ";
         string script =
             "git init -q -b main && " +
+            seedTrackedFile +
             "git -c user.email=t@t -c user.name=t commit --allow-empty -m init -q && " +
             "git checkout -q -b task/verify" +
             (withTaskCommit ? " && git -c user.email=t@t -c user.name=t commit --allow-empty -m work -q" : "");
