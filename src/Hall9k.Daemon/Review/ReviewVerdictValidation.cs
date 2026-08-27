@@ -142,12 +142,12 @@ public static partial class ReviewVerdictValidation
     /// <see cref="StructuralMarkerPattern"/> covers the structured contract's own "Defect:" /
     /// "Scenario:" labels, checked at paragraph scope instead of this pattern's sentence scope,
     /// because the two-line `FINDING:` block puts the label on the line after the location.
-    /// </summary>
     /// <para>
     /// Internal, not private (task: a second fix round over the same findings): <see cref="ReviewFixEscalation"/>
     /// reuses this exact vocabulary for its own human-restatement proximity scan, in the same
     /// assembly, rather than maintaining a second, driftable copy of the same opportunistically-grown list.
     /// </para>
+    /// </summary>
     [GeneratedRegex(
         @"\b(not|no|never|missing|fails?|failing|failed|wrong|incorrect|broken|defect|bug|"
         + @"cannot|can't|won't|doesn't|does not|didn't|no longer|without|unhandled|vulnerable|leaks?|"
