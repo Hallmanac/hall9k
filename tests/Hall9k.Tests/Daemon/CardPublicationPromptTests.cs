@@ -26,14 +26,16 @@ public sealed class CardPublicationPromptTests : IDisposable
 
     public void Dispose() => Directory.Delete(_repository, recursive: true);
 
-    private string Build(TaskDetails? task = null, ProjectDetails? project = null, string board = "PROJ") =>
+    private string Build(
+        TaskDetails? task = null, ProjectDetails? project = null, string board = "PROJ", string? routingGuidance = null) =>
         AgentPromptBuilder.BuildCardPublication(
             task ?? SomeTask(),
             project ?? SomeProject(),
             _repository,
             "https://hall9k.atlassian.net",
             JiraProjectKey.Parse(board),
-            "h9k task link-jira 3f689fba");
+            "h9k task link-jira 3f689fba",
+            routingGuidance);
 
     [Fact]
     public void The_prompt_carries_the_task_the_card_is_about()
@@ -144,6 +146,27 @@ public sealed class CardPublicationPromptTests : IDisposable
 
         prompt.Should().Contain("was adopted from github:Hallmanac/hall9k#42")
             .And.Contain("Read it as", "the rule is written by the platform, after the quote it is about");
+    }
+
+    /// <summary>
+    /// The project's backlog routing guidance (h9k project set --backlog-routing) is handed to
+    /// the agent verbatim: unlike the board binding, Hall9k has no opinion about it and no rule
+    /// to enforce, so it is quoted rather than paraphrased.
+    /// </summary>
+    [Fact]
+    public void The_projects_routing_guidance_is_handed_to_the_agent_verbatim()
+    {
+        string prompt = Build(routingGuidance: "File under the platform epic; ask before creating a new one.");
+
+        prompt.Should().Contain("File under the platform epic; ask before creating a new one.");
+    }
+
+    [Fact]
+    public void With_no_routing_guidance_the_prompt_says_nothing_about_it()
+    {
+        string prompt = Build(routingGuidance: null);
+
+        prompt.Should().NotContain("routing guidance");
     }
 
     [Fact]

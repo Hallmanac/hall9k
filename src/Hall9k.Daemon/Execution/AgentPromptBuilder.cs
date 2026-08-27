@@ -1862,7 +1862,8 @@ public static class AgentPromptBuilder
         string workingDirectory,
         string site,
         JiraProjectKey board,
-        string linkCommand)
+        string linkCommand,
+        string? routingGuidance = null)
     {
         StringBuilder prompt = new();
         prompt.AppendLine("# Write this task up as a Jira card");
@@ -1905,6 +1906,17 @@ public static class AgentPromptBuilder
                 + " rules which project the card belongs in; if nothing says, stop and report that rather"
                 + " than picking one.");
         prompt.AppendLine();
+
+        // Free text, handed over exactly as the project recorded it (h9k project set
+        // --backlog-routing) rather than parsed: an agent can read "epic-first, ask for the
+        // parent before filing" the way a deterministic github-issues author never could, which
+        // is the whole reason this policy dispatches a session at all.
+        if (routingGuidance.IsNotBlank())
+        {
+            prompt.AppendLine($"The project's own routing guidance: {routingGuidance}");
+            prompt.AppendLine();
+        }
+
         prompt.AppendLine("Hall9k models nothing about how a card should look. Issue type, required fields,");
         prompt.AppendLine("labels, components, parent links, and which board a piece of work is routed to are");
         prompt.AppendLine("this organisation's rules, not the platform's. Read them from the repository you are");
