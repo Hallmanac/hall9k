@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using FluentAssertions;
@@ -92,6 +93,7 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
                 ["is_error"] = false,
                 ["usage"] = new Dictionary<string, long> { ["input_tokens"] = 1_000, ["output_tokens"] = 200 },
                 ["total_cost_usd"] = 0.01,
+                ["num_turns"] = 12,
                 ["result"] = summary,
             });
             Directory.CreateDirectory(request.RunDirectory);
@@ -147,6 +149,91 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
         merged.Should().Contain("Conformance lens").And.Contain("Adversarial lens",
             "the merged document says which lens produced what");
         merged.Should().Contain("VERDICT: merge-ready");
+    }
+
+    /// <summary>
+    /// A before-versus-after comparison of the packet-assembly change (task: a dispatched review
+    /// session starts with the diff already assembled) needs per-pass turns and input tokens
+    /// readable from an ordinary production run, so both ride on <see cref="ReviewPassCompleted"/>
+    /// itself rather than only on the separately-appended <see cref="TokensRecorded"/> event.
+    /// </summary>
+    [Fact]
+    public async Task Each_review_pass_records_its_own_turns_and_input_tokens()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        using DocumentStore store = NewStore();
+        (Guid taskId, Guid runId, _) = await SeedVerifiedRunAsync(store, cts.Token);
+
+        ScriptedExecutor executor = new(
+            "Every acceptance criterion is met.\n\nVERDICT: merge-ready",
+            "Hunted the trust boundaries and the lifetimes; nothing survived verification.\n\nVERDICT: merge-ready");
+        await NewEngine(store, executor).ReviewAsync(runId, taskId, cts.Token);
+
+        await using IQuerySession query = store.QuerySession();
+        List<object> events = [.. (await query.Events.FetchStreamAsync(runId, token: cts.Token)).Select(e => e.Data)];
+
+        events.OfType<ReviewPassCompleted>().Should().OnlyContain(
+            pass => pass.Turns == 12 && pass.InputTokens == 1_000,
+            "the fake session's own stream-json result is what a real one would report");
+    }
+
+    /// <summary>
+    /// End-to-end through the dispatcher itself (task: a dispatched review session starts with
+    /// the diff already assembled): a real git worktree with a real diff against its base branch
+    /// produces a packet, and both lenses' prompts carry it.
+    /// </summary>
+    [Fact]
+    public async Task Both_lenses_prompts_carry_the_assembled_packet_from_a_real_worktree()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        using DocumentStore store = NewStore();
+        (Guid taskId, Guid runId, _) = await SeedVerifiedRunAsync(store, cts.Token);
+
+        await using IQuerySession seedQuery = store.QuerySession();
+        RunDetails seededRun = (await seedQuery.LoadAsync<RunDetails>(runId, cts.Token))!;
+        InitGitRepositoryWithADiffAgainstMain(seededRun.WorktreePath, seededRun.Branch);
+
+        ScriptedExecutor executor = new(
+            "Every acceptance criterion is met.\n\nVERDICT: merge-ready",
+            "Hunted the trust boundaries and the lifetimes; nothing survived verification.\n\nVERDICT: merge-ready");
+        await NewEngine(store, executor).ReviewAsync(runId, taskId, cts.Token);
+
+        executor.Spawns.Should().HaveCount(2);
+        executor.Spawns.Should().OnlyContain(
+            spawn => spawn.Prompt.Contains("Packet (a starting point, not a boundary)"));
+        executor.Spawns.Should().OnlyContain(spawn => spawn.Prompt.Contains("class Widget"));
+    }
+
+    private static void InitGitRepositoryWithADiffAgainstMain(string worktreePath, string branch)
+    {
+        Git(worktreePath, "init -q -b main");
+        File.WriteAllText(Path.Combine(worktreePath, "base.txt"), "base\n");
+        Git(worktreePath, "add -A");
+        Git(worktreePath, "-c user.name=Test -c user.email=test@test commit -q -m init");
+        Git(worktreePath, $"checkout -q -b {branch}");
+        File.WriteAllText(Path.Combine(worktreePath, "Widget.cs"), "class Widget { }\n");
+        Git(worktreePath, "add -A");
+        Git(worktreePath, "-c user.name=Test -c user.email=test@test commit -q -m widget");
+    }
+
+    private static void Git(string workingDirectory, string arguments)
+    {
+        using Process process = new();
+        process.StartInfo = new ProcessStartInfo
+        {
+            FileName = "git",
+            Arguments = $"-C \"{workingDirectory}\" {arguments}",
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false,
+        };
+        process.Start();
+        string output = process.StandardOutput.ReadToEnd() + process.StandardError.ReadToEnd();
+        process.WaitForExit();
+        if (process.ExitCode != 0)
+        {
+            throw new InvalidOperationException($"git {arguments} failed: {output}");
+        }
     }
 
     /// <summary>

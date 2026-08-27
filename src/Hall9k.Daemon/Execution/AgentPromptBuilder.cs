@@ -828,10 +828,10 @@ public static class AgentPromptBuilder
     /// </param>
     public static string BuildReview(
         TaskDetails task, ProjectDetails project, string branch, int cycle, ReviewLens lens,
-        IReadOnlyList<ReviewParkResolution>? priorRulings = null) =>
+        ReviewPacket? packet = null, IReadOnlyList<ReviewParkResolution>? priorRulings = null) =>
         lens == ReviewLens.Adversarial
-            ? BuildAdversarialReview(project, branch, cycle, priorRulings)
-            : BuildConformanceReview(task, project, branch, cycle, priorRulings);
+            ? BuildAdversarialReview(project, branch, cycle, packet, priorRulings)
+            : BuildConformanceReview(task, project, branch, cycle, packet, priorRulings);
 
     /// <summary>
     /// The one reviewer a <see cref="ReviewMode.Verify"/> cycle dispatches (task: review cycles
@@ -860,7 +860,7 @@ public static class AgentPromptBuilder
     public static string BuildReviewVerify(
         TaskDetails task, ProjectDetails project, string branch, int cycle, IReadOnlyList<ReviewLens> tracks,
         string priorFindings, string priorFixPosition, string? sinceSha, ReviewMode priorCycleMode,
-        IReadOnlyList<ReviewParkResolution>? priorRulings = null)
+        ReviewPacket? packet = null, IReadOnlyList<ReviewParkResolution>? priorRulings = null)
     {
         StringBuilder prompt = new();
         prompt.AppendLine("# Independent review: verify the fix, and check what it touched");
@@ -902,6 +902,7 @@ public static class AgentPromptBuilder
         }
 
         prompt.AppendLine();
+        AppendReviewPacket(prompt, packet);
         AppendSettledRulings(prompt, priorRulings);
         prompt.AppendLine("## The prior cycle's findings");
         prompt.AppendLine();
@@ -1034,7 +1035,7 @@ public static class AgentPromptBuilder
     /// </summary>
     private static string BuildConformanceReview(
         TaskDetails task, ProjectDetails project, string branch, int cycle,
-        IReadOnlyList<ReviewParkResolution>? priorRulings)
+        ReviewPacket? packet, IReadOnlyList<ReviewParkResolution>? priorRulings)
     {
         StringBuilder prompt = new();
         prompt.AppendLine("# Independent review: verify this diff before its pull request opens");
@@ -1056,6 +1057,7 @@ public static class AgentPromptBuilder
         }
 
         prompt.AppendLine();
+        AppendReviewPacket(prompt, packet);
         AppendSettledRulings(prompt, priorRulings);
         prompt.AppendLine("## How to review");
         prompt.AppendLine();
@@ -1095,7 +1097,8 @@ public static class AgentPromptBuilder
     /// </para>
     /// </summary>
     private static string BuildAdversarialReview(
-        ProjectDetails project, string branch, int cycle, IReadOnlyList<ReviewParkResolution>? priorRulings)
+        ProjectDetails project, string branch, int cycle, ReviewPacket? packet,
+        IReadOnlyList<ReviewParkResolution>? priorRulings)
     {
         StringBuilder prompt = new();
         prompt.AppendLine("# Adversarial review: assume this diff is wrong somewhere, and find where");
@@ -1136,6 +1139,7 @@ public static class AgentPromptBuilder
         prompt.AppendLine("Those are where the last incident's defects were, not where the next one will be.");
         prompt.AppendLine("Work through them, then keep going where they do not point.");
         prompt.AppendLine();
+        AppendReviewPacket(prompt, packet);
         AppendSettledRulings(prompt, priorRulings);
         prompt.AppendLine("## How to review");
         prompt.AppendLine();
@@ -1151,6 +1155,86 @@ public static class AgentPromptBuilder
 
         return prompt.ToString();
     }
+
+    /// <summary>
+    /// The packet section every review pass gets (task: a dispatched review session starts with
+    /// the diff already assembled): the branch diff plus each touched file's full current text,
+    /// handed over already assembled instead of left for the session to re-derive call by call —
+    /// and re-send on every resumed turn, which is what multiplies the input tokens a long review
+    /// session burns (Decisions Log #92's own 576M-input-tokens-in-one-day record). Framed
+    /// explicitly as a starting point rather than a boundary: nothing here narrows what the
+    /// reviewer may read, and a lead the packet does not cover — a caller, a test, a doc, a file
+    /// this diff never touched — is exactly the kind of thing the reviewer is still expected to
+    /// go find; <see cref="AppendReviewMechanics"/>'s own `git diff` instruction stays in the
+    /// prompt unconditionally for exactly that reason.
+    /// <para>
+    /// <paramref name="packet"/> is null when the dispatcher could not assemble one (git was
+    /// unobservable in the worktree, or neither the local nor the `origin/` base ref resolved) or
+    /// when a caller never supplied one (a unit test, an older code path) — either way the
+    /// section is simply omitted, and the prompt falls back to the diff command it always named.
+    /// </para>
+    /// </summary>
+    private static void AppendReviewPacket(StringBuilder prompt, ReviewPacket? packet)
+    {
+        if (packet is null)
+        {
+            return;
+        }
+
+        prompt.AppendLine("## Packet (a starting point, not a boundary)");
+        prompt.AppendLine();
+        prompt.AppendLine("Assembled ahead of this session so the first read does not require re-deriving it call");
+        prompt.AppendLine("by call: the branch diff below, plus — unless noted otherwise — the full current text");
+        prompt.AppendLine("of every file it touches. Start here, but do not stop here: reading anything else in");
+        prompt.AppendLine("the repository — another file, more history, a test, a doc — remains allowed and");
+        prompt.AppendLine("expected whenever a lead in the code warrants it. This packet bounds nothing.");
+        prompt.AppendLine();
+        prompt.AppendLine($"Diff (`git diff {packet.RangeDescription}`):");
+        prompt.AppendLine();
+        prompt.AppendLine("```diff");
+        prompt.AppendLine(packet.Diff.Length > 0 ? packet.Diff.TrimEnd('\n') : "(no changes in this range)");
+        prompt.AppendLine("```");
+        prompt.AppendLine();
+        prompt.AppendLine($"Touched files ({packet.TouchedFiles.Count}):");
+        foreach (string file in packet.TouchedFiles)
+        {
+            prompt.AppendLine($"- `{file}`");
+        }
+
+        prompt.AppendLine();
+
+        if (packet.Degraded || packet.FileContents is null)
+        {
+            prompt.AppendLine(
+                "The touched files' full text would have pushed this packet past its size cap, so only the");
+            prompt.AppendLine(
+                "diff and the file list above are included — read each file yourself as the diff, or your own");
+            prompt.AppendLine("reading, leads you to.");
+            prompt.AppendLine();
+            return;
+        }
+
+        foreach ((string file, string content) in packet.FileContents)
+        {
+            prompt.AppendLine($"### `{file}` (full current text)");
+            prompt.AppendLine();
+            prompt.AppendLine($"```{FenceLanguage(file)}");
+            prompt.AppendLine(content.TrimEnd('\n'));
+            prompt.AppendLine("```");
+            prompt.AppendLine();
+        }
+    }
+
+    /// <summary>Best-effort fenced-block language for a packet file, by extension; unrecognized is an unlabeled fence.</summary>
+    private static string FenceLanguage(string filePath) => Path.GetExtension(filePath).TrimStart('.') switch
+    {
+        "cs" => "csharp",
+        "md" => "markdown",
+        "json" => "json",
+        "yml" or "yaml" => "yaml",
+        "csproj" or "props" or "targets" or "xml" => "xml",
+        _ => "",
+    };
 
     /// <summary>How many prior rulings ride into a review prompt — the newest, since they are the ones most likely still relevant.</summary>
     private const int MaxPriorRulings = 8;
