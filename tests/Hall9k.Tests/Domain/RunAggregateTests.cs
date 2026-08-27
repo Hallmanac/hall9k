@@ -574,6 +574,63 @@ public sealed class RunAggregateTests
     }
 
     /// <summary>
+    /// A fix round dispatched purely over a human's needs-fixes reason (a cap park resolved
+    /// with new guidance, never a fix session over that cycle's own automated findings) must
+    /// leave LastFixRoundFindingLocations exactly as the last automated round left it, not
+    /// overwrite it with CurrentCycleFixFindingLocations — which by dispatch time reflects the
+    /// PARKED cycle's own findings, a set no fix session was ever actually dispatched over.
+    /// ReviewEngine.DispatchFixSessionAsync already refuses to compare against that set as the
+    /// CURRENT side of an escalation check for exactly this reason; recording it as the
+    /// PREVIOUS side here would defer the same false positive to the very next round.
+    /// </summary>
+    [Fact]
+    public void A_human_findings_round_does_not_overwrite_the_last_automated_fix_round_locations()
+    {
+        RunAggregate run = new();
+        Guid id = DomainId.New();
+        run.Apply(new RunDispatched(
+            id, DomainId.New(), DomainId.New(), DomainId.New(), 1, DomainId.New(),
+            "/wt/x", "task/x", ExecutorMode.Subscription, Now));
+        run.Apply(new ReviewDispatched(
+            id, DomainId.New(), Cycle: 1, ProcessId: 5001, Now, Now, Lens: ReviewLens.Adversarial));
+        run.Apply(new ReviewPassCompleted(
+            id, 1, ReviewLens.Adversarial, ReviewVerdict.NeedsFixes, Now,
+            [new ReviewFindingRecord(
+                ReviewSeverity.Medium, ReviewFindingScope.InScope, "src/A.cs:10", ReviewFindingDisposition.Fix)]));
+        run.Apply(new ReviewCompleted(id, 1, ReviewVerdict.NeedsFixes, Now));
+        run.Apply(new ReviewFixDispatched(id, DomainId.New(), Cycle: 1, ProcessId: 5002, Now, Now));
+        run.LastFixRoundFindingLocations.Should().BeEquivalentTo(["src/A.cs:10"]);
+        run.Apply(new ReviewFixCompleted(id, 1, ReviewFixOutcome.Fixed, Now));
+        run.Apply(new VerificationPassed(id, Now));
+
+        // Cycle 2 finds a fresh defect, but the track hits its cap before any fix session is
+        // ever dispatched over it — the park the CappedTrack branch produces.
+        run.Apply(new ReviewDispatched(
+            id, DomainId.New(), Cycle: 2, ProcessId: 5003, Now, Now, Lens: ReviewLens.Adversarial));
+        run.Apply(new ReviewPassCompleted(
+            id, 2, ReviewLens.Adversarial, ReviewVerdict.NeedsFixes, Now,
+            [new ReviewFindingRecord(
+                ReviewSeverity.Medium, ReviewFindingScope.InScope, "src/B.cs:20", ReviewFindingDisposition.Fix)]));
+        run.Apply(new ReviewCompleted(id, 2, ReviewVerdict.NeedsFixes, Now));
+        run.Apply(new ReviewParked(id, "The adversarial track reached its cap.", Now));
+
+        run.Apply(new ReviewParkResolved(
+            id, ReviewVerdict.NeedsFixes, "Go ahead and fix it.", Now, DomainId.New()));
+        run.PendingHumanFindings.Should().Be("Go ahead and fix it.");
+        run.CurrentCycleFixFindingLocations.Should().BeEquivalentTo(
+            ["src/B.cs:20"], "cycle 2's own completed pass is what CurrentCycleFixFindingLocations re-derives now");
+
+        run.Apply(new ReviewFixDispatched(id, DomainId.New(), Cycle: 2, ProcessId: 5004, Now, Now));
+
+        run.LastFixRoundFindingLocations.Should().BeEquivalentTo(
+            ["src/A.cs:10"],
+            "this round was dispatched over the human's own text, not src/B.cs:20 — the baseline " +
+            "for the NEXT round's escalation check must stay whatever the last automated round actually tried");
+        run.LastFixRoundCycle.Should().Be(2);
+        run.LastFixRoundHumanFindings.Should().Be("Go ahead and fix it.");
+    }
+
+    /// <summary>
     /// A budget park is not a human waypoint the way ReviewParked is (backlog 40): it is
     /// waiting on a clock, and the retry sweep resumes the same run — process id changes,
     /// identity does not — the moment the window is likely to have reset.
