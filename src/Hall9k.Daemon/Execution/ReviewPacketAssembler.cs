@@ -19,13 +19,36 @@ namespace Hall9k.Daemon.Execution;
 /// list for the reviewer to read from directly. <see cref="FileContents"/> is null exactly when
 /// <see cref="Degraded"/> is true.
 /// </para>
+/// <para>
+/// <see cref="Omissions"/> names every touched file the packet promises "full current text" for
+/// but does not actually carry, and why — a deleted file has no text on disk, a binary file is
+/// never decoded, an unreadable one hit an I/O error. Recorded so the prompt's "unless noted
+/// otherwise" is a true statement rather than an unqualified promise the packet quietly breaks.
+/// </para>
 /// </summary>
 public sealed record ReviewPacket(
     string RangeDescription,
     string Diff,
     IReadOnlyList<string> TouchedFiles,
     IReadOnlyDictionary<string, string>? FileContents,
-    bool Degraded);
+    bool Degraded,
+    IReadOnlyList<FileOmission> Omissions);
+
+/// <summary>A touched file the packet's per-file text section omits, and the reason it does.</summary>
+public sealed record FileOmission(string Path, FileOmissionReason Reason);
+
+/// <summary>Why <see cref="ReviewPacketAssembler"/> left a touched file's text out of the packet.</summary>
+public enum FileOmissionReason
+{
+    /// <summary>The file no longer exists on disk (deleted, or renamed away).</summary>
+    Deleted,
+
+    /// <summary>Git's own NUL-byte heuristic flagged the file as binary.</summary>
+    Binary,
+
+    /// <summary>Reading the file threw an I/O or permission error.</summary>
+    Unreadable,
+}
 
 /// <summary>
 /// Assembles a <see cref="ReviewPacket"/> straight from the worktree on disk: a plain `git diff`
@@ -88,28 +111,30 @@ public static class ReviewPacketAssembler
 
         IReadOnlyList<string> touchedFiles = [.. nameOnly.Split('\0', StringSplitOptions.RemoveEmptyEntries)];
 
-        (Dictionary<string, string> contents, bool degraded) =
+        (Dictionary<string, string> contents, bool degraded, List<FileOmission> omissions) =
             await ReadTouchedFilesAsync(worktreePath, touchedFiles, Encoding.UTF8.GetByteCount(diff), cancellationToken);
-        return new ReviewPacket(range, diff, touchedFiles, degraded ? null : contents, degraded);
+        return new ReviewPacket(range, diff, touchedFiles, degraded ? null : contents, degraded, omissions);
     }
 
     /// <summary>
     /// Reads each touched file's current worktree text, running total against
     /// <see cref="MaxPacketBytes"/> starting from the diff's own size (the caller already
     /// confirmed the diff alone is under the cap). A file the diff renamed away or deleted is
-    /// silently skipped: the diff itself already shows the removal, and there is no current text
-    /// on disk to embed. A probably-binary file is skipped the same way, and skipped *before* its
-    /// on-disk length is weighed against the remaining budget (cycle-2 conformance and adversarial
-    /// review): its lossy UTF-8 decode would be unusable noise in the prompt, and charging its
-    /// length to the budget would degrade the whole packet over a file that was never going to be
-    /// embedded in the first place. Only a file that survives the binary check has its length
-    /// checked against the remaining budget before being read.
+    /// recorded as a <see cref="FileOmissionReason.Deleted"/> omission and skipped: the diff
+    /// itself already shows the removal, and there is no current text on disk to embed. A
+    /// probably-binary file is skipped the same way, and skipped *before* its on-disk length is
+    /// weighed against the remaining budget (cycle-2 conformance and adversarial review): its
+    /// lossy UTF-8 decode would be unusable noise in the prompt, and charging its length to the
+    /// budget would degrade the whole packet over a file that was never going to be embedded in
+    /// the first place. Only a file that survives the binary check has its length checked against
+    /// the remaining budget before being read.
     /// </summary>
-    private static async Task<(Dictionary<string, string> Contents, bool Degraded)> ReadTouchedFilesAsync(
+    private static async Task<(Dictionary<string, string> Contents, bool Degraded, List<FileOmission> Omissions)> ReadTouchedFilesAsync(
         string worktreePath, IReadOnlyList<string> touchedFiles, long startingSize, CancellationToken cancellationToken)
     {
         long size = startingSize;
         Dictionary<string, string> contents = new();
+        List<FileOmission> omissions = new();
         foreach (string file in touchedFiles)
         {
             string fullPath = Path.Combine(worktreePath, file);
@@ -118,37 +143,40 @@ public static class ReviewPacketAssembler
             {
                 if (!File.Exists(fullPath))
                 {
+                    omissions.Add(new FileOmission(file, FileOmissionReason.Deleted));
                     continue;
                 }
 
                 if (await IsProbablyBinaryAsync(fullPath, cancellationToken))
                 {
+                    omissions.Add(new FileOmission(file, FileOmissionReason.Binary));
                     continue;
                 }
 
                 long fileLength = new FileInfo(fullPath).Length;
                 if (size + fileLength > MaxPacketBytes)
                 {
-                    return (contents, true);
+                    return (contents, true, omissions);
                 }
 
                 text = await File.ReadAllTextAsync(fullPath, cancellationToken);
             }
             catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
             {
+                omissions.Add(new FileOmission(file, FileOmissionReason.Unreadable));
                 continue;
             }
 
             size += Encoding.UTF8.GetByteCount(text);
             if (size > MaxPacketBytes)
             {
-                return (contents, true);
+                return (contents, true, omissions);
             }
 
             contents[file] = text;
         }
 
-        return (contents, false);
+        return (contents, false, omissions);
     }
 
     /// <summary>

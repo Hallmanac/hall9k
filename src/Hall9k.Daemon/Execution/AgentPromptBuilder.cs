@@ -1232,6 +1232,16 @@ public static class AgentPromptBuilder
 
         prompt.AppendLine();
 
+        foreach (FileOmission omission in packet.Omissions)
+        {
+            prompt.AppendLine($"text omitted: `{omission.Path}` ({FormatOmissionReason(omission.Reason)})");
+        }
+
+        if (packet.Omissions.Count > 0)
+        {
+            prompt.AppendLine();
+        }
+
         if (packet.Degraded || packet.FileContents is null)
         {
             prompt.AppendLine(
@@ -1255,6 +1265,15 @@ public static class AgentPromptBuilder
             prompt.AppendLine();
         }
     }
+
+    /// <summary>The word printed beside a `text omitted:` line — matches the reader's own vocabulary for why.</summary>
+    private static string FormatOmissionReason(FileOmissionReason reason) => reason switch
+    {
+        FileOmissionReason.Deleted => "deleted",
+        FileOmissionReason.Binary => "binary",
+        FileOmissionReason.Unreadable => "unreadable",
+        _ => "omitted",
+    };
 
     /// <summary>Best-effort fenced-block language for a packet file, by extension; unrecognized is an unlabeled fence.</summary>
     private static string FenceLanguage(string filePath) => Path.GetExtension(filePath).TrimStart('.') switch

@@ -447,7 +447,7 @@ public sealed class AgentPromptBuilderTests : IDisposable
     {
         ReviewPacket packet = new(
             "main...HEAD", "diff --git a/Widget.cs b/Widget.cs\n+class Widget { }\n",
-            ["Widget.cs"], new Dictionary<string, string> { ["Widget.cs"] = "class Widget { }\n" }, Degraded: false);
+            ["Widget.cs"], new Dictionary<string, string> { ["Widget.cs"] = "class Widget { }\n" }, Degraded: false, Omissions: []);
 
         string prompt = AgentPromptBuilder.BuildReview(
             SomeTask(), SomeProject(), "task/1-slug", cycle: 1, ReviewLens.Conformance, packet);
@@ -471,7 +471,7 @@ public sealed class AgentPromptBuilderTests : IDisposable
     {
         ReviewPacket packet = new(
             "main...HEAD", "diff --git a/Huge.cs b/Huge.cs\n+lots of content\n",
-            ["Huge.cs"], FileContents: null, Degraded: true);
+            ["Huge.cs"], FileContents: null, Degraded: true, Omissions: []);
 
         string prompt = AgentPromptBuilder.BuildReview(
             SomeTask(), SomeProject(), "task/1-slug", cycle: 1, ReviewLens.Conformance, packet);
@@ -481,6 +481,33 @@ public sealed class AgentPromptBuilderTests : IDisposable
         prompt.Should().Contain("`Huge.cs`");
         prompt.Should().Contain("pushed this packet past its size cap");
         prompt.Should().NotContain("(full current text)", "the degraded packet carries no per-file bodies at all");
+    }
+
+    /// <summary>
+    /// The "full current text ... unless noted otherwise" promise in the packet's own intro
+    /// (cycle-3 conformance and adversarial review) is honest only when a file it could not embed
+    /// is actually named and why. A deleted file and a binary file ride in the same packet so the
+    /// rendered list carries both reasons, not just whichever one a narrower test would exercise.
+    /// </summary>
+    [Fact]
+    public void Review_prompt_with_a_packet_names_every_omitted_files_text_and_why()
+    {
+        ReviewPacket packet = new(
+            "main...HEAD", "diff --git a/Widget.cs b/Widget.cs\n+class Widget { }\n",
+            ["Widget.cs", "doomed.txt", "asset.png"],
+            new Dictionary<string, string> { ["Widget.cs"] = "class Widget { }\n" },
+            Degraded: false,
+            Omissions:
+            [
+                new FileOmission("doomed.txt", FileOmissionReason.Deleted),
+                new FileOmission("asset.png", FileOmissionReason.Binary),
+            ]);
+
+        string prompt = AgentPromptBuilder.BuildReview(
+            SomeTask(), SomeProject(), "task/1-slug", cycle: 1, ReviewLens.Conformance, packet);
+
+        prompt.Should().Contain("text omitted: `doomed.txt` (deleted)");
+        prompt.Should().Contain("text omitted: `asset.png` (binary)");
     }
 
     /// <summary>
@@ -494,7 +521,7 @@ public sealed class AgentPromptBuilderTests : IDisposable
     {
         ReviewPacket packet = new(
             "main...HEAD", "diff --git a/Widget.cs b/Widget.cs\n+class Widget { }\n",
-            ["Widget.cs"], new Dictionary<string, string> { ["Widget.cs"] = "class Widget { }\n" }, Degraded: false);
+            ["Widget.cs"], new Dictionary<string, string> { ["Widget.cs"] = "class Widget { }\n" }, Degraded: false, Omissions: []);
 
         string prompt = AgentPromptBuilder.BuildReview(
             SomeTask(), SomeProject(), "task/1-slug", cycle: 1, ReviewLens.Adversarial, packet);
@@ -519,7 +546,7 @@ public sealed class AgentPromptBuilderTests : IDisposable
             "main...HEAD", "diff --git a/DOC.md b/DOC.md\n+```bash\n+dotnet build\n+```\n",
             ["DOC.md", "Widget.cs"],
             new Dictionary<string, string> { ["DOC.md"] = DocContent, ["Widget.cs"] = "class Widget { }\n" },
-            Degraded: false);
+            Degraded: false, Omissions: []);
 
         string prompt = AgentPromptBuilder.BuildReview(
             SomeTask(), SomeProject(), "task/1-slug", cycle: 1, ReviewLens.Conformance, packet);
@@ -537,7 +564,7 @@ public sealed class AgentPromptBuilderTests : IDisposable
     {
         ReviewPacket packet = new(
             "abc123..HEAD", "diff --git a/Fix.cs b/Fix.cs\n+// fixed\n",
-            ["Fix.cs"], new Dictionary<string, string> { ["Fix.cs"] = "// fixed\n" }, Degraded: false);
+            ["Fix.cs"], new Dictionary<string, string> { ["Fix.cs"] = "// fixed\n" }, Degraded: false, Omissions: []);
 
         string prompt = AgentPromptBuilder.BuildReviewVerify(
             SomeTask(), SomeProject(), "task/1-slug", cycle: 2,
