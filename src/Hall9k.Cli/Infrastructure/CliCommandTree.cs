@@ -425,7 +425,10 @@ public static class CliCommandTree
                     "Publish a draft: the readiness gate. Enforces the full contract (an outcome-phrased "
                     + "objective and at least one checkable acceptance criterion, PLAN.md §4) and refuses a "
                     + "dependency cycle, naming it. A published task is immutable and assignable but still "
-                    + "will not run — assigning it is a separate, explicit act (--assign does both at once).")
+                    + "will not run — assigning it is a separate, explicit act (--assign does both at once). "
+                    + "Under a tracking backlog policy (h9k project set --backlog), publishing has an "
+                    + "external side effect: github-issues files a GitHub issue itself, through the "
+                    + "operator's own gh credentials, and jira dispatches an agent run to author the card.")
                 .WithExample("task", "publish", "28b19893")
                 .WithExample("task", "publish", "28b19893", "--assign")
                 .WithExample("task", "publish", "28b19893", "--no-assign");
