@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Text;
 using Hall9k.Connectors.Text;
 using Hall9k.Connectors.WorkItems;
@@ -999,8 +1000,9 @@ public static class AgentPromptBuilder
             foreach (ReviewParkResolution ruling in priorRulings.TakeLast(MaxPriorRulings))
             {
                 string verdict = ruling.Verdict == ReviewVerdict.MergeReady ? "merge-ready" : "needs-fixes";
+                string resolvedAt = ruling.ResolvedAt.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
                 prompt.AppendLine(
-                    $"- Cycle {ruling.Cycle}, resolved {ruling.ResolvedAt:yyyy-MM-dd} as {verdict}: {PrintedReason(ruling)}");
+                    $"- Cycle {ruling.Cycle}, resolved {resolvedAt} as {verdict}: {PrintedReason(ruling)}");
             }
 
             prompt.AppendLine();
