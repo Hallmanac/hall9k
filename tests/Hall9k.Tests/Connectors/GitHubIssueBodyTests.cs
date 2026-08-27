@@ -17,7 +17,15 @@ public sealed class GitHubIssueBodyTests
 
         body.Should().Contain("Read the migration doc first.")
             .And.Contain("## Acceptance criteria")
-            .And.Contain("- Requests over the limit get 429");
+            .And.Contain("- [ ] Requests over the limit get 429");
+    }
+
+    [Fact]
+    public void Compose_folds_a_newline_inside_a_criterion_so_it_cannot_break_out_of_its_checklist_item()
+    {
+        string body = GitHubIssueBody.Compose(null, ["Requests over the limit get 429\n\n## Notes\n- something else"]);
+
+        body.Should().Contain("- [ ] Requests over the limit get 429").And.NotContain("\n## Notes");
     }
 
     [Fact]
@@ -31,7 +39,7 @@ public sealed class GitHubIssueBodyTests
     {
         string body = GitHubIssueBody.Compose(null, ["One criterion"]);
 
-        body.Should().NotContain("## Context").And.Contain("- One criterion");
+        body.Should().NotContain("## Context").And.Contain("- [ ] One criterion");
     }
 
     [Fact]
