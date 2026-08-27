@@ -82,4 +82,23 @@ public sealed class ReviewFixEscalationTests
             "src/Auth.cs:42 names a different line than src/Auth.cs:4 — an unbounded substring match " +
             "would wrongly treat the shorter line number as a prefix match");
     }
+
+    [Fact]
+    public void A_human_reason_naming_an_unrelated_file_whose_name_ends_in_the_previous_locations_file_does_not_escalate()
+    {
+        ReviewFixEscalation.Reason(
+            ["Engine.cs:512"], [],
+            "the leak is in src/Hall9k.Daemon/Review/ReviewEngine.cs:512").Should().BeNull(
+            "ReviewEngine.cs:512 and Engine.cs:512 are different places by ReviewFindingLocations.SamePlace — " +
+            "an unbounded substring match would wrongly treat the shorter filename as a suffix match");
+    }
+
+    [Fact]
+    public void A_human_reason_naming_a_specific_line_in_a_file_the_previous_round_named_with_no_line_does_not_escalate()
+    {
+        ReviewFixEscalation.Reason(
+            ["src/Foo.cs"], [], "the actual bug is at src/Foo.cs:120").Should().BeNull(
+            "a bare file with no stated line matches nothing per ReviewFindingLocations.SamePlace — an " +
+            "unbounded substring match would wrongly treat a more specific file:line as a restatement");
+    }
 }
