@@ -281,7 +281,14 @@ public sealed class GitHubPullRequestInspector : IPullRequestInspector
     /// minutes with a landed Copilot review nobody had read before the merge). An errored
     /// review (<see cref="FindErroredCopilotReview"/>) does not count as landed: a review that
     /// could not read the diff produced no verdict, so the phase this state ultimately writes
-    /// must not tell a reader Copilot has weighed in when it has not. A review left on a commit
+    /// must not tell a reader Copilot has weighed in when it has not. Nor does it fall through to
+    /// <see cref="ExternalReviewState.None"/>: an errored review is review activity that was
+    /// observed and simply produced no verdict, so it reports
+    /// <see cref="ExternalReviewState.Unknown"/> instead — the same claim-no-absence reasoning
+    /// as the uncomparable-commit case below, and the mirror of the mistake it already corrects
+    /// (independent pre-PR review, cycle 1: this arm used to skip the review with no record at
+    /// all, which read as "no review activity exists" when Copilot had, in fact, errored). A
+    /// review left on a commit
     /// other than <paramref name="headCommit"/> does not count as landed either (origin: a
     /// countersign re-request after a fix push recreates Copilot's review request while its
     /// earlier review of the pre-fix commit still sits in <c>latestReviews</c> — the same
@@ -330,6 +337,10 @@ public sealed class GitHubPullRequestInspector : IPullRequestInspector
                 string body = review.GetProperty("body").GetString() ?? "";
                 if (body.Contains(ErroredReviewBodyMarker, StringComparison.OrdinalIgnoreCase))
                 {
+                    // An errored review is review activity that happened and produced no verdict —
+                    // it must not fall through to None below, the same claim-no-absence reasoning
+                    // as the uncomparable-commit case just below (independent pre-PR review, cycle 1).
+                    unclassifiedReviewSeen = true;
                     continue;
                 }
 
