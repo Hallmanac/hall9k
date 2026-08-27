@@ -73,4 +73,13 @@ public sealed class ReviewFixEscalationTests
         ReviewFixEscalation.Reason(["src/Auth.cs:42"], ["src/Other.cs:99"], null).Should().BeNull();
         ReviewFixEscalation.Reason(["src/Auth.cs:42"], ["src/Other.cs:99"], string.Empty).Should().BeNull();
     }
+
+    [Fact]
+    public void A_human_reason_naming_a_different_line_that_prefixes_the_previous_locations_line_does_not_escalate()
+    {
+        ReviewFixEscalation.Reason(
+            ["src/Auth.cs:4"], [], "separate bug, see src/Auth.cs:42").Should().BeNull(
+            "src/Auth.cs:42 names a different line than src/Auth.cs:4 — an unbounded substring match " +
+            "would wrongly treat the shorter line number as a prefix match");
+    }
 }
