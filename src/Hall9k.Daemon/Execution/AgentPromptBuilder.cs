@@ -1600,6 +1600,11 @@ public static class AgentPromptBuilder
         prompt.AppendLine("the key or the board, and run it again. A run that never gets a key past that command");
         prompt.AppendLine("has not published anything, however the card looked in the browser.");
         prompt.AppendLine();
+        prompt.AppendLine("This session ends at your final message — nothing runs after it. Run that command in");
+        prompt.AppendLine("the foreground and read its result before you finish: backgrounding it, or ending the");
+        prompt.AppendLine("session before it returns, means nobody ever reads whether it succeeded, and the card");
+        prompt.AppendLine("exists with nothing having linked it back.");
+        prompt.AppendLine();
 
         prompt.AppendLine("## Working rules");
         prompt.AppendLine();

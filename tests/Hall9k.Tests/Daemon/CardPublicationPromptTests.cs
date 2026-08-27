@@ -86,6 +86,19 @@ public sealed class CardPublicationPromptTests : IDisposable
     }
 
     [Fact]
+    public void The_report_back_command_is_forbidden_from_running_backgrounded()
+    {
+        // The reporting command is this prompt's own version of backlog 57's failure shape: a
+        // session that backgrounds it, or ends before it returns, strands a published card the
+        // platform never learns about, with no worktree or commit involved.
+        string prompt = Build();
+
+        prompt.Should().Contain("This session ends at your final message")
+            .And.Contain("Run that command in")
+            .And.Contain("foreground");
+    }
+
+    [Fact]
     public void The_session_is_told_it_is_in_a_shared_repository_and_must_not_write_to_it()
     {
         // Unlike a run, this session works in the project's own repository rather than an
