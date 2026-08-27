@@ -108,4 +108,64 @@ public sealed class TaskPushToJiraCommand : Hall9kAsyncCommand<TaskPushToJiraCom
             + $"reads the card back before recording it. Watch it with:[/] h9k task show {shortId}");
         return ExitCodes.Ok;
     }
+
+    /// <summary>
+    /// What asking for a Jira publication automatically (a project's backlog policy, not a human
+    /// typing push-to-jira) came to — the human command's own missing-connection case is a
+    /// refusal that stops a whole invocation, but a publish that already succeeded must not be
+    /// undone by a connection nobody has registered yet, so this reports the gap instead of
+    /// throwing through it.
+    /// </summary>
+    internal enum AutoRequestOutcome
+    {
+        Requested,
+        NoJiraConnection,
+    }
+
+    /// <summary>
+    /// The push-to-jira request, made on the task's behalf by <see cref="TaskPublishCommand"/>
+    /// when a project's backlog policy is jira, rather than by a human typing the command. Every
+    /// rule is the same one <see cref="ExecuteAsync"/> enforces — one card per task
+    /// (<see cref="TaskDecider.RequestWorkItemPublication"/> refuses a second one on its own) —
+    /// this only changes what happens when there is no Jira connection to ask: a human running
+    /// the command by hand gets a refusal naming the fix, and a project that has never registered
+    /// one gets told once, at publish, and can push manually later once it has.
+    /// </summary>
+    internal static async Task<AutoRequestOutcome> TryAutoRequestAsync(
+        IDocumentStore store, Guid taskId, Guid requestedByOwnerId, CancellationToken cancellationToken)
+    {
+        await using IDocumentSession session = store.LightweightSession();
+
+        if (await WorkItemConnections.FindJiraConnectionAsync(session, cancellationToken) is null)
+        {
+            return AutoRequestOutcome.NoJiraConnection;
+        }
+
+        StreamState fence = await session.Events.FetchStreamStateAsync(taskId, cancellationToken)
+            ?? throw new DomainNotFoundException($"No task {taskId}.");
+        TaskAggregate task = await session.Events.AggregateStreamAsync<TaskAggregate>(
+                taskId, version: fence.Version, token: cancellationToken)
+            ?? throw new DomainNotFoundException($"No task {taskId}.");
+        ProjectDetails project = await session.LoadAsync<ProjectDetails>(task.ProjectId, cancellationToken)
+            ?? throw new DomainNotFoundException($"Task {taskId} names a project that is not registered.");
+
+        WorkItemPublicationRequested requested = TaskDecider.RequestWorkItemPublication(
+            task, WorkItemProvider.Jira, project.JiraProjectKey, DateTimeOffset.UtcNow, requestedByOwnerId);
+
+        session.Events.Append(taskId, expectedVersion: fence.Version + 1, requested);
+        try
+        {
+            await session.SaveChangesAsync(cancellationToken);
+        }
+        catch (EventStreamUnexpectedMaxEventIdException)
+        {
+            throw new DomainConflictException(
+                $"Task {taskId} changed while this request was being prepared, so nothing was "
+                + "requested. The likeliest change is a card being linked to it. Check it with "
+                + $"h9k task show {taskId} and run h9k task push-to-jira again if it still needs one.");
+        }
+
+        await Doorbell.RingAsync($"publication-requested:{taskId}", cancellationToken);
+        return AutoRequestOutcome.Requested;
+    }
 }

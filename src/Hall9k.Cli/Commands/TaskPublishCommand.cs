@@ -1,13 +1,19 @@
 using System.ComponentModel;
 using Hall9k.Cli.Infrastructure;
+using Hall9k.Connectors.Text;
+using Hall9k.Connectors.WorkItems;
 using Hall9k.Domain.Features.Owner;
+using Hall9k.Domain.Features.Project;
+using Hall9k.Domain.Features.Project.Projections;
 using Hall9k.Domain.Features.Tasks;
 using Hall9k.Domain.Features.Tasks.Events;
 using Hall9k.Domain.Features.Tasks.Handlers;
 using Hall9k.Domain.Features.Tasks.Queries;
 using Hall9k.Domain.Infrastructure.Bootstrap;
 using Hall9k.Domain.Shared.Exceptions;
+using JasperFx.Events;
 using Marten;
+using Marten.Events;
 using Spectre.Console;
 using Spectre.Console.Cli;
 
@@ -53,6 +59,8 @@ public sealed class TaskPublishCommand : Hall9kAsyncCommand<TaskPublishCommand.S
         Guid taskId = await TaskIdResolver.ResolveAsync(session, settings.Id, cancellationToken);
         TaskAggregate task = await session.Events.AggregateStreamAsync<TaskAggregate>(taskId, token: cancellationToken)
             ?? throw new DomainNotFoundException($"No task {taskId}.");
+        ProjectDetails project = await session.LoadAsync<ProjectDetails>(task.ProjectId, cancellationToken)
+            ?? throw new DomainNotFoundException($"Task {taskId} names a project that is not registered.");
 
         // The whole reachable chain, not just the first hop: a cycle three tasks away is still
         // a cycle this task could never run inside.
@@ -84,6 +92,16 @@ public sealed class TaskPublishCommand : Hall9kAsyncCommand<TaskPublishCommand.S
         AnsiConsole.MarkupLine(
             $"[green]Task {shortId} published[/]: {ExternalText.OneLineMarkup(task.Objective)}");
 
+        // Every published task is tracked automatically: a task adopted with --from-issue or
+        // --from-jira already carries a reference (RequestWorkItemPublication and LinkWorkItem
+        // both refuse a second one on their own), so this is skipped entirely rather than
+        // silently creating nothing — the difference between "adopted" and "declined" is worth
+        // seeing on the stream, and a task with a reference already has neither.
+        if (task.ExternalReference is null)
+        {
+            await TrackInBacklogAsync(store, taskId, shortId, task, project, context.OwnerId, cancellationToken);
+        }
+
         if (assignee is null || assigned is null)
         {
             AnsiConsole.MarkupLine(
@@ -94,6 +112,110 @@ public sealed class TaskPublishCommand : Hall9kAsyncCommand<TaskPublishCommand.S
         await Doorbell.RingAsync($"task-assigned:{taskId}", cancellationToken);
         await TaskAssignCommand.AnnounceAsync(assigned, assignee, session, cancellationToken);
         return ExitCodes.Ok;
+    }
+
+    /// <summary>
+    /// Backlog: every published task is tracked automatically, per the project's own setting
+    /// (h9k project set --backlog). Both branches run in their own store session, after the
+    /// publish transaction has already committed — jira dispatches an agent session and cannot
+    /// be made to happen inside a CLI invocation at all, and github-issues calls out to gh, which
+    /// this repository's own idiom (TaskLinkJiraCommand, CardPublicationEngine) never mixes into
+    /// the transaction doing the deciding. Either way a failure here is reported and swallowed:
+    /// the task is published either way, and an operator told what to run by hand is better than
+    /// a publish that half-failed.
+    /// </summary>
+    private static async Task TrackInBacklogAsync(
+        DocumentStore store,
+        Guid taskId,
+        string shortId,
+        TaskAggregate task,
+        ProjectDetails project,
+        Guid ownerId,
+        CancellationToken cancellationToken)
+    {
+        if (project.BacklogPolicy == BacklogPolicy.Jira)
+        {
+            TaskPushToJiraCommand.AutoRequestOutcome jiraOutcome;
+            try
+            {
+                jiraOutcome = await TaskPushToJiraCommand.TryAutoRequestAsync(
+                    store, taskId, ownerId, cancellationToken);
+            }
+            catch (DomainException exception)
+            {
+                AnsiConsole.MarkupLine(
+                    $"[yellow]  Note:[/] [dim]{project.Name.EscapeMarkup()} tracks its backlog in Jira, but "
+                    + $"requesting publication failed: {exception.Message.EscapeMarkup()} Push it by hand "
+                    + $"once the task settles:[/] h9k task push-to-jira {shortId}");
+                return;
+            }
+
+            AnsiConsole.MarkupLine(jiraOutcome == TaskPushToJiraCommand.AutoRequestOutcome.Requested
+                ? $"[dim]  {project.Name.EscapeMarkup()} tracks its backlog in Jira — publication "
+                    + "requested; the daemon dispatches the session that writes the card.[/]"
+                : $"[yellow]  Note:[/] [dim]{project.Name.EscapeMarkup()} tracks its backlog in Jira, but no "
+                    + "Jira connection is registered, so nothing was requested. Register one, then push it "
+                    + $"by hand:[/] h9k task push-to-jira {shortId}");
+            return;
+        }
+
+        if (project.BacklogPolicy != BacklogPolicy.GitHubIssues)
+        {
+            return;
+        }
+
+        GitHubWorkItemProvider provider = new();
+        ImportedWorkItem issue;
+        try
+        {
+            issue = await provider.CreateAsync(
+                new GitHubIssueCreateRequest(
+                    RelayedText.WithoutClosingKeywords(ExternalText.OneLine(task.Objective)),
+                    GitHubIssueBody.Compose(task.AgentContext, task.AcceptanceCriteria),
+                    GitHubIssueBody.Labels(project.BacklogRoutingGuidance),
+                    project.RepositoryPath),
+                cancellationToken);
+        }
+        catch (DomainConflictException exception)
+        {
+            // The issue was created; only reading it back to verify it failed. Advising a
+            // by-hand create here (as the branch below does) would file a duplicate.
+            AnsiConsole.MarkupLine(
+                $"[yellow]  Note:[/] [dim]{project.Name.EscapeMarkup()} tracks its backlog in GitHub "
+                + $"issues, but {exception.Message.EscapeMarkup()} Link it:[/] h9k task link-issue "
+                + $"{shortId} <issue>");
+            return;
+        }
+        catch (DomainException exception)
+        {
+            AnsiConsole.MarkupLine(
+                $"[yellow]  Note:[/] [dim]{project.Name.EscapeMarkup()} tracks its backlog in GitHub issues, "
+                + $"but creating one failed: {exception.Message.EscapeMarkup()} Create it by hand and link "
+                + $"it:[/] h9k task link-issue {shortId} <issue>");
+            return;
+        }
+
+        await using IDocumentSession session = store.LightweightSession();
+        TaskLinkIssueCommand.LinkOutcome outcome;
+        try
+        {
+            outcome = await TaskLinkIssueCommand.LinkAsync(session, taskId, issue, ownerId, cancellationToken);
+            await session.SaveChangesAsync(cancellationToken);
+        }
+        catch (Exception exception) when (exception is DomainException or EventStreamUnexpectedMaxEventIdException)
+        {
+            AnsiConsole.MarkupLine(
+                $"[yellow]  Note:[/] [dim]Created {issue.Reference.ToString().EscapeMarkup()} but could not "
+                + $"link it: {exception.Message.EscapeMarkup()} Link it by hand:[/] h9k task link-issue "
+                + $"{shortId} {issue.Reference.Reference.EscapeMarkup()}");
+            return;
+        }
+
+        AnsiConsole.MarkupLine(outcome == TaskLinkIssueCommand.LinkOutcome.Linked
+            ? $"[dim]  {project.Name.EscapeMarkup()} tracks its backlog in GitHub issues — created and "
+                + $"linked {issue.Reference.ToString().EscapeMarkup()}.[/]"
+            : $"[dim]  {project.Name.EscapeMarkup()} tracks its backlog in GitHub issues; task {shortId} "
+                + "already carried a reference by the time this landed.[/]");
     }
 
     /// <summary>

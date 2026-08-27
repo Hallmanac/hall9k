@@ -552,7 +552,8 @@ public sealed class CardPublicationEngine(
             checkout,
             site.GetLeftPart(UriPartial.Authority),
             aggregate.PendingPublicationProjectKey,
-            $"h9k task link-jira {task.Id}");
+            $"h9k task link-jira {task.Id}",
+            project.BacklogRoutingGuidance);
 
         // Recorded before anything is spawned, which is RunLauncher's order (RunDispatched, then
         // spawn, then RunProcessStarted) and it is the order for the same reason. The fence makes
