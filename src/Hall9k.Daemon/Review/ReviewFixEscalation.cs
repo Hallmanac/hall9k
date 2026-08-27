@@ -60,12 +60,39 @@ public static class ReviewFixEscalation
         }
 
         string? restated = humanFindings.IsNotBlank()
-            ? previousLocations.FirstOrDefault(previous =>
-                humanFindings.Contains(previous, StringComparison.OrdinalIgnoreCase))
+            ? previousLocations.FirstOrDefault(previous => ContainsLocation(humanFindings, previous))
             : null;
         return restated is null
             ? null
             : "repeat round — the human's needs-fixes verdict restates the previous fix round's "
                 + $"finding at {restated}";
+    }
+
+    /// <summary>
+    /// Whether <paramref name="text"/> literally names <paramref name="location"/> — a plain
+    /// substring match, but bounded on the right so a shorter line number stated in
+    /// <paramref name="location"/> cannot match as a prefix of a longer, unrelated one already
+    /// present in <paramref name="text"/> (<c>src/Auth.cs:4</c> must not match inside
+    /// <c>src/Auth.cs:42</c>). No left boundary is needed: <paramref name="location"/> always
+    /// starts mid-path or at a path separator, never mid-digit.
+    /// </summary>
+    private static bool ContainsLocation(string text, string location)
+    {
+        for (int start = 0; ; )
+        {
+            int index = text.IndexOf(location, start, StringComparison.OrdinalIgnoreCase);
+            if (index < 0)
+            {
+                return false;
+            }
+
+            int after = index + location.Length;
+            if (after >= text.Length || !char.IsAsciiDigit(text[after]))
+            {
+                return true;
+            }
+
+            start = index + 1;
+        }
     }
 }
