@@ -1483,6 +1483,67 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
     }
 
     /// <summary>
+    /// Cycle-3 conformance finding: <c>SettleAsync</c>'s force-conclude loop iterates
+    /// <c>ActiveReviewLenses</c> in order — Conformance, then Adversarial — and used to always
+    /// credit whichever of those it reached first with a Verify pass's shared ride-along,
+    /// regardless of which track the reviewer's own `track=` tag actually named. This forces both
+    /// tracks to their cap with a Verify pass whose ride-along is explicitly tagged
+    /// `track=adversarial`, and asserts the residual lands on the adversarial track's own
+    /// conclusion, never conformance's, even though conformance is reached first in the loop.
+    /// </summary>
+    [Fact]
+    public async Task A_verify_passs_tagged_ride_along_settles_under_the_track_its_own_tag_names()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        using DocumentStore store = NewStore();
+        (Guid taskId, Guid runId, _) = await SeedVerifiedRunAsync(store, cts.Token);
+
+        ScriptedExecutor executor = new(
+            // Cycle 1: both tracks find something, so both stay active into cycle 2.
+            "FINDING: severity=medium; scope=in-scope; at=A.cs:1\nDefect: the criterion is not met.\n\n"
+            + "VERDICT: needs-fixes",
+            "FINDING: severity=medium; scope=in-scope; at=B.cs:2\nDefect: still present.\n\n"
+            + "VERDICT: needs-fixes",
+            "Tried.\n\nRESOLUTION: fixed",
+            // Cycle 2: one Verify pass stands in for both tracks. Both prior findings still
+            // stand (each keeps its own track alive at the two-cycle cap), plus a ride-along
+            // explicitly tagged adversarial — not conformance, the track SettleAsync's loop
+            // reaches first.
+            "FINDING: severity=medium; scope=in-scope; track=conformance; at=A.cs:1\nDefect: still not met.\n\n"
+            + "FINDING: severity=medium; scope=in-scope; track=adversarial; at=B.cs:2\nDefect: still present.\n\n"
+            + "FINDING: severity=low; scope=in-scope; track=adversarial; at=C.cs:5\n"
+            + "Defect: a nit only the adversarial track flagged.\n\nVERDICT: needs-fixes");
+        bool mergeReady = await NewEngine(
+            store, executor,
+            new DaemonOptions { MaxComplianceReviewCycles = 2, MaxAdversarialReviewCycles = 2 })
+            .ReviewAsync(runId, taskId, cts.Token);
+
+        mergeReady.Should().BeFalse("both tracks are still continuing but already at their two-cycle cap");
+
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            session.Events.Append(runId, new ReviewParkResolved(
+                runId, ReviewVerdict.MergeReady, null, Now, DomainId.New()));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        ScriptedExecutor resumeExecutor = new();
+        mergeReady = await NewEngine(store, resumeExecutor).ReviewAsync(runId, taskId, cts.Token);
+
+        mergeReady.Should().BeTrue();
+
+        await using IQuerySession query = store.QuerySession();
+        List<object> events = [.. (await query.Events.FetchStreamAsync(runId, token: cts.Token)).Select(e => e.Data)];
+        List<ReviewTrackConcluded> concluded = [.. events.OfType<ReviewTrackConcluded>()
+            .Where(e => e.Settlement == ReviewSettlement.Settled && e.Residuals.Count > 0)];
+
+        concluded.Should().ContainSingle(e => e.Lens == ReviewLens.Adversarial && e.Residuals.Any(r => r.Location == "C.cs:5"),
+            "the ride-along's own track= tag named adversarial, not whichever lens the settle loop reached first");
+        concluded.Should().NotContain(e => e.Lens == ReviewLens.Conformance && e.Residuals.Any(r => r.Location == "C.cs:5"),
+            "conformance is reached first in SettleAsync's loop, but the tag did not name it");
+    }
+
+    /// <summary>
     /// Cycle-3 cap-park finding: a still-active track's ride-along can be force-concluded after a
     /// fix session actually ran this same cycle (dispatched over the Fix finding that kept the
     /// track continuing, disputed, and the human then ended the loop with merge-ready). That

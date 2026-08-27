@@ -1465,14 +1465,24 @@ public sealed class ReviewEngine(
                     continue;
                 }
 
+                // Attribute to the track the reviewer's own tag names, when that track is still
+                // active on this run; fall back to iteration order — the lens whose pass covers
+                // this finding first — only when the finding is untagged or names a track that is
+                // no longer active (cycle-3 finding: this used to always credit whichever active
+                // lens the outer loop reached first, regardless of what the finding's own track=
+                // tag actually said).
+                ReviewLens attributedLens = finding.Track is { } track && run.ActiveReviewLenses.Contains(track)
+                    ? track
+                    : lens;
+
                 if (alreadyOnStream.Any(existing => ReviewFindingLocations.SamePlace(existing.Location, finding.Location))
                     || forced.Any(kept => ReviewFindingLocations.SamePlace(kept.Residual.Location, finding.Location)))
                 {
                     continue;
                 }
 
-                forced.Add((lens, new ReviewResidual(
-                    lens, run.ReviewCycle, finding.Severity, finding.Scope, forcedDisposition, finding.Location)));
+                forced.Add((attributedLens, new ReviewResidual(
+                    attributedLens, run.ReviewCycle, finding.Severity, finding.Scope, forcedDisposition, finding.Location)));
             }
         }
 

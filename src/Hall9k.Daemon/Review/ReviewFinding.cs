@@ -78,5 +78,5 @@ public sealed record ReviewFinding(
     }
 
     /// <summary>The stream's record of this finding: its classification, never its text (log #6).</summary>
-    public ReviewFindingRecord ToRecord() => new(Severity, Scope, Location, Disposition);
+    public ReviewFindingRecord ToRecord() => new(Severity, Scope, Location, Disposition, Track);
 }
