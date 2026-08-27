@@ -850,18 +850,29 @@ public static class AgentPromptBuilder
     /// down — in which case the prompt falls back to a full base-branch diff instruction rather than
     /// guessing at a boundary.
     /// </param>
+    /// <param name="priorCycleMode">
+    /// The shape the cycle whose findings are quoted below actually took (cycle-4 conformance
+    /// finding): the prompt cannot honestly claim "two reviewers read this branch in full" when that
+    /// cycle was itself a delta-scoped <see cref="ReviewMode.Verify"/> pass rather than a
+    /// <see cref="ReviewMode.Discovery"/> or <see cref="ReviewMode.FinalFullPass"/> cycle — a false
+    /// completeness claim is exactly the kind of unobserved fact AGENTS.md says never to assert.
+    /// </param>
     public static string BuildReviewVerify(
         TaskDetails task, ProjectDetails project, string branch, int cycle, IReadOnlyList<ReviewLens> tracks,
-        string priorFindings, string priorFixPosition, string? sinceSha,
+        string priorFindings, string priorFixPosition, string? sinceSha, ReviewMode priorCycleMode,
         IReadOnlyList<ReviewParkResolution>? priorRulings = null)
     {
         StringBuilder prompt = new();
         prompt.AppendLine("# Independent review: verify the fix, and check what it touched");
         prompt.AppendLine();
         prompt.AppendLine("You are an independent reviewer with fresh context, brought in to verify a fix rather");
-        prompt.AppendLine("than discover a diff from scratch. Two earlier reviewers already read this branch in");
-        prompt.AppendLine("full and reported the findings below; a fix session already acted on them. Your job");
-        prompt.AppendLine("is to confirm each fix actually landed and to check its blast radius — whether it");
+        prompt.AppendLine(priorCycleMode == ReviewMode.Verify
+            ? "than discover a diff from scratch. One earlier reviewer already stood in for both lenses over"
+            : "than discover a diff from scratch. Two earlier reviewers already read this branch in");
+        prompt.AppendLine(priorCycleMode == ReviewMode.Verify
+            ? "a delta since discovery and reported the findings below; a fix session already acted on them."
+            : "full and reported the findings below; a fix session already acted on them.");
+        prompt.AppendLine("Your job is to confirm each fix actually landed and to check its blast radius — whether it");
         prompt.AppendLine("touched a caller, a test, or a nearby invariant the original finding never mentioned —");
         prompt.AppendLine("not to re-read the whole branch from the beginning.");
         prompt.AppendLine();
@@ -911,7 +922,20 @@ public static class AgentPromptBuilder
         prompt.AppendLine();
         prompt.AppendLine("## What the fix session did about them");
         prompt.AppendLine();
-        prompt.AppendLine(priorFixPosition.IsBlank() ? "(no fix session summary recorded)" : priorFixPosition.Trim());
+        if (priorFixPosition.IsBlank())
+        {
+            prompt.AppendLine("(no fix session summary recorded)");
+        }
+        else
+        {
+            prompt.AppendLine(
+                "Quoted history below, not this pass's own findings — a fix session's summary often restates");
+            prompt.AppendLine(
+                "the finding headers it was handed, and that restatement is not a fresh finding you reported:");
+            prompt.AppendLine();
+            prompt.AppendLine(QuoteAsHistory(priorFixPosition));
+        }
+
         prompt.AppendLine();
         prompt.AppendLine("## How to review");
         prompt.AppendLine();

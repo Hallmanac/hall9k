@@ -793,12 +793,13 @@ public sealed class AgentPromptBuilderTests : IDisposable
         string bothActive = AgentPromptBuilder.BuildReviewVerify(
             SomeTask(), SomeProject(), "task/1-slug", cycle: 2,
             tracks: [ReviewLens.Conformance, ReviewLens.Adversarial], priorFindings: "none",
-            priorFixPosition: "none", sinceSha: null);
+            priorFixPosition: "none", sinceSha: null, priorCycleMode: ReviewMode.Discovery);
         bothActive.Should().Contain("standing in for both review lenses");
 
         string oneActive = AgentPromptBuilder.BuildReviewVerify(
             SomeTask(), SomeProject(), "task/1-slug", cycle: 2,
-            tracks: [ReviewLens.Conformance], priorFindings: "none", priorFixPosition: "none", sinceSha: null);
+            tracks: [ReviewLens.Conformance], priorFindings: "none", priorFixPosition: "none", sinceSha: null,
+            priorCycleMode: ReviewMode.Discovery);
         oneActive.Should().NotContain("standing in for both review lenses");
         oneActive.Should().Contain("standing in for the one review lens still active");
     }
@@ -820,7 +821,7 @@ public sealed class AgentPromptBuilderTests : IDisposable
         string prompt = AgentPromptBuilder.BuildReviewVerify(
             SomeTask(), SomeProject(), "task/1-slug", cycle: 2,
             tracks: [ReviewLens.Conformance], priorFindings: priorFindings,
-            priorFixPosition: "none", sinceSha: null);
+            priorFixPosition: "none", sinceSha: null, priorCycleMode: ReviewMode.Discovery);
 
         // Scoped to the quoted-history block itself, not the whole prompt: the finding contract
         // below it legitimately teaches the FINDING: header via its own worked example, which the
@@ -850,7 +851,7 @@ public sealed class AgentPromptBuilderTests : IDisposable
         string prompt = AgentPromptBuilder.BuildReviewVerify(
             SomeTask(), SomeProject(), "task/1-slug", cycle: 2,
             tracks: [ReviewLens.Conformance], priorFindings: priorFindings,
-            priorFixPosition: "none", sinceSha: null);
+            priorFixPosition: "none", sinceSha: null, priorCycleMode: ReviewMode.Discovery);
 
         // Pulled straight from the prompt's own quoted block (between the two headings the
         // quote sits between), so this test exercises exactly what the prompt actually hands the

@@ -153,6 +153,17 @@ public sealed class RunAggregate
     public ReviewMode CurrentCycleMode { get; private set; } = ReviewMode.Discovery;
 
     /// <summary>
+    /// <see cref="CurrentCycleMode"/> as it stood immediately before the current cycle started
+    /// (task: review cycles after the first, cycle-4 conformance finding) — what a
+    /// <see cref="ReviewMode.Verify"/> pass's prompt uses to say honestly whether the prior cycle it
+    /// is quoting findings from read the branch in full (<see cref="ReviewMode.Discovery"/> or
+    /// <see cref="ReviewMode.FinalFullPass"/>) or was itself a delta-scoped <see cref="ReviewMode.Verify"/>
+    /// pass, mirroring <see cref="PriorCycleHeadSha"/>'s own capture-once-per-cycle bookkeeping so a
+    /// same-cycle top-up dispatch still reads the cycle before the one it is topping up.
+    /// </summary>
+    public ReviewMode PriorCycleMode { get; private set; } = ReviewMode.Discovery;
+
+    /// <summary>
     /// The worktree's `git rev-parse HEAD` as of the most recently dispatched review cycle's own
     /// dispatch (task: review cycles after the first). Recorded so the NEXT cycle, if it turns out
     /// to be a <see cref="ReviewMode.Verify"/> cycle, has this cycle's tip available as
@@ -663,6 +674,7 @@ public sealed class RunAggregate
         }
 
         ReviewCycle = cycle;
+        PriorCycleMode = CurrentCycleMode;
         CurrentCycleMode = mode;
         PriorCycleHeadSha = CycleHeadSha;
         CycleHeadSha = headSha;
