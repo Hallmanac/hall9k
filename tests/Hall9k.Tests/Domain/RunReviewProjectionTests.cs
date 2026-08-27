@@ -49,6 +49,32 @@ public sealed class RunReviewProjectionTests
         view.InputTokens.Should().Be(30_000, "review sessions record tokens on the run");
     }
 
+    /// <summary>
+    /// Which shape a cycle's dispatch took is a stream fact `h9k task show` and the phase line
+    /// read (task: review cycles after the first) — Discovery for a stream that never recorded a
+    /// mode, and whichever word a later cycle actually recorded otherwise.
+    /// </summary>
+    [Fact]
+    public void Run_details_reads_the_recorded_review_mode_and_defaults_to_discovery()
+    {
+        RunDetailsProjection projection = new();
+        Guid id = DomainId.New();
+        RunDetails view = VerifiedRun(projection, id);
+
+        projection.Apply(new FakeEvent<ReviewDispatched>(
+            new ReviewDispatched(id, DomainId.New(), 1, 5001, Now, Now)), view);
+        view.ReviewCycleMode.Should().Be(
+            ReviewMode.Discovery, "a stream that never recorded a mode reads as the shape every cycle had before this field existed");
+
+        projection.Apply(new FakeEvent<ReviewDispatched>(
+            new ReviewDispatched(id, DomainId.New(), 2, 5002, Now, Now, null, ReviewLens.Verify, ReviewMode.Verify)), view);
+        view.ReviewCycleMode.Should().Be(ReviewMode.Verify);
+
+        projection.Apply(new FakeEvent<ReviewDispatched>(
+            new ReviewDispatched(id, DomainId.New(), 3, 5003, Now, Now, null, ReviewLens.Conformance, ReviewMode.FinalFullPass)), view);
+        view.ReviewCycleMode.Should().Be(ReviewMode.FinalFullPass);
+    }
+
     [Fact]
     public void Run_details_parks_with_the_reason_and_stays_unfinished()
     {

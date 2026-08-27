@@ -56,6 +56,20 @@ public sealed class ReviewLensTests
             .Should().Equal([ReviewLens.Adversarial]);
     }
 
+    /// <summary>
+    /// A Verify cycle's single reviewer stands in for every still-active track (task: review
+    /// cycles after the first) — the direct extension of the precedent <see cref="ReviewLens.Unknown"/>
+    /// already set, widened to cover both real lenses rather than fixed to conformance alone.
+    /// </summary>
+    [Fact]
+    public void A_verify_pass_accounts_for_both_real_lenses()
+    {
+        ReviewLens.Verify.Covers(ReviewLens.Conformance).Should().BeTrue();
+        ReviewLens.Verify.Covers(ReviewLens.Adversarial).Should().BeTrue();
+        ReviewLens.MissingFrom(ReviewLens.CycleLenses, [ReviewLens.Verify]).Should().BeEmpty(
+            "one Verify pass answers for the whole cycle, not one lens of it");
+    }
+
     [Fact]
     public void Merge_ready_takes_every_lens_and_one_needs_fixes_carries_the_cycle()
     {

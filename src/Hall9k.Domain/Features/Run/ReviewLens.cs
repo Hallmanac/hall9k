@@ -44,6 +44,19 @@ public sealed record ReviewLens
     public static readonly ReviewLens Unknown = new("");
 
     /// <summary>
+    /// The pseudo-lens a <see cref="ReviewMode.Verify"/> cycle's single reviewer is recorded under
+    /// (task: review cycles after the first). One session answers for every still-active track that
+    /// cycle, so it accounts for both real lenses in <see cref="Covers"/> — the direct extension of
+    /// the precedent <see cref="Unknown"/> already set (a pass recorded under a stand-in lens value
+    /// accounts for more than itself), except widened to cover whichever tracks are actually active
+    /// rather than fixed to Conformance alone. Never used for a <see cref="Events.ReviewTrackConcluded"/>
+    /// or <see cref="Events.ReviewFindingRouted"/> event — those always name the real lens a finding
+    /// belongs to, so the run's own per-track history reads exactly as it would if two real lenses
+    /// had answered.
+    /// </summary>
+    public static readonly ReviewLens Verify = new("Verify");
+
+    /// <summary>
     /// The tracks a review opens with, in dispatch order. This list is the seam: a third
     /// lens (or a repeated adversarial sample) arrives by appending here, and the engine, the
     /// aggregate, and the artifact layout already handle an arbitrary count. Two is the
@@ -67,11 +80,16 @@ public sealed record ReviewLens
 
     /// <summary>
     /// Whether a pass recorded under this lens accounts for <paramref name="lens"/> in its
-    /// cycle. A lens accounts for itself, and a pass recorded without a lens accounts for
-    /// Conformance: a run dispatched before lenses existed ran exactly one reviewer and that
-    /// reviewer was the conformance reviewer — what shipped, not a guess about what it did.
+    /// cycle. A lens accounts for itself; a pass recorded without a lens accounts for
+    /// Conformance, since a run dispatched before lenses existed ran exactly one reviewer and that
+    /// reviewer was the conformance reviewer — what shipped, not a guess about what it did; and a
+    /// <see cref="Verify"/> pass accounts for both real lenses, since it is the one reviewer
+    /// standing in for whichever tracks are still active that cycle.
     /// </summary>
-    public bool Covers(ReviewLens lens) => this == lens || (this == Unknown && lens == Conformance);
+    public bool Covers(ReviewLens lens) =>
+        this == lens
+        || (this == Unknown && lens == Conformance)
+        || (this == Verify && (lens == Conformance || lens == Adversarial));
 
     /// <summary>
     /// The lenses of <paramref name="required"/> that none of <paramref name="recorded"/>

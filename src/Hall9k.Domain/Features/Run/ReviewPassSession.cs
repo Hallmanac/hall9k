@@ -19,4 +19,5 @@ public sealed record ReviewPassSession(
     Guid TranscriptSessionId,
     int ProcessId,
     DateTimeOffset ProcessStartedAt,
-    AgentModel Model);
+    AgentModel Model,
+    ReviewMode Mode);
