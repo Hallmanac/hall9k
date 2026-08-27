@@ -11,7 +11,7 @@ namespace Hall9k.Domain.Features.Run.Events;
 /// was spawned on, resolved for the Fix role in its own right, since a fix session and a review
 /// session have different shapes (log #33) — unless <paramref name="Escalated"/>, in which case
 /// it is resolved for the Review role instead (task: a second fix round over the same findings):
-/// a fix session dispatched over findings that repeat the immediately preceding fix round's own
+/// a fix session dispatched over findings that repeat an earlier fix round's own
 /// findings — automated, or a human's needs-fixes verdict restating them — gets the stronger
 /// model exactly where the observed dodge-and-redo failure mode recurs.
 /// <paramref name="EscalationReason"/> is non-null only when <paramref name="Escalated"/> is

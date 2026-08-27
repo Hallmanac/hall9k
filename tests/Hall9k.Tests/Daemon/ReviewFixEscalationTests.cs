@@ -5,9 +5,9 @@ using Xunit;
 namespace Hall9k.Tests.Daemon;
 
 /// <summary>
-/// Whether a fix round repeats the immediately preceding one's own findings (task: a second fix
-/// round over the same findings) — conservative by design, so every "should this escalate" case
-/// here has a matching "and this near-miss must not" case.
+/// Whether a fix round repeats an earlier one's own findings (task: a second fix round over the
+/// same findings) — conservative by design, so every "should this escalate" case here has a
+/// matching "and this near-miss must not" case.
 /// </summary>
 public sealed class ReviewFixEscalationTests
 {

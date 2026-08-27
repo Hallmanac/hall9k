@@ -149,7 +149,7 @@ public sealed class RunDetails
     public int ReviewResidualsRideAlong { get; set; }
     /// <summary>
     /// Whether the most recently dispatched fix session ran on the review role's model instead
-    /// of the fix role's, because it repeated the immediately preceding fix round's own findings
+    /// of the fix role's, because it repeated an earlier fix round's own findings
     /// (task: a second fix round over the same findings). Automatic once the repeated findings
     /// clear: the next fix round's own comparison simply stops matching, so this reads false
     /// again with no separate reset.
