@@ -240,12 +240,22 @@ public sealed class RunReviewProjectionTests
 
         view.LastFixSessionEscalated.Should().BeTrue();
         view.LastFixSessionEscalationReason.Should().Be("repeat round over the same findings (src/Auth.cs:42)");
+        view.LastFixSessionEscalationCycle.Should().Be(1);
+
+        // A later review pass (cycle 2) must not make the escalation line claim cycle 2 dispatched
+        // the escalated fix — it did not, and ReviewCycle has already moved past it.
+        projection.Apply(new FakeEvent<ReviewDispatched>(
+            new ReviewDispatched(id, DomainId.New(), 2, 4487, Now, Now, null, ReviewLens.Conformance)), view);
+
+        view.ReviewCycle.Should().Be(2);
+        view.LastFixSessionEscalationCycle.Should().Be(1, "no fix session has dispatched at cycle 2");
 
         projection.Apply(new FakeEvent<ReviewFixDispatched>(new ReviewFixDispatched(
             id, DomainId.New(), 2, 4486, Now, Now, AgentModel.Haiku)), view);
 
         view.LastFixSessionEscalated.Should().BeFalse("the later round de-escalated");
         view.LastFixSessionEscalationReason.Should().BeNull();
+        view.LastFixSessionEscalationCycle.Should().Be(2);
     }
 
     [Fact]

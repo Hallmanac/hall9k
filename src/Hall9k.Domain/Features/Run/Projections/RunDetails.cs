@@ -157,6 +157,12 @@ public sealed class RunDetails
     public bool LastFixSessionEscalated { get; set; }
     /// <summary>Non-null exactly when <see cref="LastFixSessionEscalated"/> is true.</summary>
     public string? LastFixSessionEscalationReason { get; set; }
+    /// <summary>
+    /// The review cycle the escalated fix session actually dispatched in — recorded separately
+    /// from <see cref="ReviewCycle"/> because that field advances on the next review pass while
+    /// this one must keep naming the dispatch it was observed on.
+    /// </summary>
+    public int LastFixSessionEscalationCycle { get; set; }
     public string? FailureReason { get; set; }
 
     /// <summary>
@@ -299,6 +305,7 @@ public sealed class RunDetailsProjection : SingleStreamProjection<RunDetails, Gu
         view.ReviewModel = @event.Data.Model ?? AgentModel.Unknown;
         view.LastFixSessionEscalated = @event.Data.Escalated;
         view.LastFixSessionEscalationReason = @event.Data.EscalationReason;
+        view.LastFixSessionEscalationCycle = @event.Data.Cycle;
         StartSession(view, AgentRole.Fix, ReviewLens.Unknown, @event.Data.ProcessId, @event.Data.ProcessStartedAt);
         // Mirrors RunAggregate: a fix session redispatched over a budget park (backlog 40)
         // is the one path that needs this stated, since nothing else moves State off BudgetParked.
