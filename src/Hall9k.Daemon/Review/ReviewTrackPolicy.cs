@@ -24,14 +24,17 @@ namespace Hall9k.Daemon.Review;
 /// instead of being fixed on its own from cycle 1 onward — the severity gate never turns that
 /// rule on. What the gate (<see cref="DaemonOptions.AdversarialSeverityGateFromCycle"/>) actually
 /// decides is whether the track is FORCED into another cycle regardless of severity: before it,
-/// a needs-fixes verdict always runs the track again even when every finding attached is a
-/// ride-along, because early cycles get full rigor while the code is still converging. From that
-/// cycle onward only a High still forces the next one, and a Medium is fixed this cycle without
-/// forcing another — the ride-along a Low or ungraded finding already was simply continues, which
-/// is the nit-churn tail the gate exists to stop paying an extra cycle for. Its cap is
-/// <see cref="DaemonOptions.MaxAdversarialReviewCycles"/>, and reaching it is not a budget
-/// quietly running out: it means the machine kept finding real high-severity problems, and the
-/// park says so.
+/// a needs-fixes verdict with a Route finding still runs the track again even though nothing
+/// attached meets the fix bar (<c>ReviewEngine.RecordReviewPassAsync</c> demotes a needs-fixes
+/// verdict to merge-ready the moment every attached finding is a ride-along, so a Route finding —
+/// alone or alongside ride-alongs — is what actually reaches this pre-gate rule, exactly as
+/// <see cref="Decide"/>'s own merge-ready branch documents), because early cycles get full rigor
+/// while the code is still converging. From that cycle onward only a High still forces the next
+/// one, and a Medium is fixed this cycle without forcing another — the ride-along a Low or
+/// ungraded finding already was simply continues, which is the nit-churn tail the gate exists to
+/// stop paying an extra cycle for. Its cap is <see cref="DaemonOptions.MaxAdversarialReviewCycles"/>,
+/// and reaching it is not a budget quietly running out: it means the machine kept finding real
+/// high-severity problems, and the park says so.
 /// </para>
 /// <para>
 /// The cap is measured from the run's budget base and the gate is not, because they are not the

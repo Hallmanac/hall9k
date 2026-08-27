@@ -946,11 +946,13 @@ nothing automated is left to try. A below-the-bar finding rides along instead of
 on its own **at every cycle, gate or no gate** — the fix bar reads only severity, never the
 cycle. Adversarial runs under a **severity gate** that governs a different question, whether
 the track is *forced* into another cycle regardless of severity: through
-`AdversarialSeverityGateFromCycle - 1` a needs-fixes verdict always forces the next cycle even
-when every finding attached is a ride-along (the pre-#87 rule was "any finding forces the next
-cycle AND is fixed there"; #87 split those two, and only the forcing half survives before the
-gate), and from the gate cycle onward only a `high` still forces it — a medium is still fixed
-there, it just stops re-triggering the loop on its own. The **empty terminal case** (a cycle whose findings all
+`AdversarialSeverityGateFromCycle - 1` a needs-fixes verdict with a Route finding still forces
+the next cycle even though nothing attached meets the fix bar (a needs-fixes verdict whose
+findings are all ride-alongs is demoted to merge-ready before it ever reaches this rule — the
+pre-#87 rule was "any finding forces the next cycle AND is fixed there"; #87 split those two,
+and only the forcing half survives before the gate), and from the gate cycle onward only a
+`high` still forces it — a medium is still fixed there, it just stops re-triggering the loop on
+its own. The **empty terminal case** (a cycle whose findings all
 route away, so nothing is left to fix) ends the track from the gate cycle too, and not
 before it: while the other track can still rewrite the branch, a track retired early would
 never read the fix commits. It cannot spin on an unchanged tip, because a cycle with nothing
