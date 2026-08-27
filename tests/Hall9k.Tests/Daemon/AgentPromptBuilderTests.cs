@@ -92,7 +92,8 @@ public sealed class AgentPromptBuilderTests : IDisposable
             prompt.Should().Contain("monitor");
             prompt.Should().Contain("foreground");
             prompt.Should().Contain(
-                "stranded there", "the prompt must match VerificationRunner's own failure wording");
+                "stranded there",
+                "the prompt's own warning about work dying with the session is load-bearing wording");
         }
     }
 

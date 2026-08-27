@@ -83,9 +83,11 @@ public sealed class VerificationRunner(
                 // usually a gate byproduct the project's .gitignore has not caught up with, but
                 // it can just as easily be a brand-new source file the session forgot to `git
                 // add` — the prompt rule promises the platform names "anything left modified but
-                // uncommitted", so silence here would be a real gap. This never fails the run;
-                // failing it would strand a retry in the same unrecoverable loop the -uno
-                // exclusion above exists to avoid.
+                // uncommitted", so silence here would be a real gap. This never fails the run:
+                // git status is run with untracked files fully reported, and it is
+                // ListUncommittedFilesAsync below that classifies `?? ` entries into this
+                // separate warn-only list, precisely so a retry cannot be permanently
+                // unclearable on a byproduct the gates regenerate every run.
                 logger.LogWarning(
                     "Run {RunId}: the worktree at {WorktreePath} has untracked file(s) not counted against the " +
                     "uncommitted-files check: {Files}",

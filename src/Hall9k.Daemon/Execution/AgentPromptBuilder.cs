@@ -1364,6 +1364,11 @@ public static class AgentPromptBuilder
         prompt.AppendLine($"  - A finding listed under \"{ReviewFindingDispositions.DoNotFixHere}\" is NOT yours.");
         prompt.AppendLine("    It is already recorded elsewhere, and fixing it here grows this pull request with");
         prompt.AppendLine("    unrelated changes. Leave it alone.");
+        prompt.AppendLine($"  - A finding listed under \"{ReviewFindingDispositions.RideAlong}\" IS your work,");
+        prompt.AppendLine("    because you are the fix session this cycle dispatched: the platform records these");
+        prompt.AppendLine("    as fixed alongside your main work, so skipping one makes that record false. Fix");
+        prompt.AppendLine("    them with the same care as the rest; they are graded below the fix bar, not below");
+        prompt.AppendLine("    caring about.");
         prompt.AppendLine("- If you judge a finding to be not a defect, or human territory (a design");
         prompt.AppendLine("  disagreement, a scope change), or to be graded wrongly — a High that is really a");
         prompt.AppendLine("  Low, or the reverse — do not paper over it, do not quietly re-grade it, and do not");
