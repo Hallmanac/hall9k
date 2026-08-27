@@ -11,8 +11,19 @@ namespace Hall9k.Domain.Features.Run;
 /// it is blank when the reviewer stated none.
 /// </para>
 /// </summary>
+/// <param name="Track">
+/// Which track a <see cref="ReviewMode.Verify"/> pass's single reviewer said this finding
+/// belongs to (task: review cycles after the first, cycle-3 finding) — carried from
+/// <see cref="Hall9k.Daemon.Review.ReviewFinding.Track"/>'s own `track=` tag onto the stream, so
+/// a still-active track can be force-concluded (<c>ReviewEngine.SettleAsync</c>) crediting the
+/// tag it actually named rather than whichever lens the settling loop happens to iterate first.
+/// Null for every finding a real, single-lens pass produces, and for a Verify pass's finding
+/// that named no track or an unrecognized one — read there the same conservative way an
+/// ungraded severity already is, never guessed at.
+/// </param>
 public sealed record ReviewFindingRecord(
     ReviewSeverity Severity,
     ReviewFindingScope Scope,
     string Location,
-    ReviewFindingDisposition Disposition);
+    ReviewFindingDisposition Disposition,
+    ReviewLens? Track = null);
