@@ -1,3 +1,4 @@
+using System.Text.RegularExpressions;
 using Hall9k.Domain.Features.Run;
 
 namespace Hall9k.Daemon.Review;
@@ -14,13 +15,23 @@ namespace Hall9k.Daemon.Review;
 /// <para>
 /// Conservative by design: a location has to be an observed match
 /// (<see cref="ReviewFindingLocations.SamePlace"/>), or the human's own needs-fixes reason has to
-/// literally contain a previous round's stated location, before this counts as a repeat. When in
-/// doubt, this returns null — a false negative costs one more cheap round; a false positive
-/// silently inflates quota burn on every ordinary review cycle that happens to touch a file twice
-/// for unrelated reasons.
+/// literally contain a previous round's stated location with defect language attributed to it,
+/// before this counts as a repeat. When in doubt, this returns null — a false negative costs one
+/// more cheap round; a false positive silently inflates quota burn on every ordinary review cycle
+/// that happens to touch a file twice for unrelated reasons.
+/// </para>
+/// <para>
+/// Cycle-5 review (independent pre-PR pass, conformance finding): a bare literal-substring match
+/// of a previous location anywhere in the human's reason escalated even when that mention
+/// explicitly dismissed the location ("`src/Auth.cs:42` is fine as written — the real gap is the
+/// missing timeout in `src/Http.cs:88`."), because the only question asked was whether the string
+/// appeared, never in what sense. The scan now requires <see cref="ReviewVerdictValidation.DefectLanguagePattern"/>
+/// vocabulary to be attributed to the matched location specifically — nearer to it than to any
+/// other location-shaped token in the same text — rather than merely present anywhere in the
+/// reason (see <see cref="RestatesLocation"/>).
 /// </para>
 /// </summary>
-public static class ReviewFixEscalation
+public static partial class ReviewFixEscalation
 {
     /// <summary>
     /// Why this round escalates, or null when it is either a first round (no previous round to
@@ -42,11 +53,12 @@ public static class ReviewFixEscalation
     /// that <see cref="ReviewFindingLocations.HasAnchor"/> is a candidate for that scan, the same
     /// restriction the automated signal above gets for free through <c>SamePlace</c>: a lineless
     /// location names nowhere, so a human reason that happens to mention its bare file name is
-    /// not evidence of anything being restated. The human check is a plain substring match rather
-    /// than anything smarter: this codebase's other free-text "did this restate known content"
-    /// checks (<c>ReviewVerdictValidation</c>) are already a long history of narrow, literal
-    /// vocabulary rather than a semantic read, and the conservative default here is a missed
-    /// restatement, never an invented one.
+    /// not evidence of anything being restated. The human check is a literal substring match for
+    /// the location, plus a proximity read for whether defect language actually belongs to it
+    /// (see <see cref="RestatesLocation"/>) — narrower than a semantic read, the same discipline
+    /// this codebase's other free-text "did this restate known content" checks
+    /// (<c>ReviewVerdictValidation</c>) already apply, and the conservative default here is still
+    /// a missed restatement, never an invented one.
     /// </para>
     /// </summary>
     public static string? Reason(
@@ -69,7 +81,7 @@ public static class ReviewFixEscalation
         string? restated = humanFindings.IsNotBlank()
             ? previousLocations
                 .Where(ReviewFindingLocations.HasAnchor)
-                .FirstOrDefault(previous => ContainsLocation(humanFindings, previous))
+                .FirstOrDefault(previous => RestatesLocation(humanFindings, previous))
             : null;
         return restated is null
             ? null
@@ -78,38 +90,127 @@ public static class ReviewFixEscalation
     }
 
     /// <summary>
-    /// Whether <paramref name="text"/> literally names <paramref name="location"/> — a plain
-    /// substring match, but bounded on both sides so <paramref name="location"/> can only match a
-    /// whole path-and-anchor token in <paramref name="text"/>, never a fragment of a longer one.
-    /// The right side rejects a following digit, so a shorter line number in
-    /// <paramref name="location"/> cannot match as a prefix of a longer, unrelated one
-    /// (<c>src/Auth.cs:4</c> must not match inside <c>src/Auth.cs:42</c>). It also rejects a
-    /// following <c>:</c>-then-digit or <c>-</c>-then-digit, so a single stated line cannot match
-    /// as a prefix of a more specific anchor naming a different place — a line-and-column
-    /// (<c>src/Foo.cs:12</c> must not match inside <c>src/Foo.cs:12:34</c>) or a range
-    /// (<c>src/Foo.cs:40</c> must not match inside <c>src/Foo.cs:40-52</c>) —
-    /// <see cref="ReviewFindingLocations.SamePlace"/> already refuses both pairs. Only a digit —
-    /// never <c>.</c>, <c>_</c> or a bare <c>-</c> — closes off the right side: every candidate
-    /// here already passed <see cref="ReviewFindingLocations.HasAnchor"/>, so it always ends in
-    /// the anchor's own digits, and a human's sentence ending right after it
-    /// (<c>"fix src/Auth.cs:42."</c>) is a match, not a rejected fragment. The left side rejects a
-    /// preceding path character, so <paramref name="location"/> cannot match as the tail of a
-    /// longer, unrelated filename (<c>Engine.cs:512</c> must not match inside
-    /// <c>ReviewEngine.cs:512</c> — those are different places by the same rule).
+    /// Whether <paramref name="location"/> is both named in <paramref name="humanFindings"/> and
+    /// has defect language attributed to it there, rather than merely mentioned (cycle-5 review):
+    /// a human dismissing a previous round's location ("`src/Auth.cs:42` is fine as written — the
+    /// real gap is the missing timeout in `src/Http.cs:88`.") names it without restating it, and a
+    /// bare substring match cannot tell the two apart. This can, because the dismissal's own
+    /// defect word ("missing") sits far closer to the different location it actually describes
+    /// (`src/Http.cs:88`) than to the dismissed one — attribution is nearest-wins: for every
+    /// <see cref="ReviewVerdictValidation.DefectLanguagePattern"/> match in the text, whichever
+    /// location-shaped span is closest by character distance — an occurrence of
+    /// <paramref name="location"/> itself, or any other location-shaped token
+    /// <see cref="LooseLocationTokenPattern"/> finds — earns the credit, and a defect word
+    /// strictly closer to a genuinely different location earns none for
+    /// <paramref name="location"/>. A tie earns neither, the same conservative default as
+    /// everywhere else in this file.
+    /// <para>
+    /// This still does not need a defect word to sit in the same sentence, let alone the same
+    /// clause, as <paramref name="location"/> — "Still broken — fix `src/Auth.cs:42`." attributes
+    /// "broken" to the location three words later across an em dash, exactly the shape a human
+    /// restating a prior finding actually writes, and the only thing that would ever pull that
+    /// credit away is a nearer, different location competing for it.
+    /// </para>
     /// </summary>
-    private static bool ContainsLocation(string text, string location)
+    private static bool RestatesLocation(string humanFindings, string location)
+    {
+        List<(int Start, int End)> occurrences = [.. LocationOccurrences(humanFindings, location)
+            .Select(start => (start, start + location.Length))];
+        if (occurrences.Count == 0)
+        {
+            return false;
+        }
+
+        List<(int Start, int End)> otherLocations = [.. LooseLocationTokenPattern().Matches(humanFindings)
+            .Select(match => (match.Index, match.Index + match.Length))
+            .Where(span => !occurrences.Any(occurrence => Overlaps(span, occurrence)))];
+
+        foreach (Match defect in ReviewVerdictValidation.DefectLanguagePattern().Matches(humanFindings))
+        {
+            int distanceToLocation = DistanceToNearestSpan(defect.Index, occurrences);
+            int distanceToOtherLocation = otherLocations.Count == 0
+                ? int.MaxValue
+                : DistanceToNearestSpan(defect.Index, otherLocations);
+            if (distanceToLocation < distanceToOtherLocation)
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// A loose, deliberately over-inclusive "something location-shaped" reader, used only to find
+    /// competing locations a defect word might belong to instead of the candidate
+    /// <see cref="RestatesLocation"/> is testing — never to decide whether two locations are the
+    /// same place (<see cref="ReviewFindingLocations.SamePlace"/> already owns that). Over-matching
+    /// here (crediting a bare symbol reference as "a location") only ever costs a missed
+    /// escalation, the safe direction this whole file defaults to; under-matching would risk
+    /// attributing a dismissal's defect language to the location it was dismissing, which is the
+    /// false positive this check exists to close. A real extension needs at least two letters, the
+    /// same floor <c>ReviewVerdictValidation.LocationPattern</c> uses, so an incidental "e.g." or
+    /// "i.e." in a human's prose is not read as a competing location.
+    /// </summary>
+    [GeneratedRegex(@"[\w./\\-]+\.[A-Za-z]{2,10}(?::\d+(?:[:-]\d+)?)?")]
+    private static partial Regex LooseLocationTokenPattern();
+
+    /// <summary>
+    /// How far <paramref name="position"/> sits from the nearest of <paramref name="spans"/> —
+    /// zero when it falls inside one.
+    /// </summary>
+    private static int DistanceToNearestSpan(int position, IReadOnlyList<(int Start, int End)> spans)
+    {
+        int nearest = int.MaxValue;
+        foreach ((int start, int end) in spans)
+        {
+            int distance = position >= start && position < end
+                ? 0
+                : Math.Min(Math.Abs(position - start), Math.Abs(position - end));
+            nearest = Math.Min(nearest, distance);
+        }
+
+        return nearest;
+    }
+
+    private static bool Overlaps((int Start, int End) first, (int Start, int End) second) =>
+        first.Start < second.End && second.Start < first.End;
+
+    /// <summary>
+    /// Every boundary-safe occurrence of <paramref name="location"/> in <paramref name="text"/> —
+    /// a plain substring match, but bounded on both sides so <paramref name="location"/> can only
+    /// match a whole path-and-anchor token in <paramref name="text"/>, never a fragment of a
+    /// longer one, and yielding every match rather than stopping at the first so
+    /// <see cref="RestatesLocation"/> can test proximity around each one. The right side rejects a
+    /// following digit, so a shorter line number in <paramref name="location"/> cannot match as a
+    /// prefix of a longer, unrelated one (<c>src/Auth.cs:4</c> must not match inside
+    /// <c>src/Auth.cs:42</c>). It also rejects a following <c>:</c>-then-digit or
+    /// <c>-</c>-then-digit, so a single stated line cannot match as a prefix of a more specific
+    /// anchor naming a different place — a line-and-column (<c>src/Foo.cs:12</c> must not match
+    /// inside <c>src/Foo.cs:12:34</c>) or a range (<c>src/Foo.cs:40</c> must not match inside
+    /// <c>src/Foo.cs:40-52</c>) — <see cref="ReviewFindingLocations.SamePlace"/> already refuses
+    /// both pairs. Only a digit — never <c>.</c>, <c>_</c> or a bare <c>-</c> — closes off the
+    /// right side: every candidate here already passed
+    /// <see cref="ReviewFindingLocations.HasAnchor"/>, so it always ends in the anchor's own
+    /// digits, and a human's sentence ending right after it (<c>"fix src/Auth.cs:42."</c>) is a
+    /// match, not a rejected fragment. The left side rejects a preceding path character, so
+    /// <paramref name="location"/> cannot match as the tail of a longer, unrelated filename
+    /// (<c>Engine.cs:512</c> must not match inside <c>ReviewEngine.cs:512</c> — those are
+    /// different places by the same rule).
+    /// </summary>
+    private static IEnumerable<int> LocationOccurrences(string text, string location)
     {
         for (int start = 0; ; )
         {
             int index = text.IndexOf(location, start, StringComparison.OrdinalIgnoreCase);
             if (index < 0)
             {
-                return false;
+                yield break;
             }
 
             if (IsBoundaryBefore(text, index) && IsBoundaryAfter(text, index + location.Length))
             {
-                return true;
+                yield return index;
             }
 
             start = index + 1;
