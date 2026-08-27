@@ -491,7 +491,7 @@ public sealed class ReviewEngine(
     /// branch rebased cleanly and pushed also reaches FixNeeded, through its own ordinary review
     /// cycle, with nothing disputed and nothing left un-rebased — that one wants
     /// <see cref="AgentPromptBuilder.BuildReviewFix"/> like any other follow-up's review loop. The
-    /// primary discriminator is <paramref name="cycle"/> being 0: <see cref="RunAggregate.ReviewCycle"/>
+    /// primary discriminator is <c>cycle</c> being 0: <see cref="RunAggregate.ReviewCycle"/>
     /// only reaches 1 at the first ordinary <c>ReviewDispatched</c> (cycle numbers start at 1), so it
     /// stays 0 for the entire dispute-and-resolve round trip no matter how many times the resumed
     /// session disputes again and gets resolved again — unlike <see cref="RunAggregate.ParkedFromState"/>,
@@ -502,7 +502,7 @@ public sealed class ReviewEngine(
     /// would misroute to the generic review-fix prompt over a conflict still un-rebased). Checking
     /// <c>FollowUpKind.Rebase</c> alone is not enough either, since it stays <c>Rebase</c> for the
     /// whole rest of the run including its ordinary review cycles — <c>cycle == 0</c> is what narrows
-    /// it to before any of those ever ran. <paramref name="humanFindings"/> is what actually
+    /// it to before any of those ever ran. <c>humanFindings</c> is what actually
     /// distinguishes a dispute resolution from a coincidental cycle-0 dispatch: it is non-null only
     /// for the one dispatch that directly consumes a needs-fixes <c>ReviewParkResolved</c>
     /// (<see cref="RunAggregate.PendingHumanFindings"/> is cleared the moment that fix session
