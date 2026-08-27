@@ -78,21 +78,15 @@ public static class ReviewPacketAssembler
         string worktreePath, string baseBranch, string? sinceSha, CancellationToken cancellationToken)
     {
         (string? diff, string range) = sinceSha is { } sha
-            ? (await RunGitAsync(worktreePath, ["diff", $"{sha}..HEAD"], cancellationToken), $"{sha}..HEAD")
+            ? (await RunGitAsync(worktreePath, ["diff", $"{sha}..HEAD"], MaxPacketBytes, cancellationToken), $"{sha}..HEAD")
             : await DiffAgainstBaseAsync(worktreePath, baseBranch, cancellationToken);
         if (diff is null)
         {
-            // Git is unobservable here, or neither ref resolved — never guess at a diff that
-            // could not be read; the caller falls back to the reviewer's own git commands.
-            return null;
-        }
-
-        if (Encoding.UTF8.GetByteCount(diff) > MaxPacketBytes)
-        {
-            // The diff alone already breaks the packet's own size ceiling — ship no packet
-            // rather than one that violates the cap it advertises; the caller falls back to
-            // AppendReviewMechanics's own `git diff` instruction (conformance and adversarial
-            // review, cycle 1).
+            // Git is unobservable here, neither ref resolved, or the diff alone already broke
+            // the packet's own size ceiling (RunGitAsync bounds the read to MaxPacketBytes so an
+            // oversized diff is never buffered into memory just to be measured and discarded) —
+            // either way, ship no packet; the caller falls back to AppendReviewMechanics's own
+            // `git diff` instruction (conformance and adversarial review, cycle 1).
             return null;
         }
 
@@ -207,14 +201,19 @@ public static class ReviewPacketAssembler
         string worktreePath, string baseBranch, CancellationToken cancellationToken)
     {
         string originRange = $"origin/{baseBranch}...HEAD";
-        string? diff = await RunGitAsync(worktreePath, ["diff", originRange], cancellationToken);
-        if (diff is not null)
+        (string? diff, bool exitedZero) = await RunGitCoreAsync(worktreePath, ["diff", originRange], MaxPacketBytes, cancellationToken);
+        if (exitedZero)
         {
+            // The origin ref resolved. A null diff here means the read hit MaxPacketBytes, not
+            // that the ref failed — falling back to the local ref on an oversized-but-successful
+            // origin diff would silently trade a current diff for a stale one (the origin-first
+            // fix, Decisions Log #94/cycle-1 review). The caller already treats a null diff as
+            // "ship no packet", the same outcome an oversized diff always had.
             return (diff, originRange);
         }
 
         string localRange = $"{baseBranch}...HEAD";
-        return (await RunGitAsync(worktreePath, ["diff", localRange], cancellationToken), localRange);
+        return (await RunGitAsync(worktreePath, ["diff", localRange], MaxPacketBytes, cancellationToken), localRange);
     }
 
     /// <summary>
@@ -224,6 +223,22 @@ public static class ReviewPacketAssembler
     /// </summary>
     private static async Task<string?> RunGitAsync(
         string worktreePath, IReadOnlyList<string> arguments, CancellationToken cancellationToken)
+        => (await RunGitCoreAsync(worktreePath, arguments, maxBytes: null, cancellationToken)).Output;
+
+    /// <summary>
+    /// Bounds the read to <paramref name="maxBytes"/> (see <see cref="ReadBoundedAsync"/>) so a
+    /// diff far larger than the packet's own cap is never buffered in full just to be measured
+    /// and discarded — the daemon is a long-lived process shared by every task it dispatches, and
+    /// an unbounded `ReadToEndAsync` on a branch that adds a large generated or vendored file
+    /// would otherwise spike its memory once per review cycle for a packet that was always going
+    /// to be rejected (adversarial review, cycle 1).
+    /// </summary>
+    private static async Task<string?> RunGitAsync(
+        string worktreePath, IReadOnlyList<string> arguments, long maxBytes, CancellationToken cancellationToken)
+        => (await RunGitCoreAsync(worktreePath, arguments, maxBytes, cancellationToken)).Output;
+
+    private static async Task<(string? Output, bool ExitedZero)> RunGitCoreAsync(
+        string worktreePath, IReadOnlyList<string> arguments, long? maxBytes, CancellationToken cancellationToken)
     {
         try
         {
@@ -246,16 +261,61 @@ public static class ReviewPacketAssembler
             }
 
             process.Start();
-            Task<string> standardOutput = process.StandardOutput.ReadToEndAsync(cancellationToken);
+            Task<string?> standardOutput = ReadBoundedAsync(process.StandardOutput, maxBytes, cancellationToken);
             Task<string> standardError = process.StandardError.ReadToEndAsync(cancellationToken);
             await process.WaitForExitAsync(cancellationToken);
-            string output = await standardOutput;
+            string? output = await standardOutput;
             await standardError;
-            return process.ExitCode == 0 ? output : null;
+            return process.ExitCode == 0 ? (output, true) : (null, false);
         }
         catch (Exception exception) when (exception is not OperationCanceledException)
         {
-            return null;
+            return (null, false);
         }
+    }
+
+    /// <summary>
+    /// Reads a process stream in chunks, tracking the UTF-8 byte count as it goes rather than
+    /// after a full <c>ReadToEndAsync</c>: once the running total crosses <paramref name="maxBytes"/>
+    /// the buffered text is dropped and every further chunk is discarded rather than accumulated,
+    /// so the read never allocates meaningfully more than the cap regardless of how much output
+    /// the process still has queued. Draining continues to end-of-stream even after the cap trips
+    /// so a full pipe never blocks the writer mid-write, which would otherwise hang
+    /// <c>WaitForExitAsync</c>. Returns null exactly when the cap was crossed; <paramref name="maxBytes"/>
+    /// null means unbounded (the existing <c>ReadToEndAsync</c> behavior, used for output that is
+    /// never large enough to matter).
+    /// </summary>
+    private static async Task<string?> ReadBoundedAsync(
+        StreamReader reader, long? maxBytes, CancellationToken cancellationToken)
+    {
+        if (maxBytes is null)
+        {
+            return await reader.ReadToEndAsync(cancellationToken);
+        }
+
+        StringBuilder builder = new();
+        long bytes = 0;
+        bool exceeded = false;
+        char[] buffer = new char[81_920];
+        int read;
+        while ((read = await reader.ReadAsync(buffer.AsMemory(0, buffer.Length), cancellationToken)) > 0)
+        {
+            if (exceeded)
+            {
+                continue;
+            }
+
+            bytes += Encoding.UTF8.GetByteCount(buffer, 0, read);
+            if (bytes > maxBytes)
+            {
+                exceeded = true;
+                builder.Clear();
+                continue;
+            }
+
+            builder.Append(buffer, 0, read);
+        }
+
+        return exceeded ? null : builder.ToString();
     }
 }
