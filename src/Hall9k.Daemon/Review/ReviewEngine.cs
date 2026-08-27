@@ -1316,8 +1316,10 @@ public sealed class ReviewEngine(
             [.. here.Where(entry => entry.Finding.Scope.IsRoutable)]);
         AppendDispositionGroup(merged, ReviewFindingDispositions.RideAlong,
             "Below the fix bar (Decisions Log #87) on their own, so no cycle was spent earning these a fix "
-            + "session of their own. Fix them here only if a fix session is already running for another "
-            + "reason and reads this document; otherwise leave them for the next one that does.",
+            + "session of their own. If you are reading this, a fix session is already dispatching this "
+            + "cycle for other findings — fix these here too, with the same care as the rest: the platform "
+            + "records a ride-along as fixed the moment a fix session dispatches, whether or not it is "
+            + "acted on, so skipping one makes that record false.",
             rideAlong);
 
         if (routed.Count == 0)
