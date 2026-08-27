@@ -1563,6 +1563,50 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
     }
 
     /// <summary>
+    /// Cycle-4 adversarial finding: unlike the two prior tests above, both tracks here CONCLUDE
+    /// inside <c>RecordReviewPassAsync</c>'s own loop — the Verify pass's shared ride-along is the
+    /// only thing either track reports, so neither is left "still active" for <c>SettleAsync</c>'s
+    /// own reference-identity guard to catch. That guard exists only there; this asserts the same
+    /// hazard is closed at the concluding-plan loop too, or one reviewer statement shared by two
+    /// concluding tracks becomes two residuals.
+    /// </summary>
+    [Fact]
+    public async Task A_verify_passs_shared_unplaced_ride_along_concluding_both_tracks_settles_as_one_residual_not_two()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        using DocumentStore store = NewStore();
+        (Guid taskId, Guid runId, _) = await SeedVerifiedRunAsync(store, cts.Token);
+
+        ScriptedExecutor executor = new(
+            // Cycle 1: both tracks find something, so both stay active into cycle 2.
+            "FINDING: severity=medium; scope=in-scope; at=A.cs:1\nDefect: the criterion is not met.\n\n"
+            + "VERDICT: needs-fixes",
+            "FINDING: severity=medium; scope=in-scope; at=B.cs:2\nDefect: still present.\n\n"
+            + "VERDICT: needs-fixes",
+            "Tried.\n\nRESOLUTION: fixed",
+            // Cycle 2: one Verify pass stands in for both tracks, and reports only a shared,
+            // unplaced, untagged low — nothing keeps either track continuing, so both conclude
+            // right here, inside the concluding-plan loop, each carrying the SAME finding
+            // instance in its own RideAlong list.
+            "FINDING: severity=low; scope=in-scope\n"
+            + "Defect: a nit neither reviewer bothered to place on a line.\n\nVERDICT: needs-fixes",
+            // Cycle 3: both tracks concluded, so the mandatory final full pass runs before the
+            // run may settle — both lenses fresh, both clean.
+            "Still clean.\n\nVERDICT: merge-ready",
+            "Still clean too.\n\nVERDICT: merge-ready");
+
+        bool mergeReady = await NewEngine(store, executor).ReviewAsync(runId, taskId, cts.Token);
+
+        mergeReady.Should().BeTrue();
+
+        await using IQuerySession query = store.QuerySession();
+        RunDetails run = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
+        run.ReviewResidualsRideAlong.Should().Be(
+            1, "the Verify pass's one unplaced ride-along was attributed to both concluding tracks' " +
+                "own plans, but it is still one reviewer statement, not two");
+    }
+
+    /// <summary>
     /// Cycle-3 conformance finding: <c>SettleAsync</c>'s force-conclude loop iterates
     /// <c>ActiveReviewLenses</c> in order — Conformance, then Adversarial — and used to always
     /// credit whichever of those it reached first with a Verify pass's shared ride-along,
