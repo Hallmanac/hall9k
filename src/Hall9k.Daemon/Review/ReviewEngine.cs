@@ -795,7 +795,29 @@ public sealed class ReviewEngine(
             runId, cycle, pass.Lens, verdict, now, [.. findings.Select(finding => finding.ToRecord())]));
         if (cycleConcluded)
         {
-            await WriteMergedFindingsAsync(runDirectory, cycle, completed, plans, routed, cancellationToken);
+            // A Fix finding is not by itself a promise that a fix session is coming (cycle-2
+            // review, adversarial finding): ReviewTrackPolicy.Decide grades severity and the gate,
+            // never the cap, so a track can carry Continues: true and a real Fix finding while
+            // already at CappedTrack's own cap — the next DriveAsync iteration then hits
+            // `ReviewPhase.FixNeeded when CappedTrack(run) is { } capped` and parks instead of
+            // reaching DispatchFixSessionAsync. Recording FixedUnreviewed for this cycle's
+            // ride-alongs in that case would assert a fix session read them when none is ever
+            // dispatched, so that disposition is additionally gated on no continuing track already
+            // being capped — the lens whose Fix finding survives park-or-dispatch is always one
+            // still saying Continues: true (a concluding plan's Fix already became its own residual
+            // below), so checking the cap only against continuing plans is exactly the set
+            // CappedTrack itself will see next. Computed before the merged findings document is
+            // written (rather than after, as it once was) because the document's own ride-along
+            // note has to say the true thing for THIS cycle: CapParkReason points a human at the
+            // same file a dispatching fix session reads, and the note is wrong for one of them
+            // unless it knows which cycle it is describing.
+            bool anyFixFinding = plans.Any(plan => plan.Fix.Count > 0);
+            bool fixSessionWillDispatch = anyFixFinding
+                && !plans.Any(plan => plan.Continues
+                    && ReviewTrackPolicy.CapReached(plan.Lens, run.ReviewCycle, run.ReviewBudgetBaseCycle, _options));
+
+            await WriteMergedFindingsAsync(
+                runDirectory, cycle, completed, plans, routed, fixSessionWillDispatch, cancellationToken);
             session.Events.Append(runId, new ReviewCompleted(runId, cycle, cycleVerdict, now));
 
             // A cycle that dispatches its own fix session already sweeps up every concluding
@@ -815,29 +837,9 @@ public sealed class ReviewEngine(
             // force-concludes never had any to lose — is what lets that straggler's ride-along
             // survive as a residual instead of vanishing: there is no later cycle for anything to
             // claim it in either way, so its residual is written the instant the run stops looking.
-            bool anyFixFinding = plans.Any(plan => plan.Fix.Count > 0);
             IReadOnlyList<ReviewTrackPlan> concludingNow = anyFixFinding
                 ? [.. plans.Where(plan => !plan.Continues)]
                 : plans;
-            // A Fix finding is not by itself a promise that a fix session is coming (cycle-2
-            // review, adversarial finding): ReviewTrackPolicy.Decide grades severity and the gate,
-            // never the cap, so a track can carry Continues: true and a real Fix finding while
-            // already at CappedTrack's own cap — the next DriveAsync iteration then hits
-            // `ReviewPhase.FixNeeded when CappedTrack(run) is { } capped` and parks instead of
-            // reaching DispatchFixSessionAsync. Recording FixedUnreviewed for this cycle's
-            // ride-alongs in that case would assert a fix session read them when none is ever
-            // dispatched, so that disposition is additionally gated on no continuing track already
-            // being capped — the lens whose Fix finding survives park-or-dispatch is always one
-            // still saying Continues: true (a concluding plan's Fix already became its own residual
-            // above), so checking the cap only against continuing plans is exactly the set
-            // CappedTrack itself will see next. This gate deliberately does NOT feed back into
-            // `concludingNow` above: a continuing, capped track is still parked rather than
-            // concluded here — CappedTrack's own park is what ends it honestly, on the reason it
-            // ran out of cycles, rather than this method quietly retiring it early over a cycle
-            // whose fix was never dispatched.
-            bool fixSessionWillDispatch = anyFixFinding
-                && !plans.Any(plan => plan.Continues
-                    && ReviewTrackPolicy.CapReached(plan.Lens, run.ReviewCycle, run.ReviewBudgetBaseCycle, _options));
             ReviewResidualDisposition rideAlongDisposition = fixSessionWillDispatch
                 ? ReviewResidualDisposition.FixedUnreviewed
                 : ReviewResidualDisposition.RideAlong;
@@ -1260,7 +1262,7 @@ public sealed class ReviewEngine(
     /// </summary>
     private static async Task WriteMergedFindingsAsync(
         string runDirectory, int cycle, IReadOnlyList<ReviewPassResult> passes, IReadOnlyList<ReviewTrackPlan> plans,
-        IReadOnlyList<RoutedFinding> routed, CancellationToken cancellationToken)
+        IReadOnlyList<RoutedFinding> routed, bool fixSessionWillDispatch, CancellationToken cancellationToken)
     {
         StringBuilder merged = new();
         merged.AppendLine($"# Independent pre-PR review — cycle {cycle}");
@@ -1279,7 +1281,7 @@ public sealed class ReviewEngine(
             merged.AppendLine(text.IsBlank() ? "(this pass recorded no output)" : text.Trim());
         }
 
-        AppendDispositions(merged, cycle, plans, routed);
+        AppendDispositions(merged, cycle, plans, routed, fixSessionWillDispatch);
         await File.WriteAllTextAsync(
             RunPaths.ReviewFindingsFile(runDirectory, cycle), merged.ToString(), cancellationToken);
     }
@@ -1291,7 +1293,8 @@ public sealed class ReviewEngine(
     /// from having to re-derive a policy it does not know.
     /// </summary>
     private static void AppendDispositions(
-        StringBuilder merged, int cycle, IReadOnlyList<ReviewTrackPlan> plans, IReadOnlyList<RoutedFinding> routed)
+        StringBuilder merged, int cycle, IReadOnlyList<ReviewTrackPlan> plans, IReadOnlyList<RoutedFinding> routed,
+        bool fixSessionWillDispatch)
     {
         List<(ReviewLens Lens, ReviewFinding Finding)> here =
             [.. plans.SelectMany(plan => plan.Fix.Select(finding => (plan.Lens, Finding: finding)))];
@@ -1314,13 +1317,17 @@ public sealed class ReviewEngine(
             "These defects are pre-existing. Cleaning them up while you are here is right, and keeping "
             + "each in its own commit is what keeps the branch's real work separable in the history.",
             [.. here.Where(entry => entry.Finding.Scope.IsRoutable)]);
-        AppendDispositionGroup(merged, ReviewFindingDispositions.RideAlong,
-            "Below the fix bar (Decisions Log #87) on their own, so no cycle was spent earning these a fix "
-            + "session of their own. If you are reading this, a fix session is already dispatching this "
-            + "cycle for other findings — fix these here too, with the same care as the rest: the platform "
-            + "records a ride-along as fixed the moment a fix session dispatches, whether or not it is "
-            + "acted on, so skipping one makes that record false.",
-            rideAlong);
+        string rideAlongNote = fixSessionWillDispatch
+            ? "Below the fix bar (Decisions Log #87) on their own, so no cycle was spent earning these a "
+                + "fix session of their own. A fix session is already dispatching this cycle for other "
+                + "findings — fix these here too, with the same care as the rest: the platform records a "
+                + "ride-along as fixed the moment a fix session dispatches, whether or not it is acted on, "
+                + "so skipping one makes that record false."
+            : "Below the fix bar (Decisions Log #87) on their own, so no cycle was spent earning these a "
+                + "fix session of their own, and no fix session is dispatching this cycle for anything "
+                + "else either — the platform records these as unfixed residuals (Decisions Log #63), "
+                + "left for a human or a later review pass rather than acted on here.";
+        AppendDispositionGroup(merged, ReviewFindingDispositions.RideAlong, rideAlongNote, rideAlong);
 
         if (routed.Count == 0)
         {
