@@ -562,19 +562,34 @@ public sealed class ReviewEngine(
         // human granting a genuinely fresh round at the same cycle number, e.g. resolving a
         // dispute with new guidance).
         bool retryOfSameRound = cycle == run.LastFixRoundCycle && humanFindings == run.LastFixRoundHumanFindings;
-        string? escalationReason = retryOfSameRound
-            ? run.LastFixSessionEscalationReason
-            : ReviewFixEscalation.Reason(
-                run.LastFixRoundFindingLocations, run.CurrentCycleFixFindingLocations, humanFindings);
-        bool escalated = retryOfSameRound ? run.LastFixSessionEscalated : escalationReason is not null;
 
         // Fix is its own role: applying findings someone else reasoned out is a different shape
         // of work from producing them, so it resolves separately (log #33) — unless this round
         // repeats the previous one's findings (task: a second fix round over the same findings),
         // in which case it resolves the Review role's model instead: the observed dodge-and-redo
-        // failure mode gets a stronger model exactly where it recurs.
-        AgentModel model = _options.ResolveModel(
-            escalated ? AgentRole.Review : AgentRole.Fix, context.Task.Model, context.Project.Model);
+        // failure mode gets a stronger model exactly where it recurs. That only means something
+        // when the two roles actually resolve to different models — an install that has never
+        // set `--model-review`/`--model-fix` (or a task overriding both the same way) resolves
+        // them identically, and recording an escalation there would tell a human the mitigation
+        // applied when the spawned session ran on the model it would have run on anyway.
+        AgentModel fixModel = _options.ResolveModel(AgentRole.Fix, context.Task.Model, context.Project.Model);
+        AgentModel reviewModel = _options.ResolveModel(AgentRole.Review, context.Task.Model, context.Project.Model);
+        bool escalated;
+        string? escalationReason;
+        if (retryOfSameRound)
+        {
+            escalated = run.LastFixSessionEscalated;
+            escalationReason = run.LastFixSessionEscalationReason;
+        }
+        else
+        {
+            string? repeatReason = ReviewFixEscalation.Reason(
+                run.LastFixRoundFindingLocations, run.CurrentCycleFixFindingLocations, humanFindings);
+            escalated = repeatReason is not null && reviewModel != fixModel;
+            escalationReason = escalated ? repeatReason : null;
+        }
+
+        AgentModel model = escalated ? reviewModel : fixModel;
         SpawnedAgent agent = await executor.SpawnAsync(new AgentSpawnRequest(
             context.RunId, sessionId, context.Run.WorktreePath, context.Run.RunDirectory, prompt, mode, model,
             context.Project.SkipPermissions, FixArtifactName(cycle, sessionId)), cancellationToken);
