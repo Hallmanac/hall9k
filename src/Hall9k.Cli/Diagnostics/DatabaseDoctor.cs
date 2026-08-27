@@ -357,22 +357,28 @@ public static class DatabaseDoctor
             token => DatabaseReachability.ProbeAsync(connectionString, token),
             ReadinessTimeout,
             ReadinessPollInterval,
+            TimeProvider.System,
             cancellationToken);
 
     /// <summary>
     /// The polling shape itself, isolated from the real Npgsql probe so it can be exercised
     /// without Docker or Postgres: a fake <paramref name="probe"/> stands in, and a shrunk
     /// <paramref name="timeout"/>/<paramref name="pollInterval"/> keeps the timeout and
-    /// eventually-ready cases fast in tests rather than needing the real 30s.
+    /// eventually-ready cases fast in tests rather than needing the real 30s. The deadline
+    /// itself is read from <paramref name="timeProvider"/> (real wall-clock time in
+    /// production) rather than <c>DateTimeOffset.UtcNow</c> directly, so a test can swap in
+    /// a clock whose elapsed time is driven by call count instead of the runner's actual
+    /// speed.
     /// </summary>
     internal static async Task<bool> WaitForReadinessAsync(
         Func<CancellationToken, Task<ReachabilityReport>> probe,
         TimeSpan timeout,
         TimeSpan pollInterval,
+        TimeProvider timeProvider,
         CancellationToken cancellationToken)
     {
-        DateTimeOffset deadline = DateTimeOffset.UtcNow + timeout;
-        while (DateTimeOffset.UtcNow < deadline)
+        DateTimeOffset deadline = timeProvider.GetUtcNow() + timeout;
+        while (timeProvider.GetUtcNow() < deadline)
         {
             if ((await probe(cancellationToken)).Status == ReachabilityStatus.Reachable)
             {
