@@ -963,19 +963,25 @@ collapsing by file would swallow a second, genuinely different defect.
 
 **A ride-along (Decisions Log #87) is settled within its own cycle, never carried into a later
 one.** It lands in the cycle's own merged findings artifact under its own disposition group.
-`ReviewEngine.RecordReviewPassAsync` decides its fate the moment the cycle concludes, from
-whether *any* track's plan in that same cycle carries a `Fix` finding: if one does, a fix
-session is already dispatching for that real reason, and it reads the whole merged findings
-document — ride-alongs included — so every *concluding* track's ride-alongs are folded in and
-recorded as `ReviewResidualDisposition.FixedUnreviewed`, exactly like a genuine fix shipped
-without a second read (a track still saying `Continues: true` gets a fresh look at the fix
-commits next cycle instead, so its own ride-alongs wait). If nothing in the cycle carries a
-`Fix` finding, no fix session dispatches at all — the empty terminal case (log #63) — and the
-run settles right there whatever any individual track's own convergence rule said (a route-only
-pass kept alive pre-gate, say, in case the other track's fix session rewrote the branch — which
-now nothing will): so every active track concludes THIS cycle regardless of its own `Continues`,
-and a ride-along here has no later cycle to wait for either way — it is a residual,
-`ReviewResidualDisposition.RideAlong`, the instant its track concludes. Either way
+`ReviewEngine.RecordReviewPassAsync` first decides which tracks conclude this cycle from whether
+*any* track's plan carries a `Fix` finding: if one does, only the tracks already saying
+`Continues: false` conclude here (a track still saying `Continues: true` gets a fresh look at the
+fix commits next cycle instead, so its own ride-alongs wait); if none does — the empty terminal
+case (log #63) — every active track concludes THIS cycle regardless of its own `Continues`, since
+the very next phase derivation settles the whole run anyway. It then decides each concluding
+track's ride-alongs from whether a fix session is actually going to dispatch this cycle, which is
+a narrower question than "any track carries a `Fix` finding": a track can carry `Continues: true`
+and a real `Fix` finding while already at `ReviewTrackPolicy.CapReached`'s own cap, in which case
+the next `DriveAsync` iteration parks that track instead of reaching the dispatch, and no fix
+session ever reads the concluding tracks' ride-alongs — so the fix-dispatch fact is additionally
+gated on no *continuing* plan already being capped. When a fix session does dispatch, it reads
+the whole merged findings document — ride-alongs included — so every concluding track's
+ride-alongs are folded in and recorded as `ReviewResidualDisposition.FixedUnreviewed`, exactly
+like a genuine fix shipped without a second read. When no fix session is going to dispatch —
+whether because nothing anywhere carries a `Fix` finding, or because the only `Fix` findings
+belong to a continuing, capped track — each concluding track's ride-along has no later cycle to
+wait for either way, so it is a residual, `ReviewResidualDisposition.RideAlong`, the instant its
+track concludes. Either way
 `RunAggregate.DeriveResidualTally` collapses ride-along residuals
 per distinct location the same way it already does for `Routed` and `FixedUnreviewed`, and
 `ReviewSettled` and `h9k task show` report the count alongside the existing fixed/routed ones —
