@@ -370,7 +370,7 @@ public sealed class TaskPhaseSurfaceTests
     /// The post-PR review watcher's own readings (origin: PR #50 sat Delivered for 23
     /// minutes with a landed Copilot review nobody had read before the merge), each rendered on
     /// the Delivered phase line — never as a new task lifecycle status. AttentionComposer draws
-    /// the identical distinction on its own cause line (Decisions Log #90), covered separately.
+    /// the identical distinction on its own cause line (Decisions Log #89), covered separately.
     /// </summary>
     [Fact]
     public void The_post_PR_review_watcher_s_readings_are_the_delivered_phase()

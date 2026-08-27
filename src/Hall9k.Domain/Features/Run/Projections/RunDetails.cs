@@ -80,7 +80,7 @@ public sealed class RunDetails
     public int ExternalReviewThreadCount { get; set; }
     /// <summary>
     /// Whether the provider's CI picture was still incomplete as of the last observation
-    /// (Decisions Log #90, pre-PR review cycle 3). False means only that the provider had a
+    /// (Decisions Log #89, pre-PR review cycle 3). False means only that the provider had a
     /// complete CI answer at that moment (pre-PR review, cycle 4) — not that the sweep went on to
     /// read past failing checks or unresolved threads, or that none were found: a parked run
     /// records this and returns before ever reaching those reads.

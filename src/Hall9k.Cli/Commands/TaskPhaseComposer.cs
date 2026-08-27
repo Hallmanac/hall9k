@@ -260,7 +260,7 @@ internal static class TaskPhaseComposer
 
     /// <summary>
     /// What the post-PR review watcher has observed about Copilot's review, while nothing else
-    /// has moved the run off AwaitingReview (Decisions Log #90). Unknown covers a run recorded
+    /// has moved the run off AwaitingReview (Decisions Log #89). Unknown covers a run recorded
     /// before this observation existed, a sweep that has not run yet, and a sweep that read a
     /// Copilot review it could not compare against the head commit — strictly less information
     /// than None (a sweep that looked and found nothing), so it must not claim either that
