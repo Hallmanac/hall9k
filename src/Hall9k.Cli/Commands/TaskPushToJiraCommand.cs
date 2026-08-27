@@ -58,40 +58,8 @@ public sealed class TaskPushToJiraCommand : Hall9kAsyncCommand<TaskPushToJiraCom
 
         BootstrapContext context = await NodeBootstrap.EnsureAsync(session, cancellationToken);
 
-        // Fence, and fence here rather than at the top: the append below carries this version, so
-        // anything landing on the task while this command was doing its own reads fails the commit
-        // instead of being absorbed. The write that matters is h9k task link-jira, which an agent
-        // may be running at any moment, and which clears the pending marker as it lands. Read
-        // unfenced, the guards in RequestWorkItemPublication see a task with no reference on both
-        // sides of that race, the request appends after the link, and the daemon then dispatches a
-        // session to write a card for work that already carries one. Bootstrap alone can shell out
-        // to git and gh above, so the window is a real one rather than an instant.
-        StreamState fence = await session.Events.FetchStreamStateAsync(taskId, cancellationToken)
-            ?? throw new DomainNotFoundException($"No task {taskId}.");
-        TaskAggregate task = await session.Events.AggregateStreamAsync<TaskAggregate>(
-                taskId, version: fence.Version, token: cancellationToken)
-            ?? throw new DomainNotFoundException($"No task {taskId}.");
-
-        ProjectDetails project = await session.LoadAsync<ProjectDetails>(task.ProjectId, cancellationToken)
-            ?? throw new DomainNotFoundException($"Task {taskId} names a project that is not registered.");
-
-        WorkItemPublicationRequested requested = TaskDecider.RequestWorkItemPublication(
-            task, WorkItemProvider.Jira, project.JiraProjectKey, DateTimeOffset.UtcNow, context.OwnerId);
-
-        session.Events.Append(taskId, expectedVersion: fence.Version + 1, requested);
-        try
-        {
-            await session.SaveChangesAsync(cancellationToken);
-        }
-        catch (EventStreamUnexpectedMaxEventIdException)
-        {
-            throw new DomainConflictException(
-                $"Task {taskId} changed while this request was being prepared, so nothing was "
-                + "requested. The likeliest change is a card being linked to it. Check it with "
-                + $"h9k task show {taskId} and run h9k task push-to-jira again if it still needs one.");
-        }
-
-        await Doorbell.RingAsync($"publication-requested:{taskId}", cancellationToken);
+        (TaskAggregate task, ProjectDetails project) = await RequestAsync(
+            session, taskId, context.OwnerId, cancellationToken);
 
         string shortId = TaskListCommand.ShortId(taskId);
         AnsiConsole.MarkupLine(
@@ -141,6 +109,28 @@ public sealed class TaskPushToJiraCommand : Hall9kAsyncCommand<TaskPushToJiraCom
             return AutoRequestOutcome.NoJiraConnection;
         }
 
+        await RequestAsync(session, taskId, requestedByOwnerId, cancellationToken);
+        return AutoRequestOutcome.Requested;
+    }
+
+    /// <summary>
+    /// The append <see cref="ExecuteAsync"/> and <see cref="TryAutoRequestAsync"/> both make, once
+    /// each has decided a request belongs to be sent — a human command refuses outright with no
+    /// Jira connection registered, the automatic trigger reports the gap instead, and everything
+    /// past that point is one path, factored once so a later change to the fence discipline (see
+    /// the comment this carried forward) cannot land on one caller and not the other.
+    /// </summary>
+    private static async Task<(TaskAggregate Task, ProjectDetails Project)> RequestAsync(
+        IDocumentSession session, Guid taskId, Guid requestedByOwnerId, CancellationToken cancellationToken)
+    {
+        // Fence, and fence here rather than at the top: the append below carries this version, so
+        // anything landing on the task while this command was doing its own reads fails the commit
+        // instead of being absorbed. The write that matters is h9k task link-jira, which an agent
+        // may be running at any moment, and which clears the pending marker as it lands. Read
+        // unfenced, the guards in RequestWorkItemPublication see a task with no reference on both
+        // sides of that race, the request appends after the link, and the daemon then dispatches a
+        // session to write a card for work that already carries one. Bootstrap alone can shell out
+        // to git and gh above, so the window is a real one rather than an instant.
         StreamState fence = await session.Events.FetchStreamStateAsync(taskId, cancellationToken)
             ?? throw new DomainNotFoundException($"No task {taskId}.");
         TaskAggregate task = await session.Events.AggregateStreamAsync<TaskAggregate>(
@@ -166,6 +156,6 @@ public sealed class TaskPushToJiraCommand : Hall9kAsyncCommand<TaskPushToJiraCom
         }
 
         await Doorbell.RingAsync($"publication-requested:{taskId}", cancellationToken);
-        return AutoRequestOutcome.Requested;
+        return (task, project);
     }
 }
