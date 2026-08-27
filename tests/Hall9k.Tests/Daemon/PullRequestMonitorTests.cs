@@ -70,6 +70,17 @@ public sealed class PullRequestMonitorTests
     }
 
     [Fact]
+    public void A_ceiling_above_what_PeriodicTimer_accepts_is_clamped_down_to_it()
+    {
+        TimeSpan misconfiguredCeiling = TimeSpan.FromDays(60);
+        PullRequestMonitor.ApplyBackoff(
+                PullRequestMonitor.MaxSupportedInterval, Base, misconfiguredCeiling, sweepFailed: true)
+            .Should().Be(PullRequestMonitor.MaxSupportedInterval,
+                "a ceiling PeriodicTimer.Period cannot actually accept must never reach it, or the " +
+                "assignment outside the loop's own try/catch stops the monitor for good");
+    }
+
+    [Fact]
     public void A_sweep_is_a_failure_only_when_every_attempted_inspection_failed()
     {
         PullRequestMonitor.IsSweepFailure(new CloseoutSweepResult(RunsInspected: 0, MergesObserved: 0, Failures: 1))
@@ -84,14 +95,23 @@ public sealed class PullRequestMonitorTests
     }
 
     [Fact]
-    public void A_skipped_run_is_not_corroborating_evidence_that_every_attempt_failed()
+    public void A_purely_skipped_sweep_is_not_a_failure()
+    {
+        PullRequestMonitor.IsSweepFailure(
+                new CloseoutSweepResult(RunsInspected: 0, MergesObserved: 0, Failures: 0, Skipped: 2))
+            .Should().BeFalse(
+                "a Done task reopened and then unassigned sits in the watch set returning Skipped " +
+                "forever without ever calling gh, so a sweep that only sees skips has nothing that failed");
+    }
+
+    [Fact]
+    public void A_skipped_run_does_not_veto_a_genuine_failure_verdict()
     {
         PullRequestMonitor.IsSweepFailure(
                 new CloseoutSweepResult(RunsInspected: 0, MergesObserved: 0, Failures: 1, Skipped: 2))
-            .Should().BeFalse(
-                "a Done task reopened and then unassigned sits in the watch set returning Skipped " +
-                "forever without ever calling gh, so it must not read as corroborating a genuinely " +
-                "broken pull request sitting alongside it and pin the interval at the ceiling");
+            .Should().BeTrue(
+                "a permanently-skipped run sitting alongside a genuinely broken pull request must not " +
+                "mask a real gh outage — the skip is excluded from the check, not a veto over it");
     }
 
     [Fact]
