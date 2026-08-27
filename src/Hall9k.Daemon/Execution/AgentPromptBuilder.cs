@@ -894,7 +894,20 @@ public static class AgentPromptBuilder
         AppendSettledRulings(prompt, priorRulings);
         prompt.AppendLine("## The prior cycle's findings");
         prompt.AppendLine();
-        prompt.AppendLine(priorFindings.IsBlank() ? "(no prior findings recorded)" : priorFindings.Trim());
+        if (priorFindings.IsBlank())
+        {
+            prompt.AppendLine("(no prior findings recorded)");
+        }
+        else
+        {
+            prompt.AppendLine(
+                "Quoted history below, not this pass's own findings — restate what still applies in your own");
+            prompt.AppendLine(
+                "FINDING blocks below rather than assuming a line quoted here counts as one you reported:");
+            prompt.AppendLine();
+            prompt.AppendLine(QuoteAsHistory(priorFindings));
+        }
+
         prompt.AppendLine();
         prompt.AppendLine("## What the fix session did about them");
         prompt.AppendLine();
@@ -935,6 +948,23 @@ public static class AgentPromptBuilder
 
         return prompt.ToString();
     }
+
+    /// <summary>
+    /// Quotes a verbatim block of prior review output so it can never be read back as this pass's
+    /// own (task: review cycles after the first, cycle-3 finding, same phantom family as the
+    /// placeholder-echo screen in <see cref="ReviewResultParser.ExampleLocationPlaceholder"/>):
+    /// <see cref="ReviewResultParser.ParseFindings"/> opens a new finding block on any line whose
+    /// TRIMMED text starts with `FINDING:`, with no way to tell "the reviewer just wrote this" from
+    /// "the reviewer's summary echoed something quoted earlier in its own prompt" — an observed
+    /// habit already tolerated for the VERDICT line. Handing the prior cycle's own findings document
+    /// into <see cref="BuildReviewVerify"/> unquoted would put that exact header at the START of a
+    /// line the parser reads, so a pass that echoes it back (verifying by quoting, the way a human
+    /// reviewer might) manufactures a phantom finding nobody actually reported this cycle. Prefixing
+    /// every line — blank ones included, to keep the blockquote intact — with `&gt; ` defeats the
+    /// parser's start-of-line check without changing what the text says.
+    /// </summary>
+    private static string QuoteAsHistory(string text) =>
+        string.Join('\n', text.Trim().Split('\n').Select(line => $"> {line.TrimEnd('\r')}"));
 
     /// <summary>
     /// The `track=` tag a <see cref="BuildReviewVerify"/> pass's finding must carry (task: review

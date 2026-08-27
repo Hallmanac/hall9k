@@ -803,6 +803,70 @@ public sealed class AgentPromptBuilderTests : IDisposable
         oneActive.Should().Contain("standing in for the one review lens still active");
     }
 
+    /// <summary>
+    /// Cycle-3 conformance finding: <see cref="ReviewResultParser.ParseFindings"/> opens a new
+    /// finding block on any line whose trimmed text starts with `FINDING:`, with no way to tell a
+    /// genuinely new header from one the pass echoed back out of its own prompt (an observed habit
+    /// already tolerated for the VERDICT line). The injected prior-findings document must never
+    /// put that header at the start of a line the parser reads, or an echo manufactures a phantom
+    /// finding nobody reported this cycle — the same phantom family as the placeholder-echo screen.
+    /// </summary>
+    [Fact]
+    public void Verify_prompt_quotes_the_prior_findings_so_no_line_starts_with_the_finding_marker()
+    {
+        const string priorFindings =
+            "FINDING: severity=high; scope=in-scope; at=Auth.cs:9\nDefect: a real regression.\n\nVERDICT: needs-fixes";
+
+        string prompt = AgentPromptBuilder.BuildReviewVerify(
+            SomeTask(), SomeProject(), "task/1-slug", cycle: 2,
+            tracks: [ReviewLens.Conformance], priorFindings: priorFindings,
+            priorFixPosition: "none", sinceSha: null);
+
+        // Scoped to the quoted-history block itself, not the whole prompt: the finding contract
+        // below it legitimately teaches the FINDING: header via its own worked example, which the
+        // parser already excludes by its own placeholder path (ReviewResultParser.ExampleLocationPlaceholder)
+        // rather than by quoting — this test is only about the prior cycle's own findings document.
+        int start = prompt.IndexOf("## The prior cycle's findings", StringComparison.Ordinal);
+        int end = prompt.IndexOf("## What the fix session did about them", StringComparison.Ordinal);
+        string historyBlock = prompt[start..end];
+
+        historyBlock.Split('\n').Should().OnlyContain(
+            line => !line.TrimStart().StartsWith(ReviewResultParser.FindingMarker, StringComparison.OrdinalIgnoreCase),
+            "an injected prior FINDING header must never sit at the start of a line the parser reads");
+        historyBlock.Should().Contain("Quoted history below, not this pass's own findings");
+        historyBlock.Should().Contain("> FINDING: severity=high; scope=in-scope; at=Auth.cs:9");
+    }
+
+    /// <summary>
+    /// Parser-level regression for the same finding: a Verify pass's own summary echoing the
+    /// quoted prior-findings block back verbatim (exactly what <see cref="BuildReviewVerify"/>
+    /// hands it) must not parse as a finding this pass reported.
+    /// </summary>
+    [Fact]
+    public void An_echoed_quoted_prior_finding_header_does_not_parse_as_a_new_finding()
+    {
+        const string priorFindings =
+            "FINDING: severity=high; scope=in-scope; at=Auth.cs:9\nDefect: a real regression.\n\nVERDICT: needs-fixes";
+        string prompt = AgentPromptBuilder.BuildReviewVerify(
+            SomeTask(), SomeProject(), "task/1-slug", cycle: 2,
+            tracks: [ReviewLens.Conformance], priorFindings: priorFindings,
+            priorFixPosition: "none", sinceSha: null);
+
+        // Pulled straight from the prompt's own quoted block (between the two headings the
+        // quote sits between), so this test exercises exactly what the prompt actually hands the
+        // agent — not a hand-rebuilt approximation of it.
+        int start = prompt.IndexOf("> FINDING:", StringComparison.Ordinal);
+        int end = prompt.IndexOf("## What the fix session did about them", StringComparison.Ordinal);
+        string quotedBlock = prompt[start..end].Trim();
+
+        string echoedSummary = "The prior findings quoted in my instructions were:\n\n"
+            + quotedBlock
+            + "\n\nI confirmed the fix landed.\n\nVERDICT: merge-ready";
+
+        ReviewResultParser.ParseFindings(echoedSummary).Should().BeEmpty(
+            "the echoed header is quoted history, not a finding this pass is reporting");
+    }
+
     [Fact]
     public void Retry_prompt_warns_that_the_previous_attempts_work_may_already_be_present()
     {
