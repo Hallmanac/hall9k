@@ -339,7 +339,7 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
         }
 
         AnsiConsole.MarkupLine(
-            $"\n[bold]Fix escalation[/]  [yellow]cycle {run.ReviewCycle} dispatched on the review role's model[/] "
+            $"\n[bold]Fix escalation[/]  [yellow]cycle {run.LastFixSessionEscalationCycle} dispatched on the review role's model[/] "
             + $"[dim]— {(run.LastFixSessionEscalationReason ?? "reason not recorded").EscapeMarkup()}[/]");
     }
 
