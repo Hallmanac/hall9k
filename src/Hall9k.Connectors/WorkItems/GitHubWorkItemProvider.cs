@@ -47,24 +47,156 @@ public sealed class GitHubWorkItemProvider(ProcessRunner? runner = null, TimePro
     }
 
     /// <summary>
+    /// Author one issue deterministically (backlog: every published task is tracked
+    /// automatically). This is the platform writing to GitHub with its own words rather than an
+    /// agent's, which is honest only because an issue's shape — a title, a body, labels — is
+    /// uniform across repositories in a way a Jira card's issue type and required fields are not
+    /// (<see cref="JiraWorkItemProvider"/>'s own doc comment is the fuller version of this
+    /// argument).
+    /// <para>
+    /// <c>gh issue create</c> prints the new issue's URL on success, and that printed claim is
+    /// never what gets recorded: it is read straight back through <see cref="ImportAsync"/>, the
+    /// same call <c>--from-issue</c> makes, so the observation gate this whole feature is built
+    /// on applies to a card the platform authored itself exactly as much as one an agent reports
+    /// having made.
+    /// </para>
+    /// </summary>
+    public async Task<ImportedWorkItem> CreateAsync(
+        GitHubIssueCreateRequest request, CancellationToken cancellationToken)
+    {
+        List<string> arguments = ["issue", "create", "--title", request.Title, "--body", request.Body ?? string.Empty];
+        foreach (string label in request.Labels)
+        {
+            arguments.Add("--label");
+            arguments.Add(label);
+        }
+
+        ProcessResult result = await RunGhAsync(arguments, request.WorkingDirectory, cancellationToken);
+        if (result.ExitCode != 0)
+        {
+            throw ExplainCreate(result.StandardError, request);
+        }
+
+        string url = result.StandardOutput.Trim();
+        if (url.IsBlank())
+        {
+            throw new DomainValidationException(
+                "gh issue create exited successfully but printed no URL, so whatever it created (if "
+                + "anything) cannot be read back and verified. Check what exists with 'gh issue list' "
+                + "and link it by hand with h9k task link-issue if it is there.");
+        }
+
+        // Distinct from a create failure on purpose: gh already reported success and a real issue
+        // exists at this URL, so a caller that reacted the way it reacts to ExplainCreate's
+        // failures — "create one by hand" — would file a second issue for the same task. A
+        // DomainConflictException (unused elsewhere in this method) lets the caller tell the two
+        // apart and give advice that does not risk a duplicate.
+        try
+        {
+            return await ImportAsync(new WorkItemImportRequest(Provider, url, request.WorkingDirectory), cancellationToken);
+        }
+        catch (DomainException exception)
+        {
+            throw new DomainConflictException(
+                $"gh issue create succeeded and reported {url}, but reading it back to verify failed: "
+                + $"{exception.Message} The issue was not recorded, but it likely exists at that URL — "
+                + "link it by hand with h9k task link-issue rather than creating another.");
+        }
+    }
+
+    /// <summary>
+    /// Post a comment on an issue — the one write closeout makes with no card semantics behind
+    /// it, the same reasoning <see cref="JiraWorkItemProvider.CommentAsync"/> documents for Jira.
+    /// Never a close or a transition: which label or state a merge should move an issue to is the
+    /// project's workflow, not a fact this platform gets to have an opinion on.
+    /// </summary>
+    public async Task CommentAsync(
+        ExternalReference reference, string comment, string workingDirectory, CancellationToken cancellationToken)
+    {
+        if (!TryParseCanonical(reference.Reference, out string repository, out int number))
+        {
+            throw new DomainValidationException(
+                $"'{RelayedText.OneLine(reference.ToString())}' does not read as a github owner/repo#number "
+                + "reference, so there is no issue to comment on.");
+        }
+
+        List<string> arguments =
+        [
+            "issue", "comment", number.ToString(CultureInfo.InvariantCulture), "--repo", repository, "--body", comment,
+        ];
+        ProcessResult result = await RunGhAsync(arguments, workingDirectory, cancellationToken);
+        if (result.ExitCode != 0)
+        {
+            throw new DomainValidationException(
+                $"gh could not comment on {repository}#{number}: {RelayedText.OneLine(result.StandardError).Trim()}");
+        }
+    }
+
+    /// <summary>
     /// <c>github:owner/repo#42</c> points at
     /// <c>https://github.com/owner/repo/issues/42</c>. A format rule rather than a lookup, so it
     /// is safe to apply without asking GitHub; a reference that does not carry an owner and a
     /// repository yields null rather than a plausible-looking guess.
     /// </summary>
-    public Uri? WebUrl(ExternalReference reference)
+    public Uri? WebUrl(ExternalReference reference) =>
+        reference.Provider == WorkItemProvider.GitHub && TryParseCanonical(reference.Reference, out string repository, out int number)
+            ? new Uri($"https://github.com/{repository}/issues/{number}")
+            : null;
+
+    /// <summary>The parse <see cref="WebUrl"/> and <see cref="CommentAsync"/> both need, factored once.</summary>
+    private static bool TryParseCanonical(string reference, out string repository, out int number)
     {
-        if (reference.Provider != WorkItemProvider.GitHub)
+        string[] parts = reference.Split('#');
+        if (parts is [{ } candidateRepository, { } candidateNumber]
+            && candidateRepository.Split('/') is [{ Length: > 0 }, { Length: > 0 }]
+            && int.TryParse(candidateNumber, NumberStyles.None, CultureInfo.InvariantCulture, out int parsed))
         {
-            return null;
+            repository = candidateRepository;
+            number = parsed;
+            return true;
         }
 
-        string[] parts = reference.Reference.Split('#');
-        return parts is [{ } repository, { } number]
-            && repository.Split('/') is [{ Length: > 0 }, { Length: > 0 }]
-            && int.TryParse(number, NumberStyles.None, CultureInfo.InvariantCulture, out _)
-                ? new Uri($"https://github.com/{repository}/issues/{number}")
-                : null;
+        repository = string.Empty;
+        number = 0;
+        return false;
+    }
+
+    /// <summary>
+    /// gh's stderr, turned into the one sentence that says what to do next, for the creation path
+    /// specifically: <see cref="Explain"/> is keyed to a number that already exists, and creation
+    /// fails on different grounds — a bad label, above all, since the routing guidance a human
+    /// wrote as a comma list is not checked against the repository's actual labels before gh is asked.
+    /// </summary>
+    private static DomainException ExplainCreate(string standardError, GitHubIssueCreateRequest request)
+    {
+        string reported = RelayedText.OneLine(standardError).Trim();
+        string title = RelayedText.OneLine(request.Title);
+
+        if (reported.Contains("gh auth login", StringComparison.OrdinalIgnoreCase)
+            || reported.Contains("HTTP 401", StringComparison.OrdinalIgnoreCase))
+        {
+            return new DomainValidationException(
+                $"gh is not authenticated, so the issue for '{title}' could not be created. Run "
+                + $"'gh auth login' and try again. gh reported: {reported}");
+        }
+
+        if (reported.Contains("Could not resolve to a Repository", StringComparison.OrdinalIgnoreCase))
+        {
+            return new DomainNotFoundException(
+                $"gh could not resolve the repository to create '{title}' in, read from "
+                + $"{request.WorkingDirectory}. gh reported: {reported}");
+        }
+
+        if (reported.Contains("label", StringComparison.OrdinalIgnoreCase)
+            && reported.Contains("not found", StringComparison.OrdinalIgnoreCase))
+        {
+            return new DomainValidationException(
+                $"gh could not create '{title}' because a label from this project's backlog routing "
+                + $"guidance does not exist in the repository: {reported}. Create the label first, or "
+                + "drop it with h9k project set --backlog-routing.");
+        }
+
+        return new DomainValidationException($"gh could not create an issue for '{title}': {reported}");
     }
 
     /// <summary>

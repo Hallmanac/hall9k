@@ -1,5 +1,6 @@
 using System.ComponentModel;
 using FluentAssertions;
+using Hall9k.Connectors.Processes;
 using Hall9k.Connectors.WorkItems;
 using Hall9k.Domain.Features.Tasks;
 using Hall9k.Domain.Shared.Exceptions;
@@ -487,6 +488,134 @@ public sealed class GitHubWorkItemProviderTests
         GitHubWorkItemProvider provider = new();
 
         provider.WebUrl(ExternalReference.Parse(reference)).Should().BeNull();
+    }
+
+    /// <summary>
+    /// gh issue create prints the new issue's URL, and that stdout is fed to the same fake for
+    /// the second call CreateAsync makes internally (ImportAsync's own gh issue view) — the
+    /// observation-gate read-back this feature is built on. A real gh answers each call
+    /// differently, but a fixed fake answering the same JSON to "issue create" and "issue view"
+    /// is indistinguishable from the platform's own claim being verified true, which is exactly
+    /// what these tests are asserting happens rather than trusting the create call alone.
+    /// </summary>
+    [Fact]
+    public async Task Creating_an_issue_reads_its_own_claim_back_before_returning_it()
+    {
+        int calls = 0;
+        RecordingProcessRunner gh = new(() => ++calls == 1
+            ? new ProcessResult(0, "https://github.com/Hallmanac/hall9k/issues/42\n", string.Empty)
+            : new ProcessResult(0, IssueJson, string.Empty));
+
+        ImportedWorkItem created = await new GitHubWorkItemProvider(gh.Runner, new FixedClock(ObservedAt)).CreateAsync(
+            new GitHubIssueCreateRequest("Adopt existing GitHub issues", "Body text", [], "/repos/hall9k"),
+            CancellationToken.None);
+
+        gh.Calls.Should().HaveCount(2, "the created issue's own claim is read back rather than trusted");
+        gh.Calls[0].Arguments.Should().ContainInOrder("issue", "create", "--title", "Adopt existing GitHub issues");
+        gh.Calls[1].Arguments.Should().ContainInOrder("issue", "view", "42");
+        created.Reference.Should().Be(new ExternalReference(WorkItemProvider.GitHub, "Hallmanac/hall9k#42"));
+    }
+
+    [Fact]
+    public async Task Creating_an_issue_passes_every_label_through()
+    {
+        int calls = 0;
+        RecordingProcessRunner gh = new(() => ++calls == 1
+            ? new ProcessResult(0, "https://github.com/o/r/issues/1\n", string.Empty)
+            : new ProcessResult(0, """{"number":1,"title":"t","body":"","state":"OPEN","url":"https://github.com/o/r/issues/1"}""", string.Empty));
+
+        await new GitHubWorkItemProvider(gh.Runner).CreateAsync(
+            new GitHubIssueCreateRequest("t", null, ["bug", "needs-triage"], "/repos/hall9k"), CancellationToken.None);
+
+        gh.Calls[0].Arguments.Should().ContainInOrder("--label", "bug", "--label", "needs-triage");
+    }
+
+    [Fact]
+    public async Task An_unauthenticated_gh_names_the_command_that_fixes_it_on_create_too()
+    {
+        RecordingProcessRunner gh = RecordingProcessRunner.Failing(
+            "To get started with GitHub CLI, please run: gh auth login");
+
+        Func<Task> create = () => new GitHubWorkItemProvider(gh.Runner).CreateAsync(
+            new GitHubIssueCreateRequest("t", null, [], "/repos/hall9k"), CancellationToken.None);
+
+        (await create.Should().ThrowAsync<DomainValidationException>()).Which.Message
+            .Should().Contain("gh auth login");
+    }
+
+    [Fact]
+    public async Task A_label_that_does_not_exist_names_the_backlog_routing_setting_that_fixes_it()
+    {
+        RecordingProcessRunner gh = RecordingProcessRunner.Failing(
+            "could not add label: 'epic-first' not found");
+
+        Func<Task> create = () => new GitHubWorkItemProvider(gh.Runner).CreateAsync(
+            new GitHubIssueCreateRequest("t", null, ["epic-first"], "/repos/hall9k"), CancellationToken.None);
+
+        (await create.Should().ThrowAsync<DomainValidationException>()).Which.Message
+            .Should().Contain("--backlog-routing");
+    }
+
+    [Fact]
+    public async Task A_create_that_prints_no_url_is_refused_rather_than_trusted()
+    {
+        RecordingProcessRunner gh = RecordingProcessRunner.Succeeding(string.Empty);
+
+        Func<Task> create = () => new GitHubWorkItemProvider(gh.Runner).CreateAsync(
+            new GitHubIssueCreateRequest("t", null, [], "/repos/hall9k"), CancellationToken.None);
+
+        (await create.Should().ThrowAsync<DomainValidationException>()).Which.Message
+            .Should().Contain("h9k task link-issue");
+    }
+
+    /// <summary>
+    /// gh issue create can succeed and then gh issue view can fail (a rate limit, a network
+    /// blip) on the very same call. A real issue exists at that point, so this must not read as
+    /// a create failure — the caller's "create it by hand" advice for that case would file a
+    /// duplicate. DomainConflictException (unused elsewhere in CreateAsync) is how the two are
+    /// told apart, and the URL gh already reported has to survive into the message since it is
+    /// the only handle a human has left on the orphaned issue.
+    /// </summary>
+    [Fact]
+    public async Task A_read_back_failure_after_a_real_create_is_distinct_from_a_create_failure()
+    {
+        int calls = 0;
+        RecordingProcessRunner gh = new(() => ++calls == 1
+            ? new ProcessResult(0, "https://github.com/Hallmanac/hall9k/issues/42\n", string.Empty)
+            : new ProcessResult(1, string.Empty, "gh: rate limit exceeded"));
+
+        Func<Task> create = () => new GitHubWorkItemProvider(gh.Runner).CreateAsync(
+            new GitHubIssueCreateRequest("t", null, [], "/repos/hall9k"), CancellationToken.None);
+
+        (await create.Should().ThrowAsync<DomainConflictException>()).Which.Message
+            .Should().Contain("https://github.com/Hallmanac/hall9k/issues/42")
+            .And.Contain("h9k task link-issue");
+    }
+
+    [Fact]
+    public async Task Commenting_on_an_issue_names_the_repository_and_number_it_parsed()
+    {
+        RecordingProcessRunner gh = RecordingProcessRunner.Succeeding(string.Empty);
+
+        await new GitHubWorkItemProvider(gh.Runner).CommentAsync(
+            new ExternalReference(WorkItemProvider.GitHub, "Hallmanac/hall9k#42"),
+            "The pull request merged.", "/repos/hall9k", CancellationToken.None);
+
+        gh.Calls.Should().ContainSingle().Which.Arguments.Should().ContainInOrder(
+            "issue", "comment", "42", "--repo", "Hallmanac/hall9k", "--body", "The pull request merged.");
+    }
+
+    [Fact]
+    public async Task Commenting_on_an_unparseable_reference_never_reaches_gh()
+    {
+        RecordingProcessRunner gh = RecordingProcessRunner.Failing("never asked");
+
+        Func<Task> comment = () => new GitHubWorkItemProvider(gh.Runner).CommentAsync(
+            new ExternalReference(WorkItemProvider.GitHub, "not-a-reference"),
+            "text", "/repos/hall9k", CancellationToken.None);
+
+        await comment.Should().ThrowAsync<DomainValidationException>();
+        gh.Calls.Should().BeEmpty();
     }
 
     private static async Task<ImportedWorkItem> Import(
