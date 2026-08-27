@@ -1181,11 +1181,27 @@ public static class AgentPromptBuilder
             return;
         }
 
+        // A three-dot range (`origin/{base}...HEAD` or `{base}...HEAD`) is the whole branch;
+        // a two-dot range (`{sha}..HEAD`) is a Verify cycle's delta since the prior cycle's own
+        // tip. Calling a delta "the branch diff" claims a completeness the packet does not have
+        // (cycle-2 conformance review) — the same false-completeness gap `priorCycleMode`
+        // already exists to close a few sections above this one.
+        bool isFullBranchDiff = packet.RangeDescription.Contains("...", StringComparison.Ordinal);
+
         prompt.AppendLine("## Packet (a starting point, not a boundary)");
         prompt.AppendLine();
         prompt.AppendLine("Assembled ahead of this session so the first read does not require re-deriving it call");
-        prompt.AppendLine("by call: the branch diff below, plus — unless noted otherwise — the full current text");
-        prompt.AppendLine("of every file it touches. Start here, but do not stop here: reading anything else in");
+        prompt.AppendLine(isFullBranchDiff
+            ? "by call: the branch diff below, plus — unless noted otherwise — the full current text"
+            : "by call: the diff since the prior review cycle below — not the whole branch, see the range");
+        prompt.AppendLine(isFullBranchDiff
+            ? "of every file it touches. Start here, but do not stop here: reading anything else in"
+            : "named below — plus, unless noted otherwise, the full current text of every file this delta");
+        if (!isFullBranchDiff)
+        {
+            prompt.AppendLine("touches. Start here, but do not stop here: reading anything else in");
+        }
+
         prompt.AppendLine("the repository — another file, more history, a test, a doc — remains allowed and");
         prompt.AppendLine("expected whenever a lead in the code warrants it. This packet bounds nothing.");
         prompt.AppendLine();
@@ -1197,7 +1213,14 @@ public static class AgentPromptBuilder
         prompt.AppendLine(diffText);
         prompt.AppendLine(diffFence);
         prompt.AppendLine();
-        prompt.AppendLine($"Touched files ({packet.TouchedFiles.Count}):");
+        prompt.AppendLine(isFullBranchDiff
+            ? $"Touched files ({packet.TouchedFiles.Count}):"
+            : $"Touched files since the prior cycle ({packet.TouchedFiles.Count}) — not the branch's full");
+        if (!isFullBranchDiff)
+        {
+            prompt.AppendLine("footprint, only what this delta changed:");
+        }
+
         foreach (string file in packet.TouchedFiles)
         {
             prompt.AppendLine($"- `{file}`");
