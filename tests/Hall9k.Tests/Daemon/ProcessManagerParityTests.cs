@@ -216,6 +216,11 @@ public sealed class ProcessManagerParityTests : IDisposable
     /// </summary>
     private static async Task<(int ProcessId, DateTimeOffset StartedAt)> AwaitNestedChildAsync(string pidFilePath)
     {
+        // Bounds how long this waits for the nested child's pid file to appear. Shares
+        // ObservationDeadline rather than a shorter window of its own, so a cold or loaded
+        // runner gets the same generous margin every other startup/teardown wait in this
+        // suite gets — including NestedChildLifetime's own margin above it — instead of
+        // racing this process's own startup latency ahead of the test's real assertion.
         DateTimeOffset deadline = DateTimeOffset.UtcNow + ObservationDeadline;
         while (DateTimeOffset.UtcNow < deadline)
         {
