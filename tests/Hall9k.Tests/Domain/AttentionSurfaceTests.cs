@@ -433,6 +433,30 @@ public sealed class AttentionSurfaceTests
         reviewStale.Attention.Cause.Should().Contain("Copilot reviewed an earlier commit and the review is stale");
         reviewStale.Attention.Cause.Should().Contain("1 comment thread");
         reviewStale.Attention.Cause.Should().NotContain("no confirmed review activity recorded");
+
+        // A sweep that looked and found no external review activity at all (ExternalReviewState
+        // None) is a stronger observation than Unknown's "no sweep, or nothing classifiable" —
+        // once that same sweep's checks read was also complete, the cause must say the merge is
+        // the only thing left rather than sending the reader back to checks the phase line above
+        // it just said were done (independent pre-PR review, cycle 4).
+        RunDetails none = StatusFixtures.Run(runId, RunState.AwaitingReview, sessionProcessId: null, pullRequestNumber: 24);
+        none.ExternalReviewState = ExternalReviewState.None;
+        TaskStatusRow reviewNone = StatusFixtures.Compose(StatusFixtures.Task(TaskState.Done, runId, pullRequest), none);
+
+        reviewNone.Attention.NeedsYou.Should().BeTrue();
+        reviewNone.Attention.Cause.Should().Contain("no external review activity recorded");
+        reviewNone.Attention.Cause.Should().Contain("the merge is yours");
+        reviewNone.Attention.Cause.Should().NotContain("read its checks");
+
+        RunDetails noneChecksPending = StatusFixtures.Run(runId, RunState.AwaitingReview, sessionProcessId: null, pullRequestNumber: 24);
+        noneChecksPending.ExternalReviewState = ExternalReviewState.None;
+        noneChecksPending.ExternalReviewChecksPending = true;
+        TaskStatusRow reviewNoneChecksPending = StatusFixtures.Compose(
+            StatusFixtures.Task(TaskState.Done, runId, pullRequest), noneChecksPending);
+
+        reviewNoneChecksPending.Attention.NeedsYou.Should().BeTrue();
+        reviewNoneChecksPending.Attention.Cause.Should().Contain("no external review activity recorded");
+        reviewNoneChecksPending.Attention.Cause.Should().Contain("checks may still be reporting");
     }
 
     /// <summary>

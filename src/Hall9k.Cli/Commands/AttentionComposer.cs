@@ -226,12 +226,25 @@ internal static class AttentionComposer
             $"Copilot reviewed an earlier commit and the review is stale ({StaleThreadCountText(run)}) "
             + "— read its checks, then the merge is yours",
             run.PullRequestUrl ?? string.Empty),
-        // "None" is a sweep that looked and found nothing; Unknown is either no sweep at all or
-        // a sweep that read a Copilot review it could not compare against the head commit — in
-        // neither Unknown case is there confirmed review activity to report, so the cause must
-        // not claim "nothing recorded" (that would be false when a review was seen but not
-        // classifiable) or hand out the all-clear "None" itself refuses to make. It sends the
-        // reader to the pull request's own checks either way.
+        // "None" is a sweep that looked and found nothing. Once that same sweep's checks read
+        // was also complete (RunDetails.ExternalReviewChecksPending), there is nothing left
+        // unresolved on this row and the cause says so plainly — the same split
+        // TaskPhaseComposer.AwaitingReviewPhase's own "None" arm already makes, so the cause
+        // never sends the reader back to checks the phase line directly above it just said were
+        // done (independent pre-PR review, cycle 4).
+        "None" when !run.ExternalReviewChecksPending => new TaskAttention(AttentionLevel.NeedsYou,
+            "no external review activity recorded — the merge is yours",
+            run.PullRequestUrl ?? string.Empty),
+        "None" => new TaskAttention(AttentionLevel.NeedsYou,
+            "no external review activity recorded, and its checks may still be reporting — read "
+            + "them, then the merge is yours",
+            run.PullRequestUrl ?? string.Empty),
+        // Unknown is either no sweep at all or a sweep that read a Copilot review it could not
+        // compare against the head commit — in neither case is there confirmed review activity
+        // to report, so the cause must not claim "nothing recorded" (that would be false when a
+        // review was seen but not classifiable) or hand out the all-clear "None" itself only
+        // gives once checks are also settled. It sends the reader to the pull request's own
+        // checks either way.
         _ => new TaskAttention(AttentionLevel.NeedsYou,
             "no confirmed review activity recorded — read its checks, then the merge is yours",
             run.PullRequestUrl ?? string.Empty),
