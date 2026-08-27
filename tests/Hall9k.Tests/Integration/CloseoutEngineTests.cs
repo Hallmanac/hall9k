@@ -2235,8 +2235,11 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
         request.Method.Should().Be(HttpMethod.Post);
         request.Url.ToString().Should().Be("https://hall9k.atlassian.net/rest/api/2/issue/PROJ-123/comment");
         request.JsonBody.Should().Contain(PullRequestUrl).And.Contain(taskId.ToString());
-        request.JsonBody.Should().Contain("does not change the card",
-            "a card that silently gains a comment and never moves reads like an integration that half worked");
+        // JSON-encodes the apostrophe in "item's", so the assertion splits either side of it
+        // rather than matching the contraction as one literal string.
+        request.JsonBody.Should().Contain("does not change this item")
+            .And.Contain("status or close it",
+                "a card that silently gains a comment and never moves reads like an integration that half worked");
     }
 
     [Fact]
