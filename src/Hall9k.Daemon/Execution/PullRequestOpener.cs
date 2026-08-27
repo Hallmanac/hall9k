@@ -122,7 +122,7 @@ public sealed class PullRequestOpener(
                 return;
             }
 
-            // DaemonLogEvents.PullRequestOpened is the structural hook (Decisions Log #89, origin:
+            // DaemonLogEvents.PullRequestOpened is the structural hook (Decisions Log #90, origin:
             // PR #50 sat Delivered for 23 minutes with no signal): an operator's monitor can wake
             // on this EventId plus the RunId/TaskId/Url fields without matching the prose below,
             // which is free to reword. The no-PR arm carries no Url, so it logs under its own

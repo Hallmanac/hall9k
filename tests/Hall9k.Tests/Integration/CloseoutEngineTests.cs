@@ -228,6 +228,8 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
         (await query.Events.FetchStreamAsync(runId, token: cts.Token))
             .Count(e => e.Data is ExternalReviewObserved)
             .Should().Be(1, "a quiet pull request does not grow a same-state event every sweep");
+
+        await RetireWatchAsync(store, runId, cts.Token);
     }
 
     /// <summary>
@@ -277,6 +279,8 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
         (await secondQuery.Events.FetchStreamAsync(runId, token: cts.Token))
             .Count(e => e.Data is ExternalReviewObserved)
             .Should().Be(2, "the CI picture completing is its own change even though the review state did not move");
+
+        await RetireWatchAsync(store, runId, cts.Token);
     }
 
     /// <summary>
@@ -456,6 +460,7 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
         (DocumentStore store, NodeContext node, GitWorktreeManager worktrees, string originPath, string repoPath) =
             await SetUpAsync(cts.Token);
         using IDisposable storeLifetime = store;
+        await DrainPriorSweepStateAsync(store, node, cts.Token);
 
         (Guid taskId, Guid runId, Worktree worktree) =
             await SeedAwaitingReviewAsync(store, node, worktrees, repoPath, cts.Token);
@@ -822,7 +827,7 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
         FakeInspector inspector = new();
         CloseoutEngine engine = NewEngine(store, node, inspector, worktrees);
         CloseoutSweepResult firstSweep = await engine.PollOnceAsync(cts.Token);
-        firstSweep.Should().Be(new CloseoutSweepResult(RunsInspected: 0, MergesObserved: 0),
+        firstSweep.Should().Be(new CloseoutSweepResult(RunsInspected: 0, MergesObserved: 0, Skipped: 1),
             "a superseded orphan is skipped, not inspected — its pull request belongs to a successor now");
         inspector.StateInspections.Should().Be(0, "the successor owns this pull request; the old run's own state has nothing left to learn");
 

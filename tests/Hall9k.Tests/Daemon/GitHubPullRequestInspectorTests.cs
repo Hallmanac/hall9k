@@ -389,20 +389,21 @@ public sealed class GitHubPullRequestInspectorTests
     /// <summary>
     /// A Copilot review whose commit the provider did not report is not read as stale: it is not
     /// observed to be on a superseded commit, only unobserved altogether. Reading it as Stale
-    /// anyway would assert the review is superseded on no evidence, the mirror of the same "never
-    /// guess at unobserved facts" gap the null/null case below covers (independent pre-PR review,
-    /// cycle 7).
+    /// anyway would assert the review is superseded on no evidence (independent pre-PR review,
+    /// cycle 7) — and reading it as None would positively claim no review activity exists over
+    /// evidence this pass read but could not classify, so it reports Unknown, the "no observation
+    /// to report" sentinel (cycle 9).
     /// </summary>
     [Fact]
-    public void A_Copilot_review_with_no_reported_commit_does_not_read_as_stale()
+    public void A_Copilot_review_with_no_reported_commit_reads_as_unknown()
     {
         string json = Payload(
             Actor("hallmanac", "User"), "cafe1", "",
             ReviewWithoutCommit(Actor("copilot-pull-request-reviewer", "Bot"), "Looks good."));
 
         GitHubPullRequestInspector.ParseReviews(json).CopilotReviewState.Should().Be(
-            ExternalReviewState.None,
-            "an unreported review commit is 'cannot tell', never a positive claim either way");
+            ExternalReviewState.Unknown,
+            "an unreported review commit is 'cannot tell': neither a stale claim nor an absence claim");
     }
 
     /// <summary>
@@ -476,7 +477,7 @@ public sealed class GitHubPullRequestInspectorTests
 
     /// <summary>
     /// A countersigned review that lands clean must not inherit the thread count of a review it
-    /// superseded (Decisions Log #89): Copilot reviews commit A leaving threads, a fix resolves
+    /// superseded (Decisions Log #90): Copilot reviews commit A leaving threads, a fix resolves
     /// them and pushes commit B, the countersign re-requests Copilot, and it re-reviews B with no
     /// comments at all. Without scoping by review id, the next sweep still reads "landed · 3
     /// comment threads" for a review that opened none.
