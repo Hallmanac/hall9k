@@ -108,7 +108,13 @@ internal static class TaskPhaseComposer
     /// </summary>
     private static TaskPhase Review(RunDetails run, SessionLiveness session)
     {
-        string cycle = run.ReviewCycle > 0 ? $"review cycle {run.ReviewCycle}" : "review";
+        // Named only past Discovery (task: review cycles after the first): Discovery is the shape
+        // review always had, so calling it out on every cycle 1 would just be noise, while Verify
+        // and FinalFullPass are the new shapes a reader needs told apart from an ordinary cycle.
+        string mode = run.ReviewCycleMode == ReviewMode.Verify ? " (verify)"
+            : run.ReviewCycleMode == ReviewMode.FinalFullPass ? " (final full pass)"
+            : string.Empty;
+        string cycle = run.ReviewCycle > 0 ? $"review cycle {run.ReviewCycle}{mode}" : "review";
         return ActiveRole(run).Value switch
         {
             "Fix" => new TaskPhase(cycle, session, "fix session running"),
