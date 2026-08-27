@@ -136,4 +136,16 @@ public sealed class ReviewFixEscalationTests
                 "would ever match, so the human-restatement scan must not treat mentioning its bare file " +
                 "name as restating it");
     }
+
+    [Fact]
+    public void A_human_reason_that_names_the_previous_locations_line_only_to_dismiss_it_does_not_escalate()
+    {
+        ReviewFixEscalation.Reason(
+            ["src/Auth.cs:42"], [],
+            "src/Auth.cs:42 is fine as written — the real gap is the missing timeout in src/Http.cs:88.")
+            .Should().BeNull(
+                "the human's own defect language (\"missing\") sits next to the different location it " +
+                "actually describes (src/Http.cs:88), not the dismissed src/Auth.cs:42 — a bare literal " +
+                "mention of the previous location must not be read as restating it");
+    }
 }
