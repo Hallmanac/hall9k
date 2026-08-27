@@ -20,10 +20,13 @@ namespace Hall9k.Daemon.Closeout;
 /// Keying this on "every attempt failed" rather than "any attempt failed" matters (independent
 /// pre-PR review, cycle 4): one permanently broken pull request — a malformed URL, a renamed
 /// repository — must not pin every OTHER healthy pull request this node watches to the backoff
-/// ceiling forever. A skipped run must not count toward "every attempt failed" either
+/// ceiling forever. A skipped run does not count toward "every attempt failed" either
 /// (independent pre-PR review, cycle 5): a run the engine passed over without ever calling
-/// <c>gh</c> says nothing about whether <c>gh</c> is in trouble, so it cannot be read as
-/// corroborating a genuinely broken pull request sitting alongside it.
+/// <c>gh</c> says nothing about whether <c>gh</c> is in trouble, so it is excluded from both
+/// sides of the check — it neither corroborates a genuinely broken pull request sitting
+/// alongside it, nor, since a permanently-skipped run (a Done task reopened and then
+/// unassigned) can sit in the watch set forever, does it get to veto a failure verdict a real
+/// <c>gh</c> outage earns (independent pre-PR review, cycle 1).
 /// </para>
 /// </summary>
 public sealed class PullRequestMonitor(
@@ -82,6 +85,15 @@ public sealed class PullRequestMonitor(
     }
 
     /// <summary>
+    /// The widest interval <see cref="PeriodicTimer.Period"/> accepts (its setter rejects
+    /// anything over <c>uint.MaxValue - 1</c> milliseconds, roughly 49.7 days) — the ceiling
+    /// <see cref="ApplyBackoff"/> clamps a configured
+    /// <see cref="DaemonOptions.PullRequestPollBackoffMaxInterval"/> to, so a value the daemon
+    /// cannot actually hand the timer never reaches it.
+    /// </summary>
+    internal static readonly TimeSpan MaxSupportedInterval = TimeSpan.FromMilliseconds(uint.MaxValue - 1);
+
+    /// <summary>
     /// Whether a sweep counts as a <c>gh</c> failure for backoff purposes: every run this sweep
     /// looked at threw, and at least one was looked at (independent pre-PR review, cycle 4). A
     /// sweep where some runs succeeded and one keeps failing — a malformed pull request URL, a
@@ -90,13 +102,18 @@ public sealed class PullRequestMonitor(
     /// sweep where the rest were merely skipped rather than inspected (independent pre-PR
     /// review, cycle 5): a Done task reopened and then unassigned sits in the watch set
     /// returning <see cref="CloseoutSweepResult.Skipped"/> forever without ever calling
-    /// <c>gh</c>, so a lone genuinely-broken pull request alongside one or more of those would
-    /// otherwise read as "every attempted inspection failed" and pin the interval at the
-    /// ceiling on a skip that was never gh's fault. An empty sweep (nothing watched) is not a
-    /// failure either; there was nothing to fail at.
+    /// <c>gh</c>, so a lone genuinely-broken pull request alongside one or more of those must not
+    /// read as "every attempted inspection failed" on a skip that was never gh's fault — but a
+    /// skip must also never veto a failure verdict the failed inspections themselves earn
+    /// (independent pre-PR review, cycle 1): that permanently-skipped run sitting in the watch
+    /// set forever must not be able to mask a real, ongoing gh outage on every other watched
+    /// pull request for as long as it persists. Excluding
+    /// <see cref="CloseoutSweepResult.Skipped"/> from the check entirely, rather than requiring
+    /// it to be zero, gives both: it neither corroborates nor vetoes. An empty sweep (nothing
+    /// watched) is not a failure either; there was nothing to fail at.
     /// </summary>
     internal static bool IsSweepFailure(CloseoutSweepResult sweep) =>
-        sweep.Failures > 0 && sweep.RunsInspected == 0 && sweep.Skipped == 0;
+        sweep.Failures > 0 && sweep.RunsInspected == 0;
 
     /// <summary>
     /// Bounded exponential backoff, reset on success (independent pre-PR review, cycle 3): a
@@ -107,7 +124,13 @@ public sealed class PullRequestMonitor(
     /// review, cycle 4): a misconfigured ceiling at or under the base would otherwise invert the
     /// backoff into polling a failing gh more often than a healthy one, and a ceiling of zero
     /// would hand <c>PeriodicTimer.Period</c> a value it rejects, outside the loop's own
-    /// try/catch.
+    /// try/catch. The cap is equally never allowed above <see cref="MaxSupportedInterval"/>
+    /// (independent pre-PR review, cycle 1's adversarial lens): a misconfigured ceiling above
+    /// what <c>PeriodicTimer.Period</c> accepts — an operator setting
+    /// <c>PullRequestPollBackoffMaxInterval=60</c> meaning minutes, but landing as 60 days once
+    /// bound as a bare-integer <see cref="TimeSpan"/> — would otherwise reach that same setter
+    /// once enough doubling caught up to it, outside the loop's own try/catch, and stop the
+    /// closeout monitor for the life of the daemon.
     /// </summary>
     internal static TimeSpan ApplyBackoff(
         TimeSpan currentInterval, TimeSpan baseInterval, TimeSpan maxInterval, bool sweepFailed)
@@ -118,6 +141,11 @@ public sealed class PullRequestMonitor(
         }
 
         TimeSpan effectiveMax = maxInterval < baseInterval ? baseInterval : maxInterval;
+        if (effectiveMax > MaxSupportedInterval)
+        {
+            effectiveMax = MaxSupportedInterval;
+        }
+
         TimeSpan widened = currentInterval + currentInterval;
         return widened > effectiveMax ? effectiveMax : widened;
     }
