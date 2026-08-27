@@ -96,8 +96,23 @@ public static class ReviewResultParser
             ReviewSeverity.Parse(Tag(header, "severity")),
             ReviewFindingScope.Parse(Tag(header, "scope")),
             location,
-            string.Join('\n', block).Trim()));
+            string.Join('\n', block).Trim(),
+            ParseTrack(Tag(header, "track"))));
     }
+
+    /// <summary>
+    /// The `track=` tag a <see cref="ReviewMode.Verify"/> pass's finding carries (task: review
+    /// cycles after the first) — absent from a Discovery or FinalFullPass pass's findings, since
+    /// those already know their own lens from the pass itself. Anything other than the two real
+    /// lens names reads as null (applies to every still-active track), the same conservative
+    /// default an absent tag gets — never guessed at.
+    /// </summary>
+    private static ReviewLens? ParseTrack(string? value) => value?.Trim().ToLowerInvariant() switch
+    {
+        "conformance" => ReviewLens.Conformance,
+        "adversarial" => ReviewLens.Adversarial,
+        _ => null,
+    };
 
     /// <summary>
     /// The header's `key=value` tags, separated by semicolons or commas — both are accepted

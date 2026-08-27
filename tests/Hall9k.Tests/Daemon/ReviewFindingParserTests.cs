@@ -87,6 +87,34 @@ public sealed class ReviewFindingParserTests
         findings[1].Disposition.Should().Be(ReviewFindingDisposition.Route);
     }
 
+    /// <summary>
+    /// A Verify pass's finding carries an extra tag naming which track it belongs to (task:
+    /// review cycles after the first): recognized, it is the real lens; unrecognized or absent,
+    /// it stays null — the same conservative "applies to every active track" reading an ungraded
+    /// severity or an untagged scope already gets, never guessed at.
+    /// </summary>
+    [Theory]
+    [InlineData("conformance", "Conformance")]
+    [InlineData("adversarial", "Adversarial")]
+    [InlineData("Adversarial", "Adversarial")]
+    public void A_recognized_track_tag_parses_to_its_real_lens(string tag, string expectedLens)
+    {
+        ReviewFinding finding = ReviewResultParser.ParseFindings(
+            $"FINDING: severity=high; scope=in-scope; track={tag}; at=A.cs:1\nDefect: something.")
+            .Should().ContainSingle().Subject;
+
+        finding.Track.Should().Be((ReviewLens)expectedLens);
+    }
+
+    [Theory]
+    [InlineData("FINDING: severity=high; scope=in-scope; at=A.cs:1\nDefect: something.")]
+    [InlineData("FINDING: severity=high; scope=in-scope; track=both; at=A.cs:1\nDefect: something.")]
+    public void An_absent_or_unrecognized_track_tag_stays_null(string summary)
+    {
+        ReviewFinding finding = ReviewResultParser.ParseFindings(summary).Should().ContainSingle().Subject;
+        finding.Track.Should().BeNull();
+    }
+
     [Theory]
     [InlineData(null)]
     [InlineData("")]
