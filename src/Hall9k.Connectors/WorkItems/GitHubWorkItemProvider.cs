@@ -64,20 +64,47 @@ public sealed class GitHubWorkItemProvider(ProcessRunner? runner = null, TimePro
     public async Task<ImportedWorkItem> CreateAsync(
         GitHubIssueCreateRequest request, CancellationToken cancellationToken)
     {
-        List<string> arguments = ["issue", "create", "--title", request.Title, "--body", request.Body ?? string.Empty];
-        foreach (string label in request.Labels)
+        // A temp file rather than --body on the command line, the same idiom PullRequestOpener
+        // uses for the same call shape (gh's own body argument): a long issue body over Windows'
+        // roughly 32K command-line limit fails the spawn outright, and CouldNotStartGh would then
+        // misdiagnose that as a missing gh install, since .NET reports both the same way.
+        string bodyFile = Path.GetTempFileName();
+        try
         {
-            arguments.Add("--label");
-            arguments.Add(label);
-        }
+            await File.WriteAllTextAsync(bodyFile, request.Body ?? string.Empty, cancellationToken);
 
-        ProcessResult result = await RunGhAsync(arguments, request.WorkingDirectory, cancellationToken);
-        if (result.ExitCode != 0)
+            List<string> arguments = ["issue", "create", "--title", request.Title, "--body-file", bodyFile];
+            foreach (string label in request.Labels)
+            {
+                arguments.Add("--label");
+                arguments.Add(label);
+            }
+
+            ProcessResult result = await RunGhAsync(
+                arguments, request.WorkingDirectory, cancellationToken,
+                onOutputStuckAfterSuccess: exception => new DomainConflictException(
+                    $"gh issue create for '{RelayedText.OneLine(request.Title)}' exited successfully, but "
+                    + "something it started was still holding its output open when Hall9k stopped "
+                    + "waiting, so the new issue's URL was never printed to read back. The issue was "
+                    + "very likely created — check what exists with 'gh issue list' and link it by hand "
+                    + $"with h9k task link-issue rather than creating another. {exception.Message}"));
+            if (result.ExitCode != 0)
+            {
+                throw ExplainCreate(result.StandardError, request);
+            }
+
+            return await CreateReadBackAsync(result.StandardOutput, request, cancellationToken);
+        }
+        finally
         {
-            throw ExplainCreate(result.StandardError, request);
+            File.Delete(bodyFile);
         }
+    }
 
-        string url = result.StandardOutput.Trim();
+    private async Task<ImportedWorkItem> CreateReadBackAsync(
+        string standardOutput, GitHubIssueCreateRequest request, CancellationToken cancellationToken)
+    {
+        string url = standardOutput.Trim();
         if (url.IsBlank())
         {
             throw new DomainValidationException(
@@ -316,8 +343,19 @@ public sealed class GitHubWorkItemProvider(ProcessRunner? runner = null, TimePro
         + "the owner/repo#42 shorthand, or the issue URL "
         + "(https://github.com/owner/repo/issues/42).");
 
+    /// <summary>
+    /// <paramref name="onOutputStuckAfterSuccess"/> is the create path's escape hatch: gh exiting
+    /// 0 and then losing the drain race is a real success whose answer never arrived, not a
+    /// failure, and only a caller whose call can create something external — <see cref="CreateAsync"/>
+    /// — needs to say what that means instead of getting the import-flavoured
+    /// <see cref="GhStoppedAnswering"/> text. Every other caller leaves it null and keeps that text,
+    /// which is the right read when nothing was created (an import, a comment).
+    /// </summary>
     private async Task<ProcessResult> RunGhAsync(
-        IReadOnlyList<string> arguments, string workingDirectory, CancellationToken cancellationToken)
+        IReadOnlyList<string> arguments,
+        string workingDirectory,
+        CancellationToken cancellationToken,
+        Func<ProcessOutputStuckException, DomainException>? onOutputStuckAfterSuccess = null)
     {
         try
         {
@@ -326,6 +364,10 @@ public sealed class GitHubWorkItemProvider(ProcessRunner? runner = null, TimePro
         catch (Win32Exception exception)
         {
             throw CouldNotStartGh(exception, workingDirectory);
+        }
+        catch (ProcessOutputStuckException exception) when (exception.ExitCode == 0 && onOutputStuckAfterSuccess is not null)
+        {
+            throw onOutputStuckAfterSuccess(exception);
         }
         catch (TimeoutException exception)
         {

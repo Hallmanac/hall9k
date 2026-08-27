@@ -35,6 +35,17 @@ public sealed class RecordingProcessRunner(Func<ProcessResult> respond)
     public static RecordingProcessRunner NeverAnswering() => new(() => throw new TimeoutException(
         "gh did not answer within 120 seconds, so Hall9k stopped waiting and ended it."));
 
+    /// <summary>
+    /// The tool exited — with <paramref name="exitCode"/> — and then something it started kept
+    /// holding its output pipe open past the drain grace, so <see cref="ExternalProcess"/> never
+    /// read the answer and reported <see cref="ProcessOutputStuckException"/> instead of a
+    /// <see cref="ProcessResult"/>.
+    /// </summary>
+    public static RecordingProcessRunner ExitedButOutputStuck(int exitCode) => new(() => throw new ProcessOutputStuckException(
+        exitCode,
+        $"gh exited with code {exitCode}, but 5 seconds later something it started was still "
+        + "holding its output open, so Hall9k never received the answer."));
+
     public ProcessRunner Runner => (fileName, arguments, workingDirectory, _) =>
     {
         Calls.Add((fileName, arguments, workingDirectory));
