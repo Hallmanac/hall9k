@@ -1325,6 +1325,86 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
     }
 
     /// <summary>
+    /// Cycle-4 finding (both lenses): once a run parks on <c>MaxFinalFullPassRounds</c>, a human's
+    /// <c>h9k review resolve --needs-fixes</c> must be a genuine fresh grant, the same way it
+    /// already is for the per-track cycle caps (<see cref="RunAggregate.ReviewBudgetBaseCycle"/>).
+    /// Left unfixed, <see cref="RunAggregate.FinalFullPassRounds"/> is a lifetime counter nothing
+    /// ever lowers, so the human's fix session dispatches, the run reaches the Reverify branch, and
+    /// <c>FinalFullPassCapReached</c> is still true — the run re-parks immediately with the
+    /// identical reason, having spent a fix session and never dispatched the review pass asked for.
+    /// This resolves the park, provides one fix, and asserts the mandatory pass actually runs and
+    /// the run settles, rather than re-parking on the very next check.
+    /// </summary>
+    [Fact]
+    public async Task A_needs_fixes_park_resolution_grants_a_fresh_final_full_pass_round_instead_of_reparking()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        using DocumentStore store = NewStore();
+        (Guid taskId, Guid runId, _) = await SeedVerifiedRunAsync(store, cts.Token);
+
+        string freshMedium(string at) =>
+            $"FINDING: severity=medium; scope=in-scope; at={at}\nDefect: the final pass caught a fresh regression.\n\n"
+            + "VERDICT: needs-fixes";
+
+        ScriptedExecutor executor = new(
+            // Cycle 1: conformance clean and dormant; adversarial needs a fix (pre-gate).
+            "Criteria met.\n\nVERDICT: merge-ready",
+            freshMedium("Retry.cs:12"),
+            "Tightened the retry guard.\n\nRESOLUTION: fixed",
+            // Cycle 2: still pre-gate — a second minor issue still forces another cycle.
+            freshMedium("Retry.cs:20"),
+            "Closed the edge case too.\n\nRESOLUTION: fixed",
+            // Cycle 3: clean — adversarial concludes, both tracks now dormant.
+            "Clean now.\n\nVERDICT: merge-ready",
+            // Cycle 4: mandatory final pass, round 1. Post-gate, so the fresh medium concludes
+            // the track right here while still owing its fix.
+            "Criteria still met.\n\nVERDICT: merge-ready",
+            freshMedium("Retry.cs:31"),
+            "Fixed the regression the final pass found.\n\nRESOLUTION: fixed",
+            // Cycle 5: mandatory final pass, round 2 — MaxFinalFullPassRounds (set to 2 below) is
+            // reached here, so the run parks deciding cycle 6 rather than dispatching a third round.
+            "Criteria still met.\n\nVERDICT: merge-ready",
+            freshMedium("Retry.cs:40"),
+            "Fixed that regression too.\n\nRESOLUTION: fixed");
+
+        bool mergeReady = await NewEngine(
+            store, executor, new DaemonOptions { MaxFinalFullPassRounds = 2 })
+            .ReviewAsync(runId, taskId, cts.Token);
+
+        mergeReady.Should().BeFalse("the run parks on the final-pass round cap before cycle 6 ever dispatches");
+
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            session.Events.Append(runId, new ReviewParkResolved(
+                runId, ReviewVerdict.NeedsFixes, "look one more time", Now, DomainId.New()));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        ScriptedExecutor resumeExecutor = new(
+            // The human's own fix session, dispatched directly over their reason.
+            "Looked again.\n\nRESOLUTION: fixed",
+            // A genuine third final-pass round — round 1 all over again if the fresh grant did
+            // not reset FinalFullPassRounds, this is where the bug would instead re-park.
+            "Clean this time.\n\nVERDICT: merge-ready",
+            "Clean this time too.\n\nVERDICT: merge-ready");
+
+        mergeReady = await NewEngine(
+            store, resumeExecutor, new DaemonOptions { MaxFinalFullPassRounds = 2 })
+            .ReviewAsync(runId, taskId, cts.Token);
+
+        mergeReady.Should().BeTrue(
+            "the human's needs-fixes resolution is a fresh grant for the final-pass round cap too, " +
+                "not just the per-track caps — the run must dispatch the pass asked for, not re-park on it");
+        resumeExecutor.Spawns.Should().HaveCount(
+            3, "the fix session and a genuine third final-pass round, not an immediate re-park");
+
+        await using IQuerySession query = store.QuerySession();
+        RunDetails run = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
+        run.State.Should().Be(RunState.UnderReview);
+        run.ReviewCycle.Should().Be(6, "a genuine third final-pass round ran and settled");
+    }
+
+    /// <summary>
     /// Adversarial cycle-2 review finding: a track still saying Continues: true when it hits its
     /// own cycle cap parks the run without ever reaching the concluding branch that turns a
     /// ride-along into a residual (that branch only runs for a plan whose own convergence rule

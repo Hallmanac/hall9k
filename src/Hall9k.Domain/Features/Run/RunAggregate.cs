@@ -639,8 +639,12 @@ public sealed class RunAggregate
             PendingHumanFindings = @event.Reason;
             // Like a manual pr resolve, the human asking is a fresh grant (log #22): the
             // per-track cycle caps are re-measured from here, so a run parked at its cap does
-            // not re-park on the very next cycle.
+            // not re-park on the very next cycle. FinalFullPassRounds is an independent bound
+            // (its own doc says why) and needs its own reset here for the same reason: without
+            // it, a run parked on FinalFullPassCapReached re-parks on the very next check no
+            // matter how many fresh grants the human gives, because nothing else ever lowers it.
             ReviewBudgetBaseCycle = ReviewCycle;
+            FinalFullPassRounds = 0;
         }
 
         State = RunState.UnderReview;
