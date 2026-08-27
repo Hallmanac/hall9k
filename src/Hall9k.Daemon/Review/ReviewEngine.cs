@@ -513,9 +513,10 @@ public sealed class ReviewEngine(
     /// <para>
     /// Escalation (task: a second fix round over the same findings) is decided here too, once,
     /// before the model resolves: <see cref="ReviewFixEscalation.Reason"/> compares this round's
-    /// own findings against <see cref="RunAggregate.LastFixRoundFindingLocations"/> — the
-    /// immediately preceding fix round's, not the whole run's history, which is what makes
-    /// de-escalation automatic once a repeated defect actually clears. A mechanical redispatch of
+    /// own findings against <see cref="RunAggregate.LastFixRoundFindingLocations"/> — the most
+    /// recent AUTOMATED round's, not necessarily the immediately preceding one and never the
+    /// whole run's history (that field's own doc has why), which is what makes de-escalation
+    /// automatic once a repeated defect actually clears. A mechanical redispatch of
     /// the very same round (a budget-exhaustion retry re-enters FixNeeded with the cycle and
     /// <paramref name="run"/>'s <see cref="RunAggregate.PendingHumanFindings"/> both unchanged)
     /// reuses whatever that round already decided instead of asking the question again over
@@ -1080,6 +1081,37 @@ public sealed class ReviewEngine(
     /// that lens, and the history cannot answer how or at which cycle it ended: the one
     /// question <see cref="ReviewTrackConcluded"/> exists to answer.
     /// </para>
+    /// <para>
+    /// A track still saying "continue" here can be carrying ride-alongs from the cycle that
+    /// capped it (adversarial cycle-2 review finding): unlike the empty terminal case above, this
+    /// track's own last completed pass may have attached a RideAlong-dispositioned finding that
+    /// no fix session ever swept up, because none dispatches once the run settles instead of
+    /// running another cycle. <see cref="RunAggregate.CompletedReviewPasses"/> still holds that
+    /// pass (a merge-ready park resolution never advances <see cref="RunAggregate.ReviewCycle"/>,
+    /// so nothing has cleared it), and reading it here is the only chance this finding gets to
+    /// become a residual: there is no later cycle for a fix session to read it in, and force-
+    /// concluding with an empty residual list would drop it from the tally as if it had never
+    /// been reported.
+    /// </para>
+    /// <para>
+    /// Two things about that forced residual mirror rules the rest of this method already obeys
+    /// (cycle-3 cap-park finding). First, it collapses per distinct location exactly as
+    /// <see cref="RunAggregate.DeriveResidualTally"/>'s own <c>PerDefect</c> does — within one
+    /// lens's own findings, across every still-active lens forced-concluding together, and
+    /// against whatever this same disposition already holds on the stream from an earlier,
+    /// normally-concluded track — so <see cref="ReviewSettled.ResidualsRideAlong"/> (or
+    /// <see cref="ReviewSettled.ResidualsFixed"/>, see next) always equals what a fresh
+    /// <c>DeriveResidualTally</c> returns once these very events are rehydrated. Second, it is
+    /// not always a ride-along: this cycle's merged findings document (<c>WriteMergedFindingsAsync</c>)
+    /// writes every active lens's ride-alongs into the SAME file a dispatched fix session reads,
+    /// concluding or not, so a track still-active here that a fix session actually ran over this
+    /// exact cycle (the dispute path — a fix session runs, disputes, and a human then ends the
+    /// loop with merge-ready) already handed this finding to that session exactly as
+    /// <c>RecordReviewPassAsync</c>'s own <c>fixSessionWillDispatch</c> distinction records for a
+    /// normally-concluding track, so it ships as fixed-unreviewed rather than as a ride-along
+    /// nobody read. A track force-concluded with no fix session ever dispatched this cycle (the
+    /// capped-park path) never handed anything to anyone, so it stays a ride-along.
+    /// </para>
     /// </summary>
     private async Task SettleAsync(RunAggregate run, CancellationToken cancellationToken)
     {
@@ -1089,32 +1121,75 @@ public sealed class ReviewEngine(
         // itself. Those conclusions carry no residuals of their own for the same reason. What
         // the track left behind, it left behind when it was routed (Apply(ReviewFindingRouted)),
         // and nothing was fixed on the cycle the run stopped on or the phase would be FixNeeded.
+        // The ride-alongs a still-active track is force-concluding with here are the one
+        // exception — counted separately below, because they are not yet on the stream this
+        // tally reads from.
         ReviewSettlement settlement = run.DeriveSettlement();
         // Counted per defect rather than per recorded residual (log #63): a routing that failed
         // is offered again next cycle, so one defect can leave both records on the stream, and
         // counting the records would report a defect as unrouted when a draft bug task exists.
         ReviewResidualTally residuals = run.DeriveResidualTally();
 
+        // A fix session dispatches over the exact cycle it is dispatched at (DispatchFixSessionAsync
+        // reads run.ReviewCycle at spawn time), so this equality is "did a fix session run over
+        // THIS cycle's merged findings document" — the same question fixSessionWillDispatch answers
+        // for a normally-concluding track, asked here in terms the aggregate alone can answer.
+        ReviewResidualDisposition forcedDisposition = run.LastFixRoundCycle == run.ReviewCycle
+            ? ReviewResidualDisposition.FixedUnreviewed
+            : ReviewResidualDisposition.RideAlong;
+        IReadOnlyList<ReviewResidual> alreadyOnStream =
+            [.. run.ReviewResiduals.Where(residual => residual.Disposition == forcedDisposition)];
+
+        List<(ReviewLens Lens, ReviewResidual Residual)> forced = [];
+        foreach (ReviewLens lens in run.ActiveReviewLenses)
+        {
+            foreach (ReviewFindingRecord finding in run.CompletedReviewPasses
+                .Where(pass => pass.Lens == lens)
+                .SelectMany(pass => pass.Findings)
+                .Where(finding => finding.Disposition == ReviewFindingDisposition.RideAlong))
+            {
+                if (alreadyOnStream.Any(existing => ReviewFindingLocations.SamePlace(existing.Location, finding.Location))
+                    || forced.Any(kept => ReviewFindingLocations.SamePlace(kept.Residual.Location, finding.Location)))
+                {
+                    continue;
+                }
+
+                forced.Add((lens, new ReviewResidual(
+                    lens, run.ReviewCycle, finding.Severity, finding.Scope, forcedDisposition, finding.Location)));
+            }
+        }
+
+        string forcedSuffix = forcedDisposition == ReviewResidualDisposition.FixedUnreviewed
+            ? "claimed by a fix session dispatched this same cycle"
+            : "never claimed";
         DateTimeOffset now = DateTimeOffset.UtcNow;
         await using IDocumentSession session = store.LightweightSession();
         foreach (ReviewLens lens in run.ActiveReviewLenses)
         {
+            IReadOnlyList<ReviewResidual> forcedResiduals = [.. forced
+                .Where(entry => entry.Lens == lens)
+                .Select(entry => entry.Residual)];
+
             session.Events.Append(run.Id, new ReviewTrackConcluded(
-                run.Id, lens, run.ReviewCycle, ReviewSettlement.Settled, [], now));
+                run.Id, lens, run.ReviewCycle, ReviewSettlement.Settled, forcedResiduals, now));
             logger.LogInformation(
-                "Run {RunId}: the {Lens} track ended at cycle {Cycle} with the run — settled, no reviewer read the final tip",
-                run.Id, LensLabel(lens), run.ReviewCycle);
+                "Run {RunId}: the {Lens} track ended at cycle {Cycle} with the run — settled, no reviewer read the final tip{Forced}",
+                run.Id, LensLabel(lens), run.ReviewCycle,
+                forcedResiduals.Count > 0 ? $", {forcedResiduals.Count} ride-along(s) {forcedSuffix}" : string.Empty);
         }
 
+        int forcedFixedUnreviewed = forcedDisposition == ReviewResidualDisposition.FixedUnreviewed ? forced.Count : 0;
+        int forcedRideAlong = forcedDisposition == ReviewResidualDisposition.RideAlong ? forced.Count : 0;
         session.Events.Append(run.Id, new ReviewSettled(
             run.Id, run.ReviewCycle, settlement,
-            residuals.FixedUnreviewed, residuals.Routed, residuals.RoutingFailed,
-            now, residuals.RideAlong));
+            residuals.FixedUnreviewed + forcedFixedUnreviewed, residuals.Routed, residuals.RoutingFailed,
+            now, residuals.RideAlong + forcedRideAlong));
         await session.SaveChangesAsync(cancellationToken);
         logger.LogInformation(
             "Run {RunId}: review settled {Settlement} at cycle {Cycle} — {Fixed} residual(s) fixed unreviewed, {Routed} routed, {Unrouted} left unrouted, {RideAlong} ride-along(s) never claimed",
             run.Id, settlement.Value, run.ReviewCycle,
-            residuals.FixedUnreviewed, residuals.Routed, residuals.RoutingFailed, residuals.RideAlong);
+            residuals.FixedUnreviewed + forcedFixedUnreviewed, residuals.Routed, residuals.RoutingFailed,
+            residuals.RideAlong + forcedRideAlong);
     }
 
     private async Task RecordFixResultAsync(
