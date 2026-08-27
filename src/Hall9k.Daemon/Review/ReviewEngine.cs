@@ -1860,9 +1860,23 @@ public sealed class ReviewEngine(
         {
             string path = LensFindingsFile(runDirectory, run.ReviewCycle, pass.Lens);
             string raw = File.Exists(path) ? await File.ReadAllTextAsync(path, cancellationToken) : string.Empty;
-            string outcome = ReviewResultParser.ParseVerdict(raw) == ReviewVerdict.NeedsFixes
-                ? $"the {LensLabel(pass.Lens)} returned needs-fixes naming nothing the platform could read as a finding"
-                : $"the {LensLabel(pass.Lens)} returned no parseable verdict";
+            ReviewVerdict rawVerdict = ReviewResultParser.ParseVerdict(raw);
+            // The verdict recorded here is the one the pass actually wrote, before the
+            // reclassification above ever touches it — a merge-ready pass whose only attached
+            // finding echoed the finding contract's own placeholder lands here too (it is promoted
+            // to needs-fixes by that reclassification and then demoted to Unknown by the
+            // NamesAFinding gate, never having been genuinely unparseable), and telling a human
+            // "no parseable verdict" about it would name a machinery fault where the real one is a
+            // reviewer's fabricated finding.
+            string outcome = rawVerdict switch
+            {
+                _ when rawVerdict == ReviewVerdict.NeedsFixes =>
+                    $"the {LensLabel(pass.Lens)} returned needs-fixes naming nothing the platform could read as a finding",
+                _ when rawVerdict == ReviewVerdict.MergeReady =>
+                    $"the {LensLabel(pass.Lens)} returned merge-ready but attached a finding the platform could "
+                    + "not read as a stated defect, so the verdict was not trusted",
+                _ => $"the {LensLabel(pass.Lens)} returned no parseable verdict",
+            };
             string repromptState = run.VerdictRepromptedCycle == run.ReviewCycle && pass.Lens == run.VerdictRepromptedLens
                 ? "even after this cycle's re-prompt"
                 : "and this lens was never itself re-prompted this cycle — the cycle's one re-prompt went to another lens";
