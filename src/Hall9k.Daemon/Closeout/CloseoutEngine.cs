@@ -38,13 +38,18 @@ namespace Hall9k.Daemon.Closeout;
 /// </param>
 /// <param name="Skipped">
 /// How many watched or orphaned runs this sweep passed over without ever calling <c>gh</c> — a
-/// stale fence, a superseded run, a task that has not reached Done, a mid-sweep task-stream
-/// advance. A skip says nothing about whether <c>gh</c> is healthy, but it is not gh trouble
-/// either, so <c>IsSweepFailure</c> (independent pre-PR review, cycle 5) must not count it as
-/// evidence that every attempted inspection failed: a sweep containing only a broken pull
-/// request and otherwise-skipped ones — a Done task reopened and then unassigned sits in the
-/// watch set returning Skipped forever — pinned the interval at the ceiling even though nothing
-/// else in the watch set was ever gh's fault.
+/// stale fence, a superseded run, a task that has not reached Done. A mid-sweep task-stream
+/// advance discovered only after the inspector call already answered does NOT count here
+/// (independent pre-PR review, cycle 2 adversarial): <c>gh</c> demonstrably answered for that
+/// run even though the read was then discarded as stale, so it counts toward
+/// <paramref name="RunsInspected"/> instead — otherwise a sweep pairing that race with one
+/// genuine failure would read as "every attempted inspection failed" despite the one successful
+/// read proving <c>gh</c> itself was healthy. A skip says nothing about whether <c>gh</c> is
+/// healthy, but it is not gh trouble either, so <c>IsSweepFailure</c> (independent pre-PR review,
+/// cycle 5) must not count it as evidence that every attempted inspection failed: a sweep
+/// containing only a broken pull request and otherwise-skipped ones — a Done task reopened and
+/// then unassigned sits in the watch set returning Skipped forever — pinned the interval at the
+/// ceiling even though nothing else in the watch set was ever gh's fault.
 /// </param>
 public sealed record CloseoutSweepResult(int RunsInspected, int MergesObserved, int Failures = 0, int Skipped = 0);
 
@@ -265,7 +270,10 @@ public sealed class CloseoutEngine(
             logger.LogDebug(
                 "Task {TaskId} advanced while inspecting the orphaned pull request {Url}; deferring to the next sweep",
                 run.TaskId, run.PullRequestUrl);
-            return InspectionOutcome.Skipped;
+            // gh already answered above — only the read is discarded as stale, so this is
+            // evidence gh is healthy, not a run this sweep passed over without calling it
+            // (independent pre-PR review, cycle 2 adversarial).
+            return InspectionOutcome.Inspected;
         }
 
         if (snapshot.IsMerged)
@@ -348,7 +356,10 @@ public sealed class CloseoutEngine(
             logger.LogDebug(
                 "Task {TaskId} advanced while inspecting {Url}; deferring to the next sweep",
                 run.TaskId, run.PullRequestUrl);
-            return InspectionOutcome.Skipped;
+            // gh already answered above — only the read is discarded as stale, so this is
+            // evidence gh is healthy, not a run this sweep passed over without calling it
+            // (independent pre-PR review, cycle 2 adversarial).
+            return InspectionOutcome.Inspected;
         }
 
         DateTimeOffset now = DateTimeOffset.UtcNow;
