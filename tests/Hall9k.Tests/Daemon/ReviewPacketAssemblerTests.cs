@@ -281,6 +281,38 @@ public sealed class ReviewPacketAssemblerTests : IDisposable
         packet.FileContents!["café.cs"].Should().Be("class Cafe { }\n");
     }
 
+    /// <summary>
+    /// The packet's own "full current text ... unless noted otherwise" promise (cycle-3 conformance
+    /// and adversarial review) is honest only if a file it could not embed is actually named and
+    /// why: a deleted file has no text on disk, a binary file is never decoded. Both land in the
+    /// same packet here so the omission list carries both reasons at once, not just whichever one
+    /// a narrower test happens to exercise.
+    /// </summary>
+    [Fact]
+    public async Task Records_which_touched_files_were_omitted_and_why()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromSeconds(30));
+        Git(_repositoryPath, "checkout -q main");
+        Commit("doomed.txt", "will be deleted\n", "add doomed file to main");
+        Git(_repositoryPath, "checkout -q -b task/remove-and-add-binary");
+        Git(_repositoryPath, "rm -q doomed.txt");
+        byte[] binary = [0x89, 0x50, 0x4E, 0x47, 0x00, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x01, 0x02];
+        File.WriteAllBytes(Path.Combine(_repositoryPath, "asset.png"), binary);
+        Git(_repositoryPath, "add -A");
+        Git(_repositoryPath, "-c user.name=Test -c user.email=test@test commit -q -m \"remove doomed file, add binary asset\"");
+
+        ReviewPacket? packet = await ReviewPacketAssembler.AssembleAsync(
+            _repositoryPath, "main", sinceSha: null, cts.Token);
+
+        packet.Should().NotBeNull();
+        packet!.Degraded.Should().BeFalse();
+        packet.Omissions.Should().BeEquivalentTo(
+        [
+            new FileOmission("doomed.txt", FileOmissionReason.Deleted),
+            new FileOmission("asset.png", FileOmissionReason.Binary),
+        ]);
+    }
+
     [Fact]
     public async Task An_unobservable_worktree_returns_no_packet_rather_than_a_guess()
     {
