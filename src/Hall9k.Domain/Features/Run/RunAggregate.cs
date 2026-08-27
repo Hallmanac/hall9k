@@ -450,8 +450,18 @@ public sealed class RunAggregate
         // nothing about this cycle's own completed passes changed in between.
         LastFixSessionEscalated = @event.Escalated;
         LastFixSessionEscalationReason = @event.EscalationReason;
-        _lastFixRoundFindingLocations.Clear();
-        _lastFixRoundFindingLocations.AddRange(CurrentCycleFixFindingLocations);
+        // Left untouched on a round dispatched over PendingHumanFindings: that is exactly the
+        // set DispatchFixSessionAsync itself refuses to compare against as the CURRENT side
+        // (ReviewEngine.cs's own comment on the point) because it "describes what automation was
+        // looking at, not what the human said" — installing it as the PREVIOUS side for the next
+        // round would defer that same unreliability one round rather than avoid it, escalating a
+        // later round against locations no fix session was ever dispatched over.
+        if (PendingHumanFindings.IsBlank())
+        {
+            _lastFixRoundFindingLocations.Clear();
+            _lastFixRoundFindingLocations.AddRange(CurrentCycleFixFindingLocations);
+        }
+
         LastFixRoundCycle = @event.Cycle;
         LastFixRoundHumanFindings = PendingHumanFindings;
     }
