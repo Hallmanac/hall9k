@@ -101,4 +101,16 @@ public sealed class ReviewFixEscalationTests
             "a bare file with no stated line matches nothing per ReviewFindingLocations.SamePlace — an " +
             "unbounded substring match would wrongly treat a more specific file:line as a restatement");
     }
+
+    [Fact]
+    public void A_human_reason_naming_only_the_bare_filename_a_previous_round_named_with_no_line_does_not_escalate()
+    {
+        ReviewFixEscalation.Reason(
+            ["src/Foo.cs"], [],
+            "The docstring in src/Foo.cs reads fine now; the real problem is the race in src/Bar.cs:88.")
+            .Should().BeNull(
+                "a previous location with no stated line is not a place ReviewFindingLocations.SamePlace " +
+                "would ever match, so the human-restatement scan must not treat mentioning its bare file " +
+                "name as restating it");
+    }
 }
