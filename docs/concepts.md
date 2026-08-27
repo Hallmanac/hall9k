@@ -294,7 +294,9 @@ Per poll, in priority order:
   it still holds unmerged work.
 - **Copilot's review state, recorded every sweep the pull request is still open.** Landed,
   requested-but-pending, reviewed-an-earlier-commit (a real review that happened, just against
-  a commit the pull request has since moved past), or absent, together with whether the
+  a commit the pull request has since moved past), absent, or unknown (no confirmed review
+  activity — either nothing has run yet, or a sweep read a review it could not classify because
+  the provider left its commit unreported), together with whether the
   provider's CI picture is still incomplete — informational only, never a `RunState` transition,
   and appended ahead of every
   branch below (including the checks-pending short circuit and a parked run's merge/close-only
