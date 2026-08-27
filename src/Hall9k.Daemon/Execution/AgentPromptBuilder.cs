@@ -1242,17 +1242,6 @@ public static class AgentPromptBuilder
             prompt.AppendLine();
         }
 
-        if (packet.Degraded || packet.FileContents is null)
-        {
-            prompt.AppendLine(
-                "The touched files' full text would have pushed this packet past its size cap, so only the");
-            prompt.AppendLine(
-                "diff and the file list above are included — read each file yourself as the diff, or your own");
-            prompt.AppendLine("reading, leads you to.");
-            prompt.AppendLine();
-            return;
-        }
-
         foreach ((string file, string content) in packet.FileContents)
         {
             string fileText = content.TrimEnd('\n');
@@ -1272,6 +1261,7 @@ public static class AgentPromptBuilder
         FileOmissionReason.Deleted => "deleted",
         FileOmissionReason.Binary => "binary",
         FileOmissionReason.Unreadable => "unreadable",
+        FileOmissionReason.TooLarge => "too large for the packet's remaining budget",
         _ => "omitted",
     };
 

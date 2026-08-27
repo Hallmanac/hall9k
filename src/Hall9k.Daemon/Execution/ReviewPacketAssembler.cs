@@ -13,16 +13,11 @@ namespace Hall9k.Daemon.Execution;
 /// argument the packet was built from, printed back into the prompt so the reviewer can
 /// reproduce or extend it.
 /// <para>
-/// <see cref="Degraded"/> is true when the touched files' combined text would have pushed the
-/// packet past <see cref="ReviewPacketAssembler.MaxPacketBytes"/>: the platform never truncates
-/// a file's content silently, it drops every file's full text and leaves the diff and the file
-/// list for the reviewer to read from directly. <see cref="FileContents"/> is null exactly when
-/// <see cref="Degraded"/> is true.
-/// </para>
-/// <para>
 /// <see cref="Omissions"/> names every touched file the packet promises "full current text" for
 /// but does not actually carry, and why — a deleted file has no text on disk, a binary file is
-/// never decoded, an unreadable one hit an I/O error. Recorded so the prompt's "unless noted
+/// never decoded, an unreadable one hit an I/O error, and a file whose own text would have pushed
+/// the running total past <see cref="ReviewPacketAssembler.MaxPacketBytes"/> is skipped rather
+/// than charged against the budget of every file after it. Recorded so the prompt's "unless noted
 /// otherwise" is a true statement rather than an unqualified promise the packet quietly breaks.
 /// </para>
 /// </summary>
@@ -30,8 +25,7 @@ public sealed record ReviewPacket(
     string RangeDescription,
     string Diff,
     IReadOnlyList<string> TouchedFiles,
-    IReadOnlyDictionary<string, string>? FileContents,
-    bool Degraded,
+    IReadOnlyDictionary<string, string> FileContents,
     IReadOnlyList<FileOmission> Omissions);
 
 /// <summary>A touched file the packet's per-file text section omits, and the reason it does.</summary>
@@ -48,6 +42,13 @@ public enum FileOmissionReason
 
     /// <summary>Reading the file threw an I/O or permission error.</summary>
     Unreadable,
+
+    /// <summary>
+    /// The file's own on-disk text would have pushed the packet past its size cap. Only this one
+    /// file is skipped — every other touched file is still weighed against whatever budget
+    /// remains, so one oversized file never costs the files that come after it in the touched list.
+    /// </summary>
+    TooLarge,
 }
 
 /// <summary>
@@ -66,11 +67,11 @@ public static class ReviewPacketAssembler
     /// The packet's total size ceiling, diff plus every touched file's full text, in UTF-8
     /// bytes. This bounds the packet's worst-case cost; it does not promise to cover every
     /// task's full file set. A task that touches a large repo-doctrine file — this repository's
-    /// own PLAN.md alone is over 350,000 bytes — still crosses this ceiling and degrades to the
-    /// diff and file list with no file text at all (adversarial review, cycle 2), and that
-    /// degradation is the intended fallback for a packet that would otherwise spend a meaningful
-    /// share of a context window on itself, not a defect: a run whose diff already approaches
-    /// this cap on its own was never going to be cheap to review call-by-call either.
+    /// own PLAN.md alone is over 350,000 bytes — has that one file skipped as a
+    /// <see cref="FileOmissionReason.TooLarge"/> omission rather than embedded (adversarial
+    /// review, cycle 2); every other touched file is still weighed against its own remaining
+    /// share of the cap, since a file too large for the budget on its own is not a reason to
+    /// deny the budget to the files after it.
     /// </summary>
     public const long MaxPacketBytes = 300_000;
 
@@ -105,9 +106,9 @@ public static class ReviewPacketAssembler
 
         IReadOnlyList<string> touchedFiles = [.. nameOnly.Split('\0', StringSplitOptions.RemoveEmptyEntries)];
 
-        (Dictionary<string, string> contents, bool degraded, List<FileOmission> omissions) =
+        (Dictionary<string, string> contents, List<FileOmission> omissions) =
             await ReadTouchedFilesAsync(worktreePath, touchedFiles, Encoding.UTF8.GetByteCount(diff), cancellationToken);
-        return new ReviewPacket(range, diff, touchedFiles, degraded ? null : contents, degraded, omissions);
+        return new ReviewPacket(range, diff, touchedFiles, contents, omissions);
     }
 
     /// <summary>
@@ -120,10 +121,15 @@ public static class ReviewPacketAssembler
     /// weighed against the remaining budget (cycle-2 conformance and adversarial review): its
     /// lossy UTF-8 decode would be unusable noise in the prompt, and charging its length to the
     /// budget would degrade the whole packet over a file that was never going to be embedded in
-    /// the first place. Only a file that survives the binary check has its length checked against
-    /// the remaining budget before being read.
+    /// the first place. A file that survives the binary check but whose own length (pre-read) or
+    /// own decoded size (post-read) would push the running total past the cap is recorded as a
+    /// <see cref="FileOmissionReason.TooLarge"/> omission and skipped on its own — the running
+    /// total is left unchanged by a skipped file, so every touched file after it is still weighed
+    /// against the full remaining budget rather than losing its own chance to fit (conformance
+    /// and adversarial review, cycle 1: an early oversized file used to discard every file's text
+    /// after it, including files that would have fit).
     /// </summary>
-    private static async Task<(Dictionary<string, string> Contents, bool Degraded, List<FileOmission> Omissions)> ReadTouchedFilesAsync(
+    private static async Task<(Dictionary<string, string> Contents, List<FileOmission> Omissions)> ReadTouchedFilesAsync(
         string worktreePath, IReadOnlyList<string> touchedFiles, long startingSize, CancellationToken cancellationToken)
     {
         long size = startingSize;
@@ -150,7 +156,8 @@ public static class ReviewPacketAssembler
                 long fileLength = new FileInfo(fullPath).Length;
                 if (size + fileLength > MaxPacketBytes)
                 {
-                    return (contents, true, omissions);
+                    omissions.Add(new FileOmission(file, FileOmissionReason.TooLarge));
+                    continue;
                 }
 
                 text = await File.ReadAllTextAsync(fullPath, cancellationToken);
@@ -161,16 +168,18 @@ public static class ReviewPacketAssembler
                 continue;
             }
 
-            size += Encoding.UTF8.GetByteCount(text);
-            if (size > MaxPacketBytes)
+            long textSize = Encoding.UTF8.GetByteCount(text);
+            if (size + textSize > MaxPacketBytes)
             {
-                return (contents, true, omissions);
+                omissions.Add(new FileOmission(file, FileOmissionReason.TooLarge));
+                continue;
             }
 
+            size += textSize;
             contents[file] = text;
         }
 
-        return (contents, false, omissions);
+        return (contents, omissions);
     }
 
     /// <summary>
