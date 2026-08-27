@@ -422,6 +422,107 @@ public sealed class AgentPromptBuilderTests : IDisposable
     }
 
     /// <summary>
+    /// No packet is the platform's own fallback shape (an assembly failure, or a caller — an
+    /// older code path, this test file's other cases — that never supplied one): the prompt
+    /// still names the diff command directly, exactly as it always has.
+    /// </summary>
+    [Fact]
+    public void Review_prompt_without_a_packet_omits_the_packet_section()
+    {
+        string prompt = AgentPromptBuilder.BuildReview(
+            SomeTask(), SomeProject(), "task/1-slug", cycle: 1, ReviewLens.Conformance);
+
+        prompt.Should().NotContain("Packet (a starting point");
+        prompt.Should().Contain("git diff main...HEAD", "the fallback instruction still names the diff itself");
+    }
+
+    /// <summary>
+    /// The packet's whole point (task: a dispatched review session starts with the diff already
+    /// assembled): the diff and every touched file's full text ride in the prompt, and the
+    /// reviewer is told plainly that reading past it is still expected — never that it bounds
+    /// the review.
+    /// </summary>
+    [Fact]
+    public void Review_prompt_with_a_packet_carries_the_diff_and_full_file_text_as_a_starting_point()
+    {
+        ReviewPacket packet = new(
+            "main...HEAD", "diff --git a/Widget.cs b/Widget.cs\n+class Widget { }\n",
+            ["Widget.cs"], new Dictionary<string, string> { ["Widget.cs"] = "class Widget { }\n" }, Degraded: false);
+
+        string prompt = AgentPromptBuilder.BuildReview(
+            SomeTask(), SomeProject(), "task/1-slug", cycle: 1, ReviewLens.Conformance, packet);
+
+        prompt.Should().Contain("Packet (a starting point, not a boundary)");
+        prompt.Should().Contain("This packet bounds nothing.");
+        prompt.Should().Contain("diff --git a/Widget.cs b/Widget.cs");
+        prompt.Should().Contain("Touched files (1):");
+        prompt.Should().Contain("`Widget.cs`");
+        prompt.Should().Contain("full current text");
+        prompt.Should().Contain("class Widget { }");
+    }
+
+    /// <summary>
+    /// Over the packet's size cap, the platform never truncates a file's content silently (the
+    /// task's own acceptance criteria): the diff and the file list still ride in, but every
+    /// file's full text is dropped rather than cut short.
+    /// </summary>
+    [Fact]
+    public void Review_prompt_with_a_degraded_packet_keeps_the_diff_and_file_list_but_drops_full_text()
+    {
+        ReviewPacket packet = new(
+            "main...HEAD", "diff --git a/Huge.cs b/Huge.cs\n+lots of content\n",
+            ["Huge.cs"], FileContents: null, Degraded: true);
+
+        string prompt = AgentPromptBuilder.BuildReview(
+            SomeTask(), SomeProject(), "task/1-slug", cycle: 1, ReviewLens.Conformance, packet);
+
+        prompt.Should().Contain("Packet (a starting point, not a boundary)");
+        prompt.Should().Contain("diff --git a/Huge.cs b/Huge.cs");
+        prompt.Should().Contain("`Huge.cs`");
+        prompt.Should().Contain("pushed this packet past its size cap");
+        prompt.Should().NotContain("(full current text)", "the degraded packet carries no per-file bodies at all");
+    }
+
+    /// <summary>
+    /// The packet carries nothing about the task's objective or acceptance criteria, so handing
+    /// it to the adversarial lens does not reopen the blindness boundary
+    /// <see cref="Adversarial_review_prompt_hunts_defects_without_ever_naming_the_criteria"/>
+    /// already covers.
+    /// </summary>
+    [Fact]
+    public void Adversarial_review_prompt_with_a_packet_still_never_names_the_objective()
+    {
+        ReviewPacket packet = new(
+            "main...HEAD", "diff --git a/Widget.cs b/Widget.cs\n+class Widget { }\n",
+            ["Widget.cs"], new Dictionary<string, string> { ["Widget.cs"] = "class Widget { }\n" }, Degraded: false);
+
+        string prompt = AgentPromptBuilder.BuildReview(
+            SomeTask(), SomeProject(), "task/1-slug", cycle: 1, ReviewLens.Adversarial, packet);
+
+        prompt.Should().Contain("Packet (a starting point, not a boundary)");
+        prompt.Should().NotContain("Add rate limiting to auth endpoints", "the objective stays withheld from this lens");
+        prompt.Should().NotContain("Requests over the limit get 429");
+    }
+
+    /// <summary>A Verify-cycle pass gets the same packet section as any other review pass.</summary>
+    [Fact]
+    public void Verify_review_prompt_with_a_packet_carries_the_packet_section_too()
+    {
+        ReviewPacket packet = new(
+            "abc123..HEAD", "diff --git a/Fix.cs b/Fix.cs\n+// fixed\n",
+            ["Fix.cs"], new Dictionary<string, string> { ["Fix.cs"] = "// fixed\n" }, Degraded: false);
+
+        string prompt = AgentPromptBuilder.BuildReviewVerify(
+            SomeTask(), SomeProject(), "task/1-slug", cycle: 2,
+            tracks: [ReviewLens.Conformance], priorFindings: "none", priorFixPosition: "none",
+            sinceSha: "abc123", priorCycleMode: ReviewMode.Discovery, packet: packet);
+
+        prompt.Should().Contain("Packet (a starting point, not a boundary)");
+        prompt.Should().Contain("diff --git a/Fix.cs b/Fix.cs");
+        prompt.Should().Contain("// fixed");
+    }
+
+    /// <summary>
     /// The project's own repo doctrine is named unconditionally, whether or not this particular
     /// task has ever parked (task: review prompts carry prior rulings) — a reviewer needs to know
     /// to check it before it reports its first finding, not only after a human has already had to
@@ -545,7 +646,7 @@ public sealed class AgentPromptBuilderTests : IDisposable
         ];
 
         string prompt = AgentPromptBuilder.BuildReview(
-            SomeTask(), SomeProject(), "task/1-slug", cycle: 12, lens, priorRulings);
+            SomeTask(), SomeProject(), "task/1-slug", cycle: 12, lens, priorRulings: priorRulings);
 
         prompt.Should().Contain("Settled rulings on this task");
         prompt.Should().Contain("Do not re-raise it without new evidence");
@@ -577,7 +678,7 @@ public sealed class AgentPromptBuilderTests : IDisposable
         ];
 
         string prompt = AgentPromptBuilder.BuildReview(
-            SomeTask(), SomeProject(), "task/1-slug", cycle: 12, ReviewLens.Conformance, priorRulings);
+            SomeTask(), SomeProject(), "task/1-slug", cycle: 12, ReviewLens.Conformance, priorRulings: priorRulings);
 
         prompt.Should().NotContain("Cycle 1,", "the oldest rulings are dropped once the bound is reached");
         prompt.Should().NotContain("Cycle 2,", "only the newest handful ride into the prompt");
@@ -602,7 +703,7 @@ public sealed class AgentPromptBuilderTests : IDisposable
         ];
 
         string prompt = AgentPromptBuilder.BuildReview(
-            SomeTask(), SomeProject(), "task/1-slug", cycle: 4, ReviewLens.Adversarial, priorRulings);
+            SomeTask(), SomeProject(), "task/1-slug", cycle: 4, ReviewLens.Adversarial, priorRulings: priorRulings);
 
         prompt.Should().Contain("false positive, confirmed via git log");
         prompt.Should().NotContain("Add rate limiting to auth endpoints", "the objective stays withheld from this lens");

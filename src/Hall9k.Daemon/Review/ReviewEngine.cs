@@ -481,9 +481,15 @@ public sealed class ReviewEngine(
                 context, cycle, lenses, headSha, sinceSha, priorCycleMode, cancellationToken);
         }
 
+        // Discovery and FinalFullPass both read the whole branch diff against the base, whatever
+        // sinceSha holds — only a Verify dispatch reads a delta (see this method's own doc) — so
+        // one packet, assembled once, covers every lens this cycle dispatches rather than one
+        // `git diff` per lens.
+        ReviewPacket? packet = await ReviewPacketAssembler.AssembleAsync(
+            context.Run.WorktreePath, context.Project.BaseBranch, sinceSha: null, cancellationToken);
         foreach (ReviewLens lens in lenses)
         {
-            if (!await DispatchReviewPassAsync(context, cycle, lens, mode, headSha, cancellationToken))
+            if (!await DispatchReviewPassAsync(context, cycle, lens, mode, headSha, packet, cancellationToken))
             {
                 return false;
             }
@@ -500,7 +506,7 @@ public sealed class ReviewEngine(
     /// once-per-iteration check, which this same cycle can outlive across several lenses.
     /// </summary>
     private async Task<bool> DispatchReviewPassAsync(
-        ReviewContext context, int cycle, ReviewLens lens, ReviewMode mode, string? headSha,
+        ReviewContext context, int cycle, ReviewLens lens, ReviewMode mode, string? headSha, ReviewPacket? packet,
         CancellationToken cancellationToken)
     {
         if (!await EnsureCurrentGenerationAsync(context, cancellationToken))
@@ -513,7 +519,7 @@ public sealed class ReviewEngine(
         // (task: review cycles after the first) — the mandatory final pass is discovery-grade
         // rigor at a later cycle number, not a different prompt.
         string prompt = AgentPromptBuilder.BuildReview(
-            context.Task, context.Project, context.Run.Branch, cycle, lens, context.PriorRulings);
+            context.Task, context.Project, context.Run.Branch, cycle, lens, packet, context.PriorRulings);
         ExecutorMode executorMode = context.Run.ExecutorMode;
         // Every lens is review work, so they resolve the same role in the chain (log #33) —
         // and each dispatch records the model it actually got, per pass.
@@ -568,11 +574,16 @@ public sealed class ReviewEngine(
             RunPaths.ReviewFindingsFile(runDirectory, previousCycle), cancellationToken);
         string priorFixPosition = await ReadIfExistsAsync(
             RunPaths.ReviewFixPositionFile(runDirectory, previousCycle), cancellationToken);
+        // sinceSha is the prior cycle's own tip, exactly the delta boundary the packet's diff
+        // should read from too; null falls back to the whole base-branch diff, the same fallback
+        // this pass's own prompt text already states (BuildReviewVerify's "since" instruction).
+        ReviewPacket? packet = await ReviewPacketAssembler.AssembleAsync(
+            context.Run.WorktreePath, context.Project.BaseBranch, sinceSha, cancellationToken);
 
         Guid sessionId = DomainId.New();
         string prompt = AgentPromptBuilder.BuildReviewVerify(
             context.Task, context.Project, context.Run.Branch, cycle, tracks, priorFindings, priorFixPosition,
-            sinceSha, priorCycleMode, context.PriorRulings);
+            sinceSha, priorCycleMode, packet, context.PriorRulings);
         ExecutorMode executorMode = context.Run.ExecutorMode;
         AgentModel model = _options.ResolveModel(AgentRole.Review, context.Task.Model, context.Project.Model);
         SpawnedAgent agent = await executor.SpawnAsync(new AgentSpawnRequest(
@@ -977,7 +988,11 @@ public sealed class ReviewEngine(
         await using IDocumentSession session = store.LightweightSession();
         session.Events.Append(runId, result.ToTokensRecorded(runId, now));
         session.Events.Append(runId, new ReviewPassCompleted(
-            runId, cycle, pass.Lens, verdict, now, [.. findings.Select(finding => finding.ToRecord())], run.CurrentCycleMode));
+            runId, cycle, pass.Lens, verdict, now, [.. findings.Select(finding => finding.ToRecord())],
+            run.CurrentCycleMode, result.Turns, result.TotalInputTokens));
+        logger.LogInformation(
+            "Run {RunId}: {Lens} pass completed (cycle {Cycle}, verdict {Verdict}, turns {Turns}, input tokens {InputTokens})",
+            runId, LensLabel(pass.Lens), cycle, verdict.Value, result.Turns, result.TotalInputTokens);
         if (cycleConcluded)
         {
             // A cycle that dispatches its own fix session already sweeps up every concluding

@@ -28,7 +28,19 @@ public sealed class StreamJsonParserTests
         result.CacheCreationInputTokens.Should().Be(196_080, "cache writes price differently again, so they stay separate");
         result.OutputTokens.Should().Be(80_515);
         result.TotalInputTokens.Should().Be(8_436_140);
+        result.Turns.Should().Be(75, "num_turns is top-level on the result payload, not under usage");
         result.Summary.Should().Be("The work is complete.");
+    }
+
+    [Fact]
+    public void A_result_with_no_num_turns_field_records_zero_rather_than_a_guess()
+    {
+        const string turnless =
+            """{"type":"result","subtype":"success","is_error":false,"usage":{"input_tokens":10,"output_tokens":5}}""";
+
+        StreamJsonParser.TryParseResult(turnless, out AgentResult result).Should().BeTrue();
+
+        result.Turns.Should().Be(0);
     }
 
     [Fact]

@@ -19,6 +19,14 @@ namespace Hall9k.Domain.Features.Run.Events;
 /// list on a clean pass, which is a different fact and is recorded as one.
 /// </para>
 /// <para>Mode is which shape the cycle this pass belongs to took; null reads as <see cref="ReviewMode.Discovery"/>.</para>
+/// <para>
+/// Turns and InputTokens are the pass's own session cost (task: a dispatched review session
+/// starts with the diff already assembled) — claude's own `num_turns` count and every input
+/// token the session was billed for, cache reads and writes included. Recorded here, per pass,
+/// rather than left to a correlated <see cref="TokensRecorded"/> lookup, so a before-versus-after
+/// comparison of the packet-assembly change is one query over this event rather than a join.
+/// Null on a stream written before either field existed.
+/// </para>
 /// </summary>
 public sealed record ReviewPassCompleted(
     Guid Id,
@@ -27,4 +35,6 @@ public sealed record ReviewPassCompleted(
     ReviewVerdict Verdict,
     DateTimeOffset CompletedAt,
     IReadOnlyList<ReviewFindingRecord>? Findings = null,
-    ReviewMode? Mode = null);
+    ReviewMode? Mode = null,
+    int? Turns = null,
+    long? InputTokens = null);
