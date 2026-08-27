@@ -504,6 +504,33 @@ public sealed class AgentPromptBuilderTests : IDisposable
         prompt.Should().NotContain("Requests over the limit get 429");
     }
 
+    /// <summary>
+    /// A packet file whose own content contains a bare three-backtick fence — a markdown file
+    /// documenting a fenced code block, say — must not close the packet's own fence early: doing
+    /// so would let the file's remainder, and every subsequent file's heading, escape into the
+    /// prompt as unquoted text (adversarial and conformance review, cycle 1). The same hazard
+    /// applies to the diff block.
+    /// </summary>
+    [Fact]
+    public void Packet_file_content_containing_a_backtick_fence_does_not_escape_its_own_block()
+    {
+        const string DocContent = "# Doc\n\nExample:\n\n```bash\ndotnet build\n```\n\nMore prose after the fence.\n";
+        ReviewPacket packet = new(
+            "main...HEAD", "diff --git a/DOC.md b/DOC.md\n+```bash\n+dotnet build\n+```\n",
+            ["DOC.md", "Widget.cs"],
+            new Dictionary<string, string> { ["DOC.md"] = DocContent, ["Widget.cs"] = "class Widget { }\n" },
+            Degraded: false);
+
+        string prompt = AgentPromptBuilder.BuildReview(
+            SomeTask(), SomeProject(), "task/1-slug", cycle: 1, ReviewLens.Conformance, packet);
+
+        prompt.Should().Contain("````diff", "the diff itself embeds a triple-backtick fence and needs a longer one too");
+        prompt.Should().Contain("````markdown", "the fence must run longer than the content's own triple backticks");
+        prompt.Should().Contain("More prose after the fence.");
+        prompt.Should().Contain("`Widget.cs` (full current text)", "Widget.cs's heading must still read as prompt structure, not quoted content");
+        prompt.Should().Contain("class Widget { }");
+    }
+
     /// <summary>A Verify-cycle pass gets the same packet section as any other review pass.</summary>
     [Fact]
     public void Verify_review_prompt_with_a_packet_carries_the_packet_section_too()
