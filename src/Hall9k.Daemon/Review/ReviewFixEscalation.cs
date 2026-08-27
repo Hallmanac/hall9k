@@ -83,16 +83,18 @@ public static class ReviewFixEscalation
     /// whole path-and-anchor token in <paramref name="text"/>, never a fragment of a longer one.
     /// The right side rejects a following digit, so a shorter line number in
     /// <paramref name="location"/> cannot match as a prefix of a longer, unrelated one
-    /// (<c>src/Auth.cs:4</c> must not match inside <c>src/Auth.cs:42</c>), and rejects a following
-    /// <c>:</c>-then-digit, so a bare file with no stated line cannot match a more specific
-    /// <c>file:line</c> naming a different place (<c>src/Foo.cs</c> must not match inside
-    /// <c>src/Foo.cs:120</c> — <see cref="ReviewFindingLocations.SamePlace"/> already refuses that
-    /// pair). Only a digit — never <c>.</c>, <c>_</c> or <c>-</c> — closes off the right side:
-    /// every candidate here already passed <see cref="ReviewFindingLocations.HasAnchor"/>, so it
-    /// always ends in the anchor's own line-number digits, and a human's sentence ending right
-    /// after it (<c>"fix src/Auth.cs:42."</c>) is a match, not a rejected fragment. The left side
-    /// rejects a preceding path character, so <paramref name="location"/> cannot match as the tail
-    /// of a longer, unrelated filename (<c>Engine.cs:512</c> must not match inside
+    /// (<c>src/Auth.cs:4</c> must not match inside <c>src/Auth.cs:42</c>). It also rejects a
+    /// following <c>:</c>-then-digit or <c>-</c>-then-digit, so a single stated line cannot match
+    /// as a prefix of a more specific anchor naming a different place — a line-and-column
+    /// (<c>src/Foo.cs:12</c> must not match inside <c>src/Foo.cs:12:34</c>) or a range
+    /// (<c>src/Foo.cs:40</c> must not match inside <c>src/Foo.cs:40-52</c>) —
+    /// <see cref="ReviewFindingLocations.SamePlace"/> already refuses both pairs. Only a digit —
+    /// never <c>.</c>, <c>_</c> or a bare <c>-</c> — closes off the right side: every candidate
+    /// here already passed <see cref="ReviewFindingLocations.HasAnchor"/>, so it always ends in
+    /// the anchor's own digits, and a human's sentence ending right after it
+    /// (<c>"fix src/Auth.cs:42."</c>) is a match, not a rejected fragment. The left side rejects a
+    /// preceding path character, so <paramref name="location"/> cannot match as the tail of a
+    /// longer, unrelated filename (<c>Engine.cs:512</c> must not match inside
     /// <c>ReviewEngine.cs:512</c> — those are different places by the same rule).
     /// </summary>
     private static bool ContainsLocation(string text, string location)
@@ -124,7 +126,7 @@ public static class ReviewFixEscalation
             return true;
         }
 
-        if (text[matchEnd] == ':' && matchEnd + 1 < text.Length && char.IsAsciiDigit(text[matchEnd + 1]))
+        if (text[matchEnd] is ':' or '-' && matchEnd + 1 < text.Length && char.IsAsciiDigit(text[matchEnd + 1]))
         {
             return false;
         }

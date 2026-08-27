@@ -115,6 +115,17 @@ public sealed class ReviewFixEscalationTests
     }
 
     [Fact]
+    public void A_human_reason_naming_a_range_starting_at_the_previous_locations_line_does_not_escalate()
+    {
+        ReviewFixEscalation.Reason(
+            ["src/Foo.cs:40"], [], "the race at src/Foo.cs:40-52 is a different problem, fix that one")
+            .Should().BeNull(
+                "src/Foo.cs:40-52 is a range, a different place than src/Foo.cs:40 per " +
+                "ReviewFindingLocations.SamePlace — an unbounded substring match would wrongly treat " +
+                "the single line as a prefix match of the range");
+    }
+
+    [Fact]
     public void A_human_reason_naming_only_the_bare_filename_a_previous_round_named_with_no_line_does_not_escalate()
     {
         ReviewFixEscalation.Reason(
