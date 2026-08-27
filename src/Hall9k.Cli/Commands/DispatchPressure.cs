@@ -11,9 +11,11 @@ namespace Hall9k.Cli.Commands;
 /// the pane then says nothing about slots rather than inventing a number.
 /// <para>
 /// Runs, because a slot is what a queued task is waiting for. The setting behind the number is
-/// denominated in agent sessions and a run reserves one per review lens, so the conversion is
-/// the daemon's and is published already done: the section heading names the lever in its own
-/// unit, and no CLI surface has to know how many processes a run tree is worth.
+/// denominated in agent sessions and a run's review occupancy varies by cycle mode (one per
+/// review lens on discovery and final-full-pass cycles, one total on the verify cycles between
+/// them), so the conversion is the daemon's and is published already done: the section heading
+/// names the lever in its own unit, and no CLI surface has to know how many processes a run
+/// tree is worth.
 /// </para>
 /// </summary>
 internal sealed record DispatchPressure(int LiveRuns, int MaxConcurrentRuns)

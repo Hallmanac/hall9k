@@ -867,10 +867,10 @@ public static class AgentPromptBuilder
         prompt.AppendLine();
         prompt.AppendLine("You are an independent reviewer with fresh context, brought in to verify a fix rather");
         prompt.AppendLine(priorCycleMode == ReviewMode.Verify
-            ? "than discover a diff from scratch. One earlier reviewer already stood in for both lenses over"
+            ? "than discover a diff from scratch. One earlier reviewer already verified the standing findings"
             : "than discover a diff from scratch. Two earlier reviewers already read this branch in");
         prompt.AppendLine(priorCycleMode == ReviewMode.Verify
-            ? "a delta since discovery and reported the findings below; a fix session already acted on them."
+            ? "over a delta since discovery and reported the findings below; a fix session already acted on them."
             : "full and reported the findings below; a fix session already acted on them.");
         prompt.AppendLine("Your job is to confirm each fix actually landed and to check its blast radius — whether it");
         prompt.AppendLine("touched a caller, a test, or a nearby invariant the original finding never mentioned —");

@@ -75,8 +75,9 @@ public sealed class StatusCommand : Hall9kAsyncCommand<StatusCommand.Settings>
             listed += Section(rows, AttentionBucket.Queued, "queued",
                 "[blue]Queued[/] [dim]— the node is at its concurrency ceiling; each of these starts as a "
                 + "run finishes. Run[/] h9k config set --max-concurrent-agent-sessions <n> [dim]and restart the "
-                + "daemon to run more at once — it is counted in agent sessions, and a run under review holds "
-                + "one per review lens[/]", now, inServiceOrder: true);
+                + "daemon to run more at once — it is counted in agent sessions: a run's discovery and final "
+                + "review cycles hold one per review lens, and the verify cycles between them hold one total[/]",
+                now, inServiceOrder: true);
         }
 
         // Blocked work is neither running nor waiting on you, but the wait has a cause worth

@@ -2134,8 +2134,11 @@ public sealed class ReviewEngine(
             Task<string> standardOutput = process.StandardOutput.ReadToEndAsync(cancellationToken);
             Task<string> standardError = process.StandardError.ReadToEndAsync(cancellationToken);
             await process.WaitForExitAsync(cancellationToken);
+            // Both awaited deterministically before the exit code decides anything, so neither
+            // stream's task is ever left unobserved on the failure path.
+            string output = await standardOutput;
             await standardError;
-            return process.ExitCode == 0 ? (await standardOutput).Trim() : null;
+            return process.ExitCode == 0 ? output.Trim() : null;
         }
         catch (Exception exception) when (exception is not OperationCanceledException)
         {
@@ -2211,13 +2214,25 @@ public sealed class ReviewEngine(
     /// returning high-severity findings" in that case steers them to restart correct work over
     /// a defect nobody ever graded, so the reason says which of the two it observed.
     /// </para>
+    /// <para>
+    /// <c>pass.Lens.Covers(Adversarial)</c> alone is not enough to say a finding is this track's:
+    /// a <see cref="ReviewMode.Verify"/> pass's single reviewer covers both tracks, so its
+    /// findings need the same per-finding attribution <c>SplitForTrack</c> and <c>SettleAsync</c>
+    /// already apply — the finding's own <c>track=</c> tag when it names one, otherwise counted
+    /// against Adversarial conservatively (independent pre-PR review, cycle 2: this used to credit
+    /// a Verify pass's conformance-tagged findings to the adversarial track's cap-park reason).
+    /// </para>
     /// </summary>
     private static string AdversarialCapReason(RunAggregate run, int cycles)
     {
         List<ReviewFindingRecord> owed = [.. run.CompletedReviewPasses
             .Where(pass => pass.Lens.Covers(ReviewLens.Adversarial))
             .SelectMany(pass => pass.Findings)
-            .Where(finding => finding.Disposition == ReviewFindingDisposition.Fix)];
+            .Where(finding => finding.Disposition == ReviewFindingDisposition.Fix)
+            .Where(finding =>
+                finding.Track is null
+                || finding.Track == ReviewLens.Adversarial
+                || !run.ActiveReviewLenses.Contains(finding.Track))];
         int high = owed.Count(finding => finding.Severity == ReviewSeverity.High);
         int ungraded = owed.Count(finding => finding.Severity == ReviewSeverity.Unknown);
 

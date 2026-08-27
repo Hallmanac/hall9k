@@ -14,7 +14,8 @@ namespace Hall9k.Domain.Features.Run;
 /// <param name="Track">
 /// Which track a <see cref="ReviewMode.Verify"/> pass's single reviewer said this finding
 /// belongs to (task: review cycles after the first, cycle-3 finding) — carried from
-/// <see cref="Hall9k.Daemon.Review.ReviewFinding.Track"/>'s own `track=` tag onto the stream, so
+/// <c>ReviewFinding.Track</c>'s own `track=` tag onto the stream (the c-tag form, because Domain
+/// references no Hall9k project and a Daemon cref cannot resolve here), so
 /// a still-active track can be force-concluded (<c>ReviewEngine.SettleAsync</c>) crediting the
 /// tag it actually named rather than whichever lens the settling loop happens to iterate first.
 /// Null for every finding a real, single-lens pass produces, and for a Verify pass's finding

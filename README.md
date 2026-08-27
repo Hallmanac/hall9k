@@ -86,8 +86,9 @@ reporting — read them, then the merge is yours → https://github.com/Hallmana
 
 Queued — the node is at its concurrency ceiling; each of these starts as a run
 finishes. Run h9k config set --max-concurrent-agent-sessions <n> and restart the
-daemon to run more at once — it is counted in agent sessions, and a run under
-review holds one per review lens
+daemon to run more at once — it is counted in agent sessions: a run's discovery
+and final review cycles hold one per review lens, and the verify cycles between
+them hold one total
 81d8bca0  Published  hall9k  Brian Hall  The closeout sweep obse…    added 24m
 ago
     ↳ assigned and ready; the dispatcher has not claimed it yet · waiting for a

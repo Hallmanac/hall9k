@@ -354,6 +354,7 @@ ones worth knowing:
 | `Hall9k__MaxComplianceReviewCycles` | 3 | The conformance track's cap |
 | `Hall9k__MaxAdversarialReviewCycles` | 10 | The adversarial track's cap |
 | `Hall9k__AdversarialSeverityGateFromCycle` | 4 | From this cycle, only a `high` re-triggers the adversarial loop |
+| `Hall9k__MaxFinalFullPassRounds` | 3 | The mandatory full-read pass immediately before settle's own cap: how many times it may reawaken a concluded track before parking |
 | `Hall9k__DefaultReviewRerequest` | disabled | Whether closeout asks reviewers for another pass after fixes push |
 | `Hall9k__DefaultModel`, `Hall9k__ModelByRole__*` | | The node's model policy, per role (build, review, fix, synthesis, refinement, publication) |
 
