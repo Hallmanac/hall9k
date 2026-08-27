@@ -11,7 +11,6 @@ using Hall9k.Domain.Features.Tasks.Handlers;
 using Hall9k.Domain.Features.Tasks.Queries;
 using Hall9k.Domain.Infrastructure.Bootstrap;
 using Hall9k.Domain.Shared.Exceptions;
-using JasperFx.Events;
 using Marten;
 using Marten.Events;
 using Spectre.Console;
@@ -143,13 +142,25 @@ public sealed class TaskPublishCommand : Hall9kAsyncCommand<TaskPublishCommand.S
     {
         if (project.BacklogPolicy == BacklogPolicy.Jira)
         {
+            // A task that already has a publication outstanding (h9k task push-to-jira, run by
+            // hand while the task was still a Draft) is already in the state this policy wants —
+            // RequestWorkItemPublication would refuse a second request, and telling the operator
+            // to push it by hand would only point at a command that refuses for the same reason.
+            if (task.PendingPublicationProvider is not null)
+            {
+                AnsiConsole.MarkupLine(
+                    $"[dim]  {project.Name.EscapeMarkup()} tracks its backlog in Jira; task {shortId} "
+                    + "already has a publication request outstanding.[/]");
+                return;
+            }
+
             TaskPushToJiraCommand.AutoRequestOutcome jiraOutcome;
             try
             {
                 jiraOutcome = await TaskPushToJiraCommand.TryAutoRequestAsync(
                     store, taskId, ownerId, cancellationToken);
             }
-            catch (DomainException exception)
+            catch (Exception exception) when (exception is not OperationCanceledException)
             {
                 AnsiConsole.MarkupLine(
                     $"[yellow]  Note:[/] [dim]{project.Name.EscapeMarkup()} tracks its backlog in Jira, but "
@@ -194,7 +205,7 @@ public sealed class TaskPublishCommand : Hall9kAsyncCommand<TaskPublishCommand.S
                 + $"{shortId} <issue>");
             return;
         }
-        catch (DomainException exception)
+        catch (Exception exception) when (exception is not OperationCanceledException)
         {
             AnsiConsole.MarkupLine(
                 $"[yellow]  Note:[/] [dim]{project.Name.EscapeMarkup()} tracks its backlog in GitHub issues, "
@@ -210,7 +221,7 @@ public sealed class TaskPublishCommand : Hall9kAsyncCommand<TaskPublishCommand.S
             outcome = await TaskLinkIssueCommand.LinkAsync(session, taskId, issue, ownerId, cancellationToken);
             await session.SaveChangesAsync(cancellationToken);
         }
-        catch (Exception exception) when (exception is DomainException or EventStreamUnexpectedMaxEventIdException)
+        catch (Exception exception) when (exception is not OperationCanceledException)
         {
             AnsiConsole.MarkupLine(
                 $"[yellow]  Note:[/] [dim]Created {issue.Reference.ToString().EscapeMarkup()} but could not "
