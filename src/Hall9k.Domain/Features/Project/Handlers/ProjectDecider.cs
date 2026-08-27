@@ -59,7 +59,9 @@ public static class ProjectDecider
         Optional<ReviewRerequestPolicy> reviewRerequest = default,
         Optional<JiraProjectKey> jiraProjectKey = default,
         Optional<ProjectHome> homeDirectory = default,
-        Optional<string> repositoryPath = default)
+        Optional<string> repositoryPath = default,
+        Optional<BacklogPolicy> backlogPolicy = default,
+        Optional<string> backlogRoutingGuidance = default)
     {
         if (repositoryPath.HasValue)
         {
@@ -116,6 +118,22 @@ public static class ProjectDecider
                 + "pass after a fix follow-up pushes, Decisions Log #62).");
         }
 
+        // Unknown is not a value here — None is (BacklogPolicy has no separate "no opinion"
+        // level to defer to), so the closed set is exactly the three static instances, checked
+        // the same way CommitStyle and AgentModel are: the value reaches an agent's prompt and,
+        // for github-issues, a `gh` command line, so a policy built some way other than Parse or
+        // FromInput is refused here rather than trusted.
+        if (backlogPolicy.HasValue
+            && backlogPolicy.Value is { } chosenBacklogPolicy
+            && chosenBacklogPolicy != BacklogPolicy.None
+            && chosenBacklogPolicy != BacklogPolicy.GitHubIssues
+            && chosenBacklogPolicy != BacklogPolicy.Jira)
+        {
+            throw new DomainValidationException(
+                $"The backlog policy must be {BacklogPolicy.None}, {BacklogPolicy.GitHubIssues}, "
+                + $"or {BacklogPolicy.Jira} (where a published task's work becomes visible outside Hall9k).");
+        }
+
         return new ProjectSettingsChanged(
             project.Id,
             verifyCommands,
@@ -129,7 +147,9 @@ public static class ProjectDecider
             reviewRerequest,
             jiraProjectKey,
             homeDirectory,
-            repositoryPath);
+            repositoryPath,
+            backlogPolicy,
+            backlogRoutingGuidance);
     }
 
     /// <summary>

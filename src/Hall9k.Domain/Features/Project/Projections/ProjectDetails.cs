@@ -26,6 +26,10 @@ public sealed class ProjectDetails
     public ReviewRerequestPolicy ReviewRerequest { get; set; } = ReviewRerequestPolicy.Unknown;
     /// <summary>The Jira board this project's cards live on; None when nothing is bound (backlog 18).</summary>
     public JiraProjectKey JiraProjectKey { get; set; } = JiraProjectKey.None;
+    /// <summary>Where a published task's work becomes visible outside Hall9k; None is the platform's original behavior.</summary>
+    public BacklogPolicy BacklogPolicy { get; set; } = BacklogPolicy.None;
+    /// <summary>Free-text routing guidance handed verbatim to the Jira agent; a label list for github-issues.</summary>
+    public string? BacklogRoutingGuidance { get; set; }
     /// <summary>
     /// Where this project lives on disk (backlog 47). None for a project registered before homes
     /// existed, or one whose home has not been created on this machine.
@@ -102,6 +106,18 @@ public sealed class ProjectDetailsProjection : SingleStreamProjection<ProjectDet
         if (@event.Data.RepositoryPath.HasValue && @event.Data.RepositoryPath.Value.IsNotBlank())
         {
             view.RepositoryPath = @event.Data.RepositoryPath.Value;
+        }
+
+        if (@event.Data.BacklogPolicy.HasValue)
+        {
+            view.BacklogPolicy = @event.Data.BacklogPolicy.Value ?? BacklogPolicy.None;
+        }
+
+        if (@event.Data.BacklogRoutingGuidance.HasValue)
+        {
+            view.BacklogRoutingGuidance = @event.Data.BacklogRoutingGuidance.Value.IsBlank()
+                ? null
+                : @event.Data.BacklogRoutingGuidance.Value;
         }
 
         view.SettingsChangedAt = @event.Data.ChangedAt;
