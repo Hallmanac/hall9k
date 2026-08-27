@@ -526,7 +526,7 @@ public sealed class VerificationRunnerTests(PostgresFixture postgres) : IClassFi
     /// checked out — with or without a commit of its own past the base. <paramref name="trackedFile"/>,
     /// when given, is committed on the base branch so a test can later overwrite it to produce
     /// a tracked, modified-but-uncommitted file — the shape the real origin incidents were
-    /// (PLAN.md §16 #90), as opposed to a brand-new untracked one.
+    /// (PLAN.md §16 #91), as opposed to a brand-new untracked one.
     /// </summary>
     private async Task InitGitWorktreeAsync(
         bool withTaskCommit, CancellationToken cancellationToken, string? trackedFile = null)
