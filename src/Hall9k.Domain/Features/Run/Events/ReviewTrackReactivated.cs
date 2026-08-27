@@ -15,10 +15,18 @@ namespace Hall9k.Domain.Features.Run.Events;
 /// plan says <c>Continues: true</c>, which needs to be dispatched again rather than concluded.
 /// </para>
 /// <para>
-/// Reawakening does not relax the track's own cycle cap (Decisions Log #63): the cap is measured
-/// against the absolute cycle number and the run's budget base, both untouched by this event, so a
-/// track that had already spent its cycles before it went dormant parks on the very next
-/// <c>FixNeeded</c> check rather than quietly resuming an automatic budget it no longer has.
+/// Reawakening deliberately DOES relax the track's own cycle cap (task: review cycles after the
+/// first, Decisions Log #92, #93 — corrected here after a cycle-3 finding caught this paragraph
+/// stating the opposite of what the code, <c>RunAggregate.TrackBudgetBaseCycle</c>, and this
+/// branch's own test (<c>A_track_the_mandatory_final_pass_reawakens_gets_a_genuine_cycle_to_fix_it</c>)
+/// all actually do): <see cref="RunAggregate.Apply(ReviewTrackReactivated)"/> records this event's
+/// own <see cref="Cycle"/> as the track's new budget base, so its cap is measured from the cycle it
+/// was reawakened at rather than the run's absolute cycle count. Measuring from the absolute count
+/// would park a track the mandatory pass just reawakened on the very next check, before it ever
+/// earns the fix session this event exists to give it a chance at. The mandatory pass's OWN
+/// repetition is bounded separately (<c>DaemonOptions.MaxFinalFullPassRounds</c>, Decisions Log
+/// #93), precisely because this relaxation means the per-track cap alone cannot bound a track the
+/// final pass keeps reawakening.
 /// </para>
 /// </summary>
 public sealed record ReviewTrackReactivated(

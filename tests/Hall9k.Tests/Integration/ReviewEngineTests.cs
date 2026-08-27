@@ -1259,6 +1259,72 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
     }
 
     /// <summary>
+    /// Cycle-3 finding: a track the mandatory final pass keeps reawakening never trips its own
+    /// per-track cap, because <c>RunAggregate.TrackBudgetBaseCycle</c> deliberately measures that
+    /// cap from the cycle it was last reactivated at (the prior test's own scenario). Left alone,
+    /// a fix session that keeps introducing one fresh post-gate finding per pass would let
+    /// FinalFullPass → reactivate → fix → verify recur without end. This scripts exactly that —
+    /// the same fresh medium finding on every mandatory pass — with <c>MaxFinalFullPassRounds</c>
+    /// set low, and asserts the run parks instead of looping a third time.
+    /// </summary>
+    [Fact]
+    public async Task A_track_the_final_pass_keeps_reawakening_parks_once_the_final_pass_round_cap_is_hit()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        using DocumentStore store = NewStore();
+        (Guid taskId, Guid runId, _) = await SeedVerifiedRunAsync(store, cts.Token);
+
+        string freshMedium(string at) =>
+            $"FINDING: severity=medium; scope=in-scope; at={at}\nDefect: the final pass caught a fresh regression.\n\n"
+            + "VERDICT: needs-fixes";
+
+        ScriptedExecutor executor = new(
+            // Cycle 1: conformance clean and dormant; adversarial needs a fix (pre-gate, any
+            // grade forces the next cycle).
+            "Criteria met.\n\nVERDICT: merge-ready",
+            freshMedium("Retry.cs:12"),
+            "Tightened the retry guard.\n\nRESOLUTION: fixed",
+            // Cycle 2: still pre-gate — a second minor issue still forces another cycle.
+            freshMedium("Retry.cs:20"),
+            "Closed the edge case too.\n\nRESOLUTION: fixed",
+            // Cycle 3: clean — adversarial concludes, both tracks now dormant.
+            "Clean now.\n\nVERDICT: merge-ready",
+            // Cycle 4: mandatory final pass, round 1. Post-gate, so the fresh medium concludes
+            // the track right here (the empty terminal case) while still owing its fix.
+            "Criteria still met.\n\nVERDICT: merge-ready",
+            freshMedium("Retry.cs:31"),
+            "Fixed the regression the final pass found.\n\nRESOLUTION: fixed",
+            // Cycle 5: nothing may settle over that fix unread, so the mandatory pass runs
+            // again — round 2 — and finds another fresh post-gate medium, same shape as round 1.
+            "Criteria still met.\n\nVERDICT: merge-ready",
+            freshMedium("Retry.cs:40"),
+            "Fixed that regression too.\n\nRESOLUTION: fixed");
+        // A third round would be owed next — reactivation keeps resetting the track's own cap
+        // (RunAggregate.TrackBudgetBaseCycle), so nothing about ITS cap would ever stop this.
+        // MaxFinalFullPassRounds is the independent bound that does, set to 2 so this test hits
+        // it on the very next round rather than scripting a long, unbounded-looking sequence.
+
+        bool mergeReady = await NewEngine(
+            store, executor, new DaemonOptions { MaxFinalFullPassRounds = 2 })
+            .ReviewAsync(runId, taskId, cts.Token);
+
+        mergeReady.Should().BeFalse(
+            "the mandatory final pass round cap must stop the loop rather than let it recur forever");
+        executor.Spawns.Should().HaveCount(12, "the run parks before a third final-pass round ever dispatches");
+
+        await using IQuerySession query = store.QuerySession();
+        RunDetails run = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
+        run.State.Should().Be(RunState.ReviewParked);
+        run.ReviewCycle.Should().Be(5, "the park happens deciding cycle 6, before it ever dispatches");
+        run.ParkedReason.Should().Contain("mandatory final full review pass has now run 2 time(s)")
+            .And.Contain("h9k review resolve --merge-ready");
+
+        List<object> events = [.. (await query.Events.FetchStreamAsync(runId, token: cts.Token)).Select(e => e.Data)];
+        events.OfType<ReviewDispatched>().Count(e => e.Mode == ReviewMode.FinalFullPass).Should().Be(
+            4, "exactly two final-pass rounds ran (cycles 4 and 5) before the cap parked the third");
+    }
+
+    /// <summary>
     /// Adversarial cycle-2 review finding: a track still saying Continues: true when it hits its
     /// own cycle cap parks the run without ever reaching the concluding branch that turns a
     /// ride-along into a residual (that branch only runs for a plan whose own convergence rule
