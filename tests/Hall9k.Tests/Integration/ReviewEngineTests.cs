@@ -166,26 +166,37 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
             $"{conformanceFinding}\n\nVERDICT: needs-fixes",
             $"{adversarialFinding}\n\nVERDICT: needs-fixes",
             "Reset the limiter window and fenced the task text.\n\nRESOLUTION: fixed",
+            // Cycle 2: both tracks are still active, so this is one Verify pass standing in for
+            // both (task: review cycles after the first) — not two more full passes.
+            "Verified both fixes; nothing new stands.\n\nVERDICT: merge-ready",
+            // Cycle 3: nothing left to review, but the loop has never yet paid for a full-rigor
+            // read of the tip the fix produced, so the mandatory FinalFullPass runs both lenses
+            // fresh before the run may settle.
             "Criteria met.\n\nVERDICT: merge-ready",
             "Hunted again; the boundary holds.\n\nVERDICT: merge-ready");
         bool mergeReady = await NewEngine(store, executor).ReviewAsync(runId, taskId, cts.Token);
 
         mergeReady.Should().BeTrue();
-        executor.Spawns.Should().HaveCount(5, "two passes → one fix → two passes");
+        executor.Spawns.Should().HaveCount(
+            6, "two passes → one fix → one verify pass → the mandatory final full pass (two lenses)");
         executor.Spawns[2].Prompt.Should().Contain(conformanceFinding).And.Contain(adversarialFinding,
             "one fix session addresses both lenses' findings");
         executor.Spawns[2].Prompt.Should().Contain("Conformance lens").And.Contain("Adversarial lens",
             "the fix session still sees which lens produced which finding");
+        executor.Spawns[3].Prompt.Should().Contain("verify the fix", "cycle 2 is a Verify pass, not a rediscovery");
 
         await using IQuerySession query = store.QuerySession();
         RunDetails run = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
-        run.ReviewCycle.Should().Be(2);
+        run.ReviewCycle.Should().Be(3, "the verify cycle and the mandatory final full pass each advance it");
         run.LastReviewVerdict.Should().Be(ReviewVerdict.MergeReady);
 
         List<object> events = [.. (await query.Events.FetchStreamAsync(runId, token: cts.Token)).Select(e => e.Data)];
-        events.OfType<ReviewCompleted>().Should().HaveCount(2, "one merged verdict per cycle, not one per lens");
+        events.OfType<ReviewCompleted>().Should().HaveCount(3, "one merged verdict per cycle, not one per lens");
         events.OfType<ReviewFixDispatched>().Should().HaveCount(1, "one fix session per cycle, however many lenses spoke");
         events.OfType<VerificationPassed>().Should().HaveCount(2, "gates re-ran after the fix");
+        events.OfType<ReviewDispatched>().Select(e => e.Mode).Should().Equal(
+            [ReviewMode.Discovery, ReviewMode.Discovery, ReviewMode.Verify, ReviewMode.FinalFullPass, ReviewMode.FinalFullPass],
+            "the mode each cycle actually ran under is on the stream");
     }
 
     /// <summary>
@@ -207,11 +218,18 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
             "1. `Auth.cs:42` — the limiter never resets.\n\nVERDICT: needs-fixes",
             "Nothing survived verification.\n\nVERDICT: merge-ready",
             "Reset the limiter window.\n\nRESOLUTION: fixed",
-            "Criteria met.\n\nVERDICT: merge-ready");
+            // Cycle 2: only conformance is still active, so it gets one Verify pass rather than
+            // a fresh full-diff dispatch (task: review cycles after the first).
+            "Criteria met.\n\nVERDICT: merge-ready",
+            // Cycle 3: the mandatory final full pass, both lenses fresh — it reawakens the
+            // adversarial track that went dormant at cycle 1 to give it one more look.
+            "Confirmed clean.\n\nVERDICT: merge-ready",
+            "Confirmed clean too.\n\nVERDICT: merge-ready");
         await NewEngine(store, executor).ReviewAsync(runId, taskId, cts.Token);
 
         executor.Spawns.Should().HaveCount(
-            4, "two passes → one fix → the one track still active, since the adversarial track went dormant");
+            6, "two passes → one fix → one verify pass over the surviving track → the mandatory " +
+                "final full pass, which reawakens the dormant adversarial track for one more look");
         List<AgentSpawnRequest> passes = [executor.Spawns[0], executor.Spawns[1]];
 
         passes.Select(SettingsArgument).Should().OnlyHaveUniqueItems(
@@ -247,33 +265,49 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
             + "Defect: the child process is never reaped. Scenario: a failed run leaks a claude process.\n\n"
             + "VERDICT: needs-fixes",
             "Reaped the child on the failure path.\n\nRESOLUTION: fixed",
-            "The lifetime holds now.\n\nVERDICT: merge-ready");
+            // Cycle 2: only the adversarial track is still active, so it gets one Verify pass.
+            "The lifetime holds now.\n\nVERDICT: merge-ready",
+            // Cycle 3: the mandatory final full pass, both lenses fresh — it reawakens the
+            // conformance track that went dormant at cycle 1 for one more look.
+            "Criteria still met.\n\nVERDICT: merge-ready",
+            "The lifetime still holds.\n\nVERDICT: merge-ready");
         bool mergeReady = await NewEngine(store, executor).ReviewAsync(runId, taskId, cts.Token);
 
-        mergeReady.Should().BeTrue("the adversarial track found it, the fix resolved it, and it then went clean");
+        mergeReady.Should().BeTrue("the adversarial track found it, the fix resolved it, and both lenses read clean");
         executor.Spawns.Should().HaveCount(
-            4, "the conformance track concluded at cycle 1 and is never dispatched again");
+            6, "two passes → one fix → one verify pass over the surviving track → the mandatory " +
+                "final full pass, which reawakens the dormant conformance track");
 
         await using IQuerySession query = store.QuerySession();
         List<object> events = [.. (await query.Events.FetchStreamAsync(runId, token: cts.Token)).Select(e => e.Data)];
 
         events.OfType<ReviewDispatched>().Select(e => e.Lens).Should().Equal(
-            [ReviewLens.Conformance, ReviewLens.Adversarial, ReviewLens.Adversarial],
-            "cycle 2 dispatches only the track that is still active");
+            [ReviewLens.Conformance, ReviewLens.Adversarial, ReviewLens.Verify,
+                ReviewLens.Conformance, ReviewLens.Adversarial],
+            "cycle 2 merges into one Verify pass over the surviving track, and the mandatory final "
+                + "full pass reawakens both");
         events.OfType<ReviewPassCompleted>().Select(e => (e.Cycle, e.Lens, e.Verdict)).Should().Equal(
         [
             (1, ReviewLens.Conformance, ReviewVerdict.MergeReady),
             (1, ReviewLens.Adversarial, ReviewVerdict.NeedsFixes),
-            (2, ReviewLens.Adversarial, ReviewVerdict.MergeReady),
+            (2, ReviewLens.Verify, ReviewVerdict.MergeReady),
+            (3, ReviewLens.Conformance, ReviewVerdict.MergeReady),
+            (3, ReviewLens.Adversarial, ReviewVerdict.MergeReady),
         ], "which track found the defect is a fact on the stream, not an impression");
         events.OfType<ReviewTrackConcluded>().Select(e => (e.Lens, e.Cycle, e.Settlement)).Should().Equal(
             [
                 (ReviewLens.Conformance, 1, ReviewSettlement.Clean),
                 (ReviewLens.Adversarial, 2, ReviewSettlement.Clean),
-            ], "each track's own cycle count is where it ended, not where the run did");
+                (ReviewLens.Conformance, 3, ReviewSettlement.Clean),
+                (ReviewLens.Adversarial, 3, ReviewSettlement.Clean),
+            ], "the mandatory final full pass reconfirms both tracks clean at cycle 3, on the record");
         events.OfType<ReviewCompleted>().Select(e => (e.Cycle, e.Verdict)).Should().Equal(
-            [(1, ReviewVerdict.NeedsFixes), (2, ReviewVerdict.MergeReady)],
+            [(1, ReviewVerdict.NeedsFixes), (2, ReviewVerdict.MergeReady), (3, ReviewVerdict.MergeReady)],
             "the cycle's verdict is the merge of the tracks that were live for it");
+        events.OfType<ReviewPassCompleted>().Select(e => e.Mode).Should().Equal(
+            [ReviewMode.Discovery, ReviewMode.Discovery, ReviewMode.Verify,
+                ReviewMode.FinalFullPass, ReviewMode.FinalFullPass],
+            "the mode each pass ran under is on the stream");
     }
 
     /// <summary>
@@ -386,11 +420,17 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
             await session.SaveChangesAsync(cts.Token);
         }
 
+        // This seed never records a ReviewDispatched event, so RunAggregate.ReviewCycle reads 0
+        // even though a cycle-1 fix already ran on the stream — the same "no review pass has ever
+        // actually run" shape a pre-gate dispute resume leaves behind, so the engine's next dispatch
+        // is Discovery over both lenses (task: review cycles after the first), reusing the label
+        // "cycle 1" the seed's own events already used.
         ScriptedExecutor executor = new(
+            // Conformance reads clean again.
+            "Nothing new survived verification.\n\nVERDICT: merge-ready",
             // The next cycle's reviewer reports the untouched legacy line again, and this time
             // the routing succeeds — the retry the failed disposition exists to allow.
-            $"{preExisting}\n\nVERDICT: needs-fixes",
-            "Nothing new survived verification.\n\nVERDICT: merge-ready");
+            $"{preExisting}\n\nVERDICT: needs-fixes");
         bool mergeReady = await NewEngine(store, executor).ReviewAsync(runId, taskId, cts.Token);
 
         mergeReady.Should().BeTrue();
@@ -445,8 +485,13 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
             preExisting,
             $"{preExisting}\n\nVERDICT: needs-fixes",
             "Left the pre-existing one alone; recorded the observation.\n\nRESOLUTION: fixed",
-            "Every acceptance criterion is met now.\n\nVERDICT: merge-ready",
-            "Nothing survived verification.\n\nVERDICT: merge-ready");
+            // Cycle 2: both tracks are still active (the placeholder finding forced conformance
+            // to continue, and the pre-gate rule kept adversarial alive over its own routed
+            // finding), so one Verify pass stands in for both.
+            "Every acceptance criterion is met now, and nothing survived verification.\n\nVERDICT: merge-ready",
+            // Cycle 3: the mandatory final full pass, both lenses fresh.
+            "Confirmed clean.\n\nVERDICT: merge-ready",
+            "Confirmed clean too.\n\nVERDICT: merge-ready");
         bool mergeReady = await NewEngine(store, executor).ReviewAsync(runId, taskId, cts.Token);
 
         mergeReady.Should().BeTrue();
@@ -488,23 +533,33 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
             "FINDING: severity=medium; scope=in-scope; at=Auth.cs:42\nDefect: the limiter never resets.\n\n"
             + "VERDICT: needs-fixes",
             "Reset the limiter.\n\nRESOLUTION: fixed",
+            // Cycle 2: only adversarial is active, so one Verify pass stands in for it. Past the
+            // gate, these mediums are fixed without forcing another cycle of their own — the
+            // track concludes at this same cycle, alongside its own terminal fix.
             "FINDING: severity=medium; scope=in-scope; at=Auth.cs:44\nDefect: the window is off by one.\n\n"
             + "FINDING: severity=low; scope=in-scope; at=Auth.cs:9\nDefect: the name reads badly.\n\n"
             + "VERDICT: needs-fixes",
-            "Narrowed the window and renamed it.\n\nRESOLUTION: fixed");
+            "Narrowed the window and renamed it.\n\nRESOLUTION: fixed",
+            // Cycle 3: nothing is left to review, but this run's every cycle past the first has
+            // been a narrow Verify pass, so the mandatory final full pass runs both lenses fresh
+            // before the run may settle — reawakening the conformance track dormant since cycle 1.
+            "Criteria still met.\n\nVERDICT: merge-ready",
+            "Nothing else survives.\n\nVERDICT: merge-ready");
         bool mergeReady = await NewEngine(
             store, executor, new DaemonOptions { AdversarialSeverityGateFromCycle = 2 })
             .ReviewAsync(runId, taskId, cts.Token);
 
         mergeReady.Should().BeTrue("the gate ended the loop rather than parking a converging run");
         executor.Spawns.Should().HaveCount(
-            5, "two passes, a fix, one more adversarial pass, and the terminal fix — no cycle 3");
+            7, "two passes, a fix, one verify pass, the terminal fix, and the mandatory final full pass");
 
         await using IQuerySession query = store.QuerySession();
         RunDetails run = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
         run.LastReviewVerdict.Should().Be(ReviewVerdict.MergeReady, "the terminal verdict is MergeReady either way");
         run.ReviewSettlement.Should().Be(
-            ReviewSettlement.Settled, "no reviewer read the tip the terminal fix produced");
+            ReviewSettlement.Settled,
+            "the terminal fix shipped unreviewed at the cycle it was made, even though the mandatory "
+                + "final full pass later confirmed the tip clean — the residual records what actually happened");
         run.ReviewResidualsFixed.Should().Be(2, "the medium and the low were fixed but never re-reviewed");
         run.ReviewResidualsRouted.Should().Be(0);
 
@@ -519,7 +574,7 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
             events.FindLastIndex(recorded => recorded is VerificationPassed),
             "the loop settles only after those gates have passed");
         events.OfType<ReviewTrackConcluded>()
-            .Single(track => track.Lens == ReviewLens.Adversarial)
+            .Single(track => track.Lens == ReviewLens.Adversarial && track.Cycle == 2)
             .Residuals.Select(residual => residual.Severity).Should().Equal(
                 [ReviewSeverity.Medium, ReviewSeverity.Low]);
     }
@@ -584,12 +639,17 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
             "FINDING: severity=high; scope=out-of-scope; at=src/Legacy.cs:40\n"
             + "Defect: a pre-existing null dereference.\n\nVERDICT: merge-ready",
             "Guarded the null case.\n\nRESOLUTION: fixed",
-            "Clean now.\n\nVERDICT: merge-ready");
+            // Cycle 2: only the adversarial track is still active, so one Verify pass stands in for it.
+            "Clean now.\n\nVERDICT: merge-ready",
+            // Cycle 3: the mandatory final full pass, both lenses fresh.
+            "Still clean.\n\nVERDICT: merge-ready",
+            "Still clean too.\n\nVERDICT: merge-ready");
         bool mergeReady = await NewEngine(store, executor).ReviewAsync(runId, taskId, cts.Token);
 
         mergeReady.Should().BeTrue();
         executor.Spawns.Should().HaveCount(
-            4, "the lens's own merge-ready line does not excuse the fix its attached finding owes");
+            6, "the lens's own merge-ready line does not excuse the fix its attached finding owes — "
+                + "two passes, one fix, one verify pass, and the mandatory final full pass");
 
         await using IQuerySession query = store.QuerySession();
         List<object> events = [.. (await query.Events.FetchStreamAsync(runId, token: cts.Token)).Select(e => e.Data)];
@@ -630,7 +690,11 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
             + "Defect: the retry duplicates the effect. Scenario: a transient failure charges twice.\n\n"
             + "VERDICT: needs-fixes",
             "Reaped the child.\n\nRESOLUTION: fixed",
-            "Clean now.\n\nVERDICT: merge-ready");
+            // Cycle 2: only the adversarial track is still active, so one Verify pass stands in for it.
+            "Clean now.\n\nVERDICT: merge-ready",
+            // Cycle 3: the mandatory final full pass, both lenses fresh.
+            "Still clean.\n\nVERDICT: merge-ready",
+            "Still clean too.\n\nVERDICT: merge-ready");
         bool mergeReady = await NewEngine(store, executor).ReviewAsync(runId, taskId, cts.Token);
 
         mergeReady.Should().BeTrue();
@@ -734,7 +798,10 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
             "FINDING: severity=medium; scope=out-of-scope; at=Legacy.cs:12\nDefect: pre-existing, and real.\n\n"
             + "VERDICT: needs-fixes",
             "Met the criterion; left the pre-existing one alone.\n\nRESOLUTION: fixed",
-            "Criteria met now.\n\nVERDICT: merge-ready",
+            // Cycle 2: both tracks are still active, so one Verify pass stands in for both.
+            "Criteria met now, and the fix commits carry nothing new.\n\nVERDICT: merge-ready",
+            // Cycle 3: the mandatory final full pass, both lenses fresh.
+            "Criteria still met.\n\nVERDICT: merge-ready",
             "Read the fix commits too; nothing survived verification.\n\nVERDICT: merge-ready");
         bool mergeReady = await NewEngine(store, executor).ReviewAsync(runId, taskId, cts.Token);
 
@@ -746,9 +813,11 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
             [
                 (1, ReviewLens.Conformance),
                 (1, ReviewLens.Adversarial),
-                (2, ReviewLens.Conformance),
-                (2, ReviewLens.Adversarial),
-            ], "the adversarial track had routed, not finished — it still owes the rewritten tip a reading");
+                (2, ReviewLens.Verify),
+                (3, ReviewLens.Conformance),
+                (3, ReviewLens.Adversarial),
+            ], "the adversarial track had routed, not finished — cycle 2 merges into one Verify pass, "
+                + "and the mandatory final full pass reads the rewritten tip fresh");
         events.OfType<ReviewTrackConcluded>().Should().NotContain(
             concluded => concluded.Lens == ReviewLens.Adversarial && concluded.Cycle == 1,
             "a cycle that only routed is not a track's ending before the severity gate applies");
@@ -782,8 +851,13 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
             "FINDING: severity=high; scope=in-scope; at=Spawner.cs:60\nDefect: the child is never reaped.\n\n"
             + $"{preExisting}\n\nVERDICT: needs-fixes",
             "Reaped the child; left the pre-existing one alone.\n\nRESOLUTION: fixed",
-            // Cycle two: the high is gone, and the reviewer reports the untouched legacy line again.
-            $"{preExisting}\n\nVERDICT: needs-fixes");
+            // Cycle 2: the high is gone, only the adversarial track is still active, and the one
+            // Verify pass standing in for it reports the untouched legacy line again.
+            $"{preExisting}\n\nVERDICT: needs-fixes",
+            // Nothing was left to fix, so the run would otherwise settle straight from this
+            // Verify cycle — but the mandatory final full pass runs first.
+            "Nothing new to report.\n\nVERDICT: merge-ready",
+            "The routed line is still someone else's; nothing else stands.\n\nVERDICT: merge-ready");
         bool mergeReady = await NewEngine(store, executor).ReviewAsync(runId, taskId, cts.Token);
 
         mergeReady.Should().BeTrue();
@@ -820,9 +894,15 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
             + "FINDING: severity=medium; scope=out-of-scope; at=src/Legacy.cs:12\nDefect: the retry duplicates.\n\n"
             + "VERDICT: needs-fixes",
             "Reaped the child; left the pre-existing one alone.\n\nRESOLUTION: fixed",
-            // Cycle two: the same untouched line, written the way this reviewer writes paths.
+            // Cycle 2: only the adversarial track is still active, so one Verify pass stands in
+            // for it — the same untouched line, written the way this reviewer writes paths.
             "FINDING: severity=medium; scope=out-of-scope; at=./Legacy.cs:12\nDefect: the retry duplicates.\n\n"
-            + "VERDICT: needs-fixes");
+            + "VERDICT: needs-fixes",
+            // Nothing was left to fix (routing only), so the run would otherwise settle straight
+            // from this cycle — but it was a Verify cycle, so the mandatory final full pass runs
+            // first, reawakening the dormant conformance track.
+            "Nothing new to report.\n\nVERDICT: merge-ready",
+            "The routed line is still someone else's; nothing else stands.\n\nVERDICT: merge-ready");
         bool mergeReady = await NewEngine(store, executor).ReviewAsync(runId, taskId, cts.Token);
 
         mergeReady.Should().BeTrue();
@@ -1360,11 +1440,17 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
             "VERDICT: needs-fixes",
             "On reflection: `Auth.cs:42` — the limiter never resets.\n\nVERDICT: needs-fixes",
             "Reset the limiter.\n\nRESOLUTION: fixed",
-            "Hunted again; the boundary holds.\n\nVERDICT: merge-ready");
+            // Cycle 2: only the adversarial track is still active, so one Verify pass stands in for it.
+            "Hunted again; the boundary holds.\n\nVERDICT: merge-ready",
+            // Cycle 3: the mandatory final full pass, both lenses fresh.
+            "Criteria still met.\n\nVERDICT: merge-ready",
+            "Still holds.\n\nVERDICT: merge-ready");
         bool mergeReady = await NewEngine(store, executor).ReviewAsync(runId, taskId, cts.Token);
 
         mergeReady.Should().BeTrue("the adversarial lens named a real finding on its one re-prompt");
-        executor.Spawns.Should().HaveCount(5, "two passes, one re-prompt, one fix, and the surviving track's final pass");
+        executor.Spawns.Should().HaveCount(
+            7, "two passes, one re-prompt, one fix, one verify pass over the surviving track, "
+                + "and the mandatory final full pass");
         executor.Spawns[2].ResumeSessionId.Should().Be(
             executor.Spawns[1].SessionId, "the re-prompt resumes the adversarial pass, not its clean sibling");
 
@@ -1397,13 +1483,17 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
             "Criteria met.\n\nVERDICT: merge-ready",
             $"{criterion}.\n\nVERDICT: needs-fixes",
             "Reset the limiter.\n\nRESOLUTION: fixed",
-            "Hunted again; the boundary holds.\n\nVERDICT: merge-ready");
+            // Cycle 2: only the adversarial track is still active, so one Verify pass stands in for it.
+            "Hunted again; the boundary holds.\n\nVERDICT: merge-ready",
+            // Cycle 3: the mandatory final full pass, both lenses fresh.
+            "Hunted once more; nothing stands.\n\nVERDICT: merge-ready",
+            "The boundary still holds.\n\nVERDICT: merge-ready");
         bool mergeReady = await NewEngine(store, executor).ReviewAsync(runId, taskId, cts.Token);
 
         mergeReady.Should().BeTrue(
             "the adversarial finding survives its own cycle and the fix session clears it");
-        executor.Spawns.Should().HaveCount(4, "two passes, one fix, and the surviving track's final pass — no " +
-            "re-prompt, because the adversarial pass's finding was never stripped");
+        executor.Spawns.Should().HaveCount(6, "two passes, one fix, one verify pass over the surviving track, "
+            + "and the mandatory final full pass — no re-prompt, because the adversarial pass's finding was never stripped");
 
         await using IQuerySession query = store.QuerySession();
         List<object> events = [.. (await query.Events.FetchStreamAsync(runId, token: cts.Token)).Select(e => e.Data)];
@@ -1455,12 +1545,18 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
 
         ScriptedExecutor executor = new(
             "Fixed as instructed.\n\nRESOLUTION: fixed",
-            "Criteria met.\n\nVERDICT: merge-ready",
-            "Nothing stands.\n\nVERDICT: merge-ready");
+            // Cycle 2: both tracks are still active (this run's first cycle never concluded a
+            // track, since its verdicts were unreadable at the park), so one Verify pass stands
+            // in for both.
+            "Criteria met, and nothing stands.\n\nVERDICT: merge-ready",
+            // Cycle 3: the mandatory final full pass, both lenses fresh.
+            "Criteria still met.\n\nVERDICT: merge-ready",
+            "Still nothing stands.\n\nVERDICT: merge-ready");
         bool mergeReady = await NewEngine(store, executor).ReviewAsync(runId, taskId, cts.Token);
 
         mergeReady.Should().BeTrue();
-        executor.Spawns.Should().HaveCount(3, "fix over the human findings, then a fresh pass per lens");
+        executor.Spawns.Should().HaveCount(
+            4, "fix over the human findings, then one verify pass, then the mandatory final full pass");
         executor.Spawns[0].Prompt.Should().Contain(humanFindings, "the human's reason is the fix session's findings")
             .And.Contain("Human review verdict");
     }
@@ -1491,17 +1587,22 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
 
         ScriptedExecutor executor = new(
             "Fixed as instructed.\n\nRESOLUTION: fixed",
-            "Criteria met.\n\nVERDICT: merge-ready",
-            "Nothing stands.\n\nVERDICT: merge-ready");
+            // Cycle 2: both tracks are still active, so one Verify pass stands in for both.
+            "Criteria met, and nothing stands.\n\nVERDICT: merge-ready",
+            // Cycle 3: the mandatory final full pass, both lenses fresh.
+            "Criteria still met.\n\nVERDICT: merge-ready",
+            "Still nothing stands.\n\nVERDICT: merge-ready");
         bool mergeReady = await NewEngine(store, executor).ReviewAsync(runId, taskId, cts.Token);
 
         mergeReady.Should().BeTrue();
-        executor.Spawns.Should().HaveCount(3, "fix over the human findings, then a fresh pass per lens");
+        executor.Spawns.Should().HaveCount(
+            4, "fix over the human findings, then one verify pass, then the mandatory final full pass");
         executor.Spawns[1].Prompt.Should().Contain("Settled rulings on this task")
             .And.Contain(humanFindings, "the fresh pass sees the human's own resolution, not just the fix session")
             .And.Contain("Cycle 1, resolved", "the ruling names which cycle it was decided at");
         executor.Spawns[2].Prompt.Should().Contain("Settled rulings on this task",
-            "both lenses' fresh passes are told the settled ruling, not just the one that first raised it");
+            "the mandatory final full pass is told the settled ruling too, not just the verify pass "
+                + "that first re-raised it");
     }
 
     /// <summary>
@@ -1670,12 +1771,16 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
             $"{conformanceFinding}\n\nVERDICT: needs-fixes",
             "Nothing of my own.\n\nVERDICT: merge-ready",
             "Reset the limiter.\n\nRESOLUTION: fixed",
-            "Criteria met.\n\nVERDICT: merge-ready");
+            // Cycle 2: only the conformance track is still active, so one Verify pass stands in for it.
+            "Criteria met.\n\nVERDICT: merge-ready",
+            // Cycle 3: the mandatory final full pass, both lenses fresh.
+            "Criteria still met.\n\nVERDICT: merge-ready",
+            "Still nothing of my own.\n\nVERDICT: merge-ready");
         bool mergeReady = await NewEngine(store, executor).ReviewAsync(runId, taskId, cts.Token);
 
         mergeReady.Should().BeTrue();
         executor.Spawns.Should().HaveCount(
-            4, "two passes → one fix → the one track still active, since the adversarial track went dormant");
+            6, "two passes, one fix, one verify pass over the surviving track, and the mandatory final full pass");
         executor.Spawns[2].Prompt.Should().Contain(
             "Fix the verified findings from an independent pre-PR review",
             "an ordinary needs-fixes cycle on a rebase follow-up must still get the review-fix prompt");
@@ -1722,12 +1827,17 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
             $"{conformanceFinding}\n\nVERDICT: needs-fixes",
             "Nothing of my own.\n\nVERDICT: merge-ready",
             "Reset the limiter.\n\nRESOLUTION: fixed",
-            "Criteria met.\n\nVERDICT: merge-ready");
+            // Cycle 2: only the conformance track is still active, so one Verify pass stands in for it.
+            "Criteria met.\n\nVERDICT: merge-ready",
+            // Cycle 3: the mandatory final full pass, both lenses fresh.
+            "Criteria still met.\n\nVERDICT: merge-ready",
+            "Still nothing of my own.\n\nVERDICT: merge-ready");
         bool mergeReady = await NewEngine(store, executor).ReviewAsync(runId, taskId, cts.Token);
 
         mergeReady.Should().BeTrue();
         executor.Spawns.Should().HaveCount(
-            5, "the resumed rebase, two passes → one ordinary fix → the surviving track's final pass");
+            7, "the resumed rebase, two passes, one ordinary fix, one verify pass over the "
+                + "surviving track, and the mandatory final full pass");
         executor.Spawns[3].Prompt.Should().Contain(
             "Fix the verified findings from an independent pre-PR review",
             "an ordinary needs-fixes cycle reached after a resumed rebase dispute must still get the review-fix prompt");
@@ -1760,18 +1870,23 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
             "1. `Auth.cs:42`: limiter never resets.\n\nVERDICT: needs-fixes",
             "Nothing of my own.\n\nVERDICT: merge-ready",
             "Reset the limiter.\n\nRESOLUTION: fixed",
-            "Criteria met.\n\nVERDICT: merge-ready");
+            // Cycle 2: only the conformance track is still active, so one Verify pass stands in for it.
+            "Criteria met.\n\nVERDICT: merge-ready",
+            // Cycle 3: the mandatory final full pass, both lenses fresh.
+            "Criteria still met.\n\nVERDICT: merge-ready",
+            "Still nothing of my own.\n\nVERDICT: merge-ready");
 
         bool mergeReady = await NewEngine(store, executor, options).ReviewAsync(runId, taskId, cts.Token);
 
         mergeReady.Should().BeTrue();
         executor.Spawns.Select(spawn => spawn.Model.Value).Should().Equal(
-            ["sonnet", "sonnet", "haiku", "sonnet"], "each leg resolves the chain for its own role");
+            ["sonnet", "sonnet", "haiku", "sonnet", "sonnet", "sonnet"],
+            "each leg resolves the chain for its own role");
 
         await using IQuerySession query = store.QuerySession();
         List<object> events = [.. (await query.Events.FetchStreamAsync(runId, token: cts.Token)).Select(e => e.Data)];
         events.OfType<ReviewDispatched>().Select(e => e.Model!.Value).Should().Equal(
-            ["sonnet", "sonnet", "sonnet"], "every pass of every cycle records its model");
+            ["sonnet", "sonnet", "sonnet", "sonnet", "sonnet"], "every pass of every cycle records its model");
         events.OfType<ReviewFixDispatched>().Select(e => e.Model!.Value).Should().Equal(["haiku"]);
 
         RunDetails run = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
@@ -1819,16 +1934,21 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
                 + "Defect: a descriptor leaks.\nScenario: descriptors pile up.\n\nVERDICT: needs-fixes",
             // Fix round 3 over src/Other.cs:99 — fresh, not a repeat of round 2's location.
             "Closed the descriptor.\n\nRESOLUTION: fixed",
-            "Fixed for real.\n\nVERDICT: merge-ready");
+            // Cycle 4 (verify, standing in for the surviving conformance track alone) reads clean.
+            "Fixed for real.\n\nVERDICT: merge-ready",
+            // Cycle 5: the mandatory final full pass, both lenses fresh.
+            "Still clean.\n\nVERDICT: merge-ready",
+            "Still nothing of my own.\n\nVERDICT: merge-ready");
 
         bool mergeReady = await NewEngine(store, executor, options).ReviewAsync(runId, taskId, cts.Token);
 
         mergeReady.Should().BeTrue();
         executor.Spawns.Select(spawn => spawn.Model.Value).Should().Equal(
-            ["sonnet", "sonnet", "haiku", "sonnet", "sonnet", "sonnet", "haiku", "sonnet"],
+            ["sonnet", "sonnet", "haiku", "sonnet", "sonnet", "sonnet", "haiku", "sonnet", "sonnet", "sonnet"],
             "fix round 1 (index 2) is a first round, fix round 2 (index 4) repeats round 1's own "
                 + "location and escalates, and fix round 3 (index 6) moves to a fresh defect and "
-                + "de-escalates automatically");
+                + "de-escalates automatically — cycles 4 and 5's own passes are ordinary review work "
+                + "and always resolve the review role");
 
         await using IQuerySession query = store.QuerySession();
         List<object> events = [.. (await query.Events.FetchStreamAsync(runId, token: cts.Token)).Select(e => e.Data)];
@@ -1875,7 +1995,10 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
             "FINDING: severity=high; scope=in-scope; at=src/Auth.cs:42\n"
                 + "Defect: still never resets.\nScenario: still 429s.\n\nVERDICT: needs-fixes",
             "Reset it for real this time.\n\nRESOLUTION: fixed",
-            "Fixed for real.\n\nVERDICT: merge-ready");
+            "Fixed for real.\n\nVERDICT: merge-ready",
+            // The mandatory final full pass, both lenses fresh.
+            "Still clean.\n\nVERDICT: merge-ready",
+            "Still nothing of my own.\n\nVERDICT: merge-ready");
 
         bool mergeReady = await NewEngine(store, executor, options).ReviewAsync(runId, taskId, cts.Token);
 
@@ -1921,7 +2044,11 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
                 + "RESOLUTION: disputed",
             // Fix round 2 — the human's redispatch, still over src/Api.cs:7.
             "Fixed it as originally reported.\n\nRESOLUTION: fixed",
-            "Fixed for real.\n\nVERDICT: merge-ready");
+            // Cycle 2 (verify, standing in for the surviving conformance track alone) reads clean.
+            "Fixed for real.\n\nVERDICT: merge-ready",
+            // Cycle 3: the mandatory final full pass, both lenses fresh.
+            "Still clean.\n\nVERDICT: merge-ready",
+            "Still nothing of my own.\n\nVERDICT: merge-ready");
 
         bool disputedPass = await NewEngine(store, executor, options).ReviewAsync(runId, taskId, cts.Token);
         disputedPass.Should().BeFalse("the disputed finding parks for the human");
@@ -1938,9 +2065,10 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
         mergeReady.Should().BeTrue();
 
         executor.Spawns.Select(spawn => spawn.Model.Value).Should().Equal(
-            ["sonnet", "sonnet", "haiku", "sonnet", "sonnet"],
+            ["sonnet", "sonnet", "haiku", "sonnet", "sonnet", "sonnet", "sonnet"],
             "the disputed round (index 2) never escalates, but the human's own redispatch (index 3) "
-                + "is a fresh round over the same location and escalates");
+                + "is a fresh round over the same location and escalates — cycles 2 and 3's own "
+                + "passes are ordinary review work and always resolve the review role");
 
         await using IQuerySession query = store.QuerySession();
         List<object> events = [.. (await query.Events.FetchStreamAsync(runId, token: cts.Token)).Select(e => e.Data)];
@@ -1982,7 +2110,11 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
                 + "RESOLUTION: disputed",
             // Fix round 2 — the human's redispatch, over a different concern entirely.
             "Added the missing cancellation token.\n\nRESOLUTION: fixed",
-            "Fixed for real.\n\nVERDICT: merge-ready");
+            // Cycle 2 (verify, standing in for the surviving conformance track alone) reads clean.
+            "Fixed for real.\n\nVERDICT: merge-ready",
+            // Cycle 3: the mandatory final full pass, both lenses fresh.
+            "Still clean.\n\nVERDICT: merge-ready",
+            "Still nothing of my own.\n\nVERDICT: merge-ready");
 
         bool disputedPass = await NewEngine(store, executor, options).ReviewAsync(runId, taskId, cts.Token);
         disputedPass.Should().BeFalse("the disputed finding parks for the human");
@@ -2001,10 +2133,11 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
         mergeReady.Should().BeTrue();
 
         executor.Spawns.Select(spawn => spawn.Model.Value).Should().Equal(
-            ["sonnet", "sonnet", "haiku", "haiku", "sonnet"],
+            ["sonnet", "sonnet", "haiku", "haiku", "sonnet", "sonnet", "sonnet"],
             "the human redirected the work to a fresh concern, so the redispatch (index 3) must not "
                 + "escalate even though the disputed round's own location is still in "
-                + "CurrentCycleFixFindingLocations");
+                + "CurrentCycleFixFindingLocations — cycles 2 and 3's own passes are ordinary review "
+                + "work and always resolve the review role");
 
         await using IQuerySession query = store.QuerySession();
         List<object> events = [.. (await query.Events.FetchStreamAsync(runId, token: cts.Token)).Select(e => e.Data)];

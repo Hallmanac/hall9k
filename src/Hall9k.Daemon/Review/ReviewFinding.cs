@@ -12,11 +12,21 @@ namespace Hall9k.Daemon.Review;
 /// <param name="Scope">The reviewer's scope tag; Unknown when it stated none.</param>
 /// <param name="Location">A `path/to/file.cs:123` pointer, or blank when the reviewer gave none.</param>
 /// <param name="Text">The finding block verbatim, header line included.</param>
+/// <param name="Track">
+/// Which track a <see cref="ReviewMode.Verify"/> pass's single reviewer says this finding belongs
+/// to (task: review cycles after the first) — read from the finding's own `track=` tag. Null for
+/// every finding a real, single-lens pass (Discovery or FinalFullPass) produces, where the pass's
+/// own <c>ReviewPassResult.Lens</c> already says which track it is, and null for a Verify pass's
+/// finding that named no track, or an unrecognized one — read as "applies to every still-active
+/// track" (<c>ReviewEngine.PlanCycleAsync</c>'s own conservative default) rather than guessed at,
+/// the same reading an ungraded severity or an untagged scope already gets elsewhere in this file.
+/// </param>
 public sealed record ReviewFinding(
     ReviewSeverity Severity,
     ReviewFindingScope Scope,
     string Location,
-    string Text)
+    string Text,
+    ReviewLens? Track = null)
 {
     /// <summary>
     /// How the loop records what it decided to do with this finding (Decisions Log #63, #87).

@@ -834,6 +834,129 @@ public static class AgentPromptBuilder
             : BuildConformanceReview(task, project, branch, cycle, priorRulings);
 
     /// <summary>
+    /// The one reviewer a <see cref="ReviewMode.Verify"/> cycle dispatches (task: review cycles
+    /// after the first, origin: 576M input tokens in one day re-reading 12k-line diffs with two
+    /// Opus lenses to judge 40-line fixes). Discovery already happened at cycle 1 — every still-
+    /// active track's own findings, from the cycle this cycle is verifying, ride in below — so this
+    /// pass is spec-aware by design: verify each fix actually landed and check its blast radius,
+    /// rather than re-deriving the whole diff from a blank slate. It answers for every track named
+    /// in <paramref name="tracks"/> at once, tagging each finding with which one it belongs to.
+    /// </summary>
+    /// <param name="tracks">The still-active tracks this pass stands in for.</param>
+    /// <param name="priorFindings">The prior cycle's own merged findings document, verbatim.</param>
+    /// <param name="priorFixPosition">The fix session's own closing summary for that cycle, verbatim.</param>
+    /// <param name="sinceSha">
+    /// The worktree HEAD as of the prior cycle's own dispatch, or null when it could not be pinned
+    /// down — in which case the prompt falls back to a full base-branch diff instruction rather than
+    /// guessing at a boundary.
+    /// </param>
+    public static string BuildReviewVerify(
+        TaskDetails task, ProjectDetails project, string branch, int cycle, IReadOnlyList<ReviewLens> tracks,
+        string priorFindings, string priorFixPosition, string? sinceSha,
+        IReadOnlyList<ReviewParkResolution>? priorRulings = null)
+    {
+        StringBuilder prompt = new();
+        prompt.AppendLine("# Independent review: verify the fix, and check what it touched");
+        prompt.AppendLine();
+        prompt.AppendLine("You are an independent reviewer with fresh context, brought in to verify a fix rather");
+        prompt.AppendLine("than discover a diff from scratch. Two earlier reviewers already read this branch in");
+        prompt.AppendLine("full and reported the findings below; a fix session already acted on them. Your job");
+        prompt.AppendLine("is to confirm each fix actually landed and to check its blast radius — whether it");
+        prompt.AppendLine("touched a caller, a test, or a nearby invariant the original finding never mentioned —");
+        prompt.AppendLine("not to re-read the whole branch from the beginning.");
+        prompt.AppendLine();
+        prompt.AppendLine("You are standing in for both review lenses this round: name which track each finding");
+        prompt.AppendLine("you report belongs to (see the tagging rule below), for whichever of these is still");
+        prompt.AppendLine("active on this run:");
+        foreach (ReviewLens track in tracks)
+        {
+            prompt.AppendLine(track == ReviewLens.Adversarial
+                ? "- **adversarial** — is this diff wrong somewhere, regardless of what it was asked to do?"
+                : "- **conformance** — does the diff meet its objective, acceptance criteria, and repo doctrine?");
+        }
+
+        prompt.AppendLine();
+        prompt.AppendLine("## What the diff is supposed to do");
+        prompt.AppendLine();
+        prompt.AppendLine(task.Objective);
+        prompt.AppendLine();
+        prompt.AppendLine("Acceptance criteria:");
+        foreach (string criterion in task.AcceptanceCriteria)
+        {
+            prompt.AppendLine($"- {criterion}");
+        }
+
+        prompt.AppendLine();
+        AppendSettledRulings(prompt, priorRulings);
+        prompt.AppendLine("## The prior cycle's findings");
+        prompt.AppendLine();
+        prompt.AppendLine(priorFindings.IsBlank() ? "(no prior findings recorded)" : priorFindings.Trim());
+        prompt.AppendLine();
+        prompt.AppendLine("## What the fix session did about them");
+        prompt.AppendLine();
+        prompt.AppendLine(priorFixPosition.IsBlank() ? "(no fix session summary recorded)" : priorFixPosition.Trim());
+        prompt.AppendLine();
+        prompt.AppendLine("## How to review");
+        prompt.AppendLine();
+        prompt.AppendLine($"- You are in the implementation's git worktree on branch `{branch}`.");
+        prompt.AppendLine(sinceSha is { } sha
+            ? $"  Read the commits added since the prior cycle: `git log {sha}..HEAD` and `git diff {sha}..HEAD`."
+              + " That range is the fix — and anything else that landed alongside it — you are verifying."
+            : "  The commit the prior cycle's fix landed on could not be pinned down, so read the whole diff "
+              + $"instead: `git diff {project.BaseBranch}...HEAD` (commits: `git log {project.BaseBranch}..HEAD`).");
+        prompt.AppendLine("- For each finding above, confirm the fix actually resolved it. An incomplete or");
+        prompt.AppendLine("  half-applied fix is still needs-fixes — do not credit an attempt for a result.");
+        prompt.AppendLine("- Check the blast radius: a regression the fix itself introduced is exactly what this");
+        prompt.AppendLine("  pass exists to catch, and a narrow re-check of the finding's own line alone would");
+        prompt.AppendLine("  miss it.");
+        prompt.AppendLine("- Report a genuinely new defect too, if these commits reveal one, even unrelated to");
+        prompt.AppendLine("  any finding above — you are not limited to re-checking the list.");
+        prompt.AppendLine("- Report verified findings only. For every suspected defect, read the surrounding");
+        prompt.AppendLine("  code until you can confirm it is real; discard anything you cannot confirm.");
+        prompt.AppendLine("- Do NOT modify files, commit, push, or open pull requests. You are read-only.");
+        prompt.AppendLine("- **Do NOT build, test, or run anything that writes into this worktree.**");
+        AppendReviewGateStatus(prompt, project);
+        AppendFindingContract(prompt, project);
+        AppendVerifyTrackTagContract(prompt, tracks);
+        AppendVerdictContract(prompt, cycle);
+        prompt.AppendLine();
+        prompt.AppendLine("Confirming every fix landed clean and finding nothing new is a real outcome: say so");
+        prompt.AppendLine("plainly and return merge-ready for whichever track(s) you found nothing owed. Inventing");
+        prompt.AppendLine("a finding to look thorough spends a fix session on nothing and teaches everyone to");
+        prompt.AppendLine("discount this pass.");
+
+        return prompt.ToString();
+    }
+
+    /// <summary>
+    /// The `track=` tag a <see cref="BuildReviewVerify"/> pass's finding must carry (task: review
+    /// cycles after the first), on top of the shared severity/scope contract
+    /// <see cref="AppendFindingContract"/> already states: which of the still-active tracks named
+    /// above this finding belongs to. Restating a prior finding's own track (already named in the
+    /// prior findings document handed to this pass) is the easy case; a genuinely new finding this
+    /// pass discovers on its own needs a considered tag the same way its severity and scope do.
+    /// </summary>
+    private static void AppendVerifyTrackTagContract(StringBuilder prompt, IReadOnlyList<ReviewLens> tracks)
+    {
+        prompt.AppendLine();
+        prompt.AppendLine("**track** — one more tag on every finding's header line, naming which review lens it");
+        prompt.AppendLine("belongs to:");
+        prompt.AppendLine();
+        prompt.AppendLine(
+            $"    {ReviewResultParser.FindingMarker} severity=high; scope=in-scope; track=conformance; " +
+            $"at={ReviewResultParser.ExampleLocationPlaceholder}");
+        prompt.AppendLine();
+        prompt.AppendLine("Use `track=conformance` or `track=adversarial` exactly. For a finding that reconfirms");
+        prompt.AppendLine("or disputes a fix from the prior cycle's findings above, restate whichever track that");
+        prompt.AppendLine("finding was already reported under. For a genuinely new finding — one the prior");
+        prompt.AppendLine("findings never named — tag it by which question it answers: conformance if it is");
+        prompt.AppendLine("about meeting the objective, the acceptance criteria, or repo doctrine; adversarial if");
+        prompt.AppendLine("it is a defect regardless of what the work was asked to do. Leave the tag off only if");
+        prompt.AppendLine("you genuinely cannot tell — the platform then counts the finding against every still-");
+        prompt.AppendLine("active track rather than dropping it.");
+    }
+
+    /// <summary>
     /// The conformance lens: does the diff do what the task said it would? The objective and
     /// the acceptance criteria are the measuring stick, and repo doctrine (AGENTS.md and the
     /// documents it points at) is the rest of it.
