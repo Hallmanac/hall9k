@@ -277,11 +277,12 @@ public sealed class ProcessManagerParityTests : IDisposable
     }
 
     /// <summary>
-    /// The child on both platforms owns this file's write handle directly (log #2 above),
-    /// so this can observe it mid-write: on Windows that is a sharing-violation IOException,
-    /// not a missing or empty file. That is "not ready yet", the same as the file not
-    /// existing yet, so it is retried by the caller's poll loop rather than failing the test
-    /// on a race that has nothing to do with what the test is actually proving.
+    /// The child on both platforms owns whichever file this reads — its redirected stdout
+    /// (log #2 above) or its own pid file — with a held write handle, so this can observe
+    /// it mid-write: on Windows that is a sharing-violation IOException, not a missing or
+    /// empty file. That is "not ready yet", the same as the file not existing yet, so it is
+    /// retried by the caller's poll loop rather than failing the test on a race that has
+    /// nothing to do with what the test is actually proving.
     /// </summary>
     private static async Task<string?> TryReadAllTextAsync(string filePath)
     {
