@@ -412,15 +412,19 @@ legible from the run's own history too.
 
 **Display composition** (`h9k status`, log #66 and §2.4): everything here reads as
 **Delivered** until a merge is observed, and the current run's state composes the phase line
-beneath it - the post-PR review watcher's own four readings of Copilot (log #90): "watching
+beneath it - the post-PR review watcher's own five readings of Copilot (log #90): "watching
 PR #24 — Copilot review landed" with its comment-thread count, "watching PR #24 — awaiting
 Copilot review · requested but not yet submitted", "watching PR #24 — Copilot reviewed an
 earlier commit" with the same thread count and its own stale-review hedge (a real review that
 happened, just against a since-superseded commit, distinct from nothing having happened at
-all), or plain "watching PR #24" with "no external review activity observed; its checks may
-still be reporting" while the provider's CI picture is still incomplete, and "watching PR #24 —
-awaiting human review" once it is not - plus the failing checks or the unresolved thread count
-when those are what is observed instead, and "automatic follow-ups stopped" when parked. The
+all), plain "watching PR #24" with "no external review activity observed; its checks may
+still be reporting" while the provider's CI picture is still incomplete, "watching PR #24 —
+awaiting human review" once it is not, or plain "watching PR #24" with "no confirmed review
+observation recorded; its checks may still be reporting" when no sweep has confirmed review
+activity at all — either because none has run yet, or because a sweep read a real Copilot
+review it could not compare against the head commit - plus the
+failing checks or the unresolved thread count when those are what is observed instead, and
+"automatic follow-ups stopped" when parked. The
 quiet-checks-pending reading never claims a clean pull request or names the human as the last
 gate, because the monitor does not act on checks or review
 threads while CI is still reporting — it still records what it saw of Copilot's review state that
@@ -584,7 +588,8 @@ gone. A phase never claims a session is doing something without observing the pr
 a session on another node, or one whose start time was never recorded, reads as "liveness not
 observed here" rather than as either answer. The two meanings of the old `ClosingOut` separate here
 - "follow-up on PR #24: building, session alive" against "watching PR #24 — Copilot review landed"
-(or awaiting Copilot, or plain "watching PR #24" when nothing has been observed yet, log #90) -
+(or awaiting Copilot, or plain "watching PR #24" when no review activity is confirmed yet -
+either nothing has run, or a sweep read a review it could not classify, log #90) -
 so "is it my turn?" never needs a log dive.
 
 **Attention** is `AttentionComposer`, the single owner of the mapping from recorded facts to a

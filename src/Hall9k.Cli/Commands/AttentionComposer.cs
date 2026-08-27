@@ -226,14 +226,14 @@ internal static class AttentionComposer
             $"Copilot reviewed an earlier commit and the review is stale ({StaleThreadCountText(run)}) "
             + "— read its checks, then the merge is yours",
             run.PullRequestUrl ?? string.Empty),
-        // "None" and Unknown both mean no external review activity has been observed, which is
-        // not the same as a clean pull request: the closeout monitor records this observation
-        // ahead of its own checks read, so a run whose CI is still running reads identically to
-        // one that is genuinely idle. The cause says what is actually recorded — nothing — and
-        // sends the reader to the pull request's own checks rather than handing them an all-clear
-        // nobody made.
+        // "None" is a sweep that looked and found nothing; Unknown is either no sweep at all or
+        // a sweep that read a Copilot review it could not compare against the head commit — in
+        // neither Unknown case is there confirmed review activity to report, so the cause must
+        // not claim "nothing recorded" (that would be false when a review was seen but not
+        // classifiable) or hand out the all-clear "None" itself refuses to make. It sends the
+        // reader to the pull request's own checks either way.
         _ => new TaskAttention(AttentionLevel.NeedsYou,
-            "nothing has been recorded against this pull request yet — read its checks, then the merge is yours",
+            "no confirmed review activity recorded — read its checks, then the merge is yours",
             run.PullRequestUrl ?? string.Empty),
     };
 

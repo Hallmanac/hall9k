@@ -68,10 +68,12 @@ public sealed class RunDetails
     public string? ErroredReviewUrl { get; set; }
     /// <summary>
     /// The post-PR review watcher's latest read of Copilot's review state (Landed,
-    /// RequestedPending, None) — what the Delivered phase line names as "awaiting Copilot
-    /// review", "Copilot review landed", or "awaiting human review". Unknown for a run
-    /// recorded before this observation existed, which the phase reads as no different from
-    /// a quiet pull request.
+    /// RequestedPending, Stale, None, or Unknown) — what the Delivered phase line names as
+    /// "awaiting Copilot review", "Copilot review landed", "Copilot reviewed an earlier
+    /// commit", or "awaiting human review". Unknown covers a run recorded before this
+    /// observation existed, a sweep that has not landed yet, and a sweep that read a Copilot
+    /// review it could not compare against the head commit — none of which the phase treats
+    /// as different from a quiet pull request.
     /// </summary>
     public ExternalReviewState ExternalReviewState { get; set; } = ExternalReviewState.Unknown;
     /// <summary>Every review thread Copilot's review opened, resolved or not, as of the last observation.</summary>
