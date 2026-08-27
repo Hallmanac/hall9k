@@ -31,10 +31,11 @@ namespace Hall9k.Daemon.Closeout;
 /// (a rate limit, a network blip, an outage), since that is the one remote call each inspection
 /// makes. It is not itself a retry signal here — the run stays in the watch set and the very
 /// next sweep tries it again regardless of what this count says. <see cref="PullRequestMonitor"/>
-/// reads it alongside <paramref name="RunsInspected"/> and <paramref name="Skipped"/>
-/// (<c>IsSweepFailure</c>) to widen its own poll interval only when EVERY run this sweep looked
-/// at failed (independent pre-PR review, cycle 4) — a lone permanently-broken pull request must
-/// not pin the interval at the ceiling and delay every other healthy one this node also watches.
+/// reads it alongside <paramref name="RunsInspected"/> (<c>IsSweepFailure</c>) to widen its own
+/// poll interval only when EVERY run this sweep looked at failed (independent pre-PR review,
+/// cycle 4) — a lone permanently-broken pull request must not pin the interval at the ceiling
+/// and delay every other healthy one this node also watches. <paramref name="Skipped"/> plays no
+/// part in that check; see its own doc for why.
 /// </param>
 /// <param name="Skipped">
 /// How many watched or orphaned runs this sweep passed over without ever calling <c>gh</c> — a
@@ -46,10 +47,11 @@ namespace Hall9k.Daemon.Closeout;
 /// genuine failure would read as "every attempted inspection failed" despite the one successful
 /// read proving <c>gh</c> itself was healthy. A skip says nothing about whether <c>gh</c> is
 /// healthy, but it is not gh trouble either, so <c>IsSweepFailure</c> (independent pre-PR review,
-/// cycle 5) must not count it as evidence that every attempted inspection failed: a sweep
-/// containing only a broken pull request and otherwise-skipped ones — a Done task reopened and
-/// then unassigned sits in the watch set returning Skipped forever — pinned the interval at the
-/// ceiling even though nothing else in the watch set was ever gh's fault.
+/// cycle 5) deliberately excludes it from both sides of the check rather than reading it as
+/// evidence either way: a sweep containing only a broken pull request and otherwise-skipped
+/// ones — a Done task reopened and then unassigned sits in the watch set returning Skipped
+/// forever — pins the interval at the ceiling on the strength of the one real failure alone,
+/// with the skips neither adding to nor diluting that verdict.
 /// </param>
 public sealed record CloseoutSweepResult(int RunsInspected, int MergesObserved, int Failures = 0, int Skipped = 0);
 
