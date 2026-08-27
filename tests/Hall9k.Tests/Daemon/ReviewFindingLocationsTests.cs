@@ -55,4 +55,19 @@ public sealed class ReviewFindingLocationsTests
     [InlineData("src/Legacy.cs", "Legacy.cs")]
     public void An_unplaced_finding_matches_nothing(string? left, string? right) =>
         ReviewFindingLocations.SamePlace(left, right).Should().BeFalse();
+
+    [Theory]
+    [InlineData("src/Legacy.cs:40")]
+    [InlineData("src/Legacy.cs:40-52")]
+    [InlineData("Legacy.cs:40")]
+    public void HasAnchor_is_true_for_a_location_that_states_a_line(string location) =>
+        ReviewFindingLocations.HasAnchor(location).Should().BeTrue();
+
+    [Theory]
+    [InlineData("src/Legacy.cs")]
+    [InlineData("")]
+    [InlineData("   ")]
+    [InlineData(null)]
+    public void HasAnchor_is_false_for_a_location_that_names_only_a_file(string? location) =>
+        ReviewFindingLocations.HasAnchor(location).Should().BeFalse();
 }

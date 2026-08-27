@@ -35,11 +35,15 @@ public static class ReviewFixEscalation
     /// (an automated reviewer still finding it), or <paramref name="humanFindings"/> — a human's
     /// <c>h9k review resolve --needs-fixes</c> reason — literally naming one of the previous
     /// round's own locations (a human restating what an automated round already tried and failed
-    /// to clear, most often after a dispute or a capped-track park). The human check is a plain
-    /// substring match rather than anything smarter: this codebase's other free-text "did this
-    /// restate known content" checks (<c>ReviewVerdictValidation</c>) are already a long history
-    /// of narrow, literal vocabulary rather than a semantic read, and the conservative default
-    /// here is a missed restatement, never an invented one.
+    /// to clear, most often after a dispute or a capped-track park). Only a previous location
+    /// that <see cref="ReviewFindingLocations.HasAnchor"/> is a candidate for that scan, the same
+    /// restriction the automated signal above gets for free through <c>SamePlace</c>: a lineless
+    /// location names nowhere, so a human reason that happens to mention its bare file name is
+    /// not evidence of anything being restated. The human check is a plain substring match rather
+    /// than anything smarter: this codebase's other free-text "did this restate known content"
+    /// checks (<c>ReviewVerdictValidation</c>) are already a long history of narrow, literal
+    /// vocabulary rather than a semantic read, and the conservative default here is a missed
+    /// restatement, never an invented one.
     /// </para>
     /// </summary>
     public static string? Reason(
@@ -60,7 +64,9 @@ public static class ReviewFixEscalation
         }
 
         string? restated = humanFindings.IsNotBlank()
-            ? previousLocations.FirstOrDefault(previous => ContainsLocation(humanFindings, previous))
+            ? previousLocations
+                .Where(ReviewFindingLocations.HasAnchor)
+                .FirstOrDefault(previous => ContainsLocation(humanFindings, previous))
             : null;
         return restated is null
             ? null

@@ -46,6 +46,15 @@ public static class ReviewFindingLocations
     }
 
     /// <summary>
+    /// Whether <paramref name="location"/> states a line (or range, or line-and-column) rather
+    /// than naming only a file. Mirrors the anchor check <see cref="SamePlace"/> already applies
+    /// to its left-hand side: a lineless location names nowhere, so a caller scanning for one
+    /// location restating another should not consider it as a candidate to restate.
+    /// </summary>
+    public static bool HasAnchor(string? location) =>
+        location.IsNotBlank() && Split(location).Anchor.Length > 0;
+
+    /// <summary>
     /// A location split into the file it names and the anchor after it — the line, or a range,
     /// or a line and column, kept as the reviewer wrote it. The anchor starts at the first
     /// colon followed by a digit, which is what keeps a Windows drive letter (`C:/src/A.cs:9`)
