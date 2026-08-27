@@ -60,14 +60,25 @@ public sealed class ReviewPacketAssemblerTests : IDisposable
 
     /// <summary>
     /// The task's own acceptance criteria: over the cap, the packet drops file contents rather
-    /// than truncating any one of them silently.
+    /// than truncating any one of them silently. The huge content is already on the merge base
+    /// so the diff itself stays small — it is the file's own current text on disk, not the diff,
+    /// that pushes the packet over its cap; <see cref="Diff_alone_over_the_cap_ships_no_packet"/>
+    /// covers the diff-itself-too-large case.
     /// </summary>
     [Fact]
     public async Task Degrades_to_diff_and_file_list_when_the_packet_would_exceed_its_size_cap()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromSeconds(30));
-        string huge = new('a', (int)ReviewPacketAssembler.MaxPacketBytes + 50_000);
+        // Many lines, not one enormous line: appending a single line below then diffs as a few
+        // bytes rather than replacing the whole huge line, which is what keeps the diff itself
+        // small while the file's current text alone still exceeds the cap.
+        string huge = string.Join('\n', Enumerable.Repeat(new string('a', 40), 9_000)) + "\n";
+        Git(_repositoryPath, "checkout -q main");
         Commit("huge.txt", huge, "add a file bigger than the packet cap");
+        // Rebuilds task/work on top of main's new tip, so the huge content is already on the
+        // merge base and only the small change below shows up in the three-dot diff.
+        Git(_repositoryPath, "checkout -q -B task/work");
+        Commit("huge.txt", huge + "changed\n", "touch the huge file");
 
         ReviewPacket? packet = await ReviewPacketAssembler.AssembleAsync(
             _repositoryPath, "main", sinceSha: null, cts.Token);
@@ -77,6 +88,50 @@ public sealed class ReviewPacketAssemblerTests : IDisposable
         packet.FileContents.Should().BeNull("the platform never truncates a file's content silently");
         packet.TouchedFiles.Should().Contain("huge.txt", "the file list still names what changed");
         packet.Diff.Should().NotBeNullOrEmpty("the diff itself is never dropped, only the full file text");
+    }
+
+    /// <summary>
+    /// The packet's size ceiling bounds the diff itself, not only the touched files' text
+    /// (conformance and adversarial review, cycle 1): a diff that alone exceeds
+    /// <see cref="ReviewPacketAssembler.MaxPacketBytes"/> ships no packet at all rather than
+    /// embedding it whole, so the caller falls back to the reviewer's own `git diff`.
+    /// </summary>
+    [Fact]
+    public async Task Diff_alone_over_the_cap_ships_no_packet()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromSeconds(30));
+        string huge = new('a', (int)ReviewPacketAssembler.MaxPacketBytes + 50_000);
+        Commit("huge.txt", huge, "add a file bigger than the packet cap");
+
+        ReviewPacket? packet = await ReviewPacketAssembler.AssembleAsync(
+            _repositoryPath, "main", sinceSha: null, cts.Token);
+
+        packet.Should().BeNull("the diff alone already breaks the packet's own size ceiling");
+    }
+
+    /// <summary>
+    /// A binary touched file is never decoded as UTF-8 just to measure or embed it (adversarial
+    /// review, cycle 1): its content is silently omitted, the same treatment a deleted file's
+    /// missing text already gets, rather than filling the packet with replacement-character
+    /// noise.
+    /// </summary>
+    [Fact]
+    public async Task A_binary_touched_file_is_skipped_rather_than_decoded()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromSeconds(30));
+        byte[] binary = [0x89, 0x50, 0x4E, 0x47, 0x00, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x01, 0x02];
+        File.WriteAllBytes(Path.Combine(_repositoryPath, "asset.png"), binary);
+        Git(_repositoryPath, "add -A");
+        Git(_repositoryPath, "-c user.name=Test -c user.email=test@test commit -q -m \"add binary asset\"");
+
+        ReviewPacket? packet = await ReviewPacketAssembler.AssembleAsync(
+            _repositoryPath, "main", sinceSha: null, cts.Token);
+
+        packet.Should().NotBeNull();
+        packet!.Degraded.Should().BeFalse();
+        packet.TouchedFiles.Should().Contain("asset.png");
+        packet.FileContents.Should().NotBeNull();
+        packet.FileContents!.Should().NotContainKey("asset.png", "a binary file has no meaningful text to embed");
     }
 
     /// <summary>
@@ -102,6 +157,38 @@ public sealed class ReviewPacketAssemblerTests : IDisposable
         packet.Should().NotBeNull();
         packet!.RangeDescription.Should().Be("origin/main...HEAD");
         packet.TouchedFiles.Should().Contain("feature.txt");
+    }
+
+    /// <summary>
+    /// A task worktree shares its local base-branch ref with the project home's `dev/` worktree
+    /// (AGENTS.md), so that ref is routinely stale relative to the task's actual base while
+    /// `origin/{baseBranch}` stays current — the remote-tracking-preferred convention
+    /// <c>VerificationRunner.CountBranchCommitsAsync</c> already follows (conformance review,
+    /// cycle 1). A present-but-stale local ref must not win over a fresher origin one.
+    /// </summary>
+    [Fact]
+    public async Task Prefers_the_origin_ref_over_a_present_but_stale_local_base_branch()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromSeconds(30));
+        string originPath = Path.Combine(_root, "origin.git");
+        Git(_root, $"init -q --bare -b main \"{originPath}\"");
+        Git(_repositoryPath, $"remote add origin \"{originPath}\"");
+        Git(_repositoryPath, "push -q origin main");
+        Commit("feature.txt", "feature\n", "add feature file");
+        // origin/main moves ahead while the local main ref (shared with dev/) stays behind —
+        // the exact staleness AGENTS.md's project-home shape produces in a real task worktree.
+        Git(_repositoryPath, "checkout -q main");
+        Commit("upstream.txt", "upstream\n", "advance main independently");
+        Git(_repositoryPath, "push -q origin main");
+        Git(_repositoryPath, "checkout -q task/work");
+
+        ReviewPacket? packet = await ReviewPacketAssembler.AssembleAsync(
+            _repositoryPath, "main", sinceSha: null, cts.Token);
+
+        packet.Should().NotBeNull();
+        packet!.RangeDescription.Should().Be("origin/main...HEAD");
+        packet.TouchedFiles.Should().Contain("feature.txt");
+        packet.TouchedFiles.Should().NotContain("upstream.txt", "upstream.txt is on origin/main itself, not part of this task's diff");
     }
 
     [Fact]
@@ -142,6 +229,28 @@ public sealed class ReviewPacketAssemblerTests : IDisposable
         packet!.TouchedFiles.Should().Contain("doomed.txt");
         packet.FileContents.Should().NotBeNull();
         packet.FileContents!.Should().NotContainKey("doomed.txt", "there is no current text on disk to embed");
+    }
+
+    /// <summary>
+    /// With `core.quotePath` at its default, git C-quotes a non-ASCII path in `--name-only`
+    /// output; without `-z` the touched-files list would carry the escaped, unopenable literal
+    /// and the file's text would be silently skipped as though it were deleted (conformance
+    /// review, cycle 1). `VerificationRunner.ListUncommittedFilesAsync` already solved this for
+    /// `git status` the same way.
+    /// </summary>
+    [Fact]
+    public async Task A_non_ascii_file_name_is_read_correctly_rather_than_dropped()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromSeconds(30));
+        Commit("café.cs", "class Cafe { }\n", "add café.cs");
+
+        ReviewPacket? packet = await ReviewPacketAssembler.AssembleAsync(
+            _repositoryPath, "main", sinceSha: null, cts.Token);
+
+        packet.Should().NotBeNull();
+        packet!.TouchedFiles.Should().Contain("café.cs");
+        packet.FileContents.Should().NotBeNull();
+        packet.FileContents!["café.cs"].Should().Be("class Cafe { }\n");
     }
 
     [Fact]

@@ -722,8 +722,14 @@ public sealed record ReviewPassCompleted( // ONE lens of the cycle returned its 
     ReviewVerdict Verdict,               //   is a query over the stream, not an impression
     DateTimeOffset CompletedAt,
     IReadOnlyList<ReviewFindingRecord>?  // each finding's grade, scope tag, pointer, and the
-        Findings = null);                //   disposition the loop chose (log #63) — classification
+        Findings = null,                 //   disposition the loop chose (log #63) — classification
                                          //   only, never the text. Null on pre-#63 streams.
+    ReviewMode? Mode = null,             // which shape THIS pass's cycle took; null reads Discovery
+    int? Turns = null,                   // the pass's own session cost (task: a dispatched review
+    long? InputTokens = null);           //   session starts with the diff already assembled) — claude's
+                                         //   num_turns and every billed input token, cache reads and
+                                         //   writes included. Null on streams written before either
+                                         //   field existed.
 public sealed record ReviewCompleted(    // the CYCLE's merged verdict over every lens (log #59),
     Guid Id,                             // appended in the same transaction as the cycle's last
     int Cycle,                           // ReviewPassCompleted. Merged findings artifact:
