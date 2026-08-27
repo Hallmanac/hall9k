@@ -1016,6 +1016,155 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
             "the lease is retained so the worktree stays the human's workspace");
     }
 
+    /// <summary>
+    /// Adversarial cycle-2 review finding: a track still saying Continues: true when it hits its
+    /// own cycle cap parks the run without ever reaching the concluding branch that turns a
+    /// ride-along into a residual (that branch only runs for a plan whose own convergence rule
+    /// says Continues: false). If the human then resolves the park with merge-ready, the run
+    /// settles straight from here — SettleAsync force-concludes the still-active track, and has
+    /// to read its last completed pass for a ride-along it never otherwise gets the chance to
+    /// record, or the finding disappears from the tally as if it had never been reported.
+    /// </summary>
+    [Fact]
+    public async Task A_ride_along_on_a_track_still_capped_when_the_run_settles_is_recorded_as_a_residual()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        using DocumentStore store = NewStore();
+        (Guid taskId, Guid runId, _) = await SeedVerifiedRunAsync(store, cts.Token);
+
+        const string mixedFindings =
+            "FINDING: severity=medium; scope=in-scope; at=A.cs:1\n"
+            + "Defect: the criterion is not met.\n\n"
+            + "FINDING: severity=low; scope=in-scope; at=B.cs:2\n"
+            + "Defect: a nit nobody asked for.\n\nVERDICT: needs-fixes";
+        ScriptedExecutor executor = new(
+            mixedFindings,
+            "Nothing of my own.\n\nVERDICT: merge-ready");
+        bool mergeReady = await NewEngine(
+            store, executor, new DaemonOptions { MaxComplianceReviewCycles = 1 })
+            .ReviewAsync(runId, taskId, cts.Token);
+
+        mergeReady.Should().BeFalse("conformance is still continuing but already at its one-cycle cap");
+
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            session.Events.Append(runId, new ReviewParkResolved(
+                runId, ReviewVerdict.MergeReady, null, Now, DomainId.New()));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        ScriptedExecutor resumeExecutor = new();
+        mergeReady = await NewEngine(store, resumeExecutor).ReviewAsync(runId, taskId, cts.Token);
+
+        mergeReady.Should().BeTrue();
+        resumeExecutor.Spawns.Should().BeEmpty("no further session second-guesses the human");
+
+        await using IQuerySession query = store.QuerySession();
+        RunDetails run = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
+        run.ReviewResidualsRideAlong.Should().Be(
+            1, "the low finding at B.cs:2 rode along on the capped conformance track and was " +
+                "never fixed or re-reviewed — settling must not drop it silently");
+    }
+
+    /// <summary>
+    /// Cycle-3 cap-park finding: both tracks can be forced-concluded together at the same
+    /// settlement (both capped at cycle 1 here), and each can independently report the same
+    /// nit. SettleAsync's forced ride-along has to collapse that per distinct location exactly as
+    /// <see cref="RunAggregate.DeriveResidualTally"/>'s own <c>PerDefect</c> does everywhere else
+    /// in the tally, or two lenses reporting one nit inflates the residual count to two.
+    /// </summary>
+    [Fact]
+    public async Task Two_lenses_forced_concluding_together_collapse_a_shared_ride_along_to_one_residual()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        using DocumentStore store = NewStore();
+        (Guid taskId, Guid runId, _) = await SeedVerifiedRunAsync(store, cts.Token);
+
+        const string sharedNit =
+            "FINDING: severity=low; scope=in-scope; at=Shared.cs:9\n"
+            + "Defect: a nit both lenses happened to notice.\n\n";
+        ScriptedExecutor executor = new(
+            "FINDING: severity=medium; scope=in-scope; at=A.cs:1\n"
+            + "Defect: the criterion is not met.\n\n" + sharedNit + "VERDICT: needs-fixes",
+            "FINDING: severity=high; scope=in-scope; at=B.cs:2\n"
+            + "Defect: a real correctness bug.\n\n" + sharedNit + "VERDICT: needs-fixes");
+        bool mergeReady = await NewEngine(
+            store, executor,
+            new DaemonOptions { MaxComplianceReviewCycles = 1, MaxAdversarialReviewCycles = 1 })
+            .ReviewAsync(runId, taskId, cts.Token);
+
+        mergeReady.Should().BeFalse("both tracks are still continuing but already at their one-cycle cap");
+
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            session.Events.Append(runId, new ReviewParkResolved(
+                runId, ReviewVerdict.MergeReady, null, Now, DomainId.New()));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        ScriptedExecutor resumeExecutor = new();
+        mergeReady = await NewEngine(store, resumeExecutor).ReviewAsync(runId, taskId, cts.Token);
+
+        mergeReady.Should().BeTrue();
+        resumeExecutor.Spawns.Should().BeEmpty("no further session second-guesses the human");
+
+        await using IQuerySession query = store.QuerySession();
+        RunDetails run = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
+        run.ReviewResidualsRideAlong.Should().Be(
+            1, "both lenses reported the same nit at Shared.cs:9 — one defect reported twice is " +
+                "still one defect, not two");
+    }
+
+    /// <summary>
+    /// Cycle-3 cap-park finding: a still-active track's ride-along can be force-concluded after a
+    /// fix session actually ran this same cycle (dispatched over the Fix finding that kept the
+    /// track continuing, disputed, and the human then ended the loop with merge-ready). That
+    /// fix session already read the ride-along too — <c>WriteMergedFindingsAsync</c> writes every
+    /// active lens's ride-alongs into the one merged document a dispatched fix session reads,
+    /// concluding or not — so it must record fixed-unreviewed, the same distinction
+    /// <c>RecordReviewPassAsync</c>'s own <c>fixSessionWillDispatch</c> already draws for a
+    /// normally-concluding track, rather than ride-along, which would claim nobody ever looked.
+    /// </summary>
+    [Fact]
+    public async Task A_ride_along_handed_to_a_disputed_fix_session_settles_as_fixed_unreviewed()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        using DocumentStore store = NewStore();
+        (Guid taskId, Guid runId, _) = await SeedVerifiedRunAsync(store, cts.Token);
+
+        ScriptedExecutor executor = new(
+            "FINDING: severity=high; scope=in-scope; at=Api.cs:7\n"
+            + "Defect: envelope type differs from spec.\n\n"
+            + "FINDING: severity=low; scope=in-scope; at=Shared.cs:9\n"
+            + "Defect: a nit nobody asked for.\n\nVERDICT: needs-fixes",
+            "No defects of my own.\n\nVERDICT: merge-ready",
+            "That envelope change is the task's stated design; changing it back is a scope decision.\n\nRESOLUTION: disputed");
+        bool mergeReady = await NewEngine(store, executor).ReviewAsync(runId, taskId, cts.Token);
+
+        mergeReady.Should().BeFalse("the fix session disputed the conformance finding");
+
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            session.Events.Append(runId, new ReviewParkResolved(
+                runId, ReviewVerdict.MergeReady, null, Now, DomainId.New()));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        ScriptedExecutor resumeExecutor = new();
+        mergeReady = await NewEngine(store, resumeExecutor).ReviewAsync(runId, taskId, cts.Token);
+
+        mergeReady.Should().BeTrue();
+        resumeExecutor.Spawns.Should().BeEmpty("no further session second-guesses the human");
+
+        await using IQuerySession query = store.QuerySession();
+        RunDetails run = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
+        run.ReviewResidualsFixed.Should().Be(
+            1, "the low finding at Shared.cs:9 was already inside the merged document the " +
+                "disputed fix session read this same cycle, so it shipped fixed-unreviewed");
+        run.ReviewResidualsRideAlong.Should().Be(
+            0, "it must not also be counted as an unclaimed ride-along");
+    }
+
     [Fact]
     public async Task A_disputed_finding_parks_with_both_positions_recorded()
     {
