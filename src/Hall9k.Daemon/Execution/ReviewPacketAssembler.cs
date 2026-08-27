@@ -61,10 +61,29 @@ public static class ReviewPacketAssembler
             return null;
         }
 
-        string? nameOnly = await RunGitAsync(worktreePath, ["diff", "--name-only", range], cancellationToken);
-        IReadOnlyList<string> touchedFiles = nameOnly is null
-            ? []
-            : [.. nameOnly.Split('\n', StringSplitOptions.RemoveEmptyEntries).Select(line => line.Trim())];
+        if (Encoding.UTF8.GetByteCount(diff) > MaxPacketBytes)
+        {
+            // The diff alone already breaks the packet's own size ceiling — ship no packet
+            // rather than one that violates the cap it advertises; the caller falls back to
+            // AppendReviewMechanics's own `git diff` instruction (conformance and adversarial
+            // review, cycle 1).
+            return null;
+        }
+
+        // -z: a NUL-terminated, unquoted list, the same treatment
+        // VerificationRunner.ListUncommittedFilesAsync already gives `git status` — without it,
+        // core.quotePath's default C-quotes any non-ASCII path and the quoted, unopenable name
+        // then fails File.Exists below, silently dropping that file's text from the packet.
+        string? nameOnly = await RunGitAsync(worktreePath, ["diff", "--name-only", "-z", range], cancellationToken);
+        if (nameOnly is null)
+        {
+            // The diff itself was readable but the touched-file enumeration was not — never
+            // render that as "zero files touched"; an unobserved list stays unobserved rather
+            // than standing in for an empty one (conformance review, cycle 1).
+            return null;
+        }
+
+        IReadOnlyList<string> touchedFiles = [.. nameOnly.Split('\0', StringSplitOptions.RemoveEmptyEntries)];
 
         (Dictionary<string, string> contents, bool degraded) =
             await ReadTouchedFilesAsync(worktreePath, touchedFiles, Encoding.UTF8.GetByteCount(diff), cancellationToken);
@@ -73,10 +92,13 @@ public static class ReviewPacketAssembler
 
     /// <summary>
     /// Reads each touched file's current worktree text, running total against
-    /// <see cref="MaxPacketBytes"/> starting from the diff's own size — a diff alone already over
-    /// the cap degrades before a single file is read. A file the diff renamed away or deleted is
+    /// <see cref="MaxPacketBytes"/> starting from the diff's own size (the caller already
+    /// confirmed the diff alone is under the cap). A file the diff renamed away or deleted is
     /// silently skipped: the diff itself already shows the removal, and there is no current text
-    /// on disk to embed.
+    /// on disk to embed. A file's on-disk length is checked against the remaining budget before
+    /// anything is read, and a probably-binary file is skipped the same way a deleted one is —
+    /// its lossy UTF-8 decode would be unusable noise in the prompt and would inflate the size it
+    /// is measured against (adversarial review, cycle 1).
     /// </summary>
     private static async Task<(Dictionary<string, string> Contents, bool Degraded)> ReadTouchedFilesAsync(
         string worktreePath, IReadOnlyList<string> touchedFiles, long startingSize, CancellationToken cancellationToken)
@@ -90,6 +112,17 @@ public static class ReviewPacketAssembler
             try
             {
                 if (!File.Exists(fullPath))
+                {
+                    continue;
+                }
+
+                long fileLength = new FileInfo(fullPath).Length;
+                if (size + fileLength > MaxPacketBytes)
+                {
+                    return (contents, true);
+                }
+
+                if (await IsProbablyBinaryAsync(fullPath, cancellationToken))
                 {
                     continue;
                 }
@@ -114,23 +147,41 @@ public static class ReviewPacketAssembler
     }
 
     /// <summary>
-    /// Tries the local base-branch ref first, then `origin/{baseBranch}` — the same fallback the
-    /// review prompt itself already states in prose (<c>AgentPromptBuilder.AppendReviewMechanics</c>):
-    /// a task worktree is cut with `--no-track` off `origin/{baseBranch}` (AGENTS.md) and may carry
-    /// no local ref of that name at all.
+    /// Git's own binary heuristic — a NUL byte within the first sampled chunk — applied to
+    /// avoid decoding a binary touched file (an image, an archive, a compiled artifact) as UTF-8
+    /// just to measure or embed it (adversarial review, cycle 1).
+    /// </summary>
+    private static async Task<bool> IsProbablyBinaryAsync(string fullPath, CancellationToken cancellationToken)
+    {
+        const int SampleBytes = 8000;
+        byte[] buffer = new byte[SampleBytes];
+        await using FileStream stream = File.OpenRead(fullPath);
+        int read = await stream.ReadAsync(buffer.AsMemory(0, SampleBytes), cancellationToken);
+        return Array.IndexOf(buffer, (byte)0, 0, read) >= 0;
+    }
+
+    /// <summary>
+    /// Tries `origin/{baseBranch}` first, then the local base-branch ref — the same
+    /// remote-tracking-preferred convention <c>VerificationRunner.CountBranchCommitsAsync</c> and
+    /// <c>GitWorktreeManager.ResolveStartPointAsync</c> already follow (the log #4 convention). A
+    /// task worktree is cut with `--no-track` off `origin/{baseBranch}` (AGENTS.md), so its local
+    /// base-branch ref, when one exists at all, is shared with the project home's `dev/` worktree
+    /// and reflects whatever that last fast-forwarded to — routinely stale relative to the task's
+    /// actual base — while `origin/{baseBranch}` is always current. The local ref is only a
+    /// fallback for the worktree that carries no `origin/{baseBranch}` at all.
     /// </summary>
     private static async Task<(string? Diff, string Range)> DiffAgainstBaseAsync(
         string worktreePath, string baseBranch, CancellationToken cancellationToken)
     {
-        string localRange = $"{baseBranch}...HEAD";
-        string? diff = await RunGitAsync(worktreePath, ["diff", localRange], cancellationToken);
+        string originRange = $"origin/{baseBranch}...HEAD";
+        string? diff = await RunGitAsync(worktreePath, ["diff", originRange], cancellationToken);
         if (diff is not null)
         {
-            return (diff, localRange);
+            return (diff, originRange);
         }
 
-        string originRange = $"origin/{baseBranch}...HEAD";
-        return (await RunGitAsync(worktreePath, ["diff", originRange], cancellationToken), originRange);
+        string localRange = $"{baseBranch}...HEAD";
+        return (await RunGitAsync(worktreePath, ["diff", localRange], cancellationToken), localRange);
     }
 
     /// <summary>
@@ -151,6 +202,8 @@ public static class ReviewPacketAssembler
                     WorkingDirectory = worktreePath,
                     RedirectStandardOutput = true,
                     RedirectStandardError = true,
+                    StandardOutputEncoding = Encoding.UTF8,
+                    StandardErrorEncoding = Encoding.UTF8,
                     UseShellExecute = false,
                 },
             };
