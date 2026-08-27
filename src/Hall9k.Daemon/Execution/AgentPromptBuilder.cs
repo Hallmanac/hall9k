@@ -945,7 +945,11 @@ public static class AgentPromptBuilder
             ? $"  Read the commits added since the prior cycle: `git log {sha}..HEAD` and `git diff {sha}..HEAD`."
               + " That range is the fix — and anything else that landed alongside it — you are verifying."
             : "  The commit the prior cycle's fix landed on could not be pinned down, so read the whole diff "
-              + $"instead: `git diff {project.BaseBranch}...HEAD` (commits: `git log {project.BaseBranch}..HEAD`).");
+              + $"instead: `git diff origin/{project.BaseBranch}...HEAD` (commits: "
+              + $"`git log origin/{project.BaseBranch}..HEAD`) — the same origin-first range "
+              + "AppendReviewMechanics uses, for the same staleness reason: a local base-branch ref, when this "
+              + "worktree carries one at all, is shared with the project home's `dev/` worktree and is routinely "
+              + "stale relative to this task's actual base.");
         prompt.AppendLine("- For each finding above, confirm the fix actually resolved it. An incomplete or");
         prompt.AppendLine("  half-applied fix is still needs-fixes — do not credit an attempt for a result.");
         prompt.AppendLine("- Check the blast radius: a regression the fix itself introduced is exactly what this");
@@ -1464,7 +1468,7 @@ public static class AgentPromptBuilder
         prompt.AppendLine("- `in-scope` — the defective line lives in code this branch added or changed.");
         prompt.AppendLine($"- `out-of-scope` — the defect is pre-existing on `{project.BaseBranch}`; this diff only");
         prompt.AppendLine("  sits next to it. Check before you tag: the line is out of scope only if it is");
-        prompt.AppendLine($"  absent from `git diff {project.BaseBranch}...HEAD`.");
+        prompt.AppendLine($"  absent from `git diff origin/{project.BaseBranch}...HEAD`.");
         prompt.AppendLine();
         prompt.AppendLine("Report out-of-scope defects — they are worth knowing about, and the platform routes the");
         prompt.AppendLine("smaller ones to their own bug tasks instead of growing this pull request. Do not stretch");
@@ -1484,9 +1488,12 @@ public static class AgentPromptBuilder
     private static void AppendReviewMechanics(StringBuilder prompt, ProjectDetails project, string branch)
     {
         prompt.AppendLine($"- You are in the implementation's git worktree on branch `{branch}`.");
-        prompt.AppendLine($"  The diff under review: `git diff {project.BaseBranch}...HEAD` (commits:");
-        prompt.AppendLine($"  `git log {project.BaseBranch}..HEAD`). Use `origin/{project.BaseBranch}` if the local");
-        prompt.AppendLine("  base ref is absent.");
+        prompt.AppendLine($"  The diff under review: `git diff origin/{project.BaseBranch}...HEAD` (commits:");
+        prompt.AppendLine($"  `git log origin/{project.BaseBranch}..HEAD`) — the same range the packet above, when");
+        prompt.AppendLine($"  present, was built from. Fall back to the local `{project.BaseBranch}` ref only when");
+        prompt.AppendLine($"  this worktree carries no `origin/{project.BaseBranch}` at all: a task worktree's local");
+        prompt.AppendLine("  base-branch ref, when one exists, is shared with the project home's `dev/` worktree and");
+        prompt.AppendLine("  is routinely stale relative to this task's actual base.");
         prompt.AppendLine("- Report verified findings only. For every suspected defect, read the surrounding");
         prompt.AppendLine("  code until you can confirm it is real; discard anything you cannot confirm.");
         prompt.AppendLine("- Each finding must carry: the file and line (`path/to/file.cs:123`), a one-sentence");

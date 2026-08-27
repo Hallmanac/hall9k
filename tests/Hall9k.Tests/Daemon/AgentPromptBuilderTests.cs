@@ -321,7 +321,7 @@ public sealed class AgentPromptBuilderTests : IDisposable
             SomeTask(), project, "task/1-slug", cycle: 2, ReviewLens.Conformance);
 
         prompt.Should().Contain("independent reviewer with fresh context");
-        prompt.Should().Contain("git diff main...HEAD");
+        prompt.Should().Contain("git diff origin/main...HEAD");
         prompt.Should().Contain("verified findings only", Exactly.Once());
         prompt.Should().Contain("read the surrounding");
         prompt.Should().Contain("discard anything you cannot confirm");
@@ -366,7 +366,7 @@ public sealed class AgentPromptBuilderTests : IDisposable
             "Requests over the limit get 429", "this lens's instructions never mention the acceptance criteria");
         prompt.Should().NotContain("Acceptance criteria");
 
-        prompt.Should().Contain("git diff main...HEAD", "both lenses read the same diff");
+        prompt.Should().Contain("git diff origin/main...HEAD", "both lenses read the same diff");
         prompt.Should().Contain("verified findings only", Exactly.Once());
         prompt.Should().Contain("Do NOT modify files");
         prompt.Should().Contain("VERDICT: merge-ready");
@@ -397,7 +397,7 @@ public sealed class AgentPromptBuilderTests : IDisposable
             "a reviewer that writes `critical` should learn the platform reads it as ungraded");
         prompt.Should().Contain("the defective line lives in code this branch added or changed");
         prompt.Should().Contain("pre-existing on `main`");
-        prompt.Should().Contain("absent from `git diff main...HEAD`", "the scope tag is checkable, not felt");
+        prompt.Should().Contain("absent from `git diff origin/main...HEAD`", "the scope tag is checkable, not felt");
         prompt.Should().NotContain(
             "only a high forces", "telling a reviewer which grade buys another cycle invites it to grade for that");
     }
@@ -433,7 +433,7 @@ public sealed class AgentPromptBuilderTests : IDisposable
             SomeTask(), SomeProject(), "task/1-slug", cycle: 1, ReviewLens.Conformance);
 
         prompt.Should().NotContain("Packet (a starting point");
-        prompt.Should().Contain("git diff main...HEAD", "the fallback instruction still names the diff itself");
+        prompt.Should().Contain("git diff origin/main...HEAD", "the fallback instruction still names the diff itself");
     }
 
     /// <summary>
