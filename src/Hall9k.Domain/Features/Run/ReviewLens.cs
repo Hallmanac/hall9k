@@ -16,8 +16,11 @@ namespace Hall9k.Domain.Features.Run;
 /// and drops out of the loop on its own. Conformance ends the moment it comes back clean and
 /// parks the run if it is still finding things after its cycle cap; Adversarial keeps going
 /// under the severity gate up to its much larger cap. A track that ends goes dormant and the
-/// other continues alone, so "the lens list" is the set of tracks a cycle dispatches, minus
-/// whichever have already finished.
+/// other continues alone, so an ordinary cycle's "lens list" is the set of tracks a cycle
+/// dispatches, minus whichever have already finished — except the mandatory
+/// <see cref="ReviewMode.FinalFullPass"/> cycle immediately before the run may settle
+/// (Decisions Log #92), which dispatches every lens regardless of conclusion and reawakens
+/// a dormant one that still finds something real.
 /// </para>
 /// <para>
 /// Origin incident (2026-08-21, PR #21): four Copilot passes over the same branch each
@@ -62,8 +65,12 @@ public sealed record ReviewLens
     /// aggregate, and the artifact layout already handle an arbitrary count. Two is the
     /// shipped shape because two is what the origin incident justified.
     /// <para>
-    /// It is the <em>opening</em> set, not the per-cycle set: once a track concludes it stops
-    /// being dispatched, and later cycles run only whichever tracks are still active.
+    /// It is the <em>opening</em> set, not the per-cycle set: an ordinary cycle dispatches only
+    /// whichever tracks are still active, since once a track concludes it stops being dispatched
+    /// — except the mandatory <see cref="ReviewMode.FinalFullPass"/> immediately before the run
+    /// may settle (task: review cycles after the first), which dispatches this full list
+    /// unconditionally, concluded tracks included, so nothing reaches the pull request on a
+    /// stale conclusion alone.
     /// </para>
     /// </summary>
     public static readonly IReadOnlyList<ReviewLens> CycleLenses = [Conformance, Adversarial];

@@ -54,8 +54,12 @@ public static class ReviewTrackPolicy
     /// criteria put it. Before the gate, every stated finding keeps the track alive, a routed
     /// one included: ending there would retire the track over a tip it is about to stop
     /// recognizing, because the OTHER track can still be forcing fix sessions that rewrite the
-    /// branch, and a dormant track is deliberately never reawakened. That is how a lens ends up
-    /// having never read the fix commits, which is where PR #21's two regressions came from.
+    /// branch, and within an ordinary cycle a dormant track is never reawakened — only the
+    /// mandatory <see cref="ReviewMode.FinalFullPass"/> cycle immediately before the run may
+    /// settle reawakens one, via <see cref="Hall9k.Domain.Features.Run.Events.ReviewTrackReactivated"/> (Decisions Log
+    /// #92), and only when it finds something real. That is how a lens used to end up having
+    /// never read the fix commits, which is where PR #21's two regressions came from, and what
+    /// the final pass now exists to stop happening at settlement.
     /// </para>
     /// <para>
     /// This cannot loop forever on an unchanged tip. A cycle where nothing at all is left to fix
