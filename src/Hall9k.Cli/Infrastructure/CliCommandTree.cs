@@ -486,6 +486,15 @@ public static class CliCommandTree
                     + "for a card a human made by hand.")
                 .WithExample("task", "link-jira", "28b19893", "PROJ-123")
                 .WithExample("task", "link-jira", "28b19893", "https://your-org.atlassian.net/browse/PROJ-123");
+            task.AddCommand<TaskLinkIssueCommand>("link-issue")
+                .WithDescription(
+                    "Record the GitHub issue this task belongs to, verified first. The issue you pass is "
+                    + "read back through gh and what gets recorded is the response, never the claim — so an "
+                    + "issue that does not resolve writes nothing and tells you why. Used automatically when "
+                    + "a project's backlog policy is github-issues (h9k project set --backlog), and equally "
+                    + "usable to link an issue you made by hand.")
+                .WithExample("task", "link-issue", "28b19893", "42")
+                .WithExample("task", "link-issue", "28b19893", "https://github.com/owner/repo/issues/42");
             task.AddCommand<TaskAbandonCommand>("abandon")
                 .WithDescription(
                     "Abandon a task (terminal; releases any lease). Reaches every non-terminal state, drafts "
