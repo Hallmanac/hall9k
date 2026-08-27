@@ -380,6 +380,19 @@ The checkpoints, in the order the window sees them:
    fix session dodged a flaky-test race by restructuring the test rather than fixing the race the
    review kept finding), visible on `h9k task show` and the daemon log line when it does apply;
    de-escalation is automatic the moment a later round moves on to a genuinely different finding.
+   Only cycle 1 pays full two-lens discovery (Decisions Log #92, origin: 576M input tokens in one
+   day re-reading 12k-line diffs with two lenses to judge 40-line fixes): a middle cycle instead
+   dispatches one **Verify** reviewer, handed the prior cycle's own findings, each finding's fix
+   position, and the commits added since that cycle, whose job is to confirm the fix and check its
+   blast radius rather than rediscover the diff — its rounds count against the same per-track caps
+   a full cycle's would, and a dispute or cap-out parks exactly as before. Immediately before the
+   run may settle, one mandatory **FinalFullPass** runs both lenses fresh, whether or not a track
+   had already gone dormant, so nothing reaches the remote on delta-green alone; a track it
+   reawakens with a real finding is recorded reactivated rather than left stuck at an old
+   conclusion, and a run that converges clean at cycle 1 pays no extra pass at all. Which shape a
+   cycle ran under — Discovery, Verify, or FinalFullPass — is a deterministic engine decision
+   recorded on the run stream, so `h9k task show` and the daemon log say which one dispatched;
+   only the review content itself is agent judgment.
 4. **The daemon opens the pull request.** Agents never do, and there is deliberately no create-pr
    skill. The task reaches **Done** here, when the pull request opens, so Done means "the work is
    on a PR and waiting on review" rather than "merged".
