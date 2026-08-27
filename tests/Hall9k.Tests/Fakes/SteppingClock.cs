@@ -7,12 +7,12 @@ namespace Hall9k.Tests.Fakes;
 /// </summary>
 public sealed class SteppingClock(TimeSpan step) : TimeProvider
 {
-    private DateTimeOffset now = DateTimeOffset.UtcNow;
+    private DateTimeOffset _now = DateTimeOffset.UtcNow;
 
     public override DateTimeOffset GetUtcNow()
     {
-        DateTimeOffset current = now;
-        now += step;
+        DateTimeOffset current = _now;
+        _now += step;
         return current;
     }
 }
