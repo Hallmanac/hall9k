@@ -108,14 +108,16 @@ public static class CliCommandTree
             project.AddCommand<ProjectSetCommand>("set")
                 .WithDescription(
                     "Change project settings: verify gates, skip-permissions, links, parallelism, "
-                    + "commit style, agent model, review re-requests, the Jira board, and where the "
-                    + "project lives on disk. Any change that the home's generated AGENTS.md renders "
-                    + "rewrites that file.")
+                    + "commit style, agent model, review re-requests, the Jira board, the backlog "
+                    + "policy that tracks every published task (none, github-issues, jira) and its "
+                    + "routing guidance, and where the project lives on disk. Any change that the "
+                    + "home's generated AGENTS.md renders rewrites that file.")
                 .WithExample("project", "set", "hall9k", "--commit-style", "narrative")
                 .WithExample("project", "set", "hall9k", "--home", "~/.hall9k/projects/hall9k")
                 .WithExample("project", "set", "hall9k", "--model", "claude-opus-5")
                 .WithExample("project", "set", "hall9k", "--rerequest-review", "on")
-                .WithExample("project", "set", "hall9k", "--jira", "PROJ");
+                .WithExample("project", "set", "hall9k", "--jira", "PROJ")
+                .WithExample("project", "set", "hall9k", "--backlog", "github-issues");
         });
 
         config.AddBranch("owner", owner =>

@@ -96,7 +96,8 @@ recipe for a project that has none yet, and the repair path for one that is inco
 [the project home](#the-project-home) below.
 
 `project set` is where the verification gates, the agent model, parallelism, commit style,
-context links, skip-permissions, the Jira board binding, the review re-request policy, and the
+context links, skip-permissions, the Jira board binding, the backlog policy (`--backlog
+none|github-issues|jira`) and its routing guidance, the review re-request policy, and the
 home's location live.
 Settings resolve most-specific-wins, and the exact chain differs per setting;
 [operations.md](operations.md#per-project-and-per-owner) has the two that matter.
@@ -170,6 +171,19 @@ The location is a setting (`--home`, or `h9k project set <name> --home <path>`);
 it is the contract, which is what lets a dispatched agent be handed paths rather than sent
 hunting for them.
 
+### Backlog tracking
+
+`h9k project set --backlog none|github-issues|jira` · `h9k project set --backlog-routing "<TEXT>"` ·
+`h9k task link-issue <task> <issue>`
+
+Every published task is tracked in the project's backlog automatically, per this setting.
+`github-issues` is deterministic: `h9k task publish` runs `gh issue create` itself — no agent
+involved, because an issue's shape (title, body, labels) is uniform enough for the platform to
+author on its own — reads the created issue straight back the same way `--from-issue` does, and
+records it through `link-issue`, the same observation-gate pattern `link-jira` uses. `--backlog-routing`
+is read as a comma-separated label list under `github-issues`. `jira` is agent-mediated (below);
+`none` is today's default, unchanged behavior.
+
 ### Jira
 
 `h9k task push-to-jira` · `h9k task link-jira` · `h9k connection add jira` ·
@@ -180,7 +194,10 @@ because the platform never authors one. The session runs in `<home>/repo/dev`, s
 repository path of a project with a home names the bare clone and a bare clone has no files to
 read; a project registered before homes existed still points at an ordinary checkout, and that is
 where its session runs. `link-jira` reads the key back through the registered
-connection before recording anything, which is what makes it safe for an agent to call.
+connection before recording anything, which is what makes it safe for an agent to call. A project
+set to `--backlog jira` makes this request automatically at publish, so `push-to-jira` becomes the
+manual retry lever for a project that had no Jira connection registered yet when it was first
+published.
 
 ### Install and the daemon
 
@@ -264,7 +281,9 @@ returns once the work is *recorded*, not once it is *done*.
 
 Agent-facing commands are observation gates. `h9k task link-jira` reads the key back through the
 connection before recording it, so what gets recorded is what Jira answered rather than what the
-agent claimed. When you add a command an agent will call, that is the shape to follow.
+agent claimed. `h9k task link-issue` is the same gate for GitHub — read back through `gh` before
+recording — and the platform's own `gh issue create` claim goes through it exactly as an agent's
+would. When you add a command an agent will call, that is the shape to follow.
 
 Two commands an agent might reach for do not exist yet: `h9k ask` and `h9k answer`. The design is
 settled and the events are already on the task stream, but the commands are Slice 2. An agent

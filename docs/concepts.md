@@ -404,4 +404,11 @@ reads the key back through the connection before recording anything. Agent-facin
 observation gates: an agent's claim is an argument that gets checked, never a fact that gets
 accepted.
 
-Depth: [PLAN.md §6.2, §6.6, §10](../PLAN.md), Decisions Log #65.
+GitHub gets a write path of its own, because an issue's shape (title, body, labels) is uniform
+enough for the platform to author deterministically, with no agent needed. A project's **backlog
+policy** (`h9k project set --backlog none|github-issues|jira`) decides how every published task is
+tracked: `github-issues` has `h9k task publish` run `gh issue create` itself and record the result
+through `h9k task link-issue`, the same observation-gate pattern `link-jira` uses; `jira` makes the
+same publication request `push-to-jira` does.
+
+Depth: [PLAN.md §6.2, §6.6, §10](../PLAN.md), Decisions Log #65, #94.
