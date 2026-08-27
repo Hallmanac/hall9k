@@ -439,6 +439,10 @@ public sealed class GitHubPullRequestInspectorTests
     /// An error placeholder (Decisions Log #62, origin: PR #6, 2026-08-17) produced no verdict,
     /// so it must not read as Copilot having weighed in — the same conservatism
     /// <see cref="FindErroredCopilotReview"/> already applies to the errored-review re-request.
+    /// Nor may it read as <see cref="ExternalReviewState.None"/>: an errored review is review
+    /// activity that was observed, so claiming no activity exists is the same absence-over-
+    /// evidence mistake already corrected for the stale and uncomparable-commit cases
+    /// (independent pre-PR review, cycle 1).
     /// </summary>
     [Fact]
     public void An_errored_Copilot_review_does_not_read_as_landed()
@@ -448,8 +452,10 @@ public sealed class GitHubPullRequestInspectorTests
             Review(Actor("copilot-pull-request-reviewer", "Bot"), "cafe1",
                 "Copilot encountered an error and was unable to review this pull request."));
 
-        GitHubPullRequestInspector.ParseReviews(json).CopilotReviewState.Should().NotBe(
-            ExternalReviewState.Landed, "a review that could not read the diff produced no verdict");
+        GitHubPullRequestInspector.ParseReviews(json).CopilotReviewState.Should().Be(
+            ExternalReviewState.Unknown,
+            "a review that could not read the diff produced no verdict, but it is still observed " +
+            "activity — not the positive absence claim None makes");
     }
 
     /// <summary>
