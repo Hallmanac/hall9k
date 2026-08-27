@@ -759,6 +759,50 @@ public sealed class AgentPromptBuilderTests : IDisposable
         prompt.Should().Contain("graded medium or high");
     }
 
+    /// <summary>
+    /// Independent pre-PR review, cycle 2, adversarial finding: a re-prompted Verify pass's
+    /// output replaces the original's in full, so a re-prompt that restated severity and scope
+    /// but not the track= tag would come back untagged and get attributed to every active track
+    /// rather than the one it belongs to.
+    /// </summary>
+    [Fact]
+    public void The_verify_reprompt_also_restates_the_track_tag_contract()
+    {
+        string prompt = AgentPromptBuilder.BuildReviewVerdictReprompt(
+            SomeProject(), cycle: 3, verifyTracks: [ReviewLens.Conformance, ReviewLens.Adversarial]);
+
+        prompt.Should().Contain("track=conformance` or `track=adversarial` exactly");
+    }
+
+    [Fact]
+    public void A_reprompt_for_a_non_verify_pass_omits_the_track_tag_contract()
+    {
+        string prompt = AgentPromptBuilder.BuildReviewVerdictReprompt(SomeProject(), cycle: 3);
+
+        prompt.Should().NotContain("track=conformance", "a Discovery or FinalFullPass pass never tags a track");
+    }
+
+    /// <summary>
+    /// Independent pre-PR review, cycle 2, adversarial finding: the prompt's own claim has to
+    /// match the track list right under it — a session told it stands in for "both" lenses while
+    /// looking at a list of one contradicts itself.
+    /// </summary>
+    [Fact]
+    public void Verify_prompt_says_both_lenses_only_when_both_are_still_active()
+    {
+        string bothActive = AgentPromptBuilder.BuildReviewVerify(
+            SomeTask(), SomeProject(), "task/1-slug", cycle: 2,
+            tracks: [ReviewLens.Conformance, ReviewLens.Adversarial], priorFindings: "none",
+            priorFixPosition: "none", sinceSha: null);
+        bothActive.Should().Contain("standing in for both review lenses");
+
+        string oneActive = AgentPromptBuilder.BuildReviewVerify(
+            SomeTask(), SomeProject(), "task/1-slug", cycle: 2,
+            tracks: [ReviewLens.Conformance], priorFindings: "none", priorFixPosition: "none", sinceSha: null);
+        oneActive.Should().NotContain("standing in for both review lenses");
+        oneActive.Should().Contain("standing in for the one review lens still active");
+    }
+
     [Fact]
     public void Retry_prompt_warns_that_the_previous_attempts_work_may_already_be_present()
     {

@@ -20,6 +20,10 @@ namespace Hall9k.Daemon.Review;
 /// finding that named no track, or an unrecognized one — read as "applies to every still-active
 /// track" (<c>ReviewEngine.PlanCycleAsync</c>'s own conservative default) rather than guessed at,
 /// the same reading an ungraded severity or an untagged scope already gets elsewhere in this file.
+/// A tag naming a real lens that is no longer among this cycle's active tracks gets the identical
+/// reading (<c>ReviewEngine.SplitForTrack</c>): that track is never iterated to claim it, so
+/// treating the tag as unattributable rather than as a claim nobody will read is what keeps the
+/// finding from vanishing.
 /// </param>
 public sealed record ReviewFinding(
     ReviewSeverity Severity,

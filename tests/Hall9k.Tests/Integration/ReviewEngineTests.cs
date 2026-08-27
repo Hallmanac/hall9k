@@ -778,6 +778,53 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
     }
 
     /// <summary>
+    /// Independent pre-PR review, cycle 2, conformance finding #4: a single <see cref="ReviewMode.Verify"/>
+    /// pass stands in for both still-active tracks, so <c>SplitForTrack</c> hands the identical
+    /// out-of-scope finding to both tracks' plans when it names no <c>track=</c> tag — exactly the
+    /// same conservative reading that already applies to a Fix finding. Unlike a Fix finding,
+    /// nothing downstream is meant to route the same statement twice: one reviewer naming one
+    /// pre-existing defect, with no line to place it on, must still become one draft bug task.
+    /// </summary>
+    [Fact]
+    public async Task A_verify_passs_shared_unplaced_out_of_scope_finding_routes_once_not_twice()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        using DocumentStore store = NewStore();
+        (Guid taskId, Guid runId, _) = await SeedVerifiedRunAsync(store, cts.Token);
+
+        ScriptedExecutor executor = new(
+            // Cycle 1: both tracks find something in-scope, so both stay active into cycle 2.
+            "FINDING: severity=medium; scope=in-scope; at=A.cs:1\nDefect: the criterion is not met.\n\n"
+            + "VERDICT: needs-fixes",
+            "FINDING: severity=medium; scope=in-scope; at=B.cs:2\nDefect: still present.\n\n"
+            + "VERDICT: needs-fixes",
+            "Fixed both.\n\nRESOLUTION: fixed",
+            // Cycle 2: one Verify pass stands in for both tracks, and reports one pre-existing,
+            // out-of-scope defect it names by file but could not pin to a line — no `at=` tag, so
+            // the parsed Location stays blank, and no `track=` tag either.
+            "FINDING: severity=medium; scope=out-of-scope\n"
+            + "Defect: Legacy.cs carries a pre-existing issue, but no single line accounts for it.\n\n"
+            + "VERDICT: needs-fixes",
+            // Cycle 3: the routing-only cycle needed no fix session, but a Verify cycle still
+            // never paid the mandatory final full pass, so it runs before the run may settle —
+            // both lenses fresh, both clean.
+            "Criteria still met.\n\nVERDICT: merge-ready",
+            "Still clean.\n\nVERDICT: merge-ready");
+        bool mergeReady = await NewEngine(store, executor).ReviewAsync(runId, taskId, cts.Token);
+
+        mergeReady.Should().BeTrue("routing away the one out-of-scope defect leaves nothing left to fix");
+        executor.Spawns.Should().HaveCount(6, "the routing-only cycle needed no fix session, but still paid the mandatory final pass");
+
+        await using IQuerySession query = store.QuerySession();
+        List<object> events = [.. (await query.Events.FetchStreamAsync(runId, token: cts.Token)).Select(e => e.Data)];
+        events.OfType<ReviewFindingRouted>().Should().ContainSingle(
+            "one reviewer statement, reached once per track it stands in for, is still one defect");
+
+        RunDetails run = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
+        run.ReviewResidualsRouted.Should().Be(1);
+    }
+
+    /// <summary>
     /// The same cycle with the other track still live is not the empty terminal case at all
     /// (Decisions Log #63): the conformance track forces a fix session that rewrites the branch,
     /// so the adversarial track has something new to read and stays alive to read it. Retiring
@@ -1097,6 +1144,121 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
     }
 
     /// <summary>
+    /// Independent pre-PR review, cycle 2, conformance finding #1: the mandatory FinalFullPass
+    /// can reawaken a track that went dormant cycles ago, and the earliest that pass can possibly
+    /// land is cycle 3 — already <c>MaxComplianceReviewCycles</c>' own absolute count measured
+    /// from cycle 0. Without a per-track budget base, the reactivated track would be capped and
+    /// parked on the very cycle that reawakened it, before ever earning a fix session for the
+    /// defect that mandatory pass exists to catch.
+    /// </summary>
+    [Fact]
+    public async Task A_track_the_mandatory_final_pass_reawakens_gets_a_genuine_cycle_to_fix_it()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        using DocumentStore store = NewStore();
+        (Guid taskId, Guid runId, _) = await SeedVerifiedRunAsync(store, cts.Token);
+
+        const string reawakenedFinding =
+            "FINDING: severity=high; scope=in-scope; at=Auth.cs:9\n"
+            + "Defect: the mandatory final pass found a real regression the earlier cycles missed.\n\n";
+        ScriptedExecutor executor = new(
+            // Cycle 1: conformance clean and goes dormant; adversarial finds something.
+            "Criteria met at cycle 1.\n\nVERDICT: merge-ready",
+            "FINDING: severity=high; scope=in-scope; at=Spawner.cs:60\nDefect: the child process is never reaped.\n\n"
+            + "VERDICT: needs-fixes",
+            "Reaped the child.\n\nRESOLUTION: fixed",
+            // Cycle 2: only adversarial is still active — one Verify pass, and it concludes.
+            "The lifetime holds now.\n\nVERDICT: merge-ready",
+            // Cycle 3: the mandatory final full pass, both lenses fresh. Conformance — dormant
+            // since cycle 1 — finds a genuine new defect this time, reawakening it at cycle 3,
+            // which already equals MaxComplianceReviewCycles measured from cycle 0.
+            reawakenedFinding + "VERDICT: needs-fixes",
+            "The lifetime still holds.\n\nVERDICT: merge-ready",
+            "Fixed the regression the final pass caught.\n\nRESOLUTION: fixed",
+            // Cycle 4: one Verify pass over the reawakened conformance track alone.
+            "Confirmed fixed.\n\nVERDICT: merge-ready",
+            // Cycle 5: a fix landed since the last full pass, so one more mandatory final pass
+            // runs before the run may settle (finding #2) — both lenses fresh, both clean.
+            "Still clean.\n\nVERDICT: merge-ready",
+            "Still clean too.\n\nVERDICT: merge-ready");
+
+        bool mergeReady = await NewEngine(
+            store, executor, new DaemonOptions { MaxComplianceReviewCycles = 3 })
+            .ReviewAsync(runId, taskId, cts.Token);
+
+        mergeReady.Should().BeTrue(
+            "the reawakened conformance track earned its own fix cycle instead of parking on a budget it never spent");
+        executor.Spawns.Should().HaveCount(10);
+
+        await using IQuerySession query = store.QuerySession();
+        RunDetails run = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
+        run.State.Should().Be(RunState.UnderReview);
+        run.ReviewCycle.Should().Be(5);
+
+        List<object> events = [.. (await query.Events.FetchStreamAsync(runId, token: cts.Token)).Select(e => e.Data)];
+        events.OfType<ReviewTrackReactivated>().Should().ContainSingle(
+            reactivated => reactivated.Lens == ReviewLens.Conformance && reactivated.Cycle == 3);
+    }
+
+    /// <summary>
+    /// Independent pre-PR review, cycle 2, conformance finding #2: a fix session can still
+    /// dispatch on the very cycle the mandatory FinalFullPass ran (a post-severity-gate Medium
+    /// that concludes its track but still owes a fix, the empty terminal case) — and the fix it
+    /// produces must itself get a fresh-context read before the run may settle, or the pull
+    /// request ships commits the mandatory final pass never actually saw.
+    /// </summary>
+    [Fact]
+    public async Task A_fix_dispatched_from_the_mandatory_final_pass_gets_one_more_pass_before_settling()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        using DocumentStore store = NewStore();
+        (Guid taskId, Guid runId, _) = await SeedVerifiedRunAsync(store, cts.Token);
+
+        ScriptedExecutor executor = new(
+            // Cycle 1: conformance clean and dormant; adversarial needs a fix (pre-gate, any
+            // grade forces the next cycle).
+            "Criteria met.\n\nVERDICT: merge-ready",
+            "FINDING: severity=medium; scope=in-scope; at=Retry.cs:12\nDefect: the retry duplicates the effect.\n\n"
+            + "VERDICT: needs-fixes",
+            "Tightened the retry guard.\n\nRESOLUTION: fixed",
+            // Cycle 2: still pre-gate (< AdversarialSeverityGateFromCycle, default 4) — a second
+            // minor issue still forces another cycle regardless of its grade.
+            "FINDING: severity=medium; scope=in-scope; at=Retry.cs:20\nDefect: a related edge is still off.\n\n"
+            + "VERDICT: needs-fixes",
+            "Closed the edge case too.\n\nRESOLUTION: fixed",
+            // Cycle 3: clean — adversarial concludes, both tracks now dormant.
+            "Clean now.\n\nVERDICT: merge-ready",
+            // Cycle 4: the mandatory final full pass. Both tracks already concluded, so it is
+            // dispatched at cycle 4 — at or past the severity gate. Adversarial reports a fresh
+            // Medium: post-gate, a Medium no longer forces another cycle on its own, so the track
+            // concludes right here even though a fix is still owed for it (the empty terminal
+            // case) — this is the exact shape that used to ship unreviewed.
+            "Criteria still met.\n\nVERDICT: merge-ready",
+            "FINDING: severity=medium; scope=in-scope; at=Retry.cs:31\n"
+            + "Defect: the final pass caught a fresh regression.\n\nVERDICT: needs-fixes",
+            "Fixed the regression the final pass found.\n\nRESOLUTION: fixed",
+            // Cycle 5: nothing may settle over that fix unread, so one more mandatory final pass
+            // runs — both lenses fresh, both clean this time.
+            "Still clean.\n\nVERDICT: merge-ready",
+            "Still clean too.\n\nVERDICT: merge-ready");
+
+        bool mergeReady = await NewEngine(store, executor).ReviewAsync(runId, taskId, cts.Token);
+
+        mergeReady.Should().BeTrue();
+        executor.Spawns.Should().HaveCount(
+            11, "the post-gate fix from the mandatory final pass earns its own extra final pass " +
+                "before the run may settle, rather than shipping unreviewed");
+
+        await using IQuerySession query = store.QuerySession();
+        RunDetails run = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
+        run.ReviewCycle.Should().Be(5, "a fix landed on top of the mandatory final pass, so one more fresh-context pass ran first");
+
+        List<object> events = [.. (await query.Events.FetchStreamAsync(runId, token: cts.Token)).Select(e => e.Data)];
+        events.OfType<ReviewDispatched>().Count(e => e.Mode == ReviewMode.FinalFullPass).Should().Be(
+            4, "the mandatory final pass ran twice — once before the last fix, once to read it");
+    }
+
+    /// <summary>
     /// Adversarial cycle-2 review finding: a track still saying Continues: true when it hits its
     /// own cycle cap parks the run without ever reaching the concluding branch that turns a
     /// ride-along into a residual (that branch only runs for a plan whose own convergence rule
@@ -1193,6 +1355,65 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
         run.ReviewResidualsRideAlong.Should().Be(
             1, "both lenses reported the same nit at Shared.cs:9 — one defect reported twice is " +
                 "still one defect, not two");
+    }
+
+    /// <summary>
+    /// Independent pre-PR review, cycle 2, adversarial finding: unlike the two-independent-passes
+    /// case above, a single <see cref="ReviewMode.Verify"/> pass stands in for BOTH still-active
+    /// tracks at once, so <c>SettleAsync</c>'s force-conclude loop reaches the very same
+    /// <see cref="ReviewFindingRecord"/> instance once per lens that pass covers. An unplaced
+    /// ride-along (no location the reviewer stated) cannot be collapsed by place — that is
+    /// deliberate, so two genuinely different unplaced findings never get merged into one — so
+    /// this has to be caught before the place-based dedup ever runs, or one reviewer's one
+    /// statement becomes two residuals.
+    /// </summary>
+    [Fact]
+    public async Task A_verify_passs_shared_unplaced_ride_along_settles_as_one_residual_not_two()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        using DocumentStore store = NewStore();
+        (Guid taskId, Guid runId, _) = await SeedVerifiedRunAsync(store, cts.Token);
+
+        const string unplacedRideAlong =
+            "FINDING: severity=low; scope=in-scope\n"
+            + "Defect: a nit neither reviewer bothered to place on a line.\n\n";
+        ScriptedExecutor executor = new(
+            // Cycle 1: both tracks find something, so both stay active into cycle 2.
+            "FINDING: severity=medium; scope=in-scope; at=A.cs:1\nDefect: the criterion is not met.\n\n"
+            + "VERDICT: needs-fixes",
+            "FINDING: severity=medium; scope=in-scope; at=B.cs:2\nDefect: still present.\n\n"
+            + "VERDICT: needs-fixes",
+            "Tried.\n\nRESOLUTION: fixed",
+            // Cycle 2: one Verify pass stands in for both tracks. Both findings still stand
+            // (each keeps its own track alive), plus one ride-along neither lens placed or
+            // tagged, so it counts against every track this pass stands in for.
+            "FINDING: severity=medium; scope=in-scope; track=conformance; at=A.cs:1\nDefect: still not met.\n\n"
+            + "FINDING: severity=medium; scope=in-scope; track=adversarial; at=B.cs:2\nDefect: still present.\n\n"
+            + unplacedRideAlong + "VERDICT: needs-fixes");
+        bool mergeReady = await NewEngine(
+            store, executor,
+            new DaemonOptions { MaxComplianceReviewCycles = 2, MaxAdversarialReviewCycles = 2 })
+            .ReviewAsync(runId, taskId, cts.Token);
+
+        mergeReady.Should().BeFalse("both tracks are still continuing but already at their two-cycle cap");
+
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            session.Events.Append(runId, new ReviewParkResolved(
+                runId, ReviewVerdict.MergeReady, null, Now, DomainId.New()));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        ScriptedExecutor resumeExecutor = new();
+        mergeReady = await NewEngine(store, resumeExecutor).ReviewAsync(runId, taskId, cts.Token);
+
+        mergeReady.Should().BeTrue();
+
+        await using IQuerySession query = store.QuerySession();
+        RunDetails run = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
+        run.ReviewResidualsRideAlong.Should().Be(
+            1, "the Verify pass's one unplaced ride-along was reached once per track it stands in " +
+                "for, but it is still one reviewer statement, not two");
     }
 
     /// <summary>

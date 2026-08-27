@@ -46,15 +46,16 @@ public sealed record ReviewMode
 
     public static implicit operator string(ReviewMode? mode) => mode?.Value ?? string.Empty;
 
-    public static implicit operator ReviewMode(string? value) => value.IsBlank() ? Discovery : Parse(value);
-
-    /// <summary>Reads the stream's own word for the mode; anything unrecognized — including an old stream that never recorded one — reads as Discovery, the shape every cycle had before this field existed.</summary>
-    public static ReviewMode Parse(string? value) => value?.Trim() switch
-    {
-        "Verify" => Verify,
-        "FinalFullPass" => FinalFullPass,
-        _ => Discovery,
-    };
+    /// <summary>
+    /// Blank means the fact was never recorded — a stream written before this field existed — and
+    /// reads as Discovery, the only shape every cycle had then. Anything else round-trips as
+    /// itself (TASK-MODEL.md §8: old/new payloads round-trip as themselves), including a word this
+    /// build does not recognize: an older daemon reading a mode a later one added, or a value
+    /// corrupted in transit, is preserved rather than silently rewritten to Discovery, the same
+    /// preservation <see cref="ReviewSeverity"/> and <see cref="ReviewLens"/> already give their
+    /// own unrecognized payload words.
+    /// </summary>
+    public static implicit operator ReviewMode(string? value) => value.IsBlank() ? Discovery : new ReviewMode(value);
 
     public bool Equals(ReviewMode? other) => other is not null && Value == other.Value;
 
@@ -67,7 +68,7 @@ public sealed record ReviewMode
     private sealed class ReviewModeJsonConverter : JsonConverter<ReviewMode>
     {
         public override ReviewMode Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options) =>
-            Parse(reader.GetString());
+            reader.GetString();
 
         public override void Write(Utf8JsonWriter writer, ReviewMode value, JsonSerializerOptions options) =>
             writer.WriteStringValue(value.Value);

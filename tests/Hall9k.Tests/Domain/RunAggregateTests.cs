@@ -811,4 +811,35 @@ public sealed class RunAggregateTests
 
         run.RunDirectory.Should().Be(runDirectory);
     }
+
+    /// <summary>
+    /// PriorCycleHeadSha is what a Verify cycle's prompt points its "commits since the prior
+    /// cycle" instruction at (task: review cycles after the first) — it must hold the cycle
+    /// BEFORE the current one, not the current cycle's own head, or the range that instruction
+    /// builds always resolves to nothing.
+    /// </summary>
+    [Fact]
+    public void Prior_cycle_head_sha_lags_one_cycle_behind_and_survives_a_same_cycle_top_up()
+    {
+        RunAggregate run = new();
+        Guid id = DomainId.New();
+
+        run.Apply(new ReviewDispatched(
+            id, DomainId.New(), Cycle: 1, ProcessId: 5001, Now, Now, HeadSha: "sha1"));
+        run.CycleHeadSha.Should().Be("sha1");
+        run.PriorCycleHeadSha.Should().BeNull("cycle 1 has no cycle before it");
+
+        run.Apply(new ReviewDispatched(
+            id, DomainId.New(), Cycle: 2, ProcessId: 5002, Now, Now, HeadSha: "sha2"));
+        run.CycleHeadSha.Should().Be("sha2");
+        run.PriorCycleHeadSha.Should().Be("sha1", "cycle 2's own dispatch is what a Verify prompt reads the diff since");
+
+        // A crash-recovery top-up re-dispatches into the SAME cycle (ReviewEngine.DispatchMissingPassesAsync
+        // passes the cycle's own already-recorded head back in) — it must not move PriorCycleHeadSha
+        // to cycle 2's own head, or the range a Verify top-up's prompt builds collapses to nothing.
+        run.Apply(new ReviewDispatched(
+            id, DomainId.New(), Cycle: 2, ProcessId: 5003, Now, Now, HeadSha: "sha2"));
+        run.CycleHeadSha.Should().Be("sha2");
+        run.PriorCycleHeadSha.Should().Be("sha1", "topping up cycle 2 is not a new cycle starting");
+    }
 }

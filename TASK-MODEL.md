@@ -694,20 +694,27 @@ public sealed record TokensRecorded(     // from the stream-json result payload,
 
 // Pre-PR review loop (log #24) — appended by the daemon's ReviewEngine between the gates
 // and PullRequestOpener. Full findings text is a disk artifact (log #6), never payload.
-// A cycle runs one pass per still-active lens (log #59), so the dispatch and pass events
-// come one per lens while ReviewCompleted stays the cycle's single merged milestone. Each
-// lens is a track converging on its own terms (log #63): it concludes with its own event,
-// and the loop ends with one ReviewSettled saying how merge-ready was reached.
+// Only cycle 1 pays full discovery: a Discovery or FinalFullPass cycle runs one pass per
+// still-active lens (log #59), so the dispatch and pass events come one per lens, while a
+// middle Verify cycle dispatches exactly one, standing in for every still-active track
+// (task: review cycles after the first) — ReviewCompleted stays the cycle's single merged
+// milestone either way. Each lens is a track converging on its own terms (log #63): it
+// concludes with its own event, and the loop ends with one ReviewSettled saying how
+// merge-ready was reached.
 public sealed record ReviewDispatched(   // one review pass spawned over the diff, fresh session;
-    Guid Id,                             // one per lens, so a cycle appends two of these (log #59).
-    Guid SessionId,                      // -> UnderReview. Pid + start = adoption identity (log #2).
-    int Cycle,                           // review rounds, from 1
-    int ProcessId,
+    Guid Id,                             // one per lens for Discovery/FinalFullPass (two events);
+    Guid SessionId,                      // exactly one, under ReviewLens.Verify, for a Verify cycle.
+    int Cycle,                           // review rounds, from 1     -> UnderReview. Pid + start =
+    int ProcessId,                       // adoption identity (log #2).
     DateTimeOffset ProcessStartedAt,
     DateTimeOffset DispatchedAt,
     AgentModel? Model = null,            // resolved for the Review role in its own right (log #33)
-    ReviewLens? Lens = null);            // which attention budget this pass carries; null on streams
+    ReviewLens? Lens = null,             // which attention budget this pass carries; null on streams
                                          //   written before lenses existed (log #59)
+    ReviewMode? Mode = null,             // Discovery, Verify, or FinalFullPass (task: review cycles
+                                         //   after the first); null reads as Discovery
+    string? HeadSha = null);             // git rev-parse HEAD at spawn, best-effort — what the NEXT
+                                         //   cycle's Verify prompt (if any) reads "since" from
 public sealed record ReviewPassCompleted( // ONE lens of the cycle returned its verdict (log #59);
     Guid Id,                             // that lens's own findings artifact:
     int Cycle,                           // review-<cycle>-<lens>-findings.md in the run directory
@@ -764,10 +771,15 @@ public sealed record ReviewTrackConcluded( // one track finished and went dorman
     Guid Id,                             //   reviewer read the tip and found nothing; Settled = the
     ReviewLens Lens,                     //   severity gate, scope routing, or the run settling out
     int Cycle,                           //   from under a track still asking for another cycle. A
-    ReviewSettlement Settlement,         //   concluded track is never dispatched again and is never
-    IReadOnlyList<ReviewResidual>        //   reawakened by the other track's fix sessions.
-        Residuals,                       // what it ended on unconfirmed: grade, scope, and
-    DateTimeOffset ConcludedAt);         //   fixed-unreviewed vs routed
+    ReviewSettlement Settlement,         //   concluded track is never dispatched again by an ordinary
+    IReadOnlyList<ReviewResidual>        //   cycle and is never reawakened by the OTHER track's fix
+        Residuals,                       // sessions — only ReviewTrackReactivated, below, revives one.
+    DateTimeOffset ConcludedAt);         //   Residuals: grade, scope, and fixed-unreviewed vs routed.
+public sealed record ReviewTrackReactivated( // the mandatory FinalFullPass found a genuine new
+    Guid Id,                             //   defect on a track that had already concluded (task:
+    ReviewLens Lens,                     //   review cycles after the first) — the inverse of
+    int Cycle,                           //   ReviewTrackConcluded, not a replacement of its record:
+    DateTimeOffset ReactivatedAt);       //   the earlier conclusion stays on the stream as history.
 public sealed record ReviewFindingRouted( // an out-of-scope non-high went to a draft bug task instead
     Guid Id,                             //   of into this diff (log #63). DraftTaskId is null and
     ReviewLens Lens,                     //   FailureReason set when creation failed: routing is a
@@ -886,7 +898,17 @@ public sealed record ReviewVerdict      // MergeReady, NeedsFixes, Unknown (§3.
 public sealed record ReviewFixOutcome   // Fixed, Disputed, Unknown (§3.1)
 public sealed record ReviewLens         // Conformance, Adversarial (§3.1); Unknown = a pass recorded
                                         //   before lenses existed, which covers Conformance without
-                                        //   claiming it said so. CycleLenses is the seam (log #59)
+                                        //   claiming it said so. Verify is the pseudo-lens a Verify
+                                        //   cycle's one pass is recorded under, whose Covers answers
+                                        //   true for both real lenses (task: review cycles after the
+                                        //   first). CycleLenses (Conformance, Adversarial) is the
+                                        //   seam (log #59)
+public sealed record ReviewMode         // Discovery, Verify, FinalFullPass (§3.1, task: review
+                                        //   cycles after the first) — the shape a cycle's dispatch
+                                        //   took: two full passes, one verifying pass over the
+                                        //   prior cycle's own findings, or the mandatory pre-settle
+                                        //   full-rigor pass. Recorded on ReviewDispatched and
+                                        //   ReviewPassCompleted; only cycle 1 is ever Discovery.
 public sealed record HandoffOutcome     // Captured, NotAuthored, NotCaptured (§3.2),
                                         //   NotClosedOut (query-only: no run to ask yet), Unknown
 ```
@@ -904,15 +926,27 @@ Verified findings only (read the surrounding code, confirm the defect, discard t
 unconfirmed), each with file:line, a defect statement, and a concrete failure scenario,
 closed by a parsed `VERDICT:` line.
 
-**Every cycle runs one pass per lens** (log #59), and `ReviewLens.CycleLenses` is that
-list: **Conformance** asks whether the work meets its objective, its acceptance criteria,
-and repo doctrine, while **Adversarial** assumes the code is wrong somewhere and hunts
-defect classes without ever being told what the work was supposed to do. The passes are
-dispatched together and awaited one at a time, so a cycle costs the slower pass rather
+**Only cycle 1 pays full discovery** (task: review cycles after the first, origin: 576M
+input tokens in one day re-reading 12k-line diffs with two lenses to judge 40-line fixes).
+Cycle 1 is always `ReviewMode.Discovery`: one pass per lens, and `ReviewLens.CycleLenses`
+is that list — **Conformance** asks whether the work meets its objective, its acceptance
+criteria, and repo doctrine, while **Adversarial** assumes the code is wrong somewhere and
+hunts defect classes without ever being told what the work was supposed to do. The passes
+are dispatched together and awaited one at a time, so a cycle costs the slower pass rather
 than the sum. Each appends its own `ReviewDispatched` and its own `ReviewPassCompleted`
 carrying its lens and that lens's verdict; when the cycle's last pass lands, the findings
 merge into one document and the verdicts merge into one `ReviewCompleted`, appended in the
-same transaction as that last pass event. **MergeReady requires every lens clean.**
+same transaction as that last pass event. A middle cycle instead dispatches exactly one
+`ReviewMode.Verify` pass, recorded under the pseudo-lens `ReviewLens.Verify`, standing in
+for every still-active track — handed the prior cycle's own merged findings and fix
+summary so it verifies the fix and its blast radius rather than re-deriving the diff.
+Immediately before the run may settle, one mandatory `ReviewMode.FinalFullPass` cycle runs
+both lenses fresh regardless of which had already gone dormant, so nothing ships on
+delta-green alone; a track it reawakens with a real finding gets its own
+`ReviewTrackReactivated` rather than being left at its old conclusion, and its own cycle
+cap is measured from the cycle it was reawakened at, not the run's absolute cycle count, so
+it gets a genuine chance to fix what that pass found. A run that converges clean at cycle 1
+pays no extra pass at all. **MergeReady requires every lens clean.**
 
 - **merge-ready** → that track concludes Clean and goes dormant; when the last track does,
   `ReviewSettled` records how the loop ended and `PullRequestOpener` proceeds (§2.2 follows).
