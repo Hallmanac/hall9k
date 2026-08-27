@@ -445,6 +445,7 @@ h9k project set myproject --max-parallel 2
 h9k project set myproject --skip-permissions true
 h9k project set myproject --link "api-conventions=https://…"
 h9k project set myproject --jira PROJ
+h9k project set myproject --backlog github-issues
 h9k project set myproject --rerequest-review on
 
 h9k owner set --rerequest-review on
