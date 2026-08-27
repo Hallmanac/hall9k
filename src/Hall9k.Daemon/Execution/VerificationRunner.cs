@@ -84,8 +84,10 @@ public sealed class VerificationRunner(
                 // it can just as easily be a brand-new source file the session forgot to `git
                 // add` — the prompt rule promises the platform names "anything left modified but
                 // uncommitted", so silence here would be a real gap. This never fails the run:
-                // git status is run with untracked files fully reported, and it is
-                // ListUncommittedFilesAsync below that classifies `?? ` entries into this
+                // git status is run with `--untracked-files=all`, so a new file inside a wholly
+                // untracked directory is reported by its own path rather than collapsed into one
+                // directory entry (conformance review, independent pre-PR review cycle 2), and it
+                // is ListUncommittedFilesAsync below that classifies `?? ` entries into this
                 // separate warn-only list, precisely so a retry cannot be permanently
                 // unclearable on a byproduct the gates regenerate every run.
                 logger.LogWarning(
@@ -331,10 +333,13 @@ public sealed class VerificationRunner(
 
     /// <summary>
     /// Every tracked file the worktree holds modified or staged at session end (backlog 57),
-    /// plus, separately, every untracked one — `git status --porcelain -z`, NUL-separated
-    /// rather than the default newline-and-quote form so a path holding a space or a non-ASCII
-    /// character (`core.quotePath`'s octal-escaping) comes back verbatim instead of quoted
-    /// (conformance review finding). A rename or copy entry emits the new path first and the
+    /// plus, separately, every untracked one — `git status --porcelain -z --untracked-files=all`,
+    /// NUL-separated rather than the default newline-and-quote form so a path holding a space or
+    /// a non-ASCII character (`core.quotePath`'s octal-escaping) comes back verbatim instead of
+    /// quoted (conformance review finding), and with untracked files fully expanded rather than
+    /// collapsed to one entry per new directory, so a brand-new vertical slice never `git add`ed
+    /// is named file by file (conformance review, independent pre-PR review cycle 2). A rename or
+    /// copy entry emits the new path first and the
     /// old path as a second NUL-terminated field with no ` -&gt; ` marker; the old path is
     /// consumed and discarded, since the new path is the one that still exists. Untracked
     /// files are reported separately rather than folded into the failing list: a gate's own
@@ -350,7 +355,10 @@ public sealed class VerificationRunner(
         ListUncommittedFilesAsync(string worktreePath, CancellationToken cancellationToken)
     {
         (int exitCode, string output) =
-            await RunGitAsync(worktreePath, ["status", "--porcelain", "-z"], cancellationToken);
+            await RunGitAsync(
+                worktreePath,
+                ["status", "--porcelain", "-z", "--untracked-files=all"],
+                cancellationToken);
         if (exitCode != 0)
         {
             return (null, []);
