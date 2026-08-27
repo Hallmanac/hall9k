@@ -64,6 +64,9 @@ namespace Hall9k.Daemon.Review;
 /// (<see cref="Events.ReviewTrackReactivated"/>) rather than left stuck at an old conclusion. Which
 /// mode a cycle ran under is a deterministic engine decision, recorded on <see cref="Events.ReviewDispatched"/>
 /// and <see cref="Events.ReviewPassCompleted"/> — only the review content itself is agent judgment.
+/// A reactivation resets that track's own cap (<see cref="RunAggregate.TrackBudgetBaseCycle"/>), so
+/// the mandatory final pass has its own independent bound (<see cref="DaemonOptions.MaxFinalFullPassRounds"/>,
+/// <see cref="FinalFullPassCapReached"/>) rather than relying on a per-track cap it can keep resetting.
 /// </para>
 /// </summary>
 public sealed class ReviewEngine(
@@ -184,6 +187,19 @@ public sealed class ReviewEngine(
                     // outright (MaySettle's own doc says why the human case is exempt).
                     if (!MaySettle(run))
                     {
+                        // The per-track cycle caps cannot bound this on their own (cycle-3 finding):
+                        // a track the final pass keeps reawakening gets its budget base bumped by
+                        // that very reactivation (RunAggregate.TrackBudgetBaseCycle's own doc), so it
+                        // never trips its own cap. FinalFullPassCapReached is the independent bound
+                        // that stops the two-full-passes-plus-fix-session iteration from recurring
+                        // forever.
+                        if (FinalFullPassCapReached(run))
+                        {
+                            await ParkAsync(
+                                context.RunId, context.TaskId, FinalFullPassCapParkReason(run), cancellationToken);
+                            return false;
+                        }
+
                         string? settlingHeadSha =
                             await GetWorktreeHeadShaAsync(context.Run.WorktreePath, cancellationToken);
                         if (!await DispatchReviewPassesAsync(
@@ -271,6 +287,17 @@ public sealed class ReviewEngine(
                     ReviewMode reverifyMode = run.ReviewCycle == 0
                         ? ReviewMode.Discovery
                         : run.ActiveReviewLenses.Count == 0 ? ReviewMode.FinalFullPass : ReviewMode.Verify;
+                    // Same independent bound as the Settling branch above, checked here too: a run
+                    // can reach a FinalFullPass dispatch straight from Reverify (every track just
+                    // concluded again without ever passing back through Settling), and the per-track
+                    // caps still cannot catch a track the final pass itself keeps reawakening.
+                    if (reverifyMode == ReviewMode.FinalFullPass && FinalFullPassCapReached(run))
+                    {
+                        await ParkAsync(
+                            context.RunId, context.TaskId, FinalFullPassCapParkReason(run), cancellationToken);
+                        return false;
+                    }
+
                     IReadOnlyList<ReviewLens> reverifyLenses = reverifyMode == ReviewMode.Verify
                         ? run.ActiveReviewLenses
                         : ReviewLens.CycleLenses;
@@ -2034,6 +2061,35 @@ public sealed class ReviewEngine(
     private ReviewLens? CappedTrack(RunAggregate run) =>
         run.ActiveReviewLenses.FirstOrDefault(lens =>
             ReviewTrackPolicy.CapReached(lens, run.ReviewCycle, run.TrackBudgetBaseCycle(lens), _options));
+
+    /// <summary>
+    /// Whether the mandatory <see cref="ReviewMode.FinalFullPass"/> has already run as many times
+    /// as <see cref="DaemonOptions.MaxFinalFullPassRounds"/> allows (task: review cycles after the
+    /// first, cycle-3 finding). This is deliberately independent of <see cref="CappedTrack"/>: a
+    /// track the final pass keeps reawakening has its own budget base bumped by that very
+    /// reactivation (<see cref="RunAggregate.TrackBudgetBaseCycle"/>'s own doc says why), so it can
+    /// keep passing <see cref="ReviewTrackPolicy.CapReached"/> forever while the mandatory pass
+    /// itself never stops re-running — this is the bound that catches that instead.
+    /// </summary>
+    private bool FinalFullPassCapReached(RunAggregate run) =>
+        run.FinalFullPassRounds >= _options.MaxFinalFullPassRounds;
+
+    /// <summary>
+    /// Why hitting <see cref="FinalFullPassCapReached"/> parks the run: not a spent budget in the
+    /// ordinary sense, but the mandatory full-rigor read repeatedly finding something new just as
+    /// the run is about to settle — worth a human's look rather than another automatic round.
+    /// </summary>
+    private string FinalFullPassCapParkReason(RunAggregate run)
+    {
+        string findings = RunPaths.ReviewFindingsFile(ParkedRunDirectory(run), run.ReviewCycle);
+        return $"The mandatory final full review pass has now run {run.FinalFullPassRounds} time(s) " +
+            $"without the run ever reaching a clean settle — its cap. A track keeps being reawakened " +
+            "just as the loop is about to conclude, which either means the fixes keep introducing new " +
+            "issues or the loop is oscillating; either way it is worth a human's look rather than " +
+            $"another automatic round. Unresolved findings: {findings}. Fix in the worktree and " +
+            "resolve with h9k review resolve --merge-ready, grant a fresh round with --needs-fixes, " +
+            "or abandon the task.";
+    }
 
     /// <summary>
     /// Why a capped track parks, in that track's own terms. The two caps mean different things

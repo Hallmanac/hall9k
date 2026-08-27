@@ -211,6 +211,16 @@ public sealed class RunAggregate
     public int TrackBudgetBaseCycle(ReviewLens lens) =>
         Math.Max(ReviewBudgetBaseCycle, _trackReactivatedAtCycle.GetValueOrDefault(lens));
 
+    /// <summary>
+    /// How many cycles this run has dispatched as the mandatory <see cref="ReviewMode.FinalFullPass"/>
+    /// (task: review cycles after the first, cycle-3 finding) — an independent bound alongside the
+    /// per-track cycle caps, because <see cref="Events.ReviewTrackReactivated"/> deliberately resets
+    /// <see cref="TrackBudgetBaseCycle"/> (that field's own doc says why), which means a track the
+    /// final pass keeps reawakening never trips its own cap on its own. Counted per cycle, not per
+    /// lens: a FinalFullPass cycle dispatches two passes but is one round of the mandatory read.
+    /// </summary>
+    public int FinalFullPassRounds { get; private set; }
+
     /// <summary>This cycle's findings that are still owed a fix session — the loop's "is there anything to fix" (log #63).</summary>
     public int PendingFixFindings =>
         _completedReviewPasses.Sum(pass =>
@@ -656,6 +666,10 @@ public sealed class RunAggregate
         _completedReviewPasses.Clear();
         _cycleHasPassMilestones = false;
         _fixDispatchedThisCycle = false;
+        if (mode == ReviewMode.FinalFullPass)
+        {
+            FinalFullPassRounds++;
+        }
     }
 
     private void AddInFlightPass(

@@ -247,6 +247,13 @@ reactivated rather than left stuck at an earlier conclusion, and a run that conv
 cycle 1 pays no extra pass at all. Which shape a cycle ran under — Discovery, Verify, or
 FinalFullPass — is a deterministic engine decision recorded on the run stream.
 
+Reawakening a track deliberately gives it a fresh per-track cycle budget, measured from the cycle
+it was reawakened at rather than the run's absolute cycle count, so it gets a genuine chance to fix
+what the mandatory pass found. That relaxation means the per-track cap alone cannot bound a track
+the mandatory pass keeps reawakening cycle after cycle, so the mandatory pass carries its own
+separate round cap: however many times it has run for this run, hitting that count without ever
+settling parks the run for a human, the same way a capped track does.
+
 Findings must be verified: read the surrounding code, confirm the defect, discard the
 unconfirmed. Each carries a `file:line`, a defect statement, and a concrete failure scenario.
 
@@ -303,7 +310,7 @@ as it would have anyway. De-escalation is automatic the moment a later round mov
 genuinely different finding, with no separate reset step. `h9k task show` prints a "Fix
 escalation" line while the newest run's most recent fix dispatch escalated this way.
 
-Depth: [TASK-MODEL.md §3.1](../TASK-MODEL.md), Decisions Log #24, #59, #62, #63, #88, #90, #91.
+Depth: [TASK-MODEL.md §3.1](../TASK-MODEL.md), Decisions Log #24, #59, #62, #63, #88, #90, #92, #93.
 
 ## Closeout
 

@@ -946,7 +946,11 @@ delta-green alone; a track it reawakens with a real finding gets its own
 `ReviewTrackReactivated` rather than being left at its old conclusion, and its own cycle
 cap is measured from the cycle it was reawakened at, not the run's absolute cycle count, so
 it gets a genuine chance to fix what that pass found. A run that converges clean at cycle 1
-pays no extra pass at all. **MergeReady requires every lens clean.**
+pays no extra pass at all. Because that relaxation means a track's own cap can never bound
+a track the mandatory pass keeps reawakening, `FinalFullPass` carries an independent cap of
+its own, `MaxFinalFullPassRounds` (3): however many cycles have run as `FinalFullPass`,
+hitting that count without ever settling parks the run for a human, exactly like a capped
+track does. **MergeReady requires every lens clean.**
 
 - **merge-ready** → that track concludes Clean and goes dormant; when the last track does,
   `ReviewSettled` records how the loop ended and `PullRequestOpener` proceeds (§2.2 follows).

@@ -125,6 +125,19 @@ public sealed class DaemonOptions
     public int MaxAdversarialReviewCycles { get; set; } = 10;
 
     /// <summary>
+    /// Rounds the mandatory <see cref="ReviewMode.FinalFullPass"/> may run before the run
+    /// parks for a human (task: review cycles after the first, cycle-3 finding: the per-track
+    /// cycle caps are measured from <see cref="RunAggregate.TrackBudgetBaseCycle"/>, which a
+    /// <see cref="Hall9k.Domain.Features.Run.Events.ReviewTrackReactivated"/> deliberately resets — by design
+    /// (<see cref="RunAggregate.TrackBudgetBaseCycle"/>'s own doc) — so a track the final pass
+    /// keeps reawakening never trips its own cap, and the two-full-passes-plus-fix-session
+    /// iteration could otherwise recur without end. This is the independent bound that ends it:
+    /// however many times the mandatory pass has run for this run, once it reaches this count
+    /// without ever settling, a human looks rather than the loop grinding forever.
+    /// </summary>
+    public int MaxFinalFullPassRounds { get; set; } = 3;
+
+    /// <summary>
     /// The first adversarial cycle the severity gate applies to (Decisions Log #63). A Low or an
     /// ungraded finding rides along instead of being fixed on its own at every cycle, gate or no
     /// gate (Decisions Log #87) — the gate does not turn that rule on. What the gate changes is
