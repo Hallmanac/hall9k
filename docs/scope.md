@@ -60,11 +60,17 @@ the reason kept. Provenance is recorded in both directions.
 ### External work items
 
 `h9k task add --from-issue` adopts a GitHub issue; `--from-jira` adopts a Jira card. Both are
-one-time snapshots that never re-check, and neither invents acceptance criteria. Jira is
-connected as a read credential plus an agent-mediated pen: `h9k task push-to-jira` dispatches a
-session that writes the card in the project's own repository, and `h9k task link-jira` reads the
-key back through the connection before recording anything. When a task carrying a Jira reference
-merges, closeout comments the pull request on the card.
+one-time snapshots that never re-check, and neither invents acceptance criteria. A project
+declares a backlog policy (`h9k project set --backlog none|github-issues|jira`), and every task
+published under one is tracked automatically: `github-issues` has the platform author the issue
+itself, deterministically, since an issue's shape is uniform; `jira` dispatches the same
+agent-mediated push a human can also run by hand with `h9k task push-to-jira`, which writes the
+card in the project's own repository. Either way, `h9k task link-issue` / `h9k task link-jira`
+reads the item back through gh or the registered connection before recording anything — an
+agent's claim, or the platform's own creation call, is never taken as the recorded fact. An
+adopted task never gets a second item created for it. When a task carrying an external reference
+merges, closeout comments the pull request on it (GitHub issue or Jira card alike) and never
+closes or transitions it.
 
 ### Recovery
 
@@ -76,8 +82,9 @@ of them is automatic.
 
 Per-project and per-owner settings resolving most-specific-wins over a node default: verification
 gates, agent model per role, parallelism, commit style, context links, skip-permissions, the Jira
-board binding, and the post-fix review re-request policy. The node has a session ceiling the
-dispatcher respects, counted in agent sessions rather than runs.
+board binding, the backlog policy and its free-text routing guidance, and the post-fix review
+re-request policy. The node has a session ceiling the dispatcher respects, counted in agent
+sessions rather than runs.
 
 ### Installation and release delivery
 
