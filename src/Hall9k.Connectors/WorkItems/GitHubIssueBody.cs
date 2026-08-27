@@ -1,3 +1,5 @@
+using Hall9k.Connectors.Text;
+
 namespace Hall9k.Connectors.WorkItems;
 
 /// <summary>
@@ -14,13 +16,18 @@ public static class GitHubIssueBody
         List<string> sections = [];
         if (agentContext.IsNotBlank())
         {
-            sections.Add(agentContext.Trim());
+            sections.Add(RelayedText.Printable(agentContext.Trim()));
         }
 
         if (acceptanceCriteria.Count > 0)
         {
+            // Each criterion goes through RelayedText.OneLine, the same rule
+            // Hall9k.Daemon.Execution.PullRequestBody applies to a checklist item: a criterion
+            // free to carry its own newline could otherwise break out of the list item it is
+            // meant to be, opening a heading or a second list underneath it.
             sections.Add(
-                "## Acceptance criteria\n\n" + string.Join('\n', acceptanceCriteria.Select(c => $"- {c}")));
+                "## Acceptance criteria\n\n"
+                + string.Join('\n', acceptanceCriteria.Select(c => $"- [ ] {RelayedText.OneLine(c)}")));
         }
 
         return string.Join("\n\n", sections);
