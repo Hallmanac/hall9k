@@ -277,7 +277,17 @@ reviewer just caught. A thread-dispute park (Decisions Log #62) is the one park 
 part in this: it settles a disputed comment thread before any reviewer ever reads the diff, not a
 review finding, so its resolution is not carried forward as a settled ruling.
 
-Depth: [TASK-MODEL.md §3.1](../TASK-MODEL.md), Decisions Log #24, #59, #62, #63, #88.
+**A repeat fix round over the same findings escalates to the review role's model (Decisions Log
+#89).** When a fix session dispatches over substantially the same findings its immediately
+preceding fix round already tried — the same location an automated pass keeps returning, or a
+human's own `--needs-fixes` reason restating it — that fix session runs on the review role's
+model instead of the fix role's, so the observed dodge-and-redo failure mode (a weaker model
+sidestepping a defect rather than fixing it) gets a stronger model exactly where it recurs.
+De-escalation is automatic the moment a later round moves on to a genuinely different finding, with
+no separate reset step. `h9k task show` prints a "Fix escalation" line while the newest run's most
+recent fix dispatch escalated this way.
+
+Depth: [TASK-MODEL.md §3.1](../TASK-MODEL.md), Decisions Log #24, #59, #62, #63, #88, #89.
 
 ## Closeout
 
