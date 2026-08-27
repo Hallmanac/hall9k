@@ -1,5 +1,6 @@
 using FluentAssertions;
 using Hall9k.Cli.Diagnostics;
+using Hall9k.Tests.Fakes;
 using Xunit;
 
 namespace Hall9k.Tests.Cli;
@@ -25,7 +26,8 @@ public sealed class DatabaseDoctorReadinessTests
             return Task.FromResult(Reachable());
         }
 
-        bool ready = await DatabaseDoctor.WaitForReadinessAsync(Probe, Timeout, PollInterval, CancellationToken.None);
+        bool ready = await DatabaseDoctor.WaitForReadinessAsync(
+            Probe, Timeout, PollInterval, TimeProvider.System, CancellationToken.None);
 
         ready.Should().BeTrue();
         calls.Should().Be(1, "a container that is ready immediately needs exactly one probe, not a wasted poll");
@@ -41,7 +43,13 @@ public sealed class DatabaseDoctorReadinessTests
             return Task.FromResult(calls < 3 ? RefusedConnection() : Reachable());
         }
 
-        bool ready = await DatabaseDoctor.WaitForReadinessAsync(Probe, Timeout, PollInterval, CancellationToken.None);
+        // A clock that advances one poll interval per read, not the wall clock: the third
+        // probe's readiness must land inside the timeout regardless of how slow the runner
+        // actually is (origin incident: raced the real clock and failed on a loaded
+        // windows-latest CI runner, GitHub Actions run 32897678640).
+        SteppingClock clock = new(PollInterval);
+
+        bool ready = await DatabaseDoctor.WaitForReadinessAsync(Probe, Timeout, PollInterval, clock, CancellationToken.None);
 
         ready.Should().BeTrue("readiness that arrives on the third probe is still well inside the timeout");
         calls.Should().Be(3, "the loop must keep polling — a slow start is not the same as a dead one");
@@ -52,7 +60,8 @@ public sealed class DatabaseDoctorReadinessTests
     {
         Task<ReachabilityReport> Probe(CancellationToken token) => Task.FromResult(RefusedConnection());
 
-        bool ready = await DatabaseDoctor.WaitForReadinessAsync(Probe, Timeout, PollInterval, CancellationToken.None);
+        bool ready = await DatabaseDoctor.WaitForReadinessAsync(
+            Probe, Timeout, PollInterval, TimeProvider.System, CancellationToken.None);
 
         ready.Should().BeFalse("a container that never answers must time out rather than poll forever");
     }
@@ -68,7 +77,7 @@ public sealed class DatabaseDoctorReadinessTests
         }
 
         Func<Task> waiting = () => DatabaseDoctor.WaitForReadinessAsync(
-            Probe, TimeSpan.FromSeconds(30), PollInterval, cancellation.Token);
+            Probe, TimeSpan.FromSeconds(30), PollInterval, TimeProvider.System, cancellation.Token);
 
         await waiting.Should().ThrowAsync<OperationCanceledException>(
             "cancelling the caller's token must interrupt the poll rather than waiting out the full 30s timeout");
@@ -85,7 +94,8 @@ public sealed class DatabaseDoctorReadinessTests
             return Task.FromResult(Reachable());
         }
 
-        await DatabaseDoctor.WaitForReadinessAsync(Probe, Timeout, PollInterval, cancellation.Token);
+        await DatabaseDoctor.WaitForReadinessAsync(
+            Probe, Timeout, PollInterval, TimeProvider.System, cancellation.Token);
 
         tokenSeenByProbe.Should().Be(cancellation.Token,
             "the probe has to be cancellable by the same token as the wait, or a caller cancelling never stops it");
