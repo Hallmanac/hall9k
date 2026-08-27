@@ -129,4 +129,14 @@ public sealed class PullRequestMonitorTests
             .Should().Be(Base, "a zero or negative interval would otherwise hand PeriodicTimer's " +
                 "constructor a value it rejects, crashing the monitor before a single sweep ran");
     }
+
+    [Fact]
+    public void A_configured_interval_above_what_PeriodicTimer_accepts_is_clamped_down_to_it()
+    {
+        PullRequestMonitor.ClampPollInterval(TimeSpan.FromDays(60), NullLogger.Instance)
+            .Should().Be(PullRequestMonitor.MaxSupportedInterval,
+                "PullRequestPollInterval=60 meaning minutes lands as 60 days once bound as a bare-integer " +
+                "TimeSpan, which PeriodicTimer's constructor rejects outright, crashing the monitor before " +
+                "a single sweep ran");
+    }
 }
