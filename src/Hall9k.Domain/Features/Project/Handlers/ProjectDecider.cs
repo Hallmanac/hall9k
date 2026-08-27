@@ -120,9 +120,13 @@ public static class ProjectDecider
 
         // Unknown is not a value here — None is (BacklogPolicy has no separate "no opinion"
         // level to defer to), so the closed set is exactly the three static instances, checked
-        // the same way CommitStyle and AgentModel are: the value reaches an agent's prompt and,
-        // for github-issues, a `gh` command line, so a policy built some way other than Parse or
-        // FromInput is refused here rather than trusted.
+        // the same way CommitStyle and AgentModel are: BacklogPolicy itself is only ever compared
+        // against its own statics (== / !=), never interpolated anywhere, so a policy built some
+        // way other than Parse or FromInput is refused here rather than trusted, on the same
+        // discipline as its siblings above. What actually reaches an agent's prompt and, for
+        // github-issues, a `gh` command line, is BacklogRoutingGuidance — deliberately left
+        // unvalidated as free-text guidance, since it is the operator's routing instructions
+        // rather than a closed set.
         if (backlogPolicy.HasValue
             && backlogPolicy.Value is { } chosenBacklogPolicy
             && chosenBacklogPolicy != BacklogPolicy.None
