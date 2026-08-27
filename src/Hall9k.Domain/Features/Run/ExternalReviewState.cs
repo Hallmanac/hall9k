@@ -40,7 +40,11 @@ public sealed record ExternalReviewState
     /// <summary>Neither a landed, requested, nor stale Copilot review is on the pull request right now.</summary>
     public static readonly ExternalReviewState None = new("None");
 
-    /// <summary>Not recognized, or a run recorded before this observation existed. Serializes as an empty string.</summary>
+    /// <summary>
+    /// No classifiable observation: not recognized, a run recorded before this observation
+    /// existed, a sweep that has not landed yet, or a sweep that read a Copilot review it could
+    /// not compare against the head commit. Serializes as an empty string.
+    /// </summary>
     public static readonly ExternalReviewState Unknown = new("");
 
     public string Value { get; }

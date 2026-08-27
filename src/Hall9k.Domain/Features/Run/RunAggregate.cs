@@ -53,8 +53,8 @@ public sealed class RunAggregate
 
     /// <summary>
     /// The post-PR review watcher's latest read of Copilot's review state (Landed,
-    /// RequestedPending, None) — read only by the Delivered phase line, never a lifecycle
-    /// status and never a driver of <see cref="State"/>.
+    /// RequestedPending, Stale, None, or Unknown) — read only by the Delivered phase line,
+    /// never a lifecycle status and never a driver of <see cref="State"/>.
     /// </summary>
     public ExternalReviewState ExternalReviewState { get; private set; } = ExternalReviewState.Unknown;
 

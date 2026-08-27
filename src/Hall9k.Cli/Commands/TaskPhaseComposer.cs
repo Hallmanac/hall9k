@@ -260,12 +260,14 @@ internal static class TaskPhaseComposer
 
     /// <summary>
     /// What the post-PR review watcher has observed about Copilot's review, while nothing else
-    /// has moved the run off AwaitingReview (Decisions Log #90). Unknown is a run recorded
-    /// before this observation existed, or the sweep that would have recorded it has not run
-    /// yet — strictly less information than None (a sweep that looked and found nothing), so
-    /// it must not claim more than None does. The pre-this-branch line it replaces asserted
-    /// "waiting on your merge" here, which is exactly the all-clear None's own comment below
-    /// already refuses to assert; Unknown reads the identical conservative way instead.
+    /// has moved the run off AwaitingReview (Decisions Log #90). Unknown covers a run recorded
+    /// before this observation existed, a sweep that has not run yet, and a sweep that read a
+    /// Copilot review it could not compare against the head commit — strictly less information
+    /// than None (a sweep that looked and found nothing), so it must not claim either that
+    /// nothing was recorded or that a clean pull request was observed. The pre-this-branch line
+    /// it replaces asserted "waiting on your merge" here, which is exactly the all-clear None's
+    /// own comment below already refuses to assert; Unknown reads the identical conservative
+    /// way instead.
     /// </summary>
     private static TaskPhase AwaitingReviewPhase(string pullRequest, RunDetails run) => run.ExternalReviewState.Value switch
     {
@@ -290,11 +292,13 @@ internal static class TaskPhaseComposer
                 SessionLiveness.NotApplicable, "no external review activity observed; its checks may still be reporting")
             : new TaskPhase($"watching {pullRequest} — awaiting human review",
                 SessionLiveness.NotApplicable, "no external review activity observed"),
-        // Unknown carries even less than None: no sweep has recorded an observation at all, so
-        // asserting the human's merge is the last gate here would be the same unfounded claim
-        // the None arm above refuses to make, on a row that has been watched even less.
+        // Unknown carries even less than None: either no sweep has recorded an observation at
+        // all, or a sweep read a Copilot review it could not compare against the head commit —
+        // in neither case is there confirmed review activity to report, so asserting the human's
+        // merge is the last gate here would be the same unfounded claim the None arm above
+        // refuses to make.
         _ => new TaskPhase($"watching {pullRequest}",
-            SessionLiveness.NotApplicable, "no external review observation recorded yet; its checks may still be reporting"),
+            SessionLiveness.NotApplicable, "no confirmed review observation recorded; its checks may still be reporting"),
     };
 
     /// <summary>

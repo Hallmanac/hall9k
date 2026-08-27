@@ -373,7 +373,7 @@ public sealed class AttentionSurfaceTests
         // on every pull request the platform opens, since CI is pending the moment one does.
         row.Attention.Cause.Should().NotContain("observed");
         row.Phase.Text.Should().Be("watching PR #24");
-        row.Phase.Detail.Should().Be("no external review observation recorded yet; its checks may still be reporting");
+        row.Phase.Detail.Should().Be("no confirmed review observation recorded; its checks may still be reporting");
     }
 
     /// <summary>
@@ -432,7 +432,7 @@ public sealed class AttentionSurfaceTests
         reviewStale.Attention.NeedsYou.Should().BeTrue("a stale review still leaves the checks and merge for a human to read");
         reviewStale.Attention.Cause.Should().Contain("Copilot reviewed an earlier commit and the review is stale");
         reviewStale.Attention.Cause.Should().Contain("1 comment thread");
-        reviewStale.Attention.Cause.Should().NotContain("nothing has been recorded against this pull request yet");
+        reviewStale.Attention.Cause.Should().NotContain("no confirmed review activity recorded");
     }
 
     /// <summary>

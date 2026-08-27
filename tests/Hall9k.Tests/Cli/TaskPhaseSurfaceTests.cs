@@ -444,14 +444,15 @@ public sealed class TaskPhaseSurfaceTests
         StatusFixtures.Compose(StatusFixtures.Task(TaskState.Done, runId, pullRequest), none)
             .Phase.Detail.Should().Be("no external review activity observed");
 
-        // A run recorded before this observation existed (or a sweep that has not run yet)
+        // A run recorded before this observation existed (or a sweep that has not run yet, or
+        // a sweep that read a Copilot review it could not compare against the head commit)
         // carries even less information than "None" (a sweep that looked and found nothing),
         // so it must not claim more than None does either — the never-guess rule.
         RunDetails unobserved = StatusFixtures.Run(runId, RunState.AwaitingReview, sessionProcessId: null, pullRequestNumber: 24);
         StatusFixtures.Compose(StatusFixtures.Task(TaskState.Done, runId, pullRequest), unobserved)
             .Phase.Text.Should().Be("watching PR #24");
         StatusFixtures.Compose(StatusFixtures.Task(TaskState.Done, runId, pullRequest), unobserved)
-            .Phase.Detail.Should().Be("no external review observation recorded yet; its checks may still be reporting");
+            .Phase.Detail.Should().Be("no confirmed review observation recorded; its checks may still be reporting");
     }
 
     [Fact]
