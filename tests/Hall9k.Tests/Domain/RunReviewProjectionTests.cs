@@ -228,7 +228,7 @@ public sealed class RunReviewProjectionTests
     /// most recent, and cleared the moment a later fix round de-escalates.
     /// </summary>
     [Fact]
-    public void Run_details_records_the_most_recent_fix_dispatchs_escalation()
+    public void Run_details_records_the_most_recent_fix_dispatches_escalation()
     {
         RunDetailsProjection projection = new();
         Guid id = DomainId.New();
