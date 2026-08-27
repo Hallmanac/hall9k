@@ -184,4 +184,57 @@ public sealed class ProjectDeciderTests
             baseBranch: "main", registeredAt: Now));
         return project;
     }
+
+    [Fact]
+    public void ChangeSettings_rejects_a_backlog_policy_outside_the_vocabulary()
+    {
+        Action act = () => ProjectDecider.ChangeSettings(
+            Registered(), Optional<IReadOnlyList<VerifyCommand>>.None, Optional<bool>.None,
+            Optional<int>.None, Optional<IReadOnlyList<ContextLink>>.None, Now, DomainId.New(),
+            backlogPolicy: Optional<BacklogPolicy>.Of("trello"));
+
+        act.Should().Throw<DomainValidationException>().WithMessage("*None*GitHubIssues*Jira*");
+    }
+
+    [Fact]
+    public void ChangeSettings_carries_a_backlog_policy_and_lets_none_clear_it()
+    {
+        ProjectAggregate project = Registered();
+
+        ProjectSettingsChanged set = ProjectDecider.ChangeSettings(
+            project, Optional<IReadOnlyList<VerifyCommand>>.None, Optional<bool>.None,
+            Optional<int>.None, Optional<IReadOnlyList<ContextLink>>.None, Now, DomainId.New(),
+            backlogPolicy: Optional<BacklogPolicy>.Of(BacklogPolicy.GitHubIssues));
+        project.Apply(set);
+        project.BacklogPolicy.Should().Be(BacklogPolicy.GitHubIssues);
+
+        ProjectSettingsChanged cleared = ProjectDecider.ChangeSettings(
+            project, Optional<IReadOnlyList<VerifyCommand>>.None, Optional<bool>.None,
+            Optional<int>.None, Optional<IReadOnlyList<ContextLink>>.None, Now, DomainId.New(),
+            backlogPolicy: Optional<BacklogPolicy>.Of(BacklogPolicy.None));
+        project.Apply(cleared);
+        project.BacklogPolicy.Should().Be(BacklogPolicy.None, "none is both the default and the explicit stop");
+
+        ProjectSettingsChanged untouched = ProjectDecider.ChangeSettings(
+            project, Optional<IReadOnlyList<VerifyCommand>>.None, Optional<bool>.None,
+            Optional<int>.None, Optional<IReadOnlyList<ContextLink>>.None, Now, DomainId.New());
+        untouched.BacklogPolicy.HasValue.Should().BeFalse("an option not passed leaves the setting alone");
+    }
+
+    [Fact]
+    public void ChangeSettings_lets_a_blank_routing_guidance_clear_it()
+    {
+        ProjectAggregate project = Registered();
+        project.Apply(ProjectDecider.ChangeSettings(
+            project, Optional<IReadOnlyList<VerifyCommand>>.None, Optional<bool>.None,
+            Optional<int>.None, Optional<IReadOnlyList<ContextLink>>.None, Now, DomainId.New(),
+            backlogRoutingGuidance: Optional<string>.Of("epic-first")));
+        project.BacklogRoutingGuidance.Should().Be("epic-first");
+
+        project.Apply(ProjectDecider.ChangeSettings(
+            project, Optional<IReadOnlyList<VerifyCommand>>.None, Optional<bool>.None,
+            Optional<int>.None, Optional<IReadOnlyList<ContextLink>>.None, Now, DomainId.New(),
+            backlogRoutingGuidance: Optional<string>.Of(string.Empty)));
+        project.BacklogRoutingGuidance.Should().BeNull("present but empty clears it, the ContextLinks/JiraProjectKey idiom");
+    }
 }

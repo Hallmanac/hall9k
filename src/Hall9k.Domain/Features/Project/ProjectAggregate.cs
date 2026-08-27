@@ -31,6 +31,10 @@ public sealed class ProjectAggregate
     /// what ends that state.
     /// </summary>
     public ProjectHome HomeDirectory { get; private set; } = ProjectHome.None;
+    /// <summary>Where a published task's work becomes visible outside Hall9k; None is the platform's original behavior.</summary>
+    public BacklogPolicy BacklogPolicy { get; private set; } = BacklogPolicy.None;
+    /// <summary>Free-text routing guidance handed verbatim to the Jira agent; a label list for github-issues.</summary>
+    public string? BacklogRoutingGuidance { get; private set; }
     public DateTimeOffset RegisteredAt { get; private set; }
 
     private readonly List<VerifyCommand> _verifyCommands = [];
@@ -104,6 +108,16 @@ public sealed class ProjectAggregate
         if (@event.RepositoryPath.HasValue && @event.RepositoryPath.Value.IsNotBlank())
         {
             RepositoryPath = @event.RepositoryPath.Value;
+        }
+
+        if (@event.BacklogPolicy.HasValue)
+        {
+            BacklogPolicy = @event.BacklogPolicy.Value ?? BacklogPolicy.None;
+        }
+
+        if (@event.BacklogRoutingGuidance.HasValue)
+        {
+            BacklogRoutingGuidance = @event.BacklogRoutingGuidance.Value.IsBlank() ? null : @event.BacklogRoutingGuidance.Value;
         }
     }
 }

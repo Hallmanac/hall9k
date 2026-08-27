@@ -15,6 +15,13 @@ namespace Hall9k.Domain.Features.Project.Events;
 /// is the repository the daemon cuts worktrees from, and a recorded path still naming the old
 /// clone would leave the two disagreeing about where this project's code is.
 /// </para>
+/// <para>
+/// BacklogPolicy declares where a published task's work becomes visible outside Hall9k;
+/// <see cref="Project.BacklogPolicy.None"/> is both the default and the explicit "don't", the
+/// same clearing idiom as everything else here. BacklogRoutingGuidance is free text handed
+/// verbatim to the Jira publication agent and, for github-issues, treated as a comma-separated
+/// label list — nothing more, because a deterministic issue author cannot interpret prose.
+/// </para>
 /// </summary>
 public sealed record ProjectSettingsChanged(
     Guid Id,
@@ -29,4 +36,6 @@ public sealed record ProjectSettingsChanged(
     Optional<ReviewRerequestPolicy> ReviewRerequest = default,
     Optional<JiraProjectKey> JiraProjectKey = default,
     Optional<ProjectHome> HomeDirectory = default,
-    Optional<string> RepositoryPath = default);
+    Optional<string> RepositoryPath = default,
+    Optional<BacklogPolicy> BacklogPolicy = default,
+    Optional<string> BacklogRoutingGuidance = default);
