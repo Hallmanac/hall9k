@@ -18,10 +18,14 @@ namespace Hall9k.Daemon.Execution;
 
 /// <summary>
 /// Deterministic gates only (PLAN.md §6.5): the project's verify commands run sequentially
-/// in the run's worktree; first failure stops the line. Before any gate, a no-commit
-/// check fails runs whose branch carries nothing — gates on an unmodified tree pass
-/// vacuously and prove nothing (Research tasks exempt; their deliverable is the
-/// transcript). The reviewer agent is Slice 3.
+/// in the run's worktree; first failure stops the line. Before any gate, two pre-gate checks
+/// fail a run honestly rather than let the gates run against a tree the pull request will
+/// never actually carry: a no-commit check for a branch that carries nothing at all (Research
+/// tasks exempt; their deliverable is the transcript), and an uncommitted-files check
+/// (backlog 57, not exempt for any task type) for a session that ended with
+/// modified-but-uncommitted files still sitting in the worktree — a failure that names every
+/// file left behind so a human or a retry session finds the work instead of losing it. The
+/// reviewer agent is Slice 3.
 /// </summary>
 public sealed class VerificationRunner(
     IDocumentStore store,
@@ -43,33 +47,93 @@ public sealed class VerificationRunner(
             return false;
         }
 
-        // Fail fast on an agent that committed nothing, before any gate runs (origin
-        // incident: task 08's agent completed all its work uncommitted; gates passed
-        // vacuously on the unmodified tree and the failure surfaced two stages late as
-        // "No commits between main and branch" at PR creation). Research tasks are
-        // exempt — their deliverable is the transcript, not commits (the one TaskType
-        // whose legitimate output is empty); every other type ships its work as commits.
-        if (project is not null && task.Type != TaskType.Research)
+        // Fail fast on an agent that left work behind uncommitted, before any gate runs
+        // against a tree the pull request will never actually carry (origin incident:
+        // task 08's agent completed all its work uncommitted; gates passed vacuously on
+        // the unmodified tree and the failure surfaced two stages late as "No commits
+        // between main and branch" at PR creation). Two distinct shapes of that same
+        // failure, checked separately because they need different words (backlog 57):
+        // zero commits at all, and — the shape the zero-commit check alone always missed —
+        // some commits landed but the session still ended with modified-but-uncommitted
+        // files sitting in the worktree (origin incidents, both 2026-08-26: the PR #53
+        // follow-up's cycle-3 fix round left eight files uncommitted, caught only by the
+        // next review pass; task df277369 failed twice backgrounding its own test suite and
+        // ending the session before it finished). Either way the reason names the files, so
+        // a human or a retry session finds the finished work instead of rediscovering it.
+        if (project is not null)
         {
-            int? commits = await CountBranchCommitsAsync(run.WorktreePath, project.BaseBranch, cancellationToken);
-            if (commits == 0)
+            (IReadOnlyList<string>? uncommittedFiles, IReadOnlyList<string> untrackedFiles) =
+                await ListUncommittedFilesAsync(run.WorktreePath, cancellationToken);
+
+            if (uncommittedFiles is null)
+            {
+                // Git is unobservable here (not a repo, permission denied, `git` missing from
+                // PATH); never guess — proceed and let the gates surface whatever is actually
+                // broken, but say so, the same as the no-commit check's own unobservable case
+                // below: an unlogged skip here would leave an operator with no record of why a
+                // session's stranded work went uncaught.
+                logger.LogWarning(
+                    "Run {RunId}: could not read the worktree's status at {WorktreePath}; skipping the uncommitted-files check",
+                    runId, run.WorktreePath);
+            }
+
+            if (untrackedFiles.Count > 0)
+            {
+                // A softer signal than a failure (conformance review): an untracked file is
+                // usually a gate byproduct the project's .gitignore has not caught up with, but
+                // it can just as easily be a brand-new source file the session forgot to `git
+                // add` — the prompt rule promises the platform names "anything left modified but
+                // uncommitted", so silence here would be a real gap. This never fails the run;
+                // failing it would strand a retry in the same unrecoverable loop the -uno
+                // exclusion above exists to avoid.
+                logger.LogWarning(
+                    "Run {RunId}: the worktree at {WorktreePath} has untracked file(s) not counted against the " +
+                    "uncommitted-files check: {Files}",
+                    runId, run.WorktreePath, SummarizeFiles(untrackedFiles));
+            }
+
+            // Research tasks are exempt from the no-commit check — their deliverable is the
+            // transcript, not commits (the one TaskType whose legitimate output is empty);
+            // every other type ships its work as commits. The uncommitted-files check right
+            // below is not exempt: a research task that left modified files behind still
+            // stranded work, whatever its deliverable is.
+            if (task.Type != TaskType.Research)
+            {
+                int? commits = await CountBranchCommitsAsync(run.WorktreePath, project.BaseBranch, cancellationToken);
+                if (commits == 0)
+                {
+                    string reason = uncommittedFiles is { Count: > 0 }
+                        ? $"Agent produced no commits: branch '{run.Branch}' holds nothing beyond " +
+                          $"'{project.BaseBranch}'. The session ended with modified-but-uncommitted files " +
+                          $"still sitting in the worktree instead of being committed: " +
+                          $"{SummarizeFiles(uncommittedFiles)}."
+                        : $"Agent produced no commits: branch '{run.Branch}' holds nothing beyond " +
+                          $"'{project.BaseBranch}'. The session ended without committing its work, so the " +
+                          "gates were not run against the unmodified tree.";
+                    await FailBeforeGatesAsync(runId, taskId, reason, cancellationToken);
+                    logger.LogWarning("Run {RunId} failed before the gates: {Reason}", runId, reason);
+                    return false;
+                }
+
+                if (commits is null)
+                {
+                    // Git is unobservable here (not a repo, unknown base ref); never guess —
+                    // proceed and let the gates surface whatever is actually broken.
+                    logger.LogWarning(
+                        "Run {RunId}: could not count commits on branch {Branch} against {BaseBranch}; skipping the no-commit check",
+                        runId, run.Branch, project.BaseBranch);
+                }
+            }
+
+            if (uncommittedFiles is { Count: > 0 })
             {
                 string reason =
-                    $"Agent produced no commits: branch '{run.Branch}' holds nothing beyond " +
-                    $"'{project.BaseBranch}'. The session ended without committing its work, so the " +
-                    "gates were not run against the unmodified tree.";
+                    "The session ended with modified-but-uncommitted files still sitting in the worktree: " +
+                    $"{SummarizeFiles(uncommittedFiles)}. Finished work left uncommitted never reaches " +
+                    "the pull request, so the gates were not run until it is committed.";
                 await FailBeforeGatesAsync(runId, taskId, reason, cancellationToken);
                 logger.LogWarning("Run {RunId} failed before the gates: {Reason}", runId, reason);
                 return false;
-            }
-
-            if (commits is null)
-            {
-                // Git is unobservable here (not a repo, unknown base ref); never guess —
-                // proceed and let the gates surface whatever is actually broken.
-                logger.LogWarning(
-                    "Run {RunId}: could not count commits on branch {Branch} against {BaseBranch}; skipping the no-commit check",
-                    runId, run.Branch, project.BaseBranch);
             }
         }
 
@@ -263,6 +327,68 @@ public sealed class VerificationRunner(
         return null;
     }
 
+    /// <summary>
+    /// Every tracked file the worktree holds modified or staged at session end (backlog 57),
+    /// plus, separately, every untracked one — `git status --porcelain -z`, NUL-separated
+    /// rather than the default newline-and-quote form so a path holding a space or a non-ASCII
+    /// character (`core.quotePath`'s octal-escaping) comes back verbatim instead of quoted
+    /// (conformance review finding). A rename or copy entry emits the new path first and the
+    /// old path as a second NUL-terminated field with no ` -&gt; ` marker; the old path is
+    /// consumed and discarded, since the new path is the one that still exists. Untracked
+    /// files are reported separately rather than folded into the failing list: a gate's own
+    /// build or test output (a coverage report, `TestResults/`, a lint cache) the project's
+    /// `.gitignore` does not yet name is not stranded agent work, and failing a run on it is a
+    /// defect a retry can never clear, since the next session's gates regenerate the same file
+    /// (adversarial review, independent pre-PR review cycle 1). The modified-list slot is null
+    /// when git cannot answer, the same "never guess" convention
+    /// <see cref="CountBranchCommitsAsync"/> already follows: an unobservable worktree is never
+    /// reported as clean.
+    /// </summary>
+    private static async Task<(IReadOnlyList<string>? Modified, IReadOnlyList<string> Untracked)>
+        ListUncommittedFilesAsync(string worktreePath, CancellationToken cancellationToken)
+    {
+        (int exitCode, string output) =
+            await RunGitAsync(worktreePath, ["status", "--porcelain", "-z"], cancellationToken);
+        if (exitCode != 0)
+        {
+            return (null, []);
+        }
+
+        List<string> modified = [];
+        List<string> untracked = [];
+        string[] entries = output.Split('\0', StringSplitOptions.RemoveEmptyEntries);
+        for (int i = 0; i < entries.Length; i++)
+        {
+            string entry = entries[i];
+            if (entry.Length < 4)
+            {
+                continue;
+            }
+
+            char indexStatus = entry[0];
+            char worktreeStatus = entry[1];
+            string path = entry[3..];
+
+            if (indexStatus is 'R' or 'C' || worktreeStatus is 'R' or 'C')
+            {
+                // The old path is the next NUL-terminated field; it no longer exists, so it is
+                // consumed here and never added to either list.
+                i++;
+            }
+
+            if (indexStatus == '?' && worktreeStatus == '?')
+            {
+                untracked.Add(path);
+            }
+            else
+            {
+                modified.Add(path);
+            }
+        }
+
+        return (modified, untracked);
+    }
+
     private static async Task<(int ExitCode, string StandardOutput)> RunGitAsync(
         string workingDirectory, IReadOnlyList<string> arguments, CancellationToken cancellationToken)
     {
@@ -406,6 +532,19 @@ public sealed class VerificationRunner(
 
     private static string TailOf(string content) =>
         content.IsBlank() ? "(empty)" : content.Length <= 400 ? content : content[^400..];
+
+    /// <summary>
+    /// A file list for a one-line failure reason (backlog 57): capped the same way
+    /// <see cref="TailOf"/> caps gate output, so a wide-rewrite session's file list cannot
+    /// blow out the attention pane's one-line cause (<c>AttentionComposer.FailureCause</c>,
+    /// `h9k status`) into dozens of wrapped terminal lines (conformance review finding).
+    /// </summary>
+    private const int MaxListedFiles = 20;
+
+    private static string SummarizeFiles(IReadOnlyList<string> files) =>
+        files.Count <= MaxListedFiles
+            ? string.Join(", ", files)
+            : $"{string.Join(", ", files.Take(MaxListedFiles))}, and {files.Count - MaxListedFiles} more";
 
     /// <summary>
     /// The recorded summary plus the excerpt around the marker that actually classified the

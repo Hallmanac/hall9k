@@ -117,6 +117,7 @@ public static class AgentPromptBuilder
         prompt.AppendLine("- Implement the objective so every acceptance criterion is satisfied.");
         prompt.AppendLine("- Commit your work with clear messages. Do NOT push, do NOT open a pull request —");
         prompt.AppendLine("  the platform verifies and opens the PR after you finish.");
+        AppendSessionEndsAtFinalMessageRule(prompt);
 
         IReadOnlyList<RepoSkill> skills = DiscoverRepoSkills(worktreePath);
         if (skills.Count > 0)
@@ -321,6 +322,7 @@ public static class AgentPromptBuilder
         prompt.AppendLine($"  {pullRequestUrl}: apply valid fixes, reply in-thread, resolve them.");
         AppendThreadTextBoundaryRule(prompt);
         AppendCommitStyleRules(prompt, commitStyle, project.BaseBranch);
+        AppendSessionEndsAtFinalMessageRule(prompt);
         prompt.AppendLine("- End with a short summary: which threads you addressed, which you answered");
         prompt.AppendLine("  without a code change and why, which you dismissed and why, and any open");
         prompt.AppendLine("  questions.");
@@ -385,6 +387,7 @@ public static class AgentPromptBuilder
         prompt.AppendLine("  and `gh run view <run-id> --log-failed` shows a failing workflow's log.");
         prompt.AppendLine("- Fix the causes and re-run the failing commands locally until they pass.");
         AppendCommitStyleRules(prompt, commitStyle, project.BaseBranch);
+        AppendSessionEndsAtFinalMessageRule(prompt);
         prompt.AppendLine("- End with a short summary: what was failing, what you changed, and any open");
         prompt.AppendLine("  questions.");
         AppendHandoffRules(prompt);
@@ -496,6 +499,7 @@ public static class AgentPromptBuilder
         prompt.AppendLine("    `git push --force-with-lease` after re-verifying), and do NOT open a new pull");
         prompt.AppendLine("    request — the existing PR updates in place.");
         AppendRebaseDisputeRules(prompt);
+        AppendSessionEndsAtFinalMessageRule(prompt);
         prompt.AppendLine("- End with a short summary: what conflicted, how you resolved each conflict and");
         prompt.AppendLine("  why, and the verification results.");
         // A reopened task's follow-up run is the run that reaches true closeout, so it is the
@@ -725,6 +729,41 @@ public static class AgentPromptBuilder
         prompt.AppendLine("  earlier attempt — including UNCOMMITTED changes left in the working tree by");
         prompt.AppendLine("  design. Review `git status` and `git log` before changing anything, and build on");
         prompt.AppendLine("  what is there instead of redoing it.");
+    }
+
+    /// <summary>
+    /// The doctrine backlog 57 exists to teach: a dispatched session's process is killed the
+    /// instant its final message ends, so nothing scheduled to happen after that moment — a
+    /// backgrounded command, a scheduled wakeup, a monitor waiting to report back — ever runs.
+    /// The interactive tools that assume otherwise (background execution, wakeup scheduling,
+    /// monitors) are available in a dispatched session exactly as they are in an interactive
+    /// one, and nothing about their own descriptions says they are inert here, so the prompt has
+    /// to say so plainly rather than leaving it to be discovered by the run that hangs.
+    /// <para>
+    /// Origin evidence, all 2026-08-26: task df277369 failed twice in a row, both sessions
+    /// backgrounding the test suite and ending the session waiting for a notification that
+    /// would never come (the second attempt used ScheduleWakeup and Monitor explicitly); the PR
+    /// #53 follow-up's cycle-3 fix round left eight files uncommitted, caught only by the next
+    /// review pass; four-plus prior fix sessions logged an "(undeclared)" outcome under the same
+    /// backlog item. <see cref="VerificationRunner"/>'s pre-gate check is the other half of this
+    /// fix — it fails a run honestly when uncommitted work is left behind — but the failure is
+    /// cheaper to prevent than to diagnose after the fact, which is what this prompt rule is for.
+    /// </para>
+    /// </summary>
+    private static void AppendSessionEndsAtFinalMessageRule(StringBuilder prompt)
+    {
+        prompt.AppendLine("- **This session ends at your final message — nothing runs after it.** The");
+        prompt.AppendLine("  dispatched runtime kills the process the moment you finish, so a backgrounded");
+        prompt.AppendLine("  command, a scheduled wakeup, or a monitor set up to report back later never");
+        prompt.AppendLine("  fires: there is nothing left to fire it, and nobody reads the result. Run every");
+        prompt.AppendLine("  verification command (build, test, lint — whatever this project's gates run) in");
+        prompt.AppendLine("  the foreground and wait for it to finish before you rely on its result or move");
+        prompt.AppendLine("  on. Commit everything before that final message, new files included: a tracked");
+        prompt.AppendLine("  file left modified or staged but uncommitted when the session ends is stranded there,");
+        prompt.AppendLine("  and the platform fails the run naming exactly which files were left behind. An");
+        prompt.AppendLine("  untracked file only warns rather than fails — a gate's own build output can land");
+        prompt.AppendLine("  there too — but it still never ships, so `git add` it and commit rather than");
+        prompt.AppendLine("  counting on the warning to catch it.");
     }
 
     /// <summary>
@@ -1312,6 +1351,7 @@ public static class AgentPromptBuilder
         prompt.AppendLine("- Verify each finding yourself, fix the real ones, and commit on this branch with");
         prompt.AppendLine("  clear messages. Do NOT push, do NOT open a pull request — the platform re-runs");
         prompt.AppendLine("  the verification gates and a fresh review after you finish.");
+        AppendSessionEndsAtFinalMessageRule(prompt);
         prompt.AppendLine("- **Follow the platform's disposition for each finding**, in the section headed");
         prompt.AppendLine($"  \"{ReviewFindingDispositions.Heading}\" if the findings above have one. It is");
         prompt.AppendLine("  machine bookkeeping over the reviewers' declared severity and scope, and it is not");
