@@ -118,7 +118,7 @@ public sealed class RunAggregate
     /// Empty means the loop is finished looking. Reads the genuine, current state — a track this
     /// property has ever reported concluded stays reported that way, including a track a
     /// <see cref="ReviewMode.FinalFullPass"/> cycle just reconfirmed clean or reawakened, which is
-    /// why <see cref="ReviewEngine.SettleAsync"/> and the fix-cap check read through THIS property
+    /// why <c>ReviewEngine.SettleAsync</c> and the fix-cap check read through THIS property
     /// rather than <see cref="CurrentCycleLenses"/>: by the time either runs, this cycle's own
     /// conclusions (or reactivation) have already landed, and re-deriving "both, unconditionally"
     /// would re-conclude a track this same cycle already gave a real answer.
