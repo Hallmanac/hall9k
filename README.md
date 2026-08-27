@@ -81,8 +81,8 @@ Delivered — pushed; the merge has not been observed
 added 24h ago  #31
     ↳ watching PR #31 · no external review activity observed; its checks may
 still be reporting
-    ↳ no confirmed review activity recorded — read its checks, then the merge
-is yours → https://github.com/Hallmanac/hall9k/pull/31
+    ↳ no external review activity recorded, and its checks may still be
+reporting — read them, then the merge is yours → https://github.com/Hallmanac/hall9k/pull/31
 
 Queued — the node is at its concurrency ceiling; each of these starts as a run
 finishes. Run h9k config set --max-concurrent-agent-sessions <n> and restart the
