@@ -583,8 +583,20 @@ public sealed class ReviewEngine(
         }
         else
         {
+            // This round is dispatched over `findings` above, never over the run's automated
+            // Fix-dispositioned locations once a human's own reason is in play. What
+            // CurrentCycleFixFindingLocations holds at this point depends on how the run parked:
+            // a dispute park re-derives the disputed round's own set (ReviewParkResolved starts
+            // no new cycle), while a cap park or verdict-missing park can hold fresh locations no
+            // fix round was ever dispatched over. Either way the set describes what automation
+            // was looking at, not what the human said, so comparing it here would misreport the
+            // round — a dispute resolution as a repeat of itself, a cap resolution as a repeat of
+            // findings never tried. The human-restatement scan inside ReviewFixEscalation.Reason
+            // is the only signal that applies when humanFindings is in play.
             string? repeatReason = ReviewFixEscalation.Reason(
-                run.LastFixRoundFindingLocations, run.CurrentCycleFixFindingLocations, humanFindings);
+                run.LastFixRoundFindingLocations,
+                humanFindings.IsNotBlank() ? [] : run.CurrentCycleFixFindingLocations,
+                humanFindings);
             escalated = repeatReason is not null && reviewModel != fixModel;
             escalationReason = escalated ? repeatReason : null;
         }

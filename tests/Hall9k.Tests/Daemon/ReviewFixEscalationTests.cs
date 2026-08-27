@@ -103,6 +103,18 @@ public sealed class ReviewFixEscalationTests
     }
 
     [Fact]
+    public void A_human_reason_that_ends_its_sentence_right_after_the_previous_locations_line_escalates()
+    {
+        string? reason = ReviewFixEscalation.Reason(
+            ["src/Auth.cs:42"], [], "Still broken — fix src/Auth.cs:42.");
+
+        reason.Should().NotBeNull(
+            "a sentence-ending period after the line number is not a path character continuing the " +
+            "token — the location still ends the human's sentence, not a rejected fragment of a longer one");
+        reason.Should().Contain("src/Auth.cs:42");
+    }
+
+    [Fact]
     public void A_human_reason_naming_only_the_bare_filename_a_previous_round_named_with_no_line_does_not_escalate()
     {
         ReviewFixEscalation.Reason(

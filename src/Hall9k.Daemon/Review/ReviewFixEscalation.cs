@@ -84,9 +84,13 @@ public static class ReviewFixEscalation
     /// <c>:</c>-then-digit, so a bare file with no stated line cannot match a more specific
     /// <c>file:line</c> naming a different place (<c>src/Foo.cs</c> must not match inside
     /// <c>src/Foo.cs:120</c> — <see cref="ReviewFindingLocations.SamePlace"/> already refuses that
-    /// pair). The left side rejects a preceding path character, so <paramref name="location"/>
-    /// cannot match as the tail of a longer, unrelated filename (<c>Engine.cs:512</c> must not
-    /// match inside <c>ReviewEngine.cs:512</c> — those are different places by the same rule).
+    /// pair). Only a digit — never <c>.</c>, <c>_</c> or <c>-</c> — closes off the right side:
+    /// every candidate here already passed <see cref="ReviewFindingLocations.HasAnchor"/>, so it
+    /// always ends in the anchor's own line-number digits, and a human's sentence ending right
+    /// after it (<c>"fix src/Auth.cs:42."</c>) is a match, not a rejected fragment. The left side
+    /// rejects a preceding path character, so <paramref name="location"/> cannot match as the tail
+    /// of a longer, unrelated filename (<c>Engine.cs:512</c> must not match inside
+    /// <c>ReviewEngine.cs:512</c> — those are different places by the same rule).
     /// </summary>
     private static bool ContainsLocation(string text, string location)
     {
@@ -122,7 +126,7 @@ public static class ReviewFixEscalation
             return false;
         }
 
-        return !IsPathCharacter(text[matchEnd]);
+        return !char.IsAsciiDigit(text[matchEnd]);
     }
 
     /// <summary>
@@ -130,7 +134,8 @@ public static class ReviewFixEscalation
     /// digits and the punctuation ordinary filenames use (<c>.</c>, <c>_</c>, <c>-</c>). A path
     /// separator (<c>/</c>) is deliberately not one of these: <see cref="ReviewFindingLocations.SamePlace"/>
     /// already treats a shorter path as the same place as a longer one it is a trailing run of, so
-    /// matching right after a separator has to stay open.
+    /// matching right after a separator has to stay open. Used only for the left boundary — the
+    /// right boundary (<see cref="IsBoundaryAfter"/>) has its own, narrower rule.
     /// </summary>
     private static bool IsPathCharacter(char character) =>
         char.IsLetterOrDigit(character) || character is '.' or '_' or '-';
