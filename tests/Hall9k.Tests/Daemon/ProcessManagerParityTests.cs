@@ -220,12 +220,13 @@ public sealed class ProcessManagerParityTests : IDisposable
         // ObservationDeadline rather than a shorter window of its own, so a cold or loaded
         // runner gets the same generous margin every other startup/teardown wait in this
         // suite gets — including NestedChildLifetime's own margin above it — instead of
-        // racing this process's own startup latency ahead of the test's real assertion.
+        // racing the nested child's own startup latency ahead of the test's real assertion.
         DateTimeOffset deadline = DateTimeOffset.UtcNow + ObservationDeadline;
         while (DateTimeOffset.UtcNow < deadline)
         {
             if (File.Exists(pidFilePath) &&
-                int.TryParse((await File.ReadAllTextAsync(pidFilePath)).Trim(), out int nestedChildProcessId))
+                await TryReadAllTextAsync(pidFilePath) is { } pidFileText &&
+                int.TryParse(pidFileText.Trim(), out int nestedChildProcessId))
             {
                 try
                 {
