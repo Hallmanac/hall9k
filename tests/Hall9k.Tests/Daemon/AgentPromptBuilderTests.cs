@@ -447,7 +447,7 @@ public sealed class AgentPromptBuilderTests : IDisposable
     {
         ReviewPacket packet = new(
             "main...HEAD", "diff --git a/Widget.cs b/Widget.cs\n+class Widget { }\n",
-            ["Widget.cs"], new Dictionary<string, string> { ["Widget.cs"] = "class Widget { }\n" }, Degraded: false, Omissions: []);
+            ["Widget.cs"], new Dictionary<string, string> { ["Widget.cs"] = "class Widget { }\n" }, Omissions: []);
 
         string prompt = AgentPromptBuilder.BuildReview(
             SomeTask(), SomeProject(), "task/1-slug", cycle: 1, ReviewLens.Conformance, packet);
@@ -463,24 +463,26 @@ public sealed class AgentPromptBuilderTests : IDisposable
 
     /// <summary>
     /// Over the packet's size cap, the platform never truncates a file's content silently (the
-    /// task's own acceptance criteria): the diff and the file list still ride in, but every
-    /// file's full text is dropped rather than cut short.
+    /// task's own acceptance criteria): the diff and the file list still ride in, and the one
+    /// oversized file's text is dropped rather than cut short — but that omission costs only the
+    /// oversized file itself, not every file in the packet (conformance and adversarial review,
+    /// cycle 1).
     /// </summary>
     [Fact]
-    public void Review_prompt_with_a_degraded_packet_keeps_the_diff_and_file_list_but_drops_full_text()
+    public void Review_prompt_with_an_oversized_file_keeps_the_diff_and_file_list_but_drops_that_files_text()
     {
         ReviewPacket packet = new(
             "main...HEAD", "diff --git a/Huge.cs b/Huge.cs\n+lots of content\n",
-            ["Huge.cs"], FileContents: null, Degraded: true, Omissions: []);
+            ["Huge.cs"], FileContents: new Dictionary<string, string>(),
+            Omissions: [new FileOmission("Huge.cs", FileOmissionReason.TooLarge)]);
 
         string prompt = AgentPromptBuilder.BuildReview(
             SomeTask(), SomeProject(), "task/1-slug", cycle: 1, ReviewLens.Conformance, packet);
 
         prompt.Should().Contain("Packet (a starting point, not a boundary)");
         prompt.Should().Contain("diff --git a/Huge.cs b/Huge.cs");
-        prompt.Should().Contain("`Huge.cs`");
-        prompt.Should().Contain("pushed this packet past its size cap");
-        prompt.Should().NotContain("(full current text)", "the degraded packet carries no per-file bodies at all");
+        prompt.Should().Contain("text omitted: `Huge.cs` (too large for the packet's remaining budget)");
+        prompt.Should().NotContain("(full current text)", "the oversized file carries no body of its own");
     }
 
     /// <summary>
@@ -496,7 +498,6 @@ public sealed class AgentPromptBuilderTests : IDisposable
             "main...HEAD", "diff --git a/Widget.cs b/Widget.cs\n+class Widget { }\n",
             ["Widget.cs", "doomed.txt", "asset.png"],
             new Dictionary<string, string> { ["Widget.cs"] = "class Widget { }\n" },
-            Degraded: false,
             Omissions:
             [
                 new FileOmission("doomed.txt", FileOmissionReason.Deleted),
@@ -521,7 +522,7 @@ public sealed class AgentPromptBuilderTests : IDisposable
     {
         ReviewPacket packet = new(
             "main...HEAD", "diff --git a/Widget.cs b/Widget.cs\n+class Widget { }\n",
-            ["Widget.cs"], new Dictionary<string, string> { ["Widget.cs"] = "class Widget { }\n" }, Degraded: false, Omissions: []);
+            ["Widget.cs"], new Dictionary<string, string> { ["Widget.cs"] = "class Widget { }\n" }, Omissions: []);
 
         string prompt = AgentPromptBuilder.BuildReview(
             SomeTask(), SomeProject(), "task/1-slug", cycle: 1, ReviewLens.Adversarial, packet);
@@ -546,7 +547,7 @@ public sealed class AgentPromptBuilderTests : IDisposable
             "main...HEAD", "diff --git a/DOC.md b/DOC.md\n+```bash\n+dotnet build\n+```\n",
             ["DOC.md", "Widget.cs"],
             new Dictionary<string, string> { ["DOC.md"] = DocContent, ["Widget.cs"] = "class Widget { }\n" },
-            Degraded: false, Omissions: []);
+            Omissions: []);
 
         string prompt = AgentPromptBuilder.BuildReview(
             SomeTask(), SomeProject(), "task/1-slug", cycle: 1, ReviewLens.Conformance, packet);
@@ -564,7 +565,7 @@ public sealed class AgentPromptBuilderTests : IDisposable
     {
         ReviewPacket packet = new(
             "abc123..HEAD", "diff --git a/Fix.cs b/Fix.cs\n+// fixed\n",
-            ["Fix.cs"], new Dictionary<string, string> { ["Fix.cs"] = "// fixed\n" }, Degraded: false, Omissions: []);
+            ["Fix.cs"], new Dictionary<string, string> { ["Fix.cs"] = "// fixed\n" }, Omissions: []);
 
         string prompt = AgentPromptBuilder.BuildReviewVerify(
             SomeTask(), SomeProject(), "task/1-slug", cycle: 2,

@@ -37,11 +37,9 @@ public sealed class ReviewPacketAssemblerTests : IDisposable
 
         packet.Should().NotBeNull();
         packet!.RangeDescription.Should().Be("main...HEAD");
-        packet.Degraded.Should().BeFalse();
         packet.TouchedFiles.Should().Contain("changed.cs");
         packet.Diff.Should().Contain("class Widget");
-        packet.FileContents.Should().NotBeNull();
-        packet.FileContents!["changed.cs"].Should().Be("class Widget { }\n");
+        packet.FileContents["changed.cs"].Should().Be("class Widget { }\n");
     }
 
     [Fact]
@@ -55,18 +53,19 @@ public sealed class ReviewPacketAssemblerTests : IDisposable
         packet.Should().NotBeNull();
         packet!.Diff.Should().BeEmpty();
         packet.TouchedFiles.Should().BeEmpty();
-        packet.Degraded.Should().BeFalse();
     }
 
     /// <summary>
-    /// The task's own acceptance criteria: over the cap, the packet drops file contents rather
-    /// than truncating any one of them silently. The huge content is already on the merge base
-    /// so the diff itself stays small — it is the file's own current text on disk, not the diff,
-    /// that pushes the packet over its cap; <see cref="Diff_alone_over_the_cap_ships_no_packet"/>
-    /// covers the diff-itself-too-large case.
+    /// The task's own acceptance criteria: over the cap, the platform never truncates a file's
+    /// content silently. The huge content is already on the merge base so the diff itself stays
+    /// small — it is the file's own current text on disk, not the diff, that pushes the packet
+    /// over its cap; <see cref="Diff_alone_over_the_cap_ships_no_packet"/> covers the
+    /// diff-itself-too-large case. Skipping the one oversized file, rather than dropping every
+    /// file's text (conformance and adversarial review, cycle 1), is
+    /// <see cref="An_early_oversized_file_does_not_cost_a_smaller_file_that_still_fits"/>.
     /// </summary>
     [Fact]
-    public async Task Degrades_to_diff_and_file_list_when_the_packet_would_exceed_its_size_cap()
+    public async Task An_oversized_touched_file_is_omitted_rather_than_degrading_the_whole_packet()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromSeconds(30));
         // Many lines, not one enormous line: appending a single line below then diffs as a few
@@ -84,10 +83,38 @@ public sealed class ReviewPacketAssemblerTests : IDisposable
             _repositoryPath, "main", sinceSha: null, cts.Token);
 
         packet.Should().NotBeNull();
-        packet!.Degraded.Should().BeTrue();
-        packet.FileContents.Should().BeNull("the platform never truncates a file's content silently");
-        packet.TouchedFiles.Should().Contain("huge.txt", "the file list still names what changed");
+        packet!.TouchedFiles.Should().Contain("huge.txt", "the file list still names what changed");
+        packet.FileContents.Should().NotContainKey("huge.txt", "the file's own text alone busts the cap");
+        packet.Omissions.Should().ContainEquivalentOf(new FileOmission("huge.txt", FileOmissionReason.TooLarge));
         packet.Diff.Should().NotBeNullOrEmpty("the diff itself is never dropped, only the full file text");
+    }
+
+    /// <summary>
+    /// An early file whose own text busts the remaining budget must not cost the files after it
+    /// in the touched list their own chance to fit (conformance and adversarial review, cycle 1:
+    /// the running total used to abort entirely on the first oversized file, discarding every
+    /// file's text after it, including ones that would have fit comfortably within the cap).
+    /// </summary>
+    [Fact]
+    public async Task An_early_oversized_file_does_not_cost_a_smaller_file_that_still_fits()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromSeconds(30));
+        string huge = string.Join('\n', Enumerable.Repeat(new string('a', 40), 9_000)) + "\n";
+        Git(_repositoryPath, "checkout -q main");
+        Commit("a-huge.txt", huge, "add a file bigger than the packet cap");
+        Git(_repositoryPath, "checkout -q -B task/work");
+        Commit("a-huge.txt", huge + "changed\n", "touch the huge file");
+        // "z-small.cs" sorts after "a-huge.txt" in git's byte-sorted --name-only output, so it is
+        // the file the old abort-on-first-oversized-file behavior would have discarded.
+        Commit("z-small.cs", "class Widget { }\n", "add a small file touched in the same commit");
+
+        ReviewPacket? packet = await ReviewPacketAssembler.AssembleAsync(
+            _repositoryPath, "main", sinceSha: null, cts.Token);
+
+        packet.Should().NotBeNull();
+        packet!.TouchedFiles.Should().ContainInOrder("a-huge.txt", "z-small.cs");
+        packet.Omissions.Should().ContainEquivalentOf(new FileOmission("a-huge.txt", FileOmissionReason.TooLarge));
+        packet.FileContents.Should().ContainKey("z-small.cs").WhoseValue.Should().Be("class Widget { }\n");
     }
 
     /// <summary>
@@ -128,10 +155,8 @@ public sealed class ReviewPacketAssemblerTests : IDisposable
             _repositoryPath, "main", sinceSha: null, cts.Token);
 
         packet.Should().NotBeNull();
-        packet!.Degraded.Should().BeFalse();
-        packet.TouchedFiles.Should().Contain("asset.png");
-        packet.FileContents.Should().NotBeNull();
-        packet.FileContents!.Should().NotContainKey("asset.png", "a binary file has no meaningful text to embed");
+        packet!.TouchedFiles.Should().Contain("asset.png");
+        packet.FileContents.Should().NotContainKey("asset.png", "a binary file has no meaningful text to embed");
     }
 
     /// <summary>
@@ -155,11 +180,9 @@ public sealed class ReviewPacketAssemblerTests : IDisposable
             _repositoryPath, "main", sinceSha: null, cts.Token);
 
         packet.Should().NotBeNull();
-        packet!.Degraded.Should().BeFalse("the oversized file is binary and was never going to be embedded");
-        packet.TouchedFiles.Should().Contain("asset.bin");
-        packet.FileContents.Should().NotBeNull();
-        packet.FileContents!.Should().NotContainKey("asset.bin");
-        packet.FileContents!["small.cs"].Should().Be("class Widget { }\n");
+        packet!.TouchedFiles.Should().Contain("asset.bin");
+        packet.FileContents.Should().NotContainKey("asset.bin");
+        packet.FileContents["small.cs"].Should().Be("class Widget { }\n");
     }
 
     /// <summary>
@@ -255,8 +278,7 @@ public sealed class ReviewPacketAssemblerTests : IDisposable
 
         packet.Should().NotBeNull();
         packet!.TouchedFiles.Should().Contain("doomed.txt");
-        packet.FileContents.Should().NotBeNull();
-        packet.FileContents!.Should().NotContainKey("doomed.txt", "there is no current text on disk to embed");
+        packet.FileContents.Should().NotContainKey("doomed.txt", "there is no current text on disk to embed");
     }
 
     /// <summary>
@@ -277,8 +299,7 @@ public sealed class ReviewPacketAssemblerTests : IDisposable
 
         packet.Should().NotBeNull();
         packet!.TouchedFiles.Should().Contain("café.cs");
-        packet.FileContents.Should().NotBeNull();
-        packet.FileContents!["café.cs"].Should().Be("class Cafe { }\n");
+        packet.FileContents["café.cs"].Should().Be("class Cafe { }\n");
     }
 
     /// <summary>
@@ -305,7 +326,6 @@ public sealed class ReviewPacketAssemblerTests : IDisposable
             _repositoryPath, "main", sinceSha: null, cts.Token);
 
         packet.Should().NotBeNull();
-        packet!.Degraded.Should().BeFalse();
         packet.Omissions.Should().BeEquivalentTo(
         [
             new FileOmission("doomed.txt", FileOmissionReason.Deleted),
