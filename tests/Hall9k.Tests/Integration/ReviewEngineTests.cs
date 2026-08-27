@@ -1697,6 +1697,54 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
     }
 
     /// <summary>
+    /// The default install resolves every role to the same model, and there escalation is a
+    /// claim with nothing behind it: a repeat round whose review and fix roles resolve
+    /// identically records Escalated: false and spawns the fix role's model as any round would,
+    /// because telling the human the dodge-and-redo mitigation applied when the session ran on
+    /// the model it would have run on anyway is a false record (the model-equality gate,
+    /// otherwise untested — independent pre-PR review of the PR #53 follow-up, cycle 3).
+    /// </summary>
+    [Fact]
+    public async Task A_repeat_round_with_identical_role_models_records_no_escalation()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        using DocumentStore store = NewStore();
+        (Guid taskId, Guid runId, _) = await SeedVerifiedRunAsync(store, cts.Token);
+
+        DaemonOptions options = new()
+        {
+            // No ModelByRole: every role falls through to the default, the shape a fresh
+            // install runs with.
+            DefaultModel = "claude-opus-5",
+        };
+        ScriptedExecutor executor = new(
+            "FINDING: severity=high; scope=in-scope; at=src/Auth.cs:42\n"
+                + "Defect: the limiter never resets.\nScenario: the second request always 429s.\n\n"
+                + "VERDICT: needs-fixes",
+            "Nothing of my own.\n\nVERDICT: merge-ready",
+            "Reset the limiter.\n\nRESOLUTION: fixed",
+            "FINDING: severity=high; scope=in-scope; at=src/Auth.cs:42\n"
+                + "Defect: still never resets.\nScenario: still 429s.\n\nVERDICT: needs-fixes",
+            "Reset it for real this time.\n\nRESOLUTION: fixed",
+            "Fixed for real.\n\nVERDICT: merge-ready");
+
+        bool mergeReady = await NewEngine(store, executor, options).ReviewAsync(runId, taskId, cts.Token);
+
+        mergeReady.Should().BeTrue();
+        executor.Spawns.Select(spawn => spawn.Model.Value).Should().OnlyContain(
+            model => model == "claude-opus-5",
+            "with no per-role binding every leg resolves to the default model");
+
+        await using IQuerySession query = store.QuerySession();
+        List<object> events = [.. (await query.Events.FetchStreamAsync(runId, token: cts.Token)).Select(e => e.Data)];
+        List<ReviewFixDispatched> fixDispatches = [.. events.OfType<ReviewFixDispatched>()];
+        fixDispatches.Should().HaveCount(2);
+        fixDispatches.Select(e => e.Escalated).Should().Equal([false, false],
+            "a repeat round is not an escalation when there is no different model to escalate to");
+        fixDispatches[1].EscalationReason.Should().BeNull();
+    }
+
+    /// <summary>
     /// A human's own needs-fixes verdict, resolving a dispute at the same cycle the disputed
     /// finding was found on, is a genuinely new round — not the mechanical redispatch a budget
     /// retry would be — and gets its own fresh escalation check rather than inheriting the
@@ -1754,6 +1802,70 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
 
         RunDetails run = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
         run.LastFixSessionEscalated.Should().BeTrue("the last fix round dispatched was the escalated one");
+    }
+
+    /// <summary>
+    /// A human resolving a dispute with a needs-fixes reason that redirects the work to a
+    /// genuinely different concern must not escalate, even though the dispute round's own
+    /// (disputed) location is still sitting in <c>CurrentCycleFixFindingLocations</c> — the dispute
+    /// resolution never starts a new review cycle, so that automated set is frozen to whatever the
+    /// disputed round was itself dispatched over and is not what this round is dispatched over. The
+    /// human-restatement scan, not that stale automated set, is the only signal that may fire here.
+    /// </summary>
+    [Fact]
+    public async Task A_human_resolving_a_dispute_with_a_genuinely_different_reason_does_not_escalate()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        using DocumentStore store = NewStore();
+        (Guid taskId, Guid runId, _) = await SeedVerifiedRunAsync(store, cts.Token);
+
+        DaemonOptions options = new()
+        {
+            DefaultModel = "claude-opus-5",
+            ModelByRole = new RoleModelDefaults { Review = "sonnet", Fix = "haiku" },
+        };
+        ScriptedExecutor executor = new(
+            "FINDING: severity=high; scope=in-scope; at=src/Auth.cs:42\n"
+                + "Defect: envelope type differs from spec.\nScenario: clients break.\n\nVERDICT: needs-fixes",
+            "No defects of my own.\n\nVERDICT: merge-ready",
+            // Fix round 1 disputes rather than fixing — the first round, so no escalation applies.
+            "That envelope change is the task's stated design; changing it back is a scope decision.\n\n"
+                + "RESOLUTION: disputed",
+            // Fix round 2 — the human's redispatch, over a different concern entirely.
+            "Added the missing cancellation token.\n\nRESOLUTION: fixed",
+            "Fixed for real.\n\nVERDICT: merge-ready");
+
+        bool disputedPass = await NewEngine(store, executor, options).ReviewAsync(runId, taskId, cts.Token);
+        disputedPass.Should().BeFalse("the disputed finding parks for the human");
+
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            session.Events.Append(runId, new ReviewParkResolved(
+                runId, ReviewVerdict.NeedsFixes,
+                "The Auth.cs finding is wrong — leave it. The real gap is that the new helper at "
+                    + "src/Retry.cs:10 takes no CancellationToken.",
+                Now, DomainId.New()));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        bool mergeReady = await NewEngine(store, executor, options).ReviewAsync(runId, taskId, cts.Token);
+        mergeReady.Should().BeTrue();
+
+        executor.Spawns.Select(spawn => spawn.Model.Value).Should().Equal(
+            ["sonnet", "sonnet", "haiku", "haiku", "sonnet"],
+            "the human redirected the work to a fresh concern, so the redispatch (index 3) must not "
+                + "escalate even though the disputed round's own location is still in "
+                + "CurrentCycleFixFindingLocations");
+
+        await using IQuerySession query = store.QuerySession();
+        List<object> events = [.. (await query.Events.FetchStreamAsync(runId, token: cts.Token)).Select(e => e.Data)];
+        List<ReviewFixDispatched> fixDispatches = [.. events.OfType<ReviewFixDispatched>()];
+        fixDispatches.Should().HaveCount(2);
+        fixDispatches.Select(e => e.Escalated).Should().Equal([false, false]);
+        fixDispatches[1].EscalationReason.Should().BeNull();
+
+        RunDetails run = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
+        run.LastFixSessionEscalated.Should().BeFalse();
     }
 
     /// <summary>
