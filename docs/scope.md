@@ -28,8 +28,11 @@ survive a laptop lid closing without spawning duplicate agents, and daemon catch
 restart cannot double-book a task, because a stale generation is fenced out of every task-level
 write. A third: a fix session dispatched over substantially the same findings its immediately
 preceding fix round already tried escalates to the review role's model instead of the fix role's,
-de-escalating automatically once a round moves on to something genuinely different (PLAN.md
-Decisions Log #89).
+de-escalating automatically once a round moves on to something genuinely different — but only on
+an install where the review and fix roles actually resolve to different models; a default install
+that has never set `--model-review`/`--model-fix` resolves them identically, so a repeated round
+there dispatches on the ordinary fix model exactly as it would have anyway (PLAN.md Decisions Log
+#90).
 
 ### The board
 

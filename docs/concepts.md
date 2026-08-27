@@ -278,16 +278,19 @@ part in this: it settles a disputed comment thread before any reviewer ever read
 review finding, so its resolution is not carried forward as a settled ruling.
 
 **A repeat fix round over the same findings escalates to the review role's model (Decisions Log
-#89).** When a fix session dispatches over substantially the same findings its immediately
+#90).** When a fix session dispatches over substantially the same findings its immediately
 preceding fix round already tried — the same location an automated pass keeps returning, or a
 human's own `--needs-fixes` reason restating it — that fix session runs on the review role's
 model instead of the fix role's, so the observed dodge-and-redo failure mode (a weaker model
-sidestepping a defect rather than fixing it) gets a stronger model exactly where it recurs.
-De-escalation is automatic the moment a later round moves on to a genuinely different finding, with
-no separate reset step. `h9k task show` prints a "Fix escalation" line while the newest run's most
-recent fix dispatch escalated this way.
+sidestepping a defect rather than fixing it) gets a stronger model exactly where it recurs. This
+only changes anything when the two roles actually resolve to different models: a default install
+that has never set `--model-review`/`--model-fix`, or a task overriding both the same way,
+resolves them identically, and a repeated round there dispatches on the ordinary fix model exactly
+as it would have anyway. De-escalation is automatic the moment a later round moves on to a
+genuinely different finding, with no separate reset step. `h9k task show` prints a "Fix
+escalation" line while the newest run's most recent fix dispatch escalated this way.
 
-Depth: [TASK-MODEL.md §3.1](../TASK-MODEL.md), Decisions Log #24, #59, #62, #63, #88, #89.
+Depth: [TASK-MODEL.md §3.1](../TASK-MODEL.md), Decisions Log #24, #59, #62, #63, #88, #90.
 
 ## Closeout
 

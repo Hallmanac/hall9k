@@ -745,7 +745,14 @@ public sealed record ReviewFixDispatched( // fix session in the same worktree, f
     int ProcessId,
     DateTimeOffset ProcessStartedAt,
     DateTimeOffset DispatchedAt,
-    AgentModel? Model = null);           // resolved for the Fix role, separately from Review (log #33)
+    AgentModel? Model = null,            // resolved for the Fix role, separately from Review (log #33)
+                                         //   — UNLESS Escalated, in which case it is the Review
+                                         //   role's model instead (log #90)
+    bool Escalated = false,              // this round repeats the immediately preceding fix
+                                         //   round's own findings, AND the two roles actually
+                                         //   resolve to different models (log #90)
+    string? EscalationReason = null);    // non-null only when Escalated; the Daemon decides it,
+                                         //   Domain only records it
 public sealed record ReviewFixCompleted( // Fixed/Unknown -> gates re-run, then a fresh review (or, with
     Guid Id,                             //   every track concluded, settling); Disputed -> park. Even the
                                          //   terminal fix re-runs the gates: a settled ending ships
@@ -777,7 +784,9 @@ public sealed record ReviewSettled(      // the loop ended; PullRequestOpener ma
     int ResidualsFixed,                  //   settlement is honestly unknown rather than assumed
     int ResidualsRouted,                 //   clean. A routing that failed left no draft, so it is
     int ResidualsRoutingFailed,          //   counted apart rather than reported as one that worked.
-    DateTimeOffset SettledAt);
+    DateTimeOffset SettledAt,
+    int ResidualsRideAlong = 0);         // a ride-along (log #87) still unclaimed at settle time;
+                                         //   0 for a stream that predates ride-alongs
 public sealed record ReviewParked(       // budget spent, dispute, or no verdict: the human owns the
     Guid Id,                             // diff. Task stays Claimed, lease retained (the expiry sweep
     string Reason,                       // refreshes a parked lease, never requeues it — log #28).
@@ -1042,6 +1051,23 @@ serves every registered project, not just this one. `h9k review resolve`'s `--me
 an optional `--reason <TEXT>` for the same reason: a human dismissing a finding as a false
 positive can say why and have it reach the next fresh-context pass instead of vanishing the
 moment the park cleared.
+
+**A repeat fix round over the same findings escalates to the Review role's model (log #90).**
+`ReviewFixEscalation.Reason` is the trigger, conservative by design: a location match via
+`ReviewFindingLocations.SamePlace` against `RunAggregate.LastFixRoundFindingLocations` — the
+immediately preceding fix round's own findings, not the whole run's history, which is what makes
+de-escalation automatic once a repeated finding clears — or the human's own `h9k review resolve
+--needs-fixes` reason literally naming a previous round's location. A mechanical redispatch of the
+very same round (a budget-exhaustion retry re-entering `FixNeeded` with the cycle and
+`RunAggregate.PendingHumanFindings` both unchanged) reuses that round's already-decided outcome
+rather than asking the question again over content that has not changed. The escalation only
+changes anything when the Review and Fix roles actually resolve to different models:
+`ReviewEngine.DispatchFixSessionAsync` requires `reviewModel != fixModel` alongside a non-null
+`ReviewFixEscalation.Reason` before setting `ReviewFixDispatched.Escalated`, so a default install
+that has never set `--model-review`/`--model-fix` (log #82), or a task overriding both roles the
+same way, resolves them identically and a repeated round there dispatches on the ordinary Fix
+model exactly as it would have anyway. `h9k task show` prints a "Fix escalation" line while the
+newest run's most recent fix dispatch is escalated.
 
 ### 3.2 Context routing along dependency edges (log #36)
 
