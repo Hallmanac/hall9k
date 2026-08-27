@@ -230,12 +230,22 @@ A passing gate does not open a pull request. The daemon dispatches **independent
 over the run's diff against the base branch: separate headless sessions with fresh context, never
 the session that wrote the code. Role separation is what makes the gate worth anything.
 
-Every cycle runs one pass per **lens**, dispatched together:
+Only cycle 1 pays full discovery: it runs one pass per **lens**, dispatched together:
 
 - **Conformance** asks whether the work meets its objective, its acceptance criteria, and repo
   doctrine.
 - **Adversarial** assumes the code is wrong somewhere and hunts defect classes, without ever
   being told what the work was supposed to do.
+
+A middle cycle instead dispatches one **Verify** pass standing in for whichever lenses are still
+active, handed the prior cycle's own merged findings and fix summary rather than the whole diff
+again, so it can confirm the fix and check its blast radius instead of rediscovering the diff from
+a blank slate. Immediately before the run may settle, one mandatory **FinalFullPass** cycle runs
+both lenses fresh — whether or not a track had already gone dormant — so nothing reaches the
+remote on delta-green alone; a track it reawakens with a genuine new finding is recorded
+reactivated rather than left stuck at an earlier conclusion, and a run that converges clean at
+cycle 1 pays no extra pass at all. Which shape a cycle ran under — Discovery, Verify, or
+FinalFullPass — is a deterministic engine decision recorded on the run stream.
 
 Findings must be verified: read the surrounding code, confirm the defect, discard the
 unconfirmed. Each carries a `file:line`, a defect statement, and a concrete failure scenario.
@@ -293,7 +303,7 @@ as it would have anyway. De-escalation is automatic the moment a later round mov
 genuinely different finding, with no separate reset step. `h9k task show` prints a "Fix
 escalation" line while the newest run's most recent fix dispatch escalated this way.
 
-Depth: [TASK-MODEL.md §3.1](../TASK-MODEL.md), Decisions Log #24, #59, #62, #63, #88, #90.
+Depth: [TASK-MODEL.md §3.1](../TASK-MODEL.md), Decisions Log #24, #59, #62, #63, #88, #90, #91.
 
 ## Closeout
 

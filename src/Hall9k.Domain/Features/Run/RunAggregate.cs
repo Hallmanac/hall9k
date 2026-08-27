@@ -154,12 +154,26 @@ public sealed class RunAggregate
 
     /// <summary>
     /// The worktree's `git rev-parse HEAD` as of the most recently dispatched review cycle's own
-    /// dispatch (task: review cycles after the first) — what a later <see cref="ReviewMode.Verify"/>
-    /// cycle's prompt points its "commits since the prior cycle" instruction at. Null when it was
-    /// never recorded (a stream written before this field existed) or could not be read at dispatch
-    /// time; either way the engine falls back to a full-range instruction rather than guessing.
+    /// dispatch (task: review cycles after the first). Recorded so the NEXT cycle, if it turns out
+    /// to be a <see cref="ReviewMode.Verify"/> cycle, has this cycle's tip available as
+    /// <see cref="PriorCycleHeadSha"/> once it starts. Null when it was never recorded (a stream
+    /// written before this field existed) or could not be read at dispatch time.
     /// </summary>
     public string? CycleHeadSha { get; private set; }
+
+    /// <summary>
+    /// <see cref="CycleHeadSha"/> as it stood immediately before the current cycle started (task:
+    /// review cycles after the first) — what a <see cref="ReviewMode.Verify"/> cycle's prompt
+    /// points its "commits since the prior cycle" instruction at. Captured once, when the current
+    /// cycle's first <see cref="ReviewDispatched"/> lands, and held constant for the rest of that
+    /// cycle's lifetime — including a crash-recovery top-up dispatch into the same cycle
+    /// (<c>ReviewEngine.DispatchMissingPassesAsync</c>), which must still point at the cycle
+    /// <i>before</i> the one it is topping up rather than at <see cref="CycleHeadSha"/>, which by
+    /// then already holds this cycle's own tip. Null when the prior cycle's head was never recorded
+    /// or could not be read; the engine falls back to a full-range diff instruction rather than
+    /// guessing at a boundary.
+    /// </summary>
+    public string? PriorCycleHeadSha { get; private set; }
 
     private readonly List<ReviewResidual> _reviewResiduals = [];
     /// <summary>Every finding the tracks ended on without a reviewer confirming it resolved (log #63).</summary>
@@ -179,6 +193,23 @@ public sealed class RunAggregate
     /// next cycle for a budget the human just renewed.
     /// </summary>
     public int ReviewBudgetBaseCycle { get; private set; }
+
+    private readonly Dictionary<ReviewLens, int> _trackReactivatedAtCycle = [];
+
+    /// <summary>
+    /// The cycle a given track's own cap counts from (task: review cycles after the first) —
+    /// ordinarily <see cref="ReviewBudgetBaseCycle"/>, but bumped to whichever cycle a
+    /// <see cref="Events.ReviewTrackReactivated"/> most recently reawakened this lens: the
+    /// mandatory <see cref="ReviewMode.FinalFullPass"/> can revive a track that had already gone
+    /// dormant cycles ago, and measuring its cap from the run's absolute cycle count would count
+    /// every cycle the OTHER track spent alone against a lens that was not even being asked
+    /// anything for most of them — capping it before its own reawakened work ever gets a fix
+    /// session dispatched. <c>Math.Max</c> is what lets a human's later fresh grant
+    /// (<see cref="ReviewBudgetBaseCycle"/> moving forward on a needs-fixes park resolution)
+    /// still win over an earlier reactivation without a separate reset.
+    /// </summary>
+    public int TrackBudgetBaseCycle(ReviewLens lens) =>
+        Math.Max(ReviewBudgetBaseCycle, _trackReactivatedAtCycle.GetValueOrDefault(lens));
 
     /// <summary>This cycle's findings that are still owed a fix session — the loop's "is there anything to fix" (log #63).</summary>
     public int PendingFixFindings =>
@@ -232,6 +263,22 @@ public sealed class RunAggregate
     /// evaluated fresh only for the former.
     /// </summary>
     public int? LastFixRoundCycle { get; private set; }
+
+    private bool _fixDispatchedThisCycle;
+
+    /// <summary>
+    /// Whether a fix session has dispatched since the CURRENT tracked cycle started (task: review
+    /// cycles after the first) — reset by <see cref="StartCycleIfNew"/> the moment a fresh
+    /// <see cref="Events.ReviewDispatched"/> starts a new cycle, unlike <see cref="LastFixRoundCycle"/>,
+    /// which is a plain cycle number and can echo a fix from a logically earlier cycle that happens
+    /// to share the same number: a run adopted mid-review with no <see cref="Events.ReviewDispatched"/>
+    /// ever recorded keeps <see cref="ReviewCycle"/> at 0 through a fix that itself labels its own
+    /// events "cycle 1", so the very next fresh Discovery dispatch reuses that same label — comparing
+    /// <see cref="LastFixRoundCycle"/> to <see cref="ReviewCycle"/> directly would then read as "a fix
+    /// already ran on this cycle" for a fix that in fact predates it. This field cannot make that
+    /// mistake: it answers only for fixes dispatched after the currently-tracked cycle's own start.
+    /// </summary>
+    public bool FixDispatchedThisCycle => _fixDispatchedThisCycle;
 
     /// <summary>The <see cref="PendingHumanFindings"/> value in force when <see cref="LastFixRoundCycle"/>'s round dispatched — see that field's own doc for why this pairing matters.</summary>
     public string? LastFixRoundHumanFindings { get; private set; }
@@ -436,6 +483,7 @@ public sealed class RunAggregate
     public void Apply(ReviewTrackReactivated @event)
     {
         _concludedReviewTracks.RemoveAll(track => track.Lens == @event.Lens);
+        _trackReactivatedAtCycle[@event.Lens] = @event.Cycle;
         ReviewPhase = DeriveReviewPhase();
     }
 
@@ -529,6 +577,7 @@ public sealed class RunAggregate
 
         LastFixRoundCycle = @event.Cycle;
         LastFixRoundHumanFindings = PendingHumanFindings;
+        _fixDispatchedThisCycle = true;
     }
 
     public void Apply(ReviewFixCompleted @event)
@@ -601,10 +650,12 @@ public sealed class RunAggregate
 
         ReviewCycle = cycle;
         CurrentCycleMode = mode;
+        PriorCycleHeadSha = CycleHeadSha;
         CycleHeadSha = headSha;
         _inFlightReviewPasses.Clear();
         _completedReviewPasses.Clear();
         _cycleHasPassMilestones = false;
+        _fixDispatchedThisCycle = false;
     }
 
     private void AddInFlightPass(

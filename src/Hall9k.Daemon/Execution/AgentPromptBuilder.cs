@@ -865,9 +865,13 @@ public static class AgentPromptBuilder
         prompt.AppendLine("touched a caller, a test, or a nearby invariant the original finding never mentioned —");
         prompt.AppendLine("not to re-read the whole branch from the beginning.");
         prompt.AppendLine();
-        prompt.AppendLine("You are standing in for both review lenses this round: name which track each finding");
-        prompt.AppendLine("you report belongs to (see the tagging rule below), for whichever of these is still");
-        prompt.AppendLine("active on this run:");
+        prompt.AppendLine(tracks.Count > 1
+            ? "You are standing in for both review lenses this round: name which track each finding"
+            : "You are standing in for the one review lens still active this round — the other already");
+        prompt.AppendLine(tracks.Count > 1
+            ? "you report belongs to (see the tagging rule below), for whichever of these is still"
+            : "concluded and stays dormant. Name which track each finding you report belongs to (see the");
+        prompt.AppendLine(tracks.Count > 1 ? "active on this run:" : "tagging rule below):");
         foreach (ReviewLens track in tracks)
         {
             prompt.AppendLine(track == ReviewLens.Adversarial
@@ -913,6 +917,9 @@ public static class AgentPromptBuilder
         prompt.AppendLine("  any finding above — you are not limited to re-checking the list.");
         prompt.AppendLine("- Report verified findings only. For every suspected defect, read the surrounding");
         prompt.AppendLine("  code until you can confirm it is real; discard anything you cannot confirm.");
+        prompt.AppendLine("- Each finding must carry the file and line (`path/to/file.cs:123`) — a finding with no");
+        prompt.AppendLine("  stated location cannot be matched against the prior cycle's own findings, or told");
+        prompt.AppendLine("  apart from another unplaced one, so give a location whenever the defect has one.");
         prompt.AppendLine("- Do NOT modify files, commit, push, or open pull requests. You are read-only.");
         prompt.AppendLine("- **Do NOT build, test, or run anything that writes into this worktree.**");
         AppendReviewGateStatus(prompt, project);
@@ -921,9 +928,10 @@ public static class AgentPromptBuilder
         AppendVerdictContract(prompt, cycle);
         prompt.AppendLine();
         prompt.AppendLine("Confirming every fix landed clean and finding nothing new is a real outcome: say so");
-        prompt.AppendLine("plainly and return merge-ready for whichever track(s) you found nothing owed. Inventing");
-        prompt.AppendLine("a finding to look thorough spends a fix session on nothing and teaches everyone to");
-        prompt.AppendLine("discount this pass.");
+        prompt.AppendLine("plainly. Track-level outcomes are carried by each finding's own `track` tag above, not");
+        prompt.AppendLine("by a separate verdict line — end with exactly one VERDICT line covering every track");
+        prompt.AppendLine("together, as the contract above states. Inventing a finding to look thorough spends a");
+        prompt.AppendLine("fix session on nothing and teaches everyone to discount this pass.");
 
         return prompt.ToString();
     }
@@ -1385,8 +1393,17 @@ public static class AgentPromptBuilder
     /// demotion is not a verdict on the finding's truth and gates merge-ready on genuine
     /// reconsideration rather than restatement fatigue.
     /// </para>
+    /// <para>
+    /// <paramref name="verifyTracks"/> is non-null only when the pass being re-prompted ran under
+    /// <see cref="ReviewMode.Verify"/> (independent pre-PR review, cycle 2, adversarial finding):
+    /// that pass's own contract carries a <c>track=</c> tag on top of severity and scope
+    /// (<see cref="AppendVerifyTrackTagContract"/>), and since the resumed leg's output replaces
+    /// the original's in full, omitting it here would have a restated finding arrive untagged and
+    /// get attributed to every active track rather than the one it actually belongs to.
+    /// </para>
     /// </summary>
-    public static string BuildReviewVerdictReprompt(ProjectDetails project, int cycle)
+    public static string BuildReviewVerdictReprompt(
+        ProjectDetails project, int cycle, IReadOnlyList<ReviewLens>? verifyTracks = null)
     {
         StringBuilder prompt = new();
         prompt.AppendLine("Your review session ended without the required VERDICT line, or with a");
@@ -1410,6 +1427,11 @@ public static class AgentPromptBuilder
         prompt.AppendLine("- End your final message with exactly one verdict line, nothing after it:");
         prompt.AppendLine("  `VERDICT: merge-ready` or `VERDICT: needs-fixes`.");
         AppendFindingContract(prompt, project);
+        if (verifyTracks is { Count: > 0 })
+        {
+            AppendVerifyTrackTagContract(prompt, verifyTracks);
+        }
+
         prompt.AppendLine();
         prompt.AppendLine("This is the only re-prompt this review cycle receives; ending without a verdict");
         prompt.AppendLine($"again hands the run to a human. This is still review cycle {cycle} for this run.");

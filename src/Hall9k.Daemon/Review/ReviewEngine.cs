@@ -154,7 +154,7 @@ public sealed class ReviewEngine(
                     string? openingHeadSha = await GetWorktreeHeadShaAsync(context.Run.WorktreePath, cancellationToken);
                     if (!await DispatchReviewPassesAsync(
                         context, run.ReviewCycle + 1, run.ActiveReviewLenses, ReviewMode.Discovery,
-                        openingHeadSha, cancellationToken))
+                        openingHeadSha, sinceSha: null, cancellationToken))
                     {
                         return false;
                     }
@@ -188,7 +188,7 @@ public sealed class ReviewEngine(
                             await GetWorktreeHeadShaAsync(context.Run.WorktreePath, cancellationToken);
                         if (!await DispatchReviewPassesAsync(
                             context, run.ReviewCycle + 1, ReviewLens.CycleLenses, ReviewMode.FinalFullPass,
-                            settlingHeadSha, cancellationToken))
+                            settlingHeadSha, sinceSha: null, cancellationToken))
                         {
                             return false;
                         }
@@ -275,8 +275,14 @@ public sealed class ReviewEngine(
                         ? run.ActiveReviewLenses
                         : ReviewLens.CycleLenses;
                     string? reverifyHeadSha = await GetWorktreeHeadShaAsync(context.Run.WorktreePath, cancellationToken);
+                    // The cycle about to be dispatched has not started yet, so run.CycleHeadSha still
+                    // holds the cycle THIS reverify is following — exactly the boundary a Verify
+                    // pass's "commits since the prior cycle" instruction needs (task: review cycles
+                    // after the first). reverifyHeadSha, by contrast, is recorded on the new cycle's
+                    // own ReviewDispatched, for whichever cycle comes after this one.
                     if (!await DispatchReviewPassesAsync(
-                        context, run.ReviewCycle + 1, reverifyLenses, reverifyMode, reverifyHeadSha, cancellationToken))
+                        context, run.ReviewCycle + 1, reverifyLenses, reverifyMode, reverifyHeadSha,
+                        sinceSha: run.CycleHeadSha, cancellationToken))
                     {
                         return false;
                     }
@@ -414,8 +420,14 @@ public sealed class ReviewEngine(
         logger.LogWarning(
             "Run {RunId}: review cycle {Cycle} was missing the {Lenses} pass(es) — dispatching now",
             context.RunId, run.ReviewCycle, string.Join(", ", missing.Select(lens => lens.Slug)));
+        // This tops up the CURRENT cycle, so run.CycleHeadSha already holds that cycle's own head
+        // (recorded by whichever pass of it dispatched first) — the same value re-recorded here.
+        // The "since" boundary a Verify top-up's prompt needs is one cycle further back, which is
+        // exactly what run.PriorCycleHeadSha still holds: StartCycleIfNew only moves it when a
+        // genuinely NEW cycle starts, and this dispatch is not one.
         bool dispatched = await DispatchReviewPassesAsync(
-            context, run.ReviewCycle, missing, run.CurrentCycleMode, run.CycleHeadSha, cancellationToken);
+            context, run.ReviewCycle, missing, run.CurrentCycleMode, run.CycleHeadSha,
+            sinceSha: run.PriorCycleHeadSha, cancellationToken);
         return dispatched ? MissingPassDispatch.Dispatched : MissingPassDispatch.Stale;
     }
 
@@ -423,15 +435,18 @@ public sealed class ReviewEngine(
     /// Reports false the moment a spawn is rejected as stale, without dispatching the rest. A
     /// <see cref="ReviewMode.Verify"/> cycle dispatches exactly one session standing in for every
     /// lens in <paramref name="lenses"/> (task: review cycles after the first); every other mode
-    /// dispatches one session per lens, as review always has.
+    /// dispatches one session per lens, as review always has. <paramref name="sinceSha"/> is only
+    /// ever read for a Verify dispatch — it is the boundary that mode's prompt reads the diff
+    /// since, distinct from <paramref name="headSha"/>, which every mode records on its own
+    /// <see cref="ReviewDispatched"/> for whichever cycle comes after it.
     /// </summary>
     private async Task<bool> DispatchReviewPassesAsync(
         ReviewContext context, int cycle, IReadOnlyList<ReviewLens> lenses, ReviewMode mode, string? headSha,
-        CancellationToken cancellationToken)
+        string? sinceSha, CancellationToken cancellationToken)
     {
         if (mode == ReviewMode.Verify)
         {
-            return await DispatchVerifyPassAsync(context, cycle, lenses, headSha, cancellationToken);
+            return await DispatchVerifyPassAsync(context, cycle, lenses, headSha, sinceSha, cancellationToken);
         }
 
         foreach (ReviewLens lens in lenses)
@@ -496,9 +511,18 @@ public sealed class ReviewEngine(
     /// not paid for twice. Recorded under <see cref="ReviewLens.Verify"/>, whose widened
     /// <c>Covers</c> is what lets the crash-recovery top-up and the cycle-conclusion check treat
     /// this one session as answering for both real lenses.
+    /// <para>
+    /// <paramref name="headSha"/> and <paramref name="sinceSha"/> are deliberately two different
+    /// values, not one read twice: <paramref name="headSha"/> is the worktree's tip right now, read
+    /// fresh so it can be recorded on this dispatch's own <see cref="ReviewDispatched"/> for
+    /// whichever cycle follows this one, while <paramref name="sinceSha"/> is the PRIOR cycle's own
+    /// tip — the boundary this pass's prompt actually reads the diff since. Passing the same value
+    /// for both would always resolve to an empty `git log`/`git diff` range, since the freshly-read
+    /// current tip already includes whatever this cycle exists to verify.
+    /// </para>
     /// </summary>
     private async Task<bool> DispatchVerifyPassAsync(
-        ReviewContext context, int cycle, IReadOnlyList<ReviewLens> tracks, string? headSha,
+        ReviewContext context, int cycle, IReadOnlyList<ReviewLens> tracks, string? headSha, string? sinceSha,
         CancellationToken cancellationToken)
     {
         if (!await EnsureCurrentGenerationAsync(context, cancellationToken))
@@ -516,7 +540,7 @@ public sealed class ReviewEngine(
         Guid sessionId = DomainId.New();
         string prompt = AgentPromptBuilder.BuildReviewVerify(
             context.Task, context.Project, context.Run.Branch, cycle, tracks, priorFindings, priorFixPosition,
-            headSha, context.PriorRulings);
+            sinceSha, context.PriorRulings);
         ExecutorMode executorMode = context.Run.ExecutorMode;
         AgentModel model = _options.ResolveModel(AgentRole.Review, context.Task.Model, context.Project.Model);
         SpawnedAgent agent = await executor.SpawnAsync(new AgentSpawnRequest(
@@ -559,8 +583,15 @@ public sealed class ReviewEngine(
 
         Guid artifactId = DomainId.New();
         // The re-prompt is the pass's own contract restated — every lens answers in it now
-        // (Decisions Log #87) — and the resumed output replaces what was read before.
-        string prompt = AgentPromptBuilder.BuildReviewVerdictReprompt(context.Project, run.ReviewCycle);
+        // (Decisions Log #87) — and the resumed output replaces what was read before. A Verify
+        // pass's contract additionally includes the track= tag (independent pre-PR review, cycle
+        // 2, adversarial finding): the resumed leg's own output replaces the original's file
+        // entirely, so a re-prompt that restated severity and scope but not track would come back
+        // untagged and get attributed to every active track by SplitForTrack's own conservative
+        // default, rather than the one it actually belongs to.
+        string prompt = verdictless.Mode == ReviewMode.Verify
+            ? AgentPromptBuilder.BuildReviewVerdictReprompt(context.Project, run.ReviewCycle, run.ActiveReviewLenses)
+            : AgentPromptBuilder.BuildReviewVerdictReprompt(context.Project, run.ReviewCycle);
         // The resumed session keeps the model it was dispatched on: the chain is NOT
         // re-resolved here, or the milestone would record a model the session never ran on
         // (log #33). An older stream that recorded no model stays honestly Unknown.
@@ -936,7 +967,7 @@ public sealed class ReviewEngine(
             bool anyFixFinding = plans.Any(plan => plan.Fix.Count > 0);
             bool fixSessionWillDispatch = anyFixFinding
                 && !plans.Any(plan => plan.Continues
-                    && ReviewTrackPolicy.CapReached(plan.Lens, run.ReviewCycle, run.ReviewBudgetBaseCycle, _options));
+                    && ReviewTrackPolicy.CapReached(plan.Lens, run.ReviewCycle, run.TrackBudgetBaseCycle(plan.Lens), _options));
 
             await WriteMergedFindingsAsync(
                 runDirectory, cycle, completed, plans, routed, fixSessionWillDispatch, cancellationToken);
@@ -1023,6 +1054,14 @@ public sealed class ReviewEngine(
         // cap, its own gate, its own Continues — decided from that ONE pass's own findings filtered
         // down to the track's own subset.
         List<ReviewTrackPlan> plans = [];
+        // Memoized per pass, not re-read per lens: a Verify pass's own findings file is read once
+        // here regardless of how many active lenses it covers (task: review cycles after the
+        // first). Re-parsing it separately per lens would hand each track its own freshly-parsed
+        // ReviewFinding objects for what is otherwise the identical reviewer statement — and
+        // RouteFindingsAsync's own same-instance dedup for an untagged, unplaced finding
+        // (independent pre-PR review, cycle 2, conformance finding #4) depends on every track
+        // that shares a pass actually sharing its finding objects, not just its finding text.
+        Dictionary<ReviewPassResult, IReadOnlyList<ReviewFinding>> findingsByPass = [];
         foreach (ReviewLens lens in run.CurrentCycleLenses)
         {
             ReviewPassResult? finished = completed.FirstOrDefault(pass => pass.Lens.Covers(lens));
@@ -1031,10 +1070,14 @@ public sealed class ReviewEngine(
                 continue;
             }
 
-            IReadOnlyList<ReviewFinding> passFindings =
-                await ReadFindingsAsync(runDirectory, run.ReviewCycle, finished, cancellationToken);
+            if (!findingsByPass.TryGetValue(finished, out IReadOnlyList<ReviewFinding>? passFindings))
+            {
+                passFindings = await ReadFindingsAsync(runDirectory, run.ReviewCycle, finished, cancellationToken);
+                findingsByPass[finished] = passFindings;
+            }
+
             (ReviewVerdict trackVerdict, IReadOnlyList<ReviewFinding> trackFindings) = finished.Lens == ReviewLens.Verify
-                ? SplitForTrack(lens, passFindings, finished.Verdict)
+                ? SplitForTrack(lens, passFindings, finished.Verdict, run.CurrentCycleLenses)
                 : (finished.Verdict, passFindings);
 
             plans.Add(ReviewTrackPolicy.Decide(lens, run.ReviewCycle, trackVerdict, trackFindings, _options));
@@ -1062,9 +1105,20 @@ public sealed class ReviewEngine(
     /// one track over the other, so — like an untagged <c>track=</c> tag on a genuinely parsed
     /// finding — it counts against every track this pass stands in for rather than none.
     /// </para>
+    /// <para>
+    /// <paramref name="activeLenses"/> is <see cref="RunAggregate.CurrentCycleLenses"/> — the tracks
+    /// this cycle actually plans for. A finding tagged for a real lens that already concluded before
+    /// this cycle (the reviewer restated an earlier finding's own track, or reasoned about a track
+    /// that is no longer being asked about) has nowhere left to be attributed: <paramref name="lens"/>
+    /// never equals that stale tag, since it is never iterated once concluded, so the finding would
+    /// otherwise appear in no plan at all and vanish — never Fix-dispositioned, never routed, never a
+    /// residual. It is read the same conservative way an untagged finding already is: it counts
+    /// against every track this pass still stands in for.
+    /// </para>
     /// </summary>
     private static (ReviewVerdict Verdict, IReadOnlyList<ReviewFinding> Findings) SplitForTrack(
-        ReviewLens lens, IReadOnlyList<ReviewFinding> findings, ReviewVerdict sessionVerdict)
+        ReviewLens lens, IReadOnlyList<ReviewFinding> findings, ReviewVerdict sessionVerdict,
+        IReadOnlyList<ReviewLens> activeLenses)
     {
         if (findings.Count == 0)
         {
@@ -1073,7 +1127,10 @@ public sealed class ReviewEngine(
                 : (ReviewVerdict.MergeReady, []);
         }
 
-        List<ReviewFinding> trackFindings = [.. findings.Where(finding => finding.Track is null || finding.Track == lens)];
+        List<ReviewFinding> trackFindings = [.. findings.Where(finding =>
+            finding.Track is null
+            || finding.Track == lens
+            || !activeLenses.Any(active => active == finding.Track))];
         ReviewVerdict verdict = trackFindings.Count == 0
             ? ReviewVerdict.MergeReady
             : trackFindings.All(finding => finding.Disposition == ReviewFindingDisposition.RideAlong)
@@ -1200,10 +1257,25 @@ public sealed class ReviewEngine(
 
         List<(ReviewLens Lens, ReviewFinding Finding)> pending = [];
         List<RoutedFinding> repeats = [];
+        // Reference identity, not SamePlace: SplitForTrack hands the identical ReviewFinding
+        // instance to every active track's plan when a Verify pass's finding names no track= tag
+        // (task: review cycles after the first), so the SAME object can appear in more than one
+        // plan.Route here. SamePlace cannot catch that for an unplaced or lineless finding — it
+        // deliberately treats two blank locations as different defects rather than risk collapsing
+        // two genuinely different ones — so the one reviewer statement behind it would otherwise
+        // become two draft bug tasks. This check is narrower and answers first: it is not about
+        // whether two DIFFERENT findings share a place (still legitimate agreement, handled by
+        // SamePlace below exactly as before), only about not queuing the exact same finding twice.
+        HashSet<ReviewFinding> seenThisCycle = new(ReferenceEqualityComparer.Instance);
         foreach (ReviewTrackPlan plan in plans)
         {
             foreach (ReviewFinding finding in plan.Route)
             {
+                if (!seenThisCycle.Add(finding))
+                {
+                    continue;
+                }
+
                 // Both tracks can report the same pre-existing line in one cycle, which the
                 // fix prompt already calls agreement rather than two defects; the same list
                 // therefore grows as this cycle routes, not only across cycles.
@@ -1338,13 +1410,34 @@ public sealed class ReviewEngine(
             [.. run.ReviewResiduals.Where(residual => residual.Disposition == forcedDisposition)];
 
         List<(ReviewLens Lens, ReviewResidual Residual)> forced = [];
+        // Reference identity, not SamePlace: a Verify pass's own Findings list is the same
+        // instance every time it is reached below, once per active lens it covers (task: review
+        // cycles after the first). SamePlace cannot stand in for this — it deliberately treats two
+        // blank or lineless locations as different defects (RouteFindingsAsync's own doc says
+        // why) — so an unplaced ride-along the reviewer stated exactly once would otherwise be
+        // forced into a residual once per lens covering the pass. This dedup answers a narrower
+        // question than SamePlace's — "is this literally the same finding I already attributed a
+        // few iterations ago" — so it is checked first and independently of it.
+        HashSet<ReviewFindingRecord> attributed = new(ReferenceEqualityComparer.Instance);
         foreach (ReviewLens lens in run.ActiveReviewLenses)
         {
+            // Covers, not ==: a Verify pass is recorded under the pseudo-lens ReviewLens.Verify,
+            // which answers for every still-active track that cycle (task: review cycles after the
+            // first) — the same widening every other lens comparison here already needed once a
+            // pass could stand in for more than the one lens it was recorded under. The same-place
+            // dedup a few lines below is what stops two DIFFERENT passes' findings at the same
+            // place from being forced twice; the reference dedup just above is what stops this
+            // SAME pass's own finding from being forced twice when two active lenses both cover it.
             foreach (ReviewFindingRecord finding in run.CompletedReviewPasses
-                .Where(pass => pass.Lens == lens)
+                .Where(pass => pass.Lens.Covers(lens))
                 .SelectMany(pass => pass.Findings)
                 .Where(finding => finding.Disposition == ReviewFindingDisposition.RideAlong))
             {
+                if (!attributed.Add(finding))
+                {
+                    continue;
+                }
+
                 if (alreadyOnStream.Any(existing => ReviewFindingLocations.SamePlace(existing.Location, finding.Location))
                     || forced.Any(kept => ReviewFindingLocations.SamePlace(kept.Residual.Location, finding.Location)))
                 {
@@ -1875,8 +1968,22 @@ public sealed class ReviewEngine(
     /// park resolution is exempt outright: a human overruling the automatic loop already looked, or
     /// deliberately chose not to, and dispatching another agent pass over their explicit verdict
     /// would be presumptuous rather than thorough.
+    /// <para>
+    /// The mode check alone is not enough (independent pre-PR review, cycle 2, conformance
+    /// finding): a cycle's <see cref="RunAggregate.CurrentCycleMode"/> does not change until the
+    /// NEXT cycle's own dispatch, so it still reads <see cref="ReviewMode.FinalFullPass"/> even
+    /// after a fix session ran on top of that same cycle's own findings (the empty terminal case —
+    /// every track already <c>Continues: false</c>, but a Fix finding still owed a session). Ending
+    /// there would settle the run over commits that mandatory pass never read, which is exactly the
+    /// "nothing reaches the remote on delta-green alone" promise this method exists to keep — so a
+    /// fix dispatched on the current tracked cycle (<see cref="RunAggregate.FixDispatchedThisCycle"/>)
+    /// also blocks settling, sending the caller back to dispatch one more fresh-context pass over
+    /// the fix it just applied.
+    /// </para>
     /// </summary>
-    private static bool MaySettle(RunAggregate run) => run.HumanEndedTheLoop || run.CurrentCycleMode != ReviewMode.Verify;
+    private static bool MaySettle(RunAggregate run) =>
+        run.HumanEndedTheLoop
+        || (run.CurrentCycleMode != ReviewMode.Verify && !run.FixDispatchedThisCycle);
 
     /// <summary>
     /// The worktree's current commit, best-effort (task: review cycles after the first) — what a
@@ -1904,8 +2011,14 @@ public sealed class ReviewEngine(
             process.StartInfo.ArgumentList.Add("rev-parse");
             process.StartInfo.ArgumentList.Add("HEAD");
             process.Start();
+            // Both streams started before the wait (GitWorktreeManager.TryRunGitAsync's own
+            // pattern): stderr is never read below, but leaving it undrained lets git block on a
+            // full pipe (a dubious-ownership advice block, a noisy hook) with WaitForExitAsync
+            // never returning.
             Task<string> standardOutput = process.StandardOutput.ReadToEndAsync(cancellationToken);
+            Task<string> standardError = process.StandardError.ReadToEndAsync(cancellationToken);
             await process.WaitForExitAsync(cancellationToken);
+            await standardError;
             return process.ExitCode == 0 ? (await standardOutput).Trim() : null;
         }
         catch (Exception exception) when (exception is not OperationCanceledException)
@@ -1920,7 +2033,7 @@ public sealed class ReviewEngine(
     /// <summary>The first still-active track that has run as many cycles as it may, or null while every track has room.</summary>
     private ReviewLens? CappedTrack(RunAggregate run) =>
         run.ActiveReviewLenses.FirstOrDefault(lens =>
-            ReviewTrackPolicy.CapReached(lens, run.ReviewCycle, run.ReviewBudgetBaseCycle, _options));
+            ReviewTrackPolicy.CapReached(lens, run.ReviewCycle, run.TrackBudgetBaseCycle(lens), _options));
 
     /// <summary>
     /// Why a capped track parks, in that track's own terms. The two caps mean different things
@@ -1934,7 +2047,7 @@ public sealed class ReviewEngine(
         string levers =
             $"Unresolved findings: {findings}. Fix in the worktree and resolve with " +
             "h9k review resolve --merge-ready, grant a fresh round with --needs-fixes, or abandon the task.";
-        int cycles = run.ReviewCycle - run.ReviewBudgetBaseCycle;
+        int cycles = run.ReviewCycle - run.TrackBudgetBaseCycle(capped);
 
         return capped == ReviewLens.Adversarial
             ? $"{AdversarialCapReason(run, cycles)} {levers}"
