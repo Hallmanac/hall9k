@@ -163,6 +163,27 @@ recorded as references (`env:`, `keychain:`, `file:`) and never as secrets. When
 Jira reference merges, closeout comments the pull request on the card; it never transitions the
 card, because which status a merge means is a team's workflow rather than a fact about software.
 
+**Every published task is tracked automatically**, per a project setting (backlog: track every
+published task), and GitHub gets a write path of its own — unlike Jira, an issue's shape (title,
+body, labels) is uniform enough for the platform to author deterministically, with no agent
+needed:
+
+```bash
+h9k project set <project> --backlog none|github-issues|jira   # default none — today's behavior
+h9k project set <project> --backlog-routing "<TEXT>"          # free text: verbatim to the jira agent; a label list for github-issues
+h9k task link-issue <task> 123                                # record a GitHub issue, verified against gh first
+```
+
+`h9k task publish` checks the policy once, after publishing: `jira` appends the same request
+`push-to-jira` does (so a project with no Jira connection registered yet is told once, at publish,
+rather than refused — `push-to-jira` remains the manual retry once one exists); `github-issues`
+runs `gh issue create` itself, reads the created issue straight back the same way `--from-issue`
+does, and records it through `link-issue` — the platform's own creation claim gets the identical
+observation gate an agent's does. A task adopted with `--from-issue` or `--from-jira` already
+carries its reference, so publishing it creates nothing a second time. Closeout comments a merged
+pull request onto a linked GitHub issue exactly as it does a linked Jira card — never a transition,
+same reasoning as above.
+
 CI runs build + test on ubuntu and windows for every push/PR to main.
 
 ## The orchestrator window
