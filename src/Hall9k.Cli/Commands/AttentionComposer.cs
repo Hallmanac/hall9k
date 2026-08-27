@@ -195,7 +195,7 @@ internal static class AttentionComposer
 
     /// <summary>
     /// The AwaitingReview attention cause, split by the post-PR review watcher's own read of
-    /// Copilot (Decisions Log #89) — the same readings <c>TaskPhaseComposer</c>'s phase
+    /// Copilot (Decisions Log #90) — the same readings <c>TaskPhaseComposer</c>'s phase
     /// line already draws, so the pane's cause never contradicts the line printed directly above
     /// it (pre-PR review, cycle 2: the two used to disagree — "awaiting Copilot review" on the
     /// phase line, "read its checks, then the merge is yours" on the attention line right under

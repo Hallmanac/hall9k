@@ -227,7 +227,7 @@ public sealed class GitHubPullRequestInspector : IPullRequestInspector
             // Read once and reused below: the resolved-or-not count needs it for the "landed
             // (or stale) with its comment-thread count" phase text, so it is read ahead of the
             // unresolved-only filtering the rest of this loop applies. Scoped to the review
-            // that is actually reported (Decisions Log #89, independent pre-PR review cycle 6)
+            // that is actually reported (Decisions Log #90, independent pre-PR review cycle 6)
             // — Copilot's login alone is not enough, since a stale review superseded by a fresh
             // countersign left threads too, and those are not what the reported review left.
             PullRequestReviewer? starter = ThreadStarter(thread);
@@ -301,19 +301,23 @@ public sealed class GitHubPullRequestInspector : IPullRequestInspector
     /// re-request follows, that stale review is what gets reported (<see cref="ExternalReviewState.Stale"/>)
     /// instead of the state falling all the way through to <see cref="ExternalReviewState.None"/>,
     /// which would tell a reader Copilot never looked at all (independent pre-PR review, cycle 6).
+    /// A review that could not be compared on either side reports
+    /// <see cref="ExternalReviewState.Unknown"/> for the same reason: unclassifiable evidence is
+    /// not absence (cycle 9).
     /// </para>
     /// <para>
     /// Also returns the reported review's own GraphQL id (the landed one, or the stale one when
     /// that is what gets reported), or null when nothing was recorded — what
     /// <see cref="ParseReviews"/> scopes <c>CopilotReviewThreadCount</c> against, so a thread a
     /// now-superseded review left does not inflate the count of a fresh, clean countersign
-    /// (Decisions Log #89).
+    /// (Decisions Log #90).
     /// </para>
     /// </summary>
     private static (ExternalReviewState State, string? ReviewId) ReadCopilotReviewState(
         JsonElement pullRequest, string? headCommit)
     {
         string? staleReviewId = null;
+        bool unclassifiedReviewSeen = false;
         if (pullRequest.TryGetProperty("latestReviews", out JsonElement latest))
         {
             foreach (JsonElement review in latest.GetProperty("nodes").EnumerateArray())
@@ -350,6 +354,14 @@ public sealed class GitHubPullRequestInspector : IPullRequestInspector
                 {
                     staleReviewId = reviewId;
                 }
+                else
+                {
+                    // A Copilot review is present but could not be compared (its commit, or the
+                    // head, was unobserved). That must not fall through to None below — None is
+                    // a positive claim that no review activity exists, and this pass has read
+                    // evidence it could not classify (independent pre-PR review, cycle 9).
+                    unclassifiedReviewSeen = true;
+                }
             }
         }
 
@@ -369,7 +381,9 @@ public sealed class GitHubPullRequestInspector : IPullRequestInspector
 
         return staleReviewId is not null
             ? (ExternalReviewState.Stale, staleReviewId)
-            : (ExternalReviewState.None, null);
+            : unclassifiedReviewSeen
+                ? (ExternalReviewState.Unknown, null)
+                : (ExternalReviewState.None, null);
     }
 
     /// <summary>
@@ -582,7 +596,7 @@ public sealed class GitHubPullRequestInspector : IPullRequestInspector
     /// carries none (a standalone pull-request comment, never part of a review). What
     /// <see cref="ParseReviews"/> compares against the currently-landed review's own id to scope
     /// <c>CopilotReviewThreadCount</c> to that review specifically, rather than to every thread
-    /// Copilot has ever opened across the pull request's history (Decisions Log #89).
+    /// Copilot has ever opened across the pull request's history (Decisions Log #90).
     /// </summary>
     private static string? ThreadReviewId(JsonElement thread)
     {
