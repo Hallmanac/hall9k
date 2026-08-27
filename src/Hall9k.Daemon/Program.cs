@@ -1,4 +1,5 @@
 using Hall9k.Daemon;
+using Hall9k.Connectors.Processes;
 using Hall9k.Connectors.WorkItems;
 using Hall9k.Daemon.Closeout;
 using Hall9k.Daemon.Dispatch;
@@ -113,6 +114,10 @@ builder.Services.AddSingleton<IPullRequestInspector, GitHubPullRequestInspector>
 // The Jira connector's one seam to the network, registered rather than reached for statically so
 // the closeout comment is testable against recorded responses (the ProcessRunner pattern).
 builder.Services.AddSingleton<JiraRequester>(_ => JiraHttp.Requester);
+// The same seam for the gh-backed closeout comment: registered rather than let
+// GitHubWorkItemProvider default to ExternalProcess.Runner, so CloseoutEngine's GitHub write is
+// testable against a recorded gh instead of the real, machine-authenticated one.
+builder.Services.AddSingleton<ProcessRunner>(_ => ExternalProcess.Runner);
 builder.Services.AddSingleton<CloseoutEngine>();
 builder.Services.AddSingleton<CardPublicationEngine>();
 builder.Services.AddSingleton<ProjectHomeRenderEngine>();

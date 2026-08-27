@@ -1,3 +1,4 @@
+using Hall9k.Connectors.Processes;
 using Hall9k.Connectors.WorkItems;
 using Hall9k.Daemon.Execution;
 using Hall9k.Daemon.Worktrees;
@@ -83,6 +84,7 @@ public sealed class CloseoutEngine(
     IPullRequestInspector inspector,
     IWorktreeManager worktrees,
     JiraRequester jiraRequester,
+    ProcessRunner githubRunner,
     IOptions<DaemonOptions> options,
     ILogger<CloseoutEngine> logger)
 {
@@ -958,13 +960,20 @@ public sealed class CloseoutEngine(
     /// notice a human reads, and a project tracking its backlog in GitHub deserves the same
     /// explicit word Jira gets rather than a quieter closeout because the mention happened to be
     /// free.
+    /// <para>
+    /// Built on <see cref="githubRunner"/> rather than a bare <c>new GitHubWorkItemProvider()</c>,
+    /// the same reason this engine takes <see cref="jiraRequester"/> instead of reaching Jira
+    /// statically: the seam is what lets this write be exercised in the test suite against a
+    /// recorded gh instead of a live, machine-authenticated one (independent pre-PR review,
+    /// cycle 4).
+    /// </para>
     /// </summary>
     private async Task TellGitHubAsync(
         Guid taskId, ProjectDetails project, TaskAggregate task, ExternalReference reference, CancellationToken cancellationToken)
     {
         try
         {
-            await new GitHubWorkItemProvider().CommentAsync(
+            await new GitHubWorkItemProvider(githubRunner).CommentAsync(
                 reference, MergeComment(project, task), project.RepositoryPath, cancellationToken);
             logger.LogInformation("Task {TaskId}: told {Reference} that {Url} merged", taskId, reference, task.PullRequestUrl);
         }

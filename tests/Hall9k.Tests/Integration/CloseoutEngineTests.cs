@@ -2242,29 +2242,40 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
                 "a card that silently gains a comment and never moves reads like an integration that half worked");
     }
 
+    /// <summary>
+    /// A GitHub-adopted task is told through gh, not Jira: GitHub already cross-references the
+    /// merge on the issue's own timeline the moment the pull request body mentions it, but this
+    /// platform comment exists anyway, for parity with Jira (PLAN.md #60, backlog: every
+    /// published task is tracked automatically). The write goes through <c>CloseoutEngine</c>'s
+    /// injected <c>ProcessRunner</c> seam rather than a live gh, the same way the Jira write goes
+    /// through <see cref="RecordingJira"/> instead of a live Atlassian tenant.
+    /// </summary>
     [Fact]
-    public async Task A_merge_with_no_jira_reference_says_nothing_to_anybody()
+    public async Task A_merge_with_a_github_reference_comments_the_issue_and_says_nothing_to_jira()
     {
-        // A GitHub-adopted task gets nothing here on purpose: the pull request body already
-        // mentions the issue, so GitHub cross-references the merge on its own timeline.
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
         (DocumentStore store, NodeContext node, GitWorktreeManager worktrees, _, string repoPath) =
             await SetUpAsync(cts.Token);
         using IDisposable storeLifetime = store;
         await SeedJiraConnectionAsync(store, node, cts.Token);
 
-        await SeedAwaitingReviewAsync(
+        (Guid taskId, _, _) = await SeedAwaitingReviewAsync(
             store, node, worktrees, repoPath, cts.Token,
             externalReference: new ExternalReference(WorkItemProvider.GitHub, "o/r#42"));
 
         RecordingJira jira = new();
+        RecordingProcessRunner github = RecordingProcessRunner.Succeeding(string.Empty);
         FakeInspector inspector = new()
         {
             Snapshot = FakeInspector.Quiet() with { IsMerged = true, MergedAt = Now.AddHours(2) },
         };
-        await NewEngine(store, node, inspector, worktrees, jira: jira).PollOnceAsync(cts.Token);
+        await NewEngine(store, node, inspector, worktrees, jira: jira, github: github).PollOnceAsync(cts.Token);
 
-        jira.Requests.Should().BeEmpty();
+        jira.Requests.Should().BeEmpty("a GitHub reference is told through gh, not Jira");
+        (string FileName, IReadOnlyList<string> Arguments, string WorkingDirectory) call =
+            github.Calls.Should().ContainSingle().Subject;
+        call.Arguments.Should().ContainInOrder("issue", "comment", "42", "--repo", "o/r", "--body");
+        call.Arguments[^1].Should().Contain(PullRequestUrl).And.Contain(taskId.ToString());
     }
 
     /// <summary>
@@ -2432,10 +2443,12 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
         GitWorktreeManager worktrees,
         int maxReviewRerequests = 2,
         RecordingJira? jira = null,
+        RecordingProcessRunner? github = null,
         int maxAutomaticCloseoutRuns = 2,
         int maxCloseoutLapsPerObstruction = 2) =>
         new(store, node, new DaemonConnection(postgres.ConnectionString), inspector, worktrees,
             (jira ?? new RecordingJira()).Requester,
+            (github ?? RecordingProcessRunner.Succeeding(string.Empty)).Runner,
             Options.Create(new DaemonOptions
             {
                 MaxAutomaticCloseoutRuns = maxAutomaticCloseoutRuns,
