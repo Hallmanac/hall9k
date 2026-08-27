@@ -883,40 +883,48 @@ public sealed class CloseoutEngine(
     }
 
     /// <summary>
-    /// Tell the external work item that the work landed (backlog 18): one comment on the card
-    /// carrying the pull request, at the moment the merge is observed.
+    /// Tell the external work item that the work landed (backlog 18; and, for GitHub, the
+    /// backlog-tracking feature that gave every provider this same closeout comment): one
+    /// comment on the card or issue carrying the pull request, at the moment the merge is
+    /// observed.
     /// <para>
-    /// A comment and not a transition, deliberately. Which status a merge should move a card to
-    /// is one team's workflow rather than a fact about software — "Done" on one board is "Ready
-    /// for QA" on the next — and moving somebody's card on the platform's opinion is exactly the
-    /// kind of guess this repo refuses to make. A comment is the one Jira write that needs to
-    /// know nothing about how the project is configured, which is why it is the one the platform
-    /// makes itself. Transitions wait until real usage says which ones matter.
+    /// A comment and not a transition, deliberately, for both providers. Which status a merge
+    /// should move an item to is one team's workflow rather than a fact about software — "Done"
+    /// on one board is "Ready for QA" on the next, and GitHub's own closing keywords (Fixes #42)
+    /// would auto-close an issue at merge, which is exactly the guess this repo refuses to make.
+    /// That is why the platform strips closing keywords from everything it writes toward GitHub
+    /// (task objectives seeding issue titles, pull-request bodies) rather than ever emitting one:
+    /// the comment below mentions the pull request without ever asking GitHub to act on it.
     /// </para>
     /// <para>
     /// Best-effort, and loudly so. The merge is already recorded and the dependents are already
-    /// unblocked; a Jira outage must not undo any of that, and it must not be retried blindly
-    /// either — a retry loop around an unwatched write is how one card ends up with four
+    /// unblocked; an outage on either side must not undo any of that, and it must not be retried
+    /// blindly either — a retry loop around an unwatched write is how one item ends up with four
     /// identical comments. So a failure is logged with everything needed to do it by hand and
     /// the closeout carries on.
-    /// </para>
-    /// <para>
-    /// GitHub gets nothing here on purpose: the pull request body already mentions an adopted
-    /// issue, so GitHub cross-references the merge on the issue's own timeline without the
-    /// platform writing a word (PLAN.md #60). Jira has no such link, which is what makes this
-    /// comment the thing that closes the loop rather than a duplicate of one.
     /// </para>
     /// </summary>
     private async Task TellTheCardAsync(
         Guid taskId, ProjectDetails project, TaskAggregate task, CancellationToken cancellationToken)
     {
-        if (task.ExternalReference is not { } reference
-            || reference.Provider != WorkItemProvider.Jira
-            || task.PullRequestUrl.IsBlank())
+        if (task.ExternalReference is not { } reference || task.PullRequestUrl.IsBlank())
         {
             return;
         }
 
+        if (reference.Provider == WorkItemProvider.Jira)
+        {
+            await TellJiraAsync(taskId, project, task, reference, cancellationToken);
+        }
+        else if (reference.Provider == WorkItemProvider.GitHub)
+        {
+            await TellGitHubAsync(taskId, project, task, reference, cancellationToken);
+        }
+    }
+
+    private async Task TellJiraAsync(
+        Guid taskId, ProjectDetails project, TaskAggregate task, ExternalReference reference, CancellationToken cancellationToken)
+    {
         try
         {
             await using IQuerySession session = store.QuerySession();
@@ -938,7 +946,33 @@ public sealed class CloseoutEngine(
             logger.LogWarning(exception,
                 "Could not comment the merge of {Url} on {Reference}. Nothing is retried automatically; "
                 + "add the note by hand if it matters",
-                task.PullRequestUrl, task.ExternalReference);
+                task.PullRequestUrl, reference);
+        }
+    }
+
+    /// <summary>
+    /// GitHub already cross-references the merge on the issue's own timeline the moment the pull
+    /// request body mentions it (PLAN.md #60) — no platform write required. This comment exists
+    /// anyway, for parity with Jira: a timeline cross-reference is not the same as a completion
+    /// notice a human reads, and a project tracking its backlog in GitHub deserves the same
+    /// explicit word Jira gets rather than a quieter closeout because the mention happened to be
+    /// free.
+    /// </summary>
+    private async Task TellGitHubAsync(
+        Guid taskId, ProjectDetails project, TaskAggregate task, ExternalReference reference, CancellationToken cancellationToken)
+    {
+        try
+        {
+            await new GitHubWorkItemProvider().CommentAsync(
+                reference, MergeComment(project, task), project.RepositoryPath, cancellationToken);
+            logger.LogInformation("Task {TaskId}: told {Reference} that {Url} merged", taskId, reference, task.PullRequestUrl);
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            logger.LogWarning(exception,
+                "Could not comment the merge of {Url} on {Reference}. Nothing is retried automatically; "
+                + "add the note by hand if it matters",
+                task.PullRequestUrl, reference);
         }
     }
 
@@ -952,8 +986,8 @@ public sealed class CloseoutEngine(
          The pull request for this work has merged: {task.PullRequestUrl}
 
          Recorded by Hall9k as task {task.Id} in project {project.Name}. This is a one-off note at
-         merge — Hall9k does not change the card's status, because which status a merge means is
-         this project's workflow to decide.
+         merge — Hall9k does not change this item's status or close it, because which status a
+         merge means is this project's workflow to decide.
          """;
 
     /// <summary>
