@@ -20,6 +20,21 @@ public sealed class ProcessManagerParityTests : IDisposable
     private readonly string _directory = Directory.CreateTempSubdirectory("hall9k-process-manager-parity-").FullName;
     private readonly IProcessManager _processManager = ProcessManagers.ForCurrentPlatform();
 
+    /// <summary>
+    /// The ceiling every poll loop in this suite waits against for an OS-level condition
+    /// (a process actually starting, a file gaining content, a whole tree actually dying)
+    /// to become observable. Generous on purpose, not tight: a loaded CI runner can take
+    /// several seconds just to get three process creations deep (cmd.exe, then PowerShell,
+    /// then the nested ping.exe it launches) before there is anything to even observe, and
+    /// a fixed sleep or a tight timeout races that runner's speed rather than the condition
+    /// itself. A single shared constant also means every wait in this file times out at the
+    /// same, deliberately-chosen bound instead of an assortment of ad hoc guesses.
+    /// </summary>
+    private static readonly TimeSpan ObservationDeadline = TimeSpan.FromSeconds(20);
+
+    /// <summary>How often a poll loop in this suite rechecks its condition while waiting out <see cref="ObservationDeadline"/>.</summary>
+    private static readonly TimeSpan PollInterval = TimeSpan.FromMilliseconds(100);
+
     public void Dispose()
     {
         try
@@ -120,10 +135,10 @@ public sealed class ProcessManagerParityTests : IDisposable
         SpawnedProcess spawned = _processManager.Spawn(new ProcessSpawnRequest(
             EchoCommand("done"), _directory, [], null, stdout, stderr));
 
-        DateTimeOffset deadline = DateTimeOffset.UtcNow + TimeSpan.FromSeconds(10);
+        DateTimeOffset deadline = DateTimeOffset.UtcNow + ObservationDeadline;
         while (_processManager.IsAlive(spawned.ProcessId, spawned.StartedAt) && DateTimeOffset.UtcNow < deadline)
         {
-            await Task.Delay(TimeSpan.FromMilliseconds(100));
+            await Task.Delay(PollInterval);
         }
 
         _processManager.IsAlive(spawned.ProcessId, spawned.StartedAt).Should().BeFalse(
@@ -147,13 +162,6 @@ public sealed class ProcessManagerParityTests : IDisposable
         SpawnedProcess spawned = _processManager.Spawn(new ProcessSpawnRequest(
             NestedSleepCommand(pidFilePath), _directory, [], null, stdout, stderr));
 
-        // Give the nested child a moment to actually start before pulling the tree down
-        // from under it — otherwise this could terminate before the grandchild exists at
-        // all, proving nothing about kill-tree specifically.
-        await Task.Delay(TimeSpan.FromSeconds(1));
-        _processManager.IsAlive(spawned.ProcessId, spawned.StartedAt).Should().BeTrue(
-            "the nested sleep has to actually be running for a tree-kill to mean anything");
-
         // What actually proves kill-tree, rather than a plain kill of spawned.ProcessId:
         // spawned.ProcessId is the wrapper (cmd.exe on Windows, the exec'd sh on Unix) and
         // dies from either a tree-kill or a plain one, so asserting on it alone (as this
@@ -161,15 +169,21 @@ public sealed class ProcessManagerParityTests : IDisposable
         // child's pid to a file rather than being found by name and a start-time window —
         // a global process-table search can latch onto an unrelated same-named process
         // from a concurrent test or an unrelated shell on the machine, which either fails
-        // a defect-free seam or lets a real kill-tree bug pass green.
+        // a defect-free seam or lets a real kill-tree bug pass green. AwaitNestedChildAsync
+        // itself is the "did the nested child actually start yet" wait: it polls for the
+        // pid file up to ObservationDeadline rather than guessing a fixed pause, so a slow
+        // runner gets more time instead of a flaky early read.
         (int nestedChildProcessId, DateTimeOffset nestedChildStartedAt) = await AwaitNestedChildAsync(pidFilePath);
+
+        _processManager.IsAlive(nestedChildProcessId, nestedChildStartedAt).Should().BeTrue(
+            "the nested sleep has to actually be running for a tree-kill to mean anything");
 
         _processManager.Terminate(spawned.ProcessId, spawned.StartedAt);
 
-        DateTimeOffset deadline = DateTimeOffset.UtcNow + TimeSpan.FromSeconds(10);
+        DateTimeOffset deadline = DateTimeOffset.UtcNow + ObservationDeadline;
         while (_processManager.IsAlive(nestedChildProcessId, nestedChildStartedAt) && DateTimeOffset.UtcNow < deadline)
         {
-            await Task.Delay(TimeSpan.FromMilliseconds(100));
+            await Task.Delay(PollInterval);
         }
 
         _processManager.IsAlive(nestedChildProcessId, nestedChildStartedAt).Should().BeFalse(
@@ -191,7 +205,7 @@ public sealed class ProcessManagerParityTests : IDisposable
     /// </summary>
     private static async Task<(int ProcessId, DateTimeOffset StartedAt)> AwaitNestedChildAsync(string pidFilePath)
     {
-        DateTimeOffset deadline = DateTimeOffset.UtcNow + TimeSpan.FromSeconds(5);
+        DateTimeOffset deadline = DateTimeOffset.UtcNow + ObservationDeadline;
         while (DateTimeOffset.UtcNow < deadline)
         {
             if (File.Exists(pidFilePath) &&
@@ -211,7 +225,7 @@ public sealed class ProcessManagerParityTests : IDisposable
                 }
             }
 
-            await Task.Delay(TimeSpan.FromMilliseconds(50));
+            await Task.Delay(PollInterval);
         }
 
         throw new InvalidOperationException("The nested child's pid file never appeared.");
@@ -231,22 +245,37 @@ public sealed class ProcessManagerParityTests : IDisposable
 
     private static async Task<string> WaitForContentAsync(string filePath)
     {
-        DateTimeOffset deadline = DateTimeOffset.UtcNow + TimeSpan.FromSeconds(10);
+        DateTimeOffset deadline = DateTimeOffset.UtcNow + ObservationDeadline;
         while (DateTimeOffset.UtcNow < deadline)
         {
-            if (File.Exists(filePath))
+            if (File.Exists(filePath) && await TryReadAllTextAsync(filePath) is { Length: > 0 } content)
             {
-                string content = await File.ReadAllTextAsync(filePath);
-                if (content.Length > 0)
-                {
-                    return content;
-                }
+                return content;
             }
 
-            await Task.Delay(TimeSpan.FromMilliseconds(100));
+            await Task.Delay(PollInterval);
         }
 
-        return File.Exists(filePath) ? await File.ReadAllTextAsync(filePath) : string.Empty;
+        return File.Exists(filePath) ? await TryReadAllTextAsync(filePath) ?? string.Empty : string.Empty;
+    }
+
+    /// <summary>
+    /// The child on both platforms owns this file's write handle directly (log #2 above),
+    /// so this can observe it mid-write: on Windows that is a sharing-violation IOException,
+    /// not a missing or empty file. That is "not ready yet", the same as the file not
+    /// existing yet, so it is retried by the caller's poll loop rather than failing the test
+    /// on a race that has nothing to do with what the test is actually proving.
+    /// </summary>
+    private static async Task<string?> TryReadAllTextAsync(string filePath)
+    {
+        try
+        {
+            return await File.ReadAllTextAsync(filePath);
+        }
+        catch (IOException)
+        {
+            return null;
+        }
     }
 
     private static string EchoCommand(string marker) => $"echo {marker}";
