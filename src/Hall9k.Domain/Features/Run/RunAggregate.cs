@@ -188,11 +188,17 @@ public sealed class RunAggregate
 
     private readonly List<string> _lastFixRoundFindingLocations = [];
     /// <summary>
-    /// The finding locations <see cref="LastFixRoundCycle"/>'s fix round was dispatched over —
+    /// The finding locations the most recent AUTOMATED-findings fix round was dispatched over —
     /// what the NEXT fix round is compared against to detect a repeat (task: a second fix round
-    /// over the same findings). Carries forward only the immediately preceding round, not the
-    /// whole history, which is what makes de-escalation automatic: a round whose findings clear
-    /// this list simply stops matching the next time a comparison is made, with no separate reset.
+    /// over the same findings). NOT necessarily <see cref="LastFixRoundCycle"/>'s own round: a
+    /// human-findings round (<see cref="PendingHumanFindings"/> non-blank when it dispatches)
+    /// advances <see cref="LastFixRoundCycle"/> without replacing this list, because a human's
+    /// own reason is never the CURRENT side of that round's own comparison either — so while a
+    /// human round is what most recently dispatched, this can still be naming an earlier,
+    /// automated round's locations rather than that round's own. Carries forward only that one
+    /// automated round, not the whole history, which is what makes de-escalation automatic: a
+    /// round whose findings clear this list simply stops matching the next time an automated
+    /// comparison is made, with no separate reset.
     /// </summary>
     public IReadOnlyList<string> LastFixRoundFindingLocations => _lastFixRoundFindingLocations;
 

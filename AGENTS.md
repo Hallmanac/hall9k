@@ -370,8 +370,8 @@ The checkpoints, in the order the window sees them:
    names no platform file by name, since `AgentPromptBuilder` serves every registered project,
    not just this one), so a deviation already ratified there — or a finding a human already
    dismissed with evidence — is not re-raised verbatim by the next fresh-context reviewer without
-   it stating what changed since the ruling. A fix session dispatched over the same findings its
-   immediately preceding fix round already tried — the same location an automated pass keeps
+   it stating what changed since the ruling. A fix session dispatched over the same findings an
+   earlier fix round already tried — the same location an automated pass keeps
    returning, or a human's own `--needs-fixes` reason restating it — escalates to the review
    role's model instead of the fix role's, but only when the two roles actually resolve to
    different models: a default install that has never set `--model-review`/`--model-fix`, or a

@@ -748,8 +748,8 @@ public sealed record ReviewFixDispatched( // fix session in the same worktree, f
     AgentModel? Model = null,            // resolved for the Fix role, separately from Review (log #33)
                                          //   — UNLESS Escalated, in which case it is the Review
                                          //   role's model instead (log #90)
-    bool Escalated = false,              // this round repeats the immediately preceding fix
-                                         //   round's own findings, AND the two roles actually
+    bool Escalated = false,              // this round repeats an earlier fix round's own
+                                         //   findings, AND the two roles actually
                                          //   resolve to different models (log #90)
     string? EscalationReason = null);    // non-null only when Escalated; the Daemon decides it,
                                          //   Domain only records it
@@ -1060,9 +1060,11 @@ moment the park cleared.
 
 **A repeat fix round over the same findings escalates to the Review role's model (log #90).**
 `ReviewFixEscalation.Reason` is the trigger, conservative by design: a location match via
-`ReviewFindingLocations.SamePlace` against `RunAggregate.LastFixRoundFindingLocations` — the
-immediately preceding fix round's own findings, not the whole run's history, which is what makes
-de-escalation automatic once a repeated finding clears — or the human's own `h9k review resolve
+`ReviewFindingLocations.SamePlace` against `RunAggregate.LastFixRoundFindingLocations` — the most
+recent automated-findings fix round's own findings, not necessarily the immediately preceding
+round and never the whole run's history (a human-findings round advances the cycle without
+replacing this list, so it can lag by more than one round), which is what makes de-escalation
+automatic once a repeated finding clears — or the human's own `h9k review resolve
 --needs-fixes` reason literally naming a previous round's location. A mechanical redispatch of the
 very same round (a budget-exhaustion retry re-entering `FixNeeded` with the cycle and
 `RunAggregate.PendingHumanFindings` both unchanged) reuses that round's already-decided outcome

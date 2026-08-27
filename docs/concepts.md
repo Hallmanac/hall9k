@@ -281,9 +281,9 @@ part in this: it settles a disputed comment thread before any reviewer ever read
 review finding, so its resolution is not carried forward as a settled ruling.
 
 **A repeat fix round over the same findings escalates to the review role's model (Decisions Log
-#90).** When a fix session dispatches over substantially the same findings its immediately
-preceding fix round already tried — the same location an automated pass keeps returning, or a
-human's own `--needs-fixes` reason restating it — that fix session runs on the review role's
+#90).** When a fix session dispatches over substantially the same findings an earlier fix round
+already tried — the same location an automated pass keeps returning, or a human's own
+`--needs-fixes` reason restating it — that fix session runs on the review role's
 model instead of the fix role's, so the observed dodge-and-redo failure mode (a weaker model
 sidestepping a defect rather than fixing it) gets a stronger model exactly where it recurs. This
 only changes anything when the two roles actually resolve to different models: a default install

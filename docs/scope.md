@@ -26,8 +26,8 @@ removing the worktree and the branch at true closeout.
 Two things about that loop have been hardened by incident rather than by design review: leases
 survive a laptop lid closing without spawning duplicate agents, and daemon catch-up after a
 restart cannot double-book a task, because a stale generation is fenced out of every task-level
-write. A third: a fix session dispatched over substantially the same findings its immediately
-preceding fix round already tried escalates to the review role's model instead of the fix role's,
+write. A third: a fix session dispatched over substantially the same findings an earlier fix round
+already tried escalates to the review role's model instead of the fix role's,
 de-escalating automatically once a round moves on to something genuinely different — but only on
 an install where the review and fix roles actually resolve to different models; a default install
 that has never set `--model-review`/`--model-fix` resolves them identically, so a repeated round

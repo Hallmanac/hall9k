@@ -3,8 +3,8 @@ using Hall9k.Domain.Features.Run;
 namespace Hall9k.Daemon.Review;
 
 /// <summary>
-/// Whether a fix session is dispatching over the same findings its immediately preceding fix
-/// round already tried (task: a second fix round over the same findings). Origin (2026-08-25):
+/// Whether a fix session is dispatching over the same findings an earlier fix round already
+/// tried (task: a second fix round over the same findings). Origin (2026-08-25):
 /// task 60 generation 2's Sonnet fix session responded to the UnixProcessManager.Spawn start-time
 /// race by restructuring the flaky test rather than fixing Spawn — the gate caught it because
 /// three sibling parity tests hit the same race, costing a full extra generation. Ruled with
@@ -25,8 +25,11 @@ public static class ReviewFixEscalation
     /// <summary>
     /// Why this round escalates, or null when it is either a first round (no previous round to
     /// repeat — <paramref name="previousLocations"/> empty) or a round over genuinely fresh
-    /// findings. <paramref name="previousLocations"/> is the immediately preceding fix round's
-    /// own finding locations, never the whole run's history: a round that clears the repeated
+    /// findings. <paramref name="previousLocations"/> is an earlier fix round's own finding
+    /// locations — usually the immediately preceding round, but a human-findings round dispatched
+    /// in between leaves it unchanged rather than replacing it (see
+    /// <see cref="RunAggregate.LastFixRoundFindingLocations"/>'s own doc for why), so it can lag
+    /// by more than one round — never the whole run's history: a round that clears the repeated
     /// defect and moves on to something new de-escalates on its own the very next time this is
     /// asked, with no separate reset step anywhere in the loop.
     /// <para>
@@ -59,7 +62,7 @@ public static class ReviewFixEscalation
             .Distinct(StringComparer.OrdinalIgnoreCase)];
         if (repeated.Count > 0)
         {
-            return "repeat round over the same findings as the previous fix round "
+            return "repeat round over the same findings as an earlier fix round "
                 + $"({string.Join(", ", repeated)})";
         }
 
@@ -70,7 +73,7 @@ public static class ReviewFixEscalation
             : null;
         return restated is null
             ? null
-            : "repeat round — the human's needs-fixes verdict restates the previous fix round's "
+            : "repeat round — the human's needs-fixes verdict restates an earlier fix round's "
                 + $"finding at {restated}";
     }
 
