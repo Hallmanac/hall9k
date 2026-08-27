@@ -990,9 +990,6 @@ public sealed class ReviewEngine(
         session.Events.Append(runId, new ReviewPassCompleted(
             runId, cycle, pass.Lens, verdict, now, [.. findings.Select(finding => finding.ToRecord())],
             run.CurrentCycleMode, result.Turns, result.TotalInputTokens));
-        logger.LogInformation(
-            "Run {RunId}: {Lens} pass completed (cycle {Cycle}, verdict {Verdict}, turns {Turns}, input tokens {InputTokens})",
-            runId, LensLabel(pass.Lens), cycle, verdict.Value, result.Turns, result.TotalInputTokens);
         if (cycleConcluded)
         {
             // A cycle that dispatches its own fix session already sweeps up every concluding
@@ -1113,10 +1110,11 @@ public sealed class ReviewEngine(
 
         await session.SaveChangesAsync(cancellationToken);
         logger.LogInformation(
-            "Run {RunId}: the {Lens} pass of cycle {Cycle} completed — verdict {Verdict}, {Findings} finding(s) ({Input}in/{Output}out tokens)",
+            "Run {RunId}: the {Lens} pass of cycle {Cycle} completed — verdict {Verdict}, {Findings} finding(s), " +
+            "{Turns} turn(s) ({Input}in/{Output}out tokens)",
             runId, LensLabel(pass.Lens), cycle,
             verdict == ReviewVerdict.Unknown ? "(none)" : verdict.Value, findings.Count,
-            result.TotalInputTokens, result.OutputTokens);
+            result.Turns, result.TotalInputTokens, result.OutputTokens);
     }
 
     /// <summary>
