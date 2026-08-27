@@ -786,7 +786,7 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
     /// pre-existing defect, with no line to place it on, must still become one draft bug task.
     /// </summary>
     [Fact]
-    public async Task A_verify_passs_shared_unplaced_out_of_scope_finding_routes_once_not_twice()
+    public async Task A_verify_pass_shared_unplaced_out_of_scope_finding_routes_once_not_twice()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
         using DocumentStore store = NewStore();
@@ -1101,6 +1101,51 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
         run.ParkedReason.Should().Contain("not a spent budget")
             .And.Contain("a human should look at why")
             .And.Contain("fresh agent", "restarting is offered as a resolution, never taken automatically");
+    }
+
+    /// <summary>
+    /// Independent pre-PR review, cycle 2, adversarial finding #1: a Verify pass's single reviewer
+    /// is recorded under the pseudo-lens <see cref="ReviewLens.Verify"/>, which covers both real
+    /// lenses, so the adversarial cap-park reason must attribute each of that pass's findings to
+    /// the track its own `track=` tag names rather than crediting all of them to adversarial just
+    /// because the pass covers it. A conformance-tagged High must not be read as an adversarial
+    /// High when adversarial's own cap parks the run.
+    /// </summary>
+    [Fact]
+    public async Task An_adversarial_cap_park_attributes_a_verify_pass_findings_by_their_own_track_tag()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        using DocumentStore store = NewStore();
+        (Guid taskId, Guid runId, _) = await SeedVerifiedRunAsync(store, cts.Token);
+
+        ScriptedExecutor executor = new(
+            // Cycle 1: both tracks find something medium, so both stay active into cycle 2.
+            "FINDING: severity=medium; scope=in-scope; at=A.cs:1\nDefect: the criterion is not met.\n\n"
+            + "VERDICT: needs-fixes",
+            "FINDING: severity=medium; scope=in-scope; at=B.cs:2\nDefect: still present.\n\n"
+            + "VERDICT: needs-fixes",
+            "Tried.\n\nRESOLUTION: fixed",
+            // Cycle 2: one Verify pass stands in for both tracks. Conformance's own finding is
+            // now graded high; adversarial's own finding stays medium. Only adversarial is
+            // capped this cycle, so its park reason must not borrow conformance's high.
+            "FINDING: severity=high; scope=in-scope; track=conformance; at=A.cs:1\nDefect: still not met, worse than thought.\n\n"
+            + "FINDING: severity=medium; scope=in-scope; track=adversarial; at=B.cs:2\nDefect: still present.\n\n"
+            + "VERDICT: needs-fixes");
+        bool mergeReady = await NewEngine(
+            store, executor,
+            new DaemonOptions { MaxComplianceReviewCycles = 3, MaxAdversarialReviewCycles = 2 })
+            .ReviewAsync(runId, taskId, cts.Token);
+
+        mergeReady.Should().BeFalse("adversarial is at its two-cycle cap while conformance is not");
+
+        await using IQuerySession query = store.QuerySession();
+        RunDetails run = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
+        run.State.Should().Be(RunState.ReviewParked);
+        run.ParkedReason.Should()
+            .NotContain("still returning high-severity findings",
+                "the high finding belongs to conformance, not the adversarial track that capped")
+            .And.Contain("none of cycle 2's findings is graded high",
+                "adversarial's own finding this cycle was a medium");
     }
 
     /// <summary>
@@ -1514,7 +1559,7 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
     /// statement becomes two residuals.
     /// </summary>
     [Fact]
-    public async Task A_verify_passs_shared_unplaced_ride_along_settles_as_one_residual_not_two()
+    public async Task A_verify_pass_shared_unplaced_ride_along_settles_as_one_residual_not_two()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
         using DocumentStore store = NewStore();
@@ -1571,7 +1616,7 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
     /// concluding tracks becomes two residuals.
     /// </summary>
     [Fact]
-    public async Task A_verify_passs_shared_unplaced_ride_along_concluding_both_tracks_settles_as_one_residual_not_two()
+    public async Task A_verify_pass_shared_unplaced_ride_along_concluding_both_tracks_settles_as_one_residual_not_two()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
         using DocumentStore store = NewStore();
@@ -1616,7 +1661,7 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
     /// conclusion, never conformance's, even though conformance is reached first in the loop.
     /// </summary>
     [Fact]
-    public async Task A_verify_passs_tagged_ride_along_settles_under_the_track_its_own_tag_names()
+    public async Task A_verify_pass_tagged_ride_along_settles_under_the_track_its_own_tag_names()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
         using DocumentStore store = NewStore();

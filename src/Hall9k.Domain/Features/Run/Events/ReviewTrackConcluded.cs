@@ -6,10 +6,13 @@ namespace Hall9k.Domain.Features.Run.Events;
 /// confirm resolved — the severity gate closing an adversarial track over Mediums and Lows, or
 /// a cycle whose findings were all routed to draft bug tasks.
 /// <para>
-/// A concluded track stops being dispatched and is deliberately never reawakened by the other
-/// track's fix sessions (the accepted trade-off: conformance converges in one or two cycles,
-/// fix sessions are small, and the gates, the external reviewer, and the human merge gate
-/// stand behind the loop).
+/// Within an ordinary cycle a concluded track stops being dispatched and is deliberately never
+/// reawakened by the other track's fix sessions (the accepted trade-off: conformance converges
+/// in one or two cycles, fix sessions are small, and the gates, the external reviewer, and the
+/// human merge gate stand behind the loop) — except the mandatory
+/// <see cref="ReviewMode.FinalFullPass"/> cycle immediately before the run may settle, which
+/// dispatches every track regardless of conclusion and reawakens one via
+/// <see cref="ReviewTrackReactivated"/> when it finds something real (Decisions Log #92).
 /// </para>
 /// <para>
 /// Every track has one of these by the time the run reaches merge-ready, but a track does not

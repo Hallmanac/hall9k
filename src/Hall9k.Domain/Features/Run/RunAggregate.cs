@@ -107,9 +107,12 @@ public sealed class RunAggregate
 
     private readonly List<ReviewTrackOutcome> _concludedReviewTracks = [];
     /// <summary>
-    /// The review tracks that have finished, in the order they finished (log #63). A concluded
-    /// track is never dispatched again and is deliberately never reawakened by the other
-    /// track's fix sessions.
+    /// The review tracks that have finished, in the order they finished (log #63). Within an
+    /// ordinary cycle a concluded track is never dispatched again and is deliberately never
+    /// reawakened by the other track's fix sessions — only the mandatory
+    /// <see cref="ReviewMode.FinalFullPass"/> cycle immediately before the run may settle
+    /// dispatches it anyway (see <see cref="CurrentCycleLenses"/>) and reawakens it via
+    /// <see cref="Events.ReviewTrackReactivated"/> when it finds something real (Decisions Log #92).
     /// </summary>
     public IReadOnlyList<ReviewTrackOutcome> ConcludedReviewTracks => _concludedReviewTracks;
 
