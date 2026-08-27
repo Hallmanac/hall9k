@@ -19,12 +19,16 @@ namespace Hall9k.Daemon.Review;
 /// where the run parks because nothing automated is left to try.
 /// </para>
 /// <para>
-/// <b>Adversarial</b> runs under the severity gate on top of the same fix bar. Before
-/// <see cref="DaemonOptions.AdversarialSeverityGateFromCycle"/> every finding of every grade
-/// forces a fresh re-review — early cycles get full rigor while the code is still converging.
-/// From that cycle onward only a High forces the next one; a Medium is still fixed this cycle
-/// without forcing another, and a Low or an ungraded finding rides along instead of being fixed
-/// at all, which is the nit-churn tail the gate exists for. Its cap is
+/// <b>Adversarial</b> disposes every finding against the same fix bar at every cycle, gate or no
+/// gate: a Low or an ungraded finding is never itself Fix-dispositioned, so it rides along
+/// instead of being fixed on its own from cycle 1 onward — the severity gate never turns that
+/// rule on. What the gate (<see cref="DaemonOptions.AdversarialSeverityGateFromCycle"/>) actually
+/// decides is whether the track is FORCED into another cycle regardless of severity: before it,
+/// a needs-fixes verdict always runs the track again even when every finding attached is a
+/// ride-along, because early cycles get full rigor while the code is still converging. From that
+/// cycle onward only a High still forces the next one, and a Medium is fixed this cycle without
+/// forcing another — the ride-along a Low or ungraded finding already was simply continues, which
+/// is the nit-churn tail the gate exists to stop paying an extra cycle for. Its cap is
 /// <see cref="DaemonOptions.MaxAdversarialReviewCycles"/>, and reaching it is not a budget
 /// quietly running out: it means the machine kept finding real high-severity problems, and the
 /// park says so.

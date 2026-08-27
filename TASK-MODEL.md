@@ -942,11 +942,15 @@ it ever reads that rewrite. A below-the-bar finding **rides along**
 (`ReviewFindingDisposition.RideAlong`) rather than forcing a cycle.
 Conformance ends the moment nothing it found meets the fix bar;
 still finding something that does at `MaxComplianceReviewCycles` (3) parks the run, because
-nothing automated is left to try. Adversarial runs under a **severity gate**: through
-`AdversarialSeverityGateFromCycle - 1` any finding of any grade forces the next cycle, and
-from the gate cycle onward only a `high` does — a medium is still fixed there, it just stops
-re-triggering the loop, while a low (fixed there before #87) rides along instead of being
-fixed at all. The **empty terminal case** (a cycle whose findings all
+nothing automated is left to try. A below-the-bar finding rides along instead of being fixed
+on its own **at every cycle, gate or no gate** — the fix bar reads only severity, never the
+cycle. Adversarial runs under a **severity gate** that governs a different question, whether
+the track is *forced* into another cycle regardless of severity: through
+`AdversarialSeverityGateFromCycle - 1` a needs-fixes verdict always forces the next cycle even
+when every finding attached is a ride-along (the pre-#87 rule was "any finding forces the next
+cycle AND is fixed there"; #87 split those two, and only the forcing half survives before the
+gate), and from the gate cycle onward only a `high` still forces it — a medium is still fixed
+there, it just stops re-triggering the loop on its own. The **empty terminal case** (a cycle whose findings all
 route away, so nothing is left to fix) ends the track from the gate cycle too, and not
 before it: while the other track can still rewrite the branch, a track retired early would
 never read the fix commits. It cannot spin on an unchanged tip, because a cycle with nothing
