@@ -980,66 +980,6 @@ public sealed class ReviewEngine(
             runId, cycle, pass.Lens, verdict, now, [.. findings.Select(finding => finding.ToRecord())], run.CurrentCycleMode));
         if (cycleConcluded)
         {
-            // The mandatory FinalFullPass reads every lens regardless of conclusion
-            // (RunAggregate.CurrentCycleLenses's own override), so a plan here can name a track
-            // that was already concluded — and this time it found something real (Continues: true)
-            // rather than confirming clean. That track is genuinely reawakened, on the record
-            // (the ReviewTrackReactivated events below), rather than left stuck at its old
-            // conclusion (ReviewTrackReactivated's own doc says why this cannot just be "replace
-            // the old ReviewTrackConcluded" — nothing here replaces a conclusion that already read
-            // Continues: false). The set itself is computed here, before the merged findings
-            // document below, because the cap check that document's ride-along note depends on
-            // needs it already: run is the aggregate loaded at the top of this iteration, before
-            // the ReviewTrackReactivated events are appended, so a lens reactivated just now would
-            // still read run.TrackBudgetBaseCycle's pre-reactivation value unless this set overrides
-            // it with the cycle it was actually reawakened at (cycle-4 conformance finding) —
-            // otherwise a track a FinalFullPass reawakens with a real Fix finding could read as
-            // already capped in that check while the very next DriveAsync iteration — with the
-            // reactivation applied — finds it not capped at all, dispatching a fix session over a
-            // ride-along this method already recorded as never claimed.
-            HashSet<ReviewLens> reactivatedThisCycle = run.CurrentCycleMode == ReviewMode.FinalFullPass
-                ? [.. plans
-                    .Where(plan => plan.Continues && run.ConcludedReviewTracks.Any(track => track.Lens == plan.Lens))
-                    .Select(plan => plan.Lens)]
-                : [];
-
-            // A Fix finding is not by itself a promise that a fix session is coming (cycle-2
-            // review, adversarial finding): ReviewTrackPolicy.Decide grades severity and the gate,
-            // never the cap, so a track can carry Continues: true and a real Fix finding while
-            // already at CappedTrack's own cap — the next DriveAsync iteration then hits
-            // `ReviewPhase.FixNeeded when CappedTrack(run) is { } capped` and parks instead of
-            // reaching DispatchFixSessionAsync. Recording FixedUnreviewed for this cycle's
-            // ride-alongs in that case would assert a fix session read them when none is ever
-            // dispatched, so that disposition is additionally gated on no continuing track already
-            // being capped — the lens whose Fix finding survives park-or-dispatch is always one
-            // still saying Continues: true (a concluding plan's Fix already became its own residual
-            // below), so checking the cap only against continuing plans is exactly the set
-            // CappedTrack itself will see next. Computed before the merged findings document is
-            // written (rather than after, as it once was) because the document's own ride-along
-            // note has to say the true thing for THIS cycle: CapParkReason points a human at the
-            // same file a dispatching fix session reads, and the note is wrong for one of them
-            // unless it knows which cycle it is describing.
-            bool anyFixFinding = plans.Any(plan => plan.Fix.Count > 0);
-            bool fixSessionWillDispatch = anyFixFinding
-                && !plans.Any(plan => plan.Continues
-                    && ReviewTrackPolicy.CapReached(
-                        plan.Lens,
-                        run.ReviewCycle,
-                        reactivatedThisCycle.Contains(plan.Lens) ? cycle : run.TrackBudgetBaseCycle(plan.Lens),
-                        _options));
-
-            await WriteMergedFindingsAsync(
-                runDirectory, cycle, completed, plans, routed, fixSessionWillDispatch, cancellationToken);
-            session.Events.Append(runId, new ReviewCompleted(runId, cycle, cycleVerdict, now));
-
-            foreach (ReviewTrackPlan reawakened in plans.Where(plan => reactivatedThisCycle.Contains(plan.Lens)))
-            {
-                session.Events.Append(runId, new ReviewTrackReactivated(runId, reawakened.Lens, cycle, now));
-                logger.LogInformation(
-                    "Run {RunId}: the {Lens} track reactivated at cycle {Cycle} — the mandatory final full pass found something new",
-                    runId, LensLabel(reawakened.Lens), cycle);
-            }
-
             // A cycle that dispatches its own fix session already sweeps up every concluding
             // track's ride-alongs for free (DispatchFixSessionAsync reads this cycle's own merged
             // findings file whole): each one shipped the same way its own Fix findings did,
@@ -1057,9 +997,78 @@ public sealed class ReviewEngine(
             // force-concludes never had any to lose — is what lets that straggler's ride-along
             // survive as a residual instead of vanishing: there is no later cycle for anything to
             // claim it in either way, so its residual is written the instant the run stops looking.
+            bool anyFixFinding = plans.Any(plan => plan.Fix.Count > 0);
             IReadOnlyList<ReviewTrackPlan> concludingNow = anyFixFinding
                 ? [.. plans.Where(plan => !plan.Continues)]
                 : plans;
+
+            // The mandatory FinalFullPass reads every lens regardless of conclusion
+            // (RunAggregate.CurrentCycleLenses's own override), so a plan here can name a track
+            // that was already concluded — and this time it found something real (Continues: true)
+            // rather than confirming clean. That track is genuinely reawakened, on the record
+            // (the ReviewTrackReactivated events below), rather than left stuck at its old
+            // conclusion (ReviewTrackReactivated's own doc says why this cannot just be "replace
+            // the old ReviewTrackConcluded" — nothing here replaces a conclusion that already read
+            // Continues: false). Computed after concludingNow, and gated on the track not being in
+            // it (cycle-5 adversarial finding): the empty terminal case above force-concludes every
+            // plan, reactivated one included, in this very transaction, and a track the same
+            // transaction both reactivates and concludes is not a real reawakening — it is the
+            // terminal case, on the record twice. The set is computed here, before the merged
+            // findings document below, because the cap check that document's ride-along note
+            // depends on needs it already: run is the aggregate loaded at the top of this
+            // iteration, before the ReviewTrackReactivated events are appended, so a lens
+            // reactivated just now would still read run.TrackBudgetBaseCycle's pre-reactivation
+            // value unless this set overrides it with the cycle it was actually reawakened at
+            // (cycle-4 conformance finding) — otherwise a track a FinalFullPass reawakens with a
+            // real Fix finding could read as already capped in that check while the very next
+            // DriveAsync iteration — with the reactivation applied — finds it not capped at all,
+            // dispatching a fix session over a ride-along this method already recorded as never
+            // claimed.
+            HashSet<ReviewLens> reactivatedThisCycle = run.CurrentCycleMode == ReviewMode.FinalFullPass
+                ? [.. plans
+                    .Where(plan => plan.Continues
+                        && run.ConcludedReviewTracks.Any(track => track.Lens == plan.Lens)
+                        && !concludingNow.Any(concluding => concluding.Lens == plan.Lens))
+                    .Select(plan => plan.Lens)]
+                : [];
+
+            // A Fix finding is not by itself a promise that a fix session is coming (cycle-2
+            // review, adversarial finding): ReviewTrackPolicy.Decide grades severity and the gate,
+            // never the cap, so a track can carry Continues: true and a real Fix finding while
+            // already at CappedTrack's own cap — the next DriveAsync iteration then hits
+            // `ReviewPhase.FixNeeded when CappedTrack(run) is { } capped` and parks instead of
+            // reaching DispatchFixSessionAsync. Recording FixedUnreviewed for this cycle's
+            // ride-alongs in that case would assert a fix session read them when none is ever
+            // dispatched, so that disposition is additionally gated on no continuing track already
+            // being capped — the lens whose Fix finding survives park-or-dispatch is always one
+            // still saying Continues: true (a concluding plan's Fix already became its own residual
+            // above), so checking the cap only against continuing plans is exactly the set
+            // CappedTrack itself will see next. Computed before the merged findings document is
+            // written (rather than after, as it once was) because the document's own ride-along
+            // note has to say the true thing for THIS cycle: CapParkReason points a human at the
+            // same file a dispatching fix session reads, and the note is wrong for one of them
+            // unless it knows which cycle it is describing.
+            bool fixSessionWillDispatch = anyFixFinding
+                && !plans.Any(plan => plan.Continues
+                    && ReviewTrackPolicy.CapReached(
+                        plan.Lens,
+                        run.ReviewCycle,
+                        reactivatedThisCycle.Contains(plan.Lens) ? cycle : run.TrackBudgetBaseCycle(plan.Lens),
+                        _options));
+
+            await WriteMergedFindingsAsync(
+                runDirectory, cycle, run.CurrentCycleMode, completed, plans, routed, fixSessionWillDispatch,
+                cancellationToken);
+            session.Events.Append(runId, new ReviewCompleted(runId, cycle, cycleVerdict, now));
+
+            foreach (ReviewTrackPlan reawakened in plans.Where(plan => reactivatedThisCycle.Contains(plan.Lens)))
+            {
+                session.Events.Append(runId, new ReviewTrackReactivated(runId, reawakened.Lens, cycle, now));
+                logger.LogInformation(
+                    "Run {RunId}: the {Lens} track reactivated at cycle {Cycle} — the mandatory final full pass found something new",
+                    runId, LensLabel(reawakened.Lens), cycle);
+            }
+
             ReviewResidualDisposition rideAlongDisposition = fixSessionWillDispatch
                 ? ReviewResidualDisposition.FixedUnreviewed
                 : ReviewResidualDisposition.RideAlong;
@@ -1615,16 +1624,32 @@ public sealed class ReviewEngine(
     /// (<see cref="LensFindingsFile"/>), so a cycle recorded twice re-derives it rather than
     /// nesting its previous self.
     /// </para>
+    /// <para>
+    /// The intro sentence is <paramref name="mode"/>-aware (cycle-5 conformance finding): a
+    /// <see cref="ReviewMode.Verify"/> cycle is one reviewer reading a delta, not independent
+    /// per-lens full-diff passes, and this document is what the next cycle's prompt and a
+    /// human reading a park both quote verbatim, so it cannot claim more than what happened.
+    /// </para>
     /// </summary>
     private static async Task WriteMergedFindingsAsync(
-        string runDirectory, int cycle, IReadOnlyList<ReviewPassResult> passes, IReadOnlyList<ReviewTrackPlan> plans,
-        IReadOnlyList<RoutedFinding> routed, bool fixSessionWillDispatch, CancellationToken cancellationToken)
+        string runDirectory, int cycle, ReviewMode mode, IReadOnlyList<ReviewPassResult> passes,
+        IReadOnlyList<ReviewTrackPlan> plans, IReadOnlyList<RoutedFinding> routed, bool fixSessionWillDispatch,
+        CancellationToken cancellationToken)
     {
         StringBuilder merged = new();
         merged.AppendLine($"# Independent pre-PR review — cycle {cycle}");
         merged.AppendLine();
-        merged.AppendLine("Each section below is one independent pass over the same diff, with its own fresh");
-        merged.AppendLine("context. A finding belongs to the lens whose section it appears under.");
+        if (mode == ReviewMode.Verify)
+        {
+            merged.AppendLine("This cycle dispatched one reviewer standing in for every still-active track,");
+            merged.AppendLine("reading the delta since the prior cycle rather than the whole diff. A finding");
+            merged.AppendLine("belongs to whichever track its own tag names, not to the section heading below.");
+        }
+        else
+        {
+            merged.AppendLine("Each section below is one independent pass over the same diff, with its own fresh");
+            merged.AppendLine("context. A finding belongs to the lens whose section it appears under.");
+        }
         foreach (ReviewPassResult pass in passes)
         {
             string path = LensFindingsFile(runDirectory, cycle, pass.Lens);
@@ -1653,9 +1678,9 @@ public sealed class ReviewEngine(
         bool fixSessionWillDispatch)
     {
         List<(ReviewLens Lens, ReviewFinding Finding)> here =
-            [.. plans.SelectMany(plan => plan.Fix.Select(finding => (plan.Lens, Finding: finding)))];
+            [.. Deduplicated(plans.SelectMany(plan => plan.Fix.Select(finding => (plan.Lens, Finding: finding))))];
         List<(ReviewLens Lens, ReviewFinding Finding)> rideAlong =
-            [.. plans.SelectMany(plan => plan.RideAlong.Select(finding => (plan.Lens, Finding: finding)))];
+            [.. Deduplicated(plans.SelectMany(plan => plan.RideAlong.Select(finding => (plan.Lens, Finding: finding))))];
         if (here.Count == 0 && routed.Count == 0 && rideAlong.Count == 0)
         {
             return;
@@ -1711,6 +1736,29 @@ public sealed class ReviewEngine(
                 _ => $"NOT routed — creating the draft failed ({entry.FailureReason})",
             };
             merged.AppendLine($"- {FindingLabel(entry.Lens, entry.Finding)} → {destination}");
+        }
+    }
+
+    /// <summary>
+    /// Reference identity, not SamePlace: a Verify pass hands the identical <see cref="ReviewFinding"/>
+    /// instance to every active track's plan when a finding is untagged (<c>SplitForTrack</c>'s own
+    /// doc), so a shared instance landing in two tracks' <c>Fix</c> or <c>RideAlong</c> lists is one
+    /// reviewer statement, not two — the same reasoning <c>RecordReviewPassAsync</c>'s own
+    /// <c>rideAlongAttributed</c> set already applies to residuals, and <c>RouteFindingsAsync</c>'s
+    /// own <c>SplitAlreadyRouted</c> applies to routing (cycle-5 adversarial finding). Order is
+    /// preserved, so the earlier track in <paramref name="entries"/> wins the shared statement's
+    /// byline.
+    /// </summary>
+    private static IEnumerable<(ReviewLens Lens, ReviewFinding Finding)> Deduplicated(
+        IEnumerable<(ReviewLens Lens, ReviewFinding Finding)> entries)
+    {
+        HashSet<ReviewFinding> seen = new(ReferenceEqualityComparer.Instance);
+        foreach ((ReviewLens Lens, ReviewFinding Finding) entry in entries)
+        {
+            if (seen.Add(entry.Finding))
+            {
+                yield return entry;
+            }
         }
     }
 
