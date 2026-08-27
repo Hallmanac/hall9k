@@ -1808,17 +1808,21 @@ public sealed class ReviewEngine(
 
     /// <summary>
     /// The label a human reads beside a pass's raw output. An <see cref="ReviewVerdict.Unknown"/>
-    /// pass is not one fact but two different ones (task filed 2026-08-25): a needs-fixes
-    /// verdict that named nothing the platform could read as a finding, still visible in the
-    /// preserved text right below this heading, versus a pass that truly ended without a
-    /// parseable verdict line at all. Reporting both as "(none stated)" contradicts the very
-    /// text it introduces when the cause was the former.
+    /// pass is not one fact but three different ones (task filed 2026-08-25; the third added with
+    /// the merge-ready demotion path): a needs-fixes verdict that named nothing the platform
+    /// could read as a finding, a merge-ready verdict demoted because it attached a finding the
+    /// platform could not read as a stated defect, or a pass that truly ended without a
+    /// parseable verdict line at all — each still visible in the preserved text right below this
+    /// heading. Reporting any of the first two as "(none stated)" contradicts the very text it
+    /// introduces, exactly as <see cref="VerdictMissingCauseAsync"/> already distinguishes them.
     /// </summary>
     private static string VerdictLabel(ReviewVerdict verdict, string rawText) => verdict switch
     {
         _ when verdict != ReviewVerdict.Unknown => verdict.Value,
         _ when ReviewResultParser.ParseVerdict(rawText) == ReviewVerdict.NeedsFixes =>
             "needs-fixes (named nothing the platform could read as a finding)",
+        _ when ReviewResultParser.ParseVerdict(rawText) == ReviewVerdict.MergeReady =>
+            "merge-ready (attached a finding the platform could not read as a stated defect, so the verdict was not trusted)",
         _ => "(none stated)",
     };
 
