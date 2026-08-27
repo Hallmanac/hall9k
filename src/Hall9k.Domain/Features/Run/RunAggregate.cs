@@ -115,10 +115,51 @@ public sealed class RunAggregate
 
     /// <summary>
     /// The tracks a cycle still dispatches: every opening lens that has not concluded (log #63).
-    /// Empty means the loop is finished looking.
+    /// Empty means the loop is finished looking. Reads the genuine, current state — a track this
+    /// property has ever reported concluded stays reported that way, including a track a
+    /// <see cref="ReviewMode.FinalFullPass"/> cycle just reconfirmed clean or reawakened, which is
+    /// why <see cref="ReviewEngine.SettleAsync"/> and the fix-cap check read through THIS property
+    /// rather than <see cref="CurrentCycleLenses"/>: by the time either runs, this cycle's own
+    /// conclusions (or reactivation) have already landed, and re-deriving "both, unconditionally"
+    /// would re-conclude a track this same cycle already gave a real answer.
     /// </summary>
     public IReadOnlyList<ReviewLens> ActiveReviewLenses =>
         [.. ReviewLens.CycleLenses.Where(lens => !_concludedReviewTracks.Any(track => track.Lens.Covers(lens)))];
+
+    /// <summary>
+    /// The lenses the CURRENT cycle's own dispatch, top-up, and conclusion bookkeeping must
+    /// account for (task: review cycles after the first) — <see cref="ActiveReviewLenses"/> for
+    /// every mode except <see cref="ReviewMode.FinalFullPass"/>, where it is every real lens
+    /// regardless of conclusion: that cycle's whole job is to read every lens fresh, including a
+    /// dormant one, so the crash-recovery top-up (<c>ReviewEngine.DispatchMissingPassesAsync</c>),
+    /// the cycle-conclusion check (<see cref="DeriveReviewPhase"/>,
+    /// <c>ReviewEngine.RecordReviewPassAsync</c>'s own <c>cycleConcluded</c>), and the per-track
+    /// planning (<c>ReviewEngine.PlanCycleAsync</c>) all expect a pass — or a plan — for both.
+    /// Deliberately NOT what <c>SettleAsync</c> or the fix-cap check read: once this cycle's own
+    /// conclusions land, <see cref="ActiveReviewLenses"/> is what genuinely answers "who is still
+    /// owed a look," and this property would wrongly keep answering "both" for the rest of the
+    /// cycle's lifetime, since <see cref="CurrentCycleMode"/> itself does not change until the
+    /// next cycle's own dispatch.
+    /// </summary>
+    public IReadOnlyList<ReviewLens> CurrentCycleLenses =>
+        CurrentCycleMode == ReviewMode.FinalFullPass ? ReviewLens.CycleLenses : ActiveReviewLenses;
+
+    /// <summary>
+    /// The shape the most recently dispatched review cycle took (task: review cycles after the
+    /// first) — <see cref="ReviewMode.Discovery"/> by default, including for every stream written
+    /// before this field existed. Set once per cycle, at its first <see cref="ReviewDispatched"/>,
+    /// and unchanged by anything else that cycle records.
+    /// </summary>
+    public ReviewMode CurrentCycleMode { get; private set; } = ReviewMode.Discovery;
+
+    /// <summary>
+    /// The worktree's `git rev-parse HEAD` as of the most recently dispatched review cycle's own
+    /// dispatch (task: review cycles after the first) — what a later <see cref="ReviewMode.Verify"/>
+    /// cycle's prompt points its "commits since the prior cycle" instruction at. Null when it was
+    /// never recorded (a stream written before this field existed) or could not be read at dispatch
+    /// time; either way the engine falls back to a full-range instruction rather than guessing.
+    /// </summary>
+    public string? CycleHeadSha { get; private set; }
 
     private readonly List<ReviewResidual> _reviewResiduals = [];
     /// <summary>Every finding the tracks ended on without a reviewer confirming it resolved (log #63).</summary>
@@ -149,6 +190,15 @@ public sealed class RunAggregate
 
     /// <summary>Whether a human's merge-ready park resolution is what ended the loop, rather than a clean reviewer.</summary>
     private bool _humanEndedTheLoop;
+
+    /// <summary>
+    /// Whether a human's own merge-ready park resolution is what is ending the loop (task: review
+    /// cycles after the first) — the mandatory <see cref="ReviewMode.FinalFullPass"/> before the run
+    /// may settle does not apply here: a human overruling the automatic loop already looked, or
+    /// deliberately chose not to, and dispatching another agent pass over their explicit verdict
+    /// would be presumptuous rather than thorough.
+    /// </summary>
+    public bool HumanEndedTheLoop => _humanEndedTheLoop;
 
     private readonly List<ReviewPassSession> _inFlightReviewPasses = [];
     /// <summary>
@@ -331,10 +381,10 @@ public sealed class RunAggregate
 
     public void Apply(ReviewDispatched @event)
     {
-        StartCycleIfNew(@event.Cycle);
+        StartCycleIfNew(@event.Cycle, @event.Mode ?? ReviewMode.Discovery, @event.HeadSha);
         AddInFlightPass(
             @event.Lens ?? ReviewLens.Unknown, @event.SessionId, @event.SessionId,
-            @event.ProcessId, @event.ProcessStartedAt, @event.Model ?? AgentModel.Unknown);
+            @event.ProcessId, @event.ProcessStartedAt, @event.Model ?? AgentModel.Unknown, CurrentCycleMode);
         ReviewPhase = ReviewPhase.AwaitingVerdict;
         State = RunState.UnderReview;
     }
@@ -347,7 +397,7 @@ public sealed class RunAggregate
         // resumed under a new artifact id, and the resume target stays the original session.
         RecordPassResult(
             lens, pass?.TranscriptSessionId, pass?.Model ?? AgentModel.Unknown, @event.Verdict,
-            FindingsOf(@event.Findings, @event.Verdict));
+            FindingsOf(@event.Findings, @event.Verdict), @event.Mode ?? ReviewMode.Discovery);
         _inFlightReviewPasses.RemoveAll(inFlight => inFlight.Lens == lens);
         _cycleHasPassMilestones = true;
         ReviewPhase = DeriveReviewPhase();
@@ -362,7 +412,7 @@ public sealed class RunAggregate
         {
             RecordPassResult(
                 pass.Lens, pass.TranscriptSessionId, pass.Model, @event.Verdict,
-                FindingsOf(null, @event.Verdict));
+                FindingsOf(null, @event.Verdict), pass.Mode);
         }
 
         _inFlightReviewPasses.Clear();
@@ -379,6 +429,13 @@ public sealed class RunAggregate
         _concludedReviewTracks.RemoveAll(track => track.Lens == lens);
         _concludedReviewTracks.Add(new ReviewTrackOutcome(lens, @event.Cycle, @event.Settlement));
         _reviewResiduals.AddRange(@event.Residuals ?? []);
+        ReviewPhase = DeriveReviewPhase();
+    }
+
+    /// <summary>See the event's own doc for why this exists: the inverse of <see cref="Apply(ReviewTrackConcluded)"/>, not a replacement of its record.</summary>
+    public void Apply(ReviewTrackReactivated @event)
+    {
+        _concludedReviewTracks.RemoveAll(track => track.Lens == @event.Lens);
         ReviewPhase = DeriveReviewPhase();
     }
 
@@ -422,10 +479,12 @@ public sealed class RunAggregate
     public void Apply(ReviewVerdictReprompted @event)
     {
         // SessionId is this leg's artifact identity only; the resumed transcript — and so the
-        // pass's identity for anything that follows — continues the ORIGINAL session.
+        // pass's identity for anything that follows — continues the ORIGINAL session. The mode is
+        // this cycle's own (CurrentCycleMode): a reprompt resumes the same pass under the same
+        // cycle, so it never changes what shape that cycle's dispatch took.
         AddInFlightPass(
             @event.Lens ?? ReviewLens.Unknown, @event.SessionId, @event.ResumedSessionId,
-            @event.ProcessId, @event.ProcessStartedAt, @event.Model ?? AgentModel.Unknown);
+            @event.ProcessId, @event.ProcessStartedAt, @event.Model ?? AgentModel.Unknown, CurrentCycleMode);
         VerdictRepromptedCycle = @event.Cycle;
         VerdictRepromptedLens = @event.Lens ?? ReviewLens.Unknown;
         ReviewPhase = ReviewPhase.AwaitingVerdict;
@@ -528,8 +587,12 @@ public sealed class RunAggregate
         State = RunState.UnderReview;
     }
 
-    /// <summary>A new cycle starts with no passes: the previous cycle's are history, not state.</summary>
-    private void StartCycleIfNew(int cycle)
+    /// <summary>
+    /// A new cycle starts with no passes: the previous cycle's are history, not state. Mode and
+    /// HeadSha are this new cycle's own — read them fresh here rather than trusting a caller's copy,
+    /// since a daemon restart replays this from the stream with nothing else in memory.
+    /// </summary>
+    private void StartCycleIfNew(int cycle, ReviewMode mode, string? headSha)
     {
         if (cycle == ReviewCycle)
         {
@@ -537,6 +600,8 @@ public sealed class RunAggregate
         }
 
         ReviewCycle = cycle;
+        CurrentCycleMode = mode;
+        CycleHeadSha = headSha;
         _inFlightReviewPasses.Clear();
         _completedReviewPasses.Clear();
         _cycleHasPassMilestones = false;
@@ -544,20 +609,20 @@ public sealed class RunAggregate
 
     private void AddInFlightPass(
         ReviewLens lens, Guid sessionId, Guid transcriptSessionId,
-        int processId, DateTimeOffset processStartedAt, AgentModel model)
+        int processId, DateTimeOffset processStartedAt, AgentModel model, ReviewMode mode)
     {
         // One in-flight pass per lens: a redispatch (the daemon died between spawn and
         // record) supersedes its own orphan rather than being waited on twice.
         _inFlightReviewPasses.RemoveAll(pass => pass.Lens == lens);
         _inFlightReviewPasses.Add(new ReviewPassSession(
-            lens, sessionId, transcriptSessionId, processId, processStartedAt, model));
+            lens, sessionId, transcriptSessionId, processId, processStartedAt, model, mode));
     }
 
     private void RecordPassResult(
         ReviewLens lens, Guid? sessionId, AgentModel model, ReviewVerdict verdict,
-        IReadOnlyList<ReviewFindingRecord> findings)
+        IReadOnlyList<ReviewFindingRecord> findings, ReviewMode mode)
     {
-        ReviewPassResult result = new(lens, sessionId, model, verdict, findings);
+        ReviewPassResult result = new(lens, sessionId, model, verdict, findings, mode);
         int index = _completedReviewPasses.FindIndex(pass => pass.Lens == lens);
         if (index >= 0)
         {
@@ -598,7 +663,7 @@ public sealed class RunAggregate
     private ReviewPhase DeriveReviewPhase()
     {
         if (_inFlightReviewPasses.Count > 0
-            || ReviewLens.MissingFrom(ActiveReviewLenses, _completedReviewPasses.Select(pass => pass.Lens)).Count > 0)
+            || ReviewLens.MissingFrom(CurrentCycleLenses, _completedReviewPasses.Select(pass => pass.Lens)).Count > 0)
         {
             return ReviewPhase.AwaitingVerdict;
         }

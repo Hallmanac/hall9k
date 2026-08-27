@@ -5,12 +5,18 @@ namespace Hall9k.Domain.Features.Run.Events;
 /// <summary>
 /// One independent review pass was spawned over the run's diff before its pull request
 /// opens (Decisions Log #23): a separate headless session with fresh context — never the
-/// session that wrote the code. Cycle counts review rounds from 1, and each cycle dispatches
-/// one of these per lens (log #59), so two dispatch events per cycle is the shipped shape.
-/// ProcessId + start time are the session's identity for adoption (the PID-reuse guard,
-/// log #2). Model is the resolved model this pass was spawned on, recorded per pass as an
-/// observed fact (log #33). Lens is which attention budget this pass carries; null on
-/// streams written before lenses existed. RunState → UnderReview.
+/// session that wrote the code. Cycle counts review rounds from 1. A
+/// <see cref="ReviewMode.Discovery"/> or <see cref="ReviewMode.FinalFullPass"/> cycle dispatches
+/// one of these per lens (log #59); a <see cref="ReviewMode.Verify"/> cycle dispatches exactly one,
+/// recorded under <see cref="ReviewLens.Verify"/>, standing in for every still-active track (task:
+/// review cycles after the first). ProcessId + start time are the session's identity for adoption
+/// (the PID-reuse guard, log #2). Model is the resolved model this pass was spawned on, recorded
+/// per pass as an observed fact (log #33). Lens is which attention budget this pass carries; null
+/// on streams written before lenses existed. Mode is which shape this cycle's dispatch took; null
+/// reads as <see cref="ReviewMode.Discovery"/>, the only shape a stream written before this field
+/// existed could have carried. HeadSha is the worktree's `git rev-parse HEAD` at the moment this
+/// pass was spawned, best-effort (null when it could not be read) — what a later Verify cycle's
+/// prompt points a "commits since the prior cycle" instruction at. RunState → UnderReview.
 /// </summary>
 public sealed record ReviewDispatched(
     Guid Id,
@@ -20,4 +26,6 @@ public sealed record ReviewDispatched(
     DateTimeOffset ProcessStartedAt,
     DateTimeOffset DispatchedAt,
     AgentModel? Model = null,
-    ReviewLens? Lens = null);
+    ReviewLens? Lens = null,
+    ReviewMode? Mode = null,
+    string? HeadSha = null);

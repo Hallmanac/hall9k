@@ -123,6 +123,14 @@ public sealed class RunDetails
     public string? PendingGateRetry { get; set; }
     /// <summary>Pre-PR review loop (log #24): which round of review the run is on, from 1.</summary>
     public int ReviewCycle { get; set; }
+    /// <summary>
+    /// The shape <see cref="ReviewCycle"/>'s dispatch took (task: review cycles after the first) —
+    /// <see cref="ReviewMode.Discovery"/> by default, including for every run recorded before this
+    /// field existed. What <c>h9k task show</c> and the daemon log read to tell the story of why a
+    /// cycle dispatched one reviewer instead of two, or why the loop kept running past the point it
+    /// looked converged.
+    /// </summary>
+    public ReviewMode ReviewCycleMode { get; set; } = ReviewMode.Discovery;
     public ReviewVerdict LastReviewVerdict { get; set; } = ReviewVerdict.Unknown;
     /// <summary>
     /// Every human verdict this run's review park has ever taken, oldest first — kept as history
@@ -291,6 +299,7 @@ public sealed class RunDetailsProjection : SingleStreamProjection<RunDetails, Gu
         }
 
         view.ReviewCycle = @event.Data.Cycle;
+        view.ReviewCycleMode = @event.Data.Mode ?? ReviewMode.Discovery;
         view.ReviewModel = @event.Data.Model ?? AgentModel.Unknown;
         StartSession(
             view, AgentRole.Review, @event.Data.Lens, @event.Data.ProcessId, @event.Data.ProcessStartedAt);

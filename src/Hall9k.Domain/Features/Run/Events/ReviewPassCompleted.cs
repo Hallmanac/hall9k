@@ -18,6 +18,7 @@ namespace Hall9k.Domain.Features.Run.Events;
 /// track produced them. Null on streams written before findings were classified; an empty
 /// list on a clean pass, which is a different fact and is recorded as one.
 /// </para>
+/// <para>Mode is which shape the cycle this pass belongs to took; null reads as <see cref="ReviewMode.Discovery"/>.</para>
 /// </summary>
 public sealed record ReviewPassCompleted(
     Guid Id,
@@ -25,4 +26,5 @@ public sealed record ReviewPassCompleted(
     ReviewLens Lens,
     ReviewVerdict Verdict,
     DateTimeOffset CompletedAt,
-    IReadOnlyList<ReviewFindingRecord>? Findings = null);
+    IReadOnlyList<ReviewFindingRecord>? Findings = null,
+    ReviewMode? Mode = null);

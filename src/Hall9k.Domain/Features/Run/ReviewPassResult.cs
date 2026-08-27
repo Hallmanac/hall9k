@@ -26,4 +26,5 @@ public sealed record ReviewPassResult(
     Guid? SessionId,
     AgentModel Model,
     ReviewVerdict Verdict,
-    IReadOnlyList<ReviewFindingRecord> Findings);
+    IReadOnlyList<ReviewFindingRecord> Findings,
+    ReviewMode Mode);
