@@ -91,6 +91,24 @@ public sealed class ProjectSetCommand : Hall9kAsyncCommand<ProjectSetCommand.Set
             + "card belongs")]
         public string? JiraProjectKey { get; init; }
 
+        [CommandOption("--backlog <POLICY>")]
+        [Description(
+            "Where a published task's work becomes visible outside Hall9k: 'none' (default — the "
+            + "platform's original behavior), 'github-issues' (the platform authors the issue itself, "
+            + "deterministically — title from the objective, body from the criteria and agent context), "
+            + "or 'jira' (dispatches the same agent-mediated push h9k task push-to-jira already does, "
+            + "just automatically at publish). A task adopted with --from-issue or --from-jira already "
+            + "carries its reference, so publishing it creates nothing a second time.")]
+        public string? Backlog { get; init; }
+
+        [CommandOption("--backlog-routing <TEXT>")]
+        [Description(
+            "Free-text routing guidance for the backlog policy above (epic-first, initiative-first, "
+            + "which labels to apply): handed verbatim to the authoring agent for 'jira'; for "
+            + "'github-issues' it is read only as a comma-separated label list, since a deterministic "
+            + "author cannot follow prose. Blank clears it.")]
+        public string? BacklogRouting { get; init; }
+
         [CommandOption("--home <PATH>")]
         [Description(
             "Where this project lives on disk — the directory holding the generated AGENTS.md, "
@@ -184,7 +202,16 @@ public sealed class ProjectSetCommand : Hall9kAsyncCommand<ProjectSetCommand.Set
                     : JiraProjectKey.Parse(jiraKey))
                 : Optional<JiraProjectKey>.None,
             homeDirectory: homeDirectory,
-            repositoryPath: repositoryPath);
+            repositoryPath: repositoryPath,
+            backlogPolicy: settings.Backlog is { } backlog
+                ? Optional<BacklogPolicy>.Of(BacklogPolicy.Parse(backlog))
+                : Optional<BacklogPolicy>.None,
+            // Blank clears it, the ContextLinks/JiraProjectKey idiom: 'absent' means left alone
+            // and 'present but empty' means cleared, so a bare --backlog-routing "" is how a
+            // human removes guidance without touching the policy that reads it.
+            backlogRoutingGuidance: settings.BacklogRouting is { } routing
+                ? Optional<string>.Of(routing.Trim())
+                : Optional<string>.None);
 
         session.Events.Append(details.Id, changed);
         await session.SaveChangesAsync(cancellationToken);

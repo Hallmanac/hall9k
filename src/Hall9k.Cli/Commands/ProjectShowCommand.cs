@@ -103,6 +103,7 @@ public sealed class ProjectShowCommand : Hall9kAsyncCommand<ProjectShowCommand.S
             ? $"{project.JiraProjectKey.Value.EscapeMarkup()} [dim]— new cards are filed here; a reported "
               + "card key is checked against it[/]"
             : $"[dim]none bound — bind one: h9k project set {project.Name.EscapeMarkup()} --jira PROJ[/]");
+        table.AddRow("Backlog policy", BacklogPolicyRow(project));
         table.AddRow("Context links", project.ContextLinks.Count == 0
             ? $"[dim]none — add one: h9k project set {project.Name.EscapeMarkup()} --link \"jira=https://…\"[/]"
             : string.Join("\n", project.ContextLinks.Select(link =>
@@ -111,6 +112,33 @@ public sealed class ProjectShowCommand : Hall9kAsyncCommand<ProjectShowCommand.S
             ? $"[dim]{changedAt.ToLocalTime():g}[/]"
             : "[dim]never — still the registration defaults[/]");
         return table;
+    }
+
+    /// <summary>
+    /// What the policy means today, said in the same words the option's own help does — a
+    /// project bound to a policy nobody has looked at in months should not require re-reading
+    /// h9k project set --help to remember what publishing a task will do.
+    /// </summary>
+    private static string BacklogPolicyRow(ProjectDetails project)
+    {
+        string routing = project.BacklogRoutingGuidance.IsNotBlank()
+            ? $" [dim](routing: {project.BacklogRoutingGuidance.EscapeMarkup()})[/]"
+            : string.Empty;
+
+        if (project.BacklogPolicy == BacklogPolicy.GitHubIssues)
+        {
+            return "github-issues [dim]— publishing authors a GitHub issue and links it, verified "
+                + $"read-back included[/]{routing}";
+        }
+
+        if (project.BacklogPolicy == BacklogPolicy.Jira)
+        {
+            return "jira [dim]— publishing dispatches the same agent-mediated push h9k task "
+                + $"push-to-jira does[/]{routing}";
+        }
+
+        return $"[dim]none — publishing tracks nothing externally; set one: h9k project set "
+            + $"{project.Name.EscapeMarkup()} --backlog github-issues|jira[/]";
     }
 
     private static void WriteTasks(ProjectDetails project, IReadOnlyList<TaskStatusRow> rows)
