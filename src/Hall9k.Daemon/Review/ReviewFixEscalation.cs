@@ -70,11 +70,17 @@ public static class ReviewFixEscalation
 
     /// <summary>
     /// Whether <paramref name="text"/> literally names <paramref name="location"/> — a plain
-    /// substring match, but bounded on the right so a shorter line number stated in
-    /// <paramref name="location"/> cannot match as a prefix of a longer, unrelated one already
-    /// present in <paramref name="text"/> (<c>src/Auth.cs:4</c> must not match inside
-    /// <c>src/Auth.cs:42</c>). No left boundary is needed: <paramref name="location"/> always
-    /// starts mid-path or at a path separator, never mid-digit.
+    /// substring match, but bounded on both sides so <paramref name="location"/> can only match a
+    /// whole path-and-anchor token in <paramref name="text"/>, never a fragment of a longer one.
+    /// The right side rejects a following digit, so a shorter line number in
+    /// <paramref name="location"/> cannot match as a prefix of a longer, unrelated one
+    /// (<c>src/Auth.cs:4</c> must not match inside <c>src/Auth.cs:42</c>), and rejects a following
+    /// <c>:</c>-then-digit, so a bare file with no stated line cannot match a more specific
+    /// <c>file:line</c> naming a different place (<c>src/Foo.cs</c> must not match inside
+    /// <c>src/Foo.cs:120</c> — <see cref="ReviewFindingLocations.SamePlace"/> already refuses that
+    /// pair). The left side rejects a preceding path character, so <paramref name="location"/>
+    /// cannot match as the tail of a longer, unrelated filename (<c>Engine.cs:512</c> must not
+    /// match inside <c>ReviewEngine.cs:512</c> — those are different places by the same rule).
     /// </summary>
     private static bool ContainsLocation(string text, string location)
     {
@@ -86,8 +92,7 @@ public static class ReviewFixEscalation
                 return false;
             }
 
-            int after = index + location.Length;
-            if (after >= text.Length || !char.IsAsciiDigit(text[after]))
+            if (IsBoundaryBefore(text, index) && IsBoundaryAfter(text, index + location.Length))
             {
                 return true;
             }
@@ -95,4 +100,32 @@ public static class ReviewFixEscalation
             start = index + 1;
         }
     }
+
+    private static bool IsBoundaryBefore(string text, int matchStart) =>
+        matchStart == 0 || !IsPathCharacter(text[matchStart - 1]);
+
+    private static bool IsBoundaryAfter(string text, int matchEnd)
+    {
+        if (matchEnd >= text.Length)
+        {
+            return true;
+        }
+
+        if (text[matchEnd] == ':' && matchEnd + 1 < text.Length && char.IsAsciiDigit(text[matchEnd + 1]))
+        {
+            return false;
+        }
+
+        return !IsPathCharacter(text[matchEnd]);
+    }
+
+    /// <summary>
+    /// A character that continues a path or filename token rather than closing one off — letters,
+    /// digits and the punctuation ordinary filenames use (<c>.</c>, <c>_</c>, <c>-</c>). A path
+    /// separator (<c>/</c>) is deliberately not one of these: <see cref="ReviewFindingLocations.SamePlace"/>
+    /// already treats a shorter path as the same place as a longer one it is a trailing run of, so
+    /// matching right after a separator has to stay open.
+    /// </summary>
+    private static bool IsPathCharacter(char character) =>
+        char.IsLetterOrDigit(character) || character is '.' or '_' or '-';
 }
