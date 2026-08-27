@@ -35,6 +35,17 @@ public sealed class ProcessManagerParityTests : IDisposable
     /// <summary>How often a poll loop in this suite rechecks its condition while waiting out <see cref="ObservationDeadline"/>.</summary>
     private static readonly TimeSpan PollInterval = TimeSpan.FromMilliseconds(100);
 
+    /// <summary>
+    /// How long <see cref="NestedSleepCommand"/>'s own child keeps itself alive. Two full
+    /// <see cref="ObservationDeadline"/> windows sit between the child's start and the last
+    /// moment <see cref="Terminate_kills_the_whole_process_tree_not_just_the_returned_pid"/>
+    /// still cares whether it is alive — one for <see cref="AwaitNestedChildAsync"/> to spot
+    /// the pid file, one for the post-Terminate death poll — so the child has to outlive both
+    /// combined with margin to spare, or a slow runner lets the child's own natural exit look
+    /// like a proven kill-tree.
+    /// </summary>
+    private static readonly TimeSpan NestedChildLifetime = ObservationDeadline * 4;
+
     public void Dispose()
     {
         try
@@ -305,12 +316,14 @@ public sealed class ProcessManagerParityTests : IDisposable
         // protect $ from that outer shell's own parameter expansion — unescaped, "$!"
         // would resolve to the outer shell's (empty) last-background-job pid before the
         // inner "sh -c" ever saw it, leaving the pid file blank.
-        : $"sh -c \"sleep 30 & echo \\$! > '{pidFilePath}'; wait\"";
+        : $"sh -c \"sleep {(int)NestedChildLifetime.TotalSeconds} & echo \\$! > '{pidFilePath}'; wait\"";
 
     private static string EncodeNestedPingScript(string pidFilePath)
     {
+        // ping sends roughly one echo per second, so -n count doubles as an approximate
+        // second count for NestedChildLifetime.
         string script =
-            $"$p = Start-Process -FilePath ping -ArgumentList '-n','30','127.0.0.1' -PassThru -WindowStyle Hidden; " +
+            $"$p = Start-Process -FilePath ping -ArgumentList '-n','{(int)NestedChildLifetime.TotalSeconds}','127.0.0.1' -PassThru -WindowStyle Hidden; " +
             $"Set-Content -Path '{pidFilePath}' -Value $p.Id; " +
             "Wait-Process -Id $p.Id";
         return Convert.ToBase64String(Encoding.Unicode.GetBytes(script));
