@@ -135,6 +135,34 @@ public sealed class ReviewPacketAssemblerTests : IDisposable
     }
 
     /// <summary>
+    /// A binary file whose on-disk length alone exceeds the packet's remaining budget must not
+    /// degrade the packet: it was never going to be embedded regardless of size, so its length
+    /// must never be charged against the budget in the first place (cycle-2 conformance and
+    /// adversarial review — the binary check used to run *after* the size check, so an oversized
+    /// binary file tripped the degrade path before the code ever learned the file was binary).
+    /// </summary>
+    [Fact]
+    public async Task An_oversized_binary_touched_file_does_not_degrade_the_packet()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromSeconds(30));
+        Commit("small.cs", "class Widget { }\n", "add a small text file");
+        byte[] binary = new byte[ReviewPacketAssembler.MaxPacketBytes + 50_000]; // all-zero bytes trip the NUL heuristic
+        File.WriteAllBytes(Path.Combine(_repositoryPath, "asset.bin"), binary);
+        Git(_repositoryPath, "add -A");
+        Git(_repositoryPath, "-c user.name=Test -c user.email=test@test commit -q -m \"add oversized binary asset\"");
+
+        ReviewPacket? packet = await ReviewPacketAssembler.AssembleAsync(
+            _repositoryPath, "main", sinceSha: null, cts.Token);
+
+        packet.Should().NotBeNull();
+        packet!.Degraded.Should().BeFalse("the oversized file is binary and was never going to be embedded");
+        packet.TouchedFiles.Should().Contain("asset.bin");
+        packet.FileContents.Should().NotBeNull();
+        packet.FileContents!.Should().NotContainKey("asset.bin");
+        packet.FileContents!["small.cs"].Should().Be("class Widget { }\n");
+    }
+
+    /// <summary>
     /// A task worktree is cut with `--no-track` off `origin/{baseBranch}` (AGENTS.md), so it may
     /// carry no local ref of the base branch's name at all — the same fallback the review
     /// prompt's own prose already states.

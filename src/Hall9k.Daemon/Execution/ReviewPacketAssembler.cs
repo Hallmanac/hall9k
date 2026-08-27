@@ -41,10 +41,13 @@ public static class ReviewPacketAssembler
 {
     /// <summary>
     /// The packet's total size ceiling, diff plus every touched file's full text, in UTF-8
-    /// bytes. Chosen to comfortably cover an ordinary task's diff and files while staying well
-    /// short of spending a meaningful share of a context window on the packet alone — a run
-    /// whose diff already approaches this on its own was never going to be cheap to review
-    /// call-by-call either.
+    /// bytes. This bounds the packet's worst-case cost; it does not promise to cover every
+    /// task's full file set. A task that touches a large repo-doctrine file — this repository's
+    /// own PLAN.md alone is over 350,000 bytes — still crosses this ceiling and degrades to the
+    /// diff and file list with no file text at all (adversarial review, cycle 2), and that
+    /// degradation is the intended fallback for a packet that would otherwise spend a meaningful
+    /// share of a context window on itself, not a defect: a run whose diff already approaches
+    /// this cap on its own was never going to be cheap to review call-by-call either.
     /// </summary>
     public const long MaxPacketBytes = 300_000;
 
@@ -95,10 +98,12 @@ public static class ReviewPacketAssembler
     /// <see cref="MaxPacketBytes"/> starting from the diff's own size (the caller already
     /// confirmed the diff alone is under the cap). A file the diff renamed away or deleted is
     /// silently skipped: the diff itself already shows the removal, and there is no current text
-    /// on disk to embed. A file's on-disk length is checked against the remaining budget before
-    /// anything is read, and a probably-binary file is skipped the same way a deleted one is —
-    /// its lossy UTF-8 decode would be unusable noise in the prompt and would inflate the size it
-    /// is measured against (adversarial review, cycle 1).
+    /// on disk to embed. A probably-binary file is skipped the same way, and skipped *before* its
+    /// on-disk length is weighed against the remaining budget (cycle-2 conformance and adversarial
+    /// review): its lossy UTF-8 decode would be unusable noise in the prompt, and charging its
+    /// length to the budget would degrade the whole packet over a file that was never going to be
+    /// embedded in the first place. Only a file that survives the binary check has its length
+    /// checked against the remaining budget before being read.
     /// </summary>
     private static async Task<(Dictionary<string, string> Contents, bool Degraded)> ReadTouchedFilesAsync(
         string worktreePath, IReadOnlyList<string> touchedFiles, long startingSize, CancellationToken cancellationToken)
@@ -116,15 +121,15 @@ public static class ReviewPacketAssembler
                     continue;
                 }
 
+                if (await IsProbablyBinaryAsync(fullPath, cancellationToken))
+                {
+                    continue;
+                }
+
                 long fileLength = new FileInfo(fullPath).Length;
                 if (size + fileLength > MaxPacketBytes)
                 {
                     return (contents, true);
-                }
-
-                if (await IsProbablyBinaryAsync(fullPath, cancellationToken))
-                {
-                    continue;
                 }
 
                 text = await File.ReadAllTextAsync(fullPath, cancellationToken);
