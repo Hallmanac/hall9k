@@ -373,10 +373,13 @@ The checkpoints, in the order the window sees them:
    it stating what changed since the ruling. A fix session dispatched over the same findings its
    immediately preceding fix round already tried — the same location an automated pass keeps
    returning, or a human's own `--needs-fixes` reason restating it — escalates to the review
-   role's model instead of the fix role's (Decisions Log #89, origin: a Sonnet fix session dodged
-   a flaky-test race by restructuring the test rather than fixing the race the review kept
-   finding), visible on `h9k task show` and the daemon log line; de-escalation is automatic the
-   moment a later round moves on to a genuinely different finding.
+   role's model instead of the fix role's, but only when the two roles actually resolve to
+   different models: a default install that has never set `--model-review`/`--model-fix`, or a
+   task overriding both the same way, resolves them identically and a repeated round dispatches
+   on the ordinary fix model exactly as it would have anyway (Decisions Log #90, origin: a Sonnet
+   fix session dodged a flaky-test race by restructuring the test rather than fixing the race the
+   review kept finding), visible on `h9k task show` and the daemon log line when it does apply;
+   de-escalation is automatic the moment a later round moves on to a genuinely different finding.
 4. **The daemon opens the pull request.** Agents never do, and there is deliberately no create-pr
    skill. The task reaches **Done** here, when the pull request opens, so Done means "the work is
    on a PR and waiting on review" rather than "merged".
