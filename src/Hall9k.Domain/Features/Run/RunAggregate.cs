@@ -745,13 +745,18 @@ public sealed class RunAggregate
             // (log #63) rather than borrowing the word Clean.
             _humanEndedTheLoop = true;
             ReviewPhase = ReviewPhase.Settling;
-            // The same fresh-grant reset the NeedsFixes branch below gives itself, and for the
-            // same reason (independent pre-PR review, cycle 2, adversarial finding): Settling
-            // still runs FinalFullPassCapReached before HumanEndedTheLoop's own exemption is ever
-            // reached (ReviewEngine.NeedsFullGateBeforeSettling deliberately does not exempt the
-            // gate itself), so a run parked at the cap would immediately re-park on the identical
-            // reason the moment this merge-ready resolve tried to clear it, with no way out but
-            // --needs-fixes or abandoning the task.
+            // The same fresh-grant reset the NeedsFixes branch below gives itself, kept for the
+            // same discipline even though it no longer guards the scenario it was written for
+            // (independent pre-PR review, cycle 5): ReviewEngine.ReviewPhase.Settling's own settle
+            // short-circuit (ReviewEngine.cs, MaySettle(run)) takes HumanEndedTheLoop
+            // unconditionally, before FinalFullPassCapReached is ever consulted, so a merge-ready
+            // resolve now always settles straight through rather than re-parking on the cap — the
+            // re-ordering that fixed the cycle-2 finding this reset was originally written against
+            // also made the reset itself unreachable-in-effect on this branch (there is nothing
+            // left downstream of it for a fresh FinalFullPassRounds to matter to). It stays rather
+            // than being dropped: an old value must never carry into whatever the run's next
+            // review cycle does, and the moment something changes MaySettle's ordering back, this
+            // reset is what keeps that path correct without needing to be rediscovered.
             FinalFullPassRounds = 0;
         }
         else
