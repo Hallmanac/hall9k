@@ -17,9 +17,12 @@ public sealed class TestScopeResolverTests : IDisposable
 
     /// <summary>
     /// A repo shaped like this one — `src/Hall9k.Domain/Widget.cs` declaring `Widget`,
-    /// `tests/Hall9k.Tests/WidgetTests.cs` referencing it, and a non-`*Tests.cs` file under
-    /// `tests/` standing in for a shared fake — with the cycle boundary tagged so each test can
-    /// diff a fix's own commits against it.
+    /// `tests/Hall9k.Tests/WidgetTests.cs` referencing it, a non-`*Tests.cs` file under
+    /// `tests/` standing in for a shared fake, and `OtherTests.cs`, a test class that never
+    /// mentions `Widget` but (like almost every C# file) contains the bare word "class" — with
+    /// the cycle boundary tagged so each test can diff a fix's own commits against it. Any test
+    /// below that expects a scope containing only `WidgetTests` fails loudly if a keyword ever
+    /// gets captured as a type name again, since `OtherTests` would map in too (cycle-6 finding).
     /// </summary>
     public TestScopeResolverTests()
     {
@@ -34,6 +37,10 @@ public sealed class TestScopeResolverTests : IDisposable
             "public sealed class WidgetTests\n{\n    private readonly Widget _widget = new();\n}\n",
             "add widget tests");
         Commit("tests/Hall9k.Tests/Fakes/FakeClock.cs", "public sealed class FakeClock\n{\n}\n", "add shared fake");
+        Commit(
+            "tests/Hall9k.Tests/OtherTests.cs",
+            "public sealed class OtherTests\n{\n    private readonly int _x = 1;\n}\n",
+            "add unrelated test class");
     }
 
     private string CycleHeadSha => TryGit(_repositoryPath, "rev-parse HEAD").Output.Trim();
@@ -51,6 +58,32 @@ public sealed class TestScopeResolverTests : IDisposable
         scope.TestClasses.Should().ContainSingle().Which.Should().Be("WidgetTests");
         scope.FilterExpression.Should().Be("FullyQualifiedName~WidgetTests");
         scope.Reason.Should().Contain("cycle 2 fix");
+    }
+
+    /// <summary>
+    /// The type-declaration pattern's name group must capture the type identifier, never a
+    /// keyword the kind alternation stopped short of consuming (cycle-6 finding): `record class`
+    /// and `record struct` must not be split at `record`, `readonly` must not block the `record
+    /// struct` kind match, and a `file`-scoped type must resolve like any other. Each case
+    /// asserts the scope narrows to exactly `WidgetTests` — `OtherTests`'s presence in the
+    /// fixture means a keyword capture would pull it in too, failing `ContainSingle`.
+    /// </summary>
+    [Theory]
+    [InlineData("public sealed record class Widget")]
+    [InlineData("public sealed record struct Widget")]
+    [InlineData("public readonly record struct Widget")]
+    [InlineData("file class Widget")]
+    public async Task A_touched_type_declared_with_record_readonly_or_file_modifiers_scopes_to_its_own_referencing_test(
+        string declaration)
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromSeconds(30));
+        string sinceSha = CycleHeadSha;
+        Commit("src/Hall9k.Domain/Widget.cs", $"{declaration}\n{{\n    public int Count;\n}}\n", "restyle widget");
+
+        TestGateScope scope = await TestScopeResolver.ResolveAsync(_repositoryPath, sinceSha, "cycle 2 fix", cts.Token);
+
+        scope.IsScoped.Should().BeTrue();
+        scope.TestClasses.Should().ContainSingle().Which.Should().Be("WidgetTests");
     }
 
     [Fact]
