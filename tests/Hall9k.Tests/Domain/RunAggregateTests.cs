@@ -2,6 +2,7 @@ using FluentAssertions;
 using Hall9k.Domain.Features.Run;
 using Hall9k.Domain.Features.Run.Events;
 using Hall9k.Domain.Infrastructure.Ids;
+using Hall9k.Domain.Shared.ValueObjects;
 using Xunit;
 
 namespace Hall9k.Tests.Domain;
@@ -520,6 +521,44 @@ public sealed class RunAggregateTests
             id, DomainId.New(), DomainId.New(), DomainId.New(), 1, DomainId.New(),
             "/wt/x", "task/x", ExecutorMode.Subscription, Now));
         return run;
+    }
+
+    [Fact]
+    public void Pr_review_conformance_lens_dispatch_and_completion_never_touch_ReviewPhase()
+    {
+        RunAggregate run = Dispatched(out Guid id);
+        run.Apply(new AgentSessionCompleted(id, Now));
+        run.State.Should().Be(RunState.Verifying, "the adversarial lens is this run's ordinary primary session");
+
+        Guid sessionId = DomainId.New();
+        run.Apply(new PrReviewConformanceDispatched(id, sessionId, 5501, Now, Now, AgentModel.Unknown));
+        run.State.Should().Be(RunState.UnderReview);
+        run.PrReviewConformanceSessionId.Should().Be(sessionId);
+        run.PrReviewConformanceCompleted.Should().BeFalse();
+        // Deliberately untouched: reusing ReviewEngine's own cycle/track machinery here would
+        // risk a restarted daemon's adoption sweep resuming this run through ReviewEngine
+        // itself, which has no idea what a pr-review task is.
+        run.ReviewPhase.Should().Be(ReviewPhase.None);
+        run.ReviewCycle.Should().Be(0);
+
+        run.Apply(new PrReviewConformanceCompleted(id, sessionId, Now));
+        run.PrReviewConformanceCompleted.Should().BeTrue();
+        run.ReviewPhase.Should().Be(ReviewPhase.None);
+    }
+
+    [Fact]
+    public void Pr_review_delivered_moves_the_run_to_underreview_for_the_daemons_own_resume_sweep()
+    {
+        RunAggregate run = Dispatched(out Guid id);
+        run.Apply(new AgentSessionCompleted(id, Now));
+        run.Apply(new PrReviewConformanceDispatched(id, DomainId.New(), 5502, Now, Now, AgentModel.Unknown));
+        run.Apply(new ReviewParked(id, "Pull request review complete.", Now));
+        run.State.Should().Be(RunState.ReviewParked);
+
+        run.Apply(new PrReviewDelivered(id, "Walked and directed.", Now, DomainId.New()));
+
+        run.State.Should().Be(RunState.UnderReview, "the same signal ReviewParkResolved uses for its own resume sweep");
+        run.PrReviewDelivered.Should().BeTrue();
     }
 
     [Fact]
