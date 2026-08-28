@@ -190,8 +190,27 @@ public sealed class ReviewEngine(
                     // not a claim that the suite ran, so it never substitutes for this gate
                     // (independent pre-PR review, cycle 1 — a human resolving a park that followed
                     // a scoped Verify gate previously reached SettleAsync here having never run the
-                    // full suite over the fix's commits).
-                    if (NeedsFullGateBeforeSettling(run))
+                    // full suite over the fix's commits). The mode/fix-dispatched check alone misses
+                    // a park resolved after HEAD moved without ever going through a fix-dispatch cycle
+                    // (independent pre-PR review, cycle 1, adversarial lens): a Discovery-mode park
+                    // that gets a same-session commit and a bare `--merge-ready` resolve moves HEAD
+                    // without ever setting FixDispatchedThisCycle, so the mode check alone would fall
+                    // through to SettleAsync having never gated the tip about to ship. This gap is
+                    // reachable only through a human's own resolve (DeriveReviewPhase's own route to
+                    // Settling — every review pass in the cycle already concluded clean — can never
+                    // land here with HEAD having moved, since nothing commits to the worktree between
+                    // a cycle's own gate and its passes landing), so the extra check is scoped to
+                    // <see cref="RunAggregate.HumanEndedTheLoop"/> rather than applied unconditionally:
+                    // widening it to every Settling entry forced a redundant full gate and a whole
+                    // extra FinalFullPass dispatch onto the run's own clean, human-free convergence
+                    // path too, which is not this finding's defect and not worth paying for on every
+                    // settle.
+                    bool needsFullGateBeforeSettling = NeedsFullGateBeforeSettling(run);
+                    bool gateAlreadyRanFullOverCurrentHead = needsFullGateBeforeSettling || run.HumanEndedTheLoop
+                        ? await GateAlreadyRanFullOverCurrentHeadAsync(context, run, cancellationToken)
+                        : true;
+                    if (needsFullGateBeforeSettling
+                        || (run.HumanEndedTheLoop && !gateAlreadyRanFullOverCurrentHead))
                     {
                         // The per-track cycle caps cannot bound this on their own (cycle-3 finding):
                         // a track the final pass keeps reawakening gets its budget base bumped by
@@ -216,7 +235,7 @@ public sealed class ReviewEngine(
                         // merges on scoped green alone, and, when the loop is concluding on its own,
                         // the reviewers about to read this tip are reading a tree already proven to
                         // build and pass its whole suite.
-                        if (!await GateAlreadyRanFullOverCurrentHeadAsync(context, run, cancellationToken)
+                        if (!gateAlreadyRanFullOverCurrentHead
                             && !await verification.VerifyAsync(
                                 context.RunId, context.TaskId, scopeSinceSha: null,
                                 "mandatory final full pass: nothing merges on scoped green alone", cancellationToken))
@@ -2199,10 +2218,23 @@ public sealed class ReviewEngine(
     /// settle (task: a fix cycle's verification gate) — <see cref="MaySettle"/>'s own non-human
     /// condition, deliberately without its human exemption: a human's merge-ready resolution
     /// excuses another reviewer's fresh-context read, never the suite actually running at full
-    /// scope over the fix's own commits (independent pre-PR review, cycle 1). Whether that gate
-    /// pass can be skipped because one already ran is <see cref="GateAlreadyRanFullOverCurrentHeadAsync"/>'s
-    /// separate question — this method only ever decides that the branch is entered at all, never
-    /// that the gate call inside it is redundant.
+    /// scope over the fix's own commits (independent pre-PR review, cycle 1). This mode/fix-dispatch
+    /// check alone is not sufficient to decide branch entry when a human resolved the park, though
+    /// (independent pre-PR review, cycle 1, adversarial lens): it says nothing about a tip that
+    /// moved without ever setting <see cref="RunAggregate.FixDispatchedThisCycle"/> — a
+    /// <see cref="ReviewMode.Discovery"/>-mode park resolved by a same-session worktree commit
+    /// followed by a bare merge-ready resolve, for instance. The call site's own extra OR clause
+    /// (<see cref="RunAggregate.HumanEndedTheLoop"/> AND the negation of
+    /// <see cref="GateAlreadyRanFullOverCurrentHeadAsync"/>) closes that, but deliberately only for
+    /// a human-resolved park: <see cref="RunAggregate.DeriveReviewPhase"/>'s own automatic route to
+    /// Settling — every pass in the cycle already concluded clean — is never reached with HEAD
+    /// having moved since that cycle's own gate, since nothing commits to the worktree between a
+    /// cycle's gate and its passes landing, so widening the extra check to every Settling entry
+    /// would only pay for a redundant gate and a whole extra <see cref="ReviewMode.FinalFullPass"/>
+    /// dispatch on every clean, human-free settle. Whether the gate pass inside the branch can then
+    /// be skipped because one already ran is <see cref="GateAlreadyRanFullOverCurrentHeadAsync"/>'s
+    /// question again — this method only ever decides its own half of whether the branch is
+    /// entered, never that the gate call inside it is redundant.
     /// </summary>
     private static bool NeedsFullGateBeforeSettling(RunAggregate run) =>
         run.CurrentCycleMode == ReviewMode.Verify || run.FixDispatchedThisCycle;
