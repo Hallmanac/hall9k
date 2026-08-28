@@ -1,4 +1,5 @@
 using System.ComponentModel;
+using System.Text.RegularExpressions;
 using Hall9k.Cli.Infrastructure;
 using Hall9k.Connectors.Text;
 using Hall9k.Connectors.WorkItems;
@@ -90,6 +91,21 @@ public sealed class TaskAddCommand : Hall9kAsyncCommand<TaskAddCommand.Settings>
             + "moment, never re-checked afterwards")]
         public string? FromJira { get; init; }
 
+        [CommandOption("--from-pr <NUMBER-OR-URL>")]
+        [Description(
+            "Adopt an existing pull request to review on the owner's behalf (pr-review task type): the "
+            + "number (42 or #42), the owner/repo#42 shorthand, or the pull request URL on github.com. "
+            + "Read through the gh CLI from the project's repository. The title seeds the objective and "
+            + "the description becomes agent context, exactly as --from-issue does for an issue; a Jira "
+            + "card or GitHub issue the pull request itself references (a closing keyword, or a Jira key "
+            + "in the title or body) is imported alongside it, best-effort, as further agent context. "
+            + "Implies --type pr-review — pass it explicitly only if you like, and never a different type. "
+            + "Acceptance criteria are never read out of the pull request; supply them with --criteria or "
+            + "at the prompt. Only a pull request the source reports as open is adopted; the state read at "
+            + "import is recorded as an observation of that moment, never re-checked afterwards. The run "
+            + "this task dispatches never writes to the pull request or the remote in any form")]
+        public string? FromPr { get; init; }
+
         [CommandOption("--model <MODEL>")]
         [Description(
             "Model this task's sessions run on, overriding every other level of the chain "
@@ -160,7 +176,28 @@ public sealed class TaskAddCommand : Hall9kAsyncCommand<TaskAddCommand.Settings>
         // the event, which is where the rule belongs; this asks it early, on the near side of
         // the prompts, because that is where the human's typing sits.
         Guid[] dependencies = await ResolveDependenciesAsync(session, blockedBy, cancellationToken);
+        bool adoptingPullRequest = adoption?.Provider == WorkItemProvider.GitHubPullRequest;
+        if (adoptingPullRequest && type.IsBlank())
+        {
+            type = "pr-review";
+        }
+
         TaskType taskType = TaskType.Parse(type);
+        if (adoptingPullRequest && taskType != TaskType.PrReview)
+        {
+            throw new DomainValidationException(
+                $"--from-pr adopts a pull request to review, which is always a pr-review task; --type "
+                + $"{type} does not match. Drop --type (pr-review is the default with --from-pr) or pass "
+                + "--type pr-review.");
+        }
+
+        if (!adoptingPullRequest && taskType == TaskType.PrReview)
+        {
+            throw new DomainValidationException(
+                "A pr-review task reviews an existing pull request, so --type pr-review needs "
+                + "--from-pr <url> naming it.");
+        }
+
         AgentModel taskModel = TaskDecider.VetModel(AgentModel.FromInput(model));
 
         ImportedWorkItem? imported = adoption is null
@@ -169,7 +206,13 @@ public sealed class TaskAddCommand : Hall9kAsyncCommand<TaskAddCommand.Settings>
         if (imported is not null && adoption is not null)
         {
             objective = ChooseObjective(objective, imported, adoption);
-            agentContext = WorkItemContext.Compose(imported, agentContext);
+            string? linkedContext = adoptingPullRequest
+                ? await TryImportLinkedContextAsync(session, projectDetails, imported, cancellationToken)
+                : null;
+            string? additional = linkedContext.IsNotBlank() && agentContext.IsNotBlank()
+                ? $"{linkedContext}\n\n{agentContext}"
+                : linkedContext.IsNotBlank() ? linkedContext : agentContext;
+            agentContext = WorkItemContext.Compose(imported, additional);
             criteria = criteria.Count > 0 ? criteria : AskForCriteria(imported, adoption);
         }
 
@@ -254,6 +297,7 @@ public sealed class TaskAddCommand : Hall9kAsyncCommand<TaskAddCommand.Settings>
             {
                 new AdoptionSource(WorkItemProvider.GitHub, settings.FromIssue ?? string.Empty, "--from-issue", "issue"),
                 new AdoptionSource(WorkItemProvider.Jira, settings.FromJira ?? string.Empty, "--from-jira", "card"),
+                new AdoptionSource(WorkItemProvider.GitHubPullRequest, settings.FromPr ?? string.Empty, "--from-pr", "pull request"),
             }.Where(source => source.Reference.IsNotBlank()),
         ];
 
@@ -495,6 +539,61 @@ public sealed class TaskAddCommand : Hall9kAsyncCommand<TaskAddCommand.Settings>
             }
 
             criteria.Add(entry.Trim());
+        }
+    }
+
+    /// <summary>
+    /// A GitHub closing keyword ("fixes #42", "closes owner/repo#42") in the pull request's own
+    /// title or body, the same vocabulary <see cref="RelayedText.WithoutClosingKeywords"/> defuses
+    /// on the way into agent context.
+    /// </summary>
+    private static readonly Regex LinkedIssueReference = new(
+        @"\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)[:\s]+(?:([\w.-]+/[\w.-]+)#(\d+)|#(\d+))",
+        RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
+    /// <summary>A Jira issue key ("PROJ-123") anywhere in the pull request's own title or body.</summary>
+    private static readonly Regex LinkedJiraKey = new(@"\b([A-Z][A-Z0-9]+-\d+)\b", RegexOptions.Compiled);
+
+    /// <summary>
+    /// The task type/pull-request contract's own imported-context clause: "when the PR references
+    /// a Jira card or GitHub issue... that context is imported... exactly as --from-issue/--from-jira
+    /// do today". Best-effort and never fatal to the adoption — a linked reference this install
+    /// cannot read (no Jira connection, a private repository, a deleted issue) is dropped, not
+    /// refused, because the pull request itself is still the thing being adopted. Deliberately
+    /// bypasses <see cref="WorkItemImporter"/>'s open-only gate: this is a read for context, not an
+    /// adoption of the linked item as its own task, and the linked issue a pull request closes is
+    /// very often already closed by the time of review.
+    /// </summary>
+    private static async Task<string?> TryImportLinkedContextAsync(
+        IQuerySession session, ProjectDetails project, ImportedWorkItem pullRequest, CancellationToken cancellationToken)
+    {
+        string haystack = $"{pullRequest.Title}\n{pullRequest.Body}";
+        Match issueMatch = LinkedIssueReference.Match(haystack);
+        (WorkItemProvider Provider, string Reference)? linked = issueMatch.Success
+            ? (WorkItemProvider.GitHub, $"{(issueMatch.Groups[1].Success ? issueMatch.Groups[1].Value : pullRequest.Reference.Reference.Split('#')[0])}#{(issueMatch.Groups[2].Success ? issueMatch.Groups[2].Value : issueMatch.Groups[3].Value)}")
+            : LinkedJiraKey.Match(haystack) is { Success: true } jiraMatch
+                ? (WorkItemProvider.Jira, jiraMatch.Groups[1].Value)
+                : null;
+        if (linked is null)
+        {
+            return null;
+        }
+
+        try
+        {
+            ImportedWorkItem linkedItem = linked.Value.Provider == WorkItemProvider.Jira
+                ? await (await WorkItemConnections.JiraProviderAsync(session, cancellationToken)).ImportAsync(
+                    new WorkItemImportRequest(linked.Value.Provider, linked.Value.Reference, project.RepositoryPath),
+                    cancellationToken)
+                : await new GitHubWorkItemProvider().ImportAsync(
+                    new WorkItemImportRequest(linked.Value.Provider, linked.Value.Reference, project.RepositoryPath),
+                    cancellationToken);
+            return "Linked from the pull request, imported alongside it (state not re-checked as open):\n\n"
+                + WorkItemContext.Compose(linkedItem);
+        }
+        catch (DomainException)
+        {
+            return null;
         }
     }
 
