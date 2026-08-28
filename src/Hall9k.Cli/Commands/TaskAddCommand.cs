@@ -52,7 +52,9 @@ public sealed class TaskAddCommand : Hall9kAsyncCommand<TaskAddCommand.Settings>
         public string[] BlockedBy { get; init; } = [];
 
         [CommandOption("--type <TYPE>")]
-        [Description("feature | bugfix | refactor | chore | research")]
+        [Description(
+            "feature | bugfix | refactor | chore | research | pr-review. pr-review is set for you by "
+            + "--from-pr and needs no explicit --type of its own")]
         public string? Type { get; init; }
 
         [CommandOption("--context <CONTEXT>")]
@@ -551,9 +553,6 @@ public sealed class TaskAddCommand : Hall9kAsyncCommand<TaskAddCommand.Settings>
         @"\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)[:\s]+(?:([\w.-]+/[\w.-]+)#(\d+)|#(\d+))",
         RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
-    /// <summary>A Jira issue key ("PROJ-123") anywhere in the pull request's own title or body.</summary>
-    private static readonly Regex LinkedJiraKey = new(@"\b([A-Z][A-Z0-9]+-\d+)\b", RegexOptions.Compiled);
-
     /// <summary>
     /// The task type/pull-request contract's own imported-context clause: "when the PR references
     /// a Jira card or GitHub issue... that context is imported... exactly as --from-issue/--from-jira
@@ -571,8 +570,8 @@ public sealed class TaskAddCommand : Hall9kAsyncCommand<TaskAddCommand.Settings>
         Match issueMatch = LinkedIssueReference.Match(haystack);
         (WorkItemProvider Provider, string Reference)? linked = issueMatch.Success
             ? (WorkItemProvider.GitHub, $"{(issueMatch.Groups[1].Success ? issueMatch.Groups[1].Value : pullRequest.Reference.Reference.Split('#')[0])}#{(issueMatch.Groups[2].Success ? issueMatch.Groups[2].Value : issueMatch.Groups[3].Value)}")
-            : LinkedJiraKey.Match(haystack) is { Success: true } jiraMatch
-                ? (WorkItemProvider.Jira, jiraMatch.Groups[1].Value)
+            : FindJiraKey(haystack, project.JiraProjectKey) is { } jiraKey
+                ? (WorkItemProvider.Jira, jiraKey)
                 : null;
         if (linked is null)
         {
@@ -595,6 +594,26 @@ public sealed class TaskAddCommand : Hall9kAsyncCommand<TaskAddCommand.Settings>
         {
             return null;
         }
+    }
+
+    /// <summary>
+    /// A Jira issue key ("PROJ-123") anywhere in the pull request's own title or body — but only
+    /// for the project's own bound board (h9k project set --jira). A bare `[A-Z][A-Z0-9]+-\d+`
+    /// pattern matches plenty of non-Jira text too (UTF-8, SHA-256, RFC-7231, CVE-2024-…), and
+    /// scoping to the one key this project actually files against is what tells them apart,
+    /// rather than firing a lookup for whichever one happens to parse. No board bound means
+    /// nothing to scope the match to, so nothing is linked (never guess at unobserved facts,
+    /// AGENTS.md) — the same key JiraProjectKey.None already stands for everywhere else.
+    /// </summary>
+    private static string? FindJiraKey(string haystack, JiraProjectKey projectKey)
+    {
+        if (!projectKey.HasValue)
+        {
+            return null;
+        }
+
+        Match match = Regex.Match(haystack, $@"\b({Regex.Escape(projectKey.Value)}-\d+)\b");
+        return match.Success ? match.Groups[1].Value : null;
     }
 
     /// <summary>
