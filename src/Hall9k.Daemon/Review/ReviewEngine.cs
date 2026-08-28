@@ -957,12 +957,19 @@ public sealed class ReviewEngine(
         string output = result.Summary ?? string.Empty;
         await File.WriteAllTextAsync(LensFindingsFile(runDirectory, cycle, pass.Lens), output, cancellationToken);
 
-        // The objective, the acceptance criteria and the agent context are only ever printed
-        // into the conformance lens's own prompt (AgentPromptBuilder.BuildConformanceReview); the
-        // adversarial lens is deliberately never told any of them, so it has nothing of that
-        // shape to echo, and screening its output for the same text risks deleting a genuine
-        // finding that happens to phrase itself the way the task's own text does (cycle-4
-        // adversarial finding, ReviewEngine.cs:614).
+        // The objective and the acceptance criteria are only ever printed into the conformance
+        // lens's own prompt (AgentPromptBuilder.BuildConformanceReview) and the Verify pass's
+        // (BuildReviewVerify, which restates the same "what the diff is supposed to do" section);
+        // the adversarial lens is deliberately never told either, so it has nothing of that shape
+        // to echo, and screening its output for the same text risks deleting a genuine finding
+        // that happens to phrase itself the way the task's own text does (cycle-4 adversarial
+        // finding, ReviewEngine.cs:614). The agent context is narrower still: only the pr-review
+        // lens's own prompt (AgentPromptBuilder.BuildPrReviewLens) ever prints it, and a pr-review
+        // run never reaches this method (PrReviewEngine's own class doc — it never enters
+        // ReviewEngine's cycle machine), so no pass this method ever records was shown it,
+        // whatever lens it covers (cycle-1 adversarial finding: BuildReviewVerify's own prompt
+        // carries no Context section at all, so gating the strip on Covers(Conformance) screened
+        // a Verify pass's output against text it never saw).
         bool sawTaskContext = pass.Lens.Covers(ReviewLens.Conformance);
         ReviewVerdict verdict = ReviewResultParser.ParseVerdict(output);
 
@@ -1010,12 +1017,10 @@ public sealed class ReviewEngine(
                 output,
                 sawTaskContext ? context.Task.Objective : null,
                 sawTaskContext ? context.Task.AcceptanceCriteria : null,
-                // Unlike the objective, the acceptance criteria and the agent context, settled
-                // rulings are printed into BOTH lenses' prompts
-                // (AgentPromptBuilder.AppendSettledRulings), so this strip is never gated on
-                // sawTaskContext.
-                AgentPromptBuilder.RulingReasonsShown(context.PriorRulings),
-                sawTaskContext ? context.Task.AgentContext : null))
+                // Unlike the objective and the acceptance criteria, settled rulings are printed
+                // into BOTH lenses' prompts (AgentPromptBuilder.AppendSettledRulings), so this
+                // strip is never gated on sawTaskContext.
+                AgentPromptBuilder.RulingReasonsShown(context.PriorRulings)))
         {
             // A needs-fixes verdict that names nothing is not a real answer (origin: ten
             // occurrences filed 2026-08-25): recording it as Unknown routes it through the exact
