@@ -957,12 +957,12 @@ public sealed class ReviewEngine(
         string output = result.Summary ?? string.Empty;
         await File.WriteAllTextAsync(LensFindingsFile(runDirectory, cycle, pass.Lens), output, cancellationToken);
 
-        // The objective and acceptance criteria are only ever printed into the conformance
-        // lens's own prompt (AgentPromptBuilder.BuildConformanceReview); the adversarial lens is
-        // deliberately never told either, so it has nothing of that shape to echo, and screening
-        // its output for the same text risks deleting a genuine finding that happens to phrase
-        // itself the way the task's own text does (cycle-4 adversarial finding,
-        // ReviewEngine.cs:614).
+        // The objective, the acceptance criteria and the agent context are only ever printed
+        // into the conformance lens's own prompt (AgentPromptBuilder.BuildConformanceReview); the
+        // adversarial lens is deliberately never told any of them, so it has nothing of that
+        // shape to echo, and screening its output for the same text risks deleting a genuine
+        // finding that happens to phrase itself the way the task's own text does (cycle-4
+        // adversarial finding, ReviewEngine.cs:614).
         bool sawTaskContext = pass.Lens.Covers(ReviewLens.Conformance);
         ReviewVerdict verdict = ReviewResultParser.ParseVerdict(output);
 
@@ -1010,10 +1010,12 @@ public sealed class ReviewEngine(
                 output,
                 sawTaskContext ? context.Task.Objective : null,
                 sawTaskContext ? context.Task.AcceptanceCriteria : null,
-                // Unlike the objective and acceptance criteria, settled rulings are printed into
-                // BOTH lenses' prompts (AgentPromptBuilder.AppendSettledRulings), so this strip is
-                // never gated on sawTaskContext.
-                AgentPromptBuilder.RulingReasonsShown(context.PriorRulings)))
+                // Unlike the objective, the acceptance criteria and the agent context, settled
+                // rulings are printed into BOTH lenses' prompts
+                // (AgentPromptBuilder.AppendSettledRulings), so this strip is never gated on
+                // sawTaskContext.
+                AgentPromptBuilder.RulingReasonsShown(context.PriorRulings),
+                sawTaskContext ? context.Task.AgentContext : null))
         {
             // A needs-fixes verdict that names nothing is not a real answer (origin: ten
             // occurrences filed 2026-08-25): recording it as Unknown routes it through the exact
