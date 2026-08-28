@@ -272,8 +272,15 @@ public sealed class ReviewEngine(
                         // dispatching a whole extra FinalFullPass here re-reads a byte-identical tip a
                         // second time and spends it against MaxFinalFullPassRounds for nothing). The
                         // gate above is what neither case ever covered, and it has now actually run,
-                        // so the run may settle.
-                        if (run.HumanEndedTheLoop || !needsFullGateBeforeSettling)
+                        // so the run may settle. This is term-for-term MaySettle (the Reverify branch's
+                        // own settle check below calls it by name) rather than a second copy of its
+                        // logic, so the two branches cannot drift apart the next time either grows a
+                        // condition (independent pre-PR review, cycle 5, conformance lens). Because
+                        // MaySettle's own human clause takes this short-circuit unconditionally, a
+                        // human's merge-ready resolve now settles straight from here without ever
+                        // reaching FinalFullPassCapReached below — see RunAggregate.Apply(ReviewParkResolved)'s
+                        // own note on what that means for its FinalFullPassRounds reset.
+                        if (MaySettle(run))
                         {
                             await SettleAsync(run, cancellationToken);
                             break;
@@ -289,7 +296,10 @@ public sealed class ReviewEngine(
                         // trigger (verifyCommandsFingerprintChanged with needsFullGateBeforeSettling
                         // false) always takes that short-circuit and was never about to spend a round,
                         // so checking the cap ahead of it parked a run that had converged clean
-                        // (cycle-4 finding).
+                        // (cycle-4 finding). The same ordering also means a human's own merge-ready
+                        // resolve — MaySettle's other unconditional clause — never reaches this check
+                        // at all (cycle-5 finding): the cap bounds only the automatic
+                        // scoped-then-full-then-fix iteration, never a human-ended run.
                         if (FinalFullPassCapReached(run))
                         {
                             await ParkAsync(
