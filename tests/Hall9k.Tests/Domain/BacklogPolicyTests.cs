@@ -46,6 +46,28 @@ public sealed class BacklogPolicyTests
     }
 
     [Fact]
+    public void Parse_refuses_a_control_character_without_echoing_it_into_the_refusal()
+    {
+        // A bidirectional override reverses the display of the sentence explaining the refusal if
+        // echoed raw, the same reason JiraProjectKey.Parse whitelists rather than echoes.
+        Action act = () => BacklogPolicy.Parse("jira‮-evil");
+
+        act.Should().Throw<DomainValidationException>()
+            .Which.Message.Should().NotContain("‮")
+            .And.Contain("jira?-evil");
+    }
+
+    [Fact]
+    public void Parse_refuses_an_unbounded_argument_without_echoing_it_whole()
+    {
+        Action act = () => BacklogPolicy.Parse(new string('x', 500));
+
+        act.Should().Throw<DomainValidationException>()
+            .Which.Message.Should().Contain("…")
+            .And.NotContain(new string('x', 500));
+    }
+
+    [Fact]
     public void The_raw_conversion_wraps_without_validating_so_the_decider_can_be_the_one_gate()
     {
         // The CommitStyle/ReviewRerequestPolicy convention: an implicit conversion from a bare

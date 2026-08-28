@@ -65,8 +65,26 @@ public sealed record BacklogPolicy
             : FromInput(trimmed) is { } parsed && parsed != None
                 ? parsed
                 : throw new DomainValidationException(
-                    $"'{value}' is not a backlog policy. Use none, github-issues, or jira.");
+                    $"'{RelayedPolicy(trimmed)}' is not a backlog policy. Use none, github-issues, or jira.");
     }
+
+    /// <summary>
+    /// What a refused policy is safe to be quoted as, the <see cref="Shared.ValueObjects.JiraProjectKey"/>
+    /// convention (<c>RelayedProjectKey</c>): the value came off a command line and the refusal is
+    /// printed to a terminal, and this type cannot reach Hall9k.Connectors' relay rules from the
+    /// domain, so a control character or a bidirectional override cannot reach the refusal it is
+    /// explaining, and an unbounded argument cannot be echoed whole.
+    /// </summary>
+    private const int MaximumRelayedLength = 40;
+
+    private static string RelayedPolicy(string value)
+    {
+        string visible = new([.. value.Take(MaximumRelayedLength).Select(Legible)]);
+        return value.Length > MaximumRelayedLength ? visible + "…" : visible;
+    }
+
+    private static char Legible(char character) =>
+        char.IsAsciiLetterOrDigit(character) || character is '-' or '_' ? character : '?';
 
     public bool Equals(BacklogPolicy? other) => other is not null && Value == other.Value;
 
