@@ -89,7 +89,7 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
                 : "an unrecorded time";
             header.AddRow("Backlog",
                 $"[yellow]untracked by choice[/] [dim]— attested by {who} at {when}; no external item "
-                + "was created for this task[/]");
+                + "was created for it at publish[/]");
         }
 
         if (details.PendingPublicationProvider is { } publishingTo)

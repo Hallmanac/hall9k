@@ -170,12 +170,13 @@ public sealed class TaskDetailsProjection : SingleStreamProjection<TaskDetails, 
     public void Apply(IEvent<TaskPublished> @event, TaskDetails view)
     {
         view.State = TaskState.Published;
-        if (@event.Data.UntrackedAttested)
-        {
-            view.UntrackedAttested = true;
-            view.UntrackedAttestedAt = @event.Data.PublishedAt;
-            view.UntrackedAttestedByOwnerId = @event.Data.PublishedByOwnerId;
-        }
+        // Set unconditionally, not just when true: a task republished WITH tracking after an
+        // earlier --untracked publish (unassign -> draft -> revise -> publish, or a fresh
+        // --no-existing-item publish) must stop rendering the stale attestation from the first
+        // one (adversarial review, backlog: a task can be published deliberately untracked).
+        view.UntrackedAttested = @event.Data.UntrackedAttested;
+        view.UntrackedAttestedAt = @event.Data.UntrackedAttested ? @event.Data.PublishedAt : null;
+        view.UntrackedAttestedByOwnerId = @event.Data.UntrackedAttested ? @event.Data.PublishedByOwnerId : null;
     }
 
     // Absent means "left alone": a revision that reworded the objective must not also claim
