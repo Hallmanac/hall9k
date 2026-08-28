@@ -898,10 +898,21 @@ public static partial class ReviewVerdictValidation
     /// composer never wrote, letting the boundary the composer meant fall out on its own.
     /// </para>
     /// </summary>
-    private static IReadOnlyList<string>? AgentContextParagraphs(string? taskAgentContext) =>
-        taskAgentContext.IsBlank()
-            ? null
-            : ParagraphBoundary().Split(FenceDelimiterLine().Replace(taskAgentContext, string.Empty));
+    private static IReadOnlyList<string>? AgentContextParagraphs(string? taskAgentContext)
+    {
+        if (taskAgentContext.IsBlank())
+        {
+            return null;
+        }
+
+        // Normalized the same way NamesAFinding normalizes a reviewer's own output: a CRLF-authored
+        // context (a task.md read on Windows, or an adopted issue body copied in verbatim) leaves a
+        // stray '\r' between the two '\n's ParagraphBoundary and FenceDelimiterLine need to see a
+        // blank line, collapsing every paragraph — and the fence delimiter itself — back into one.
+        string normalized = string.Join(
+            '\n', taskAgentContext.Split('\n').Select(line => line.TrimEnd('\r')));
+        return ParagraphBoundary().Split(FenceDelimiterLine().Replace(normalized, string.Empty));
+    }
 
     /// <summary>A markdown fence delimiter alone on its own line, with nothing else on it.</summary>
     [GeneratedRegex(@"^[ \t]*`{3,}[ \t]*$", RegexOptions.Multiline)]
