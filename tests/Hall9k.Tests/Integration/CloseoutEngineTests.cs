@@ -20,6 +20,7 @@ using Hall9k.Domain.Infrastructure.Storage;
 using Hall9k.Domain.Shared.ValueObjects;
 using JasperFx;
 using Marten;
+using Marten.Events;
 using Marten.Linq.MatchesSql;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
@@ -917,6 +918,128 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
 
         await session.SaveChangesAsync(cancellationToken);
         return (taskId, runId, worktree);
+    }
+
+    /// <summary>
+    /// The other orphan shape (origin: 2026-08-28 needs-you cleanup, task 98ac05ef): a task
+    /// completed Claimed -> Done naming a run id that never had its own stream started at all,
+    /// because RunLauncher's declined-dispatch path discovered the pull request was already
+    /// merged before ever spawning. No RunAggregate stream means no RunDetails row, so
+    /// <see cref="SeedOrphanedFailedRunAsync"/>'s RunDetails-driven orphan query has nothing to
+    /// find here — this is read from the task side instead.
+    /// </summary>
+    [Fact]
+    public async Task A_task_whose_completed_run_has_no_run_record_reconstructs_it_and_reaches_true_closeout()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        (DocumentStore store, NodeContext node, GitWorktreeManager worktrees, _, string repoPath) =
+            await SetUpAsync(cts.Token);
+        using IDisposable storeLifetime = store;
+        await DrainPriorSweepStateAsync(store, node, cts.Token);
+
+        (Guid taskId, Guid runId) = await SeedTaskWithMissingRunRecordAsync(store, node, repoPath, cts.Token);
+        Guid dependentId = await SeedBlockedDependentAsync(store, node.OwnerId, taskId, cts.Token);
+
+        await using (IQuerySession before = store.QuerySession())
+        {
+            (await before.Events.FetchStreamStateAsync(runId, cts.Token)).Should().BeNull(
+                "the declined-dispatch shape never started this run's stream at all");
+        }
+
+        FakeInspector inspector = new()
+        {
+            Snapshot = FakeInspector.Quiet() with { IsMerged = true, MergedAt = Now.AddDays(-2) },
+        };
+        CloseoutEngine engine = NewEngine(store, node, inspector, worktrees);
+        CloseoutSweepResult sweep = await engine.PollOnceAsync(cts.Token);
+        sweep.MergesObserved.Should().Be(1, "the missing-run sweep completes the merge exactly like any other orphan");
+        inspector.StateInspections.Should().Be(1, "the missing-run sweep spends the same cheap merge/close-only read");
+        inspector.Inspections.Should().Be(0, "it never spends the reviews-and-checks read either");
+
+        await using IQuerySession query = store.QuerySession();
+        RunDetails run = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
+        run.State.Should().Be(RunState.Completed,
+            "a minimal run record is reconstructed and carried straight to true closeout");
+        run.PullRequestMergedAt.Should().Be(Now.AddDays(-2));
+        run.WorktreePath.Should().BeEmpty("nothing was ever checked out for a run that never dispatched");
+        run.Branch.Should().BeEmpty("nothing was ever branched for a run that never dispatched");
+
+        TaskListItem task = (await query.LoadAsync<TaskListItem>(taskId, cts.Token))!;
+        task.State.Should().Be(TaskState.Done);
+
+        TaskListItem dependent = (await query.LoadAsync<TaskListItem>(dependentId, cts.Token))!;
+        dependent.State.Should().Be(TaskState.Queued, "true closeout unblocks dependents exactly as any other merge does");
+    }
+
+    /// <summary>
+    /// The still-open twin of the test above: nothing here to close out yet, and — unlike the
+    /// RunDetails-driven orphan path — nothing here to record a close-without-merge against
+    /// either, since there is still no run stream to append one onto. The row stays exactly as
+    /// unwatched as it was.
+    /// </summary>
+    [Fact]
+    public async Task A_task_whose_completed_run_has_no_run_record_and_an_open_pull_request_is_left_alone()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        (DocumentStore store, NodeContext node, GitWorktreeManager worktrees, _, string repoPath) =
+            await SetUpAsync(cts.Token);
+        using IDisposable storeLifetime = store;
+        await DrainPriorSweepStateAsync(store, node, cts.Token);
+
+        (Guid taskId, Guid runId) = await SeedTaskWithMissingRunRecordAsync(store, node, repoPath, cts.Token);
+
+        FakeInspector inspector = new() { Snapshot = FakeInspector.Quiet() };
+        CloseoutEngine engine = NewEngine(store, node, inspector, worktrees);
+        CloseoutSweepResult sweep = await engine.PollOnceAsync(cts.Token);
+        sweep.MergesObserved.Should().Be(0, "the read happened, but a still-open answer records nothing");
+        inspector.StateInspections.Should().Be(1);
+
+        await using IQuerySession query = store.QuerySession();
+        (await query.Events.FetchStreamStateAsync(runId, cts.Token)).Should().BeNull(
+            "nothing is invented for an answer that settles nothing — the run stream stays unstarted");
+        TaskListItem task = (await query.LoadAsync<TaskListItem>(taskId, cts.Token))!;
+        task.State.Should().Be(TaskState.Done, "still Done, still carrying the pull request, still unwatched");
+
+        // This task stays Done with an unrecorded run by design — exactly what makes the
+        // assertion above meaningful — so it would otherwise keep matching every later test's
+        // missing-run-record query on this shared node/database (see RetireWatchAsync's own note).
+        await RetireMissingRunTaskAsync(store, taskId, node.OwnerId, cts.Token);
+    }
+
+    /// <summary>See the two tests above: RunLauncher's declined-dispatch shape, seeded directly on the task stream.</summary>
+    private static async Task<(Guid TaskId, Guid RunId)> SeedTaskWithMissingRunRecordAsync(
+        DocumentStore store, NodeContext node, string repoPath, CancellationToken cancellationToken)
+    {
+        Guid taskId = DomainId.New();
+        Guid runId = DomainId.New();
+        Guid ownerId = node.OwnerId;
+        Guid projectId = DomainId.New();
+
+        await using IDocumentSession session = store.LightweightSession();
+
+        (TaskAggregate task, object[] lifecycle) = TaskSeed.Start(
+            TaskDecider.Add(
+                taskId, projectId, "Close me out", ["merged"], TaskType.Chore, null, null,
+                null, Now, ownerId),
+            ownerId, Now);
+        List<object> taskEvents = [.. lifecycle];
+        Hall9k.Domain.Features.Tasks.Events.TaskClaimed claimed =
+            TaskDecider.Claim(task, node.NodeId, ownerId, runId, Now);
+        task.Apply(claimed);
+        taskEvents.Add(claimed);
+        Hall9k.Domain.Features.Tasks.Events.TaskCompleted completed =
+            TaskDecider.Complete(task, runId, PullRequestUrl, Now);
+        task.Apply(completed);
+        taskEvents.Add(completed);
+
+        session.Events.StartStream<TaskAggregate>(taskId, [.. taskEvents]);
+
+        var registered = Hall9k.Domain.Features.Project.Handlers.ProjectDecider.Register(
+            projectId, ownerId, DomainId.New(), $"closeout-missing-run-{taskId:N}", repoPath, null, "main", Now);
+        session.Events.StartStream<Hall9k.Domain.Features.Project.ProjectAggregate>(registered.Id, registered);
+
+        await session.SaveChangesAsync(cancellationToken);
+        return (taskId, runId);
     }
 
     [Fact]
@@ -2472,6 +2595,26 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
     }
 
     /// <summary>
+    /// The missing-run-record twin of <see cref="RetireWatchAsync"/>: there is no run stream to
+    /// append a retirement onto, so instead the task itself is moved off Done — a reopen (as a
+    /// real <c>h9k pr resolve</c> would do) clears CurrentRunId and drops it out of
+    /// <see cref="TasksWithMissingRunRecordsAsync"/>'s own Done-state filter.
+    /// </summary>
+    private static async Task RetireMissingRunTaskAsync(
+        DocumentStore store, Guid taskId, Guid ownerId, CancellationToken cancellationToken)
+    {
+        await using IDocumentSession session = store.LightweightSession();
+        StreamState fence = (await session.Events.FetchStreamStateAsync(taskId, cancellationToken))!;
+        TaskAggregate task = (await session.Events.AggregateStreamAsync<TaskAggregate>(
+            taskId, version: fence.Version, token: cancellationToken))!;
+        Hall9k.Domain.Features.Tasks.Events.TaskReopened reopened = TaskDecider.Reopen(
+            task, task.CurrentRunId!.Value, "task/retire-missing-run", "test cleanup",
+            FollowUpKind.ReviewFeedback, automatic: false, Now, ownerId);
+        session.Events.Append(taskId, expectedVersion: fence.Version + 1, reopened);
+        await session.SaveChangesAsync(cancellationToken);
+    }
+
+    /// <summary>
     /// Retires whatever is already sitting in the watch set or the orphan set for this node
     /// before a test seeds its own scenario, for the same reason <see cref="RetireWatchAsync"/>
     /// exists: this class's tests share one node and one database, so a leftover row from an
@@ -2498,7 +2641,24 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
             .Where(r => r.FailureReason != RunDetails.PullRequestClosedWithoutMerge)
             .ToListAsync(cancellationToken);
 
-        if (watched.Count == 0 && orphaned.Count == 0)
+        // The missing-run-record shape's own leftover (not node-scoped, matching
+        // TasksWithMissingRunRecordsAsync's own scope — there is no RunDetails row to read a
+        // NodeId from): a Done task with a pull request whose CurrentRunId has no run record.
+        IReadOnlyList<TaskListItem> doneWithPullRequest = await query.Query<TaskListItem>()
+            .Where(t => t.MatchesSql("d.data ->> 'state' = ?", TaskState.Done.Value))
+            .Where(t => t.PullRequestUrl != null && t.CurrentRunId != null)
+            .ToListAsync(cancellationToken);
+        Guid[] candidateRunIds = [.. doneWithPullRequest.Select(t => t.CurrentRunId!.Value)];
+        HashSet<Guid> recordedRunIds = candidateRunIds.Length == 0
+            ? []
+            : [.. await query.Query<RunDetails>()
+                .Where(r => candidateRunIds.Contains(r.Id))
+                .Select(r => r.Id)
+                .ToListAsync(cancellationToken)];
+        IReadOnlyList<Guid> missingRunTasks =
+            [.. doneWithPullRequest.Where(t => !recordedRunIds.Contains(t.CurrentRunId!.Value)).Select(t => t.Id)];
+
+        if (watched.Count == 0 && orphaned.Count == 0 && missingRunTasks.Count == 0)
         {
             return;
         }
@@ -2510,6 +2670,11 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
         }
 
         await session.SaveChangesAsync(cancellationToken);
+
+        foreach (Guid taskId in missingRunTasks)
+        {
+            await RetireMissingRunTaskAsync(store, taskId, node.OwnerId, cancellationToken);
+        }
     }
 
     /// <summary>Turns the countersign on at the level under test, leaving the others unset.</summary>

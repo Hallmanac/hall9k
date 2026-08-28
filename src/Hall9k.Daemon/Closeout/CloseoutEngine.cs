@@ -9,6 +9,7 @@ using Hall9k.Domain.Features.Run.Events;
 using Hall9k.Domain.Features.Run.Projections;
 using Hall9k.Domain.Features.Tasks;
 using Hall9k.Domain.Features.Tasks.Handlers;
+using Hall9k.Domain.Features.Tasks.Projections;
 using Hall9k.Domain.Infrastructure.Persistence;
 using Hall9k.Domain.Infrastructure.Storage;
 using Hall9k.Domain.Shared.ValueObjects;
@@ -199,7 +200,181 @@ public sealed class CloseoutEngine(
             }
         }
 
+        foreach (TaskListItem task in await TasksWithMissingRunRecordsAsync(cancellationToken))
+        {
+            try
+            {
+                switch (await InspectMissingRunAsync(task, cancellationToken))
+                {
+                    case InspectionOutcome.MergeObserved:
+                        inspected++;
+                        merges++;
+                        break;
+                    case InspectionOutcome.Inspected:
+                        inspected++;
+                        break;
+                    case InspectionOutcome.Skipped:
+                        skipped++;
+                        break;
+                }
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception exception)
+            {
+                failures++;
+                logger.LogWarning(
+                    exception, "Closeout missing-run sweep failed for task {TaskId}; will retry next sweep", task.Id);
+            }
+        }
+
         return new CloseoutSweepResult(inspected, merges, failures, skipped);
+    }
+
+    /// <summary>
+    /// Done tasks carrying a pull request whose recorded run has no run record at all —
+    /// RunLauncher's declined-dispatch path (origin: 2026-08-28 needs-you cleanup) can complete
+    /// a task's closeout without ever starting that run's stream, which leaves nothing here for
+    /// the RunDetails-driven <c>orphaned</c> query above to ever find. Read from the task side
+    /// instead, and deliberately not node-scoped the way the two RunDetails-driven queries above
+    /// are: there is no RunDetails row to read a NodeId from, and any node reconstructing this
+    /// run record races safely — Marten's StartStream in <see cref="ReconstructAndCompleteAsync"/>
+    /// refuses a run id a concurrent winner already started.
+    /// </summary>
+    private async Task<IReadOnlyList<TaskListItem>> TasksWithMissingRunRecordsAsync(CancellationToken cancellationToken)
+    {
+        await using IQuerySession query = store.QuerySession();
+        IReadOnlyList<TaskListItem> doneWithPullRequest = await query.Query<TaskListItem>()
+            .Where(t => t.MatchesSql("d.data ->> 'state' = ?", TaskState.Done.Value))
+            .Where(t => t.PullRequestUrl != null && t.CurrentRunId != null)
+            .ToListAsync(cancellationToken);
+
+        if (doneWithPullRequest.Count == 0)
+        {
+            return [];
+        }
+
+        Guid[] runIds = [.. doneWithPullRequest.Select(t => t.CurrentRunId!.Value)];
+        HashSet<Guid> recorded = [.. await query.Query<RunDetails>()
+            .Where(r => runIds.Contains(r.Id))
+            .Select(r => r.Id)
+            .ToListAsync(cancellationToken)];
+
+        return [.. doneWithPullRequest.Where(t => !recorded.Contains(t.CurrentRunId!.Value))];
+    }
+
+    /// <summary>
+    /// One read of a Done task's pull request when its own recorded run has no run record to
+    /// watch through — the companion to <see cref="InspectOrphanAsync"/> for a run that was never
+    /// even started rather than one that started and then died. Merge-only, like the orphan
+    /// path: nothing here dispatches a follow-up or invents a close-without-merge record onto a
+    /// run stream that does not exist yet, so an open or closed-without-merge pull request is a
+    /// true no-op and stays needs-you until a human or a future sweep observes a merge.
+    /// </summary>
+    private async Task<InspectionOutcome> InspectMissingRunAsync(TaskListItem candidate, CancellationToken cancellationToken)
+    {
+        await using IDocumentSession session = store.LightweightSession();
+
+        StreamState? fence = await session.Events.FetchStreamStateAsync(candidate.Id, cancellationToken);
+        if (fence is null)
+        {
+            return InspectionOutcome.Skipped;
+        }
+
+        TaskAggregate? task = await session.Events.AggregateStreamAsync<TaskAggregate>(
+            candidate.Id, version: fence.Version, token: cancellationToken);
+        if (task is null
+            || task.State != TaskState.Done
+            || task.PullRequestUrl.IsBlank()
+            || task.CurrentRunId is not { } runId)
+        {
+            return InspectionOutcome.Skipped;
+        }
+
+        // Revalidate: this task's run may have been reconstructed (or genuinely dispatched) by
+        // a sibling sweep, another node, or a fresh claim since the candidate list was read.
+        if (await session.LoadAsync<RunDetails>(runId, cancellationToken) is not null)
+        {
+            return InspectionOutcome.Skipped;
+        }
+
+        int pullRequestNumber = PullRequestUrls.ParseNumber(task.PullRequestUrl);
+        if (pullRequestNumber <= 0)
+        {
+            return InspectionOutcome.Skipped;
+        }
+
+        ProjectDetails? project = await session.LoadAsync<ProjectDetails>(task.ProjectId, cancellationToken);
+        if (project is null)
+        {
+            return InspectionOutcome.Skipped;
+        }
+
+        PullRequestStateSnapshot snapshot = await inspector.InspectStateAsync(
+            project.RepositoryPath, task.PullRequestUrl, pullRequestNumber, cancellationToken);
+
+        // The inspection is a slow network call; revalidate before acting, exactly as the two
+        // RunDetails-driven sweeps above do.
+        StreamState? current = await session.Events.FetchStreamStateAsync(candidate.Id, cancellationToken);
+        if (current is null || current.Version != fence.Version)
+        {
+            logger.LogDebug(
+                "Task {TaskId} advanced while inspecting its unrecorded run's pull request {Url}; deferring to the next sweep",
+                candidate.Id, task.PullRequestUrl);
+            return InspectionOutcome.Inspected;
+        }
+
+        if (!snapshot.IsMerged)
+        {
+            // Still open, or closed without merge: neither is this sweep's to act on — there is
+            // no run stream yet to record a close against, and the row's Delivered rendering
+            // already says the honest thing (no run record is watching it).
+            return InspectionOutcome.Inspected;
+        }
+
+        await ReconstructAndCompleteAsync(
+            session, task, project, runId, node.NodeId, node.OwnerId, snapshot.MergedAt, DateTimeOffset.UtcNow,
+            cancellationToken);
+        return InspectionOutcome.MergeObserved;
+    }
+
+    /// <summary>
+    /// Completes a task's closeout for a pull request that is known to be merged, when the run
+    /// that would watch it has no run record — RunLauncher's declined-dispatch path (a queued
+    /// follow-up whose pull request turned out to already be merged before the run ever spawned)
+    /// and <see cref="InspectMissingRunAsync"/> above both reach here, and either an already-
+    /// terminal <paramref name="runId"/> or a wholly unrecorded one is fine: a minimal run record
+    /// is reconstructed only when nothing is there yet (<see cref="RunRecordReconstructed"/>),
+    /// and the ordinary merged-run closeout (<see cref="CompleteCloseoutAsync"/>) runs unchanged
+    /// either way.
+    /// </summary>
+    public async Task ReconstructAndCompleteAsync(
+        IDocumentSession session,
+        TaskAggregate task,
+        ProjectDetails project,
+        Guid runId,
+        Guid nodeId,
+        Guid ownerId,
+        DateTimeOffset? mergedAt,
+        DateTimeOffset now,
+        CancellationToken cancellationToken)
+    {
+        RunDetails? run = await session.LoadAsync<RunDetails>(runId, cancellationToken);
+        if (run is null)
+        {
+            int pullRequestNumber = PullRequestUrls.ParseNumber(task.PullRequestUrl ?? string.Empty);
+            session.Events.StartStream<RunAggregate>(runId, new RunRecordReconstructed(
+                runId, task.Id, nodeId, ownerId, task.PullRequestUrl,
+                pullRequestNumber > 0 ? pullRequestNumber : null, now));
+            await session.SaveChangesAsync(cancellationToken);
+            run = await session.LoadAsync<RunDetails>(runId, cancellationToken)
+                ?? throw new InvalidOperationException(
+                    $"Run {runId} was just reconstructed for task {task.Id} but its projection did not materialize.");
+        }
+
+        await CompleteCloseoutAsync(session, run, project, task, mergedAt, now, cancellationToken);
     }
 
     /// <summary>
@@ -874,6 +1049,14 @@ public sealed class CloseoutEngine(
         await UnblockDependentsAsync(run.TaskId, now, cancellationToken);
         await TellTheCardAsync(run.TaskId, project, task, cancellationToken);
         await RemoveWorktreeBestEffortAsync(project.RepositoryPath, run.WorktreePath, cancellationToken);
+
+        // Blank on a reconstructed run (ReconstructAndCompleteAsync): it never actually
+        // dispatched, so there is no branch this run itself ever checked out to delete.
+        if (run.Branch.IsBlank())
+        {
+            return;
+        }
+
         try
         {
             await worktrees.DeleteBranchEverywhereAsync(project.RepositoryPath, run.Branch, cancellationToken);
