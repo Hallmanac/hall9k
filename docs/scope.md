@@ -79,6 +79,20 @@ orchestrator either links what a search of the tracker found, attests none exist
 `--untracked` — the platform never searches the tracker itself. When a task carrying an external reference merges, closeout comments the pull
 request on it (GitHub issue or Jira card alike) and never closes or transitions it.
 
+### Pull-request review
+
+`h9k task add --from-pr` adopts an existing, open pull request (a number, `owner/repo#42`, or a
+URL) as a `pr-review` task: read-only, on the owner's behalf, and never a build. The node pulls
+the pull request into a detached worktree and runs an adversarial-weighted independent review
+over it — both lenses, the same machinery the pre-PR review loop uses — then parks a findings
+report the owner walks by hand, finding by finding, through the `walk-pr-review-findings` skill:
+dismiss it, comment, or have a session post on the owner's explicit go, always under the owner's
+own GitHub login, never an agent's. Nothing is posted, reviewed, or reacted to without that go. A
+pr-review task's own resolve is `h9k review resolve <id> --merge-ready` once every finding has
+been directed — `--needs-fixes` is refused outright, since there is no diff of this task's own for
+a fix session to act on — and completion never observes a merge, because there is no pull request
+of this task's own to merge.
+
 ### Recovery
 
 `h9k task retry`, `h9k task resolve`, `h9k task abandon`, `h9k pr resolve`, and

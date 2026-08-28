@@ -40,7 +40,10 @@ public sealed class TaskReviseCommand : Hall9kAsyncCommand<TaskReviseCommand.Set
         public string? AgentContext { get; init; }
 
         [CommandOption("--type <TYPE>")]
-        [Description("Change the task type: feature | bugfix | refactor | chore | research")]
+        [Description(
+            "Change the task type: feature | bugfix | refactor | chore | research. Not pr-review — "
+            + "that type needs a pull-request reference only h9k task add --from-pr attaches, so "
+            + "revising an ordinary task to it here is refused")]
         public string? Type { get; init; }
 
         [CommandOption("--model <MODEL>")]
