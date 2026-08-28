@@ -341,7 +341,7 @@ public sealed class TaskProjectionBackfillTests(PostgresFixture postgres) : ICla
 
     private static TaskDependency Blocker(Guid id, string objective) => new(
         id, objective, TaskState.Queued, IsClosedOut: false, CurrentRunState: null,
-        PullRequestUrl: null, []);
+        PullRequestUrl: null, TaskType.Chore, []);
 
     /// <summary>Turns the stored documents back into the shape an older projection wrote.</summary>
     private async Task StripAssignedOwnerAsync(Guid taskId, CancellationToken cancellationToken) =>

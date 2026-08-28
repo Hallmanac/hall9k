@@ -20,6 +20,14 @@ namespace Hall9k.Domain.Features.Tasks;
 /// accepted: it reopens a done task onto its existing pull-request branch, and refuses a task
 /// that has no pull request to follow up on.
 /// </param>
+/// <param name="Type">
+/// The dependency's own task type. Carried so a dependent's advice can tell a pr-review
+/// task's <c>PullRequestUrl</c> — the pull request it reviewed, never one this platform opened
+/// or pushed to — apart from an ordinary task's own PR: <c>TaskDecider.Reopen</c> refuses a
+/// pr-review task outright (AGENTS.md: it "never writes to the pull request or the remote in
+/// any form"), so advice naming h9k pr resolve must never reach one (adversarial review,
+/// cycle 7).
+/// </param>
 public sealed record TaskDependency(
     Guid Id,
     string Objective,
@@ -27,6 +35,7 @@ public sealed record TaskDependency(
     bool IsClosedOut,
     RunState? CurrentRunState,
     string? PullRequestUrl,
+    TaskType Type,
     IReadOnlyList<Guid> BlockedBy)
 {
     /// <summary>
@@ -93,14 +102,18 @@ public sealed record TaskDependency(
     /// never lifts. h9k pr resolve dispatches a follow-up run onto the existing pull-request
     /// branch, which puts the pull request back under watch, and that run's merge is observed.
     /// Named only when the decider would accept it: a reopen needs a recorded run to follow up
-    /// on and a pull request to follow up about (review finding, 2026-08-21).
+    /// on and a pull request to follow up about (review finding, 2026-08-21), and never for a
+    /// pr-review task, whose PullRequestUrl names the pull request it reviewed rather than one
+    /// of its own to reopen — TaskDecider.Reopen refuses it outright (adversarial review, cycle 7).
     /// </summary>
-    private string DescribeDoneRemedy() => (CurrentRunState, PullRequestUrl.IsBlank()) switch
+    private string DescribeDoneRemedy() => (CurrentRunState, PullRequestUrl.IsBlank(), Type == TaskType.PrReview) switch
     {
-        (null, _) => "Nothing is left to put back under watch, so the only lever is on this side: "
+        (null, _, _) => "Nothing is left to put back under watch, so the only lever is on this side: "
                      + "revise this task's dependencies",
-        (_, true) => "It has no pull request to put back under watch, so the only lever is on this "
+        (_, true, _) => "It has no pull request to put back under watch, so the only lever is on this "
                      + "side: revise this task's dependencies",
+        (_, _, true) => "It is a pull-request review with no pull request of its own to put back under "
+                     + "watch, so the only lever is on this side: revise this task's dependencies",
         _ => $"Put it back under watch with h9k pr resolve {ShortId} — the follow-up run that "
              + "dispatches rejoins the closeout monitor's watch set, and its merge is observed — "
              + "or revise this task's dependencies",

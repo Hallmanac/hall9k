@@ -271,7 +271,7 @@ public sealed class TaskLifecycleSurfaceTests
 
     private static TaskDependency Dependency(
         TaskState state, string? pullRequest, RunState? runState, bool closedOut) =>
-        new(DomainId.New(), "blocker", state, closedOut, runState, pullRequest, []);
+        new(DomainId.New(), "blocker", state, closedOut, runState, pullRequest, TaskType.Chore, []);
 
     [Fact]
     public void A_persisted_state_this_build_does_not_know_says_so_instead_of_picking_one()
