@@ -1243,8 +1243,8 @@ public static class AgentPromptBuilder
         {
             prompt.AppendLine("Hunting hard and finding nothing is a real outcome: if the pull request genuinely");
             prompt.AppendLine("meets its own title and description, say so plainly and return merge-ready.");
-            prompt.AppendLine("Inventing a finding to look thorough spends a fix session on nothing and teaches");
-            prompt.AppendLine("everyone to discount this pass.");
+            prompt.AppendLine("Inventing a finding to look thorough wastes the owner's time walking a report");
+            prompt.AppendLine("that has nothing real in it and teaches everyone to discount this pass.");
         }
         else
         {
@@ -1339,9 +1339,19 @@ public static class AgentPromptBuilder
         AppendFindingContract(prompt, project, mechanicsOverride);
         AppendVerdictContract(prompt, cycle, mechanicsOverride);
         prompt.AppendLine();
-        prompt.AppendLine("Hunting hard and finding nothing is a real outcome: if no defect survives your own");
-        prompt.AppendLine("verification, say so plainly and return merge-ready. Inventing a finding to look");
-        prompt.AppendLine("thorough spends a fix session on nothing and teaches everyone to discount this pass.");
+        if (mechanicsOverride is { DiffIsForeignPullRequest: true })
+        {
+            prompt.AppendLine("Hunting hard and finding nothing is a real outcome: if no defect survives your own");
+            prompt.AppendLine("verification, say so plainly and return merge-ready. Inventing a finding to look");
+            prompt.AppendLine("thorough wastes the owner's time walking a report that has nothing real in it and");
+            prompt.AppendLine("teaches everyone to discount this pass.");
+        }
+        else
+        {
+            prompt.AppendLine("Hunting hard and finding nothing is a real outcome: if no defect survives your own");
+            prompt.AppendLine("verification, say so plainly and return merge-ready. Inventing a finding to look");
+            prompt.AppendLine("thorough spends a fix session on nothing and teaches everyone to discount this pass.");
+        }
 
         return prompt.ToString();
     }
