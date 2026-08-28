@@ -52,6 +52,15 @@ public sealed class TaskPublishCommand : Hall9kAsyncCommand<TaskPublishCommand.S
             + "(h9k task link-jira / h9k task link-issue) instead. Recorded on the task stream with who "
             + "attested it and when")]
         public bool NoExistingItem { get; init; }
+
+        [CommandOption("--untracked")]
+        [Description(
+            "The sibling attestation to --no-existing-item, opposite choice: deliberately skip external "
+            + "tracking for this task instead of linking an item or confirming none exists — for internal "
+            + "chores and platform tasks that should not pollute a team's tracker. Refused alongside "
+            + "--no-existing-item (contradictory) and on a project with backlog policy none (meaningless — "
+            + "nothing there tracks it). Recorded on the task stream with who chose it and when")]
+        public bool Untracked { get; init; }
     }
 
     protected override async Task<int> ExecuteAsync(Settings settings, CancellationToken cancellationToken)
@@ -77,7 +86,8 @@ public sealed class TaskPublishCommand : Hall9kAsyncCommand<TaskPublishCommand.S
 
         BootstrapContext context = await NodeBootstrap.EnsureAsync(session, cancellationToken);
         TaskPublished published = TaskDecider.Publish(
-            task, graph, DateTimeOffset.UtcNow, context.OwnerId, project.BacklogPolicy, settings.NoExistingItem);
+            task, graph, DateTimeOffset.UtcNow, context.OwnerId, project.BacklogPolicy,
+            settings.NoExistingItem, settings.Untracked);
         session.Events.Append(taskId, published);
         task.Apply(published);
 
@@ -105,8 +115,17 @@ public sealed class TaskPublishCommand : Hall9kAsyncCommand<TaskPublishCommand.S
         // --from-jira already carries a reference (RequestWorkItemPublication and LinkWorkItem
         // both refuse a second one on their own), so this is skipped entirely rather than
         // silently creating nothing — the difference between "adopted" and "declined" is worth
-        // seeing on the stream, and a task with a reference already has neither.
-        if (task.ExternalReference is null)
+        // seeing on the stream, and a task with a reference already has neither. A task published
+        // --untracked declined tracking deliberately, on the stream, at the gate itself — creating
+        // an item here anyway would contradict the attestation that just landed.
+        if (published.UntrackedAttested)
+        {
+            string tracker = project.BacklogPolicy == BacklogPolicy.Jira ? "Jira" : "GitHub issues";
+            AnsiConsole.MarkupLine(
+                $"[dim]  {project.Name.EscapeMarkup()} tracks its backlog in {tracker}, but task {shortId} "
+                + "was published --untracked: no item will be created or linked for it.[/]");
+        }
+        else if (task.ExternalReference is null)
         {
             await TrackInBacklogAsync(store, taskId, shortId, task, project, context.OwnerId, cancellationToken);
         }

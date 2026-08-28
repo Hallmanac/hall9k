@@ -411,8 +411,12 @@ tracked: `github-issues` has `h9k task publish` run `gh issue create` itself and
 through `h9k task link-issue`, the same observation-gate pattern `link-jira` uses; `jira` makes the
 same publication request `push-to-jira` does. Either policy gates the publish itself first: a
 draft with no linked item yet, and no publication already pending, is refused until a human or
-orchestrator links what a search of the tracker found or attests none exists with
-`h9k task publish <id> --no-existing-item`, so the platform never mints a duplicate from a search
-it cannot perform itself.
+orchestrator links what a search of the tracker found, attests none exists with
+`h9k task publish <id> --no-existing-item`, or attests that this task should skip tracking
+altogether with `h9k task publish <id> --untracked` — for internal chores and platform tasks that
+should not pollute a team's tracker — so the platform never mints a duplicate from a search it
+cannot perform itself. The two attestations say opposite things and are refused together as
+contradictory, and `--untracked` on a project with backlog policy `none` is refused as
+meaningless.
 
-Depth: [PLAN.md §6.2, §6.6, §10](../PLAN.md), Decisions Log #65, #95, #96.
+Depth: [PLAN.md §6.2, §6.6, §10](../PLAN.md), Decisions Log #65, #95, #96, #97.

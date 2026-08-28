@@ -85,10 +85,12 @@ public static class TaskDecider
     /// issues) is also a dedup gate: a task with no <see cref="TaskAggregate.ExternalReference"/>
     /// and no <see cref="TaskAggregate.PendingPublicationProvider"/> already under way refuses to
     /// publish unless <paramref name="noExistingItemAttested"/> says a search already came back
-    /// empty (backlog: publishing an untracked task under a tracking backlog policy). The
-    /// platform never searches the tracker itself — that is the human's or the orchestrator's
+    /// empty, or <paramref name="untracked"/> says this task should deliberately skip tracking
+    /// altogether — an internal chore or platform task that should not pollute a team's tracker
+    /// (backlog: a task can be published deliberately untracked under a tracking backlog policy).
+    /// The platform never searches the tracker itself — that is the human's or the orchestrator's
     /// job, the same relay pattern every other park uses — so this only ever refuses or accepts
-    /// the attestation, never checks it. The attestation is recorded on <see cref="TaskPublished"/>
+    /// an attestation, never checks it. Each attestation is recorded on <see cref="TaskPublished"/>
     /// only when the gate actually asked for it; a flag passed on a publish the gate never gated
     /// is clamped to false rather than asserting an unobserved fact on the stream.
     /// </para>
@@ -99,7 +101,8 @@ public static class TaskDecider
         DateTimeOffset publishedAt,
         Guid publishedByOwnerId,
         BacklogPolicy? backlogPolicy = null,
-        bool noExistingItemAttested = false)
+        bool noExistingItemAttested = false,
+        bool untracked = false)
     {
         if (task.State != TaskState.Draft)
         {
@@ -151,6 +154,29 @@ public static class TaskDecider
 
         BacklogPolicy policy = backlogPolicy ?? BacklogPolicy.None;
 
+        // Two flags asking opposite things is an input error regardless of policy: one confirms
+        // a search came back empty and proceeds to create or link an item, the other says skip
+        // tracking this task altogether. Neither can be what the caller meant by the other.
+        if (untracked && noExistingItemAttested)
+        {
+            throw new DomainValidationException(
+                $"--untracked and --no-existing-item say opposite things for task {task.Id}: "
+                + "--no-existing-item confirms none exists and proceeds to create or link one, while "
+                + "--untracked skips tracking this task entirely. Pass one, not both.");
+        }
+
+        // --untracked only means something where there is tracking to skip. A policy of none
+        // never asks for either attestation, so the flag has nothing to attest and is refused
+        // rather than silently ignored — unlike a defensively-passed --no-existing-item, which
+        // clamps to false, --untracked is asserting a deliberate choice, and a choice nobody
+        // asked for is worth teaching rather than swallowing.
+        if (untracked && policy == BacklogPolicy.None)
+        {
+            throw new DomainValidationException(
+                $"Task {task.Id}'s project does not track a backlog (policy none), so --untracked has "
+                + $"nothing to skip. Publish without it: h9k task publish {task.Id}.");
+        }
+
         // A pending publication (h9k task push-to-jira, run by hand while the task was still a
         // Draft) is already a session on its way to minting the card this gate exists to avoid
         // duplicating — TrackInBacklogAsync already recognises and skips this exact state, so the
@@ -158,7 +184,7 @@ public static class TaskDecider
         bool needsExistingItemCheck = (policy == BacklogPolicy.Jira || policy == BacklogPolicy.GitHubIssues)
             && task.ExternalReference is null
             && task.PendingPublicationProvider is null;
-        if (needsExistingItemCheck && !noExistingItemAttested)
+        if (needsExistingItemCheck && !noExistingItemAttested && !untracked)
         {
             string tracker = policy == BacklogPolicy.Jira ? "Jira" : "GitHub issues";
             string linkCommand = policy == BacklogPolicy.Jira
@@ -170,14 +196,18 @@ public static class TaskDecider
                 + $"item yet. Search {tracker} for an open item that already covers this objective "
                 + "before publishing, so this does not mint a duplicate. Found one? Link it: "
                 + linkCommand + ". Confirmed none exists? Publish anyway with the attestation: "
-                + $"h9k task publish {task.Id} --no-existing-item.");
+                + $"h9k task publish {task.Id} --no-existing-item. Don't want this task tracked in "
+                + $"{tracker} at all? Skip tracking for it deliberately: h9k task publish {task.Id} "
+                + "--untracked.");
         }
 
-        // Recorded only when the gate actually asked for it — a flag passed defensively on a
+        // Recorded only when the gate actually asked for one — a flag passed defensively on a
         // publish the gate never gated (policy none, an already-linked task, one with a
         // publication already pending) would otherwise assert an unobserved fact on the stream.
         bool noExistingItemRecorded = needsExistingItemCheck && noExistingItemAttested;
-        return new TaskPublished(task.Id, publishedAt, publishedByOwnerId, noExistingItemRecorded);
+        bool untrackedRecorded = needsExistingItemCheck && untracked;
+        return new TaskPublished(
+            task.Id, publishedAt, publishedByOwnerId, noExistingItemRecorded, untrackedRecorded);
     }
 
     /// <summary>

@@ -75,6 +75,23 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
             }
         }
 
+        if (details.UntrackedAttested)
+        {
+            // Honest by construction: this row only ever appears when TaskPublished actually
+            // carried the attestation, so a task that predates the policy or was published
+            // under policy none — both of which leave the field false — never shows it.
+            OwnerDetails? attester = details.UntrackedAttestedByOwnerId is { } attesterId
+                ? await session.LoadAsync<OwnerDetails>(attesterId, cancellationToken)
+                : null;
+            string who = attester?.Name.EscapeMarkup() ?? "[dim]unknown[/]";
+            string when = details.UntrackedAttestedAt is { } attestedAt
+                ? attestedAt.ToLocalTime().ToString("g")
+                : "an unrecorded time";
+            header.AddRow("Backlog",
+                $"[yellow]untracked by choice[/] [dim]— attested by {who} at {when}; no external item "
+                + "was created for this task[/]");
+        }
+
         if (details.PendingPublicationProvider is { } publishingTo)
         {
             header.AddRow("Publishing to", PublicationMarkup(details, publishingTo));

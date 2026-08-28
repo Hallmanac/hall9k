@@ -53,6 +53,19 @@ public sealed class TaskDetails
     public Guid? PublicationRequestedByOwnerId { get; set; }
     /// <summary>How the last publication session ended, in words — kept because "no link" alone teaches nobody.</summary>
     public string? PublicationOutcome { get; set; }
+    /// <summary>
+    /// True when publish was attested --untracked: the tracking-policy gate was cleared by
+    /// declaring this task deliberately exempt, rather than by linking an item or confirming
+    /// none exists (backlog: a task can be published deliberately untracked under a tracking
+    /// backlog policy). False for a task that predates the policy or was published under policy
+    /// none — neither of those ever asked for this attestation, so this stays honestly false
+    /// for them rather than defaulting to a look-alike state.
+    /// </summary>
+    public bool UntrackedAttested { get; set; }
+    /// <summary>When the untracked attestation was made — the publish itself (see <see cref="Events.TaskPublished.PublishedAt"/>).</summary>
+    public DateTimeOffset? UntrackedAttestedAt { get; set; }
+    /// <summary>Who made it (see <see cref="Events.TaskPublished.PublishedByOwnerId"/>).</summary>
+    public Guid? UntrackedAttestedByOwnerId { get; set; }
     /// <summary>Whose work this is; null until an explicit assignment says (Decisions Log #34).</summary>
     public Guid? AssignedOwnerId { get; set; }
     /// <summary>
@@ -154,7 +167,16 @@ public sealed class TaskDetailsProjection : SingleStreamProjection<TaskDetails, 
         SourceIdeaId = @event.Data.SourceIdeaId,
     };
 
-    public void Apply(IEvent<TaskPublished> @event, TaskDetails view) => view.State = TaskState.Published;
+    public void Apply(IEvent<TaskPublished> @event, TaskDetails view)
+    {
+        view.State = TaskState.Published;
+        if (@event.Data.UntrackedAttested)
+        {
+            view.UntrackedAttested = true;
+            view.UntrackedAttestedAt = @event.Data.PublishedAt;
+            view.UntrackedAttestedByOwnerId = @event.Data.PublishedByOwnerId;
+        }
+    }
 
     // Absent means "left alone": a revision that reworded the objective must not also claim
     // the criteria were retyped identically.

@@ -70,8 +70,9 @@ reads the item back through gh or the registered connection before recording any
 agent's claim, or the platform's own creation call, is never taken as the recorded fact. An
 adopted task never gets a second item created for it. `h9k task publish` refuses a draft with no
 linked item and no publication already pending under a tracking policy until a human or
-orchestrator either links what a search of the tracker found, or attests none exists with
-`--no-existing-item` — the platform never searches the tracker itself. When a task carrying an external reference merges, closeout comments the pull
+orchestrator either links what a search of the tracker found, attests none exists with
+`--no-existing-item`, or attests that the task should skip tracking altogether with
+`--untracked` — the platform never searches the tracker itself. When a task carrying an external reference merges, closeout comments the pull
 request on it (GitHub issue or Jira card alike) and never closes or transitions it.
 
 ### Recovery

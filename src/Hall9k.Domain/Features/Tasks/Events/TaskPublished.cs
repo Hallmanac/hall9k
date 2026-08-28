@@ -17,8 +17,19 @@ namespace Hall9k.Domain.Features.Tasks.Events;
 /// Draft) — none of those cases ever asks for one, so the flag is clamped to false rather than
 /// recorded verbatim from the caller.
 /// </param>
+/// <param name="UntrackedAttested">
+/// The sibling attestation to <see cref="NoExistingItemAttested"/>, same shape, opposite
+/// choice: the publisher supplied <c>--untracked</c> to deliberately skip external tracking for
+/// this task rather than searching the tracker and either linking a match or confirming none
+/// exists. <see cref="PublishedAt"/> and <see cref="PublishedByOwnerId"/> are this attestation's
+/// who and when too. Clamped to false under the same conditions as
+/// <see cref="NoExistingItemAttested"/> — a policy of none, an already-linked task, or a
+/// pending publication never asks for either attestation, so a flag passed defensively is never
+/// recorded verbatim.
+/// </param>
 public sealed record TaskPublished(
     Guid Id,
     DateTimeOffset PublishedAt,
     Guid PublishedByOwnerId,
-    bool NoExistingItemAttested = false);
+    bool NoExistingItemAttested = false,
+    bool UntrackedAttested = false);
