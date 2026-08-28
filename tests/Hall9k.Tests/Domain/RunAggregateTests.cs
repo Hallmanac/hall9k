@@ -44,14 +44,16 @@ public sealed class RunAggregateTests
     }
 
     /// <summary>
-    /// <see cref="RunAggregate.LastGateRanFullScope"/> and <see cref="RunAggregate.LastGateHeadSha"/>
-    /// (task: a fix cycle's verification gate, cycle-3 finding) are what let the Settling branch
-    /// recognize "this exact tip already had a full run" — set from whatever the most recent
-    /// <see cref="VerificationPassed"/> actually recorded, overwritten by each new one, never
-    /// re-derived from anything else on the aggregate.
+    /// <see cref="RunAggregate.LastGateRanFullScope"/>, <see cref="RunAggregate.LastGateHeadSha"/>,
+    /// and <see cref="RunAggregate.LastGateVerifyCommandsFingerprint"/> (task: a fix cycle's
+    /// verification gate, cycle-3 finding; fingerprint added on Copilot review, PR #62) are what
+    /// let the Settling branch recognize "this exact tip already had a full run under the gates
+    /// currently configured" — set from whatever the most recent <see cref="VerificationPassed"/>
+    /// actually recorded, overwritten by each new one, never re-derived from anything else on the
+    /// aggregate.
     /// </summary>
     [Fact]
-    public void The_most_recent_verification_passs_own_scope_and_head_are_tracked()
+    public void The_most_recent_verification_pass_records_its_own_scope_head_and_gate_fingerprint()
     {
         RunAggregate run = new();
         Guid id = DomainId.New();
@@ -60,16 +62,20 @@ public sealed class RunAggregateTests
             SessionId: DomainId.New(), WorktreePath: "/wt/x", Branch: "task/x",
             ExecutorMode.Subscription, Now));
 
-        run.Apply(new VerificationPassed(id, Now, "scoped", RanFullScope: false, HeadSha: "sha-1"));
+        run.Apply(new VerificationPassed(
+            id, Now, "scoped", RanFullScope: false, HeadSha: "sha-1", VerifyCommandsFingerprint: "fp-1"));
         run.LastGateRanFullScope.Should().BeFalse();
         run.LastGateHeadSha.Should().Be("sha-1");
+        run.LastGateVerifyCommandsFingerprint.Should().Be("fp-1");
 
-        run.Apply(new VerificationPassed(id, Now, "full", RanFullScope: true, HeadSha: "sha-2"));
+        run.Apply(new VerificationPassed(
+            id, Now, "full", RanFullScope: true, HeadSha: "sha-2", VerifyCommandsFingerprint: "fp-2"));
         run.LastGateRanFullScope.Should().BeTrue("the most recent pass overwrites the prior one's record");
         run.LastGateHeadSha.Should().Be("sha-2");
+        run.LastGateVerifyCommandsFingerprint.Should().Be("fp-2");
     }
 
-    /// <summary>An old stream, or a caller that never resolved either value, defaults to "not full and no known head" — the conservative reading that never lets an unknown gate stand in for one that actually covered the tip.</summary>
+    /// <summary>An old stream, or a caller that never resolved either value, defaults to "not full, no known head, no known gate fingerprint" — the conservative reading that never lets an unknown gate stand in for one that actually covered the tip.</summary>
     [Fact]
     public void A_verification_passed_with_no_scope_recorded_defaults_conservatively()
     {
@@ -84,6 +90,7 @@ public sealed class RunAggregateTests
 
         run.LastGateRanFullScope.Should().BeFalse();
         run.LastGateHeadSha.Should().BeNull();
+        run.LastGateVerifyCommandsFingerprint.Should().BeNull();
     }
 
     [Fact]
