@@ -109,10 +109,11 @@ public static partial class TestScopeResolver
                 $"non-C# file(s) touched, not statically mappable to tests: {TestGateScope.Summarize(nonSourceFiles)} ({cycleDescription})");
         }
 
-        IReadOnlyList<TestFile>? testFiles = await LoadTestFilesAsync(worktreePath, cancellationToken);
+        (IReadOnlyList<TestFile>? testFiles, string? testTreeLoadFailure) =
+            await LoadTestFilesAsync(worktreePath, cancellationToken);
         if (testFiles is null)
         {
-            return TestGateScope.Full($"could not enumerate the test tree to map touched files against ({cycleDescription})");
+            return TestGateScope.Full($"{testTreeLoadFailure} ({cycleDescription})");
         }
 
         HashSet<string> testClasses = [];
@@ -204,15 +205,21 @@ public static partial class TestScopeResolver
     /// Every declared type in every `*Tests.cs` file under `tests/`, read once per resolve so the
     /// per-touched-file reference search below is an in-memory scan rather than a subprocess per
     /// file — `grep` is not guaranteed on every platform this daemon runs on (AGENTS.md: CI covers
-    /// both ubuntu and windows). Null when the test tree itself is unreadable.
+    /// both ubuntu and windows). A null file list with a reason naming what was actually observed
+    /// when the test tree itself is unreadable, whether that is enumeration itself or one
+    /// particular file (independent pre-PR review, cycle 1 — a shared blanket "could not
+    /// enumerate the test tree" reason previously asserted an enumeration failure even when
+    /// enumeration succeeded and a single file's read was what actually failed, pointing an
+    /// operator at directory permissions instead of the one bad file; AGENTS.md's "never guess at
+    /// unobserved facts" rule).
     /// </summary>
-    private static async Task<IReadOnlyList<TestFile>?> LoadTestFilesAsync(
+    private static async Task<(IReadOnlyList<TestFile>? Files, string? FailureReason)> LoadTestFilesAsync(
         string worktreePath, CancellationToken cancellationToken)
     {
         string testsRoot = Path.Combine(worktreePath, "tests");
         if (!Directory.Exists(testsRoot))
         {
-            return null;
+            return (null, "the worktree has no tests/ directory to enumerate");
         }
 
         List<TestFile> files = [];
@@ -229,7 +236,14 @@ public static partial class TestScopeResolver
                 }
                 catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
                 {
-                    continue;
+                    // Skipping this one file and continuing (Copilot review, PR #62) would let the
+                    // resolve run "confident" on an incomplete test tree: the one class this file
+                    // would have declared is exactly the one that could reference the touched file
+                    // being mapped, and its absence is indistinguishable from "nothing references
+                    // it". An unreadable test file makes the WHOLE tree unreadable for this
+                    // resolve's purposes, same as the enumeration failure just below — but the
+                    // reason names this file, not enumeration, since enumeration is what found it.
+                    return (null, $"could not read test file {Path.GetRelativePath(worktreePath, path)} while enumerating the test tree");
                 }
 
                 foreach (string className in ExtractTypeNames(content))
@@ -243,10 +257,10 @@ public static partial class TestScopeResolver
             // A permission-denied file or a directory removed mid-enumeration must degrade to
             // the class's own documented Full fallback, the same as the touched-file read below
             // already does, rather than fault the run with a raw exception (adversarial review).
-            return null;
+            return (null, "could not enumerate the test tree to map touched files against");
         }
 
-        return files;
+        return (files, null);
     }
 
     private static Regex TypeReferencePattern(string typeName) => new($@"\b{Regex.Escape(typeName)}\b");
