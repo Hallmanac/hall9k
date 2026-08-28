@@ -332,6 +332,60 @@ public sealed class GitWorktreeManagerTests : IDisposable
     }
 
     /// <summary>
+    /// No test at all covered this before (cycle-1 conformance finding, `PrReviewEngine.cs:50`):
+    /// the fetch reads GitHub's own synthetic <c>refs/pull/&lt;n&gt;/head</c>, simulated here by
+    /// writing that ref directly into the bare origin, exactly as GitHub itself maintains it.
+    /// </summary>
+    [Fact]
+    public async Task Creates_a_detached_read_only_checkout_of_the_pull_requests_head()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(1));
+        string sha = SeedHeadSha();
+        Git(_originPath, $"update-ref refs/pull/7/head {sha}");
+
+        Worktree worktree = await _manager.CreatePrReviewCheckoutAsync(
+            new PrReviewWorktreeRequest(_repositoryPath, 7, DomainId.New(), DomainId.New()), cts.Token);
+
+        worktree.Branch.Should().Be("pr/7");
+        Directory.Exists(worktree.Path).Should().BeTrue();
+        (_, string headSha) = TryGit(worktree.Path, "rev-parse HEAD");
+        headSha.Trim().Should().Be(sha);
+
+        (int exitCode, _) = TryGit(worktree.Path, "symbolic-ref -q HEAD");
+        exitCode.Should().NotBe(0, "the checkout must be detached, never on a branch a session could commit onto");
+
+        (_, string refs) = TryGit(_repositoryPath, "for-each-ref refs/remotes/origin/pr-review");
+        refs.Should().Contain("refs/remotes/origin/pr-review/7", "the fetch names its own tracking ref, never a local branch");
+    }
+
+    /// <summary>
+    /// The ref-leak fix (adversarial review, cycle 1, `GitWorktreeManager.cs:117`): nothing used
+    /// to delete this ref at all, so a project used for routine pr-review work accumulated one
+    /// per pull request ever reviewed. Deleting one leaves an unrelated pull request's own ref
+    /// alone.
+    /// </summary>
+    [Fact]
+    public async Task Deleting_a_pr_reviews_tracking_ref_leaves_every_other_one_alone()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(1));
+        string sha = SeedHeadSha();
+        Git(_originPath, $"update-ref refs/pull/7/head {sha}");
+        Git(_originPath, $"update-ref refs/pull/9/head {sha}");
+        await _manager.CreatePrReviewCheckoutAsync(
+            new PrReviewWorktreeRequest(_repositoryPath, 7, DomainId.New(), DomainId.New()), cts.Token);
+        await _manager.CreatePrReviewCheckoutAsync(
+            new PrReviewWorktreeRequest(_repositoryPath, 9, DomainId.New(), DomainId.New()), cts.Token);
+
+        await _manager.DeletePrReviewTrackingRefAsync(_repositoryPath, 7, cts.Token);
+
+        (_, string refs) = TryGit(_repositoryPath, "for-each-ref refs/remotes/origin/pr-review");
+        refs.Should().NotContain("refs/remotes/origin/pr-review/7");
+        refs.Should().Contain("refs/remotes/origin/pr-review/9", "only the named pull request's ref is deleted");
+    }
+
+    private string SeedHeadSha() => TryGit(_seedPath, "rev-parse HEAD").Output.Trim();
+
+    /// <summary>
     /// The reading checkout is fetched through the repository it actually resolves refs through,
     /// which is the home's bare clone for a <c>repo/dev</c> cut from one — never whatever
     /// repository path the project happens to record, since <c>--keep-repo-path</c> and

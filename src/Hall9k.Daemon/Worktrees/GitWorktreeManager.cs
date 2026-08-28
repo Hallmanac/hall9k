@@ -114,7 +114,7 @@ public sealed class GitWorktreeManager(ILogger<GitWorktreeManager> logger) : IWo
             // downstream consumer runs against `origin/<base>` is not stale or missing.
             await BestEffortFetchAsync(repositoryPath, cancellationToken);
 
-            string trackingRef = $"refs/remotes/origin/pr-review/{request.PullRequestNumber}";
+            string trackingRef = PrReviewTrackingRef(request.PullRequestNumber);
             await RunGitAsync(
                 repositoryPath,
                 $"fetch origin \"+refs/pull/{request.PullRequestNumber}/head:{trackingRef}\"",
@@ -149,6 +149,31 @@ public sealed class GitWorktreeManager(ILogger<GitWorktreeManager> logger) : IWo
             mutex.Release();
         }
     }
+
+    public async Task DeletePrReviewTrackingRefAsync(
+        string repositoryPath, int pullRequestNumber, CancellationToken cancellationToken)
+    {
+        repositoryPath = Path.GetFullPath(repositoryPath);
+        SemaphoreSlim mutex = LockFor(repositoryPath);
+        await mutex.WaitAsync(cancellationToken);
+        try
+        {
+            // update-ref -d, not fetch --prune: nothing on origin ever named this ref (it
+            // was fetched from refs/pull/<n>/head, a synthetic ref GitHub serves, into a
+            // name of this platform's own choosing), so there is no remote-side deletion
+            // for a prune to observe — only the local record this fetch created.
+            await RunGitAsync(
+                repositoryPath, $"update-ref -d {PrReviewTrackingRef(pullRequestNumber)}", cancellationToken);
+            logger.LogInformation(
+                "Pr-review tracking ref for pull request #{Number} deleted", pullRequestNumber);
+        }
+        finally
+        {
+            mutex.Release();
+        }
+    }
+
+    private static string PrReviewTrackingRef(int pullRequestNumber) => $"refs/remotes/origin/pr-review/{pullRequestNumber}";
 
     public async Task PruneAsync(string repositoryPath, CancellationToken cancellationToken)
     {

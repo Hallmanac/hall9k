@@ -67,6 +67,18 @@ public interface IWorktreeManager
     Task RemoveAsync(string repositoryPath, string worktreePath, CancellationToken cancellationToken);
 
     /// <summary>
+    /// Best-effort deletion of the remote-tracking ref <see cref="CreatePrReviewCheckoutAsync"/>
+    /// fetched a reviewed pull request's head into (adversarial review, cycle 1): nothing else
+    /// ever removes it, so a project used for routine pr-review work would otherwise accumulate
+    /// one permanent <c>refs/remotes/origin/pr-review/&lt;n&gt;</c> ref per pull request ever
+    /// reviewed, and — worse than the clutter — the accumulation collides with a real branch
+    /// literally named <c>pr-review</c> ever appearing on origin, which the ordinary tracking-ref
+    /// fetch cannot create alongside a same-named directory of numbered refs. Call only after the
+    /// worktree that held the ref detached is already removed.
+    /// </summary>
+    Task DeletePrReviewTrackingRefAsync(string repositoryPath, int pullRequestNumber, CancellationToken cancellationToken);
+
+    /// <summary>
     /// Best-effort deletion of a task branch everywhere it lingers after its pull request
     /// merged: the local branch (git branch -D — PRs land via rebase merge, so the tip is
     /// never an ancestor of the base branch; the merged-PR signal the caller observed is

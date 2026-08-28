@@ -108,6 +108,9 @@ public sealed class RunLauncherTests(PostgresFixture postgres) : IClassFixture<P
         public Task RemoveAsync(string repositoryPath, string worktreePath, CancellationToken cancellationToken) =>
             Task.CompletedTask;
 
+        public Task DeletePrReviewTrackingRefAsync(string repositoryPath, int pullRequestNumber, CancellationToken cancellationToken) =>
+            Task.CompletedTask;
+
         public Task DeleteBranchEverywhereAsync(string repositoryPath, string branch, CancellationToken cancellationToken)
         {
             DeletedBranches.Add(branch);
@@ -334,6 +337,9 @@ public sealed class RunLauncherTests(PostgresFixture postgres) : IClassFixture<P
                 $"pr/{request.PullRequestNumber}", $"pr/{request.PullRequestNumber}"));
 
         public Task RemoveAsync(string repositoryPath, string worktreePath, CancellationToken cancellationToken) =>
+            Task.CompletedTask;
+
+        public Task DeletePrReviewTrackingRefAsync(string repositoryPath, int pullRequestNumber, CancellationToken cancellationToken) =>
             Task.CompletedTask;
 
         public Task DeleteBranchEverywhereAsync(string repositoryPath, string branch, CancellationToken cancellationToken) =>
