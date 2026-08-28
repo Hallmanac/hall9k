@@ -763,15 +763,36 @@ public sealed class RunAggregate
     /// <summary>
     /// How the review ended, for the <see cref="Events.ReviewSettled"/> the loop is about to
     /// write. Clean is the narrow claim it sounds like — every track ended on a reviewer that
-    /// read the tip and found nothing — so a single residual, a single settled track, or a
-    /// human's own merge-ready resolution is enough to make the ending Settled instead.
+    /// read the tip and found nothing — so a single outstanding residual, a single settled track,
+    /// or a human's own merge-ready resolution is enough to make the ending Settled instead.
+    /// <see cref="IsSupersededByCleanReread"/> is what "outstanding" excludes: a FixedUnreviewed
+    /// residual a later mandatory <see cref="ReviewMode.FinalFullPass"/> on the same lens went on
+    /// to read clean has now had exactly the re-read it was recorded for want of.
     /// </summary>
     public ReviewSettlement DeriveSettlement() =>
         _humanEndedTheLoop
-        || _reviewResiduals.Count > 0
+        || _reviewResiduals.Any(residual => !IsSupersededByCleanReread(residual))
         || _concludedReviewTracks.Any(track => track.Settlement == ReviewSettlement.Settled)
             ? ReviewSettlement.Settled
             : ReviewSettlement.Clean;
+
+    /// <summary>
+    /// Whether a later cycle's clean conclusion on this residual's own lens supersedes it
+    /// (cycle-3 cap-park finding, origin: a run whose severity gate fixed a Medium unreviewed
+    /// could never settle Clean even after the mandatory FinalFullPass re-read the same lens and
+    /// found nothing, because the append-only residual list still carried the earlier
+    /// FixedUnreviewed record). <see cref="_concludedReviewTracks"/> holds one entry per lens —
+    /// its OWN latest conclusion, replaced in place by <see cref="Apply(Events.ReviewTrackConcluded)"/>
+    /// — so a later Clean entry for this residual's lens is the marker that the re-read actually
+    /// happened, consulted here rather than mutating the residual this cycle already wrote to the
+    /// stream. Only ever applies to a FixedUnreviewed residual: a Routed or RoutingFailed one
+    /// describes a defect this pull request exported rather than fixed, and a RideAlong one a
+    /// defect the fix deliberately left behind, so a clean re-read confirms neither away.
+    /// </summary>
+    private bool IsSupersededByCleanReread(ReviewResidual residual) =>
+        residual.Disposition == ReviewResidualDisposition.FixedUnreviewed
+        && _concludedReviewTracks.Any(track =>
+            track.Lens == residual.Lens && track.Settlement == ReviewSettlement.Clean && track.Cycle > residual.Cycle);
 
     /// <summary>
     /// The residual counts for the <see cref="Events.ReviewSettled"/> the loop is about to
@@ -819,11 +840,18 @@ public sealed class RunAggregate
             PerDefect(ReviewResidualDisposition.RideAlong).Count);
     }
 
-    /// <summary>This disposition's residuals with every repeat of a place already seen dropped.</summary>
+    /// <summary>
+    /// This disposition's residuals with every repeat of a place already seen dropped, and — for
+    /// FixedUnreviewed — any residual a later clean re-read on its own lens has already superseded
+    /// (<see cref="IsSupersededByCleanReread"/>) left out too, for the same reason
+    /// <see cref="DeriveSettlement"/> excludes it: the tally and the settlement it accompanies must
+    /// never disagree about what is actually still outstanding.
+    /// </summary>
     private List<ReviewResidual> PerDefect(ReviewResidualDisposition disposition)
     {
         List<ReviewResidual> distinct = [];
-        foreach (ReviewResidual residual in _reviewResiduals.Where(residual => residual.Disposition == disposition))
+        foreach (ReviewResidual residual in _reviewResiduals
+            .Where(residual => residual.Disposition == disposition && !IsSupersededByCleanReread(residual)))
         {
             if (!distinct.Any(kept => ReviewFindingLocations.SamePlace(kept.Location, residual.Location)))
             {
