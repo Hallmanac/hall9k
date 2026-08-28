@@ -479,6 +479,37 @@ public sealed class AgentPromptBuilderTests : IDisposable
     }
 
     /// <summary>
+    /// Both lenses' own opening framing must state the foreign-pull-request truth from the
+    /// first paragraph rather than contradict it 200 lines later (cycle-3 medium finding,
+    /// `AgentPromptBuilder.cs:1113-1119` and `:1239`): the ordinary pre-PR wording — "no pull
+    /// request exists yet" for conformance, "a diff that is about to become a pull request" for
+    /// adversarial — is true of the normal review loop but false of a pr-review task, whose
+    /// diff is someone else's already-open pull request and whose verdict opens nothing.
+    /// </summary>
+    [Fact]
+    public void Pr_review_lenses_state_the_foreign_pull_requests_own_framing_from_their_own_opening()
+    {
+        ProjectDetails project = SomeProject();
+
+        string conformance = AgentPromptBuilder.BuildPrReviewLens(
+            SomeTask(), project, "pr/42", ReviewLens.Conformance, packet: null, baseBranch: "main");
+        string adversarial = AgentPromptBuilder.BuildPrReviewLens(
+            SomeTask(), project, "pr/42", ReviewLens.Adversarial, packet: null, baseBranch: "main");
+
+        foreach (string prompt in new[] { conformance, adversarial })
+        {
+            prompt.Should().NotContain("No pull request exists yet",
+                "this pull request is already open; nothing about this review opens one");
+            prompt.Should().NotContain("a diff that is about to become a pull request",
+                "the diff under review already is a pull request, someone else's");
+            prompt.Should().Contain("already opened and authored", "the opening paragraph itself states the foreign-PR truth");
+            prompt.Should().Contain(
+                "your verdict opens" + Environment.NewLine + "nothing",
+                "stated up front rather than only 200 lines later");
+        }
+    }
+
+    /// <summary>
     /// A pr-review run's two lenses are dispatched one after another by PrReviewEngine, never
     /// concurrently (cycle-1 conformance finding, `AgentPromptBuilder.cs:1577`): the "a second
     /// review pass is reading this same directory right now" claim is never true here, and neither

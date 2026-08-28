@@ -1110,14 +1110,29 @@ public static class AgentPromptBuilder
         ReviewMechanicsOverride? mechanicsOverride = null)
     {
         StringBuilder prompt = new();
-        prompt.AppendLine("# Independent review: verify this diff before its pull request opens");
-        prompt.AppendLine();
-        prompt.AppendLine("You are an independent reviewer with fresh context. A different agent implemented");
-        prompt.AppendLine("the task below; you have not seen its reasoning, and that is the point — judge only");
-        prompt.AppendLine("the code. No pull request exists yet; your verdict is one of the review passes that");
-        prompt.AppendLine("decide whether one opens, so report everything you find rather than leaving a");
-        prompt.AppendLine("defect for someone else.");
-        prompt.AppendLine();
+        if (mechanicsOverride is { DiffIsForeignPullRequest: true })
+        {
+            prompt.AppendLine("# Independent review: a pull-request-review task's own findings report");
+            prompt.AppendLine();
+            prompt.AppendLine("You are an independent reviewer with fresh context, reading a pull request someone");
+            prompt.AppendLine("else already opened and authored — not this task's own diff, and your verdict opens");
+            prompt.AppendLine("nothing. The deliverable is a findings report the owner walks by hand, directing");
+            prompt.AppendLine("every comment that reaches the pull request, so report everything you find rather");
+            prompt.AppendLine("than leaving a defect for someone else.");
+            prompt.AppendLine();
+        }
+        else
+        {
+            prompt.AppendLine("# Independent review: verify this diff before its pull request opens");
+            prompt.AppendLine();
+            prompt.AppendLine("You are an independent reviewer with fresh context. A different agent implemented");
+            prompt.AppendLine("the task below; you have not seen its reasoning, and that is the point — judge only");
+            prompt.AppendLine("the code. No pull request exists yet; your verdict is one of the review passes that");
+            prompt.AppendLine("decide whether one opens, so report everything you find rather than leaving a");
+            prompt.AppendLine("defect for someone else.");
+            prompt.AppendLine();
+        }
+
         if (mechanicsOverride is { DiffIsForeignPullRequest: true })
         {
             prompt.AppendLine("## What this review task is");
@@ -1234,13 +1249,30 @@ public static class AgentPromptBuilder
         IReadOnlyList<ReviewParkResolution>? priorRulings, ReviewMechanicsOverride? mechanicsOverride = null)
     {
         StringBuilder prompt = new();
-        prompt.AppendLine("# Adversarial review: assume this diff is wrong somewhere, and find where");
-        prompt.AppendLine();
-        prompt.AppendLine("You are an independent reviewer with fresh context, reading a diff that is about to");
-        prompt.AppendLine("become a pull request. You are deliberately NOT being told what this change was");
-        prompt.AppendLine("supposed to accomplish: a reviewer who knows the intent reads for alignment with it,");
-        prompt.AppendLine("and your job is the defects that are wrong whatever the intent was.");
-        prompt.AppendLine();
+        if (mechanicsOverride is { DiffIsForeignPullRequest: true })
+        {
+            prompt.AppendLine("# Adversarial review: assume this pull request is wrong somewhere, and find where");
+            prompt.AppendLine();
+            prompt.AppendLine("You are an independent reviewer with fresh context, reading a pull request someone");
+            prompt.AppendLine("else already opened and authored — not this task's own diff, and your verdict opens");
+            prompt.AppendLine("nothing. You are deliberately NOT being told what this change was supposed to");
+            prompt.AppendLine("accomplish: a reviewer who knows the intent reads for alignment with it, and your job");
+            prompt.AppendLine("is the defects that are wrong whatever the intent was. The deliverable is a findings");
+            prompt.AppendLine("report the owner walks by hand, directing every comment that reaches the pull");
+            prompt.AppendLine("request.");
+            prompt.AppendLine();
+        }
+        else
+        {
+            prompt.AppendLine("# Adversarial review: assume this diff is wrong somewhere, and find where");
+            prompt.AppendLine();
+            prompt.AppendLine("You are an independent reviewer with fresh context, reading a diff that is about to");
+            prompt.AppendLine("become a pull request. You are deliberately NOT being told what this change was");
+            prompt.AppendLine("supposed to accomplish: a reviewer who knows the intent reads for alignment with it,");
+            prompt.AppendLine("and your job is the defects that are wrong whatever the intent was.");
+            prompt.AppendLine();
+        }
+
         prompt.AppendLine("Start from the assumption that something here is broken and find it. Code that is");
         prompt.AppendLine("wrong rarely looks wrong; the defect is usually in what the code does not handle,");
         prompt.AppendLine("so read for the input nobody tried, the order nobody expected, and the failure");
