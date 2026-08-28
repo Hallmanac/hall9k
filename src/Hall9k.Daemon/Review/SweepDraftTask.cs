@@ -70,7 +70,7 @@ public static partial class SweepDraftTask
     private sealed record Evidence(Guid RunId, int Cycle, string FindingsFile);
 
     /// <summary>One defect on the sweep: the place it was found, how it was graded, and every time it was seen.</summary>
-    private sealed record Item(string Location, ReviewSeverity Severity, string FindingExcerpt, IReadOnlyList<Evidence> Evidence);
+    private sealed record Item(string Location, ReviewSeverity Severity, string FindingText, IReadOnlyList<Evidence> Evidence);
 
     /// <summary>
     /// A brand-new sweep, seeded with everything in <paramref name="routes"/> — there was no open
@@ -102,7 +102,7 @@ public static partial class SweepDraftTask
             if (matchIndex < 0)
             {
                 merged.Add(new Item(
-                    route.Finding.Location, route.Finding.Severity, ReviewDraftBugTask.Excerpt(route.Finding), [evidence]));
+                    route.Finding.Location, route.Finding.Severity, route.Finding.Text, [evidence]));
                 continue;
             }
 
@@ -158,8 +158,11 @@ public static partial class SweepDraftTask
             body.AppendLine($"### {(item.Location.IsBlank() ? NoLocationMarker : item.Location)}");
             body.AppendLine();
             body.AppendLine($"- Severity: {ReviewDraftBugTask.SeverityName(item.Severity)}");
-            string fence = RelayedText.FenceFor(item.FindingExcerpt);
-            body.AppendLine($"- Finding: {fence} {item.FindingExcerpt} {fence}");
+            body.AppendLine("- Finding:");
+            string fence = RelayedText.FenceFor(item.FindingText);
+            body.AppendLine(fence);
+            body.AppendLine(item.FindingText);
+            body.AppendLine(fence);
             body.AppendLine("- Evidence:");
             foreach (Evidence evidence in item.Evidence)
             {
@@ -193,18 +196,19 @@ public static partial class SweepDraftTask
     }
 
     /// <summary>
-    /// The inverse of the <see cref="RelayedText.FenceFor"/> wrapper <see cref="Render"/> puts
-    /// around a finding excerpt, so a parsed-back item's <c>FindingExcerpt</c> holds the same bare
-    /// text the finding carried rather than growing a wider fence on every re-render.
-    /// <see cref="Render"/> always separates the fence from the excerpt with a literal space on
-    /// both sides — the CommonMark padding an inline code span needs to close correctly when the
-    /// excerpt itself starts or ends with a backtick (cycle-2 adversarial review) — which doubles
-    /// as this method's unambiguous marker: the fence's own backtick run can never merge with a
-    /// backtick the excerpt happens to start or end with, so counting the leading run and
-    /// requiring the matching "<c>fence space … space fence</c>" shape on both ends recovers
-    /// exactly the excerpt <see cref="Render"/> was given, backticks and all. A line that does not
-    /// have that shape is not a fence this method wrote — left exactly as read, the same "never a
-    /// parse failure" posture the rest of this parser follows.
+    /// The inverse of the single-line <see cref="RelayedText.FenceFor"/> wrapper an older
+    /// <see cref="Render"/> used to put around a finding on one "- Finding: " line, kept so an
+    /// item written in that shape before <see cref="Render"/> moved to a fenced block still parses
+    /// back to the same bare text rather than a fence-and-all string. That render always separated
+    /// the fence from the text with a literal space on both sides — the CommonMark padding an
+    /// inline code span needs to close correctly when the text itself starts or ends with a
+    /// backtick (cycle-2 adversarial review) — which doubles as this method's unambiguous marker:
+    /// the fence's own backtick run can never merge with a backtick the text happens to start or
+    /// end with, so counting the leading run and requiring the matching
+    /// "<c>fence space … space fence</c>" shape on both ends recovers exactly the text that older
+    /// render was given, backticks and all. A line that does not have that shape is not a fence
+    /// this method wrote — left exactly as read, the same "never a parse failure" posture the rest
+    /// of this parser follows.
     /// </summary>
     private static string StripFence(string text)
     {
@@ -231,11 +235,21 @@ public static partial class SweepDraftTask
     /// <summary>
     /// Reads the items already on an open sweep's AgentContext back out, so <see cref="Append"/>
     /// can merge into them rather than starting over. Line-based rather than one regex over the
-    /// whole document: a finding's own excerpt can contain almost anything printable, and a
-    /// single pattern spanning an unbounded item is what a hand-edited or oddly-worded item would
-    /// break first. A line this does not recognize is simply not part of any field — never a
-    /// parse failure — which is the same "duplicate rather than lose" posture
+    /// whole document: a finding's own text can contain almost anything printable, and a single
+    /// pattern spanning an unbounded item is what a hand-edited or oddly-worded item would break
+    /// first. A line this does not recognize is simply not part of any field — never a parse
+    /// failure — which is the same "duplicate rather than lose" posture
     /// <see cref="ReviewFindingLocations"/> itself documents for its own blank-location case.
+    /// <para>
+    /// A finding's text is fenced the way <see cref="Render"/> writes it: a bare "- Finding:"
+    /// line, then a fence on its own line, then the finding's text verbatim until a line that
+    /// repeats that same fence. Everything between the two fence lines is taken as-is, so a
+    /// finding quoting its own "### " heading or "- Severity:" line mid-body cannot be mistaken
+    /// for the next item's fields while a fence block is open. A "- Finding: " line followed by
+    /// inline text is still read the older single-line shape a sweep composed before this format
+    /// existed used (<see cref="StripFence"/>), so an already-open sweep with items in that shape
+    /// keeps parsing correctly across the format change.
+    /// </para>
     /// </summary>
     private static IReadOnlyList<Item> Parse(string? agentContext)
     {
@@ -247,27 +261,61 @@ public static partial class SweepDraftTask
         List<Item> items = [];
         string? location = null;
         ReviewSeverity severity = ReviewSeverity.Unknown;
-        string findingExcerpt = string.Empty;
+        string findingText = string.Empty;
         List<Evidence> evidence = [];
+        string? findingFence = null;
+        List<string> findingLines = [];
+        bool awaitingFindingFence = false;
 
         void Flush()
         {
             if (location is not null)
             {
-                items.Add(new Item(location, severity, findingExcerpt, evidence));
+                items.Add(new Item(location, severity, findingText, evidence));
             }
         }
 
         foreach (string raw in agentContext.ReplaceLineEndings("\n").Split('\n'))
         {
             string line = raw.TrimEnd();
+
+            if (findingFence is not null)
+            {
+                if (line.Trim() == findingFence)
+                {
+                    findingText = string.Join('\n', findingLines);
+                    findingFence = null;
+                }
+                else
+                {
+                    findingLines.Add(line);
+                }
+
+                continue;
+            }
+
+            if (awaitingFindingFence)
+            {
+                awaitingFindingFence = false;
+                string candidateFence = line.Trim();
+                if (candidateFence.Length >= 3 && candidateFence.All(character => character == '`'))
+                {
+                    findingFence = candidateFence;
+                    findingLines = [];
+                    continue;
+                }
+
+                // Not a fence after all — a hand-edited "- Finding:" with nothing following it.
+                // Fall through and let the line below be read on its own terms.
+            }
+
             if (line.StartsWith("### ", StringComparison.Ordinal))
             {
                 Flush();
                 string heading = line["### ".Length..].Trim();
                 location = heading == NoLocationMarker ? string.Empty : heading;
                 severity = ReviewSeverity.Unknown;
-                findingExcerpt = string.Empty;
+                findingText = string.Empty;
                 evidence = [];
                 continue;
             }
@@ -282,9 +330,13 @@ public static partial class SweepDraftTask
             {
                 severity = ReviewSeverity.Parse(trimmed["- Severity: ".Length..]);
             }
+            else if (trimmed == "- Finding:")
+            {
+                awaitingFindingFence = true;
+            }
             else if (trimmed.StartsWith("- Finding: ", StringComparison.Ordinal))
             {
-                findingExcerpt = StripFence(trimmed["- Finding: ".Length..]);
+                findingText = StripFence(trimmed["- Finding: ".Length..]);
             }
             else
             {
@@ -296,6 +348,15 @@ public static partial class SweepDraftTask
                     evidence.Add(new Evidence(runId, parsedCycle, match.Groups["path"].Value));
                 }
             }
+        }
+
+        if (findingFence is not null)
+        {
+            // The document ended mid-fence — hand-edited or truncated — with no closing line to
+            // match. Treat EOF as an implicit close rather than dropping everything collected so
+            // far: losing a finding's text on the next append (cycle-2 adversarial review) is far
+            // worse than rendering an item whose fence never actually closed on the page.
+            findingText = string.Join('\n', findingLines);
         }
 
         Flush();

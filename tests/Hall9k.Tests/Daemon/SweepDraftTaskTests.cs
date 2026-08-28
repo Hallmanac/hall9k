@@ -203,8 +203,64 @@ public sealed class SweepDraftTaskTests
         string secondAppend = SweepDraftTask.Append(
             firstAppend, [Route(runId: DomainId.New(), cycle: 3, location: "Foo.cs:12")]);
 
-        secondAppend.Should().Contain("- Finding: ``` Defect: the comment above `Foo` ```")
+        secondAppend.Should().Contain("Defect: the comment above `Foo`")
             .And.NotContain("````", "the fence must never widen across repeated re-renders");
+        CountOccurrences(secondAppend, "```").Should().Be(
+            2, "one opening and one closing fence for the one item, not a widening pair from each append");
+    }
+
+    /// <summary>
+    /// An item used to store only <c>ReviewDraftBugTask.Excerpt</c> — the finding's own first
+    /// line, hard-truncated at 140 characters — which always dropped the <c>Scenario:</c> line
+    /// the review contract mandates for every finding. The sweep now stores the finding's own
+    /// text whole, the same as a routed medium's own draft bug task does.
+    /// </summary>
+    [Fact]
+    public void The_findings_full_text_including_its_scenario_line_survives_into_the_rendered_body()
+    {
+        SweepFindingRoute route = new(
+            new ReviewFinding(
+                ReviewSeverity.Low, ReviewFindingScope.OutOfScope, "Foo.cs:12",
+                "FINDING: severity=low; scope=out-of-scope; at=Foo.cs:12\n"
+                + "Defect: the XML doc is stale.\n"
+                + "Scenario: a reader trusting the comment files a duplicate."),
+            DomainId.New(), 1, "/runs/x/review-1-findings.md");
+
+        string body = SweepDraftTask.ComposeNew(DomainId.New(), DomainId.New(), [route], Now, DomainId.New()).AgentContext!;
+
+        body.Should().Contain("Scenario: a reader trusting the comment files a duplicate.");
+
+        string updated = SweepDraftTask.Append(body, [Route(runId: DomainId.New(), cycle: 2, location: "Foo.cs:12")]);
+        updated.Should().Contain(
+            "Scenario: a reader trusting the comment files a duplicate.",
+            "the scenario line survives a re-render, not just the first append");
+    }
+
+    /// <summary>
+    /// A document truncated mid-fence — hand-edited, or simply cut off before the closing fence
+    /// was ever written — used to make <c>Parse</c> flush the item with an empty finding text,
+    /// so the very next append would silently erase it (Copilot review, PR #87). EOF now closes
+    /// an open fence implicitly instead.
+    /// </summary>
+    [Fact]
+    public void An_unterminated_fence_at_end_of_document_is_treated_as_closed_at_EOF()
+    {
+        SweepFindingRoute route = new(
+            new ReviewFinding(
+                ReviewSeverity.Low, ReviewFindingScope.OutOfScope, "Foo.cs:12",
+                "FINDING: severity=low; scope=out-of-scope; at=Foo.cs:12\n"
+                + "Defect: a stale comment misleads the next reader."),
+            DomainId.New(), 1, "/runs/x/review-1-findings.md");
+
+        string body = SweepDraftTask.ComposeNew(DomainId.New(), DomainId.New(), [route], Now, DomainId.New()).AgentContext!;
+        int closingFenceIndex = body.LastIndexOf("```", StringComparison.Ordinal);
+        string truncated = body[..closingFenceIndex].TrimEnd('\n');
+
+        string updated = SweepDraftTask.Append(truncated, [Route(runId: DomainId.New(), cycle: 2, location: "Bar.cs:9")]);
+
+        updated.Should().Contain(
+            "Defect: a stale comment misleads the next reader.",
+            "a document truncated mid-fence must not erase the finding text on the next append");
     }
 
     private static int CountOccurrences(string text, string value)
