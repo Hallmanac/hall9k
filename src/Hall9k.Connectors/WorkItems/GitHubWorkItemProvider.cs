@@ -155,7 +155,9 @@ public sealed class GitHubWorkItemProvider(ProcessRunner? runner = null, TimePro
         [
             "issue", "comment", number.ToString(CultureInfo.InvariantCulture), "--repo", repository, "--body", comment,
         ];
-        ProcessResult result = await RunGhAsync(arguments, workingDirectory, cancellationToken);
+        ProcessResult result = await RunGhAsync(
+            arguments, workingDirectory, cancellationToken,
+            onStoppedAnswering: exception => GhStoppedAnsweringOnComment(exception, workingDirectory, repository, number));
         if (result.ExitCode != 0)
         {
             throw new DomainValidationException(
@@ -353,13 +355,19 @@ public sealed class GitHubWorkItemProvider(ProcessRunner? runner = null, TimePro
     /// failure, and only a caller whose call can create something external — <see cref="CreateAsync"/>
     /// — needs to say what that means instead of getting the import-flavoured
     /// <see cref="GhStoppedAnswering"/> text. Every other caller leaves it null and keeps that text,
-    /// which is the right read when nothing was created (an import, a comment).
+    /// which is the right read when nothing was created (an import).
+    /// <paramref name="onStoppedAnswering"/> is the same idea for a call that never went quiet
+    /// before answering at all: <see cref="GhStoppedAnswering"/>'s wording is written for a read
+    /// (<c>ImportAsync</c>) and tells the reader to "import again", which is wrong for
+    /// <see cref="CommentAsync"/> — a write that is never retried automatically. Left null, a
+    /// caller keeps the import wording, which is the right read for a call that is, in fact, a read.
     /// </summary>
     private async Task<ProcessResult> RunGhAsync(
         IReadOnlyList<string> arguments,
         string workingDirectory,
         CancellationToken cancellationToken,
-        Func<ProcessOutputStuckException, DomainException>? onOutputStuckAfterSuccess = null)
+        Func<ProcessOutputStuckException, DomainException>? onOutputStuckAfterSuccess = null,
+        Func<TimeoutException, DomainValidationException>? onStoppedAnswering = null)
     {
         try
         {
@@ -375,7 +383,7 @@ public sealed class GitHubWorkItemProvider(ProcessRunner? runner = null, TimePro
         }
         catch (TimeoutException exception)
         {
-            throw GhStoppedAnswering(exception, workingDirectory);
+            throw onStoppedAnswering?.Invoke(exception) ?? GhStoppedAnswering(exception, workingDirectory);
         }
     }
 
@@ -402,6 +410,21 @@ public sealed class GitHubWorkItemProvider(ProcessRunner? runner = null, TimePro
         + "— an unlocked keychain or a credential helper — so run 'gh auth status' and then "
         + "'gh issue view 42' by hand from that directory to see what it is waiting on, and "
         + "import again.");
+
+    /// <summary>
+    /// The comment-flavoured sibling of <see cref="GhStoppedAnswering"/>: a comment is a write,
+    /// never retried automatically, so telling the reader to "import again" points at a command
+    /// that has nothing to do with what stalled and never runs on its own. Names the issue the
+    /// comment was headed for and says to re-post it, rather than to re-read something.
+    /// </summary>
+    private static DomainValidationException GhStoppedAnsweringOnComment(
+        TimeoutException exception, string workingDirectory, string repository, int number) => new(
+        $"{exception.Message} It was posting a comment on {repository}#{number} from {workingDirectory}. "
+        + "A comment that stops here is usually gh, or something gh started, waiting on input it "
+        + "cannot ask for — an unlocked keychain or a credential helper — so run 'gh auth status' "
+        + "by hand from that directory to see what it is waiting on. The comment is not retried "
+        + $"automatically; check 'gh issue view {number} --repo {repository}' to see whether it "
+        + "posted, and add it by hand if it did not.");
 
     /// <summary>
     /// A missing gh and a missing working directory arrive as the same exception: .NET reports
