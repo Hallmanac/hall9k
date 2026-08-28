@@ -183,6 +183,21 @@ public sealed class TaskPublishCommand : Hall9kAsyncCommand<TaskPublishCommand.S
             return;
         }
 
+        // A publication request outstanding for another provider (h9k task push-to-jira, run by
+        // hand against a project that also carries a bound Jira board) is a session already
+        // writing this task's one external item — filing a GitHub issue on top of it races
+        // WorkItemLinked against whatever that session finishes with, and TaskDecider.LinkWorkItem
+        // refuses the loser, so the loser's card or issue is orphaned with nothing left to record
+        // or clean it up. Reported and skipped for the same reason the Jira branch above skips.
+        if (task.PendingPublicationProvider is not null)
+        {
+            AnsiConsole.MarkupLine(
+                $"[dim]  {project.Name.EscapeMarkup()} tracks its backlog in GitHub issues, but task "
+                + $"{shortId} already has a {task.PendingPublicationProvider} publication request "
+                + "outstanding; nothing was created.[/]");
+            return;
+        }
+
         GitHubWorkItemProvider provider = new();
         string oneLineObjective = ExternalText.OneLine(task.Objective);
         string title = RelayedText.Truncate(oneLineObjective, GitHubIssueTitleMaxLength);
