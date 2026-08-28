@@ -394,6 +394,24 @@ public sealed class PrReviewEngine(
             logger.LogWarning(exception, "Worktree removal failed for {Path} (safe to prune later)", run.WorktreePath);
         }
 
+        // run.Branch is "pr/<n>" for every pr-review run (CreatePrReviewCheckoutAsync's own
+        // Worktree.Branch) — the only record of which pull request this run's now-removed
+        // worktree was fetched against, and so the only way to name the tracking ref left
+        // behind in the bare clone (adversarial review, cycle 1: nothing else ever deletes it).
+        if (PullRequestNumberFromBranch(run.Branch) is { } pullRequestNumber)
+        {
+            try
+            {
+                await worktrees.DeletePrReviewTrackingRefAsync(project.RepositoryPath, pullRequestNumber, cancellationToken);
+            }
+            catch (Exception exception) when (exception is not OperationCanceledException)
+            {
+                logger.LogWarning(
+                    exception, "Pr-review tracking ref cleanup failed for pull request #{Number} (safe to delete by hand)",
+                    pullRequestNumber);
+            }
+        }
+
         DateTimeOffset now = DateTimeOffset.UtcNow;
         await using IDocumentSession session = store.LightweightSession();
 
@@ -518,7 +536,15 @@ public sealed class PrReviewEngine(
         await session.SaveChangesAsync(cancellationToken);
     }
 
-    private static string ConformanceArtifactName(Guid sessionId) => $"pr-review-conformance-{sessionId:N}";
+    /// <summary>Internal so the liveness-discrimination unit tests can name the same file <see cref="SessionStillLive"/> reads.</summary>
+    internal static string ConformanceArtifactName(Guid sessionId) => $"pr-review-conformance-{sessionId:N}";
+
+    /// <summary>The pull request number out of a pr-review run's own <c>pr/&lt;n&gt;</c> branch name.</summary>
+    private static int? PullRequestNumberFromBranch(string branch) =>
+        branch.StartsWith("pr/", StringComparison.Ordinal)
+        && int.TryParse(branch.AsSpan(3), out int number)
+            ? number
+            : null;
 
     private static async Task<string> ReadIfExistsAsync(string path, CancellationToken cancellationToken) =>
         File.Exists(path) ? await File.ReadAllTextAsync(path, cancellationToken) : "(no findings recorded)";

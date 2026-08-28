@@ -1279,6 +1279,9 @@ public sealed class CardPublicationEngineTests(PostgresFixture postgres) : IClas
         public Task RemoveAsync(string repositoryPath, string worktreePath, CancellationToken cancellationToken) =>
             Task.CompletedTask;
 
+        public Task DeletePrReviewTrackingRefAsync(string repositoryPath, int pullRequestNumber, CancellationToken cancellationToken) =>
+            Task.CompletedTask;
+
         public Task DeleteBranchEverywhereAsync(string repositoryPath, string branch, CancellationToken cancellationToken) =>
             Task.CompletedTask;
 
