@@ -67,7 +67,10 @@ public sealed class PullRequestResolveCommand : Hall9kAsyncCommand<PullRequestRe
         Guid previousRunId = task.CurrentRunId
             ?? throw new DomainConflictException($"Task {taskId} has no recorded run to follow up on.");
         RunDetails previousRun = await session.LoadAsync<RunDetails>(previousRunId, cancellationToken)
-            ?? throw new DomainNotFoundException($"Task {taskId}'s run {previousRunId} has no run record.");
+            ?? throw new DomainNotFoundException(
+                $"Task {taskId}'s run {previousRunId} has no run record, so there is no branch to resume — " +
+                "pr resolve cannot dispatch a follow-up here. If the pull request has since merged, the " +
+                $"closeout sweep will complete the task on its own; otherwise check {task.PullRequestUrl} directly.");
 
         BootstrapContext context = await NodeBootstrap.EnsureAsync(session, cancellationToken);
 
