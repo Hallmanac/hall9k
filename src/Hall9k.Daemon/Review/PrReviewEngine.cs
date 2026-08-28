@@ -135,7 +135,41 @@ public sealed class PrReviewEngine(
         catch (Exception exception) when (exception is not OperationCanceledException)
         {
             logger.LogError(exception, "Pr-review loop crashed for run {RunId}", runId);
+            // Cancellation is excluded above on purpose, same as ReviewEngine.ReviewAsync: a
+            // stopping daemon leaves its agents running and reattaches. A crash is the other
+            // case — a still-live conformance session is a live agent process in the untrusted
+            // foreign checkout with nobody left to read its findings, so it does not get to
+            // keep running (adversarial review, cycle 7).
+            await TerminateInFlightConformanceSessionAsync(runId, cancellationToken);
             await FailAsync(runId, taskId, $"Pr-review loop failed: {exception.Message}", cancellationToken);
+        }
+    }
+
+    /// <summary>
+    /// Best-effort cleanup on the crash path, mirroring
+    /// <see cref="ReviewEngine.TerminateInFlightSessionsAsync"/>: failures here are swallowed
+    /// deliberately, since this runs inside error handling and a run that cannot be read is
+    /// already being failed for that reason.
+    /// </summary>
+    private async Task TerminateInFlightConformanceSessionAsync(Guid runId, CancellationToken cancellationToken)
+    {
+        try
+        {
+            await using IQuerySession query = store.QuerySession();
+            RunAggregate? run = await query.Events.AggregateStreamAsync<RunAggregate>(runId, token: cancellationToken);
+            if (run is { PrReviewConformanceCompleted: false }
+                && run.PrReviewConformanceProcessId is { } processId
+                && run.PrReviewConformanceProcessStartedAt is { } startedAt)
+            {
+                processManager.Terminate(processId, startedAt);
+                logger.LogWarning(
+                    "Run {RunId}: terminated the in-flight pr-review conformance session (pid {ProcessId}) after the loop crashed",
+                    runId, processId);
+            }
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            logger.LogWarning(exception, "Run {RunId}: could not terminate the run's in-flight pr-review conformance session", runId);
         }
     }
 
