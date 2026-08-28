@@ -127,6 +127,7 @@ h9k task add --project <name> --from-jira PROJ-1  # adopt a Jira card (key or UR
 h9k task revise <id> --criteria "…" --blocked-by <id>   # Draft-only; each option replaces that part
 h9k task publish <id> [--assign]                  # the readiness gate; --assign starts it too
 h9k task publish <id> --no-existing-item          # required if a tracking backlog policy finds no linked item yet and has no publication already pending
+h9k task publish <id> --untracked                 # the same gate's other exit: deliberately skip tracking for this task, attested on the stream
 h9k task assign <id> [<owner>]                    # the dispatch trigger — Queued, or Blocked on dependencies
 h9k task unassign <id>                            # back to Published (refused while leased)
 h9k task draft <id>                               # Published back to Draft, so it can be revised
@@ -177,10 +178,19 @@ h9k task link-issue <task> 123                                # record a GitHub 
 
 `h9k task publish` checks the policy twice. First, before publishing: a tracking policy (`jira` or
 `github-issues`) on a task that carries no linked item yet and has no publication already pending
-refuses the publish outright, naming the two ways forward — link an existing item
-(`h9k task link-jira` / `h9k task link-issue`), or attest none exists and proceed with
-`h9k task publish <id> --no-existing-item` — so a human or orchestrator confirms no existing item
-covers the objective before a duplicate can be minted. Then, after publishing: `jira` appends the
+refuses the publish outright, naming the three ways forward — link an existing item
+(`h9k task link-jira` / `h9k task link-issue`), attest none exists and proceed with
+`h9k task publish <id> --no-existing-item`, or attest that this task should skip tracking
+altogether with `h9k task publish <id> --untracked`, for internal chores and platform tasks that
+should not pollute a team's tracker — so a human or orchestrator confirms no existing item covers
+the objective, or deliberately opts out of tracking, before a duplicate can be minted.
+`--no-existing-item` and `--untracked` say opposite things and are refused together as
+contradictory, and `--untracked` on a project with backlog policy `none` is refused as
+meaningless — there is no tracking there to skip. Both attestations land on the same
+`TaskPublished` event, recording who chose which and when; `h9k task show` renders an
+untracked-by-choice task honestly, distinct from one that predates the policy or was published
+under policy `none` (both leave the attestation unset rather than defaulting to a look-alike
+state). Then, after publishing: `jira` appends the
 same request `push-to-jira` does (so a project with no Jira connection registered yet is told once,
 at publish, rather than refused — `push-to-jira` remains the manual retry once one exists);
 `github-issues` runs `gh issue create` itself, reads the created issue straight back the same way

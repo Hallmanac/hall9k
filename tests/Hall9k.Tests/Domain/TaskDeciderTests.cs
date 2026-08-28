@@ -134,7 +134,8 @@ public sealed class TaskDeciderTests
         act.Should().Throw<DomainBusinessRuleException>()
             .WithMessage("*GitHub issues*")
             .WithMessage($"*h9k task link-issue {task.Id}*")
-            .WithMessage($"*h9k task publish {task.Id} --no-existing-item*");
+            .WithMessage($"*h9k task publish {task.Id} --no-existing-item*")
+            .WithMessage($"*h9k task publish {task.Id} --untracked*");
     }
 
     [Fact]
@@ -147,7 +148,76 @@ public sealed class TaskDeciderTests
         act.Should().Throw<DomainBusinessRuleException>()
             .WithMessage("*Jira*")
             .WithMessage($"*h9k task link-jira {task.Id}*")
-            .WithMessage($"*h9k task publish {task.Id} --no-existing-item*");
+            .WithMessage($"*h9k task publish {task.Id} --no-existing-item*")
+            .WithMessage($"*h9k task publish {task.Id} --untracked*");
+    }
+
+    /// <summary>
+    /// Backlog: a task can be published deliberately untracked under a tracking backlog policy.
+    /// The third way forward the refusal above names — --untracked skips creating or linking any
+    /// external item, and records who chose it and when as the attestation on the stream.
+    /// </summary>
+    [Fact]
+    public void Publish_records_the_untracked_attestation_and_proceeds()
+    {
+        TaskAggregate task = DraftTask();
+
+        TaskPublished published = TaskDecider.Publish(
+            task, TaskDependencyGraph.Empty, Now, Owner, BacklogPolicy.GitHubIssues,
+            untracked: true);
+
+        published.UntrackedAttested.Should().BeTrue();
+        published.NoExistingItemAttested.Should().BeFalse();
+        published.PublishedAt.Should().Be(Now, "the attestation's own when is the publish's when");
+        published.PublishedByOwnerId.Should().Be(Owner, "the attestation's own who is the publisher");
+
+        task.Apply(published);
+        task.State.Should().Be(TaskState.Published);
+    }
+
+    [Fact]
+    public void Publish_refuses_untracked_combined_with_no_existing_item_as_contradictory()
+    {
+        TaskAggregate task = DraftTask();
+
+        Action act = () => TaskDecider.Publish(
+            task, TaskDependencyGraph.Empty, Now, Owner, BacklogPolicy.Jira,
+            noExistingItemAttested: true, untracked: true);
+
+        act.Should().Throw<DomainValidationException>()
+            .WithMessage("*--untracked*")
+            .WithMessage("*--no-existing-item*");
+    }
+
+    [Fact]
+    public void Publish_refuses_untracked_under_backlog_policy_none_as_meaningless()
+    {
+        TaskAggregate task = DraftTask();
+
+        Action act = () => TaskDecider.Publish(
+            task, TaskDependencyGraph.Empty, Now, Owner, BacklogPolicy.None, untracked: true);
+
+        act.Should().Throw<DomainValidationException>()
+            .WithMessage("*policy none*")
+            .WithMessage($"*h9k task publish {task.Id}*");
+    }
+
+    [Fact]
+    public void Publish_never_records_an_untracked_attestation_the_gate_did_not_ask_for()
+    {
+        TaskAggregate task = new();
+        task.Apply(TaskDecider.Add(
+            DomainId.New(), DomainId.New(), "Add rate limiting to auth endpoints",
+            ["429 returned past the limit"], TaskType.Feature,
+            agentContext: null, constraints: null,
+            externalReference: new ExternalReference(WorkItemProvider.GitHub, "Hallmanac/hall9k#42"),
+            addedAt: Now, addedByOwnerId: Owner));
+
+        TaskPublished published = TaskDecider.Publish(
+            task, TaskDependencyGraph.Empty, Now, Owner, BacklogPolicy.GitHubIssues, untracked: true);
+
+        published.UntrackedAttested.Should().BeFalse(
+            "a task that already carries a reference is never asked, so the flag is not recorded");
     }
 
     [Fact]

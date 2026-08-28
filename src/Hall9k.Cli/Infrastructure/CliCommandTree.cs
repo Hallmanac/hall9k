@@ -431,12 +431,14 @@ public static class CliCommandTree
                     + "operator's own gh credentials, and jira dispatches an agent run to author the card. "
                     + "That policy is also a dedup gate: a draft with no linked item and no publication "
                     + "already pending is refused until you search the tracker yourself and either link "
-                    + "what you find (h9k task link-jira / h9k task link-issue) or attest none exists "
-                    + "with --no-existing-item.")
+                    + "what you find (h9k task link-jira / h9k task link-issue), attest none exists with "
+                    + "--no-existing-item, or attest that this task should skip tracking altogether with "
+                    + "--untracked (for internal chores that should not pollute a team's tracker).")
                 .WithExample("task", "publish", "28b19893")
                 .WithExample("task", "publish", "28b19893", "--assign")
                 .WithExample("task", "publish", "28b19893", "--no-assign")
-                .WithExample("task", "publish", "28b19893", "--no-existing-item");
+                .WithExample("task", "publish", "28b19893", "--no-existing-item")
+                .WithExample("task", "publish", "28b19893", "--untracked");
             task.AddCommand<TaskAssignCommand>("assign")
                 .WithDescription(
                     "Assign a published task to an owner: the dispatch trigger, and the only way a task "

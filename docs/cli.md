@@ -179,9 +179,13 @@ hunting for them.
 Every published task is tracked in the project's backlog automatically, per this setting — but
 `h9k task publish` checks the policy before it ever creates anything: a draft that carries no
 linked item yet, and has no publication already pending, is refused (exit code 70) until a human
-or orchestrator links an existing item (`h9k task link-issue` / `h9k task link-jira`) or attests
-none exists and proceeds with `h9k task publish <id> --no-existing-item`, so a duplicate is never
-minted from a search the platform itself cannot perform. Once that gate is past, `github-issues`
+or orchestrator links an existing item (`h9k task link-issue` / `h9k task link-jira`), attests
+none exists and proceeds with `h9k task publish <id> --no-existing-item`, or attests that this
+task should skip tracking altogether with `h9k task publish <id> --untracked` — for internal
+chores and platform tasks that should not pollute a team's tracker — so a duplicate is never
+minted from a search the platform itself cannot perform. The two attestations are refused
+together as contradictory, and `--untracked` under backlog policy `none` is refused as
+meaningless. Once that gate is past, `github-issues`
 is deterministic: `h9k task publish` runs `gh issue create` itself — no agent involved, because an
 issue's shape (title, body, labels) is uniform enough for the platform to author on its own —
 reads the created issue straight back the same way `--from-issue` does, and records it through
