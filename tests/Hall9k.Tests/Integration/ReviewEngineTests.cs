@@ -1250,6 +1250,57 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
     }
 
     /// <summary>
+    /// The already-routed guard has to pick the strongest prior routing at a place, not
+    /// whichever happened to land first: a Low that folded into the sweep in an earlier cycle
+    /// must not keep gating a Medium that later earns its own draft at the identical place, and
+    /// once that Medium is routed, a second report of the same place — from the other track, in
+    /// the same cycle — must recognize the Medium as already routed rather than minting a second
+    /// draft for the one defect (adversarial review, cycle 5).
+    /// </summary>
+    [Fact]
+    public async Task A_medium_that_outranks_an_earlier_swept_low_at_the_same_place_is_still_routed_only_once()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        using DocumentStore store = NewStore();
+        (Guid taskId, Guid runId, _) = await SeedVerifiedRunAsync(store, cts.Token);
+
+        ScriptedExecutor executor = new(
+            // Cycle 1: both tracks find something in-scope, so both stay active into cycle 2;
+            // adversarial also reports a genuinely out-of-scope Low, which folds into the sweep.
+            "FINDING: severity=medium; scope=in-scope; at=A.cs:1\nDefect: the criterion is not met.\n\n"
+            + "VERDICT: needs-fixes",
+            "FINDING: severity=medium; scope=in-scope; at=B.cs:2\nDefect: still present.\n\n"
+            + "FINDING: severity=low; scope=out-of-scope; at=Legacy.cs:40\n"
+            + "Defect: the retry duplicates the effect.\n\nVERDICT: needs-fixes",
+            "Fixed both.\n\nRESOLUTION: fixed",
+            // Cycle 2: one Verify pass stands in for both still-active tracks, and both now grade
+            // the identical pre-existing line a Medium — the exact shape that used to mint two
+            // drafts, because the guard matched the earlier swept Low instead of the stronger
+            // routing this same cycle had already minted for the first of the two.
+            "FINDING: severity=medium; scope=out-of-scope; track=conformance; at=Legacy.cs:40\n"
+            + "Defect: the retry duplicates the effect.\n\n"
+            + "FINDING: severity=medium; scope=out-of-scope; track=adversarial; at=Legacy.cs:40\n"
+            + "Defect: the retry duplicates the effect.\n\nVERDICT: needs-fixes",
+            // Nothing was left to fix, so both tracks force-conclude right there (Decisions Log
+            // #63's empty terminal case) — but the mandatory final full pass still runs both
+            // lenses fresh before the run may settle.
+            "The routed line is still someone else's; nothing else stands.\n\nVERDICT: merge-ready",
+            "The routed line is still someone else's; nothing else stands.\n\nVERDICT: merge-ready");
+        bool mergeReady = await NewEngine(store, executor).ReviewAsync(runId, taskId, cts.Token);
+
+        mergeReady.Should().BeTrue("nothing out-of-scope is this branch's own work to fix");
+
+        await using IQuerySession query = store.QuerySession();
+        List<object> events = [.. (await query.Events.FetchStreamAsync(runId, token: cts.Token)).Select(e => e.Data)];
+        List<ReviewFindingRouted> mediumRoutings = [.. events.OfType<ReviewFindingRouted>()
+            .Where(e => e.Location == "Legacy.cs:40" && e.Severity == ReviewSeverity.Medium)];
+
+        mediumRoutings.Should().ContainSingle(
+            "the same defect graded Medium by both tracks in cycle 2 is one routed defect, not two, even " +
+            "though an earlier cycle already swept it as a Low");
+    }
+
+    /// <summary>
     /// The idempotency the sweep exists to provide: a second run's review, on a different task
     /// against the same project, reports the exact same pre-existing Low defect a first run's
     /// review already folded into the sweep. It updates that item's evidence list rather than
