@@ -67,10 +67,23 @@ the hinge to a draft task and is the only step that requires a project.
 dispatch trigger. The path back for an edit is `unassign → draft → revise → publish → assign`.
 
 `h9k task add` also adopts existing external work: `--from-issue 42` (or `owner/repo#42`, or a
-URL) and `--from-jira PROJ-1` (or a URL). Adoption is a one-time snapshot: the title seeds the
-objective, the description becomes agent context, and the state read at import is recorded as an
-observation of that moment and never re-checked. Acceptance criteria are never read out of a
-description; supply them with `--criteria` or at the prompt.
+URL), `--from-jira PROJ-1` (or a URL), and `--from-pr` (a pull request number, `owner/repo#42`, or
+a URL) — the last of which adopts a pull request to review rather than build, always as a
+`pr-review` task (§ below). Adoption is a one-time snapshot: the title seeds the objective, the
+description becomes agent context, and the state read at import is recorded as an observation of
+that moment and never re-checked. Acceptance criteria are never read out of a description; supply
+them with `--criteria` or at the prompt.
+
+### Pull-request review
+
+`--from-pr` creates a read-only `pr-review` task: the node pulls the pull request into a detached
+worktree, runs an adversarial-weighted independent review over it (never a build or a fix), and
+parks a findings report for the owner to walk — `h9k review resolve <id> --merge-ready` once every
+finding has been directed, since a pr-review task has no diff of its own for `--needs-fixes` to
+act on. Nothing is ever posted to the pull request without an explicit human go: the
+`walk-pr-review-findings` skill is what walks the report and posts on direction, always under the
+owner's own login. The task completes without any merge ever being observed — there is no pull
+request of this task's own to merge.
 
 `--file task.md` reads a whole task from a markdown file: a minimal `---` frontmatter block
 (project, type, objective, criteria, an optional model, optional blocked-by) followed by a body

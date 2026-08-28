@@ -399,15 +399,19 @@ public static class CliCommandTree
                 + "A task runs only once a human assigns it and every dependency has closed out.");
             task.AddCommand<TaskAddCommand>("add")
                 .WithDescription(
-                    "Create a draft (flags, --file task.md, or --from-issue to adopt a GitHub issue). "
-                    + "Creation is identity, not readiness: a project and an objective are all it takes, and "
-                    + "the draft is invisible to the dispatcher until you publish and assign it. Acceptance "
-                    + "criteria are what h9k task publish demands, and an adopted issue never supplies them.")
+                    "Create a draft (flags, --file task.md, --from-issue to adopt a GitHub issue, or "
+                    + "--from-pr to adopt a pull request to review — a pr-review task, read-only until "
+                    + "you direct otherwise). Creation is identity, not readiness: a project and an "
+                    + "objective are all it takes, and the draft is invisible to the dispatcher until you "
+                    + "publish and assign it. Acceptance criteria are what h9k task publish demands, and "
+                    + "an adopted issue or pull request never supplies them.")
                 .WithExample("task", "add", "--project", "hall9k", "--objective", "\"Add the project browse surface\"",
                     "--criteria", "\"h9k project list shows one row per project\"")
                 .WithExample("task", "add", "--file", "backlog/19-model-policy.md", "--model", "claude-opus-5")
                 .WithExample("task", "add", "--project", "hall9k", "--from-issue", "42")
                 .WithExample("task", "add", "--project", "hall9k", "--from-jira", "PROJ-123")
+                .WithExample("task", "add", "--project", "hall9k",
+                    "--from-pr", "https://github.com/Hallmanac/hall9k/pull/42")
                 .WithExample("task", "add", "--project", "hall9k",
                     "--from-issue", "https://github.com/Hallmanac/hall9k/issues/42",
                     "--criteria", "\"The importer refuses a closed issue\"")
