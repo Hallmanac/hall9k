@@ -431,8 +431,13 @@ public sealed class RunLauncher(
     private static string? OwnerRepoFrom(Uri? repositoryUrl) =>
         repositoryUrl is not null
         && repositoryUrl.AbsolutePath.Trim('/').Split('/') is [{ Length: > 0 } owner, { Length: > 0 } repository, ..]
-            ? $"{owner}/{repository.Replace(".git", string.Empty, StringComparison.OrdinalIgnoreCase)}"
+            ? $"{owner}/{TrimGitSuffix(repository)}"
             : null;
+
+    private static string TrimGitSuffix(string repository) =>
+        repository.EndsWith(".git", StringComparison.OrdinalIgnoreCase)
+            ? repository[..^4]
+            : repository;
 
     /// <summary>
     /// A retried task resumes its failed run's branch through the same checkout path
