@@ -107,6 +107,28 @@ public sealed class BacklogTrackingTests(PostgresFixture postgres) : IClassFixtu
 
         (await secondRequest.Should().ThrowAsync<DomainConflictException>()).Which.Message
             .Should().Contain("already has a jira publication outstanding");
+
+        // The same outstanding request has to stop TaskLinkIssueCommand.LinkAsync too, not just a
+        // second RequestWorkItemPublication: linking a GitHub issue made by hand while this Jira
+        // session is still running would clear PendingPublicationProvider out from under it
+        // (TaskAggregate.Apply(WorkItemLinked)), so CardPublicationEngine stops watching the run
+        // and the card it eventually writes has nothing recording or cleaning it up.
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            Func<Task> link = () => TaskLinkIssueCommand.LinkAsync(
+                session, taskId,
+                new ImportedWorkItem(
+                    new ExternalReference(WorkItemProvider.GitHub, "Hallmanac/hall9k#99"),
+                    "Made by hand", null, WorkItemStatus.Open, null, Now),
+                DomainId.New(), cts.Token);
+
+            (await link.Should().ThrowAsync<DomainConflictException>()).Which.Message
+                .Should().Contain("jira publication request outstanding");
+        }
+
+        task = await LoadAsync(store, taskId, cts.Token);
+        task!.PendingPublicationProvider.Should().Be(WorkItemProvider.Jira, "the refused link must not disturb the running session's own bookkeeping");
+        task.ExternalReference.Should().BeNull();
     }
 
     [Fact]
