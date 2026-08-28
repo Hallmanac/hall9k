@@ -2,6 +2,7 @@ using FluentAssertions;
 using Hall9k.Cli.Commands;
 using Hall9k.Daemon;
 using Hall9k.Daemon.Dispatch;
+using Hall9k.Domain.Features.Project;
 using Hall9k.Domain.Features.Tasks;
 using Hall9k.Domain.Features.Tasks.Events;
 using Hall9k.Domain.Features.Tasks.Handlers;
@@ -261,6 +262,51 @@ public sealed class TaskProjectionBackfillTests(PostgresFixture postgres) : ICla
                 runId, "the stream always said which run this attestation belongs to");
             details.CurrentRunId.Should().Be(
                 runId, "and it is this task's current run, which is what IsArchived actually compares against");
+        }
+    }
+
+    /// <summary>
+    /// <see cref="TaskDetails.UntrackedAttested"/> is a non-nullable bool, always serialized, so
+    /// an absent key is the marker for a document written before the field landed (backlog: a
+    /// task can be published deliberately untracked under a tracking backlog policy) — the same
+    /// class of defect the failureReason and resolvedRunId markers above already cover.
+    /// </summary>
+    [Fact]
+    public async Task An_untracked_attestation_projected_before_the_marker_landed_is_restored_after_the_backfill_runs()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        using DocumentStore store = NewStore();
+
+        Guid taskId = DomainId.New();
+        Guid ownerId = DomainId.New();
+        await using (IDocumentSession seed = store.LightweightSession())
+        {
+            TaskAdded added = Add(taskId, "Published untracked, projected before the marker landed");
+            TaskAggregate task = new();
+            task.Apply(added);
+            TaskPublished published = TaskDecider.Publish(
+                task, TaskDependencyGraph.Empty, Now, ownerId, BacklogPolicy.GitHubIssues, untracked: true);
+            seed.Events.StartStream<TaskAggregate>(taskId, [added, published]);
+            await seed.SaveChangesAsync(cts.Token);
+        }
+
+        await StripKeyAsync(taskId, "untrackedAttested", ["mt_doc_taskdetails"], cts.Token);
+
+        await using (IQuerySession query = store.QuerySession())
+        {
+            TaskDetails stale = (await query.LoadAsync<TaskDetails>(taskId, cts.Token))!;
+            stale.UntrackedAttested.Should().BeFalse(
+                "the pre-marker document never wrote this key at all");
+        }
+
+        (await TaskLifecycleProjectionBackfill.RunAsync(store, cts.Token)).Should().Equal(
+            [taskId], "the missing key is a staleness marker, so the window closes at the next daemon start");
+
+        await using (IQuerySession query = store.QuerySession())
+        {
+            TaskDetails details = (await query.LoadAsync<TaskDetails>(taskId, cts.Token))!;
+            details.UntrackedAttested.Should().BeTrue(
+                "the stream always recorded the attestation; the rebuild restores it");
         }
     }
 
