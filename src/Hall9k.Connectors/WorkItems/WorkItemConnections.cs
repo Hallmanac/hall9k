@@ -68,14 +68,14 @@ public static class WorkItemConnections
         }
 
         return jira is null
-            ? new WorkItemImporter(new GitHubWorkItemProvider())
+            ? new WorkItemImporter(new GitHubWorkItemProvider(), new GitHubPullRequestProvider())
             {
                 Unusable = new Dictionary<WorkItemProvider, Func<DomainException>>
                 {
                     [WorkItemProvider.Jira] = refusal,
                 },
             }
-            : new WorkItemImporter(new GitHubWorkItemProvider(), jira);
+            : new WorkItemImporter(new GitHubWorkItemProvider(), new GitHubPullRequestProvider(), jira);
     }
 
     /// <summary>
