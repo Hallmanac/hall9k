@@ -1237,7 +1237,7 @@ public static class AgentPromptBuilder
 
         AppendReviewMechanics(prompt, project, branch, mechanicsOverride);
         AppendFindingContract(prompt, project, mechanicsOverride);
-        AppendVerdictContract(prompt, cycle);
+        AppendVerdictContract(prompt, cycle, mechanicsOverride);
         prompt.AppendLine();
         if (mechanicsOverride is { DiffIsForeignPullRequest: true })
         {
@@ -1337,7 +1337,7 @@ public static class AgentPromptBuilder
         prompt.AppendLine("  the interaction between what changed and what did not.");
         AppendReviewMechanics(prompt, project, branch, mechanicsOverride);
         AppendFindingContract(prompt, project, mechanicsOverride);
-        AppendVerdictContract(prompt, cycle);
+        AppendVerdictContract(prompt, cycle, mechanicsOverride);
         prompt.AppendLine();
         prompt.AppendLine("Hunting hard and finding nothing is a real outcome: if no defect survives your own");
         prompt.AppendLine("verification, say so plainly and return merge-ready. Inventing a finding to look");
@@ -1665,8 +1665,18 @@ public static class AgentPromptBuilder
         prompt.AppendLine("**The bar for needs-fixes:** if every finding you have is graded low, or a grade you");
         prompt.AppendLine("could not confidently make, return merge-ready and attach the finding anyway — do not");
         prompt.AppendLine("manufacture a needs-fixes verdict to make sure it gets read. The platform still records");
-        prompt.AppendLine("it and decides on its own whether it is worth a session; a needs-fixes verdict costs a");
-        prompt.AppendLine("whole fix-and-re-review cycle and is reserved for at least one medium or high finding.");
+        if (mechanicsOverride is { DiffIsForeignPullRequest: true })
+        {
+            prompt.AppendLine("it either way — there is no fix-and-re-review cycle here for a needs-fixes verdict");
+            prompt.AppendLine("to cost, only the same findings report either verdict produces — so grade honestly");
+            prompt.AppendLine("rather than picking whichever word you think matters more.");
+        }
+        else
+        {
+            prompt.AppendLine("it and decides on its own whether it is worth a session; a needs-fixes verdict costs a");
+            prompt.AppendLine("whole fix-and-re-review cycle and is reserved for at least one medium or high finding.");
+        }
+
         prompt.AppendLine();
         prompt.AppendLine("**scope** — decide it against the diff, not against your judgment of whose problem it is:");
         prompt.AppendLine();
@@ -1775,9 +1785,15 @@ public static class AgentPromptBuilder
     /// <summary>
     /// The VERDICT-line contract, identical for every lens: the daemon parses this line, and a
     /// pass that ends without one gets the cycle's single re-prompt (log #59 — the re-prompt
-    /// belongs to the cycle, not to each lens) before the run parks for a human.
+    /// belongs to the cycle, not to each lens) before the run parks for a human. The pr-review
+    /// lens (<paramref name="mechanicsOverride"/>) is the one exception: <c>PrReviewEngine</c>
+    /// still parses this line (<c>PrReviewEngine.HasUsableVerdict</c>), but has no cycle to
+    /// re-prompt within, so a missing verdict fails the run outright rather than costing a
+    /// same-session retry (cycle-1 adversarial finding, this method's own former claim was
+    /// false for that lens).
     /// </summary>
-    private static void AppendVerdictContract(StringBuilder prompt, int cycle)
+    private static void AppendVerdictContract(
+        StringBuilder prompt, int cycle, ReviewMechanicsOverride? mechanicsOverride = null)
     {
         prompt.AppendLine();
         prompt.AppendLine("## Verdict (required — never end without it)");
@@ -1798,9 +1814,17 @@ public static class AgentPromptBuilder
         prompt.AppendLine("named this way is read the same as no verdict at all. You may not end this session without a");
         prompt.AppendLine("VERDICT line. If checks or commands you started are still running, WAIT for them");
         prompt.AppendLine("to finish, then conclude — a promise to deliver the verdict later is not a");
-        prompt.AppendLine("verdict, and nobody returns to keep it. The platform parses this line; a missing");
-        prompt.AppendLine($"verdict stalls the run and hands it to a human. This is review cycle {cycle} for");
-        prompt.AppendLine("this run.");
+        prompt.AppendLine("verdict, and nobody returns to keep it. The platform parses this line;");
+        if (mechanicsOverride is { DiffIsForeignPullRequest: true })
+        {
+            prompt.AppendLine("a missing verdict — or a needs-fixes verdict naming nothing — fails this run");
+            prompt.AppendLine("outright, with no re-prompt: the owner retries the task to dispatch a fresh review.");
+        }
+        else
+        {
+            prompt.AppendLine($"a missing verdict stalls the run and hands it to a human. This is review cycle {cycle} for");
+            prompt.AppendLine("this run.");
+        }
     }
 
     /// <summary>
