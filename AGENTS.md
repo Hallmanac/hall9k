@@ -563,6 +563,10 @@ Repo-resident Claude skills live in `.claude/skills/` and are available in every
   forward) (backlog 44)
 - **pr-summary** — generate a PR title/description from the branch's commits (text only — the
   daemon opens PRs; agents never do)
+- **walk-pr-review-findings** — walk a pr-review task's findings report with the owner, finding
+  by finding, and post only what they direct (a batched GitHub review or a plain comment) on
+  their explicit go, under their own login. Use once a pr-review task (§16 #99) parks NeedsHuman
+  with a findings report
 
 There is deliberately no create-pr skill: PRs are opened by the daemon (`PullRequestOpener`),
 never by agents.
