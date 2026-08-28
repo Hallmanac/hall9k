@@ -419,6 +419,19 @@ public sealed class RunAggregate
         State = RunState.Dispatched;
     }
 
+    /// <summary>See the event's own doc: a reconstructed stream for a run that never actually dispatched.</summary>
+    public void Apply(RunRecordReconstructed @event)
+    {
+        Id = @event.Id;
+        TaskId = @event.TaskId;
+        NodeId = @event.NodeId;
+        OwnerId = @event.OwnerId;
+        PullRequestUrl = @event.PullRequestUrl;
+        PullRequestNumber = @event.PullRequestNumber;
+        DispatchedAt = @event.ReconstructedAt;
+        State = RunState.Dispatched;
+    }
+
     public void Apply(RunProcessStarted @event)
     {
         ProcessId = @event.ProcessId;

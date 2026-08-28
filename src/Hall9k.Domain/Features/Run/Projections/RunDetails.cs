@@ -228,6 +228,20 @@ public sealed class RunDetailsProjection : SingleStreamProjection<RunDetails, Gu
         IsFollowUp = @event.Data.IsFollowUp,
     };
 
+    /// <summary>See the event's own doc: a reconstructed stream for a run that never actually dispatched.</summary>
+    public RunDetails Create(IEvent<RunRecordReconstructed> @event) => new()
+    {
+        Id = @event.Data.Id,
+        TaskId = @event.Data.TaskId,
+        NodeId = @event.Data.NodeId,
+        OwnerId = @event.Data.OwnerId,
+        RunDirectory = RunPaths.GlobalDirectory(@event.Data.Id),
+        State = RunState.Dispatched,
+        DispatchedAt = @event.Data.ReconstructedAt,
+        PullRequestUrl = @event.Data.PullRequestUrl,
+        PullRequestNumber = @event.Data.PullRequestNumber,
+    };
+
     public void Apply(IEvent<RunProcessStarted> @event, RunDetails view)
     {
         view.ProcessId = @event.Data.ProcessId;
