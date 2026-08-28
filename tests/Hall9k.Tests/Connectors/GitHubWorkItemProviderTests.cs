@@ -684,6 +684,26 @@ public sealed class GitHubWorkItemProviderTests
             "issue", "comment", "42", "--repo", "Hallmanac/hall9k", "--body", "The pull request merged.");
     }
 
+    /// <summary>
+    /// A comment is a write that is never retried automatically, unlike an import, so the
+    /// generic "gh stopped answering" text (written for a read) must not tell the reader to
+    /// import again or send them to view the issue as if that were the stuck call.
+    /// </summary>
+    [Fact]
+    public async Task Commenting_that_stops_gets_a_comment_flavoured_refusal_not_the_import_one()
+    {
+        RecordingProcessRunner gh = RecordingProcessRunner.NeverAnswering();
+
+        Func<Task> comment = () => new GitHubWorkItemProvider(gh.Runner).CommentAsync(
+            new ExternalReference(WorkItemProvider.GitHub, "Hallmanac/hall9k#42"),
+            "The pull request merged.", "/repos/hall9k", CancellationToken.None);
+
+        (await comment.Should().ThrowAsync<DomainValidationException>()).Which.Message
+            .Should().Contain("Hallmanac/hall9k#42")
+            .And.Contain("comment")
+            .And.NotContain("import again", "this is the comment path, not an import that can simply be retried");
+    }
+
     [Fact]
     public async Task Commenting_on_an_unparseable_reference_never_reaches_gh()
     {
