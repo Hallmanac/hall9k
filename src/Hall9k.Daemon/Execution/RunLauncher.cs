@@ -95,6 +95,35 @@ public sealed class RunLauncher(
                 return;
             }
 
+            // The worktree checkout below fetches from the PROJECT's own origin — it has no
+            // notion of any other remote — so a pull request adopted from a different
+            // repository (--from-pr accepts any owner/repo#N or URL) would otherwise either
+            // silently check out whatever PR shares that number in the project's own repo, or
+            // fail an unhelpful "couldn't find remote ref" if none does. Refused here, before
+            // any fetch or worktree is touched, rather than guessed at (AGENTS.md, "never
+            // guess at unobserved facts"): best-effort against project.RepositoryUrl, falling
+            // back to the same ambient `gh repo view` observation TaskPublishCommand already
+            // uses for the identical "what repository is this project really" question — and
+            // silent (proceeds) only when neither source can name one, exactly as that
+            // existing guard does.
+            if (isPrReview && prReviewFacts is not null)
+            {
+                Uri? projectRepositoryUrl = project.RepositoryUrl
+                    ?? await new GitHubWorkItemProvider().TryObserveRepositoryHostAsync(project.RepositoryPath, cancellationToken);
+                if (OwnerRepoFrom(projectRepositoryUrl) is { } projectRepository
+                    && !string.Equals(projectRepository, prReviewFacts.Repository, StringComparison.OrdinalIgnoreCase))
+                {
+                    await RecordLaunchFailureAsync(
+                        taskId, runId, leaseGeneration,
+                        $"{task.ExternalReference} lives in {prReviewFacts.Repository}, not "
+                        + $"{project.Name}'s own repository ({projectRepository}). A pr-review task's "
+                        + "worktree is always cut from the project it was adopted against, so reviewing "
+                        + $"a pull request from another repository needs a project registered against "
+                        + $"{prReviewFacts.Repository} instead.", cancellationToken);
+                    return;
+                }
+            }
+
             // A reopened task carries the branch of its existing PR: the follow-up run
             // resumes that branch instead of cutting a fresh one off the base (log #20).
             (string Branch, string PullRequestUrl)? followUp =
@@ -391,6 +420,19 @@ public sealed class RunLauncher(
             ExternalReference.Parse(task.ExternalReference).Reference, project.RepositoryPath, cancellationToken);
         return facts.State.Equals("OPEN", StringComparison.OrdinalIgnoreCase) ? facts : null;
     }
+
+    /// <summary>
+    /// Best-effort <c>owner/repo</c> out of a project's registered or observed repository URL,
+    /// for the pr-review foreign-repository guard above. Unlike
+    /// <c>GitHubWorkItemProvider</c>'s own <c>RepositoryFrom</c>, this never throws: a URL that
+    /// does not parse as a github.com owner/repo means nothing to compare against, not a reason
+    /// to fail the launch over a check that is a courtesy rather than a hard requirement.
+    /// </summary>
+    private static string? OwnerRepoFrom(Uri? repositoryUrl) =>
+        repositoryUrl is not null
+        && repositoryUrl.AbsolutePath.Trim('/').Split('/') is [{ Length: > 0 } owner, { Length: > 0 } repository, ..]
+            ? $"{owner}/{repository.Replace(".git", string.Empty, StringComparison.OrdinalIgnoreCase)}"
+            : null;
 
     /// <summary>
     /// A retried task resumes its failed run's branch through the same checkout path

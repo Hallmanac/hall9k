@@ -77,6 +77,16 @@ public sealed class RunListItemProjection : SingleStreamProjection<RunListItem, 
 
     public void Apply(IEvent<RunBudgetExhausted> @event, RunListItem view) => view.State = RunState.BudgetParked;
 
+    // Mirrors RunDetails/RunAggregate: a pr-review run's own conformance lens (PrReviewEngine)
+    // is dispatched the same way ReviewDispatched moves a task's own review loop to
+    // UnderReview, and PrReviewDelivered is that task type's h9k review resolve --merge-ready
+    // equivalent of ReviewParkResolved. Without these this projection stays stuck at Verifying
+    // for the whole conformance-lens window — a state meaning "the project's gates are
+    // running", which a pr-review run's gates never do.
+    public void Apply(IEvent<PrReviewConformanceDispatched> @event, RunListItem view) => view.State = RunState.UnderReview;
+
+    public void Apply(IEvent<PrReviewDelivered> @event, RunListItem view) => view.State = RunState.UnderReview;
+
     public void Apply(IEvent<PullRequestOpened> @event, RunListItem view)
     {
         view.PullRequestUrl = @event.Data.PullRequestUrl;
