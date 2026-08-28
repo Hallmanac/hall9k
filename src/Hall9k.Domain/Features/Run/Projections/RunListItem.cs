@@ -47,6 +47,17 @@ public sealed class RunListItemProjection : SingleStreamProjection<RunListItem, 
             : RunPaths.GlobalDirectory(@event.Data.Id),
     };
 
+    /// <summary>See RunDetailsProjection's own creator: a reconstructed stream for a run that never actually dispatched.</summary>
+    public RunListItem Create(IEvent<RunRecordReconstructed> @event) => new()
+    {
+        Id = @event.Data.Id,
+        TaskId = @event.Data.TaskId,
+        NodeId = @event.Data.NodeId,
+        State = RunState.Dispatched,
+        DispatchedAt = @event.Data.ReconstructedAt,
+        PullRequestUrl = @event.Data.PullRequestUrl,
+    };
+
     public void Apply(IEvent<RunProcessStarted> @event, RunListItem view) => view.State = RunState.Running;
 
     public void Apply(IEvent<RunResumed> @event, RunListItem view) => view.State = RunState.Running;
