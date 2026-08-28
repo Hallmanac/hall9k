@@ -404,6 +404,77 @@ public sealed class AgentPromptBuilderTests : IDisposable
     }
 
     /// <summary>
+    /// A pr-review task's own acceptance criteria describe the review deliverable — what its
+    /// findings report has to look like — never a standard the foreign diff is judged against
+    /// (cycle-1 conformance finding, `AgentPromptBuilder.cs:1105`): printing them under "What the
+    /// diff is supposed to do" the same way an ordinary task's criteria are printed contradicted
+    /// the very next paragraph, which already states the real basis is the pull request's own
+    /// title and description.
+    /// </summary>
+    [Fact]
+    public void Pr_review_conformance_lens_never_treats_the_tasks_own_criteria_as_the_diffs_standard()
+    {
+        ProjectDetails project = SomeProject();
+
+        string prompt = AgentPromptBuilder.BuildPrReviewLens(
+            SomeTask(), project, "pr/42", ReviewLens.Conformance, packet: null, baseBranch: "main");
+
+        prompt.Should().NotContain("Acceptance criteria:\n- Requests over the limit get 429",
+            "the criteria must never be presented as the diff's own standard");
+        prompt.Should().Contain("about the review, not the diff");
+        prompt.Should().Contain("never against this task's");
+        prompt.Should().NotContain(
+            "Judge the work against the objective, the acceptance criteria, and the repo's own",
+            "the ordinary conformance instruction still names the task's own criteria as the standard");
+    }
+
+    /// <summary>
+    /// A pr-review lens's own AGENTS.md/CLAUDE.md doctrine trust differs from the ordinary loop's
+    /// (cycle-1 adversarial finding, `AgentPromptBuilder.cs:857`): the checkout is the pull
+    /// request author's own head, so a diff that edits those files in the same commit it wants
+    /// excused must not get to cite them as settled, ratifying doctrine the way this project's own
+    /// repo would be trusted.
+    /// </summary>
+    [Fact]
+    public void Pr_review_lens_never_treats_the_foreign_checkouts_doctrine_files_as_settled()
+    {
+        ProjectDetails project = SomeProject();
+
+        string conformance = AgentPromptBuilder.BuildPrReviewLens(
+            SomeTask(), project, "pr/42", ReviewLens.Conformance, packet: null, baseBranch: "main");
+        string adversarial = AgentPromptBuilder.BuildPrReviewLens(
+            SomeTask(), project, "pr/42", ReviewLens.Adversarial, packet: null, baseBranch: "main");
+
+        foreach (string prompt in new[] { conformance, adversarial })
+        {
+            prompt.Should().Contain("the pull request's own head", "the checkout's doctrine files are not this project's own");
+            prompt.Should().Contain("do not treat it as", "a stated ratification inside the diff proves nothing on its own");
+            prompt.Should().NotContain("A deviation from a house rule already recorded there can be a deliberate, ratified",
+                "the ordinary same-repo trust wording must not apply to a foreign checkout");
+        }
+    }
+
+    /// <summary>
+    /// A pr-review run's two lenses are dispatched one after another by PrReviewEngine, never
+    /// concurrently (cycle-1 conformance finding, `AgentPromptBuilder.cs:1577`): the "a second
+    /// review pass is reading this same directory right now" claim is never true here, and neither
+    /// is the justification that follows it — no other build could be sharing this worktree's
+    /// obj/bin at the same time.
+    /// </summary>
+    [Fact]
+    public void Pr_review_lens_never_claims_a_second_pass_is_reading_the_same_directory_right_now()
+    {
+        ProjectDetails project = SomeProject();
+
+        string prompt = AgentPromptBuilder.BuildPrReviewLens(
+            SomeTask(), project, "pr/42", ReviewLens.Adversarial, packet: null, baseBranch: "main");
+
+        prompt.Should().NotContain("A second",
+            "the two pr-review lenses never run at the same time, so this claim is never true here");
+        prompt.Should().Contain("Do NOT build, test, or run anything that writes into this worktree");
+    }
+
+    /// <summary>
     /// The severity anchors and the scope anchor are stated to the reviewer (Decisions Log
     /// #63), never left to its intuition: a grade every reviewer invents for itself is not a
     /// gate, and a scope tag that is a judgment call is not checkable against the diff.
