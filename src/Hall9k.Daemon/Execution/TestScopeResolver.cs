@@ -270,10 +270,15 @@ public static partial class TestScopeResolver
     /// subject hide behind its nested type's false-positive match and scope the gate down when the
     /// class's contract calls for <see cref="TestGateScope.Full"/> (independent pre-PR review,
     /// cycle 1, adversarial lens) — and the same over-capture inflated a test file's declared
-    /// "test classes" with nested helper types no `--filter` term ever selects.
+    /// "test classes" with nested helper types no `--filter` term ever selects. The accessibility
+    /// group requires trailing whitespace when present (<c>(?:public|internal|...)\s+</c>, not a
+    /// free-floating <c>\s*</c> after it) so an indented nested type that omits an accessibility
+    /// keyword — legal, idiomatic C#, defaulting to private — cannot have its own leading
+    /// indentation absorbed in place of a captured modifier and slip past the column-0 anchor
+    /// (independent pre-PR review, cycle 1, conformance lens).
     /// </summary>
     [GeneratedRegex(
-        """^(?:\[[^\]]*\]\s*)*(?:public|internal|private|protected)?\s*(?:sealed\s+|abstract\s+|static\s+|partial\s+|readonly\s+|file\s+)*(?:record\s+(?:class|struct)|class|record|interface|struct|enum)\s+(?<name>\w+)""",
+        """^(?:\[[^\]]*\]\s*)*(?:(?:public|internal|private|protected)\s+)?(?:sealed\s+|abstract\s+|static\s+|partial\s+|readonly\s+|file\s+)*(?:record\s+(?:class|struct)|class|record|interface|struct|enum)\s+(?<name>\w+)""",
         RegexOptions.Multiline)]
     private static partial Regex TypeDeclarationPattern();
 
