@@ -957,6 +957,115 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
     }
 
     /// <summary>
+    /// The severity gate the standing sweep adds (backlog: out-of-scope review findings
+    /// consolidate): a Medium out-of-scope finding still mints its own dedicated draft exactly
+    /// as before, while a Low one folds into the project's one standing sweep draft instead of
+    /// costing a build-gate-review pipeline of its own — so a serious pre-existing defect can
+    /// never be buried in a polish pile, and the board shows one extra draft this cycle, not two.
+    /// </summary>
+    [Fact]
+    public async Task An_out_of_scope_low_folds_into_the_projects_standing_sweep_while_a_medium_still_gets_its_own_draft()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        using DocumentStore store = NewStore();
+        (Guid taskId, Guid runId, _) = await SeedVerifiedRunAsync(store, cts.Token);
+
+        ScriptedExecutor executor = new(
+            "Criteria met.\n\nVERDICT: merge-ready",
+            "FINDING: severity=medium; scope=out-of-scope; at=Legacy.cs:12\n"
+            + "Defect: the retry duplicates the effect.\n\n"
+            + "FINDING: severity=low; scope=out-of-scope; at=Cosmetic.cs:4\n"
+            + "Defect: a stale comment misleads the next reader.\n\nVERDICT: needs-fixes");
+        bool mergeReady = await NewEngine(store, executor).ReviewAsync(runId, taskId, cts.Token);
+
+        mergeReady.Should().BeTrue("nothing in either finding is this branch's own work");
+        executor.Spawns.Should().HaveCount(2, "there was nothing in this branch to fix, so no fix session ran");
+
+        await using IQuerySession query = store.QuerySession();
+        List<object> events = [.. (await query.Events.FetchStreamAsync(runId, token: cts.Token)).Select(e => e.Data)];
+        List<ReviewFindingRouted> routedEvents = [.. events.OfType<ReviewFindingRouted>()];
+        routedEvents.Should().HaveCount(2);
+
+        ReviewFindingRouted mediumRouted =
+            routedEvents.Should().ContainSingle(entry => entry.Severity == ReviewSeverity.Medium).Subject;
+        ReviewFindingRouted lowRouted =
+            routedEvents.Should().ContainSingle(entry => entry.Severity == ReviewSeverity.Low).Subject;
+        mediumRouted.DraftTaskId.Should().NotBeNull();
+        lowRouted.DraftTaskId.Should().NotBeNull();
+        (mediumRouted.DraftTaskId == lowRouted.DraftTaskId).Should().BeFalse("the medium still mints its own draft");
+
+        TaskDetails mediumDraft = (await query.LoadAsync<TaskDetails>(mediumRouted.DraftTaskId!.Value, cts.Token))!;
+        mediumDraft.Type.Should().Be(TaskType.Bugfix, "a medium out-of-scope finding routes exactly as it did before");
+        mediumDraft.Objective.Should().Contain("Legacy.cs:12");
+
+        TaskDetails sweep = (await query.LoadAsync<TaskDetails>(lowRouted.DraftTaskId!.Value, cts.Token))!;
+        sweep.State.Should().Be(TaskState.Draft, "the sweep stays a draft — the platform never publishes it");
+        sweep.Type.Should().Be(TaskType.Chore);
+        sweep.Objective.Should().Be(SweepDraftTask.Objective);
+        sweep.AgentContext.Should().Contain("Cosmetic.cs:4")
+            .And.Contain("Severity: Low")
+            .And.Contain("a stale comment misleads")
+            .And.Contain(RunPaths.ReviewFindingsFile(RunPaths.GlobalDirectory(runId), 1),
+                "the evidence path points at the run's own findings file, so grooming needs no archaeology")
+            .And.Contain("Assign it alone", "the wide-footprint, run-alone warning is in the generated body");
+
+        List<TaskListItem> sweepRows = [.. await query.Query<TaskListItem>()
+            .Where(item => item.ProjectId == sweep.ProjectId && item.Objective == SweepDraftTask.Objective)
+            .ToListAsync(cts.Token)];
+        sweepRows.Should().ContainSingle("h9k task list shows one sweep draft, not a row per auto-filed finding");
+
+        string merged = File.ReadAllText(RunPaths.ReviewFindingsFile(RunPaths.GlobalDirectory(runId), 1));
+        merged.Should().Contain($"folded into the standing sweep draft {lowRouted.DraftTaskId}");
+    }
+
+    /// <summary>
+    /// The idempotency the sweep exists to provide: a second run's review, on a different task
+    /// against the same project, reports the exact same pre-existing Low defect a first run's
+    /// review already folded into the sweep. It updates that item's evidence list rather than
+    /// minting a second sweep or a second item — "eight one-line fixes cost one pipeline" only
+    /// holds if a defect two different branches both notice does not itself get double-booked.
+    /// </summary>
+    [Fact]
+    public async Task A_low_finding_reported_by_a_second_run_updates_the_sweep_items_evidence_instead_of_duplicating_it()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        using DocumentStore store = NewStore();
+        (Guid firstTaskId, Guid firstRunId, _) = await SeedVerifiedRunAsync(store, cts.Token);
+
+        await using IQuerySession firstQuery = store.QuerySession();
+        TaskDetails firstTask = (await firstQuery.LoadAsync<TaskDetails>(firstTaskId, cts.Token))!;
+
+        const string sameFinding = "FINDING: severity=low; scope=out-of-scope; at=Cosmetic.cs:4\n"
+            + "Defect: a stale comment misleads the next reader.\n\nVERDICT: needs-fixes";
+        ScriptedExecutor firstExecutor = new("Criteria met.\n\nVERDICT: merge-ready", sameFinding);
+        (await NewEngine(store, firstExecutor).ReviewAsync(firstRunId, firstTaskId, cts.Token))
+            .Should().BeTrue();
+
+        NodeContext node = new();
+        await node.InitializeAsync(store, cts.Token);
+        string secondWorktree = Path.Combine(_home, $"wt-{DomainId.New():N}");
+        Directory.CreateDirectory(secondWorktree);
+        (Guid secondTaskId, Guid secondRunId, _) = await SeedVerifiedRunInProjectAsync(
+            store, firstTask.ProjectId, node, secondWorktree, cts.Token);
+
+        ScriptedExecutor secondExecutor = new("Criteria met.\n\nVERDICT: merge-ready", sameFinding);
+        (await NewEngine(store, secondExecutor).ReviewAsync(secondRunId, secondTaskId, cts.Token))
+            .Should().BeTrue();
+
+        await using IQuerySession query = store.QuerySession();
+        List<TaskListItem> sweepRows = [.. await query.Query<TaskListItem>()
+            .Where(item => item.ProjectId == firstTask.ProjectId && item.Objective == SweepDraftTask.Objective)
+            .ToListAsync(cts.Token)];
+        sweepRows.Should().ContainSingle("the second run's re-raise updates the open sweep rather than starting a second one");
+
+        TaskDetails sweep = (await query.LoadAsync<TaskDetails>(sweepRows[0].Id, cts.Token))!;
+        Regex.Matches(sweep.AgentContext!, "### Cosmetic.cs:4").Count.Should().Be(
+            1, "the same file and defect updates one item rather than adding a second");
+        sweep.AgentContext.Should().Contain(firstRunId.ToString())
+            .And.Contain(secondRunId.ToString(), "both runs' evidence lands on the one item");
+    }
+
+    /// <summary>
     /// The empty terminal case (Decisions Log #63): a cycle whose findings all route away leaves
     /// nothing anywhere to fix, so no fix session runs and the run settles. Re-reviewing would
     /// read the identical tip and return the identical findings, which is a loop with no exit
@@ -3357,6 +3466,40 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
         session.Events.StartStream<RunAggregate>(runId,
             new RunDispatched(runId, taskId, node.NodeId, node.OwnerId, 1, mainSessionId,
                 worktreePath, "task/review-me", ExecutorMode.Subscription, Now),
+            new AgentSessionCompleted(runId, Now),
+            new VerificationPassed(runId, Now));
+        await session.SaveChangesAsync(cancellationToken);
+
+        return (taskId, runId, mainSessionId);
+    }
+
+    /// <summary>
+    /// Like <see cref="SeedVerifiedRunAsync(DocumentStore, CancellationToken)"/>, but reuses an
+    /// already-registered project and node instead of minting a new one of each — for a test
+    /// that needs two runs sharing one project, the way two different pull requests against the
+    /// same repository would.
+    /// </summary>
+    private async Task<(Guid TaskId, Guid RunId, Guid MainSessionId)> SeedVerifiedRunInProjectAsync(
+        DocumentStore store, Guid projectId, NodeContext node, string worktreePath, CancellationToken cancellationToken)
+    {
+        Guid taskId = DomainId.New();
+        Guid runId = DomainId.New();
+        Guid mainSessionId = DomainId.New();
+
+        await using IDocumentSession session = store.LightweightSession();
+
+        TaskAggregate task = new();
+        (task, object[] lifecycle) = TaskSeed.Start(
+            TaskDecider.Add(taskId, projectId, "Review me before another PR", ["reviewed"],
+                TaskType.Chore, null, null, null, Now, node.OwnerId),
+            node.OwnerId, Now);
+        var claimed = TaskDecider.Claim(task, node.NodeId, node.OwnerId, runId, Now);
+        session.Events.StartStream<TaskAggregate>(taskId, [.. lifecycle, claimed]);
+        session.Store(new TaskLease { Id = taskId, NodeId = node.NodeId, LeaseGeneration = 1, HeartbeatAt = Now });
+
+        session.Events.StartStream<RunAggregate>(runId,
+            new RunDispatched(runId, taskId, node.NodeId, node.OwnerId, 1, mainSessionId,
+                worktreePath, "task/review-me-too", ExecutorMode.Subscription, Now),
             new AgentSessionCompleted(runId, Now),
             new VerificationPassed(runId, Now));
         await session.SaveChangesAsync(cancellationToken);

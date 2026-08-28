@@ -87,7 +87,7 @@ public static class ReviewDraftBugTask
     /// pair for the serializer to replace with U+FFFD. One truncation rule, in one place.
     /// </para>
     /// </summary>
-    private static string Excerpt(ReviewFinding finding)
+    internal static string Excerpt(ReviewFinding finding)
     {
         string? line = finding.Text
             .Split('\n')
@@ -145,6 +145,7 @@ public static class ReviewDraftBugTask
 
     private static string LensName(ReviewLens lens) => lens.Value.IsBlank() ? "not recorded" : lens.Value;
 
-    private static string SeverityName(ReviewSeverity severity) =>
+    /// <summary>A reviewer's grade, in words — shared with <see cref="SweepDraftTask"/>, which renders the same severities.</summary>
+    internal static string SeverityName(ReviewSeverity severity) =>
         severity == ReviewSeverity.Unknown ? "not graded" : severity.Value;
 }

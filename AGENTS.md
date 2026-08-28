@@ -425,6 +425,14 @@ The checkpoints, in the order the window sees them:
    fix session dodged a flaky-test race by restructuring the test rather than fixing the race the
    review kept finding), visible on `h9k task show` and the daemon log line when it does apply;
    de-escalation is automatic the moment a later round moves on to a genuinely different finding.
+   An out-of-scope finding this pull request is not fixing still has to land somewhere (#63): a
+   Medium or higher mints a draft bug task of its own, unchanged, while a Low instead folds into
+   the project's one standing sweep draft — the board shows it as `Sweep: consolidated
+   out-of-scope review findings` (Decisions Log #99) — so eight one-line pre-existing defects cost
+   one build-gate-review-PR pipeline instead of eight. Its footprint is wide by construction (it
+   touches as many unrelated files as it has items), so it is groomed and published by a human and
+   assigned alone, with no parallel siblings queued beside it, exactly as *the judgment the window
+   owns* above prescribes for any wide-footprint task.
    Only cycle 1 pays full two-lens discovery (Decisions Log #92, origin: 576M input tokens in one
    day re-reading 12k-line diffs with two lenses to judge 40-line fixes): a middle cycle instead
    dispatches one **Verify** reviewer, handed the prior cycle's own findings, each finding's fix
