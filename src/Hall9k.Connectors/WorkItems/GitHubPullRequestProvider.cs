@@ -287,7 +287,8 @@ public sealed class GitHubPullRequestProvider(ProcessRunner? runner = null, Time
 
     private static DomainValidationException NotAPullRequestDocument(string json, string reported) => new(
         "gh exited successfully but did not answer with a pull request in JSON, so there is nothing to "
-        + $"adopt: {reported}. Check that the 'gh' on PATH is the GitHub CLI itself.");
+        + $"adopt: {reported}. gh printed: {RelayedText.OneLine(RelayedText.Truncate(json, 200))}. Check "
+        + "that the 'gh' on PATH is the GitHub CLI itself.");
 
     private static DomainValidationException ForeignHost(string url, string host) => new(
         $"{RelayedText.OneLine(url)} is on {RelayedText.OneLine(host)}, and Hall9k reviews pull requests "
