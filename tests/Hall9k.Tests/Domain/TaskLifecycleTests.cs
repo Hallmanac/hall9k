@@ -108,6 +108,38 @@ public sealed class TaskLifecycleTests
     }
 
     [Fact]
+    public void Revising_an_ordinary_task_to_pr_review_is_refused_since_it_carries_no_pull_request()
+    {
+        TaskAggregate task = Draft();
+
+        Action act = () => TaskDecider.Revise(
+            task, Optional<string>.None, Optional<IReadOnlyList<string>>.None, Optional<string>.None,
+            Optional<IReadOnlyList<Guid>>.None, Optional<TaskType>.Of(TaskType.PrReview), Optional<AgentModel>.None,
+            Now, Owner);
+
+        act.Should().Throw<DomainValidationException>()
+            .WithMessage("*h9k task add --from-pr*", "the same door TaskAddCommand's own --from-pr guard names");
+    }
+
+    [Fact]
+    public void Revising_a_pull_request_adopted_task_to_pr_review_is_allowed()
+    {
+        TaskAggregate task = new();
+        task.Apply(TaskDecider.Add(
+            DomainId.New(), DomainId.New(), "Review the widgets PR", acceptanceCriteria: [], TaskType.PrReview,
+            agentContext: null, constraints: null,
+            externalReference: new ExternalReference(WorkItemProvider.GitHubPullRequest, "acme/widgets#7"),
+            addedAt: Now, addedByOwnerId: Owner));
+
+        task.Apply(TaskDecider.Revise(
+            task, Optional<string>.None, Optional<IReadOnlyList<string>>.None, Optional<string>.None,
+            Optional<IReadOnlyList<Guid>>.None, Optional<TaskType>.Of(TaskType.PrReview), Optional<AgentModel>.None,
+            Now, Owner));
+
+        task.Type.Should().Be(TaskType.PrReview);
+    }
+
+    [Fact]
     public void The_edit_after_the_fact_path_is_unassign_then_draft_then_revise_then_publish_then_assign()
     {
         TaskAggregate task = Queued();
