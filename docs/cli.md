@@ -74,6 +74,13 @@ description becomes agent context, and the state read at import is recorded as a
 that moment and never re-checked. Acceptance criteria are never read out of a description; supply
 them with `--criteria` or at the prompt.
 
+`--file task.md` reads a whole task from a markdown file: a minimal `---` frontmatter block
+(project, type, objective, criteria, an optional model, optional blocked-by) followed by a body
+that becomes the agent context. It is deliberately not YAML, since a handful of known keys does
+not warrant the dependency. The numbered [`backlog/`](../backlog) files are written in that
+format; the `IDEA-` notes beside them are earlier-stage prose with no frontmatter, so they are
+read and authored from rather than fed to `--file`.
+
 ### Pull-request review
 
 `--from-pr` creates a read-only `pr-review` task: the node pulls the pull request into a detached
@@ -84,13 +91,6 @@ act on. Nothing is ever posted to the pull request without an explicit human go:
 `walk-pr-review-findings` skill is what walks the report and posts on direction, always under the
 owner's own login. The task completes without any merge ever being observed — there is no pull
 request of this task's own to merge.
-
-`--file task.md` reads a whole task from a markdown file: a minimal `---` frontmatter block
-(project, type, objective, criteria, an optional model, optional blocked-by) followed by a body
-that becomes the agent context. It is deliberately not YAML, since a handful of known keys does
-not warrant the dependency. The numbered [`backlog/`](../backlog) files are written in that
-format; the `IDEA-` notes beside them are earlier-stage prose with no frontmatter, so they are
-read and authored from rather than fed to `--file`.
 
 ### Recovery
 
