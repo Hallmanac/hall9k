@@ -118,6 +118,29 @@ public sealed class ReviewPacketAssemblerTests : IDisposable
     }
 
     /// <summary>
+    /// Touched files are ordered by how much of the diff each one carries, largest first, not by
+    /// git's byte-sorted path order — otherwise the packet's byte budget in
+    /// <see cref="ReadTouchedFilesAsync"/> goes to whichever path sorts alphabetically early,
+    /// which is rarely the file the diff is actually about (conformance review, cycle 2).
+    /// "a-tiny.cs" sorts before "z-large.cs" in path order, but "z-large.cs" carries the much
+    /// bigger diff, so it must come first.
+    /// </summary>
+    [Fact]
+    public async Task Touched_files_are_ordered_by_diff_footprint_not_path()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromSeconds(30));
+        Commit("a-tiny.cs", "class Tiny { }\n", "add a tiny file");
+        string largeContent = string.Join('\n', Enumerable.Range(0, 200).Select(i => $"line {i}")) + "\n";
+        Commit("z-large.cs", largeContent, "add a file with a much bigger diff");
+
+        ReviewPacket? packet = await ReviewPacketAssembler.AssembleAsync(
+            _repositoryPath, "main", sinceSha: null, cts.Token);
+
+        packet.Should().NotBeNull();
+        packet!.TouchedFiles.Should().ContainInOrder("z-large.cs", "a-tiny.cs");
+    }
+
+    /// <summary>
     /// The packet's size ceiling bounds the diff itself, not only the touched files' text
     /// (conformance and adversarial review, cycle 1): a diff that alone exceeds
     /// <see cref="ReviewPacketAssembler.MaxPacketBytes"/> ships no packet at all rather than
