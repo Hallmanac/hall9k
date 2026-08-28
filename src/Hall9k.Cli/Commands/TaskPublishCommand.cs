@@ -184,13 +184,18 @@ public sealed class TaskPublishCommand : Hall9kAsyncCommand<TaskPublishCommand.S
         }
 
         GitHubWorkItemProvider provider = new();
+        string oneLineObjective = ExternalText.OneLine(task.Objective);
+        string title = RelayedText.Truncate(oneLineObjective, GitHubIssueTitleMaxLength);
+        // A cut title loses everything past character 255 unless the body carries the rest: the
+        // title is the only place the objective would otherwise be recorded on GitHub at all.
+        string? truncatedObjective = title.Length < oneLineObjective.Length ? task.Objective : null;
         ImportedWorkItem issue;
         try
         {
             issue = await provider.CreateAsync(
                 new GitHubIssueCreateRequest(
-                    RelayedText.Truncate(ExternalText.OneLine(task.Objective), GitHubIssueTitleMaxLength),
-                    GitHubIssueBody.Compose(task.AgentContext, task.AcceptanceCriteria),
+                    title,
+                    GitHubIssueBody.Compose(task.AgentContext, task.AcceptanceCriteria, truncatedObjective),
                     GitHubIssueBody.Labels(project.BacklogRoutingGuidance),
                     project.RepositoryPath),
                 cancellationToken);

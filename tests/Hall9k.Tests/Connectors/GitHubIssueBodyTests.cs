@@ -43,6 +43,25 @@ public sealed class GitHubIssueBodyTests
     }
 
     [Fact]
+    public void Compose_with_a_truncated_objective_puts_the_full_text_in_a_leading_section()
+    {
+        string body = GitHubIssueBody.Compose(
+            "Read the migration doc first.", ["One criterion"], "The full objective, unabridged.");
+
+        body.Should().Contain("## Objective")
+            .And.Contain("The full objective, unabridged.")
+            .And.MatchRegex("(?s)^## Objective.*## Acceptance criteria");
+    }
+
+    [Fact]
+    public void Compose_with_no_truncated_objective_carries_no_objective_section()
+    {
+        string body = GitHubIssueBody.Compose("Read the migration doc first.", ["One criterion"], truncatedObjective: null);
+
+        body.Should().NotContain("## Objective");
+    }
+
+    [Fact]
     public void Labels_reads_a_comma_separated_list_and_trims_each_entry()
     {
         GitHubIssueBody.Labels("bug, needs-triage ,  platform").Should().Equal("bug", "needs-triage", "platform");
