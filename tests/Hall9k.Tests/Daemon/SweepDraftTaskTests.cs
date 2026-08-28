@@ -158,6 +158,55 @@ public sealed class SweepDraftTaskTests
         updated.Should().Contain("### Cosmetic.cs:4").And.Contain("Severity: Low");
     }
 
+    /// <summary>
+    /// An excerpt whose own prose starts and ends with a backtick (a finding quoting a symbol at
+    /// each end, e.g. <c>ReviewDraftBugTask.Excerpt</c> after its leading "- " strip) merges the
+    /// fence's backticks with the excerpt's own on a naive render — the round-trip corruption the
+    /// cycle-2 adversarial review found. The fence and excerpt are now always space-separated, so
+    /// the excerpt's own backticks survive an append unmutated.
+    /// </summary>
+    [Fact]
+    public void An_excerpt_that_starts_and_ends_with_a_backtick_round_trips_unmutated()
+    {
+        SweepFindingRoute route = new(
+            new ReviewFinding(
+                ReviewSeverity.Low, ReviewFindingScope.OutOfScope, "Foo.cs:12",
+                "FINDING: severity=low; scope=out-of-scope; at=Foo.cs:12\n`Foo.cs:12` is stale, see `Bar`"),
+            DomainId.New(), 1, "/runs/x/review-1-findings.md");
+
+        string body = SweepDraftTask.ComposeNew(DomainId.New(), DomainId.New(), [route], Now, DomainId.New()).AgentContext!;
+
+        body.Should().Contain("`Foo.cs:12` is stale, see `Bar`");
+
+        string updated = SweepDraftTask.Append(body, [Route()]);
+        updated.Should().Contain(
+            "`Foo.cs:12` is stale, see `Bar`", "the excerpt's own backticks survive a re-render unmutated");
+    }
+
+    /// <summary>
+    /// An excerpt ending in a backtick but not starting with one (the asymmetric case the
+    /// adversarial review traced) previously grew a wider fence on every append instead of ever
+    /// being recognized as already fenced.
+    /// </summary>
+    [Fact]
+    public void An_excerpt_that_only_ends_with_a_backtick_does_not_accumulate_fences_on_repeated_appends()
+    {
+        SweepFindingRoute route = new(
+            new ReviewFinding(
+                ReviewSeverity.Low, ReviewFindingScope.OutOfScope, "Foo.cs:12",
+                "FINDING: severity=low; scope=out-of-scope; at=Foo.cs:12\nDefect: the comment above `Foo`"),
+            DomainId.New(), 1, "/runs/x/review-1-findings.md");
+
+        string body = SweepDraftTask.ComposeNew(DomainId.New(), DomainId.New(), [route], Now, DomainId.New()).AgentContext!;
+        string firstAppend = SweepDraftTask.Append(
+            body, [Route(runId: DomainId.New(), cycle: 2, location: "Foo.cs:12")]);
+        string secondAppend = SweepDraftTask.Append(
+            firstAppend, [Route(runId: DomainId.New(), cycle: 3, location: "Foo.cs:12")]);
+
+        secondAppend.Should().Contain("- Finding: ``` Defect: the comment above `Foo` ```")
+            .And.NotContain("````", "the fence must never widen across repeated re-renders");
+    }
+
     private static int CountOccurrences(string text, string value)
     {
         int count = 0;
