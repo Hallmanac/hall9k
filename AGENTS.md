@@ -35,7 +35,7 @@ h9k project add --name <n> --repo-url <url>   # register a project and create it
 h9k project init <name>      # create, repair or refresh a project's home; idempotent
 h9k project list             # every project with its tasks counted by attention bucket
 h9k project show <name>      # one project: home, registration, settings, rollup, newest tasks
-h9k task list --project <name> --state <state>   # browse live tasks, newest first (--all, --limit, --include-archived)
+h9k task list --project <name> --state <state>   # browse live and done tasks, newest first (--all, --limit, --include-archived)
 h9k status                   # the attention pane: state, phase, and attention on every row
 h9k idea add "<text>"        # capture an idea; discovery starts, a project is optional
 h9k connection list          # every external account this install can reach, and where its credential lives
