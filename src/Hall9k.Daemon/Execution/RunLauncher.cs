@@ -439,17 +439,26 @@ public sealed class RunLauncher(
                 .ToListAsync(cancellationToken);
         }
 
-        foreach (RunDetails previous in previousRuns.Where(r => r.WorktreePath.IsNotBlank() && Directory.Exists(r.WorktreePath)))
+        foreach (RunDetails previous in previousRuns)
         {
-            try
+            if (previous.WorktreePath.IsNotBlank() && Directory.Exists(previous.WorktreePath))
             {
-                await worktrees.RemoveAsync(project.RepositoryPath, previous.WorktreePath, cancellationToken);
-            }
-            catch (Exception exception) when (exception is not OperationCanceledException)
-            {
-                logger.LogWarning(exception, "Worktree removal failed for {Path} (safe to prune later)", previous.WorktreePath);
+                try
+                {
+                    await worktrees.RemoveAsync(project.RepositoryPath, previous.WorktreePath, cancellationToken);
+                }
+                catch (Exception exception) when (exception is not OperationCanceledException)
+                {
+                    logger.LogWarning(exception, "Worktree removal failed for {Path} (safe to prune later)", previous.WorktreePath);
+                }
             }
 
+            // Checked for every previous run, not only one whose worktree directory still exists
+            // (cycle-1 adversarial finding): the ref's lifetime is independent of the directory's —
+            // FinalizeAsync already removes the worktree and only then attempts this same deletion
+            // best-effort, so a run whose directory is already gone is exactly the run most likely
+            // to still be carrying a ref that earlier attempt failed to clear. Deleting an
+            // already-gone ref is a harmless no-op error, caught the same as any other failure here.
             if (PullRequestNumberFromPrReviewBranch(previous.Branch) is { } pullRequestNumber)
             {
                 try
