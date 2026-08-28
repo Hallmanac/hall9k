@@ -88,6 +88,30 @@ public sealed class PrReviewEngineUnitTests : IDisposable
             "the session's own result already landed on disk even though the process that wrote it is gone");
     }
 
+    /// <summary>
+    /// A dead process whose stream file carries content but no terminal result line — the shape
+    /// <c>claude -p --output-format stream-json</c> leaves when it is killed moments after
+    /// spawning, having written only its <c>{"type":"system","subtype":"init",…}</c> line — is
+    /// NOT live (cycle-1 adversarial finding, <c>PrReviewEngine.cs:232</c>): a non-empty file was
+    /// once enough to count as resumable, which sent this case to <c>AwaitConformanceAsync</c>
+    /// to wait out a process that no longer exists and fail the run, rather than back to
+    /// <c>DriveAsync</c>'s redispatch branch.
+    /// </summary>
+    [Fact]
+    public void A_dead_sessions_own_stream_file_with_only_an_init_line_is_not_live()
+    {
+        FakeProcessManager processes = new();
+        Guid sessionId = DomainId.New();
+        RunAggregate run = DispatchedConformance(sessionId, 4242, Now);
+
+        string streamFile = RunPaths.SessionStreamFile(_runDirectory, PrReviewEngine.ConformanceArtifactName(sessionId));
+        Directory.CreateDirectory(_runDirectory);
+        File.WriteAllText(streamFile, "{\"type\":\"system\",\"subtype\":\"init\"}\n");
+
+        NewEngine(processes).SessionStillLive(run, _runDirectory).Should().BeFalse(
+            "the process died before ever writing a result — the file has content but nothing to resume from");
+    }
+
     [Fact]
     public void A_session_already_marked_completed_is_live_regardless_of_the_process()
     {

@@ -209,6 +209,16 @@ public sealed class PrReviewEngine(
     /// died in between (a daemon restart racing a crash, a budget exhaustion never recorded)
     /// is treated the same as never dispatched, so <see cref="DriveAsync"/> redispatches a
     /// fresh one rather than waiting forever on a process that is gone.
+    /// <para>
+    /// "Its result already landed on disk" means a terminal result line, not merely a non-empty
+    /// file (cycle-1 adversarial finding): <c>claude -p --output-format stream-json</c> writes
+    /// its <c>{"type":"system","subtype":"init",…}</c> line within a second of spawning, so a
+    /// process killed before it ever produces a result still leaves a non-empty stream file.
+    /// Treating that as live sent this straight to <see cref="AwaitConformanceAsync"/>, which
+    /// waits out <c>SessionResultWaiter</c>'s grace period on an already-dead process and fails
+    /// the run — exactly the case this method exists to redispatch instead. Parsed the same way
+    /// <see cref="EnsureAdversarialResultRecordedAsync"/> parses the primary session's own stream.
+    /// </para>
     /// <para>Internal for the liveness-discrimination unit tests (test: pr-review type guards, coverage follow-up).</para>
     /// </summary>
     internal bool SessionStillLive(RunAggregate run, string runDirectory)
@@ -229,7 +239,23 @@ public sealed class PrReviewEngine(
         }
 
         string streamFile = RunPaths.SessionStreamFile(runDirectory, ConformanceArtifactName(run.PrReviewConformanceSessionId!.Value));
-        return File.Exists(streamFile) && new FileInfo(streamFile).Length > 0;
+        return File.Exists(streamFile) && StreamFileHoldsTerminalResult(streamFile);
+    }
+
+    private static bool StreamFileHoldsTerminalResult(string streamFile)
+    {
+        using StreamReader reader = new(new FileStream(
+            streamFile, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete));
+        string? line;
+        while ((line = reader.ReadLine()) is not null)
+        {
+            if (StreamJsonParser.TryParseResult(line, out _))
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private async Task<bool> DispatchConformanceAsync(
