@@ -454,16 +454,23 @@ public static class CliCommandTree
                 .WithExample("task", "draft", "28b19893");
             task.AddCommand<TaskListCommand>("list")
                 .WithDescription(
-                    "Browse tasks newest-first, across projects or filtered to one (--project) and to a state "
-                    + "(--state: a lifecycle word, which selects exactly what the Status column shows, such as "
-                    + "Delivered; an attention group like needs-you or attention-delivered; or a run state like "
-                    + "Running from the phase line). Bounded to the newest 20 by default — the footer says how "
-                    + "many were held back and how to see them (--all, --limit <n>).")
+                    "Browse tasks newest-first, across projects or filtered to one (--project) and to one or "
+                    + "more states (--state: a lifecycle word, which selects exactly what the Status column "
+                    + "shows, such as Delivered; an attention group like needs-you or attention-delivered; or a "
+                    + "run state like Running from the phase line — comma-separated, repeatable, or both, "
+                    + "unioned together, and the three vocabularies may mix in one filter). Archived rows are "
+                    + "hidden from an otherwise-unfiltered view by default so closeouts don't crowd out live "
+                    + "work; ask for them with --state archived, --state closed, or --include-archived. Bounded "
+                    + "to the newest 20 by default — the footer says how many were held back and how to see "
+                    + "them (--all, --limit <n>), and how many Archived rows the default hid.")
                 .WithExample("task", "list")
                 .WithExample("task", "list", "--project", "hall9k", "--state", "needs-you")
                 .WithExample("task", "list", "--state", "draft")
                 .WithExample("task", "list", "--state", "attention-delivered", "--all")
-                .WithExample("task", "list", "--state", "AwaitingReview");
+                .WithExample("task", "list", "--state", "AwaitingReview")
+                .WithExample("task", "list", "--state", "published,working", "--state", "delivered")
+                .WithExample("task", "list", "--state", "archived")
+                .WithExample("task", "list", "--include-archived");
             task.AddCommand<TaskShowCommand>("show")
                 .WithDescription(
                     "One task in full: the readiness contract it was published against, its dependencies "

@@ -122,6 +122,19 @@ internal static class TaskStateFilter
     ];
 
     /// <summary>
+    /// Splits --state's raw values into individual words: comma-separated within one occurrence
+    /// of the flag, repeatable across occurrences, or both — <c>--state published,working
+    /// --state delivered</c> and <c>--state published --state working --state delivered</c>
+    /// parse identically. Each resulting word is validated and matched on its own, so the
+    /// existing unknown-state teaching error still names exactly the one word that was wrong.
+    /// </summary>
+    public static IReadOnlyList<string> Split(IEnumerable<string> raw) =>
+        [.. raw
+            .SelectMany(value => value.Split(','))
+            .Select(value => value.Trim())
+            .Where(value => value.IsNotBlank())];
+
+    /// <summary>
     /// Validates the input up front, so a typo fails with the vocabulary quoted instead of
     /// quietly returning zero rows and reading as "you have no such work".
     /// </summary>
