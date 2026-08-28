@@ -289,7 +289,12 @@ is what `h9k review resolve` answers.
 
 Scope routes findings rather than ranking them. An out-of-scope high (a pre-existing defect on
 the base branch) is fixed here in its own commit; an out-of-scope non-high becomes a **draft bug
-task** that is inert until a human publishes it.
+task** that is inert until a human publishes it — a medium mints one of its own exactly as
+before, while a low folds into the project's one standing sweep draft instead (Decisions Log
+#99): a repeat of the same file and defect updates that item's evidence rather than duplicating
+it, so eight one-line pre-existing defects cost one build-gate-review pipeline rather than eight.
+A human grooms and publishes the sweep once it is fat enough; the moment it publishes, the next
+routed low finding starts a fresh one.
 
 The terminal verdict is always MergeReady, but the *settlement* records how it was reached:
 Clean means a reviewer read the final tip and found nothing, Settled means the severity gate,

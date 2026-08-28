@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Collections.ObjectModel;
 using System.Diagnostics;
 using System.Text;
@@ -19,6 +20,8 @@ using Hall9k.Domain.Infrastructure.Storage;
 using Hall9k.Domain.Shared.ValueObjects;
 using JasperFx.Events;
 using Marten;
+using Marten.Events;
+using Marten.Linq.MatchesSql;
 using Microsoft.Extensions.Options;
 
 namespace Hall9k.Daemon.Review;
@@ -99,6 +102,21 @@ public sealed class ReviewEngine(
     /// </summary>
     private static readonly ReadOnlyDictionary<string, string> ReviewSessionEnvironment =
         new(new Dictionary<string, string> { ["GIT_OPTIONAL_LOCKS"] = "0" });
+
+    /// <summary>
+    /// One project's out-of-scope Low findings fold into a single shared sweep document
+    /// (<see cref="SweepDraftTask"/>), unlike every other <c>TaskAggregate</c> writer in this repo,
+    /// which owns a fresh stream nobody else ever touches. <see cref="ReviewEngine"/> is a
+    /// singleton (registered once for the daemon's lifetime), so this dictionary is the one place
+    /// that can serialize two review loops racing to fold into the same project's sweep within
+    /// this process — the exact collision <see cref="RouteFindingsAsync"/> guards against
+    /// (adversarial and conformance review, cycle 1). <see cref="RouteToSweepAsync"/>'s own
+    /// expectedVersion fence is the second, cross-process layer for the case this lock cannot
+    /// reach: an install running more than one daemon node against the same database.
+    /// </summary>
+    private readonly ConcurrentDictionary<Guid, SemaphoreSlim> _sweepLocks = new();
+
+    private SemaphoreSlim SweepLockFor(Guid projectId) => _sweepLocks.GetOrAdd(projectId, static _ => new SemaphoreSlim(1, 1));
 
     /// <summary>
     /// Drives the loop until merge-ready (true — PullRequestOpener may proceed), or a
@@ -1118,7 +1136,8 @@ public sealed class ReviewEngine(
         IReadOnlyList<ReviewTrackPlan> plans = cycleConcluded && cycleVerdict != ReviewVerdict.Unknown
             ? await PlanCycleAsync(runDirectory, run, completed, cancellationToken)
             : [];
-        IReadOnlyList<RoutedFinding> routed = await RouteFindingsAsync(context, run, cycle, plans, cancellationToken);
+        IReadOnlyList<RoutedFinding> routed =
+            await RouteFindingsAsync(context, run, runDirectory, cycle, plans, cancellationToken);
 
         DateTimeOffset now = DateTimeOffset.UtcNow;
         await using IDocumentSession session = store.LightweightSession();
@@ -1399,9 +1418,18 @@ public sealed class ReviewEngine(
     /// that dies in between re-reads the same pass on resume, and the routing already on the
     /// stream is what stops the second draft.
     /// </para>
+    /// <para>
+    /// Where a routed finding lands still splits by severity (Decisions Log #87's own
+    /// <see cref="ReviewSeverity.MeetsFixBar"/>, reused rather than reinvented): a Medium meets
+    /// the fix bar and still mints a draft of its own, exactly as before this consolidated
+    /// anything, while a Low does not and instead folds into the project's one standing sweep
+    /// draft (<see cref="SweepDraftTask"/>) — so a serious pre-existing defect can never be
+    /// buried in a polish pile, and eight one-line Low findings cost one build-gate-review
+    /// pipeline instead of eight (backlog: out-of-scope review findings consolidate).
+    /// </para>
     /// </summary>
     private async Task<IReadOnlyList<RoutedFinding>> RouteFindingsAsync(
-        ReviewContext context, RunAggregate run, int cycle, IReadOnlyList<ReviewTrackPlan> plans,
+        ReviewContext context, RunAggregate run, string runDirectory, int cycle, IReadOnlyList<ReviewTrackPlan> plans,
         CancellationToken cancellationToken)
     {
         (IReadOnlyList<(ReviewLens Lens, ReviewFinding Finding)> pending, IReadOnlyList<RoutedFinding> repeats) =
@@ -1413,44 +1441,155 @@ public sealed class ReviewEngine(
 
         DateTimeOffset now = DateTimeOffset.UtcNow;
         List<RoutedFinding> routed = [];
-        await using IDocumentSession session = store.LightweightSession();
-        foreach ((ReviewLens lens, ReviewFinding finding) in pending)
+        List<(ReviewLens Lens, ReviewFinding Finding)> sweepBound =
+            [.. pending.Where(entry => !entry.Finding.Severity.MeetsFixBar)];
+
+        // The sweep is a document every run in the project shares, unlike a fresh draft bug task's
+        // own stream, so folding into it has to be serialized end to end — through this method's
+        // own SaveChangesAsync, not just the read inside RouteToSweepAsync — or two review loops
+        // committing within milliseconds of each other can both observe "no open sweep yet" and
+        // start two, or both revise the one open sweep and have the loser's items silently
+        // overwritten (adversarial and conformance review, cycle 1). Held only when this batch
+        // actually has a Low to fold, so every other cycle's routing pays nothing for it.
+        SemaphoreSlim? sweepLock = sweepBound.Count > 0 ? SweepLockFor(context.Task.ProjectId) : null;
+        if (sweepLock is not null)
         {
-            Guid draftTaskId = DomainId.New();
+            await sweepLock.WaitAsync(cancellationToken);
+        }
+
+        try
+        {
+            await using IDocumentSession session = store.LightweightSession();
+            foreach ((ReviewLens lens, ReviewFinding finding) in pending.Where(entry => entry.Finding.Severity.MeetsFixBar))
+            {
+                Guid draftTaskId = DomainId.New();
+                try
+                {
+                    TaskAdded added = ReviewDraftBugTask.Compose(
+                        draftTaskId, context.Task, context.RunId, context.Run.Branch, context.Project.BaseBranch,
+                        lens, cycle, finding, now, context.Run.OwnerId);
+                    session.Events.StartStream<TaskAggregate>(draftTaskId, added);
+                    routed.Add(new RoutedFinding(lens, finding, draftTaskId, null));
+                }
+                catch (Exception exception) when (exception is not OperationCanceledException)
+                {
+                    logger.LogWarning(exception,
+                        "Run {RunId}: could not compose a draft bug task for the out-of-scope finding at {Location}",
+                        context.RunId, finding.Location);
+                    routed.Add(new RoutedFinding(lens, finding, null, exception.Message));
+                }
+            }
+
+            if (sweepBound.Count > 0)
+            {
+                routed.AddRange(
+                    await RouteToSweepAsync(session, context, runDirectory, cycle, sweepBound, now, cancellationToken));
+            }
+
+            AppendRouted(session, context.RunId, cycle, routed, now);
             try
             {
-                TaskAdded added = ReviewDraftBugTask.Compose(
-                    draftTaskId, context.Task, context.RunId, context.Run.Branch, context.Project.BaseBranch,
-                    lens, cycle, finding, now, context.Run.OwnerId);
-                session.Events.StartStream<TaskAggregate>(draftTaskId, added);
-                routed.Add(new RoutedFinding(lens, finding, draftTaskId, null));
+                await session.SaveChangesAsync(cancellationToken);
+                logger.LogInformation(
+                    "Run {RunId}: routed {Count} out-of-scope finding(s) of cycle {Cycle} to draft bug tasks",
+                    context.RunId, routed.Count(entry => entry.DraftTaskId is not null), cycle);
+                return [.. routed, .. repeats];
             }
             catch (Exception exception) when (exception is not OperationCanceledException)
             {
                 logger.LogWarning(exception,
-                    "Run {RunId}: could not compose a draft bug task for the out-of-scope finding at {Location}",
-                    context.RunId, finding.Location);
-                routed.Add(new RoutedFinding(lens, finding, null, exception.Message));
+                    "Run {RunId}: creating draft bug tasks for cycle {Cycle} failed — the review loop continues and the findings are recorded as unrouted",
+                    context.RunId, cycle);
+                routed = [.. routed.Select(entry => entry with { DraftTaskId = null, FailureReason = exception.Message })];
+                await RecordRoutingFailureAsync(context.RunId, cycle, routed, now, cancellationToken);
+                return [.. routed, .. repeats];
             }
         }
+        finally
+        {
+            sweepLock?.Release();
+        }
+    }
 
-        AppendRouted(session, context.RunId, cycle, routed, now);
+    /// <summary>
+    /// Every finding this batch graded Low, folded into the project's one open standing sweep
+    /// draft (<see cref="SweepDraftTask"/>) — created fresh when none is open. One read-then-write
+    /// over the whole batch rather than one per finding: a per-finding query would let two Low
+    /// findings in the same cycle each observe "no open sweep yet" and mint two, since neither
+    /// write is visible to the other until this method's caller saves them together. Nothing here
+    /// may fail the review either, for the same reason <see cref="RouteFindingsAsync"/> itself
+    /// never lets a routing failure propagate: a failure is recorded against every finding in the
+    /// batch, and the next cycle to report the same defect tries the fold again.
+    /// </summary>
+    private async Task<IReadOnlyList<RoutedFinding>> RouteToSweepAsync(
+        IDocumentSession session, ReviewContext context, string runDirectory, int cycle,
+        IReadOnlyList<(ReviewLens Lens, ReviewFinding Finding)> sweepBound, DateTimeOffset now,
+        CancellationToken cancellationToken)
+    {
         try
         {
-            await session.SaveChangesAsync(cancellationToken);
-            logger.LogInformation(
-                "Run {RunId}: routed {Count} out-of-scope finding(s) of cycle {Cycle} to draft bug tasks",
-                context.RunId, routed.Count(entry => entry.DraftTaskId is not null), cycle);
-            return [.. routed, .. repeats];
+            string findingsFile = RunPaths.ReviewFindingsFile(runDirectory, cycle);
+            List<SweepFindingRoute> routes =
+                [.. sweepBound.Select(entry => new SweepFindingRoute(entry.Finding, context.RunId, cycle, findingsFile))];
+
+            // The state filter is matched as SQL rather than compared in LINQ, the same way every
+            // TaskState filter in this repo is (TaskAddCommand.RefuseSecondAdoptionAsync,
+            // DispatchEngine, TaskDependencyResolver): TaskState is a value object, and Marten
+            // refuses to translate a comparison against one.
+            TaskListItem? open = await session.Query<TaskListItem>()
+                .Where(task => task.ProjectId == context.Task.ProjectId)
+                .Where(task => task.Objective == SweepDraftTask.Objective)
+                .Where(task => task.MatchesSql("d.data ->> 'state' = ?", TaskState.Draft.Value))
+                .OrderByDescending(task => task.AddedAt)
+                .FirstOrDefaultAsync(cancellationToken);
+
+            Guid sweepTaskId;
+            if (open is null)
+            {
+                sweepTaskId = DomainId.New();
+                TaskAdded added = SweepDraftTask.ComposeNew(sweepTaskId, context.Task.ProjectId, routes, now, context.Run.OwnerId);
+                session.Events.StartStream<TaskAggregate>(sweepTaskId, added);
+            }
+            else
+            {
+                sweepTaskId = open.Id;
+
+                // Pinned to the stream version observed right now (the write-time half of the
+                // fence GenerationFence.LoadFencedAsync documents): a second review loop revising
+                // the same open sweep between this read and this method's caller committing would
+                // otherwise land its own full-document overwrite on top of this one, and
+                // TaskDetails.Apply(TaskRevised) keeps only the later event's AgentContext whole —
+                // the earlier append's items would be gone with no trace on the stream
+                // (adversarial and conformance review, cycle 1). expectedVersion turns that into a
+                // detected conflict rather than a silent loss: the append below throws, the catch
+                // clause already wrapping this method records the fold as failed exactly as any
+                // other routing failure, and the next cycle to report the same defect tries again.
+                StreamState? state = await session.Events.FetchStreamStateAsync(sweepTaskId, cancellationToken)
+                    ?? throw new InvalidOperationException($"Sweep draft {sweepTaskId} named by the query has no stream.");
+                TaskAggregate sweep = await session.Events.AggregateStreamAsync<TaskAggregate>(
+                    sweepTaskId, version: state.Version, token: cancellationToken)
+                    ?? throw new InvalidOperationException($"Sweep draft {sweepTaskId} named by the query has no stream.");
+                TaskRevised revised = TaskDecider.Revise(
+                    sweep,
+                    Optional<string>.None,
+                    Optional<IReadOnlyList<string>>.None,
+                    Optional<string>.Of(SweepDraftTask.Append(sweep.AgentContext, routes)),
+                    Optional<IReadOnlyList<Guid>>.None,
+                    Optional<TaskType>.None,
+                    Optional<AgentModel>.None,
+                    now,
+                    context.Run.OwnerId);
+                session.Events.Append(sweepTaskId, expectedVersion: state.Version + 1, revised);
+            }
+
+            return [.. sweepBound.Select(entry => new RoutedFinding(entry.Lens, entry.Finding, sweepTaskId, null, IsSweep: true))];
         }
         catch (Exception exception) when (exception is not OperationCanceledException)
         {
             logger.LogWarning(exception,
-                "Run {RunId}: creating draft bug tasks for cycle {Cycle} failed — the review loop continues and the findings are recorded as unrouted",
-                context.RunId, cycle);
-            routed = [.. routed.Select(entry => entry with { DraftTaskId = null, FailureReason = exception.Message })];
-            await RecordRoutingFailureAsync(context.RunId, cycle, routed, now, cancellationToken);
-            return [.. routed, .. repeats];
+                "Run {RunId}: could not fold {Count} out-of-scope Low finding(s) of cycle {Cycle} into the standing sweep draft",
+                context.RunId, sweepBound.Count, cycle);
+            return [.. sweepBound.Select(entry => new RoutedFinding(entry.Lens, entry.Finding, null, exception.Message))];
         }
     }
 
@@ -1881,9 +2020,9 @@ public sealed class ReviewEngine(
         merged.AppendLine();
         merged.AppendLine($"### {ReviewFindingDispositions.DoNotFixHere}");
         merged.AppendLine();
-        merged.AppendLine("These are pre-existing defects outside this branch's work. Each one is now a draft");
-        merged.AppendLine("bug task waiting for a human; fixing them here would grow this diff with unrelated");
-        merged.AppendLine("changes.");
+        merged.AppendLine("These are pre-existing defects outside this branch's work. Each one is now a draft bug");
+        merged.AppendLine("task of its own, or folded into the project's standing sweep draft, waiting for a");
+        merged.AppendLine("human; fixing them here would grow this diff with unrelated changes.");
         foreach (RoutedFinding entry in routed)
         {
             // The cycle that exported it is stated because it is the one that was observed:
@@ -1895,6 +2034,7 @@ public sealed class ReviewEngine(
                     "already routed to a draft bug task earlier in this cycle",
                 { AlreadyRoutedInCycle: { } earlier } =>
                     $"already routed to a draft bug task by cycle {earlier} of this run",
+                { DraftTaskId: { } draftTaskId, IsSweep: true } => $"folded into the standing sweep draft {draftTaskId}",
                 { DraftTaskId: { } draftTaskId } => $"draft task {draftTaskId}",
                 _ => $"NOT routed — creating the draft failed ({entry.FailureReason})",
             };
@@ -2713,10 +2853,13 @@ public sealed class ReviewEngine(
     /// (<paramref name="AlreadyRoutedInCycle"/> — no second draft, and no second routing event).
     /// That cycle can be the current one, because both tracks report the same pre-existing line
     /// in the cycle they share, so it is carried rather than assumed to be an earlier one.
+    /// <paramref name="IsSweep"/> says which kind of draft <paramref name="DraftTaskId"/> names —
+    /// a task of this finding's own, or the project's standing sweep — purely so the merged
+    /// findings document below can say which; nothing about routing or dedup reads it.
     /// </summary>
     private sealed record RoutedFinding(
         ReviewLens Lens, ReviewFinding Finding, Guid? DraftTaskId, string? FailureReason,
-        int? AlreadyRoutedInCycle = null);
+        int? AlreadyRoutedInCycle = null, bool IsSweep = false);
 
     private sealed record ReviewContext(
         Guid RunId, Guid TaskId, RunDetails Run, TaskDetails Task, ProjectDetails Project,
