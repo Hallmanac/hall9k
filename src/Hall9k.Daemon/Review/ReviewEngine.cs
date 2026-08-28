@@ -1542,14 +1542,28 @@ public sealed class ReviewEngine(
     /// what was exported out of it. Each repeat carries the cycle whose routing it repeats,
     /// because that is the observed fact the merged document then states rather than a guess
     /// about which cycle exported it.
+    /// <para>
+    /// A place already routed only blocks a new finding at that place when the earlier routing
+    /// already covers what the new one needs: either the earlier one itself met the fix bar (its
+    /// own draft bug task exists, and nothing about a repeat's own grade changes that), or the new
+    /// one does not meet the fix bar either (a Low following a Low the sweep already folded).
+    /// Without that condition, whichever grade a place's first report happened to carry — Low from
+    /// one lens, Medium from the other, in this cycle or an earlier one — would silently decide
+    /// the place's destination for good: a Low reported first would fold to the sweep and block a
+    /// later Medium at the identical place from ever earning its own draft, exactly the "buried in
+    /// a polish pile" outcome <see cref="RouteFindingsAsync"/>'s own contract rules out
+    /// (adversarial review, cycle 4). Processing this cycle's own findings highest-grade-first
+    /// closes the same gap when both lenses disagree on one place in the same cycle, so which one
+    /// happened to iterate first cannot decide it either.
+    /// </para>
     /// </summary>
     private static (IReadOnlyList<(ReviewLens Lens, ReviewFinding Finding)> Pending, IReadOnlyList<RoutedFinding> Repeats)
         SplitAlreadyRouted(RunAggregate run, int cycle, IReadOnlyList<ReviewTrackPlan> plans)
     {
-        List<(string Location, int Cycle)> routedLocations = [.. run.ReviewResiduals
+        List<(string Location, int Cycle, ReviewSeverity Severity)> routedLocations = [.. run.ReviewResiduals
             .Where(residual => residual.Disposition == ReviewResidualDisposition.Routed
                 && residual.Location.IsNotBlank())
-            .Select(residual => (residual.Location, residual.Cycle))];
+            .Select(residual => (residual.Location, residual.Cycle, residual.Severity))];
 
         List<(ReviewLens Lens, ReviewFinding Finding)> pending = [];
         List<RoutedFinding> repeats = [];
@@ -1563,36 +1577,44 @@ public sealed class ReviewEngine(
         // whether two DIFFERENT findings share a place (still legitimate agreement, handled by
         // SamePlace below exactly as before), only about not queuing the exact same finding twice.
         HashSet<ReviewFinding> seenThisCycle = new(ReferenceEqualityComparer.Instance);
+        List<(ReviewLens Lens, ReviewFinding Finding)> thisCycle = [];
         foreach (ReviewTrackPlan plan in plans)
         {
             foreach (ReviewFinding finding in plan.Route)
             {
-                if (!seenThisCycle.Add(finding))
+                if (seenThisCycle.Add(finding))
                 {
-                    continue;
+                    thisCycle.Add((plan.Lens, finding));
                 }
-
-                // Both tracks can report the same pre-existing line in one cycle, which the
-                // fix prompt already calls agreement rather than two defects; the same list
-                // therefore grows as this cycle routes, not only across cycles.
-                int? alreadyRoutedIn = routedLocations
-                    .Where(routed => ReviewFindingLocations.SamePlace(routed.Location, finding.Location))
-                    .Select(routed => (int?)routed.Cycle)
-                    .FirstOrDefault();
-                if (alreadyRoutedIn is { } earlierCycle)
-                {
-                    repeats.Add(new RoutedFinding(
-                        plan.Lens, finding, null, null, AlreadyRoutedInCycle: earlierCycle));
-                    continue;
-                }
-
-                if (finding.Location.IsNotBlank())
-                {
-                    routedLocations.Add((finding.Location, cycle));
-                }
-
-                pending.Add((plan.Lens, finding));
             }
+        }
+
+        foreach ((ReviewLens Lens, ReviewFinding Finding) entry in
+            thisCycle.OrderByDescending(entry => entry.Finding.Severity.MeetsFixBar))
+        {
+            (ReviewLens lens, ReviewFinding finding) = entry;
+
+            // Both tracks can report the same pre-existing line in one cycle, which the
+            // fix prompt already calls agreement rather than two defects; the same list
+            // therefore grows as this cycle routes, not only across cycles.
+            (int Cycle, ReviewSeverity Severity)? alreadyRoutedIn = routedLocations
+                .Where(routed => ReviewFindingLocations.SamePlace(routed.Location, finding.Location))
+                .Select(routed => ((int Cycle, ReviewSeverity Severity)?)(routed.Cycle, routed.Severity))
+                .FirstOrDefault();
+            if (alreadyRoutedIn is { } earlier
+                && (earlier.Severity.MeetsFixBar || !finding.Severity.MeetsFixBar))
+            {
+                repeats.Add(new RoutedFinding(
+                    lens, finding, null, null, AlreadyRoutedInCycle: earlier.Cycle, IsSweep: !earlier.Severity.MeetsFixBar));
+                continue;
+            }
+
+            if (finding.Location.IsNotBlank())
+            {
+                routedLocations.Add((finding.Location, cycle, finding.Severity));
+            }
+
+            pending.Add((lens, finding));
         }
 
         return (pending, repeats);
@@ -1971,6 +1993,10 @@ public sealed class ReviewEngine(
             // repeat is as often this cycle's own routing as an earlier cycle's.
             string destination = entry switch
             {
+                { AlreadyRoutedInCycle: { } earlier, IsSweep: true } when earlier == cycle =>
+                    "already folded into the standing sweep draft earlier in this cycle",
+                { AlreadyRoutedInCycle: { } earlier, IsSweep: true } =>
+                    $"already folded into the standing sweep draft by cycle {earlier} of this run",
                 { AlreadyRoutedInCycle: { } earlier } when earlier == cycle =>
                     "already routed to a draft bug task earlier in this cycle",
                 { AlreadyRoutedInCycle: { } earlier } =>
@@ -2755,7 +2781,10 @@ public sealed class ReviewEngine(
     /// in the cycle they share, so it is carried rather than assumed to be an earlier one.
     /// <paramref name="IsSweep"/> says which kind of draft <paramref name="DraftTaskId"/> names —
     /// a task of this finding's own, or the project's standing sweep — purely so the merged
-    /// findings document below can say which; nothing about routing or dedup reads it.
+    /// findings document below can say which; nothing about routing or dedup reads it. A repeat
+    /// carries it too, read off the earlier routing it repeats, so the merged document never
+    /// tells a human "already routed to a draft bug task" about a repeat whose earlier routing was
+    /// in fact a sweep fold (adversarial and conformance review, cycle 4).
     /// </summary>
     private sealed record RoutedFinding(
         ReviewLens Lens, ReviewFinding Finding, Guid? DraftTaskId, string? FailureReason,
