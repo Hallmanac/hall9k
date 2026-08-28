@@ -21,10 +21,10 @@ with an assembled prompt, runs the project's verification gates, puts the diff t
 independent review loop, and opens a pull request. A fix cycle's own `dotnet test`-shaped gate
 runs narrowed to the tests reachable from that cycle's touched commits when they can be mapped
 with confidence, never on the run's first pass or the mandatory full pass immediately before the
-pull request, so nothing merges on scoped green alone (PLAN.md Decisions Log #98). Then it watches that pull request until the
-merge is observed, dispatching bounded follow-up runs for failing checks, unresolved review
-threads, and a branch that has fallen behind and now conflicts with its base along the way, and
-removing the worktree and the branch at true closeout.
+pull request, so nothing merges on scoped green alone (PLAN.md Decisions Log #98). Then it
+watches that pull request until the merge is observed, dispatching bounded follow-up runs for
+failing checks, unresolved review threads, and a branch that has fallen behind and now conflicts
+with its base along the way, and removing the worktree and the branch at true closeout.
 
 Two things about that loop have been hardened by incident rather than by design review: leases
 survive a laptop lid closing without spawning duplicate agents, and daemon catch-up after a
