@@ -458,11 +458,13 @@ public static class CliCommandTree
                     + "more states (--state: a lifecycle word, which selects exactly what the Status column "
                     + "shows, such as Delivered; an attention group like needs-you or attention-delivered; or a "
                     + "run state like Running from the phase line — comma-separated, repeatable, or both, "
-                    + "unioned together, and the three vocabularies may mix in one filter). Archived rows are "
-                    + "hidden from an otherwise-unfiltered view by default so closeouts don't crowd out live "
-                    + "work; ask for them with --state archived, --state closed, or --include-archived. Bounded "
-                    + "to the newest 20 by default — the footer says how many were held back and how to see "
-                    + "them (--all, --limit <n>), and how many Archived rows the default hid.")
+                    + "unioned together, and the three vocabularies may mix in one filter). Archived rows — a "
+                    + "human walked away, not a merged task, which stays Done and is never hidden — are hidden "
+                    + "from an otherwise-unfiltered view by default so abandoned work doesn't accumulate "
+                    + "alongside live and done tasks; ask for them with --state archived, --state closed, or "
+                    + "--include-archived. Bounded to the newest 20 by default — the footer says how many were "
+                    + "held back and how to see them (--all, --limit <n>), and how many Archived rows the "
+                    + "default hid.")
                 .WithExample("task", "list")
                 .WithExample("task", "list", "--project", "hall9k", "--state", "needs-you")
                 .WithExample("task", "list", "--state", "draft")
