@@ -176,13 +176,19 @@ hunting for them.
 `h9k project set --backlog none|github-issues|jira` · `h9k project set --backlog-routing "<TEXT>"` ·
 `h9k task link-issue <task> <issue>`
 
-Every published task is tracked in the project's backlog automatically, per this setting.
-`github-issues` is deterministic: `h9k task publish` runs `gh issue create` itself — no agent
-involved, because an issue's shape (title, body, labels) is uniform enough for the platform to
-author on its own — reads the created issue straight back the same way `--from-issue` does, and
-records it through `link-issue`, the same observation-gate pattern `link-jira` uses. `--backlog-routing`
-is read as a comma-separated label list under `github-issues`. `jira` is agent-mediated (below);
-`none` is today's default, unchanged behavior.
+Every published task is tracked in the project's backlog automatically, per this setting — but
+`h9k task publish` checks the policy before it ever creates anything: a draft that carries no
+linked item yet, and has no publication already pending, is refused (exit code 70) until a human
+or orchestrator links an existing item (`h9k task link-issue` / `h9k task link-jira`) or attests
+none exists and proceeds with `h9k task publish <id> --no-existing-item`, so a duplicate is never
+minted from a search the platform itself cannot perform. Once that gate is past, `github-issues`
+is deterministic: `h9k task publish` runs `gh issue create` itself — no agent involved, because an
+issue's shape (title, body, labels) is uniform enough for the platform to author on its own —
+reads the created issue straight back the same way `--from-issue` does, and records it through
+`link-issue`, the same observation-gate pattern `link-jira` uses. `--backlog-routing` is read as a
+comma-separated label list under `github-issues`. `jira` is agent-mediated (below); `none` is
+today's default, unchanged behavior. A task adopted with `--from-issue`/`--from-jira` already
+carries its reference, so the gate never fires for it.
 
 ### Jira
 
@@ -195,9 +201,11 @@ repository path of a project with a home names the bare clone and a bare clone h
 read; a project registered before homes existed still points at an ordinary checkout, and that is
 where its session runs. `link-jira` reads the key back through the registered
 connection before recording anything, which is what makes it safe for an agent to call. A project
-set to `--backlog jira` makes this request automatically at publish, so `push-to-jira` becomes the
-manual retry lever for a project that had no Jira connection registered yet when it was first
-published.
+set to `--backlog jira` makes this request automatically at publish — once the dedup gate above
+lets the publish through — so `push-to-jira` becomes the manual retry lever for a project that had
+no Jira connection registered yet when it was first published, and also the way to get a card
+started by hand before publishing, which the gate recognizes as a publication already pending
+rather than demanding an attestation for it.
 
 ### Install and the daemon
 

@@ -83,11 +83,14 @@ public static class TaskDecider
     /// <para>
     /// A project tracking its backlog (<paramref name="backlogPolicy"/> is Jira or GitHub
     /// issues) is also a dedup gate: a task with no <see cref="TaskAggregate.ExternalReference"/>
-    /// refuses to publish unless <paramref name="noExistingItemAttested"/> says a search already
-    /// came back empty (backlog: publishing an untracked task under a tracking backlog policy).
-    /// The platform never searches the tracker itself — that is the human's or the orchestrator's
+    /// and no <see cref="TaskAggregate.PendingPublicationProvider"/> already under way refuses to
+    /// publish unless <paramref name="noExistingItemAttested"/> says a search already came back
+    /// empty (backlog: publishing an untracked task under a tracking backlog policy). The
+    /// platform never searches the tracker itself — that is the human's or the orchestrator's
     /// job, the same relay pattern every other park uses — so this only ever refuses or accepts
-    /// the attestation, never checks it.
+    /// the attestation, never checks it. The attestation is recorded on <see cref="TaskPublished"/>
+    /// only when the gate actually asked for it; a flag passed on a publish the gate never gated
+    /// is clamped to false rather than asserting an unobserved fact on the stream.
     /// </para>
     /// </summary>
     public static TaskPublished Publish(
@@ -152,7 +155,7 @@ public static class TaskDecider
         // Draft) is already a session on its way to minting the card this gate exists to avoid
         // duplicating — TrackInBacklogAsync already recognises and skips this exact state, so the
         // gate must too, or the only way through is an attestation that is factually wrong.
-        bool needsExistingItemCheck = policy != BacklogPolicy.None
+        bool needsExistingItemCheck = (policy == BacklogPolicy.Jira || policy == BacklogPolicy.GitHubIssues)
             && task.ExternalReference is null
             && task.PendingPublicationProvider is null;
         if (needsExistingItemCheck && !noExistingItemAttested)
