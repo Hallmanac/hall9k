@@ -185,8 +185,11 @@ altogether with `h9k task publish <id> --untracked`, for internal chores and pla
 should not pollute a team's tracker — so a human or orchestrator confirms no existing item covers
 the objective, or deliberately opts out of tracking, before a duplicate can be minted.
 `--no-existing-item` and `--untracked` say opposite things and are refused together as
-contradictory, and `--untracked` on a project with backlog policy `none` is refused as
-meaningless — there is no tracking there to skip. Both attestations land on the same
+contradictory; `--untracked` on a project whose backlog policy is `none`, or any policy this build
+doesn't recognize, is refused as meaningless — there is no tracking there to skip; and
+`--untracked` on a task that already has a publication request outstanding
+(`h9k task push-to-jira`, run by hand while still a Draft) is refused too, since that session
+mints its card regardless of the flag — link it or wait for it instead. Both attestations land on the same
 `TaskPublished` event, recording who chose which and when; `h9k task show` renders an
 untracked-by-choice task honestly, distinct from one that predates the policy or was published
 under policy `none` (both leave the attestation unset rather than defaulting to a look-alike

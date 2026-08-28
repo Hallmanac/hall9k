@@ -199,9 +199,10 @@ public static class TaskDecider
             && (policy == BacklogPolicy.Jira || policy == BacklogPolicy.GitHubIssues))
         {
             throw new DomainBusinessRuleException(
-                $"Task {task.Id} already has a {pendingProvider.Value} publication request outstanding, and "
-                + "that request still runs to completion regardless — --untracked cannot cancel work already "
-                + $"in flight. Publish without it: h9k task publish {task.Id}.");
+                $"Task {task.Id} already has a {pendingProvider.Value} publication request outstanding"
+                + (task.PublicationSessionDispatched ? " and its session is running" : " and is waiting for the daemon")
+                + ", and it still runs to completion regardless — --untracked cannot cancel it. Publish "
+                + $"without it: h9k task publish {task.Id}.");
         }
 
         // A pending publication (h9k task push-to-jira, run by hand while the task was still a

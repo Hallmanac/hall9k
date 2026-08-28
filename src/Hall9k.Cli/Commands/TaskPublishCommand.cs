@@ -58,8 +58,11 @@ public sealed class TaskPublishCommand : Hall9kAsyncCommand<TaskPublishCommand.S
             "The sibling attestation to --no-existing-item, opposite choice: deliberately skip external "
             + "tracking for this task instead of linking an item or confirming none exists — for internal "
             + "chores and platform tasks that should not pollute a team's tracker. Refused alongside "
-            + "--no-existing-item (contradictory) and on a project with backlog policy none (meaningless — "
-            + "nothing there tracks it). Recorded on the task stream with who chose it and when")]
+            + "--no-existing-item (contradictory); on a project whose backlog policy tracks nothing, "
+            + "policy none or any policy this build does not recognize (meaningless — nothing there tracks "
+            + "it); and when a publication request (h9k task push-to-jira) is already outstanding on this "
+            + "task (that session mints its card regardless, so --untracked cannot cancel it — link or "
+            + "wait for it instead). Recorded on the task stream with who chose it and when")]
         public bool Untracked { get; init; }
     }
 
