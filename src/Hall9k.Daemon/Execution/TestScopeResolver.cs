@@ -14,12 +14,10 @@ namespace Hall9k.Daemon.Execution;
 public sealed record TestGateScope
 {
     private TestGateScope(
-        bool isScoped, string? filterExpression, IReadOnlyList<string> touchedFiles,
-        IReadOnlyList<string> testClasses, string reason)
+        bool isScoped, string? filterExpression, IReadOnlyList<string> testClasses, string reason)
     {
         IsScoped = isScoped;
         FilterExpression = filterExpression;
-        TouchedFiles = touchedFiles;
         TestClasses = testClasses;
         Reason = reason;
     }
@@ -30,14 +28,12 @@ public sealed record TestGateScope
     /// <summary>The `--filter` expression to inject into a `dotnet test`-shaped gate. Null when unscoped.</summary>
     public string? FilterExpression { get; }
 
-    public IReadOnlyList<string> TouchedFiles { get; }
-
     public IReadOnlyList<string> TestClasses { get; }
 
     /// <summary>The human-readable "why", recorded on the verification pass and logged.</summary>
     public string Reason { get; }
 
-    public static TestGateScope Full(string reason) => new(false, null, [], [], reason);
+    public static TestGateScope Full(string reason) => new(false, null, [], reason);
 
     public static TestGateScope Scoped(
         IReadOnlyList<string> touchedFiles, IReadOnlyList<string> testClasses, string cycleDescription)
@@ -63,7 +59,7 @@ public sealed record TestGateScope
         string reason =
             $"scoped to {testClasses.Count} test class(es) reachable from {touchedFiles.Count} " +
             $"touched file(s) ({cycleDescription}): {Summarize(testClasses)}";
-        return new TestGateScope(true, filter, touchedFiles, testClasses, reason);
+        return new TestGateScope(true, filter, testClasses, reason);
     }
 
     private const int MaxFilterExpressionLength = 4000;
@@ -265,9 +261,19 @@ public static partial class TestScopeResolver
     /// keyword's reference pattern (<see cref="TypeReferencePattern"/>) matches the word in nearly
     /// every test file, so a keyword-captured name does not fail to map, it silently over-maps
     /// (cycle-6 finding: a 6,905-character filter that blew Windows' cmd.exe 8,191-character limit).
+    /// The line anchor takes no leading whitespace, so only a file's top-level (unindented)
+    /// declarations match — this repo's file-scoped namespaces put every type a file is actually
+    /// about at column 0, and an indented nested type (a CLI command's own
+    /// <c>public sealed class Settings : CommandSettings</c>, a test file's private helper class)
+    /// never captures. A nested type's own name is often generic enough (`Settings`) to match
+    /// unrelated test files by coincidence, which previously let a touched file's own untested
+    /// subject hide behind its nested type's false-positive match and scope the gate down when the
+    /// class's contract calls for <see cref="TestGateScope.Full"/> (independent pre-PR review,
+    /// cycle 1, adversarial lens) — and the same over-capture inflated a test file's declared
+    /// "test classes" with nested helper types no `--filter` term ever selects.
     /// </summary>
     [GeneratedRegex(
-        """^\s*(?:\[[^\]]*\]\s*)*(?:public|internal|private|protected)?\s*(?:sealed\s+|abstract\s+|static\s+|partial\s+|readonly\s+|file\s+)*(?:record\s+(?:class|struct)|class|record|interface|struct|enum)\s+(?<name>\w+)""",
+        """^(?:\[[^\]]*\]\s*)*(?:public|internal|private|protected)?\s*(?:sealed\s+|abstract\s+|static\s+|partial\s+|readonly\s+|file\s+)*(?:record\s+(?:class|struct)|class|record|interface|struct|enum)\s+(?<name>\w+)""",
         RegexOptions.Multiline)]
     private static partial Regex TypeDeclarationPattern();
 

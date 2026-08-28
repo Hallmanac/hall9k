@@ -216,6 +216,57 @@ public sealed class TestScopeResolverTests : IDisposable
         scope.Reason.Should().Contain("no test class references").And.Contain("Orphan.cs");
     }
 
+    /// <summary>
+    /// A touched type's own nested type (a CLI command's own `public sealed class Settings :
+    /// CommandSettings`, the shape every command file in this repo has) must never stand in for
+    /// the file's real subject: the nested type's generic name coincidentally appearing in an
+    /// unrelated test file's own unrelated content must not let the untested outer type scope the
+    /// gate down (independent pre-PR review, cycle 1, adversarial lens).
+    /// </summary>
+    [Fact]
+    public async Task A_touched_types_own_nested_type_never_stands_in_for_the_outer_type()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromSeconds(30));
+        Commit(
+            "tests/Hall9k.Tests/OtherTests.cs",
+            "public sealed class OtherTests\n{\n    private readonly int Settings = 1;\n}\n",
+            "give OtherTests an unrelated Settings field");
+        string sinceSha = CycleHeadSha;
+        Commit(
+            "src/Hall9k.Domain/Orphan.cs",
+            "public sealed class Orphan\n{\n    public sealed class Settings\n    {\n    }\n}\n",
+            "add untested command-shaped type");
+
+        TestGateScope scope = await TestScopeResolver.ResolveAsync(_repositoryPath, sinceSha, "cycle 2 fix", cts.Token);
+
+        scope.IsScoped.Should().BeFalse();
+        scope.Reason.Should().Contain("no test class references").And.Contain("Orphan.cs");
+    }
+
+    /// <summary>
+    /// A test file's own nested private helper class (`tests/Integration/ReviewEngineTests.cs`'s
+    /// `ScriptedExecutor`, the shape a scripted-executor fixture takes) must never be registered as
+    /// its own selectable test class: no xunit `--filter FullyQualifiedName~` term can select a
+    /// type that declares no tests of its own, so counting it only inflates the filter with inert
+    /// terms (conformance review finding).
+    /// </summary>
+    [Fact]
+    public async Task A_test_files_nested_private_helper_class_is_never_registered_as_a_test_class()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromSeconds(30));
+        Commit(
+            "tests/Hall9k.Tests/WidgetTests.cs",
+            "public sealed class WidgetTests\n{\n    private readonly Widget _widget = new();\n\n    private sealed class Helper\n    {\n    }\n}\n",
+            "add nested helper to widget tests");
+        string sinceSha = CycleHeadSha;
+        Commit("src/Hall9k.Domain/Widget.cs", "public sealed class Widget\n{\n    public int Count;\n}\n", "fix widget");
+
+        TestGateScope scope = await TestScopeResolver.ResolveAsync(_repositoryPath, sinceSha, "cycle 2 fix", cts.Token);
+
+        scope.IsScoped.Should().BeTrue();
+        scope.TestClasses.Should().ContainSingle().Which.Should().Be("WidgetTests");
+    }
+
     private void Commit(string relativePath, string content, string message)
     {
         string fullPath = Path.Combine(_repositoryPath, relativePath);

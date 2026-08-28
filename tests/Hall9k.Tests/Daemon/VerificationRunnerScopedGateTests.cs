@@ -36,8 +36,8 @@ public sealed class VerificationRunnerScopedGateTests
     /// `\d+` matches any Unicode decimal digit and any digit run length, so a localized VSTest
     /// build's non-ASCII digits or a pathologically wide count must never fault the whole run with
     /// an unhandled `FormatException`/`OverflowException` — the class degrades honestly everywhere
-    /// else it cannot read a signal confidently, and this is no exception (adversarial... conformance
-    /// review finding).
+    /// else it cannot read a signal confidently, and this is no exception (adversarial review
+    /// finding).
     /// </summary>
     [Fact]
     public void An_unparseable_total_count_never_faults_the_gate() =>
