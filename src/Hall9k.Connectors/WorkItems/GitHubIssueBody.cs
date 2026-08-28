@@ -10,10 +10,23 @@ namespace Hall9k.Connectors.WorkItems;
 /// </summary>
 public static class GitHubIssueBody
 {
-    /// <summary>The agent context, then the acceptance criteria as a checklist. Either half may be absent.</summary>
-    public static string Compose(string? agentContext, IReadOnlyList<string> acceptanceCriteria)
+    /// <summary>
+    /// The agent context, then the acceptance criteria as a checklist. Either half may be absent.
+    /// <paramref name="truncatedObjective"/> is the task's own objective, in full, when the title
+    /// this issue was created with had to be cut to fit GitHub's 256-character limit: the title
+    /// alone would otherwise be the only place the objective was recorded, and the characters past
+    /// the cut would exist nowhere on GitHub. Pass null when the title was not truncated, so a
+    /// normal issue is not given a redundant restatement of its own title.
+    /// </summary>
+    public static string Compose(
+        string? agentContext, IReadOnlyList<string> acceptanceCriteria, string? truncatedObjective = null)
     {
         List<string> sections = [];
+        if (truncatedObjective.IsNotBlank())
+        {
+            sections.Add($"## Objective\n\n{RelayedText.Printable(truncatedObjective.Trim())}");
+        }
+
         if (agentContext.IsNotBlank())
         {
             sections.Add(RelayedText.Printable(agentContext.Trim()));
