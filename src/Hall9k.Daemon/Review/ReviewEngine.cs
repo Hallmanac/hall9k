@@ -1490,15 +1490,17 @@ public sealed class ReviewEngine(
             try
             {
                 await session.SaveChangesAsync(cancellationToken);
+                int draftTaskCount = routed.Count(entry => entry.DraftTaskId is not null && !entry.IsSweep);
+                int sweepFoldCount = routed.Count(entry => entry.DraftTaskId is not null && entry.IsSweep);
                 logger.LogInformation(
-                    "Run {RunId}: routed {Count} out-of-scope finding(s) of cycle {Cycle} to draft bug tasks",
-                    context.RunId, routed.Count(entry => entry.DraftTaskId is not null), cycle);
+                    "Run {RunId}: routed cycle {Cycle}'s out-of-scope findings — {DraftTaskCount} to draft bug tasks, {SweepFoldCount} folded into the standing sweep",
+                    context.RunId, cycle, draftTaskCount, sweepFoldCount);
                 return [.. routed, .. repeats];
             }
             catch (Exception exception) when (exception is not OperationCanceledException)
             {
                 logger.LogWarning(exception,
-                    "Run {RunId}: creating draft bug tasks for cycle {Cycle} failed — the review loop continues and the findings are recorded as unrouted",
+                    "Run {RunId}: routing out-of-scope findings for cycle {Cycle} failed — the review loop continues and the findings are recorded as unrouted",
                     context.RunId, cycle);
                 routed = [.. routed.Select(entry => entry with { DraftTaskId = null, FailureReason = exception.Message })];
                 await RecordRoutingFailureAsync(context.RunId, cycle, routed, now, cancellationToken);
