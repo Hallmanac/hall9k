@@ -107,6 +107,13 @@ public sealed class GitWorktreeManager(ILogger<GitWorktreeManager> logger) : IWo
         await mutex.WaitAsync(cancellationToken);
         try
         {
+            // A plain `git fetch origin <refspec>` on the command line replaces the
+            // configured `+refs/heads/*:refs/remotes/origin/*` for that invocation, so the
+            // base branch's remote-tracking ref never advances on its own — refresh it first,
+            // the same way CreateAsync and CheckoutExistingAsync do, so the diff every
+            // downstream consumer runs against `origin/<base>` is not stale or missing.
+            await BestEffortFetchAsync(repositoryPath, cancellationToken);
+
             string trackingRef = $"refs/remotes/origin/pr-review/{request.PullRequestNumber}";
             await RunGitAsync(
                 repositoryPath,
