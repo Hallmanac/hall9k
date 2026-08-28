@@ -12,7 +12,6 @@ using Hall9k.Domain.Features.Tasks.Queries;
 using Hall9k.Domain.Infrastructure.Bootstrap;
 using Hall9k.Domain.Shared.Exceptions;
 using Marten;
-using Marten.Events;
 using Spectre.Console;
 using Spectre.Console.Cli;
 
