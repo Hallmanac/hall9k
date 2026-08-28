@@ -100,8 +100,10 @@ public sealed class TaskListCommand : Hall9kAsyncCommand<TaskListCommand.Setting
         if (matched.Count == 0)
         {
             string message = hiddenArchived > 0
-                ? $"[dim]Every task matching {Filters(settings, project)} is archived. See them with:[/] "
-                  + $"h9k task list --include-archived{Repeat(settings, project)}"
+                ? project is null
+                    ? "[dim]Every task is archived. See them with:[/] h9k task list --include-archived"
+                    : $"[dim]Every task matching {Filters(settings, project)} is archived. See them with:[/] "
+                      + $"h9k task list --include-archived{Repeat(settings, project)}"
                 : $"[dim]No tasks match {Filters(settings, project)}. Drop a filter, or browse everything:[/] "
                   + "h9k task list --all";
             AnsiConsole.MarkupLine(message);

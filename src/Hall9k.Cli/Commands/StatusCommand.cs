@@ -97,7 +97,8 @@ public sealed class StatusCommand : Hall9kAsyncCommand<StatusCommand.Settings>
         }
 
         AnsiConsole.MarkupLine(
-            "\n[dim]Browse it all:[/] h9k task list [dim](--project <name>, --state <state>) · per project:[/] h9k project list");
+            "\n[dim]Browse it all:[/] h9k task list --all --include-archived "
+            + "[dim](--project <name>, --state <state>) · per project:[/] h9k project list");
         return ExitCodes.Ok;
     }
 
