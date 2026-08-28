@@ -453,6 +453,18 @@ public static partial class ReviewVerdictValidation
     /// actually have echoed.
     /// </para>
     /// <para>
+    /// <paramref name="taskAgentContext"/> screens the identical class of echo for the task's own
+    /// agent context, printed into the conformance lens's own prompt right alongside the
+    /// objective and the acceptance criteria (<c>AgentPromptBuilder.BuildConformanceReview</c>,
+    /// cycle-2 review, adversarial finding): a routed bug task's agent context embeds a prior
+    /// review finding verbatim — header, location and all — and an ordinary adopted task's
+    /// context is an issue body that routinely pairs a filename with defect vocabulary the same
+    /// way a criterion does, so a session that restates either before concluding satisfies the
+    /// location-plus-defect shape below without having found anything, for the identical reason
+    /// restating the objective does. Screened only when <c>sawTaskContext</c> gates it the same
+    /// way the objective and criteria already are — the adversarial lens is never shown it either.
+    /// </para>
+    /// <para>
     /// A paragraph that is itself only a heading or bold lead-in — the numbered `###` title a
     /// reviewer gives a finding before describing it below — borrows defect language from a later
     /// paragraph rather than requiring both in its own paragraph (cycle-5 conformance finding #1,
@@ -470,17 +482,19 @@ public static partial class ReviewVerdictValidation
     /// </summary>
     public static bool NamesAFinding(
         string? output, string? taskObjective = null, IReadOnlyList<string>? taskAcceptanceCriteria = null,
-        IReadOnlyList<string>? priorRulingReasons = null)
+        IReadOnlyList<string>? priorRulingReasons = null, string? taskAgentContext = null)
     {
         if (output.IsBlank())
         {
             return false;
         }
 
-        string sanitized = StripVerbatimEchoes(
+        string sanitized = StripObjectiveEcho(
             StripVerbatimEchoes(
-                StripObjectiveEcho(StripPlaceholderLocations(output), taskObjective), taskAcceptanceCriteria),
-            priorRulingReasons);
+                StripVerbatimEchoes(
+                    StripObjectiveEcho(StripPlaceholderLocations(output), taskObjective), taskAcceptanceCriteria),
+                priorRulingReasons),
+            taskAgentContext);
 
         IReadOnlyList<ReviewFinding> structuredFindings = ReviewResultParser.ParseFindings(sanitized);
         if (structuredFindings.Any(HasStatedDefect))

@@ -551,6 +551,39 @@ public sealed class ReviewVerdictValidationTests
     }
 
     /// <summary>
+    /// A conformance session that restates the task's own agent context before concluding
+    /// satisfies the location-plus-defect shape without having found anything (cycle-2 review,
+    /// adversarial finding, `AgentPromptBuilder.cs:1117`): a routed bug task's agent context
+    /// embeds a prior review finding verbatim, and an ordinary adopted task's context is an issue
+    /// body that routinely pairs a filename with a defect word, exactly like the objective and
+    /// the acceptance criteria already screened above.
+    /// </summary>
+    [Fact]
+    public void Restating_the_tasks_own_agent_context_does_not_name_a_finding()
+    {
+        const string agentContext = "LogsCommand.cs no longer resolves a stale run directory";
+        ReviewVerdictValidation.NamesAFinding(
+                $"Context says: {agentContext}.\n\nVERDICT: needs-fixes",
+                taskAgentContext: agentContext)
+            .Should().BeFalse();
+    }
+
+    /// <summary>
+    /// The agent-context echo screen only removes the context's own text, so a genuine defect
+    /// stated alongside a restated agent context is still read as naming a finding.
+    /// </summary>
+    [Fact]
+    public void A_real_defect_stated_alongside_a_restated_agent_context_still_names_a_finding()
+    {
+        const string agentContext = "LogsCommand.cs no longer resolves a stale run directory";
+        ReviewVerdictValidation.NamesAFinding(
+                $"Context says: {agentContext}. `Auth.cs:42` never resets the limiter after a "
+                + "rejected request.\n\nVERDICT: needs-fixes",
+                taskAgentContext: agentContext)
+            .Should().BeTrue();
+    }
+
+    /// <summary>
     /// A human's own review-park <c>--reason</c> text can be as short as a single word (cycle-6
     /// human triage, task: review prompts carry prior rulings). "no" is also
     /// <c>DefectLanguagePattern</c>'s own bare negation word, so stripping every occurrence of it
