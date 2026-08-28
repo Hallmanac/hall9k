@@ -130,16 +130,16 @@ public sealed class ClaudeExecutor(ILogger<ClaudeExecutor> logger, IProcessManag
         // request.WorktreePath is another contributor's pull-request head for a pr-review
         // spawn (AgentSpawnRequest.UntrustedWorkingDirectory) — the first checkout this
         // platform ever hands an agent that it did not cut itself, so its own
-        // .claude/settings.json (hooks included) and .mcp.json cannot be trusted the way
-        // this platform's own worktrees are. --setting-sources user drops the checkout's
-        // project- and local-scoped settings.json from the merge, leaving only the owner's
-        // own ~/.claude/settings.json (still loaded — it is the owner's, not the pull
-        // request's); --strict-mcp-config, given with no --mcp-config of its own, connects
-        // to no MCP server at all rather than whatever the checkout's .mcp.json names. What
-        // this does NOT close: the checkout's CLAUDE.md/AGENTS.md are still read into
-        // context the way any project's are — closing that is AgentPromptBuilder's job
-        // (AppendSettledRulings' pr-review override), because it is a framing question
-        // (is this text authoritative doctrine?), not a can-it-execute-code one.
+        // .claude/settings.json (hooks included), .mcp.json and CLAUDE.md/AGENTS.md cannot
+        // be trusted the way this platform's own worktrees are. --setting-sources user drops
+        // the checkout's project- and local-scoped settings.json AND its CLAUDE.md/AGENTS.md
+        // from the merge (verified empirically: a checkout's CLAUDE.md is not read into
+        // context under this flag), leaving only the owner's own ~/.claude/settings.json
+        // (still loaded — it is the owner's, not the pull request's); --strict-mcp-config,
+        // given with no --mcp-config of its own, connects to no MCP server at all rather than
+        // whatever the checkout's .mcp.json names. AgentPromptBuilder's own pr-review framing
+        // (AppendSettledRulings' override) is defense in depth on top of this, not the only
+        // thing standing between the session and the pull request author's doctrine files.
         if (request.UntrustedWorkingDirectory)
         {
             yield return "--setting-sources user";
