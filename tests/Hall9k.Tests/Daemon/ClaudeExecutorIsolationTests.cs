@@ -10,11 +10,11 @@ namespace Hall9k.Tests.Daemon;
 /// <summary>
 /// A pr-review spawn's worktree is another contributor's pull-request head, not something this
 /// platform cut itself (adversarial review, cycle 1, `RunLauncher.cs:228`): the flags asserted
-/// here are what stop that checkout's own `.claude/settings.json` (hooks included) and
-/// `.mcp.json` from being loaded as live configuration the moment the process starts, before its
-/// read-only prompt is ever read. <see cref="AgentSpawnRequest.UntrustedWorkingDirectory"/> is the
-/// one signal that turns them on; every other spawn keeps trusting its own worktree exactly as
-/// before.
+/// here are what stop that checkout's own `.claude/settings.json` (hooks included), its
+/// project- and local-scoped `CLAUDE.md`/`AGENTS.md`, and its `.mcp.json` from being loaded as
+/// live configuration the moment the process starts, before its read-only prompt is ever read.
+/// <see cref="AgentSpawnRequest.UntrustedWorkingDirectory"/> is the one signal that turns them
+/// on; every other spawn keeps trusting its own worktree exactly as before.
 /// </summary>
 public sealed class ClaudeExecutorIsolationTests
 {

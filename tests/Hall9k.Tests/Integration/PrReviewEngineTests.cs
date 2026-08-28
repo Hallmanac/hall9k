@@ -78,6 +78,18 @@ public sealed class PrReviewEngineTests(PostgresFixture postgres) : IClassFixtur
             throw new InvalidOperationException("A reclaimed run must retire before dispatching anything.");
     }
 
+    /// <summary>Records the spawn request instead of starting anything.</summary>
+    private sealed class CapturingExecutor : IExecutor
+    {
+        public AgentSpawnRequest? Request { get; private set; }
+
+        public Task<SpawnedAgent> SpawnAsync(AgentSpawnRequest request, CancellationToken cancellationToken)
+        {
+            Request = request;
+            return Task.FromResult(new SpawnedAgent(4242, Now));
+        }
+    }
+
     /// <summary>
     /// The generation fence rejects <c>DispatchConformanceAsync</c> before it ever spawns:
     /// the adversarial lens's own result is already on disk, but a fresh generation claimed the
@@ -109,6 +121,41 @@ public sealed class PrReviewEngineTests(PostgresFixture postgres) : IClassFixtur
         await using IQuerySession query = store.QuerySession();
         RunAggregate? run = await query.Events.AggregateStreamAsync<RunAggregate>(runId, token: cts.Token);
         run!.State.Should().Be(RunState.Superseded, "the fence must retire the run rather than let it dispatch");
+    }
+
+    /// <summary>
+    /// The conformance lens reads the same foreign pull-request checkout the adversarial lens
+    /// already read (adversarial review cycle-3 ride-along, `PrReviewEngine.cs:271`): its own
+    /// spawn request must carry <see cref="AgentSpawnRequest.UntrustedWorkingDirectory"/> the
+    /// same way <c>RunLauncherTests</c> already covers for the primary session, so a checkout
+    /// this platform did not cut itself never gets its own `.claude/` config or `.mcp.json`
+    /// loaded for the second lens either.
+    /// </summary>
+    [Fact]
+    public async Task Dispatching_the_conformance_lens_marks_the_spawn_request_untrusted()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        using DocumentStore store = NewStore();
+        NodeContext node = new();
+        await node.InitializeAsync(store, cts.Token);
+
+        (Guid taskId, Guid runId, string runDirectory) = await SeedClaimedPrReviewRunAsync(store, node, cts.Token);
+
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            session.Events.Append(runId, new AgentSessionCompleted(runId, Now));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        CapturingExecutor executor = new();
+        PrReviewEngine engine = NewEngine(store, executor, new FakeProcessManager(), new NoOpWorktreeManager());
+        await engine.RecordAdversarialResultAsync(runDirectory, "Nothing found.\n\nVERDICT: merge-ready", cts.Token);
+
+        await engine.ReviewAsync(runId, taskId, cts.Token);
+
+        executor.Request.Should().NotBeNull("the adversarial result is recorded, so the conformance lens must dispatch next");
+        executor.Request!.UntrustedWorkingDirectory.Should().BeTrue(
+            "the conformance lens reads the same foreign pull-request checkout the adversarial lens did");
     }
 
     /// <summary>
