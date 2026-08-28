@@ -276,9 +276,18 @@ internal static class AttentionComposer
     /// to a branch whose pull request nobody can merge, so there is no watch worth rejoining.
     /// That row's next act is on the pull request itself, which is what the URL is for.
     /// </para>
+    /// <para>
+    /// A pr-review task is a second exception, refused for a different reason (adversarial
+    /// review, cycle 3): <c>TaskDecider.Reopen</c> refuses the type outright, since a pr-review
+    /// run has no pull request of its own for a follow-up to push to. A pr-review task only
+    /// reaches this row at all when a human closed it out by hand
+    /// (<c>h9k task resolve --pr &lt;url&gt;</c> over a run that failed) — never advise the lever
+    /// the platform will refuse.
+    /// </para>
     /// </summary>
     private static string UnwatchedRemedy(TaskListItem task, RunDetails run, string id) =>
-        run.FailureReason != RunDetails.PullRequestClosedWithoutMerge && run.Branch.IsNotBlank()
+        task.Type != TaskType.PrReview
+        && run.FailureReason != RunDetails.PullRequestClosedWithoutMerge && run.Branch.IsNotBlank()
             ? $"h9k pr resolve {id}"
             : run.PullRequestUrl ?? task.PullRequestUrl ?? string.Empty;
 
