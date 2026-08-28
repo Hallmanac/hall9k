@@ -1,4 +1,3 @@
-using Hall9k.Connectors.Processes;
 using Hall9k.Connectors.WorkItems;
 using Hall9k.Daemon.Execution;
 using Hall9k.Daemon.ProcessManagement;
@@ -53,7 +52,6 @@ public sealed class PrReviewEngine(
     IExecutor executor,
     IProcessManager processManager,
     IWorktreeManager worktrees,
-    ProcessRunner processRunner,
     IOptions<DaemonOptions> options,
     ILogger<PrReviewEngine> logger)
 {
@@ -286,7 +284,13 @@ public sealed class PrReviewEngine(
             }
         }
 
-        string baseBranch = await ResolveBaseBranchAsync(task, project, processRunner, cancellationToken) ?? project.BaseBranch;
+        // The base RunLauncher already resolved and recorded at dispatch (RunDispatched.PrReviewBaseRefName),
+        // not a second live `gh pr view` here: the two lenses must diff against the identical
+        // base, and a re-read minutes later can silently disagree with the first — the pull
+        // request's base moved, or the read itself failed transiently — leaving the conformance
+        // lens filing findings against a different range than the adversarial lens actually read
+        // (cycle-3 conformance finding).
+        string baseBranch = run.PrReviewBaseRefName.IsNotBlank() ? run.PrReviewBaseRefName : project.BaseBranch;
         ReviewPacket? packet = await ReviewPacketAssembler.AssembleAsync(run.WorktreePath, baseBranch, sinceSha: null, cancellationToken);
 
         Guid sessionId = DomainId.New();
@@ -505,26 +509,6 @@ public sealed class PrReviewEngine(
         }
 
         logger.LogInformation("Run {RunId} task {TaskId}: pull-request review delivered — task complete, no merge ever observed", runId, taskId);
-    }
-
-    private static async Task<string?> ResolveBaseBranchAsync(
-        TaskDetails task, ProjectDetails project, ProcessRunner processRunner, CancellationToken cancellationToken)
-    {
-        if (task.ExternalReference.IsBlank())
-        {
-            return null;
-        }
-
-        try
-        {
-            PullRequestFacts facts = await new GitHubPullRequestProvider(processRunner).FetchFactsAsync(
-                ExternalReference.Parse(task.ExternalReference).Reference, project.RepositoryPath, cancellationToken);
-            return facts.BaseRefName.IsNotBlank() ? facts.BaseRefName : null;
-        }
-        catch (Domain.Shared.Exceptions.DomainException)
-        {
-            return null;
-        }
     }
 
     private async Task FailAsync(Guid runId, Guid taskId, string reason, CancellationToken cancellationToken)

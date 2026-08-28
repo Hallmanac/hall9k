@@ -24,6 +24,8 @@ public sealed class RunAggregate
     /// been.
     /// </summary>
     public string RunDirectory { get; private set; } = string.Empty;
+    /// <summary>The pull request's base branch as read at dispatch, for a pr-review run only. See <see cref="Events.RunDispatched"/>'s own doc for why.</summary>
+    public string? PrReviewBaseRefName { get; private set; }
     public ExecutorMode ExecutorMode { get; private set; } = ExecutorMode.Unknown;
     /// <summary>The model the build session was spawned on, as resolved at dispatch (log #33). Unknown on streams written before the chain existed.</summary>
     public AgentModel Model { get; private set; } = AgentModel.Unknown;
@@ -452,6 +454,7 @@ public sealed class RunAggregate
         WorktreePath = @event.WorktreePath;
         Branch = @event.Branch;
         RunDirectory = @event.RunDirectory.IsNotBlank() ? @event.RunDirectory : RunPaths.GlobalDirectory(@event.Id);
+        PrReviewBaseRefName = @event.PrReviewBaseRefName;
         ExecutorMode = @event.ExecutorMode;
         Model = @event.Model ?? AgentModel.Unknown;
         DispatchedAt = @event.DispatchedAt;

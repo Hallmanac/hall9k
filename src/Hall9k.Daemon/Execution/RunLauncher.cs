@@ -18,6 +18,7 @@ using Hall9k.Domain.Features.Tasks.Projections;
 using Hall9k.Domain.Features.Tasks.Rendering;
 using Hall9k.Domain.Infrastructure.Ids;
 using Hall9k.Domain.Infrastructure.Storage;
+using Hall9k.Domain.Shared.Exceptions;
 using Hall9k.Domain.Shared.ValueObjects;
 using JasperFx.Events;
 using Marten;
@@ -203,7 +204,8 @@ public sealed class RunLauncher(
             session.Events.StartStream<RunAggregate>(runId, new RunDispatched(
                 runId, taskId, nodeId, ownerId, leaseGeneration, sessionId,
                 worktree.Path, worktree.Branch, mode, DateTimeOffset.UtcNow,
-                IsFollowUp: followUp is not null, Model: model, RunDirectory: runDirectory));
+                IsFollowUp: followUp is not null, Model: model, RunDirectory: runDirectory,
+                PrReviewBaseRefName: prReviewFacts?.BaseRefName));
             await session.SaveChangesAsync(cancellationToken);
 
             // The reopen's kind picks the follow-up prompt; Unknown (reopens recorded

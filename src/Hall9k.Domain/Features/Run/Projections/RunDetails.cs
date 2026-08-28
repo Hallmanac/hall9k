@@ -26,6 +26,8 @@ public sealed class RunDetails
     /// been.
     /// </summary>
     public string RunDirectory { get; set; } = string.Empty;
+    /// <summary>The pull request's base branch as read at dispatch, for a pr-review run only. See <see cref="RunDispatched"/>'s own doc for why.</summary>
+    public string? PrReviewBaseRefName { get; set; }
     public string ExecutorMode { get; set; } = string.Empty;
     /// <summary>The model the build session was spawned on (Decisions Log #33); Unknown for runs dispatched before the chain existed.</summary>
     public AgentModel Model { get; set; } = AgentModel.Unknown;
@@ -221,6 +223,7 @@ public sealed class RunDetailsProjection : SingleStreamProjection<RunDetails, Gu
         RunDirectory = @event.Data.RunDirectory.IsNotBlank()
             ? @event.Data.RunDirectory
             : RunPaths.GlobalDirectory(@event.Data.Id),
+        PrReviewBaseRefName = @event.Data.PrReviewBaseRefName,
         ExecutorMode = @event.Data.ExecutorMode,
         Model = @event.Data.Model ?? AgentModel.Unknown,
         State = RunState.Dispatched,

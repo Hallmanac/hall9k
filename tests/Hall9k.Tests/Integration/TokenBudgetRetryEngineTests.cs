@@ -118,7 +118,6 @@ public sealed class TokenBudgetRetryEngineTests(PostgresFixture postgres) : ICla
         PrReviewEngine prReview = new(
             store, new ClaudeExecutor(NullLogger<ClaudeExecutor>.Instance, processes), processes,
             new GitWorktreeManager(NullLogger<GitWorktreeManager>.Instance),
-            RecordingProcessRunner.Failing("this test never reviews a pull request").Runner,
             Options.Create(new DaemonOptions()), NullLogger<PrReviewEngine>.Instance);
         return new RunSupervisor(store, node, processes, verification, review, prReview,
             new PullRequestOpener(store, NullLogger<PullRequestOpener>.Instance),
