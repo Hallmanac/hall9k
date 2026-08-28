@@ -59,12 +59,18 @@ public static class TaskLifecycleProjectionBackfill
     /// <see cref="TaskDetails.ResolvedRunId"/> exist only on the detail document, since only the
     /// daemon's project-home render sweep reads them, so a document written before either landed
     /// never had the key and would otherwise sit un-archived at the top level of <c>tasks/</c>
-    /// forever, indistinguishable from a task genuinely still live.
+    /// forever, indistinguishable from a task genuinely still live. <see cref="TaskDetails.UntrackedAttested"/>
+    /// (backlog: a task can be published deliberately untracked under a tracking backlog policy)
+    /// is the same shape: non-nullable, so it is always serialized and safe as a marker, unlike
+    /// its sibling <see cref="TaskDetails.UntrackedAttestedAt"/> and
+    /// <see cref="TaskDetails.UntrackedAttestedByOwnerId"/>, which are only written when true and
+    /// would read every ordinary task as permanently stale.
     /// </summary>
     private const string StaleDetailsOnlyDocument =
         "(" + StaleDocument
         + " or not jsonb_exists(d.data, 'failedRunId')"
-        + " or not jsonb_exists(d.data, 'resolvedRunId'))";
+        + " or not jsonb_exists(d.data, 'resolvedRunId')"
+        + " or not jsonb_exists(d.data, 'untrackedAttested'))";
 
     /// <summary>
     /// Rebuilds every task stream still carrying an out-of-date document and returns the ids it
