@@ -244,6 +244,32 @@ public sealed class TestScopeResolverTests : IDisposable
     }
 
     /// <summary>
+    /// The same nested-type exclusion holds when the nested type declares no explicit accessibility
+    /// keyword (legal, idiomatic C# — it defaults to private): a free-floating `\s*` in place of the
+    /// accessibility keyword must not let the indentation itself substitute for a captured modifier
+    /// (independent pre-PR review, cycle 1, conformance lens).
+    /// </summary>
+    [Fact]
+    public async Task A_touched_types_own_unmodified_nested_type_never_stands_in_for_the_outer_type()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromSeconds(30));
+        Commit(
+            "tests/Hall9k.Tests/OtherTests.cs",
+            "public sealed class OtherTests\n{\n    private readonly int Settings = 1;\n}\n",
+            "give OtherTests an unrelated Settings field");
+        string sinceSha = CycleHeadSha;
+        Commit(
+            "src/Hall9k.Domain/Orphan.cs",
+            "public sealed class Orphan\n{\n    sealed class Settings\n    {\n    }\n}\n",
+            "add untested type with an unmodified nested type");
+
+        TestGateScope scope = await TestScopeResolver.ResolveAsync(_repositoryPath, sinceSha, "cycle 2 fix", cts.Token);
+
+        scope.IsScoped.Should().BeFalse();
+        scope.Reason.Should().Contain("no test class references").And.Contain("Orphan.cs");
+    }
+
+    /// <summary>
     /// A test file's own nested private helper class (`tests/Integration/ReviewEngineTests.cs`'s
     /// `ScriptedExecutor`, the shape a scripted-executor fixture takes) must never be registered as
     /// its own selectable test class: no xunit `--filter FullyQualifiedName~` term can select a
