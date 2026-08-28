@@ -37,6 +37,7 @@ public sealed class RunSupervisor(
     IProcessManager processManager,
     VerificationRunner verification,
     ReviewEngine review,
+    PrReviewEngine prReview,
     PullRequestOpener pullRequests,
     ILogger<RunSupervisor> logger)
 {
@@ -314,6 +315,21 @@ public sealed class RunSupervisor(
             result.OutputTokens,
             result.IsError);
 
+        // A pr-review task's primary session IS the adversarial review lens: there is no
+        // diff of its own to gate, re-review, or open a pull request over, so it never
+        // reaches the pre-PR pipeline below — PrReviewEngine takes over completely, and an
+        // error result is already fully handled by the generic RunFailed/TaskFailed above.
+        if (await IsPrReviewTaskAsync(taskId, cancellationToken))
+        {
+            if (!result.IsError)
+            {
+                await prReview.RecordAdversarialResultAsync(runDirectory, result.Summary ?? string.Empty, cancellationToken);
+                await prReview.ReviewAsync(runId, taskId, cancellationToken);
+            }
+
+            return;
+        }
+
         if (!result.IsError)
         {
             switch (await ParkedOnThreadDisputeAsync(runId, taskId, result, cancellationToken))
@@ -521,6 +537,18 @@ public sealed class RunSupervisor(
         {
             try
             {
+                if (await IsPrReviewTaskAsync(run.TaskId, cancellationToken))
+                {
+                    // Reached either mid-conformance-dispatch (RunState.Verifying, the same
+                    // AgentSessionCompleted-driven transition every primary session gets) or
+                    // after h9k review resolve --merge-ready recorded PrReviewDelivered
+                    // (RunState.UnderReview) — PrReviewEngine.ReviewAsync tells the two apart
+                    // and either resumes the report or finalizes the task. Never gates, never
+                    // opens a pull request.
+                    await prReview.ReviewAsync(run.Id, run.TaskId, cancellationToken);
+                    return;
+                }
+
                 bool mergeReady = run.State == RunState.Verifying
                     ? await verification.VerifyAsync(run.Id, run.TaskId, scopeSinceSha: null, InitialVerificationScopeReason, cancellationToken)
                         && await review.ReviewAsync(run.Id, run.TaskId, cancellationToken)
@@ -669,6 +697,14 @@ public sealed class RunSupervisor(
 
         session.Events.Append(taskId, expectedVersion: current.Version + 1, TaskDecider.Fail(current.Task, runId, reason, now));
         session.Delete<TaskLease>(taskId);
+    }
+
+    /// <summary>Whether this run belongs to a pr-review task, the one type PrReviewEngine drives instead of the pre-PR pipeline.</summary>
+    private async Task<bool> IsPrReviewTaskAsync(Guid taskId, CancellationToken cancellationToken)
+    {
+        await using IQuerySession query = store.QuerySession();
+        TaskDetails? task = await query.LoadAsync<TaskDetails>(taskId, cancellationToken);
+        return task?.Type == TaskType.PrReview;
     }
 
     private async Task<long> LoadCursorAsync(Guid runId, CancellationToken cancellationToken)

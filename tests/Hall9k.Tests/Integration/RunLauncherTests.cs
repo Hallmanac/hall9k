@@ -102,6 +102,9 @@ public sealed class RunLauncherTests(PostgresFixture postgres) : IClassFixture<P
         public Task<Worktree> CheckoutExistingAsync(FollowUpWorktreeRequest request, CancellationToken cancellationToken) =>
             throw new InvalidOperationException("A merged pull request must not get a follow-up worktree.");
 
+        public Task<Worktree> CreatePrReviewCheckoutAsync(PrReviewWorktreeRequest request, CancellationToken cancellationToken) =>
+            throw new InvalidOperationException("A merged pull request must not get a pr-review worktree.");
+
         public Task RemoveAsync(string repositoryPath, string worktreePath, CancellationToken cancellationToken) =>
             Task.CompletedTask;
 
@@ -324,6 +327,11 @@ public sealed class RunLauncherTests(PostgresFixture postgres) : IClassFixture<P
         public Task<Worktree> CheckoutExistingAsync(FollowUpWorktreeRequest request, CancellationToken cancellationToken) =>
             Task.FromResult(new Worktree(
                 Path.Combine(Path.GetTempPath(), $"hall9k-wt-{request.RunId:N}"), request.Branch, request.Branch));
+
+        public Task<Worktree> CreatePrReviewCheckoutAsync(PrReviewWorktreeRequest request, CancellationToken cancellationToken) =>
+            Task.FromResult(new Worktree(
+                Path.Combine(Path.GetTempPath(), $"hall9k-wt-{request.RunId:N}"),
+                $"pr/{request.PullRequestNumber}", $"pr/{request.PullRequestNumber}"));
 
         public Task RemoveAsync(string repositoryPath, string worktreePath, CancellationToken cancellationToken) =>
             Task.CompletedTask;
@@ -662,7 +670,11 @@ public sealed class RunLauncherTests(PostgresFixture postgres) : IClassFixture<P
         ReviewEngine review = new(
             store, new ClaudeExecutor(NullLogger<ClaudeExecutor>.Instance, processes), processes, verification,
             Options.Create(new DaemonOptions()), NullLogger<ReviewEngine>.Instance);
-        return new RunSupervisor(store, node, processes, verification, review,
+        PrReviewEngine prReview = new(
+            store, new ClaudeExecutor(NullLogger<ClaudeExecutor>.Instance, processes), processes,
+            new GitWorktreeManager(NullLogger<GitWorktreeManager>.Instance), Options.Create(new DaemonOptions()),
+            NullLogger<PrReviewEngine>.Instance);
+        return new RunSupervisor(store, node, processes, verification, review, prReview,
             new PullRequestOpener(store, NullLogger<PullRequestOpener>.Instance),
             NullLogger<RunSupervisor>.Instance);
     }

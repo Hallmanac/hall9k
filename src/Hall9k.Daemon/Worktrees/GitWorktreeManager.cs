@@ -99,6 +99,34 @@ public sealed class GitWorktreeManager(ILogger<GitWorktreeManager> logger) : IWo
         }
     }
 
+    public async Task<Worktree> CreatePrReviewCheckoutAsync(
+        PrReviewWorktreeRequest request, CancellationToken cancellationToken)
+    {
+        string repositoryPath = Path.GetFullPath(request.RepositoryPath);
+        SemaphoreSlim mutex = LockFor(repositoryPath);
+        await mutex.WaitAsync(cancellationToken);
+        try
+        {
+            string trackingRef = $"refs/remotes/origin/pr-review/{request.PullRequestNumber}";
+            await RunGitAsync(
+                repositoryPath,
+                $"fetch origin \"+refs/pull/{request.PullRequestNumber}/head:{trackingRef}\"",
+                cancellationToken);
+
+            string worktreePath = WorktreePathFor(repositoryPath, request.TaskId, request.RunId);
+            await RunGitAsync(repositoryPath, $"worktree add --detach \"{worktreePath}\" {trackingRef}", cancellationToken);
+
+            logger.LogInformation(
+                "Read-only worktree {Path} checked out detached at pull request #{Number}'s head",
+                worktreePath, request.PullRequestNumber);
+            return new Worktree(worktreePath, $"pr/{request.PullRequestNumber}", trackingRef);
+        }
+        finally
+        {
+            mutex.Release();
+        }
+    }
+
     public async Task RemoveAsync(string repositoryPath, string worktreePath, CancellationToken cancellationToken)
     {
         repositoryPath = Path.GetFullPath(repositoryPath);
