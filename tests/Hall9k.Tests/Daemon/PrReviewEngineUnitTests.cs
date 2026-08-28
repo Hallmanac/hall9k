@@ -37,7 +37,7 @@ public sealed class PrReviewEngineUnitTests : IDisposable
     }
 
     private static PrReviewEngine NewEngine(FakeProcessManager processes) =>
-        new(null!, null!, processes, null!, null!, Options.Create(new DaemonOptions()), NullLogger<PrReviewEngine>.Instance);
+        new(null!, null!, processes, null!, Options.Create(new DaemonOptions()), NullLogger<PrReviewEngine>.Instance);
 
     private static RunAggregate DispatchedConformance(Guid sessionId, int processId, DateTimeOffset startedAt)
     {

@@ -276,7 +276,6 @@ public sealed class PrReviewEngineTests(PostgresFixture postgres) : IClassFixtur
     private static PrReviewEngine NewEngine(
         DocumentStore store, IExecutor executor, FakeProcessManager processes, IWorktreeManager worktrees) =>
         new(store, executor, processes, worktrees,
-            RecordingProcessRunner.Failing("this test never reads a real pull request").Runner,
             Options.Create(new DaemonOptions()), NullLogger<PrReviewEngine>.Instance);
 
     /// <summary>

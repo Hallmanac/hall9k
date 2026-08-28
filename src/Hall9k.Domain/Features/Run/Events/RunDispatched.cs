@@ -20,6 +20,14 @@ namespace Hall9k.Domain.Features.Run.Events;
 /// than trusting this value verbatim; old runs (an empty string, meaning "before this field
 /// existed") and new ones resolve through <c>RunPaths.GlobalDirectory</c> and the recorded path
 /// respectively, with no special case at the read site.
+/// PrReviewBaseRefName is the pull request's base branch as RunLauncher read it at dispatch, for
+/// a pr-review task only (cycle-3 conformance finding): the adversarial lens's diff and the
+/// conformance lens's own re-diff must compare against the identical base, and a second live
+/// `gh pr view` minutes later can disagree with the first — the base moved, or the read itself
+/// failed — with nothing on the stream to say which base either lens actually used. Recording it
+/// once here is what lets the conformance lens reuse this run's own dispatch-time read instead of
+/// taking a second one. Null for a pr-review run dispatched before this field existed, or for any
+/// non-pr-review run, which never carries one.
 /// </summary>
 public sealed record RunDispatched(
     Guid Id,
@@ -34,4 +42,5 @@ public sealed record RunDispatched(
     DateTimeOffset DispatchedAt,
     bool IsFollowUp = false,
     AgentModel? Model = null,
-    string RunDirectory = "");
+    string RunDirectory = "",
+    string? PrReviewBaseRefName = null);
