@@ -218,8 +218,8 @@ public sealed class ReviewResolveCommand : Hall9kAsyncCommand<ReviewResolveComma
     /// UnderReview exactly as ReviewParkResolved does so the daemon's own resume sweep picks
     /// it up, but PrReviewEngine finalizes it directly (task Done, no merge ever observed)
     /// rather than re-entering any review loop.
+    /// <para>Internal so the pr-review verdict rules are testable against a real store without going through <see cref="CliStore.Open"/>'s ambient connection (test: pr-review resolve coverage).</para>
     /// </summary>
-    /// <summary>Internal so the pr-review verdict rules are testable against a real store without going through <see cref="CliStore.Open"/>'s ambient connection (test: pr-review resolve coverage).</summary>
     internal static async Task<int> ResolvePrReviewAsync(
         IDocumentSession session, Guid runId, Guid taskId, StreamState fence, Settings settings,
         CancellationToken cancellationToken)

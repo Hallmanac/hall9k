@@ -86,8 +86,8 @@ public sealed class PrReviewEngine(
     /// written before anything downstream reads it. Re-derives the primary session's own result
     /// from its stream file the same way <see cref="RunResultFile.AlreadyWrittenAsync"/> detects
     /// it, rather than assuming; a no-op once the file already exists.
+    /// <para>Internal for the re-entrancy unit tests (test: pr-review type guards, coverage follow-up) — pure file I/O, no store needed.</para>
     /// </summary>
-    /// <summary>Internal for the re-entrancy unit tests (test: pr-review type guards, coverage follow-up) — pure file I/O, no store needed.</summary>
     internal async Task EnsureAdversarialResultRecordedAsync(string runDirectory, CancellationToken cancellationToken)
     {
         string path = RunPaths.ReviewLensFindingsFile(runDirectory, 1, ReviewLens.Adversarial.Slug);
@@ -209,8 +209,8 @@ public sealed class PrReviewEngine(
     /// died in between (a daemon restart racing a crash, a budget exhaustion never recorded)
     /// is treated the same as never dispatched, so <see cref="DriveAsync"/> redispatches a
     /// fresh one rather than waiting forever on a process that is gone.
+    /// <para>Internal for the liveness-discrimination unit tests (test: pr-review type guards, coverage follow-up).</para>
     /// </summary>
-    /// <summary>Internal for the liveness-discrimination unit tests (test: pr-review type guards, coverage follow-up).</summary>
     internal bool SessionStillLive(RunAggregate run, string runDirectory)
     {
         if (run.PrReviewConformanceCompleted)
