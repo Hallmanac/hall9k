@@ -786,12 +786,12 @@ public sealed record ReviewTrackReactivated( // the mandatory FinalFullPass foun
     ReviewLens Lens,                     //   review cycles after the first) — the inverse of
     int Cycle,                           //   ReviewTrackConcluded, not a replacement of its record:
     DateTimeOffset ReactivatedAt);       //   the earlier conclusion stays on the stream as history.
-public sealed record ReviewFindingRouted( // an out-of-scope non-high went to a draft bug task instead
-    Guid Id,                             //   of into this diff (log #63). DraftTaskId is null and
-    ReviewLens Lens,                     //   FailureReason set when creation failed: routing is a
-    int Cycle,                           //   courtesy, and a courtesy that fails never fails the
-    ReviewSeverity Severity,             //   review loop — but it is recorded as having failed.
-    string Location,
+public sealed record ReviewFindingRouted( // an out-of-scope non-high routes away from this diff
+    Guid Id,                             //   (log #63): a Medium still mints a draft bug task of
+    ReviewLens Lens,                     //   its own, a Low instead folds into the project's one
+    int Cycle,                           //   standing sweep draft (backlog: out-of-scope review
+    ReviewSeverity Severity,             //   findings consolidate). DraftTaskId null + FailureReason
+    string Location,                     //   set on a failed courtesy that never fails the review loop.
     Guid? DraftTaskId,
     string? FailureReason,
     DateTimeOffset RoutedAt);
@@ -1009,10 +1009,16 @@ the other track's fix sessions.
 mechanical scope tag: in-scope if the defective line is in code this branch added or
 changed, out-of-scope if it is pre-existing on the base branch. An out-of-scope **high** is
 fixed here in a commit of its own; an out-of-scope **non-high** is not fixed here at all,
-and the daemon turns it into a **draft bug task** (`ReviewFindingRouted`) that is inert
-until a human publishes it. A failed draft creation is recorded as a failed routing and
-never fails the review loop; it is counted apart from the routings that worked, because no
-draft exists for it. A defect is routed **once per run**: the fix session is told to leave
+and the daemon routes it away instead (`ReviewFindingRouted`), inert until a human acts on
+it — but where it lands then splits by grade (`ReviewSeverity.MeetsFixBar`): a **Medium**
+still mints its own **draft bug task**, exactly as every non-high did before this split
+existed, while a **Low** instead folds into the project's one standing **sweep** draft
+(`SweepDraftTask`, backlog: out-of-scope review findings consolidate) — so a serious
+pre-existing defect can never be buried in a polish pile, and eight one-line Low findings
+cost one build-gate-review pipeline instead of eight. A failed draft creation, of either
+kind, is recorded as a failed routing and never fails the review loop; it is counted apart
+from the routings that worked, because no draft exists for it. A defect is routed **once
+per run**: the fix session is told to leave
 a routed line alone and every later reviewer has fresh context, so the same line comes back
 for as long as anything else keeps the loop alive, and re-routing it would turn one defect
 into one inert draft per cycle. Two reports are the same defect when they name the same
