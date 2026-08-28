@@ -22,10 +22,13 @@ namespace Hall9k.Domain.Features.Tasks.Events;
 /// choice: the publisher supplied <c>--untracked</c> to deliberately skip external tracking for
 /// this task rather than searching the tracker and either linking a match or confirming none
 /// exists. <see cref="PublishedAt"/> and <see cref="PublishedByOwnerId"/> are this attestation's
-/// who and when too. Clamped to false under the same conditions as
-/// <see cref="NoExistingItemAttested"/> — a policy of none, an already-linked task, or a
-/// pending publication never asks for either attestation, so a flag passed defensively is never
-/// recorded verbatim.
+/// who and when too. Unlike <see cref="NoExistingItemAttested"/>, only one of the gate's
+/// never-asked states clamps this flag to false silently — an already-linked task, where
+/// nothing would be created either way. The other two never reach this event at all: a policy
+/// of none (or one this build's closed set doesn't recognize) and a publication already pending
+/// both refuse the publish outright rather than clamp, because a deliberate opt-out nobody
+/// asked for, or one that would silently override an in-flight publication, is worth teaching
+/// about rather than swallowing.
 /// </param>
 public sealed record TaskPublished(
     Guid Id,

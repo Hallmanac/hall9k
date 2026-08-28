@@ -195,8 +195,7 @@ public static class TaskDecider
         // defeat the very choice the operator just made. Refused with the same "teach rather
         // than swallow" reasoning as the policy check above, before the gate below ever gets to
         // decide whether an attestation is needed.
-        if (untracked && task.PendingPublicationProvider is { } pendingProvider
-            && (policy == BacklogPolicy.Jira || policy == BacklogPolicy.GitHubIssues))
+        if (untracked && task.PendingPublicationProvider is { } pendingProvider)
         {
             throw new DomainBusinessRuleException(
                 $"Task {task.Id} already has a {pendingProvider.Value} publication request outstanding"
@@ -232,8 +231,10 @@ public static class TaskDecider
         // Recorded only when the gate actually asked for one — a flag passed defensively on a
         // publish the gate never gated would otherwise assert an unobserved fact on the stream.
         // noExistingItemRecorded reaches this clamp from policy none, an already-linked task, or
-        // one with a publication pending; untrackedRecorded only ever reaches it from policy none
-        // or an already-linked task, since a publication already pending was refused above.
+        // one with a publication pending. untrackedRecorded reaches it only from an already-linked
+        // task: policy none and an unrecognized policy were refused outright above (line ~180),
+        // and so was a pending publication (line ~198), so by the time untracked is still true
+        // here the only never-asked state left standing is ExternalReference already set.
         bool noExistingItemRecorded = needsExistingItemCheck && noExistingItemAttested;
         bool untrackedRecorded = needsExistingItemCheck && untracked;
         return new TaskPublished(
