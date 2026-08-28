@@ -498,10 +498,16 @@ public static partial class ReviewVerdictValidation
             return false;
         }
 
+        // Normalized before any strip runs, not only afterward for the paragraph split below
+        // (cycle-3 conformance finding): AgentContextParagraphs hands StripVerbatimEchoes needles
+        // already normalized to '\n', so a CRLF-authored pass's raw text has to match on the same
+        // terms, or a multi-line needle — the agent-context ones are the only multi-line needles
+        // this screen strips — never lines up against it and the echo it is meant to catch survives.
+        string normalized = output.Replace("\r\n", "\n");
         string sanitized = StripVerbatimEchoes(
             StripVerbatimEchoes(
                 StripVerbatimEchoes(
-                    StripObjectiveEcho(StripPlaceholderLocations(output), taskObjective), taskAcceptanceCriteria),
+                    StripObjectiveEcho(StripPlaceholderLocations(normalized), taskObjective), taskAcceptanceCriteria),
                 priorRulingReasons),
             AgentContextParagraphs(taskAgentContext));
 
@@ -511,12 +517,8 @@ public static partial class ReviewVerdictValidation
             return true;
         }
 
-        // Normalized the same way ParseFindings normalizes this exact data (line 47 there): a
-        // CRLF-authored pass otherwise leaves a stray '\r' between the two '\n's ParagraphBoundary
-        // needs to see a blank line, collapsing every paragraph in the body into one.
         string body = string.Join('\n', sanitized
             .Split('\n')
-            .Select(line => line.TrimEnd('\r'))
             .Where(line => !line.TrimStart().StartsWith(VerdictMarker, StringComparison.OrdinalIgnoreCase)));
 
         return NamesFindingAcrossParagraphs(ParagraphBoundary().Split(body));
