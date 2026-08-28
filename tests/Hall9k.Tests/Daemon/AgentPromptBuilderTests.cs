@@ -429,6 +429,30 @@ public sealed class AgentPromptBuilderTests : IDisposable
     }
 
     /// <summary>
+    /// The task's own objective describes the review deliverable, never the diff — the same
+    /// contradiction the acceptance-criteria fix above removed, one field over (cycle-2 verify
+    /// finding, `AgentPromptBuilder.cs:1121`): printing it verbatim under "What the diff is
+    /// supposed to do" told the lens to judge a foreign diff against a standard it can never
+    /// meet, since the diff was never written to satisfy this task's objective.
+    /// </summary>
+    [Fact]
+    public void Pr_review_conformance_lens_never_prints_the_tasks_own_objective_as_the_diffs_standard()
+    {
+        ProjectDetails project = SomeProject();
+
+        string prompt = AgentPromptBuilder.BuildPrReviewLens(
+            SomeTask(), project, "pr/42", ReviewLens.Conformance, packet: null, baseBranch: "main");
+
+        prompt.Should().NotContain("## What the diff is supposed to do\n\nAdd rate limiting to auth endpoints",
+            "the task's own objective must never be presented as the diff's own standard");
+        prompt.Should().Contain("## What this review task is");
+        prompt.Should().Contain("Add rate limiting to auth endpoints",
+            "the objective is still shown, just correctly framed as describing the review task itself");
+        prompt.Should().Contain("the pull request's own title and description",
+            "the diff's real standard is named in place of the objective");
+    }
+
+    /// <summary>
     /// A pr-review lens's own AGENTS.md/CLAUDE.md doctrine trust differs from the ordinary loop's
     /// (cycle-1 adversarial finding, `AgentPromptBuilder.cs:857`): the checkout is the pull
     /// request author's own head, so a diff that edits those files in the same commit it wants
