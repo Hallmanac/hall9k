@@ -1453,8 +1453,14 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
         RunDetails run = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
         run.State.Should().Be(RunState.ReviewParked);
         run.ReviewCycle.Should().Be(5, "the park happens deciding cycle 6, before it ever dispatches");
-        run.ParkedReason.Should().Contain("mandatory final full review pass has now run 2 time(s)")
-            .And.Contain("h9k review resolve --merge-ready");
+        run.ParkedReason.Should().Contain("dispatched the mandatory final full review pass")
+            .And.Contain("2 consecutive time(s)")
+            .And.Contain("h9k review resolve --merge-ready")
+            .And.NotContain(
+                "reawakened",
+                "the post-gate medium concludes the track outright every time (Continues: false), so " +
+                "ReviewTrackReactivated never actually fires in this scenario and the park text must not " +
+                "claim it did");
 
         List<object> events = [.. (await query.Events.FetchStreamAsync(runId, token: cts.Token)).Select(e => e.Data)];
         events.OfType<ReviewDispatched>().Count(e => e.Mode == ReviewMode.FinalFullPass).Should().Be(
