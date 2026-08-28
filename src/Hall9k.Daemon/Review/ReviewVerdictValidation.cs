@@ -454,9 +454,14 @@ public static partial class ReviewVerdictValidation
     /// </para>
     /// <para>
     /// <paramref name="taskAgentContext"/> screens the identical class of echo for the task's own
-    /// agent context, printed into the conformance lens's own prompt right alongside the
-    /// objective and the acceptance criteria (<c>AgentPromptBuilder.BuildConformanceReview</c>,
-    /// cycle-2 review, adversarial finding): a routed bug task's agent context embeds a prior
+    /// agent context — but only for a pr-review task's conformance lens
+    /// (<c>PrReviewEngine.HasUsableVerdict</c> is this parameter's only caller now; the ordinary
+    /// pre-PR loop's own <c>ReviewEngine.RecordReviewPassAsync</c> never passes it, verify cycle-2
+    /// finding): the pull request's own title and description live nowhere else for that lens to
+    /// read, so <c>AgentPromptBuilder.BuildConformanceReview</c> prints agent context into its own
+    /// prompt's "## Context" section only on its <c>DiffIsForeignPullRequest</c> branch, right
+    /// alongside the objective and the acceptance criteria that branch also carries there
+    /// (cycle-2 review, adversarial finding). A routed bug task's agent context embeds a prior
     /// review finding verbatim — header, location and all — and an ordinary adopted task's
     /// context is an issue body that routinely pairs a filename with defect vocabulary the same
     /// way a criterion does, so a session that restates either before concluding satisfies the

@@ -364,6 +364,18 @@ public sealed class PrReviewEngine(
             return false;
         }
 
+        // Recorded before the verdict is screened, not alongside PrReviewConformanceCompleted
+        // below (adversarial review, cycle 2): the session already spent these tokens whether or
+        // not its verdict turns out usable, and RejectUnusableVerdictAsync's own rejection path
+        // fails the run without ever reaching that later write, which used to drop a
+        // fully-completed session's whole spend from the run stream. ReviewEngine.RecordReviewPassAsync
+        // appends tokens before any verdict handling for the identical reason (ReviewEngine.cs:996).
+        await using (IDocumentSession tokensSession = store.LightweightSession())
+        {
+            tokensSession.Events.Append(runId, result.ToTokensRecorded(runId, DateTimeOffset.UtcNow));
+            await tokensSession.SaveChangesAsync(cancellationToken);
+        }
+
         string conformanceSummary = result.Summary ?? string.Empty;
         if (await RejectUnusableVerdictAsync(
             runId, taskId, run.LeaseGeneration, "conformance", conformanceSummary, sawTaskContext: true, task,
@@ -384,7 +396,6 @@ public sealed class PrReviewEngine(
 
         await using IDocumentSession session = store.LightweightSession();
         session.Events.Append(runId, new PrReviewConformanceCompleted(runId, sessionId, DateTimeOffset.UtcNow));
-        session.Events.Append(runId, result.ToTokensRecorded(runId, DateTimeOffset.UtcNow));
         await session.SaveChangesAsync(cancellationToken);
         return true;
     }
