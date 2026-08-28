@@ -604,9 +604,13 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
 
     /// <summary>
     /// The severity gate (Decisions Log #63). Cycle 1 is ungated, so a medium forces cycle 2;
-    /// cycle 2 is gated here, so its mediums are fixed and the loop ends without another review
-    /// pass. That is deliberate, and the residual record is what keeps it honest: the verdict
-    /// stays MergeReady, and the settlement says it was Settled rather than Clean.
+    /// cycle 2 is gated here, so its mediums are fixed without forcing a review pass of their own.
+    /// The cycle-2 conclusion still records the fix as FixedUnreviewed — nobody has re-read it yet
+    /// at that point — but this run's mandatory <see cref="ReviewMode.FinalFullPass"/> (cycle 3)
+    /// goes on to read that exact fix fresh and finds nothing, which is the re-read the residual
+    /// was waiting on: the settlement is Clean, not Settled (cycle-3 cap-park finding — a run whose
+    /// final full pass comes back clean settles Clean instead of forever reporting the gate's own
+    /// now-superseded residual).
     /// </summary>
     [Fact]
     public async Task Past_the_gate_a_medium_is_fixed_and_ships_without_another_review_pass()
@@ -644,15 +648,16 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
         RunDetails run = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
         run.LastReviewVerdict.Should().Be(ReviewVerdict.MergeReady, "the terminal verdict is MergeReady either way");
         run.ReviewSettlement.Should().Be(
-            ReviewSettlement.Settled,
-            "the terminal fix shipped unreviewed at the cycle it was made, even though the mandatory "
-                + "final full pass later confirmed the tip clean — the residual records what actually happened");
-        run.ReviewResidualsFixed.Should().Be(2, "the medium and the low were fixed but never re-reviewed");
+            ReviewSettlement.Clean,
+            "the mandatory final full pass read the exact fix fresh and found nothing — the re-read the "
+                + "cycle-2 residual was waiting on, so it is superseded rather than reported forever");
+        run.ReviewResidualsFixed.Should().Be(
+            0, "the medium and the low were fixed, and the final full pass went on to confirm the fix clean");
         run.ReviewResidualsRouted.Should().Be(0);
 
         List<object> events = [.. (await query.Events.FetchStreamAsync(runId, token: cts.Token)).Select(e => e.Data)];
         events.OfType<ReviewSettled>().Should().ContainSingle().Which.Settlement
-            .Should().Be(ReviewSettlement.Settled);
+            .Should().Be(ReviewSettlement.Clean);
         events.FindLastIndex(recorded => recorded is VerificationPassed).Should().BeGreaterThan(
             events.FindIndex(recorded => recorded is ReviewFixCompleted fix && fix.Cycle == 2),
             "what a settled ending ships unreviewed is the reviewers' reading of the terminal fix, "

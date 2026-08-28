@@ -184,6 +184,71 @@ public sealed class RunAggregateTests
     }
 
     /// <summary>
+    /// The severity gate's own "fixed but never re-read" residual is not the last word: the
+    /// mandatory <see cref="ReviewMode.FinalFullPass"/> that runs immediately before a run may
+    /// settle (Decisions Log #92) is a fresh, full-diff read of the exact tip that residual was
+    /// recorded against, so a clean result on it IS the re-read the residual was left waiting for.
+    /// Origin (cycle-3 cap-park finding): the residual list is append-only
+    /// (<see cref="RunAggregate.Apply(Events.ReviewTrackConcluded)"/> only ever adds to it), so
+    /// without consulting each lens's own latest conclusion a run stuck reporting Settled here
+    /// could never reach Clean again no matter how many subsequent fresh reads came back empty.
+    /// </summary>
+    [Fact]
+    public void A_clean_final_full_pass_supersedes_the_gate_s_own_fixed_unreviewed_residual()
+    {
+        RunAggregate run = new();
+        Guid id = DomainId.New();
+        run.Apply(new RunDispatched(
+            id, DomainId.New(), DomainId.New(), DomainId.New(), 1, DomainId.New(),
+            "/wt/x", "task/x", ExecutorMode.Subscription, Now));
+
+        // Cycle 4: the adversarial track hits the severity gate on a Medium, fixes it, and ends
+        // Settled — nobody has re-read the fix yet (mirrors The_terminal_fix_still_re_runs_the_
+        // gates_before_the_loop_settles above).
+        run.Apply(new ReviewDispatched(
+            id, DomainId.New(), Cycle: 4, ProcessId: 5001, Now, Now, Lens: ReviewLens.Adversarial));
+        run.Apply(new ReviewPassCompleted(
+            id, 4, ReviewLens.Adversarial, ReviewVerdict.NeedsFixes, Now,
+            [new ReviewFindingRecord(
+                ReviewSeverity.Medium, ReviewFindingScope.InScope, "Auth.cs:42", ReviewFindingDisposition.Fix)]));
+        run.Apply(new ReviewCompleted(id, 4, ReviewVerdict.NeedsFixes, Now));
+        run.Apply(new ReviewTrackConcluded(id, ReviewLens.Conformance, 1, ReviewSettlement.Clean, [], Now));
+        run.Apply(new ReviewTrackConcluded(
+            id, ReviewLens.Adversarial, 4, ReviewSettlement.Settled,
+            [new ReviewResidual(
+                ReviewLens.Adversarial, 4, ReviewSeverity.Medium, ReviewFindingScope.InScope,
+                ReviewResidualDisposition.FixedUnreviewed, "Auth.cs:42")],
+            Now));
+        run.Apply(new ReviewFixDispatched(id, DomainId.New(), Cycle: 4, ProcessId: 5002, Now, Now));
+        run.Apply(new ReviewFixCompleted(id, 4, ReviewFixOutcome.Fixed, Now));
+        run.Apply(new VerificationPassed(id, Now));
+        run.DeriveSettlement().Should().Be(
+            ReviewSettlement.Settled, "the medium is fixed, but nothing has read the fix yet");
+
+        // Cycle 5: the mandatory FinalFullPass reads every lens fresh, including the one that
+        // already concluded, and this time finds nothing at all.
+        run.Apply(new ReviewDispatched(
+            id, DomainId.New(), Cycle: 5, ProcessId: 5003, Now, Now, Lens: ReviewLens.Conformance,
+            Mode: ReviewMode.FinalFullPass));
+        run.Apply(new ReviewDispatched(
+            id, DomainId.New(), Cycle: 5, ProcessId: 5004, Now, Now, Lens: ReviewLens.Adversarial,
+            Mode: ReviewMode.FinalFullPass));
+        run.Apply(new ReviewPassCompleted(id, 5, ReviewLens.Conformance, ReviewVerdict.MergeReady, Now));
+        run.Apply(new ReviewPassCompleted(id, 5, ReviewLens.Adversarial, ReviewVerdict.MergeReady, Now));
+        run.Apply(new ReviewCompleted(id, 5, ReviewVerdict.MergeReady, Now));
+        run.Apply(new ReviewTrackConcluded(id, ReviewLens.Conformance, 5, ReviewSettlement.Clean, [], Now));
+        run.Apply(new ReviewTrackConcluded(id, ReviewLens.Adversarial, 5, ReviewSettlement.Clean, [], Now));
+
+        run.DeriveSettlement().Should().Be(
+            ReviewSettlement.Clean,
+            "the final full pass re-read the exact defect the gate fixed unreviewed and found nothing");
+        run.DeriveResidualTally().FixedUnreviewed.Should().Be(
+            0, "the earlier residual is superseded by the clean re-read, not silently dropped from the stream");
+        run.ReviewResiduals.Should().ContainSingle(
+            "the stream itself still records what actually happened — only the tally reads it as resolved");
+    }
+
+    /// <summary>
     /// A finding routed away in a cycle the track goes on running past is still a finding this
     /// pull request exported to a draft bug task, so it is a residual from the moment it is
     /// routed. Recording it only when the track concludes would let the run settle Clean over a
