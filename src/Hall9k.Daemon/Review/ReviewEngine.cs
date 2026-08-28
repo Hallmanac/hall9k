@@ -111,8 +111,14 @@ public sealed class ReviewEngine(
     /// that can serialize two review loops racing to fold into the same project's sweep within
     /// this process — the exact collision <see cref="RouteFindingsAsync"/> guards against
     /// (adversarial and conformance review, cycle 1). <see cref="RouteToSweepAsync"/>'s own
-    /// expectedVersion fence is the second, cross-process layer for the case this lock cannot
-    /// reach: an install running more than one daemon node against the same database.
+    /// expectedVersion fence adds a second, cross-process layer only for the revise-an-open-sweep
+    /// path; the branch that starts a brand-new sweep stream carries no such fence (a fresh
+    /// <c>StartStream</c> under a new <c>DomainId</c> has no prior version to assert against), so
+    /// today this in-process lock is the only thing stopping two daemon nodes racing against the
+    /// same database from each observing "no open sweep yet" and starting two (adversarial and
+    /// conformance review, cycle 4). Multi-node is design-only today
+    /// (<c>HALL9K-P2P-DESIGN.md</c>), so nothing misbehaves on a real install, but this comment
+    /// stops short of claiming a safety property the create path does not have.
     /// </summary>
     private readonly ConcurrentDictionary<Guid, SemaphoreSlim> _sweepLocks = new();
 
