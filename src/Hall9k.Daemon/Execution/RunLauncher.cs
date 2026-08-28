@@ -490,14 +490,21 @@ public sealed class RunLauncher(
     /// live read tells whether it is still open to review at all). A read failure (gh
     /// unavailable, the repository unreachable) is let through to <see cref="LaunchAsync"/>'s
     /// own catch, which fails the run with gh's own words rather than a guessed "not open".
-    /// Null return means the read succeeded and the pull request is genuinely not open.
+    /// Null return means the read succeeded and the pull request is genuinely not open — a
+    /// blank <see cref="TaskDetails.ExternalReference"/> is a different fact (this pr-review task
+    /// carries no reference at all, which every CLI door that can create one already refuses) and
+    /// throws rather than returning null, so it reaches the same catch with its own honest
+    /// message instead of being reported as "is no longer open" (adversarial review, cycle 3).
     /// </summary>
     private static async Task<PullRequestFacts?> FetchOpenPullRequestFactsAsync(
         TaskDetails task, ProjectDetails project, ProcessRunner processRunner, CancellationToken cancellationToken)
     {
         if (task.ExternalReference.IsBlank())
         {
-            return null;
+            throw new DomainBusinessRuleException(
+                "This pr-review task carries no external reference to a pull request, so there is "
+                + "nothing to dispatch against — every door that creates a pr-review task should have "
+                + "refused it without one.");
         }
 
         PullRequestFacts facts = await new GitHubPullRequestProvider(processRunner).FetchFactsAsync(
