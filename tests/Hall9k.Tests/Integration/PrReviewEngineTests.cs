@@ -8,6 +8,7 @@ using Hall9k.Domain.Features.Project;
 using Hall9k.Domain.Features.Project.Handlers;
 using Hall9k.Domain.Features.Run;
 using Hall9k.Domain.Features.Run.Events;
+using Hall9k.Domain.Features.Run.Projections;
 using Hall9k.Domain.Features.Project.Events;
 using Hall9k.Domain.Features.Tasks;
 using Hall9k.Domain.Features.Tasks.Documents;
@@ -205,6 +206,51 @@ public sealed class PrReviewEngineTests(PostgresFixture postgres) : IClassFixtur
 
         File.ReadAllText(RunPaths.ReviewFindingsFile(runDirectory, 1))
             .Should().Contain("matches", "the conformance lens's own findings text lands in the report");
+    }
+
+    /// <summary>
+    /// A crash while the conformance session is still in flight must terminate it (adversarial
+    /// review, cycle 7, `PrReviewEngine.cs:135`): the untrusted foreign checkout is otherwise
+    /// left with a live agent process nobody will ever read the findings of, mirroring
+    /// <c>ReviewEngineTests.A_crash_while_the_fix_session_is_in_flight_terminates_it_too</c>.
+    /// The crash is induced the way that test induces its own — an artifact write that fails
+    /// because the destination path is already a directory — landing after the conformance
+    /// session's result is in hand but before <c>PrReviewConformanceCompleted</c> commits.
+    /// </summary>
+    [Fact]
+    public async Task A_crash_while_the_conformance_session_is_in_flight_terminates_it()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        using DocumentStore store = NewStore();
+        NodeContext node = new();
+        await node.InitializeAsync(store, cts.Token);
+
+        (Guid taskId, Guid runId, string runDirectory) = await SeedClaimedPrReviewRunAsync(store, node, cts.Token);
+
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            session.Events.Append(runId, new AgentSessionCompleted(runId, Now));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        ScriptedExecutor executor = new(
+            "Reviewed the pull request against its own title and description; it matches.\n\nVERDICT: merge-ready");
+        PrReviewEngine engine = NewEngine(store, executor, executor.Processes, new NoOpWorktreeManager());
+        await engine.RecordAdversarialResultAsync(runDirectory, "Nothing found.\n\nVERDICT: merge-ready", cts.Token);
+
+        Directory.CreateDirectory(RunPaths.ReviewLensFindingsFile(runDirectory, 1, ReviewLens.Conformance.Slug));
+
+        await engine.ReviewAsync(runId, taskId, cts.Token);
+
+        executor.Processes.Terminations.Should().ContainSingle(
+            "the conformance session was still recorded in flight when the loop crashed writing its findings file");
+        executor.Processes.Terminations.Single().ProcessId.Should().Be(
+            7_000, "the conformance lens's own session, the only one this run ever dispatches");
+
+        await using IQuerySession query = store.QuerySession();
+        RunDetails run = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
+        run.State.Should().Be(RunState.Failed);
+        run.FailureReason.Should().Contain("Pr-review loop failed", "the crash is reported as itself, not as a verdict");
     }
 
     /// <summary>
