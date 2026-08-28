@@ -593,15 +593,21 @@ public sealed class GitHubWorkItemProviderTests
             .Should().Contain("--backlog-routing");
     }
 
+    /// <summary>
+    /// gh exiting 0 with blank stdout is the same "a real issue was very likely created" shape as
+    /// the drain-race and read-back-failure cases below, not a create failure: a caller that
+    /// reacted to it the way it reacts to ExplainCreate's failures ("create one by hand") would
+    /// file a duplicate for whatever gh actually created but printed nothing about.
+    /// </summary>
     [Fact]
-    public async Task A_create_that_prints_no_url_is_refused_rather_than_trusted()
+    public async Task A_create_that_prints_no_url_is_not_read_as_a_create_failure()
     {
         RecordingProcessRunner gh = RecordingProcessRunner.Succeeding(string.Empty);
 
         Func<Task> create = () => new GitHubWorkItemProvider(gh.Runner).CreateAsync(
             new GitHubIssueCreateRequest("t", null, [], "/repos/hall9k"), CancellationToken.None);
 
-        (await create.Should().ThrowAsync<DomainValidationException>()).Which.Message
+        (await create.Should().ThrowAsync<DomainConflictException>()).Which.Message
             .Should().Contain("h9k task link-issue");
     }
 
