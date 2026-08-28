@@ -155,7 +155,10 @@ public sealed partial class VerificationRunner(
         IReadOnlyList<VerifyCommand> gates = project?.VerifyCommands ?? [];
         if (gates.Count == 0)
         {
-            await RecordPassAsync(runId, "No verification gates configured for this project.", cancellationToken);
+            string? noGatesHeadSha = await GetHeadShaAsync(run.WorktreePath, cancellationToken);
+            await RecordPassAsync(
+                runId, "No verification gates configured for this project.", ranFullScope: true, noGatesHeadSha,
+                cancellationToken);
             logger.LogInformation("Run {RunId} verification passed: no gates configured", runId);
             return true;
         }
@@ -267,7 +270,16 @@ public sealed partial class VerificationRunner(
                 : testScopeFellBackToFull
                     ? $"Test gate ran full: the scoped filter matched no tests ({scope.Reason})"
                     : $"Test gate ran full: {scope.Reason}";
-        await RecordPassAsync(runId, note, cancellationToken);
+        // Whether THIS pass covered every configured gate at full scope, never guessed from the
+        // caller's own request (task: a fix cycle's verification gate) — a scope is null when no
+        // gate is `dotnet test`-shaped, in which case nothing was ever narrowed, so the whole pass
+        // trivially counts as full; otherwise it is full only when the top-level scope decision
+        // itself resolved to full (an explicit unscoped request, or TestScopeResolver's own
+        // fallback — the doc-touching case) or a scoped gate's filter fell back to a full run
+        // after intersecting to nothing (RunGateAsync's own ScopedRunExecutedNoTests check).
+        bool ranFullScope = scope is null || !scope.IsScoped || testScopeFellBackToFull;
+        string? passHeadSha = await GetHeadShaAsync(run.WorktreePath, cancellationToken);
+        await RecordPassAsync(runId, note, ranFullScope, passHeadSha, cancellationToken);
         logger.LogInformation(
             "Run {RunId} verification passed ({Count} gate(s)){TestGateSummary}",
             runId, gates.Count,
@@ -564,11 +576,24 @@ public sealed partial class VerificationRunner(
         }
     }
 
-    private async Task RecordPassAsync(Guid runId, string? note, CancellationToken cancellationToken)
+    private async Task RecordPassAsync(
+        Guid runId, string? note, bool ranFullScope, string? headSha, CancellationToken cancellationToken)
     {
         await using IDocumentSession session = store.LightweightSession();
-        session.Events.Append(runId, new VerificationPassed(runId, DateTimeOffset.UtcNow, note));
+        session.Events.Append(runId, new VerificationPassed(runId, DateTimeOffset.UtcNow, note, ranFullScope, headSha));
         await session.SaveChangesAsync(cancellationToken);
+    }
+
+    /// <summary>
+    /// The worktree's `git rev-parse HEAD`, recorded alongside a pass's own full-scope fact (task:
+    /// a fix cycle's verification gate) so a later full-scope skip decision can tell whether the
+    /// tip it ran against is still the tip about to settle. Null when git cannot answer — never
+    /// guessed, the same convention <see cref="CountBranchCommitsAsync"/> already follows.
+    /// </summary>
+    private static async Task<string?> GetHeadShaAsync(string worktreePath, CancellationToken cancellationToken)
+    {
+        (int exitCode, string output) = await RunGitAsync(worktreePath, ["rev-parse", "HEAD"], cancellationToken);
+        return exitCode == 0 ? output.Trim() : null;
     }
 
     private async Task RecordGateRetryAsync(Guid runId, string gate, string cause, CancellationToken cancellationToken)
@@ -631,12 +656,23 @@ public sealed partial class VerificationRunner(
 
     /// <summary>
     /// Whether a scoped `dotnet test` gate's own output shows VSTest ran zero tests rather than
-    /// some passing — the observed marker VSTest prints on an empty filter intersection, exit
-    /// code 0 regardless (verified against this repo's own VSTest console: `dotnet test --filter
-    /// "FullyQualifiedName~NoSuchClass"` exits 0 and prints exactly this line).
+    /// some passing — read from the run's own executed-test summary (`Total:` lines VSTest prints
+    /// once per matched test assembly), never from the presence of the per-source "No test
+    /// matches the given testcase filter" warning: that marker is emitted once per SOURCE, so a
+    /// multi-project solution where the scoped filter matched in one project and missed another
+    /// prints it right alongside a genuine `Total:` line from the project that actually ran
+    /// (cycle-3 finding — the old substring check called that combination vacuous and discarded a
+    /// passing run). Zero `Total:` lines at all — the marker alone, or no VSTest summary output
+    /// whatsoever — is exactly the case still called vacuous.
     /// </summary>
-    internal static bool ScopedRunExecutedNoTests(string output) =>
-        output.Contains("No test matches the given testcase filter", StringComparison.OrdinalIgnoreCase);
+    internal static bool ScopedRunExecutedNoTests(string output)
+    {
+        MatchCollection totals = ExecutedTestTotalPattern().Matches(output);
+        return totals.Count == 0 || totals.All(match => int.Parse(match.Groups["count"].Value) == 0);
+    }
+
+    [GeneratedRegex("""Total:\s*(?<count>\d+)""")]
+    private static partial Regex ExecutedTestTotalPattern();
 
     /// <summary>
     /// Injects <paramref name="filterExpression"/> into a `dotnet test` command, combining with
@@ -714,7 +750,7 @@ public sealed partial class VerificationRunner(
         return command.Length;
     }
 
-    [GeneratedRegex("""--filter\s+"(?<filter>[^"]*)"|--filter\s+(?<filter>\S+)""")]
+    [GeneratedRegex("""--filter(?:\s+|=|:)"(?<filter>[^"]*)"|--filter(?:\s+|=|:)(?<filter>\S+)""")]
     private static partial Regex ExistingTestFilterPattern();
 
     private static string Sanitize(string name) =>

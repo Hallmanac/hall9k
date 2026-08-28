@@ -7,10 +7,12 @@ namespace Hall9k.Tests.Daemon;
 /// <summary>
 /// A scoped `dotnet test` filter that intersects with the gate's own already-configured filter
 /// to nothing must never stand an empty run in for a passed one (task: a fix cycle's verification
-/// gate; independent pre-PR review, cycle 1). Verified against this repo's own VSTest console —
-/// `dotnet test --filter "FullyQualifiedName~NoSuchClass"` exits 0 and prints exactly this line —
-/// so <see cref="VerificationRunner.ScopedRunExecutedNoTests"/> is checked here at the string
-/// level rather than by spawning a real gate process.
+/// gate; independent pre-PR review, cycle 1) — but the per-source "No test matches" warning VSTest
+/// prints is emitted once per SOURCE, not once per run, so a multi-project solution where the
+/// filter matched in one project and missed another must not be called vacuous just because the
+/// warning appears somewhere in the combined output (cycle-3 finding).
+/// <see cref="VerificationRunner.ScopedRunExecutedNoTests"/> is checked here at the string level
+/// rather than by spawning a real gate process.
 /// </summary>
 public sealed class VerificationRunnerScopedGateTests
 {
@@ -20,15 +22,24 @@ public sealed class VerificationRunnerScopedGateTests
         "No test matches the given testcase filter `FullyQualifiedName~WidgetTests` in " +
         "/repo/tests/Hall9k.Tests/bin/Debug/net10.0/Hall9k.Tests.dll\n")]
     [InlineData("no test matches the given testcase filter `(Category!=RequiresDocker)&(FullyQualifiedName~WidgetTests)`")]
+    [InlineData("")]
     public void An_empty_filter_intersection_is_recognized(string gateOutput) =>
         VerificationRunner.ScopedRunExecutedNoTests(gateOutput).Should().BeTrue();
 
     [Theory]
     [InlineData("Passed!  - Failed:     0, Passed:     3, Skipped:     0, Total:     3, Duration: 1 s")]
     [InlineData("Failed!  - Failed:     1, Passed:     2, Skipped:     0, Total:     3, Duration: 1 s")]
-    [InlineData("")]
     public void A_genuine_test_run_is_never_mistaken_for_an_empty_one(string gateOutput) =>
         VerificationRunner.ScopedRunExecutedNoTests(gateOutput).Should().BeFalse();
+
+    [Fact]
+    public void A_multi_project_run_where_one_source_matched_and_one_did_not_is_never_mistaken_for_vacuous() =>
+        VerificationRunner.ScopedRunExecutedNoTests(
+            "No test matches the given testcase filter `FullyQualifiedName~WidgetTests` in " +
+            "/repo/tests/Hall9k.Tests/bin/Debug/net10.0/Hall9k.Tests.dll\n" +
+            "Passed!  - Failed:     0, Passed:     3, Skipped:     0, Total:     3, Duration: 1 s - " +
+            "Hall9k.Tests.Integration.dll")
+            .Should().BeFalse();
 
     [Fact]
     public void The_filter_is_appended_to_a_plain_dotnet_test_command()
@@ -42,6 +53,27 @@ public sealed class VerificationRunnerScopedGateTests
     {
         VerificationRunner.ApplyTestFilter(
                 """dotnet test --filter "Category!=RequiresDocker" """.Trim(), "FullyQualifiedName~WidgetTests")
+            .Should().Be("""dotnet test --filter "(Category!=RequiresDocker)&(FullyQualifiedName~WidgetTests)" """.Trim());
+    }
+
+    /// <summary>
+    /// `--filter=` is VSTest's own accepted alternate spelling of `--filter ` (cycle-3 finding) —
+    /// an existing filter written this way must still be found and merged, never duplicated into
+    /// a second `--filter` flag `dotnet test` does not accept.
+    /// </summary>
+    [Fact]
+    public void The_filter_combines_with_an_existing_filter_written_with_an_equals_sign()
+    {
+        VerificationRunner.ApplyTestFilter(
+                """dotnet test --filter="Category!=RequiresDocker" """.Trim(), "FullyQualifiedName~WidgetTests")
+            .Should().Be("""dotnet test --filter "(Category!=RequiresDocker)&(FullyQualifiedName~WidgetTests)" """.Trim());
+    }
+
+    /// <summary>`--filter:` is VSTest's other accepted alternate spelling (cycle-3 finding), unquoted here since that form is common without one.</summary>
+    [Fact]
+    public void The_filter_combines_with_an_existing_filter_written_with_a_colon()
+    {
+        VerificationRunner.ApplyTestFilter("dotnet test --filter:Category!=RequiresDocker", "FullyQualifiedName~WidgetTests")
             .Should().Be("""dotnet test --filter "(Category!=RequiresDocker)&(FullyQualifiedName~WidgetTests)" """.Trim());
     }
 

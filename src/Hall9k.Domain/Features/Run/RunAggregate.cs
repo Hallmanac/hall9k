@@ -314,6 +314,22 @@ public sealed class RunAggregate
     /// </summary>
     public bool FixDispatchedThisCycle => _fixDispatchedThisCycle;
 
+    /// <summary>
+    /// Whether the most recently recorded <see cref="Events.VerificationPassed"/> ran every
+    /// `dotnet test`-shaped gate at full scope (task: a fix cycle's verification gate) — set from
+    /// the event itself, never re-derived, since only <c>VerificationRunner.VerifyAsync</c>'s own
+    /// caller ever knows whether a nominally scoped gate actually fell back to full (an unmapped touched
+    /// file, or a scoped filter that intersected to nothing). Paired with
+    /// <see cref="LastGateHeadSha"/>: together they are what lets <c>ReviewEngine</c>'s Settling
+    /// step recognize "this exact tip already had a full run" and skip a second one, rather than
+    /// re-deriving it from <see cref="CurrentCycleMode"/> alone, which cannot tell a scoped
+    /// Verify cycle that never fell back from one that did.
+    /// </summary>
+    public bool LastGateRanFullScope { get; private set; }
+
+    /// <summary>The worktree HEAD <see cref="LastGateRanFullScope"/>'s gate ran against; null when it could not be read. Never trusted alone — a full scope over a HEAD that has since moved is not a full scope over the tip about to settle.</summary>
+    public string? LastGateHeadSha { get; private set; }
+
     /// <summary>The <see cref="PendingHumanFindings"/> value in force when <see cref="LastFixRoundCycle"/>'s round dispatched — see that field's own doc for why this pairing matters.</summary>
     public string? LastFixRoundHumanFindings { get; private set; }
 
@@ -469,6 +485,8 @@ public sealed class RunAggregate
     public void Apply(VerificationPassed @event)
     {
         _failedGates.Clear();
+        LastGateRanFullScope = @event.RanFullScope;
+        LastGateHeadSha = @event.HeadSha;
     }
 
     public void Apply(GateRetried @event) => GateRetries++;
