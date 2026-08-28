@@ -1,4 +1,5 @@
 using FluentAssertions;
+using Hall9k.Connectors.WorkItems;
 using Hall9k.Daemon;
 using Hall9k.Daemon.Closeout;
 using Hall9k.Daemon.Dispatch;
@@ -191,7 +192,8 @@ public sealed class RunLauncherTests(PostgresFixture postgres) : IClassFixture<P
         MergedInspector inspector = new();
         RefusingWorktreeManager worktrees = new();
         RunLauncher launcher = new(store, worktrees, new RefusingExecutor(),
-            NewSupervisor(store, node), NewContextAssembler(store), inspector, Options.Create(new DaemonOptions()),
+            NewSupervisor(store, node), NewContextAssembler(store), inspector,
+            NewCloseoutEngine(store, node, inspector, worktrees), Options.Create(new DaemonOptions()),
             NullLogger<RunLauncher>.Instance);
 
         await launcher.LaunchAsync(taskId, nextRunId, node.NodeId, node.OwnerId, 3, cts.Token);
@@ -204,10 +206,17 @@ public sealed class RunLauncherTests(PostgresFixture postgres) : IClassFixture<P
         task.PullRequestUrl.Should().Be(PullRequestUrl);
 
         (await query.LoadAsync<TaskLease>(taskId, cts.Token)).Should().BeNull("closing out releases the lease");
-        (await query.Events.FetchStreamStateAsync(nextRunId, cts.Token)).Should().BeNull(
-            "no run is ever dispatched for the merged pull request");
         worktrees.DeletedBranches.Should().ContainSingle(deleted => deleted == branch,
             "the merged branch is cleaned up like any closeout");
+
+        // nextRunId itself never spawned an agent (RefusingExecutor would have thrown), but its
+        // stream is no longer bare: the declined-dispatch path now reconstructs a minimal run
+        // record and runs it through the same closeout every merged run gets, instead of
+        // stopping at TaskCompleted and leaving nothing to watch it (origin incident, 2026-08-28
+        // needs-you cleanup — task 98ac05ef's exact shape).
+        RunDetails reconstructed = (await query.LoadAsync<RunDetails>(nextRunId, cts.Token))!;
+        reconstructed.State.Should().Be(RunState.Completed, "the reconstructed run reaches true closeout too");
+        reconstructed.PullRequestMergedAt.Should().Be(Now.AddMinutes(-30));
     }
 
     /// <summary>
@@ -272,8 +281,10 @@ public sealed class RunLauncherTests(PostgresFixture postgres) : IClassFixture<P
 
         ListLogger<RunLauncher> logger = new();
         MergedInspector inspector = new();
-        RunLauncher launcher = new(store, new RefusingWorktreeManager(), new RefusingExecutor(),
-            NewSupervisor(store, node), NewContextAssembler(store), inspector, Options.Create(new DaemonOptions()),
+        RefusingWorktreeManager worktrees = new();
+        RunLauncher launcher = new(store, worktrees, new RefusingExecutor(),
+            NewSupervisor(store, node), NewContextAssembler(store), inspector,
+            NewCloseoutEngine(store, node, inspector, worktrees), Options.Create(new DaemonOptions()),
             logger);
 
         // staleRunId, at its own generation (1) — while the task has already moved on to
@@ -393,8 +404,11 @@ public sealed class RunLauncherTests(PostgresFixture postgres) : IClassFixture<P
         }
 
         CapturingExecutor executor = new();
-        RunLauncher launcher = new(store, new StubWorktreeManager(), executor,
-            NewSupervisor(store, node), NewContextAssembler(store), new MergedInspector(), Options.Create(new DaemonOptions()),
+        StubWorktreeManager worktrees = new();
+        MergedInspector inspector = new();
+        RunLauncher launcher = new(store, worktrees, executor,
+            NewSupervisor(store, node), NewContextAssembler(store), inspector,
+            NewCloseoutEngine(store, node, inspector, worktrees), Options.Create(new DaemonOptions()),
             NullLogger<RunLauncher>.Instance);
 
         await launcher.LaunchAsync(taskId, runId, node.NodeId, node.OwnerId, 1, cts.Token);
@@ -483,8 +497,11 @@ public sealed class RunLauncherTests(PostgresFixture postgres) : IClassFixture<P
             }
 
             CapturingExecutor executor = new();
-            RunLauncher launcher = new(store, new StubWorktreeManager(), executor,
-                NewSupervisor(store, node), NewContextAssembler(store), new MergedInspector(), Options.Create(new DaemonOptions()),
+            StubWorktreeManager worktrees = new();
+            MergedInspector inspector = new();
+            RunLauncher launcher = new(store, worktrees, executor,
+                NewSupervisor(store, node), NewContextAssembler(store), inspector,
+                NewCloseoutEngine(store, node, inspector, worktrees), Options.Create(new DaemonOptions()),
                 NullLogger<RunLauncher>.Instance);
 
             await launcher.LaunchAsync(taskId, runId, node.NodeId, node.OwnerId, 1, cts.Token);
@@ -584,8 +601,11 @@ public sealed class RunLauncherTests(PostgresFixture postgres) : IClassFixture<P
             }
 
             CapturingExecutor executor = new();
-            RunLauncher launcher = new(store, new StubWorktreeManager(), executor,
-                NewSupervisor(store, node), NewContextAssembler(store), new NotMergedInspector(),
+            StubWorktreeManager worktrees = new();
+            NotMergedInspector inspector = new();
+            RunLauncher launcher = new(store, worktrees, executor,
+                NewSupervisor(store, node), NewContextAssembler(store), inspector,
+                NewCloseoutEngine(store, node, inspector, worktrees),
                 Options.Create(new DaemonOptions()), NullLogger<RunLauncher>.Instance);
 
             await launcher.LaunchAsync(
@@ -619,6 +639,20 @@ public sealed class RunLauncherTests(PostgresFixture postgres) : IClassFixture<P
         return new(store, new ClaudeExecutor(NullLogger<ClaudeExecutor>.Instance, processes), processes,
             Options.Create(new DaemonOptions()), NullLogger<BlockerContextAssembler>.Instance);
     }
+
+    /// <summary>
+    /// RunLauncher's declined-dispatch closeout now runs through the same
+    /// CloseoutEngine.ReconstructAndCompleteAsync every merged-but-unrecorded run does, so the
+    /// launcher needs one to hand it. No test here carries an external reference, so
+    /// TellTheCardAsync always returns before touching either seam — these stubs exist only to
+    /// satisfy the constructor.
+    /// </summary>
+    private CloseoutEngine NewCloseoutEngine(
+        DocumentStore store, NodeContext node, IPullRequestInspector inspector, IWorktreeManager worktrees) =>
+        new(store, node, new DaemonConnection(postgres.ConnectionString), inspector, worktrees,
+            (_, _) => Task.FromResult(new JiraResponse(200, "{}")),
+            RecordingProcessRunner.Succeeding(string.Empty).Runner,
+            Options.Create(new DaemonOptions()), NullLogger<CloseoutEngine>.Instance);
 
     private static RunSupervisor NewSupervisor(DocumentStore store, NodeContext node)
     {

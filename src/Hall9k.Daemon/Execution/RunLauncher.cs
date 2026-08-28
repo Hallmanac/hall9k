@@ -38,6 +38,7 @@ public sealed class RunLauncher(
     RunSupervisor supervisor,
     BlockerContextAssembler blockerContext,
     IPullRequestInspector inspector,
+    CloseoutEngine closeout,
     IOptions<DaemonOptions> options,
     ILogger<RunLauncher> logger)
 {
@@ -71,7 +72,7 @@ public sealed class RunLauncher(
         {
             if (task.PullRequestUrl.IsNotBlank()
                 && await TryCloseOutMergedPullRequestAsync(
-                    task, project, taskId, runId, nodeId, leaseGeneration, cancellationToken))
+                    task, project, taskId, runId, nodeId, ownerId, leaseGeneration, cancellationToken))
             {
                 return;
             }
@@ -194,8 +195,8 @@ public sealed class RunLauncher(
     /// must not fall through to a fresh dispatch either.
     /// </summary>
     private async Task<bool> TryCloseOutMergedPullRequestAsync(
-        TaskDetails task, ProjectDetails project, Guid taskId, Guid runId, Guid nodeId, int leaseGeneration,
-        CancellationToken cancellationToken)
+        TaskDetails task, ProjectDetails project, Guid taskId, Guid runId, Guid nodeId, Guid ownerId,
+        int leaseGeneration, CancellationToken cancellationToken)
     {
         string pullRequestUrl = task.PullRequestUrl!;
         int pullRequestNumber = PullRequestUrls.ParseNumber(pullRequestUrl);
@@ -271,6 +272,18 @@ public sealed class RunLauncher(
             taskId, pullRequestUrl, runId);
 
         await CleanUpMergedWorkspaceAsync(task, project.RepositoryPath, taskId, nodeId, cancellationToken);
+
+        // TaskCompleted above only moves the task to Done — this run's stream was never
+        // started (there was never anything to spawn), so nothing has yet recorded the merge
+        // itself, unblocked dependents, told the linked card, or produced a handoff. Origin
+        // incident (2026-08-28 needs-you cleanup): the first cut of this method stopped at
+        // TaskCompleted, and every task closed out this way came back needs-you within
+        // minutes — Delivered's "no run record is watching it" arm, because nothing ever
+        // would. CloseoutEngine.ReconstructAndCompleteAsync reconstructs a minimal run record
+        // for runId (it was never dispatched, so there is nothing but the id and the pull
+        // request to reconstruct from) and then runs the same closeout every merged run gets.
+        await closeout.ReconstructAndCompleteAsync(
+            session, current.Task, project, runId, nodeId, ownerId, snapshot.MergedAt, now, cancellationToken);
         return true;
     }
 
