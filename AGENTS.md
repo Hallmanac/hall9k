@@ -124,6 +124,7 @@ creates a **draft**, and nothing dispatches until a human publishes and assigns 
 h9k task add --project <name> --objective "…"     # creates a Draft (identity, not readiness)
 h9k task add --project <name> --from-issue 42     # adopt a GitHub issue (number, owner/repo#42, or URL)
 h9k task add --project <name> --from-jira PROJ-1  # adopt a Jira card (key or URL)
+h9k task add --project <name> --from-pr 42        # adopt a pull request to review (always pr-review)
 h9k task revise <id> --criteria "…" --blocked-by <id>   # Draft-only; each option replaces that part
 h9k task publish <id> [--assign]                  # the readiness gate; --assign starts it too
 h9k task publish <id> --no-existing-item          # required if a tracking backlog policy finds no linked item yet and has no publication already pending
@@ -356,7 +357,7 @@ actually failed*.
 | `h9k task resolve <id> --reason "…"` | The task is **Failed** but the objective was met anyway: the work merged, or you finished it by hand, and only the bookkeeping died. | Ends the task Done on your attestation. `--reason` is required (an attestation without a why is a guess) and `--pr` records where the work landed (#27). |
 | `h9k task abandon <id> --reason "…"` | You have stopped believing in the work. Reaches every non-terminal state, drafts and published tasks included. | Terminal. Releases any lease. Nothing is deleted: the reason is the record. |
 | `h9k pr resolve <id> [--checks \| --rebase]` | The task is **Done**, its pull request is open, and review feedback, failing CI, or a conflict with its base branch needs another pass, either because the monitor spent its budget or because you want one now (`--rebase` is for when you spot the conflict before the monitor's next inspection does, backlog 44). | Dispatches a follow-up run onto the existing PR branch and resets the monitor's automatic retry budget (#20, #22). |
-| `h9k review resolve <id> --merge-ready [--reason "…"]` / `--needs-fixes "<why>"` | A run parked **before** its PR, in the internal review loop, and is waiting on your verdict. | `--merge-ready` runs one mandatory full-scope verification gate over the fix unless this tip was already gated at full scope (#98: nothing merges on scoped green alone) and proceeds to the pull request if it passes; `--needs-fixes` dispatches a fix session with your reason as its findings and restores the fix budget (#24). `--merge-ready` is refused when the park is a disputed rebase conflict (nothing has been rebased yet, so there is nothing ready to merge) — only `--needs-fixes` applies there. Either verdict's reason is recorded on the task and carried into every later review pass as a settled ruling (#88) — except on a thread-dispute park (#62), which settles a disputed thread before any reviewer ever read the diff and so is not recorded as a review ruling — so pair `--merge-ready` with `--reason` when you dismiss a finding — e.g. the evidence that dismissed it — rather than leaving the next fresh-context reviewer to rediscover it. |
+| `h9k review resolve <id> --merge-ready [--reason "…"]` / `--needs-fixes "<why>"` | A run parked **before** its PR, in the internal review loop, and is waiting on your verdict. | `--merge-ready` runs one mandatory full-scope verification gate over the fix unless this tip was already gated at full scope (#98: nothing merges on scoped green alone) and proceeds to the pull request if it passes; `--needs-fixes` dispatches a fix session with your reason as its findings and restores the fix budget (#24). `--merge-ready` is refused when the park is a disputed rebase conflict (nothing has been rebased yet, so there is nothing ready to merge) — only `--needs-fixes` applies there. Either verdict's reason is recorded on the task and carried into every later review pass as a settled ruling (#88) — except on a thread-dispute park (#62), which settles a disputed thread before any reviewer ever read the diff and so is not recorded as a review ruling — so pair `--merge-ready` with `--reason` when you dismiss a finding — e.g. the evidence that dismissed it — rather than leaving the next fresh-context reviewer to rediscover it. A **pr-review** task's own park (§16 #99) refuses `--needs-fixes` outright — it has no diff of its own for a fix session to apply — and takes only `--merge-ready`, once you have walked the findings report and directed each one by hand (`walk-pr-review-findings`); that verdict never opens a pull request, it closes the task Done directly. |
 
 Two distinctions worth keeping straight, because they are the ones that get confused:
 
@@ -440,7 +441,10 @@ The checkpoints, in the order the window sees them:
    only the review content itself is agent judgment.
 4. **The daemon opens the pull request.** Agents never do, and there is deliberately no create-pr
    skill. The task reaches **Done** here, when the pull request opens, so Done means "the work is
-   on a PR and waiting on review" rather than "merged".
+   on a PR and waiting on review" rather than "merged". A **pr-review** task is the one exception
+   (§16 #99): there is no diff of its own to open a pull request over, so its own park is resolved
+   with `h9k review resolve --merge-ready` directly, and the task reaches Done there instead —
+   still without any pull request ever opening or merging.
 5. **Copilot and the human review it.** The closeout monitor reads unresolved threads and
    dispatches follow-up runs to answer them, bounded by a retry budget (#22, #62).
 6. **The human merges.** The platform never merges. The observed merge is true closeout: it is the
