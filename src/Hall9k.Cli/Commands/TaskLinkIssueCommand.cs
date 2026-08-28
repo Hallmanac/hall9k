@@ -97,9 +97,24 @@ public sealed class TaskLinkIssueCommand : Hall9kAsyncCommand<TaskLinkIssueComma
             $"[green]Linked[/] task {TaskListCommand.ShortId(taskId)} to "
             + $"{issue.Reference.ToString().EscapeMarkup()}: "
             + $"{ExternalText.OneLineMarkup(issue.Title)}");
-        AnsiConsole.MarkupLine(TaskLinkJiraCommand.ObservationMarkup(issue));
+        AnsiConsole.MarkupLine(ObservationMarkup(issue));
+        if (new GitHubWorkItemProvider().WebUrl(issue.Reference) is { } url)
+        {
+            AnsiConsole.MarkupLine($"[dim]  {url.ToString().EscapeMarkup()}[/]");
+        }
+
         return ExitCodes.Ok;
     }
+
+    /// <summary>
+    /// What was observed, and when, said as the one reading it is: Hall9k does not watch the
+    /// issue afterwards, so a status with no stamp beside it would read as the issue's current
+    /// state. <see cref="TaskLinkJiraCommand.ObservationMarkup"/> says the same thing in Jira's
+    /// nouns ("the card"); this is that line said in GitHub's.
+    /// </summary>
+    private static string ObservationMarkup(ImportedWorkItem issue) =>
+        $"[dim]  {ExternalText.OneLineMarkup(issue.Status.ToString())} when read at {issue.ObservedStamp}; "
+        + "Hall9k took one reading and does not watch the issue afterwards.[/]";
 
     /// <summary>What appending the link came to, for a caller that has no terminal to print to (h9k task publish).</summary>
     internal enum LinkOutcome
