@@ -1140,14 +1140,23 @@ public static class AgentPromptBuilder
             prompt.AppendLine(task.Objective);
             prompt.AppendLine();
             prompt.AppendLine(
-                "That objective describes the review task itself — hand back a findings report — not a");
+                "That is this review task's own objective — hand back a findings report — not a standard");
             prompt.AppendLine(
-                "standard the foreign diff is judged against. What the diff is supposed to do is the pull");
+                "the foreign diff is judged against. When this task was adopted straight from the pull");
             prompt.AppendLine(
-                "request's own title and description, quoted in the Context section below if this task");
+                "request with no custom objective typed, it is literally the pull request's own title,");
             prompt.AppendLine(
-                "carries one; the diff's own conformance basis is stated further down, under \"How to");
-            prompt.AppendLine("review\".");
+                "repeated here rather than describing a separate review deliverable — that repetition is");
+            prompt.AppendLine(
+                "expected, not a sign the diff is somehow being judged against itself. Either way, judge");
+            prompt.AppendLine(
+                "the diff against the pull request's own title and description (quoted again in the");
+            prompt.AppendLine(
+                "Context section below if this task carries one) and repo doctrine, never against this");
+            prompt.AppendLine(
+                "task's own acceptance criteria below, which describe the review deliverable rather than");
+            prompt.AppendLine(
+                "the diff. The full instruction is restated under \"How to review\".");
             prompt.AppendLine();
             if (task.AcceptanceCriteria.Count > 0)
             {
