@@ -37,7 +37,7 @@ public sealed class TaskListCommand : Hall9kAsyncCommand<TaskListCommand.Setting
             + "UnderReview, AwaitingReview, ChecksFailing, …), which is where the run vocabulary reads now; a "
             + "run that failed is spelled run-failed, because Failed alone is the lifecycle state. Hyphens and "
             + "case are optional.")]
-        public string[]? State { get; init; }
+        public string[] State { get; init; } = [];
 
         [CommandOption("--limit <N>")]
         [Description("How many rows to show, newest first (default 20). The footer says how many were held back.")]
@@ -65,7 +65,7 @@ public sealed class TaskListCommand : Hall9kAsyncCommand<TaskListCommand.Setting
             throw new DomainValidationException($"--limit must be at least 1, got {requested}.");
         }
 
-        IReadOnlyList<string> states = TaskStateFilter.Split(settings.State ?? []);
+        IReadOnlyList<string> states = TaskStateFilter.Split(settings.State);
         foreach (string state in states)
         {
             TaskStateFilter.Validate(state);
@@ -93,24 +93,18 @@ public sealed class TaskListCommand : Hall9kAsyncCommand<TaskListCommand.Setting
             .Where(row => project is null || row.ProjectId == project.Id)
             .Where(row => states.Count == 0 || states.Any(state => TaskStateFilter.Matches(row, state)))];
 
-        // Archived rows are hidden from an otherwise-unfiltered view by default (a closeout
-        // gradually crowding out live work otherwise): asking for them by word — --state
-        // archived, or the attention group --state closed — already returns them above, and
-        // this hiding never applies on top of that ask.
-        List<TaskStatusRow> visible = candidates;
-        int hiddenArchived = 0;
-        if (states.Count == 0 && !settings.IncludeArchived)
-        {
-            visible = [.. candidates.Where(row => row.State != LifecycleState.Archived)];
-            hiddenArchived = candidates.Count - visible.Count;
-        }
+        (IReadOnlyList<TaskStatusRow> visible, int hiddenArchived) =
+            ApplyArchivedDefault(candidates, states, settings.IncludeArchived);
 
         List<TaskStatusRow> matched = [.. visible.OrderByDescending(row => row.AddedAt)];
         if (matched.Count == 0)
         {
-            string browseHint = hiddenArchived > 0 ? "h9k task list --include-archived" : "h9k task list --all";
-            AnsiConsole.MarkupLine(
-                $"[dim]No tasks match {Filters(settings, project)}. Drop a filter, or browse everything:[/] {browseHint}");
+            string message = hiddenArchived > 0
+                ? $"[dim]Every task matching {Filters(settings, project)} is archived. See them with:[/] "
+                  + $"h9k task list --include-archived{Repeat(settings, project)}"
+                : $"[dim]No tasks match {Filters(settings, project)}. Drop a filter, or browse everything:[/] "
+                  + "h9k task list --all";
+            AnsiConsole.MarkupLine(message);
             return ExitCodes.Ok;
         }
 
@@ -120,6 +114,27 @@ public sealed class TaskListCommand : Hall9kAsyncCommand<TaskListCommand.Setting
         AnsiConsole.Write(Rows(shown, scoped: project is not null, AnsiConsole.Profile.Width, DateTimeOffset.UtcNow));
         AnsiConsole.MarkupLine(Footer(matched.Count, shown.Count, hiddenArchived, settings, project));
         return ExitCodes.Ok;
+    }
+
+    /// <summary>
+    /// Archived rows are hidden from an otherwise-unfiltered view by default (a closeout
+    /// gradually crowding out live work otherwise): asking for them by word — --state archived,
+    /// or the attention group --state closed — already returns them via <c>states</c> upstream,
+    /// and this hiding never applies on top of that ask, nor does <c>--include-archived</c> stack
+    /// with it. Extracted as a static predicate over rows so the visibility decision — the
+    /// branch's headline behaviour — can be asserted without a database, the same way
+    /// <see cref="Rows"/> and <see cref="Footer"/> already are.
+    /// </summary>
+    internal static (IReadOnlyList<TaskStatusRow> Visible, int HiddenArchived) ApplyArchivedDefault(
+        IReadOnlyList<TaskStatusRow> candidates, IReadOnlyList<string> states, bool includeArchived)
+    {
+        if (states.Count != 0 || includeArchived)
+        {
+            return (candidates, 0);
+        }
+
+        List<TaskStatusRow> visible = [.. candidates.Where(row => row.State != LifecycleState.Archived)];
+        return (visible, candidates.Count - visible.Count);
     }
 
     /// <summary>
@@ -197,7 +212,8 @@ public sealed class TaskListCommand : Hall9kAsyncCommand<TaskListCommand.Setting
     /// <summary>The active filters, echoed so --all keeps the view the reader is looking at.</summary>
     private static string Repeat(Settings settings, ProjectDetails? project) =>
         (project is null ? string.Empty : $" --project {project.Name.EscapeMarkup()}")
-        + (StateDisplay(settings) is { Length: > 0 } states ? $" --state {states.EscapeMarkup()}" : string.Empty);
+        + (StateDisplay(settings) is { Length: > 0 } states ? $" --state {states.EscapeMarkup()}" : string.Empty)
+        + (settings.IncludeArchived ? " --include-archived" : string.Empty);
 
     private static string Filters(Settings settings, ProjectDetails? project)
     {
@@ -213,12 +229,17 @@ public sealed class TaskListCommand : Hall9kAsyncCommand<TaskListCommand.Setting
             filters.Add($"--state {states.EscapeMarkup()}");
         }
 
+        if (settings.IncludeArchived)
+        {
+            filters.Add("--include-archived");
+        }
+
         return filters.Count > 0 ? string.Join(" ", filters) : "those filters";
     }
 
     /// <summary>--state's states, comma-joined for echoing back in a hint — union order preserved.</summary>
     private static string StateDisplay(Settings settings) =>
-        string.Join(",", TaskStateFilter.Split(settings.State ?? []));
+        string.Join(",", TaskStateFilter.Split(settings.State));
 
     // UUIDv7 front-loads the timestamp, so same-batch ids share their first chars;
     // the random tail is what tells them apart.
