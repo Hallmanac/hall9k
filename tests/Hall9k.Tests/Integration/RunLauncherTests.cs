@@ -1,4 +1,5 @@
 using FluentAssertions;
+using Hall9k.Connectors.Processes;
 using Hall9k.Connectors.WorkItems;
 using Hall9k.Daemon;
 using Hall9k.Daemon.Closeout;
@@ -199,8 +200,8 @@ public sealed class RunLauncherTests(PostgresFixture postgres) : IClassFixture<P
         RefusingWorktreeManager worktrees = new();
         RunLauncher launcher = new(store, worktrees, new RefusingExecutor(),
             NewSupervisor(store, node), NewContextAssembler(store), inspector,
-            NewCloseoutEngine(store, node, inspector, worktrees), Options.Create(new DaemonOptions()),
-            NullLogger<RunLauncher>.Instance);
+            NewCloseoutEngine(store, node, inspector, worktrees), UnusedProcessRunner,
+            Options.Create(new DaemonOptions()), NullLogger<RunLauncher>.Instance);
 
         await launcher.LaunchAsync(taskId, nextRunId, node.NodeId, node.OwnerId, 3, cts.Token);
 
@@ -290,8 +291,8 @@ public sealed class RunLauncherTests(PostgresFixture postgres) : IClassFixture<P
         RefusingWorktreeManager worktrees = new();
         RunLauncher launcher = new(store, worktrees, new RefusingExecutor(),
             NewSupervisor(store, node), NewContextAssembler(store), inspector,
-            NewCloseoutEngine(store, node, inspector, worktrees), Options.Create(new DaemonOptions()),
-            logger);
+            NewCloseoutEngine(store, node, inspector, worktrees), UnusedProcessRunner,
+            Options.Create(new DaemonOptions()), logger);
 
         // staleRunId, at its own generation (1) — while the task has already moved on to
         // generation 2 under liveRunId.
@@ -422,8 +423,8 @@ public sealed class RunLauncherTests(PostgresFixture postgres) : IClassFixture<P
         MergedInspector inspector = new();
         RunLauncher launcher = new(store, worktrees, executor,
             NewSupervisor(store, node), NewContextAssembler(store), inspector,
-            NewCloseoutEngine(store, node, inspector, worktrees), Options.Create(new DaemonOptions()),
-            NullLogger<RunLauncher>.Instance);
+            NewCloseoutEngine(store, node, inspector, worktrees), UnusedProcessRunner,
+            Options.Create(new DaemonOptions()), NullLogger<RunLauncher>.Instance);
 
         await launcher.LaunchAsync(taskId, runId, node.NodeId, node.OwnerId, 1, cts.Token);
 
@@ -434,6 +435,84 @@ public sealed class RunLauncherTests(PostgresFixture postgres) : IClassFixture<P
         RunDetails run = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
         run.Model.Value.Should().Be("claude-opus-5[1m]", "the run records what it was actually dispatched on");
         (await query.LoadAsync<RunListItem>(runId, cts.Token))!.Model.Value.Should().Be("claude-opus-5[1m]");
+    }
+
+    /// <summary>
+    /// The pr-review dispatch branch itself (cycle-1 conformance finding, `PrReviewEngine.cs:50`
+    /// — before this, LaunchAsync's own isPrReview branch had no coverage at all): a fresh read
+    /// of the open pull request resolves the base branch and the checkout, the run's primary
+    /// session is the adversarial lens rather than a build session, it resolves the Review role's
+    /// model rather than Build's, and — the security fix this same cycle added — the spawn is
+    /// marked as an untrusted working directory so the checkout's own settings and MCP config
+    /// never load (`RunLauncher.cs:228`).
+    /// </summary>
+    [Fact]
+    public async Task A_pr_review_task_dispatches_the_adversarial_lens_into_an_untrusted_checkout()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        using DocumentStore store = DocumentStore.For(opts =>
+        {
+            opts.Connection(postgres.ConnectionString);
+            opts.ConfigureHall9k(AutoCreate.All);
+        });
+        NodeContext node = new();
+        await node.InitializeAsync(store, cts.Token);
+
+        Guid taskId = DomainId.New();
+        Guid runId = DomainId.New();
+        Guid projectId = DomainId.New();
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            ProjectRegistered registered = ProjectDecider.Register(
+                projectId, node.OwnerId, DomainId.New(), $"pr-review-launch-{taskId:N}", "/tmp/pr-review-launch-repo",
+                new Uri("https://github.com/acme/web"), "main", Now);
+            session.Events.StartStream<ProjectAggregate>(registered.Id, registered);
+
+            (TaskAggregate aggregate, object[] lifecycle) = TaskSeed.Start(
+                TaskDecider.Add(
+                    taskId, projectId, "Review pull request acme/web#42", ["every finding names a file and line"],
+                    TaskType.PrReview, null, null,
+                    new ExternalReference(WorkItemProvider.GitHubPullRequest, "acme/web#42"), Now, node.OwnerId),
+                node.OwnerId, Now);
+            Hall9k.Domain.Features.Tasks.Events.TaskClaimed claimed =
+                TaskDecider.Claim(aggregate, node.NodeId, node.OwnerId, runId, Now);
+            session.Events.StartStream<TaskAggregate>(taskId, [.. lifecycle, claimed]);
+            session.Store(new TaskLease { Id = taskId, NodeId = node.NodeId, LeaseGeneration = 1, HeartbeatAt = Now });
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        const string pullRequestJson = """
+            {
+              "number": 42,
+              "title": "Add rate limiting to auth endpoints",
+              "body": "Fixes an incident.",
+              "state": "OPEN",
+              "url": "https://github.com/acme/web/pull/42",
+              "baseRefName": "release/2.0"
+            }
+            """;
+        RecordingProcessRunner gh = RecordingProcessRunner.Succeeding(pullRequestJson);
+        CapturingExecutor executor = new();
+        StubWorktreeManager worktrees = new();
+        MergedInspector inspector = new();
+        RunLauncher launcher = new(store, worktrees, executor,
+            NewSupervisor(store, node), NewContextAssembler(store), inspector,
+            NewCloseoutEngine(store, node, inspector, worktrees), gh.Runner,
+            Options.Create(new DaemonOptions()), NullLogger<RunLauncher>.Instance);
+
+        await launcher.LaunchAsync(taskId, runId, node.NodeId, node.OwnerId, 1, cts.Token);
+
+        executor.Request.Should().NotBeNull("the fresh gh read found the pull request open, so dispatch must proceed");
+        executor.Request!.UntrustedWorkingDirectory.Should().BeTrue(
+            "the checkout is another contributor's pull-request head, never this platform's own worktree");
+        executor.Request!.Prompt.Should().Contain("read-only, detached checkout",
+            "the primary session is the adversarial lens's own pr-review prompt");
+
+        await using IQuerySession query = store.QuerySession();
+        RunDetails run = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
+        run.Branch.Should().Be("pr/42", "the checkout's own branch name records which pull request this run reviewed");
+        run.Model.Should().Be(new DaemonOptions().ResolveModel(AgentRole.Review, null, null),
+            "a pr-review run's primary session resolves the Review role, never Build");
     }
 
     /// <summary>
@@ -515,8 +594,8 @@ public sealed class RunLauncherTests(PostgresFixture postgres) : IClassFixture<P
             MergedInspector inspector = new();
             RunLauncher launcher = new(store, worktrees, executor,
                 NewSupervisor(store, node), NewContextAssembler(store), inspector,
-                NewCloseoutEngine(store, node, inspector, worktrees), Options.Create(new DaemonOptions()),
-                NullLogger<RunLauncher>.Instance);
+                NewCloseoutEngine(store, node, inspector, worktrees), UnusedProcessRunner,
+                Options.Create(new DaemonOptions()), NullLogger<RunLauncher>.Instance);
 
             await launcher.LaunchAsync(taskId, runId, node.NodeId, node.OwnerId, 1, cts.Token);
 
@@ -619,7 +698,7 @@ public sealed class RunLauncherTests(PostgresFixture postgres) : IClassFixture<P
             NotMergedInspector inspector = new();
             RunLauncher launcher = new(store, worktrees, executor,
                 NewSupervisor(store, node), NewContextAssembler(store), inspector,
-                NewCloseoutEngine(store, node, inspector, worktrees),
+                NewCloseoutEngine(store, node, inspector, worktrees), UnusedProcessRunner,
                 Options.Create(new DaemonOptions()), NullLogger<RunLauncher>.Instance);
 
             await launcher.LaunchAsync(
@@ -678,10 +757,19 @@ public sealed class RunLauncherTests(PostgresFixture postgres) : IClassFixture<P
             Options.Create(new DaemonOptions()), NullLogger<ReviewEngine>.Instance);
         PrReviewEngine prReview = new(
             store, new ClaudeExecutor(NullLogger<ClaudeExecutor>.Instance, processes), processes,
-            new GitWorktreeManager(NullLogger<GitWorktreeManager>.Instance), Options.Create(new DaemonOptions()),
-            NullLogger<PrReviewEngine>.Instance);
+            new GitWorktreeManager(NullLogger<GitWorktreeManager>.Instance), UnusedProcessRunner,
+            Options.Create(new DaemonOptions()), NullLogger<PrReviewEngine>.Instance);
         return new RunSupervisor(store, node, processes, verification, review, prReview,
             new PullRequestOpener(store, NullLogger<PullRequestOpener>.Instance),
             NullLogger<RunSupervisor>.Instance);
     }
+
+    /// <summary>
+    /// A gh runner these tests must never actually reach: nothing here exercises a pr-review
+    /// task, so RunLauncher's own <c>ProcessRunner</c> is wired but always unused — a real
+    /// <c>gh</c> invocation would mean either a hidden pr-review path or a test running gh for
+    /// real, and this makes either one fail loudly instead of hanging on a live network call.
+    /// </summary>
+    private static readonly ProcessRunner UnusedProcessRunner =
+        RecordingProcessRunner.Failing("this test never reviews a pull request").Runner;
 }

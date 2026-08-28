@@ -17,6 +17,14 @@ namespace Hall9k.Daemon.Execution;
 /// on, carried so the milestone can record it and never re-applied to the process.
 /// RunDirectory is the run's own directory (backlog 49) — resolved once at dispatch and
 /// carried here rather than rederived, exactly like WorktreePath.
+/// UntrustedWorkingDirectory is true only for a pr-review task's spawn (RunLauncher's
+/// pr-review branch, PrReviewEngine.DispatchConformanceAsync): WorktreePath is then a
+/// checkout of another contributor's pull-request head, which the child process treats as
+/// its own project configuration the same way it would this platform's own worktrees
+/// (adversarial review, cycle 1) — a `.claude/settings.json` with a hook, or an `.mcp.json`
+/// naming a server, in that checkout would otherwise run under the owner's credentials the
+/// moment the run spawns, before the prompt's own read-only instructions are ever read.
+/// <see cref="ClaudeExecutor"/> reads this to keep the child from loading either.
 /// </summary>
 public sealed record AgentSpawnRequest(
     Guid RunId,
@@ -28,7 +36,8 @@ public sealed record AgentSpawnRequest(
     AgentModel Model,
     bool SkipPermissions,
     string? SessionArtifactName = null,
-    Guid? ResumeSessionId = null)
+    Guid? ResumeSessionId = null,
+    bool UntrustedWorkingDirectory = false)
 {
     /// <summary>
     /// Environment variables layered onto the owner's environment for this session only.

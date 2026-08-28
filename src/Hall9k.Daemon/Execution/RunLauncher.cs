@@ -1,3 +1,4 @@
+using Hall9k.Connectors.Processes;
 using Hall9k.Connectors.WorkItems;
 using Hall9k.Daemon.Closeout;
 using Hall9k.Daemon.Dispatch;
@@ -39,6 +40,7 @@ public sealed class RunLauncher(
     BlockerContextAssembler blockerContext,
     IPullRequestInspector inspector,
     CloseoutEngine closeout,
+    ProcessRunner processRunner,
     IOptions<DaemonOptions> options,
     ILogger<RunLauncher> logger)
 {
@@ -84,7 +86,7 @@ public sealed class RunLauncher(
             // written entirely in terms of this task's own branch and PR.
             bool isPrReview = task.Type == TaskType.PrReview;
             PullRequestFacts? prReviewFacts = isPrReview
-                ? await FetchOpenPullRequestFactsAsync(task, project, cancellationToken)
+                ? await FetchOpenPullRequestFactsAsync(task, project, processRunner, cancellationToken)
                 : null;
             if (isPrReview && prReviewFacts is null)
             {
@@ -109,7 +111,8 @@ public sealed class RunLauncher(
             if (isPrReview && prReviewFacts is not null)
             {
                 Uri? projectRepositoryUrl = project.RepositoryUrl
-                    ?? await new GitHubWorkItemProvider().TryObserveRepositoryHostAsync(project.RepositoryPath, cancellationToken);
+                    ?? await new GitHubWorkItemProvider(processRunner).TryObserveRepositoryHostAsync(
+                        project.RepositoryPath, cancellationToken);
                 if (OwnerRepoFrom(projectRepositoryUrl) is { } projectRepository
                     && !string.Equals(projectRepository, prReviewFacts.Repository, StringComparison.OrdinalIgnoreCase))
                 {
@@ -130,6 +133,20 @@ public sealed class RunLauncher(
                 !isPrReview && task.FollowUpBranch.IsNotBlank() && task.PullRequestUrl.IsNotBlank()
                     ? (task.FollowUpBranch, task.PullRequestUrl)
                     : null;
+
+            // A pr-review run never resumes a prior attempt's worktree the way
+            // CheckoutFreshOrRetryAsync's retry path does (nothing is ever committed into
+            // one to preserve), so a retried or reopened-elsewhere pr-review task cuts a
+            // brand-new checkout every time — and no sweep ever reaches the old ones
+            // afterward: a pr-review run carries no PullRequestNumber, so CloseoutEngine's
+            // merge closeout never watches it, and TaskDecider.Reopen refuses the type
+            // outright (adversarial review, cycle 1). Reclaiming this task's own previous
+            // pr-review worktrees right before cutting the new one is the only point left
+            // that can still reach them.
+            if (isPrReview)
+            {
+                await CleanUpPreviousPrReviewWorktreesAsync(taskId, project, nodeId, cancellationToken);
+            }
 
             (Worktree worktree, bool resumesPreviousWork) = isPrReview
                 ? (await worktrees.CreatePrReviewCheckoutAsync(
@@ -228,7 +245,8 @@ public sealed class RunLauncher(
 
             SpawnedAgent agent = await executor.SpawnAsync(
                 new AgentSpawnRequest(
-                    runId, sessionId, worktree.Path, runDirectory, prompt, mode, model, project.SkipPermissions),
+                    runId, sessionId, worktree.Path, runDirectory, prompt, mode, model, project.SkipPermissions,
+                    UntrustedWorkingDirectory: isPrReview),
                 cancellationToken);
 
             await using IDocumentSession startSession = store.LightweightSession();
@@ -401,6 +419,61 @@ public sealed class RunLauncher(
     }
 
     /// <summary>
+    /// Reclaims this task's own previous pr-review worktrees, and the tracking ref each was
+    /// fetched against, right before cutting a fresh checkout (adversarial review, cycle 1):
+    /// a pr-review run never resumes a prior attempt's worktree the way an ordinary retry
+    /// does, so every retry or requeue cuts a brand-new one, and no closeout sweep can ever
+    /// reach the old ones afterward — a pr-review run carries no PullRequestNumber, so
+    /// CloseoutEngine's merge closeout never watches it, and a pr-review task refuses to
+    /// reopen at all. This is the only point left in the run's whole lifecycle that still can.
+    /// Best-effort throughout: a failed reclaim here costs nothing this dispatch needs.
+    /// </summary>
+    private async Task CleanUpPreviousPrReviewWorktreesAsync(
+        Guid taskId, ProjectDetails project, Guid nodeId, CancellationToken cancellationToken)
+    {
+        IReadOnlyList<RunDetails> previousRuns;
+        await using (IQuerySession query = store.QuerySession())
+        {
+            previousRuns = await query.Query<RunDetails>()
+                .Where(r => r.TaskId == taskId && r.NodeId == nodeId)
+                .ToListAsync(cancellationToken);
+        }
+
+        foreach (RunDetails previous in previousRuns.Where(r => r.WorktreePath.IsNotBlank() && Directory.Exists(r.WorktreePath)))
+        {
+            try
+            {
+                await worktrees.RemoveAsync(project.RepositoryPath, previous.WorktreePath, cancellationToken);
+            }
+            catch (Exception exception) when (exception is not OperationCanceledException)
+            {
+                logger.LogWarning(exception, "Worktree removal failed for {Path} (safe to prune later)", previous.WorktreePath);
+            }
+
+            if (PullRequestNumberFromPrReviewBranch(previous.Branch) is { } pullRequestNumber)
+            {
+                try
+                {
+                    await worktrees.DeletePrReviewTrackingRefAsync(project.RepositoryPath, pullRequestNumber, cancellationToken);
+                }
+                catch (Exception exception) when (exception is not OperationCanceledException)
+                {
+                    logger.LogWarning(
+                        exception, "Pr-review tracking ref cleanup failed for pull request #{Number} (safe to delete by hand)",
+                        pullRequestNumber);
+                }
+            }
+        }
+    }
+
+    /// <summary>The pull request number out of a pr-review run's own <c>pr/&lt;n&gt;</c> branch name.</summary>
+    private static int? PullRequestNumberFromPrReviewBranch(string branch) =>
+        branch.StartsWith("pr/", StringComparison.Ordinal)
+        && int.TryParse(branch.AsSpan(3), out int number)
+            ? number
+            : null;
+
+    /// <summary>
     /// A live read of the pull request a pr-review task targets, taken fresh at every
     /// dispatch (never the task's adoption-time snapshot — a PR's base can move, and only a
     /// live read tells whether it is still open to review at all). A read failure (gh
@@ -409,14 +482,14 @@ public sealed class RunLauncher(
     /// Null return means the read succeeded and the pull request is genuinely not open.
     /// </summary>
     private static async Task<PullRequestFacts?> FetchOpenPullRequestFactsAsync(
-        TaskDetails task, ProjectDetails project, CancellationToken cancellationToken)
+        TaskDetails task, ProjectDetails project, ProcessRunner processRunner, CancellationToken cancellationToken)
     {
         if (task.ExternalReference.IsBlank())
         {
             return null;
         }
 
-        PullRequestFacts facts = await new GitHubPullRequestProvider().FetchFactsAsync(
+        PullRequestFacts facts = await new GitHubPullRequestProvider(processRunner).FetchFactsAsync(
             ExternalReference.Parse(task.ExternalReference).Reference, project.RepositoryPath, cancellationToken);
         return facts.State.Equals("OPEN", StringComparison.OrdinalIgnoreCase) ? facts : null;
     }
