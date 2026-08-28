@@ -658,17 +658,48 @@ public sealed class GitHubWorkItemProviderTests
             .And.NotContain("import again", "this is the create path, not an import that can simply be retried");
     }
 
+    /// <summary>
+    /// gh issue create can exit non-zero — a real failure — and still lose the drain race on its
+    /// stderr. An exit code was observed and it says failure, so this is not the "did this even
+    /// run" uncertainty a zero exit code or a dead deadline carries: it must land as an ordinary,
+    /// retryable failure rather than the duplicate-averse "might have been created, link it by
+    /// hand" guidance the zero-exit-code drain race above gets.
+    /// </summary>
     [Fact]
-    public async Task A_create_that_never_exits_at_all_still_gets_the_generic_stopped_answering_refusal()
+    public async Task A_create_that_exits_non_zero_and_loses_the_drain_race_is_reported_as_a_failure()
     {
-        // The deadline-never-answered case (no exit code observed at all) is a real "did this even
-        // run" unknown, unlike the exit-0-then-stuck case above, so it keeps the ordinary refusal.
+        RecordingProcessRunner gh = RecordingProcessRunner.ExitedButOutputStuck(exitCode: 1);
+
+        Func<Task> create = () => new GitHubWorkItemProvider(gh.Runner).CreateAsync(
+            new GitHubIssueCreateRequest("Track this work", null, [], "/repos/hall9k"), CancellationToken.None);
+
+        (await create.Should().ThrowAsync<DomainValidationException>()).Which.Message
+            .Should().Contain("exited with code 1")
+            .And.NotContain("h9k task link-issue", "nothing was created, so there is no duplicate to avoid")
+            .And.NotContain("likely created");
+    }
+
+    /// <summary>
+    /// The deadline-never-answered case (no exit code observed at all) is just as much a "did this
+    /// even run" unknown as the exit-0-then-drain-race case above, so it must land on the same
+    /// create-flavoured, duplicate-averse refusal rather than the generic import-flavoured
+    /// "gh stopped answering" text, which tells the reader to "import again" — wrong twice over for
+    /// a create whose outcome is unknown: there is no import under way, and "create one by hand"
+    /// risks filing a duplicate for an issue that may already exist.
+    /// </summary>
+    [Fact]
+    public async Task A_create_that_never_exits_at_all_gets_a_create_flavoured_refusal_not_the_import_one()
+    {
         RecordingProcessRunner gh = RecordingProcessRunner.NeverAnswering();
 
         Func<Task> create = () => new GitHubWorkItemProvider(gh.Runner).CreateAsync(
             new GitHubIssueCreateRequest("Track this work", null, [], "/repos/hall9k"), CancellationToken.None);
 
-        await create.Should().ThrowAsync<DomainValidationException>();
+        (await create.Should().ThrowAsync<DomainConflictException>()).Which.Message
+            .Should().Contain("Track this work")
+            .And.Contain("h9k task link-issue", "the recovery is to link the issue that might exist")
+            .And.Contain("gh auth status", "the refusal names the way to see what it is waiting on")
+            .And.NotContain("import again", "this is the create path, not an import that can simply be retried");
     }
 
     [Fact]
