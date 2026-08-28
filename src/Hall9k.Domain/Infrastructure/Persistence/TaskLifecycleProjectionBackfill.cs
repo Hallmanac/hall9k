@@ -61,10 +61,13 @@ public static class TaskLifecycleProjectionBackfill
     /// never had the key and would otherwise sit un-archived at the top level of <c>tasks/</c>
     /// forever, indistinguishable from a task genuinely still live. <see cref="TaskDetails.UntrackedAttested"/>
     /// (backlog: a task can be published deliberately untracked under a tracking backlog policy)
-    /// is the same shape: non-nullable, so it is always serialized and safe as a marker, unlike
-    /// its sibling <see cref="TaskDetails.UntrackedAttestedAt"/> and
-    /// <see cref="TaskDetails.UntrackedAttestedByOwnerId"/>, which are only written when true and
-    /// would read every ordinary task as permanently stale.
+    /// is this group's marker. This store serializes nullable properties as explicit JSON nulls
+    /// (<see cref="MartenConfiguration.ConfigureHall9k"/> sets no null-ignoring option), which is
+    /// exactly why <see cref="TaskDetails.ResolvedRunId"/> above works as a marker despite being
+    /// nullable — so its siblings <see cref="TaskDetails.UntrackedAttestedAt"/> and
+    /// <see cref="TaskDetails.UntrackedAttestedByOwnerId"/> would have served equally well.
+    /// <see cref="TaskDetails.UntrackedAttested"/> is used instead only because it is
+    /// non-nullable and therefore always present, with no serialization nuance to reason about.
     /// </summary>
     private const string StaleDetailsOnlyDocument =
         "(" + StaleDocument
