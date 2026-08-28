@@ -57,6 +57,23 @@ public sealed class VerificationRunnerScopedGateTests
     }
 
     /// <summary>
+    /// A single-quoted existing filter (a natural spelling since the gate string is handed to
+    /// `/bin/sh -c`) must be recognized the same as a double-quoted one, with the quote characters
+    /// excluded from the captured value — the unquoted `\S+` alternative previously captured the
+    /// quote marks themselves, so `dotnet test --filter 'Category!=RequiresDocker'` rewrote the
+    /// merged filter to `('Category!=RequiresDocker')&(...)`, which VSTest evaluates as a
+    /// comparison against the literal string `'RequiresDocker'` (with quotes), silently
+    /// neutralizing the project's own exclusion (adversarial review finding).
+    /// </summary>
+    [Fact]
+    public void The_filter_combines_with_an_existing_filter_written_with_single_quotes()
+    {
+        VerificationRunner.ApplyTestFilter(
+                "dotnet test --filter 'Category!=RequiresDocker'", "FullyQualifiedName~WidgetTests")
+            .Should().Be("""dotnet test --filter "(Category!=RequiresDocker)&(FullyQualifiedName~WidgetTests)" """.Trim());
+    }
+
+    /// <summary>
     /// `--filter=` is VSTest's own accepted alternate spelling of `--filter ` (cycle-3 finding) —
     /// an existing filter written this way must still be found and merged, never duplicated into
     /// a second `--filter` flag `dotnet test` does not accept.
