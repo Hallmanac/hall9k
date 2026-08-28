@@ -306,6 +306,32 @@ public sealed class RunReviewProjectionTests
         view.State.Should().Be(RunState.UnderReview);
     }
 
+    /// <summary>
+    /// RunListItem gained no handlers for the pr-review task type's own two events
+    /// (PrReviewEngine) when they landed, so it disagreed with RunDetails for the whole
+    /// conformance-lens window — stuck reporting Verifying, a state meaning "the project's
+    /// gates are running", for a task type whose gates never run at all.
+    /// </summary>
+    [Fact]
+    public void Run_list_item_walks_the_pr_review_conformance_lens_the_same_way_run_details_does()
+    {
+        RunListItemProjection projection = new();
+        Guid id = DomainId.New();
+        RunListItem view = projection.Create(new FakeEvent<RunDispatched>(new RunDispatched(
+            id, DomainId.New(), DomainId.New(), DomainId.New(), 1, DomainId.New(),
+            "/wt/x", "task/x", ExecutorMode.Subscription, Now)));
+        projection.Apply(new FakeEvent<AgentSessionCompleted>(new AgentSessionCompleted(id, Now)), view);
+        view.State.Should().Be(RunState.Verifying, "the adversarial lens is this run's ordinary primary session");
+
+        projection.Apply(new FakeEvent<PrReviewConformanceDispatched>(
+            new PrReviewConformanceDispatched(id, DomainId.New(), 5501, Now, Now, AgentModel.Unknown)), view);
+        view.State.Should().Be(RunState.UnderReview, "not stuck at Verifying for a task type whose gates never run");
+
+        projection.Apply(new FakeEvent<PrReviewDelivered>(
+            new PrReviewDelivered(id, "Walked and directed.", Now, DomainId.New())), view);
+        view.State.Should().Be(RunState.UnderReview, "the daemon's own resume sweep signal, same as ReviewParkResolved");
+    }
+
     private static RunDetails VerifiedRun(RunDetailsProjection projection, Guid id)
     {
         RunDetails view = projection.Create(new FakeEvent<RunDispatched>(new RunDispatched(
