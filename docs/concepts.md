@@ -416,7 +416,9 @@ orchestrator links what a search of the tracker found, attests none exists with
 altogether with `h9k task publish <id> --untracked` — for internal chores and platform tasks that
 should not pollute a team's tracker — so the platform never mints a duplicate from a search it
 cannot perform itself. The two attestations say opposite things and are refused together as
-contradictory, and `--untracked` on a project with backlog policy `none` is refused as
-meaningless.
+contradictory; `--untracked` on a project with backlog policy `none`, or any policy this build
+doesn't recognize, is refused as meaningless; and `--untracked` on a task with a publication
+request already outstanding (`h9k task push-to-jira`, run by hand while still a Draft) is refused
+too, since that session mints its card regardless of the flag.
 
 Depth: [PLAN.md §6.2, §6.6, §10](../PLAN.md), Decisions Log #65, #95, #96, #97.

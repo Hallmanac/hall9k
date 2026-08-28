@@ -184,8 +184,10 @@ none exists and proceeds with `h9k task publish <id> --no-existing-item`, or att
 task should skip tracking altogether with `h9k task publish <id> --untracked` — for internal
 chores and platform tasks that should not pollute a team's tracker — so a duplicate is never
 minted from a search the platform itself cannot perform. The two attestations are refused
-together as contradictory, and `--untracked` under backlog policy `none` is refused as
-meaningless. Once that gate is past, `github-issues`
+together as contradictory; `--untracked` under backlog policy `none`, or any policy this build
+doesn't recognize, is refused as meaningless; and `--untracked` on a task with a publication
+request already outstanding (`h9k task push-to-jira`, run by hand while still a Draft) is refused
+too, since that session mints its card regardless of the flag. Once that gate is past, `github-issues`
 is deterministic: `h9k task publish` runs `gh issue create` itself — no agent involved, because an
 issue's shape (title, body, labels) is uniform enough for the platform to author on its own —
 reads the created issue straight back the same way `--from-issue` does, and records it through
