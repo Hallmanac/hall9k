@@ -693,10 +693,21 @@ public sealed partial class VerificationRunner(
     /// Whether a gate's own command is `dotnet test`-shaped — the only shape
     /// <see cref="TestGateScope"/> ever narrows. A build gate, a lint gate, or a `dotnet test`
     /// wrapped in something else entirely (a script, a different runner) is left exactly as the
-    /// project configured it.
+    /// project configured it. Matched with a regex rather than a literal-space
+    /// <c>StartsWith("dotnet test")</c> (Copilot review, PR #62) for two reasons: arbitrary
+    /// whitespace between the two words (`dotnet  test`, a tab) is still the same command, and a
+    /// literal substring match would also — wrongly — call `dotnet testing` or `dotnet tests` a
+    /// test gate, since both start with the same characters. The word boundary after `test` is a
+    /// negative lookahead for a word character rather than a required whitespace-or-end
+    /// (independent pre-PR review, cycle 1 — a required trailing whitespace rejected a gate whose
+    /// shell control operator abuts the word, `dotnet test|tail -200` or `dotnet test&&dotnet
+    /// format`, which <see cref="FindDotnetTestInvocationEnd"/> below is deliberately written to
+    /// handle).
     /// </summary>
-    private static bool IsDotnetTestGate(string command) =>
-        command.TrimStart().StartsWith("dotnet test", StringComparison.Ordinal);
+    [GeneratedRegex(@"^\s*dotnet\s+test(?!\w)")]
+    private static partial Regex DotnetTestGatePattern();
+
+    private static bool IsDotnetTestGate(string command) => DotnetTestGatePattern().IsMatch(command);
 
     /// <summary>
     /// Whether a scoped `dotnet test` gate's own output shows VSTest ran zero tests rather than
