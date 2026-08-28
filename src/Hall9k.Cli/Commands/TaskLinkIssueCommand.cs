@@ -134,6 +134,26 @@ public sealed class TaskLinkIssueCommand : Hall9kAsyncCommand<TaskLinkIssueComma
             return LinkOutcome.AlreadyLinked;
         }
 
+        // A publication request outstanding for another provider (h9k task push-to-jira, run by
+        // hand or by TaskPublishCommand.TrackInBacklogAsync against a project bound to a Jira
+        // board) is a session already writing this task's one external item. Linking this issue
+        // on top of it would clear PendingPublicationProvider from under that session
+        // (TaskAggregate.Apply(WorkItemLinked)), so CardPublicationEngine stops watching it,
+        // WorkItemPublicationCompleted never gets appended, and the session's own h9k task
+        // link-jira is refused once it finishes because the task now carries this GitHub
+        // reference instead — the card it wrote ends up orphaned with nothing recording or
+        // cleaning it up. Checked here, on the fenced aggregate, so both this command's own
+        // human-facing entry point and TrackInBacklogAsync's internal call are covered by the one
+        // guard rather than only the caller that remembers to ask first.
+        if (task.PendingPublicationProvider is { } pending)
+        {
+            throw new DomainConflictException(
+                $"Task {taskId} has a {pending.Value} publication request outstanding"
+                + (task.PublicationSessionDispatched ? " and its session is running" : " and is waiting for the daemon")
+                + $". Linking {issue.Reference} now would strand that session's card with nothing to record "
+                + $"or clean it up. Wait for it to finish, or watch it with h9k task show {taskId}.");
+        }
+
         await TaskAddCommand.RefuseSecondAdoptionAsync(session, issue.Reference, cancellationToken);
 
         WorkItemLinked linked = TaskDecider.LinkWorkItem(
