@@ -91,6 +91,19 @@ public sealed class RunAggregate
     private readonly List<string> _requestedReviewerLogins = [];
     public IReadOnlyList<string> RequestedReviewerLogins => _requestedReviewerLogins;
 
+    /// <summary>
+    /// The pr-review task type's own, deliberately separate track record (PrReviewEngine):
+    /// the adversarial lens is this run's ordinary primary session and needs none of these,
+    /// so only the conformance lens — dispatched second, once the adversarial findings are on
+    /// disk — is tracked here. Never read by ReviewEngine's own cycle/track state machine.
+    /// </summary>
+    public Guid? PrReviewConformanceSessionId { get; private set; }
+    public int? PrReviewConformanceProcessId { get; private set; }
+    public DateTimeOffset? PrReviewConformanceProcessStartedAt { get; private set; }
+    public bool PrReviewConformanceCompleted { get; private set; }
+
+    /// <summary>The owner's h9k review resolve --merge-ready verdict on a pr-review park: walk done, close the task.</summary>
+    public bool PrReviewDelivered { get; private set; }
 
     /// The pre-PR review loop (log #24): which round of review the run is on, from 1. Every
     /// still-active track shares it — tracks only ever advance together, because the only thing
@@ -657,6 +670,23 @@ public sealed class RunAggregate
         ReviewPhase = @event.Outcome == ReviewFixOutcome.Disputed
             ? ReviewPhase.Disputed
             : ReviewPhase.Reverify;
+    }
+
+    public void Apply(PrReviewConformanceDispatched @event)
+    {
+        PrReviewConformanceSessionId = @event.SessionId;
+        PrReviewConformanceProcessId = @event.ProcessId;
+        PrReviewConformanceProcessStartedAt = @event.ProcessStartedAt;
+        PrReviewConformanceCompleted = false;
+        State = RunState.UnderReview;
+    }
+
+    public void Apply(PrReviewConformanceCompleted @event) => PrReviewConformanceCompleted = true;
+
+    public void Apply(PrReviewDelivered @event)
+    {
+        PrReviewDelivered = true;
+        State = RunState.UnderReview;
     }
 
     public void Apply(ReviewParked @event)

@@ -393,6 +393,23 @@ public sealed class RunDetailsProjection : SingleStreamProjection<RunDetails, Gu
         view.ReviewResidualsRideAlong = @event.Data.ResidualsRideAlong;
     }
 
+    public void Apply(IEvent<PrReviewConformanceDispatched> @event, RunDetails view)
+    {
+        view.ReviewModel = @event.Data.Model ?? AgentModel.Unknown;
+        StartSession(
+            view, AgentRole.Review, ReviewLens.Conformance, @event.Data.ProcessId, @event.Data.ProcessStartedAt);
+        view.State = RunState.UnderReview;
+    }
+
+    public void Apply(IEvent<PrReviewConformanceCompleted> @event, RunDetails view) => EndSessions(view);
+
+    public void Apply(IEvent<PrReviewDelivered> @event, RunDetails view)
+    {
+        view.ParkedReason = null;
+        EndSessions(view);
+        view.State = RunState.UnderReview;
+    }
+
     public void Apply(IEvent<ReviewParked> @event, RunDetails view)
     {
         view.ParkedReason = @event.Data.Reason;
