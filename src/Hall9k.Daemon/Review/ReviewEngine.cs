@@ -243,19 +243,6 @@ public sealed class ReviewEngine(
                         || verifyCommandsFingerprintChanged
                         || (run.HumanEndedTheLoop && !gateAlreadyRanFullOverCurrentHead))
                     {
-                        // The per-track cycle caps cannot bound this on their own (cycle-3 finding):
-                        // a track the final pass keeps reawakening gets its budget base bumped by
-                        // that very reactivation (RunAggregate.TrackBudgetBaseCycle's own doc), so it
-                        // never trips its own cap. FinalFullPassCapReached is the independent bound
-                        // that stops the two-full-passes-plus-fix-session iteration from recurring
-                        // forever.
-                        if (FinalFullPassCapReached(run))
-                        {
-                            await ParkAsync(
-                                context.RunId, context.TaskId, FinalFullPassCapParkReason(run), cancellationToken);
-                            return false;
-                        }
-
                         // Full, unless the immediately preceding gate already ran full over this
                         // exact tip (cycle-3 finding — a "scoped" Verify cycle whose own reverify
                         // gate fell back to full, most often because the fix only touched a
@@ -290,6 +277,24 @@ public sealed class ReviewEngine(
                         {
                             await SettleAsync(run, cancellationToken);
                             break;
+                        }
+
+                        // The per-track cycle caps cannot bound this on their own (cycle-3 finding):
+                        // a track the final pass keeps reawakening gets its budget base bumped by
+                        // that very reactivation (RunAggregate.TrackBudgetBaseCycle's own doc), so it
+                        // never trips its own cap. FinalFullPassCapReached is the independent bound
+                        // that stops the two-full-passes-plus-fix-session iteration from recurring
+                        // forever. Checked here, immediately before the dispatch it actually guards,
+                        // rather than before the settle short-circuit above: a fingerprint-only
+                        // trigger (verifyCommandsFingerprintChanged with needsFullGateBeforeSettling
+                        // false) always takes that short-circuit and was never about to spend a round,
+                        // so checking the cap ahead of it parked a run that had converged clean
+                        // (cycle-4 finding).
+                        if (FinalFullPassCapReached(run))
+                        {
+                            await ParkAsync(
+                                context.RunId, context.TaskId, FinalFullPassCapParkReason(run), cancellationToken);
+                            return false;
                         }
 
                         string? settlingHeadSha =
