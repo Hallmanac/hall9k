@@ -216,7 +216,8 @@ public sealed class TaskBrowseTests
     [Fact]
     public void A_bounded_list_says_how_many_it_held_back_and_the_flag_that_shows_them()
     {
-        string footer = TaskListCommand.Footer(137, TaskListCommand.DefaultLimit, new TaskListCommand.Settings(), project: null);
+        string footer = TaskListCommand.Footer(
+            137, TaskListCommand.DefaultLimit, hiddenArchived: 0, new TaskListCommand.Settings(), project: null);
 
         footer.Should().Contain("20 of 137").And.Contain("newest first");
         footer.Should().Contain("117 held back").And.Contain("h9k task list --all");
@@ -226,9 +227,9 @@ public sealed class TaskBrowseTests
     public void The_held_back_hint_repeats_the_filters_so_all_keeps_the_view_you_are_looking_at()
     {
         ProjectDetails project = new() { Id = DomainId.New(), Name = "hall9k" };
-        TaskListCommand.Settings settings = new() { Project = "hall", State = "needs-you" };
+        TaskListCommand.Settings settings = new() { Project = "hall", State = ["needs-you"] };
 
-        string footer = TaskListCommand.Footer(30, 20, settings, project);
+        string footer = TaskListCommand.Footer(30, 20, hiddenArchived: 0, settings, project);
 
         footer.Should().Contain("in hall9k").And.Contain("matching --state needs-you");
         footer.Should().Contain("--all --project hall9k --state needs-you");
@@ -237,10 +238,47 @@ public sealed class TaskBrowseTests
     [Fact]
     public void An_unbounded_view_teaches_the_filters_instead_of_claiming_rows_were_held_back()
     {
-        string footer = TaskListCommand.Footer(4, 4, new TaskListCommand.Settings(), project: null);
+        string footer = TaskListCommand.Footer(4, 4, hiddenArchived: 0, new TaskListCommand.Settings(), project: null);
 
         footer.Should().Contain("4 of 4").And.NotContain("held back");
         footer.Should().Contain("--project <name>").And.Contain("--state <state>");
+    }
+
+    [Fact]
+    public void The_footer_says_how_many_archived_rows_the_default_view_hid_and_the_flag_that_shows_them()
+    {
+        string footer = TaskListCommand.Footer(4, 4, hiddenArchived: 26, new TaskListCommand.Settings(), project: null);
+
+        footer.Should().Contain("26 archived hidden").And.Contain("h9k task list --include-archived");
+    }
+
+    [Fact]
+    public void A_state_filter_with_multiple_values_unions_them_across_all_three_vocabularies()
+    {
+        Guid runId = DomainId.New();
+        TaskStatusRow published = StatusFixtures.Compose(StatusFixtures.Task(TaskState.Published));
+        TaskStatusRow working = StatusFixtures.Compose(
+            StatusFixtures.Task(TaskState.Claimed, runId), StatusFixtures.Run(runId, RunState.Running));
+        TaskStatusRow delivered = Delivered(RunState.AwaitingReview);
+        TaskStatusRow draft = StatusFixtures.Compose(StatusFixtures.Task(TaskState.Draft));
+
+        string[] states = [.. TaskStateFilter.Split(["published,working", "delivered"])];
+        states.Should().Equal("published", "working", "delivered");
+
+        bool AnyMatch(TaskStatusRow row) => states.Any(state => TaskStateFilter.Matches(row, state));
+
+        AnyMatch(published).Should().BeTrue();
+        AnyMatch(working).Should().BeTrue();
+        AnyMatch(delivered).Should().BeTrue();
+        AnyMatch(draft).Should().BeFalse("draft was not one of the requested states");
+    }
+
+    [Fact]
+    public void Splitting_state_values_trims_whitespace_and_drops_empty_entries()
+    {
+        string[] split = [.. TaskStateFilter.Split([" published , working ", "", "delivered"])];
+
+        split.Should().Equal("published", "working", "delivered");
     }
 
     /// <summary>A pushed task whose run is in the given state: the Delivered family, one member at a time.</summary>

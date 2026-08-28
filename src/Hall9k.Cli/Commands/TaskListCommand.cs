@@ -24,26 +24,38 @@ public sealed class TaskListCommand : Hall9kAsyncCommand<TaskListCommand.Setting
 
         [CommandOption("--state <STATE>")]
         [Description(
-            "Only tasks in this state. Three vocabularies, and no word belongs to two of them. A "
-            + "lifecycle state selects exactly what the Status column shows (Draft, Published, Working, "
-            + "Delivered, Done, Failed, Archived); Delivered is pushed-but-not-merged and Done means the "
-            + "merge was observed, the same bar the dependency rule uses (PLAN.md #66). An attention group "
-            + "selects the whole group h9k status counts by (" + TaskStateFilter.AttentionSpelling + "); the "
-            + "attention- spellings are the four groups the Status column names too, and the bare word there "
-            + "is the column's, so --state delivered reaches every Delivered row including the one parked on "
-            + "a question. A run state selects on the phase line's material (Running, Verifying, UnderReview, "
-            + "AwaitingReview, ChecksFailing, …), which is where the run vocabulary reads now; a run that "
-            + "failed is spelled run-failed, because Failed alone is the lifecycle state. Hyphens and case "
-            + "are optional.")]
-        public string? State { get; init; }
+            "Only tasks in one of these states, unioned together. Comma-separated within one --state, "
+            + "repeatable across several, or both (--state published,working --state delivered shows all "
+            + "three). Three vocabularies, and no word belongs to two of them, and the three may mix freely "
+            + "in one filter. A lifecycle state selects exactly what the Status column shows (Draft, "
+            + "Published, Working, Delivered, Done, Failed, Archived); Delivered is pushed-but-not-merged and "
+            + "Done means the merge was observed, the same bar the dependency rule uses (PLAN.md #66). An "
+            + "attention group selects the whole group h9k status counts by (" + TaskStateFilter.AttentionSpelling
+            + "); the attention- spellings are the four groups the Status column names too, and the bare word "
+            + "there is the column's, so --state delivered reaches every Delivered row including the one "
+            + "parked on a question. A run state selects on the phase line's material (Running, Verifying, "
+            + "UnderReview, AwaitingReview, ChecksFailing, …), which is where the run vocabulary reads now; a "
+            + "run that failed is spelled run-failed, because Failed alone is the lifecycle state. Hyphens and "
+            + "case are optional.")]
+        public string[]? State { get; init; }
 
         [CommandOption("--limit <N>")]
         [Description("How many rows to show, newest first (default 20). The footer says how many were held back.")]
         public int? Limit { get; init; }
 
         [CommandOption("--all")]
-        [Description("Show every matching task, unbounded — this wins over --limit")]
+        [Description(
+            "Show every matching task, unbounded — this wins over --limit, but never resurfaces Archived "
+            + "rows hidden by the default view; pair it with --include-archived or --state archived for that.")]
         public bool All { get; init; }
+
+        [CommandOption("--include-archived")]
+        [Description(
+            "Also show Archived rows in an otherwise-unfiltered view. Archived tasks are hidden from the "
+            + "default view so closeouts don't gradually crowd out live work; asking for them directly "
+            + "(--state archived, or the attention group --state closed) already shows them without this "
+            + "flag, and this flag has no extra effect once --state is given.")]
+        public bool IncludeArchived { get; init; }
     }
 
     protected override async Task<int> ExecuteAsync(Settings settings, CancellationToken cancellationToken)
@@ -53,9 +65,10 @@ public sealed class TaskListCommand : Hall9kAsyncCommand<TaskListCommand.Setting
             throw new DomainValidationException($"--limit must be at least 1, got {requested}.");
         }
 
-        if (settings.State.IsNotBlank())
+        IReadOnlyList<string> states = TaskStateFilter.Split(settings.State ?? []);
+        foreach (string state in states)
         {
-            TaskStateFilter.Validate(settings.State);
+            TaskStateFilter.Validate(state);
         }
 
         using var store = CliStore.Open();
@@ -76,14 +89,28 @@ public sealed class TaskListCommand : Hall9kAsyncCommand<TaskListCommand.Setting
             return ExitCodes.Ok;
         }
 
-        List<TaskStatusRow> matched = [.. all
+        List<TaskStatusRow> candidates = [.. all
             .Where(row => project is null || row.ProjectId == project.Id)
-            .Where(row => settings.State.IsBlank() || TaskStateFilter.Matches(row, settings.State))
-            .OrderByDescending(row => row.AddedAt)];
+            .Where(row => states.Count == 0 || states.Any(state => TaskStateFilter.Matches(row, state)))];
+
+        // Archived rows are hidden from an otherwise-unfiltered view by default (a closeout
+        // gradually crowding out live work otherwise): asking for them by word — --state
+        // archived, or the attention group --state closed — already returns them above, and
+        // this hiding never applies on top of that ask.
+        List<TaskStatusRow> visible = candidates;
+        int hiddenArchived = 0;
+        if (states.Count == 0 && !settings.IncludeArchived)
+        {
+            visible = [.. candidates.Where(row => row.State != LifecycleState.Archived)];
+            hiddenArchived = candidates.Count - visible.Count;
+        }
+
+        List<TaskStatusRow> matched = [.. visible.OrderByDescending(row => row.AddedAt)];
         if (matched.Count == 0)
         {
+            string browseHint = hiddenArchived > 0 ? "h9k task list --include-archived" : "h9k task list --all";
             AnsiConsole.MarkupLine(
-                $"[dim]No tasks match {Filters(settings, project)}. Drop a filter, or browse everything:[/] h9k task list --all");
+                $"[dim]No tasks match {Filters(settings, project)}. Drop a filter, or browse everything:[/] {browseHint}");
             return ExitCodes.Ok;
         }
 
@@ -91,7 +118,7 @@ public sealed class TaskListCommand : Hall9kAsyncCommand<TaskListCommand.Setting
         List<TaskStatusRow> shown = [.. matched.Take(limit)];
 
         AnsiConsole.Write(Rows(shown, scoped: project is not null, AnsiConsole.Profile.Width, DateTimeOffset.UtcNow));
-        AnsiConsole.MarkupLine(Footer(matched.Count, shown.Count, settings, project));
+        AnsiConsole.MarkupLine(Footer(matched.Count, shown.Count, hiddenArchived, settings, project));
         return ExitCodes.Ok;
     }
 
@@ -141,28 +168,36 @@ public sealed class TaskListCommand : Hall9kAsyncCommand<TaskListCommand.Setting
 
     /// <summary>
     /// The bounded-list contract: never let a truncated view read as the whole truth. Says
-    /// what was held back and the exact flag that shows it.
+    /// what was held back and the exact flag that shows it — including, when the default view
+    /// hid Archived rows, how many and the flag that shows those too.
     /// </summary>
-    internal static string Footer(int matched, int shown, Settings settings, ProjectDetails? project)
+    internal static string Footer(int matched, int shown, int hiddenArchived, Settings settings, ProjectDetails? project)
     {
-        string scope = $"{shown} of {matched}{Scope(settings, project)}, newest first";
+        string scope = $"{shown} of {matched}{Scope(settings, project)}, newest first{ArchivedNote(hiddenArchived)}";
         int held = matched - shown;
         return held > 0
             ? $"[dim]{scope} · {held} held back — see them with:[/] h9k task list --all"
-              + $"{Repeat(settings, project)} [dim]or[/] --limit {matched}"
-            : $"[dim]{scope} · filter with:[/] h9k task list --project <name> --state <state>";
+              + $"{Repeat(settings, project)} [dim]or[/] --limit {matched}{ArchivedHint(hiddenArchived)}"
+            : $"[dim]{scope} · filter with:[/] h9k task list --project <name> --state <state>{ArchivedHint(hiddenArchived)}";
     }
 
     private static string Scope(Settings settings, ProjectDetails? project)
     {
         string scope = project is null ? string.Empty : $" in {project.Name.EscapeMarkup()}";
-        return settings.State.IsNotBlank() ? $"{scope} matching --state {settings.State.EscapeMarkup()}" : scope;
+        string states = StateDisplay(settings);
+        return states.IsNotBlank() ? $"{scope} matching --state {states.EscapeMarkup()}" : scope;
     }
+
+    private static string ArchivedNote(int hiddenArchived) =>
+        hiddenArchived > 0 ? $" · {hiddenArchived} archived hidden" : string.Empty;
+
+    private static string ArchivedHint(int hiddenArchived) =>
+        hiddenArchived > 0 ? " [dim]· see them with:[/] h9k task list --include-archived" : string.Empty;
 
     /// <summary>The active filters, echoed so --all keeps the view the reader is looking at.</summary>
     private static string Repeat(Settings settings, ProjectDetails? project) =>
         (project is null ? string.Empty : $" --project {project.Name.EscapeMarkup()}")
-        + (settings.State.IsBlank() ? string.Empty : $" --state {settings.State.EscapeMarkup()}");
+        + (StateDisplay(settings) is { Length: > 0 } states ? $" --state {states.EscapeMarkup()}" : string.Empty);
 
     private static string Filters(Settings settings, ProjectDetails? project)
     {
@@ -172,13 +207,18 @@ public sealed class TaskListCommand : Hall9kAsyncCommand<TaskListCommand.Setting
             filters.Add($"--project {project.Name.EscapeMarkup()}");
         }
 
-        if (settings.State.IsNotBlank())
+        string states = StateDisplay(settings);
+        if (states.IsNotBlank())
         {
-            filters.Add($"--state {settings.State.EscapeMarkup()}");
+            filters.Add($"--state {states.EscapeMarkup()}");
         }
 
         return filters.Count > 0 ? string.Join(" ", filters) : "those filters";
     }
+
+    /// <summary>--state's states, comma-joined for echoing back in a hint — union order preserved.</summary>
+    private static string StateDisplay(Settings settings) =>
+        string.Join(",", TaskStateFilter.Split(settings.State ?? []));
 
     // UUIDv7 front-loads the timestamp, so same-batch ids share their first chars;
     // the random tail is what tells them apart.
