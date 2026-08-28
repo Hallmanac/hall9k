@@ -669,6 +669,14 @@ public sealed class RunAggregate
             // (log #63) rather than borrowing the word Clean.
             _humanEndedTheLoop = true;
             ReviewPhase = ReviewPhase.Settling;
+            // The same fresh-grant reset the NeedsFixes branch below gives itself, and for the
+            // same reason (independent pre-PR review, cycle 2, adversarial finding): Settling
+            // still runs FinalFullPassCapReached before HumanEndedTheLoop's own exemption is ever
+            // reached (ReviewEngine.NeedsFullGateBeforeSettling deliberately does not exempt the
+            // gate itself), so a run parked at the cap would immediately re-park on the identical
+            // reason the moment this merge-ready resolve tried to clear it, with no way out but
+            // --needs-fixes or abandoning the task.
+            FinalFullPassRounds = 0;
         }
         else
         {

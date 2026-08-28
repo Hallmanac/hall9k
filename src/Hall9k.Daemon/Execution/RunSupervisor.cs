@@ -43,6 +43,13 @@ public sealed class RunSupervisor(
     private static readonly TimeSpan TailInterval = TimeSpan.FromSeconds(1);
     private static readonly TimeSpan DeadProcessGrace = TimeSpan.FromSeconds(5);
 
+    /// <summary>
+    /// This run's very first gate pass, before any review cycle has dispatched — not a
+    /// review-loop fix cycle (task: a fix cycle's verification gate), so there is no reviewed
+    /// cycle head to scope a fix's commits against and it always runs at full scope.
+    /// </summary>
+    private const string InitialVerificationScopeReason = "initial verification: no review cycle has run yet";
+
     private readonly ConcurrentDictionary<Guid, Task> _monitors = new();
 
     public int ActiveCount => _monitors.Count;
@@ -326,7 +333,7 @@ public sealed class RunSupervisor(
         // The pre-PR pipeline (log #24): gates, then the independent review loop, and
         // only a merge-ready verdict lets the pull request open.
         if (!result.IsError
-            && await verification.VerifyAsync(runId, taskId, cancellationToken)
+            && await verification.VerifyAsync(runId, taskId, scopeSinceSha: null, InitialVerificationScopeReason, cancellationToken)
             && await review.ReviewAsync(runId, taskId, cancellationToken))
         {
             await pullRequests.OpenAsync(runId, taskId, cancellationToken);
@@ -515,7 +522,7 @@ public sealed class RunSupervisor(
             try
             {
                 bool mergeReady = run.State == RunState.Verifying
-                    ? await verification.VerifyAsync(run.Id, run.TaskId, cancellationToken)
+                    ? await verification.VerifyAsync(run.Id, run.TaskId, scopeSinceSha: null, InitialVerificationScopeReason, cancellationToken)
                         && await review.ReviewAsync(run.Id, run.TaskId, cancellationToken)
                     : await review.ReviewAsync(run.Id, run.TaskId, cancellationToken);
                 if (mergeReady)

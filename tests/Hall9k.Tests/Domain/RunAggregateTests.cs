@@ -570,6 +570,40 @@ public sealed class RunAggregateTests
     }
 
     /// <summary>
+    /// A run parked on <c>FinalFullPassCapReached</c> (ReviewEngine.cs) tells the human to
+    /// resolve with `h9k review resolve --merge-ready`, exactly as `--needs-fixes` gives itself a
+    /// fresh grant by re-measuring <see cref="RunAggregate.ReviewBudgetBaseCycle"/>
+    /// (<see cref="Review_park_resolved_needs_fixes_regrants_the_cycle_caps_and_carries_the_human_findings"/>).
+    /// Without the same reset here, nothing else ever lowers <see cref="RunAggregate.FinalFullPassRounds"/>,
+    /// so the Settling branch's own cap check re-parks on the identical reason the instant this
+    /// resolve tries to clear it — the human's merge-ready verdict is silently discarded on every
+    /// attempt (independent pre-PR review, cycle 2, adversarial finding).
+    /// </summary>
+    [Fact]
+    public void Merge_ready_park_resolution_resets_the_final_full_pass_round_counter()
+    {
+        RunAggregate run = new();
+        Guid id = DomainId.New();
+        run.Apply(new RunDispatched(
+            id, DomainId.New(), DomainId.New(), DomainId.New(), 1, DomainId.New(),
+            "/wt/x", "task/x", ExecutorMode.Subscription, Now));
+
+        // Two consecutive mandatory FinalFullPass cycles, the shape FinalFullPassCapReached
+        // parks on once FinalFullPassRounds reaches the configured cap.
+        run.Apply(new ReviewDispatched(id, DomainId.New(), 1, 5001, Now, Now, Mode: ReviewMode.FinalFullPass));
+        run.Apply(new ReviewDispatched(id, DomainId.New(), 2, 5002, Now, Now, Mode: ReviewMode.FinalFullPass));
+        run.FinalFullPassRounds.Should().Be(2);
+        run.Apply(new ReviewParked(id, "This run has dispatched the mandatory final full review pass 2 consecutive time(s).", Now));
+
+        run.Apply(new ReviewParkResolved(id, ReviewVerdict.MergeReady, null, Now, DomainId.New()));
+
+        run.FinalFullPassRounds.Should().Be(
+            0, "a human's merge-ready is a fresh grant (log #22), the same as needs-fixes gives itself");
+        run.HumanEndedTheLoop.Should().BeTrue();
+        run.ReviewPhase.Should().Be(ReviewPhase.Settling);
+    }
+
+    /// <summary>
     /// The thread-dispute park (Decisions Log #62) is raised from Verifying, before a gate has
     /// run and before any reviewer has read the diff, so a merge-ready resolution there is the
     /// human settling the disputed THREAD. It must not report merge-ready to PullRequestOpener,

@@ -1,5 +1,6 @@
 using Hall9k.Domain.Infrastructure.Storage;
 using System.Diagnostics;
+using System.Text.RegularExpressions;
 using Hall9k.Domain.Features.Project;
 using Hall9k.Domain.Features.Project.Projections;
 using Hall9k.Domain.Features.Run.Events;
@@ -27,12 +28,22 @@ namespace Hall9k.Daemon.Execution;
 /// file left behind so a human or a retry session finds the work instead of losing it. The
 /// reviewer agent is Slice 3.
 /// </summary>
-public sealed class VerificationRunner(
+public sealed partial class VerificationRunner(
     IDocumentStore store,
     IOptions<DaemonOptions> options,
     ILogger<VerificationRunner> logger)
 {
-    public async Task<bool> VerifyAsync(Guid runId, Guid taskId, CancellationToken cancellationToken)
+    /// <summary>
+    /// Runs the project's gates (task: a fix cycle's verification gate). <paramref name="scopeSinceSha"/>
+    /// is the reviewed cycle's own head — the boundary <see cref="TestScopeResolver"/> diffs the fix's
+    /// commits against when narrowing a `dotnet test`-shaped gate — or null to run every gate at full
+    /// scope regardless, the caller's own decision (the run's very first gate pass before any review
+    /// cycle, or a FinalFullPass fix's own reverify: nothing merges on scoped green alone) rather than
+    /// something this method second-guesses. <paramref name="scopeContext"/> is always required: it is
+    /// the human-readable "why" recorded on the verification pass and logged either way.
+    /// </summary>
+    public async Task<bool> VerifyAsync(
+        Guid runId, Guid taskId, string? scopeSinceSha, string scopeContext, CancellationToken cancellationToken)
     {
         await using IQuerySession query = store.QuerySession();
         RunDetails? run = await query.LoadAsync<RunDetails>(runId, cancellationToken);
@@ -157,10 +168,31 @@ public sealed class VerificationRunner(
         // RunPaths.ResolveCurrentDirectory (PLAN.md §16 #84).
         string runDirectory = RunPaths.ResolveCurrentDirectory(run.RunDirectory);
 
+        // Scoping only matters to a `dotnet test`-shaped gate — a project with no such gate (or
+        // one that never reached this point, e.g. a build-only project) pays nothing extra: no
+        // git diff, no test-tree scan, no note beyond what verification always recorded.
+        TestGateScope? scope = null;
+        if (gates.Any(gate => IsDotnetTestGate(gate.Command)))
+        {
+            scope = scopeSinceSha is null
+                ? TestGateScope.Full(scopeContext)
+                : await TestScopeResolver.ResolveAsync(run.WorktreePath, scopeSinceSha, scopeContext, cancellationToken);
+            logger.LogInformation(
+                "Run {RunId} test gate scope: {Mode} — {Reason}",
+                runId, scope.IsScoped ? "scoped" : "full", scope.Reason);
+        }
+
+        // Set when any gate's scoped filter matched no tests and RunGateAsync fell back to a full
+        // run of that one gate (never guess an unobserved fact into the pass note): the top-level
+        // `scope` above is decided once, before any gate runs, so the note below must say so
+        // itself rather than keep repeating "scoped" once a gate actually ran full underneath it.
+        bool testScopeFellBackToFull = false;
+
         foreach (VerifyCommand gate in gates)
         {
-            (bool passed, string summary, bool isInfrastructureFailure, string? excerpt) =
-                await RunGateAsync(runDirectory, run.WorktreePath, gate, cancellationToken);
+            (bool passed, string summary, bool isInfrastructureFailure, string? excerpt, bool fellBackToFull) =
+                await RunGateAsync(runDirectory, run.WorktreePath, gate, scope, cancellationToken);
+            testScopeFellBackToFull |= fellBackToFull;
             if (passed)
             {
                 logger.LogInformation("Run {RunId} gate '{Gate}' passed", runId, gate.Name);
@@ -204,8 +236,9 @@ public sealed class VerificationRunner(
                 "Run {RunId} gate '{Gate}' failed with an infrastructure-classified signature; retrying once: {Summary}",
                 runId, gate.Name, summary);
 
-            (bool retryPassed, string retrySummary, bool retryIsInfrastructureFailure, _) =
-                await RunGateAsync(runDirectory, run.WorktreePath, gate, cancellationToken);
+            (bool retryPassed, string retrySummary, bool retryIsInfrastructureFailure, _, bool retryFellBackToFull) =
+                await RunGateAsync(runDirectory, run.WorktreePath, gate, scope, cancellationToken);
+            testScopeFellBackToFull |= retryFellBackToFull;
             if (retryPassed)
             {
                 logger.LogInformation("Run {RunId} gate '{Gate}' passed on retry", runId, gate.Name);
@@ -227,18 +260,52 @@ public sealed class VerificationRunner(
             return false;
         }
 
-        await RecordPassAsync(runId, note: null, cancellationToken);
-        logger.LogInformation("Run {RunId} verification passed ({Count} gate(s))", runId, gates.Count);
+        string? note = scope is null
+            ? null
+            : scope.IsScoped && !testScopeFellBackToFull
+                ? $"Test gate scoped: {scope.Reason}"
+                : testScopeFellBackToFull
+                    ? $"Test gate ran full: the scoped filter matched no tests ({scope.Reason})"
+                    : $"Test gate ran full: {scope.Reason}";
+        await RecordPassAsync(runId, note, cancellationToken);
+        logger.LogInformation(
+            "Run {RunId} verification passed ({Count} gate(s)){TestGateSummary}",
+            runId, gates.Count,
+            scope is null ? "" : $"; test gate ran {(scope.IsScoped && !testScopeFellBackToFull ? "scoped" : "full")}");
         return true;
     }
 
-    private async Task<(bool Passed, string Summary, bool IsInfrastructureFailure, string? InfrastructureExcerpt)> RunGateAsync(
-        string runDirectory, string worktreePath, VerifyCommand gate, CancellationToken cancellationToken)
+    private async Task<(bool Passed, string Summary, bool IsInfrastructureFailure, string? InfrastructureExcerpt, bool FellBackToFull)>
+        RunGateAsync(
+        string runDirectory, string worktreePath, VerifyCommand gate, TestGateScope? scope, CancellationToken cancellationToken)
     {
         string logFile = Path.Combine(runDirectory, $"verify-{Sanitize(gate.Name)}.log");
         Directory.CreateDirectory(runDirectory);
 
-        string innerCommand = $"({gate.Command}) > \"{logFile}\" 2>&1";
+        // Scoping only ever touches a `dotnet test`-shaped gate's own command — a build gate, a
+        // lint gate, anything else configured runs exactly as the project wrote it, scope or not.
+        string command = gate.Command;
+        string? header = null;
+        if (scope is not null && IsDotnetTestGate(gate.Command))
+        {
+            header = scope.IsScoped
+                ? $"# hall9k test gate: scoped -- {scope.Reason}{Environment.NewLine}# filter: {scope.FilterExpression}{Environment.NewLine}"
+                : $"# hall9k test gate: full -- {scope.Reason}{Environment.NewLine}";
+            if (scope.IsScoped)
+            {
+                command = ApplyTestFilter(command, scope.FilterExpression!);
+            }
+        }
+
+        if (header is not null)
+        {
+            // Written before the gate runs, not appended after: the run artifacts say which mode
+            // ran and why even if the gate itself times out or the process never produces output.
+            await File.WriteAllTextAsync(logFile, header, cancellationToken);
+        }
+
+        string redirect = header is null ? ">" : ">>";
+        string innerCommand = $"({command}) {redirect} \"{logFile}\" 2>&1";
 
         using Process process = new();
         process.StartInfo = new ProcessStartInfo
@@ -272,7 +339,7 @@ public sealed class VerificationRunner(
             string startFailure = $"Gate '{gate.Name}' could not start: {exception.Message}";
             return (false, startFailure,
                 GateInfrastructureFailureClassifier.IsInfrastructureFailure(startFailure),
-                GateInfrastructureFailureClassifier.MatchingExcerpt(startFailure));
+                GateInfrastructureFailureClassifier.MatchingExcerpt(startFailure), false);
         }
 
         using CancellationTokenSource timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
@@ -293,12 +360,40 @@ public sealed class VerificationRunner(
             string timeoutOutput = ReadFullOutput(logFile);
             bool timeoutIsInfrastructureFailure = GateInfrastructureFailureClassifier.IsInfrastructureFailure(timeoutOutput);
             return (false, timeoutFailure, timeoutIsInfrastructureFailure,
-                GateInfrastructureFailureClassifier.MatchingExcerpt(timeoutOutput));
+                GateInfrastructureFailureClassifier.MatchingExcerpt(timeoutOutput), false);
         }
 
         if (process.ExitCode == 0)
         {
-            return (true, "ok", false, null);
+            if (scope is { IsScoped: true } && IsDotnetTestGate(gate.Command))
+            {
+                // The scoped filter combined with whatever filter the gate already carried (this
+                // repo's own CI filter, `Category!=RequiresDocker`, among them) can intersect to
+                // nothing even though TestScopeResolver mapped at least one class from the fix's
+                // own commits — VSTest's default (`TreatNoTestsAsError=false`) exits 0 on "no test
+                // matches the given testcase filter", which would otherwise stand a run that
+                // executed nothing in for a passed one (independent pre-PR review, cycle 1),
+                // exactly what TestGateScope's own contract promises never happens. Falling back
+                // to a full, unscoped run of this one gate costs the rare intersect-to-zero case
+                // a second gate run rather than a silent false green or a spurious failure of a
+                // perfectly good fix.
+                string scopedOutput = ReadFullOutput(logFile);
+                if (ScopedRunExecutedNoTests(scopedOutput))
+                {
+                    logger.LogWarning(
+                        "Gate '{Gate}': the scoped filter \"{Filter}\" matched no tests once combined with the " +
+                        "gate's own configured filter; falling back to a full run of this gate",
+                        gate.Name, scope.FilterExpression);
+                    (bool fallbackPassed, string fallbackSummary, bool fallbackIsInfrastructureFailure, string? fallbackExcerpt, _) =
+                        await RunGateAsync(
+                            runDirectory, worktreePath, gate,
+                            TestGateScope.Full($"the scoped filter matched no tests ({scope.Reason})"),
+                            cancellationToken);
+                    return (fallbackPassed, fallbackSummary, fallbackIsInfrastructureFailure, fallbackExcerpt, true);
+                }
+            }
+
+            return (true, "ok", false, null, false);
         }
 
         // Classification reads the gate's whole output, never just the truncated tail kept
@@ -307,7 +402,7 @@ public sealed class VerificationRunner(
         string fullOutput = ReadFullOutput(logFile);
         bool isInfrastructureFailure = GateInfrastructureFailureClassifier.IsInfrastructureFailure(fullOutput);
         string summary = $"Gate '{gate.Name}' exited {process.ExitCode}. Output: {TailOf(fullOutput)}";
-        return (false, summary, isInfrastructureFailure, GateInfrastructureFailureClassifier.MatchingExcerpt(fullOutput));
+        return (false, summary, isInfrastructureFailure, GateInfrastructureFailureClassifier.MatchingExcerpt(fullOutput), false);
     }
 
     /// <summary>
@@ -524,6 +619,103 @@ public sealed class VerificationRunner(
                 taskId, runId);
         }
     }
+
+    /// <summary>
+    /// Whether a gate's own command is `dotnet test`-shaped — the only shape
+    /// <see cref="TestGateScope"/> ever narrows. A build gate, a lint gate, or a `dotnet test`
+    /// wrapped in something else entirely (a script, a different runner) is left exactly as the
+    /// project configured it.
+    /// </summary>
+    private static bool IsDotnetTestGate(string command) =>
+        command.TrimStart().StartsWith("dotnet test", StringComparison.Ordinal);
+
+    /// <summary>
+    /// Whether a scoped `dotnet test` gate's own output shows VSTest ran zero tests rather than
+    /// some passing — the observed marker VSTest prints on an empty filter intersection, exit
+    /// code 0 regardless (verified against this repo's own VSTest console: `dotnet test --filter
+    /// "FullyQualifiedName~NoSuchClass"` exits 0 and prints exactly this line).
+    /// </summary>
+    internal static bool ScopedRunExecutedNoTests(string output) =>
+        output.Contains("No test matches the given testcase filter", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// Injects <paramref name="filterExpression"/> into a `dotnet test` command, combining with
+    /// an already-configured `--filter` (this repo's own CI carries one,
+    /// `--filter "Category!=RequiresDocker"`) via `&amp;` rather than emitting a second `--filter`
+    /// flag, which `dotnet test` does not accept twice. A gate's own command is free-form shell
+    /// (backlog: it is handed to `/bin/sh -c` / `cmd.exe`), so `dotnet test` is only the
+    /// PREFIX of a gate that chains it with `&amp;&amp;`, pipes its output, or backgrounds it —
+    /// both the append and the existing-`--filter` search are therefore scoped to
+    /// <see cref="FindDotnetTestInvocationEnd"/>'s span, never the whole command string
+    /// (independent pre-PR review, cycle 2 — appending or rewriting past that span landed the
+    /// filter on a trailing program instead of on `dotnet test`, running the suite unscoped and
+    /// failing the trailing program on an option it does not accept).
+    /// </summary>
+    internal static string ApplyTestFilter(string command, string filterExpression)
+    {
+        int invocationEnd = FindDotnetTestInvocationEnd(command);
+        string invocation = command[..invocationEnd].TrimEnd();
+        string rest = command[invocationEnd..];
+
+        Match match = ExistingTestFilterPattern().Match(invocation);
+        string updatedInvocation = match.Success
+            ? string.Concat(
+                invocation.AsSpan(0, match.Index),
+                $"--filter \"({match.Groups["filter"].Value})&({filterExpression})\"",
+                invocation.AsSpan(match.Index + match.Length))
+            : $"{invocation} --filter \"{filterExpression}\"";
+
+        return rest.Length == 0 ? updatedInvocation : $"{updatedInvocation} {rest}";
+    }
+
+    /// <summary>
+    /// The index where the command's leading `dotnet test` invocation ends and, for a compound
+    /// gate command, whatever follows it begins: the first unquoted shell control operator
+    /// (`&amp;&amp;`, `||`, `;`, a bare `|`, or a bare `&amp;`) or the end of the string if the
+    /// command is nothing but `dotnet test` itself. A bare `&amp;` immediately after `&gt;` (the
+    /// `2&gt;&amp;1` file-descriptor duplication this repo's own gates use) is not a control
+    /// operator and is skipped, the same way quoted text is: neither ends the invocation.
+    /// </summary>
+    private static int FindDotnetTestInvocationEnd(string command)
+    {
+        bool inSingleQuote = false;
+        bool inDoubleQuote = false;
+        for (int i = 0; i < command.Length; i++)
+        {
+            char c = command[i];
+            if (inSingleQuote)
+            {
+                inSingleQuote = c != '\'';
+                continue;
+            }
+
+            if (inDoubleQuote)
+            {
+                inDoubleQuote = c != '"';
+                continue;
+            }
+
+            switch (c)
+            {
+                case '\'':
+                    inSingleQuote = true;
+                    break;
+                case '"':
+                    inDoubleQuote = true;
+                    break;
+                case ';':
+                case '|':
+                    return i;
+                case '&' when i == 0 || command[i - 1] != '>':
+                    return i;
+            }
+        }
+
+        return command.Length;
+    }
+
+    [GeneratedRegex("""--filter\s+"(?<filter>[^"]*)"|--filter\s+(?<filter>\S+)""")]
+    private static partial Regex ExistingTestFilterPattern();
 
     private static string Sanitize(string name) =>
         new([.. name.Select(c => char.IsAsciiLetterOrDigit(c) ? c : '-')]);

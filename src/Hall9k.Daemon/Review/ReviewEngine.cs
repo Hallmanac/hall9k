@@ -181,11 +181,17 @@ public sealed class ReviewEngine(
                     break;
 
                 case ReviewPhase.Settling:
-                    // Nothing may reach the remote on delta-green alone (task: review cycles after
-                    // the first): the run may only settle once the most recently dispatched cycle
-                    // was itself the mandatory full-rigor read, or a human overruled the loop
-                    // outright (MaySettle's own doc says why the human case is exempt).
-                    if (!MaySettle(run))
+                    // Nothing may reach the remote on scoped green alone (task: a fix cycle's
+                    // verification gate): the tip about to settle needs a full-scope gate run
+                    // since whatever fix's own — possibly scoped — reverify last ran it, whether
+                    // the loop is concluding on its own or a human overruled it. A human's
+                    // merge-ready is exempt only from another agent's fresh-context read
+                    // (MaySettle's own doc says why that half is a human's call to skip); it is
+                    // not a claim that the suite ran, so it never substitutes for this gate
+                    // (independent pre-PR review, cycle 1 — a human resolving a park that followed
+                    // a scoped Verify gate previously reached SettleAsync here having never run the
+                    // full suite over the fix's commits).
+                    if (NeedsFullGateBeforeSettling(run))
                     {
                         // The per-track cycle caps cannot bound this on their own (cycle-3 finding):
                         // a track the final pass keeps reawakening gets its budget base bumped by
@@ -198,6 +204,27 @@ public sealed class ReviewEngine(
                             await ParkAsync(
                                 context.RunId, context.TaskId, FinalFullPassCapParkReason(run), cancellationToken);
                             return false;
+                        }
+
+                        // Full, unconditionally, so nothing merges on scoped green alone (task: a
+                        // fix cycle's verification gate) and — when the loop is concluding on its
+                        // own — the reviewers about to read this tip are reading a tree already
+                        // proven to build and pass its whole suite.
+                        if (!await verification.VerifyAsync(
+                            context.RunId, context.TaskId, scopeSinceSha: null,
+                            "mandatory final full pass: nothing merges on scoped green alone", cancellationToken))
+                        {
+                            return false;
+                        }
+
+                        if (run.HumanEndedTheLoop)
+                        {
+                            // The human already gave their verdict on this diff; MaySettle's own
+                            // exemption is precisely that dispatching another agent pass over it
+                            // would be presumptuous. The full gate above is what that exemption
+                            // never covered, and it has now actually run, so the run may settle.
+                            await SettleAsync(run, cancellationToken);
+                            break;
                         }
 
                         string? settlingHeadSha =
@@ -258,7 +285,41 @@ public sealed class ReviewEngine(
                     return false;
 
                 case ReviewPhase.Reverify:
-                    if (!await verification.VerifyAsync(context.RunId, context.TaskId, cancellationToken))
+                    // Whichever tracks are still owed a look get one merged Verify pass (task:
+                    // review cycles after the first) — unless nothing is left, in which case this
+                    // fix's own commits have never had a fresh-context read, and the mandatory
+                    // FinalFullPass is what gives them one before the run may settle. The one
+                    // exception is a pre-gate dispute resume (a rebase conflict or a review thread,
+                    // Decisions Log #62): ReviewCycle is still 0 there — no review pass has EVER
+                    // run on this branch — so the cycle about to dispatch is genuinely this run's
+                    // first, and Discovery is what "cycle 1 is unchanged" promises it, not a Verify
+                    // pass standing in for a discovery that never happened. Computed BEFORE the
+                    // gate run below, not just after it (as it once was) — this run's own aggregate
+                    // state does not change in between, and knowing which cycle comes next is
+                    // exactly what decides this fix's own gate scope (task: a fix cycle's
+                    // verification gate).
+                    ReviewMode reverifyMode = run.ReviewCycle == 0
+                        ? ReviewMode.Discovery
+                        : run.ActiveReviewLenses.Count == 0 ? ReviewMode.FinalFullPass : ReviewMode.Verify;
+
+                    // Only a fix whose next stop is an ordinary Verify cycle scopes its own gate
+                    // pass: a Verify cycle can never settle or reach FinalFullPass without another
+                    // gate pass first (the Settling branch's own guard above covers that one), so
+                    // scoping here never lets an unverified-at-full-scope tip reach the remote. A
+                    // fix whose next stop is the mandatory FinalFullPass — or, cycle 0, a pre-gate
+                    // dispute resume with no review pass yet — gates at full scope instead of
+                    // scoped-then-immediately-re-verified-full: nothing merges on scoped green
+                    // alone (task: a fix cycle's verification gate).
+                    (string? reverifyScopeSinceSha, string reverifyScopeContext) =
+                        reverifyMode == ReviewMode.Verify && run.CycleHeadSha is { } reverifyScopeSha
+                            ? (reverifyScopeSha, $"cycle {run.ReviewCycle} fix ({run.CurrentCycleMode.Value})")
+                            : (null, reverifyMode == ReviewMode.FinalFullPass
+                                ? "mandatory final full pass follows: nothing merges on scoped green alone"
+                                : reverifyMode == ReviewMode.Discovery
+                                    ? "no review pass has run on this branch yet"
+                                    : "no prior cycle head to scope the fix's commits against");
+                    if (!await verification.VerifyAsync(
+                        context.RunId, context.TaskId, reverifyScopeSinceSha, reverifyScopeContext, cancellationToken))
                     {
                         // VerificationRunner already failed the run and task honestly.
                         return false;
@@ -275,18 +336,6 @@ public sealed class ReviewEngine(
                         break;
                     }
 
-                    // Whichever tracks are still owed a look get one merged Verify pass (task:
-                    // review cycles after the first) — unless nothing is left, in which case this
-                    // fix's own commits have never had a fresh-context read, and the mandatory
-                    // FinalFullPass is what gives them one before the run may settle. The one
-                    // exception is a pre-gate dispute resume (a rebase conflict or a review thread,
-                    // Decisions Log #62): ReviewCycle is still 0 there — no review pass has EVER
-                    // run on this branch — so the cycle about to dispatch is genuinely this run's
-                    // first, and Discovery is what "cycle 1 is unchanged" promises it, not a Verify
-                    // pass standing in for a discovery that never happened.
-                    ReviewMode reverifyMode = run.ReviewCycle == 0
-                        ? ReviewMode.Discovery
-                        : run.ActiveReviewLenses.Count == 0 ? ReviewMode.FinalFullPass : ReviewMode.Verify;
                     // Same independent bound as the Settling branch above, checked here too: a run
                     // can reach a FinalFullPass dispatch straight from Reverify (every track just
                     // concluded again without ever passing back through Settling), and the per-track
@@ -2100,17 +2149,27 @@ public sealed class ReviewEngine(
     }
 
     /// <summary>
-    /// Whether "nothing left to review" may actually settle the run, or must first pass through the
-    /// mandatory <see cref="ReviewMode.FinalFullPass"/> (task: review cycles after the first). Both
+    /// Whether "nothing left to review" may actually settle the run without dispatching one more
+    /// fresh-context review pass over it (task: review cycles after the first). Both
     /// <see cref="ReviewMode.Discovery"/> and <see cref="ReviewMode.FinalFullPass"/> qualify — each
     /// is a full, fresh-context read of the tip it concluded on — so a run that converges clean at
     /// cycle 1 with nothing ever needing a fix pays no extra pass at all: cycle 1's own two-lens
     /// read already is the fresh look immediately before the pull request opens. Only
     /// <see cref="ReviewMode.Verify"/> fails to qualify, because it never re-derives the whole diff,
     /// which is exactly the gap the mandatory final pass exists to close. A human's own merge-ready
-    /// park resolution is exempt outright: a human overruling the automatic loop already looked, or
-    /// deliberately chose not to, and dispatching another agent pass over their explicit verdict
-    /// would be presumptuous rather than thorough.
+    /// park resolution is exempt from this review half outright: a human overruling the automatic
+    /// loop already looked, or deliberately chose not to, and dispatching another agent pass over
+    /// their explicit verdict would be presumptuous rather than thorough.
+    /// <para>
+    /// <b>This method decides only whether another review pass is owed.</b> Whether the test gate
+    /// itself must still run at full scope before settling is <see cref="NeedsFullGateBeforeSettling"/>'s
+    /// separate question, and the human exemption does not carry over there (independent pre-PR
+    /// review, cycle 1 — a human resolving a park that followed a scoped Verify gate previously
+    /// reached <c>SettleAsync</c> straight from here having never run the full suite over the fix's
+    /// commits): a human's merge-ready excuses the next reviewer's fresh-context read, never the
+    /// suite actually running at full scope, so it must never let a tip last gated scoped reach the
+    /// remote unread by the full test gate.
+    /// </para>
     /// <para>
     /// The mode check alone is not enough (independent pre-PR review, cycle 2, conformance
     /// finding): a cycle's <see cref="RunAggregate.CurrentCycleMode"/> does not change until the
@@ -2127,6 +2186,16 @@ public sealed class ReviewEngine(
     private static bool MaySettle(RunAggregate run) =>
         run.HumanEndedTheLoop
         || (run.CurrentCycleMode != ReviewMode.Verify && !run.FixDispatchedThisCycle);
+
+    /// <summary>
+    /// Whether the Settling branch must run one more full-scope gate pass before the run may
+    /// settle (task: a fix cycle's verification gate) — <see cref="MaySettle"/>'s own non-human
+    /// condition, deliberately without its human exemption: a human's merge-ready resolution
+    /// excuses another reviewer's fresh-context read, never the suite actually running at full
+    /// scope over the fix's own commits (independent pre-PR review, cycle 1).
+    /// </summary>
+    private static bool NeedsFullGateBeforeSettling(RunAggregate run) =>
+        run.CurrentCycleMode == ReviewMode.Verify || run.FixDispatchedThisCycle;
 
     /// <summary>
     /// The worktree's current commit, best-effort (task: review cycles after the first) — what a
