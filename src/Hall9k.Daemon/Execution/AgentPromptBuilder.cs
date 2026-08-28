@@ -1118,22 +1118,24 @@ public static class AgentPromptBuilder
         prompt.AppendLine("decide whether one opens, so report everything you find rather than leaving a");
         prompt.AppendLine("defect for someone else.");
         prompt.AppendLine();
-        prompt.AppendLine("## What the diff is supposed to do");
-        prompt.AppendLine();
-        prompt.AppendLine(task.Objective);
-        prompt.AppendLine();
         if (mechanicsOverride is { DiffIsForeignPullRequest: true })
         {
+            prompt.AppendLine("## What this review task is");
+            prompt.AppendLine();
+            prompt.AppendLine(task.Objective);
+            prompt.AppendLine();
+            prompt.AppendLine(
+                "That objective describes the review task itself — hand back a findings report — not a");
+            prompt.AppendLine(
+                "standard the foreign diff is judged against. What the diff is supposed to do is the pull");
+            prompt.AppendLine(
+                "request's own title and description, quoted in the Context section below if this task");
+            prompt.AppendLine(
+                "carries one; the diff's own conformance basis is stated further down, under \"How to");
+            prompt.AppendLine("review\".");
+            prompt.AppendLine();
             if (task.AcceptanceCriteria.Count > 0)
             {
-                prompt.AppendLine(
-                    "This task also carries its own acceptance criteria below, but they are about the");
-                prompt.AppendLine(
-                    "review task itself — what your findings report has to look like — not a standard");
-                prompt.AppendLine(
-                    "this foreign diff is judged against. The diff's own conformance basis is stated");
-                prompt.AppendLine("further down, under \"How to review\".");
-                prompt.AppendLine();
                 prompt.AppendLine("This task's own acceptance criteria (about the review, not the diff):");
                 foreach (string criterion in task.AcceptanceCriteria)
                 {
@@ -1145,6 +1147,10 @@ public static class AgentPromptBuilder
         }
         else
         {
+            prompt.AppendLine("## What the diff is supposed to do");
+            prompt.AppendLine();
+            prompt.AppendLine(task.Objective);
+            prompt.AppendLine();
             prompt.AppendLine("Acceptance criteria:");
             foreach (string criterion in task.AcceptanceCriteria)
             {
