@@ -559,7 +559,11 @@ public sealed class VerificationRunnerTests(PostgresFixture postgres) : IClassFi
         string sinceSha = await InitScopableRepoAsync(cts.Token);
         await CommitAsync(
             "src/Hall9k.Domain/Widget.cs", "public sealed class Widget\n{\n    public int Count;\n}\n", "fix widget", cts.Token);
-        (Guid taskId, Guid runId) = await SeedAsync(store, [new VerifyCommand("test", "dotnet test --help")], cts.Token);
+        (Guid taskId, Guid runId) = await SeedAsync(store,
+            [new VerifyCommand(
+                "test",
+                "dotnet test --help; echo 'Passed!  - Failed: 0, Passed: 3, Skipped: 0, Total: 3, Duration: 1 s'")],
+            cts.Token);
 
         bool passed = await NewRunner(store).VerifyAsync(runId, taskId, sinceSha, "cycle 2 fix (Discovery)", cts.Token);
 

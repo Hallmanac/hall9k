@@ -51,7 +51,8 @@ public sealed record TestGateScope
 
     private const int MaxListedNames = 20;
 
-    private static string Summarize(IReadOnlyList<string> names) =>
+    /// <summary>Capped the same way for every reason string this record hands back, scoped or full — a wide-rewrite fix's own file or class list must never blow out the one-line reason (<see cref="TestScopeResolver"/>'s own fallback reasons share this cap).</summary>
+    internal static string Summarize(IReadOnlyList<string> names) =>
         names.Count <= MaxListedNames
             ? string.Join(", ", names)
             : $"{string.Join(", ", names.Take(MaxListedNames))}, and {names.Count - MaxListedNames} more";
@@ -90,7 +91,7 @@ public static partial class TestScopeResolver
         if (nonSourceFiles.Count > 0)
         {
             return TestGateScope.Full(
-                $"non-C# file(s) touched, not statically mappable to tests: {string.Join(", ", nonSourceFiles)} ({cycleDescription})");
+                $"non-C# file(s) touched, not statically mappable to tests: {TestGateScope.Summarize(nonSourceFiles)} ({cycleDescription})");
         }
 
         IReadOnlyList<TestFile>? testFiles = LoadTestFiles(worktreePath);

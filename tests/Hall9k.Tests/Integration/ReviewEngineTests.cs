@@ -69,11 +69,19 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
         /// <summary>Lets a test mutate configuration between legs, the way a config edit mid-run would.</summary>
         public Action? OnFirstSpawn { get; set; }
 
+        /// <summary>Lets a test act like the spawn actually touched the worktree — a fix session's own commit, keyed by that spawn's zero-based index — since every session here is scripted rather than real.</summary>
+        public Dictionary<int, Action> OnSpawnByIndex { get; } = [];
+
         public async Task<SpawnedAgent> SpawnAsync(AgentSpawnRequest request, CancellationToken cancellationToken)
         {
             if (Spawns.Count == 0)
             {
                 OnFirstSpawn?.Invoke();
+            }
+
+            if (OnSpawnByIndex.TryGetValue(Spawns.Count, out Action? onSpawn))
+            {
+                onSpawn();
             }
 
             Spawns.Add(request);
@@ -331,6 +339,126 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
 
         executor.Spawns[2].Environment.Should().BeEmpty(
             "the fix session runs alone and commits — it needs git's locks");
+    }
+
+    /// <summary>
+    /// The Settling branch's own mandatory full gate is skipped when the immediately preceding
+    /// gate already ran full over the identical tip (task: a fix cycle's verification gate,
+    /// cycle-3 finding). The common trigger is a nominally-scoped Verify reverify whose own gate
+    /// fell back to full because the fix's commit touched something <see cref="TestScopeResolver"/>
+    /// cannot map to a test class — a doc file, here — so re-running the full suite a second time
+    /// over the identical commits would buy nothing. Only the redundant GATE call is skipped: the
+    /// review pass immediately after still runs, since <c>MaySettle</c>'s own "another fresh-context
+    /// read is still owed" rule for a Verify-mode cycle is a separate question this does not touch.
+    /// </summary>
+    [Fact]
+    public async Task A_verify_cycles_reverify_gate_that_fell_back_to_full_skips_the_redundant_settling_gate()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        using DocumentStore store = NewStore();
+        (Guid taskId, Guid runId, string worktreePath) = await SeedVerifiedRunWithTestGateAsync(store, cts.Token);
+
+        ScriptedExecutor executor = new(
+            "1. `Auth.cs:42` — the limiter never resets.\n\nVERDICT: needs-fixes",
+            "Nothing survived verification.\n\nVERDICT: merge-ready",
+            "Reset the limiter window.\n\nRESOLUTION: fixed",
+            // Cycle 2: only conformance is still active, so it gets one Verify pass.
+            "Criteria met.\n\nVERDICT: merge-ready",
+            // Cycle 3: the mandatory final full pass, both lenses fresh.
+            "Confirmed clean.\n\nVERDICT: merge-ready",
+            "Confirmed clean too.\n\nVERDICT: merge-ready");
+        // The fix session (the third spawn, index 2) is scripted rather than real — it has to
+        // actually touch the worktree the way a real fix would, but only a doc file, so
+        // TestScopeResolver cannot map it to any test class and the reverify gate right after
+        // falls back to full even though this is nominally a "Verify" cycle.
+        executor.OnSpawnByIndex[2] = () => CommitDocOnlyChange(worktreePath);
+
+        bool mergeReady = await NewEngine(store, executor).ReviewAsync(runId, taskId, cts.Token);
+
+        mergeReady.Should().BeTrue();
+        executor.Spawns.Should().HaveCount(
+            6, "the gate skip changes nothing about how many review passes and fix sessions run — "
+                + "only a redundant gate call");
+
+        await using IQuerySession query = store.QuerySession();
+        List<object> events = [.. (await query.Events.FetchStreamAsync(runId, token: cts.Token)).Select(e => e.Data)];
+        List<VerificationPassed> passes = [.. events.OfType<VerificationPassed>()];
+        passes.Should().HaveCount(
+            2, "the run's own first gate pass, plus the cycle-2 reverify gate that fell back to full over "
+                + "the doc-only fix — Settling recognizes that full pass already covered this exact tip and "
+                + "does not pay for an identical third run");
+        passes[^1].RanFullScope.Should().BeTrue(
+            "the reverify's own scoped attempt fell back to full because TestScopeResolver could not map "
+                + "the fix's doc-only commit to any test class");
+    }
+
+    private static void CommitDocOnlyChange(string worktreePath)
+    {
+        File.WriteAllText(Path.Combine(worktreePath, "NOTES.md"), "fix notes\n");
+        Git(worktreePath, "add -A");
+        Git(worktreePath, "-c user.name=Test -c user.email=test@test commit -q -m fix-notes");
+    }
+
+    /// <summary>Like <see cref="SeedVerifiedRunAsync(DocumentStore, CancellationToken)"/>, but a real git worktree and a real `dotnet test`-shaped gate, for tests that need <see cref="VerificationRunner"/>'s own scoping to run for real rather than short-circuit on "no gates configured".</summary>
+    private async Task<(Guid TaskId, Guid RunId, string WorktreePath)> SeedVerifiedRunWithTestGateAsync(
+        DocumentStore store, CancellationToken cancellationToken)
+    {
+        NodeContext node = new();
+        await node.InitializeAsync(store, cancellationToken);
+
+        Guid taskId = DomainId.New();
+        Guid runId = DomainId.New();
+        Guid projectId = DomainId.New();
+        Guid mainSessionId = DomainId.New();
+        string worktreePath = Path.Combine(_home, $"wt-{runId:N}");
+        Directory.CreateDirectory(worktreePath);
+        Git(worktreePath, "init -q -b main");
+        File.WriteAllText(Path.Combine(worktreePath, "base.txt"), "base\n");
+        Git(worktreePath, "add -A");
+        Git(worktreePath, "-c user.name=Test -c user.email=test@test commit -q -m init");
+        // The task branch, one real commit ahead of main — the "already-reviewed" state a
+        // Discovery cycle's own head is captured against, so VerificationRunner's own no-commit
+        // pre-gate check (a branch with nothing beyond its base fails before any gate runs) does
+        // not fire, and so the fix's later doc-only commit has a real diff to be scoped against.
+        Git(worktreePath, "checkout -q -b task/review-me");
+        File.WriteAllText(Path.Combine(worktreePath, "Widget.cs"), "class Widget { }\n");
+        Git(worktreePath, "add -A");
+        Git(worktreePath, "-c user.name=Test -c user.email=test@test commit -q -m widget");
+
+        await using IDocumentSession session = store.LightweightSession();
+
+        Hall9k.Domain.Features.Project.ProjectAggregate project = new();
+        var registered = Hall9k.Domain.Features.Project.Handlers.ProjectDecider.Register(
+            projectId, node.OwnerId, DomainId.New(), $"review-{taskId:N}", worktreePath, null, "main", Now);
+        project.Apply(registered);
+        session.Events.StartStream<Hall9k.Domain.Features.Project.ProjectAggregate>(
+            projectId, registered,
+            Hall9k.Domain.Features.Project.Handlers.ProjectDecider.ChangeSettings(
+                project,
+                verifyCommands: Optional<IReadOnlyList<Hall9k.Domain.Features.Project.VerifyCommand>>.Of(
+                    [new Hall9k.Domain.Features.Project.VerifyCommand("test", "dotnet test --help")]),
+                skipPermissions: Optional<bool>.None,
+                maxParallelAgents: Optional<int>.None,
+                contextLinks: Optional<IReadOnlyList<Hall9k.Domain.Features.Project.ContextLink>>.None,
+                Now, node.OwnerId));
+
+        TaskAggregate task = new();
+        (task, object[] lifecycle) = TaskSeed.Start(
+            TaskDecider.Add(taskId, projectId, "Review me before the PR", ["reviewed"],
+                TaskType.Chore, null, null, null, Now, node.OwnerId),
+            node.OwnerId, Now);
+        var claimed = TaskDecider.Claim(task, node.NodeId, node.OwnerId, runId, Now);
+        session.Events.StartStream<TaskAggregate>(taskId, [.. lifecycle, claimed]);
+        session.Store(new TaskLease { Id = taskId, NodeId = node.NodeId, LeaseGeneration = 1, HeartbeatAt = Now });
+
+        session.Events.StartStream<RunAggregate>(runId,
+            new RunDispatched(runId, taskId, node.NodeId, node.OwnerId, 1, mainSessionId,
+                worktreePath, "task/review-me", ExecutorMode.Subscription, Now),
+            new AgentSessionCompleted(runId, Now),
+            new VerificationPassed(runId, Now));
+        await session.SaveChangesAsync(cancellationToken);
+
+        return (taskId, runId, worktreePath);
     }
 
     private static string SettingsArgument(AgentSpawnRequest request) =>

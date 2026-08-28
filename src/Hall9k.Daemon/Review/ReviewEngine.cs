@@ -206,13 +206,20 @@ public sealed class ReviewEngine(
                             return false;
                         }
 
-                        // Full, unconditionally, so nothing merges on scoped green alone (task: a
-                        // fix cycle's verification gate) and — when the loop is concluding on its
-                        // own — the reviewers about to read this tip are reading a tree already
-                        // proven to build and pass its whole suite.
-                        if (!await verification.VerifyAsync(
-                            context.RunId, context.TaskId, scopeSinceSha: null,
-                            "mandatory final full pass: nothing merges on scoped green alone", cancellationToken))
+                        // Full, unless the immediately preceding gate already ran full over this
+                        // exact tip (cycle-3 finding — a "scoped" Verify cycle whose own reverify
+                        // gate fell back to full, most often because the fix only touched a
+                        // non-mappable file like a doc, still satisfies "nothing merges on scoped
+                        // green alone"; running it again here would be the identical suite over the
+                        // identical commits). Whenever the preceding gate was actually scoped, or
+                        // any commit landed since, this still runs unconditionally — so nothing
+                        // merges on scoped green alone, and, when the loop is concluding on its own,
+                        // the reviewers about to read this tip are reading a tree already proven to
+                        // build and pass its whole suite.
+                        if (!await GateAlreadyRanFullOverCurrentHeadAsync(context, run, cancellationToken)
+                            && !await verification.VerifyAsync(
+                                context.RunId, context.TaskId, scopeSinceSha: null,
+                                "mandatory final full pass: nothing merges on scoped green alone", cancellationToken))
                         {
                             return false;
                         }
@@ -2192,10 +2199,39 @@ public sealed class ReviewEngine(
     /// settle (task: a fix cycle's verification gate) — <see cref="MaySettle"/>'s own non-human
     /// condition, deliberately without its human exemption: a human's merge-ready resolution
     /// excuses another reviewer's fresh-context read, never the suite actually running at full
-    /// scope over the fix's own commits (independent pre-PR review, cycle 1).
+    /// scope over the fix's own commits (independent pre-PR review, cycle 1). Whether that gate
+    /// pass can be skipped because one already ran is <see cref="GateAlreadyRanFullOverCurrentHeadAsync"/>'s
+    /// separate question — this method only ever decides that the branch is entered at all, never
+    /// that the gate call inside it is redundant.
     /// </summary>
     private static bool NeedsFullGateBeforeSettling(RunAggregate run) =>
         run.CurrentCycleMode == ReviewMode.Verify || run.FixDispatchedThisCycle;
+
+    /// <summary>
+    /// Whether the run's own most recently recorded gate pass already covered the worktree's
+    /// current tip at full scope (cycle-3 finding), so the Settling branch's own mandatory full
+    /// pass would be re-running the identical suite over the identical commits. True only when
+    /// <see cref="RunAggregate.LastGateRanFullScope"/> is set AND a fresh read of the worktree's
+    /// HEAD matches <see cref="RunAggregate.LastGateHeadSha"/> exactly — a scoped preceding gate,
+    /// an unread HEAD, or a HEAD that moved (a fix landed more commits since) all fall through to
+    /// false, which is what keeps the unconditional full gate whenever the preceding one was
+    /// scoped or the tip has moved (task: a fix cycle's verification gate). The common case this
+    /// actually fires for is a "scoped" <see cref="ReviewMode.Verify"/> reverify whose own gate
+    /// fell back to full because the fix's commits touched something <see cref="TestScopeResolver"/>
+    /// cannot map (a doc file, most often) — the reverify already paid full price for this exact
+    /// tip, so a second full pass here would buy nothing.
+    /// </summary>
+    private async Task<bool> GateAlreadyRanFullOverCurrentHeadAsync(
+        ReviewContext context, RunAggregate run, CancellationToken cancellationToken)
+    {
+        if (!run.LastGateRanFullScope || run.LastGateHeadSha is null)
+        {
+            return false;
+        }
+
+        string? currentHeadSha = await GetWorktreeHeadShaAsync(context.Run.WorktreePath, cancellationToken);
+        return currentHeadSha is not null && currentHeadSha == run.LastGateHeadSha;
+    }
 
     /// <summary>
     /// The worktree's current commit, best-effort (task: review cycles after the first) — what a

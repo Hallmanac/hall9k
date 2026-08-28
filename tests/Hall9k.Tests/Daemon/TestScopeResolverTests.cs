@@ -106,6 +106,29 @@ public sealed class TestScopeResolverTests : IDisposable
         scope.Reason.Should().Contain("non-C# file(s)").And.Contain("AGENTS.md");
     }
 
+    /// <summary>
+    /// The fallback reason's own file list must never blow out the one-line reason any wider than
+    /// <see cref="TestGateScope.Scoped"/>'s own <c>Summarize</c> already bounds a matched-class
+    /// list to (cycle-3 finding): a wide-rewrite fix touching dozens of non-C# files gets the same
+    /// 20-file cap and trailing "and N more" as a scoped reason would.
+    /// </summary>
+    [Fact]
+    public async Task A_touched_non_csharp_file_lists_reason_is_capped_like_a_scoped_reason()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromSeconds(30));
+        string sinceSha = CycleHeadSha;
+        for (int i = 0; i < 25; i++)
+        {
+            Commit($"docs/note-{i:00}.md", $"note {i}\n", $"add note {i}");
+        }
+
+        TestGateScope scope = await TestScopeResolver.ResolveAsync(_repositoryPath, sinceSha, "cycle 2 fix", cts.Token);
+
+        scope.IsScoped.Should().BeFalse();
+        scope.Reason.Should().Contain("note-00.md").And.Contain("note-19.md").And.Contain("and 5 more");
+        scope.Reason.Should().NotContain("note-20.md");
+    }
+
     [Fact]
     public async Task A_touched_shared_test_helper_outside_the_Tests_convention_falls_back_to_full()
     {
