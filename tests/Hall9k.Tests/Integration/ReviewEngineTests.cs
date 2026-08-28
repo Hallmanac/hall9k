@@ -1205,6 +1205,51 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
     }
 
     /// <summary>
+    /// Two lenses can disagree on the grade of the exact same pre-existing line in one cycle.
+    /// Both_tracks_reporting_one_place_in_one_cycle_export_it_once_and_say_which_cycle already
+    /// covers that one place is exported once; this covers which artifact it lands in when the
+    /// two stated grades differ — the more severe one must decide, never whichever lens's finding
+    /// the routing happened to process first. Before this fix, the lens iteration order
+    /// (Conformance, then Adversarial) meant a Low reported by Conformance claimed the place and
+    /// blocked Adversarial's Medium at the identical line from ever earning its own draft — it was
+    /// silently folded into the sweep instead (adversarial review, cycle 4).
+    /// </summary>
+    [Fact]
+    public async Task A_medium_and_a_low_disagreeing_on_the_same_place_in_one_cycle_still_mint_the_mediums_own_draft()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        using DocumentStore store = NewStore();
+        (Guid taskId, Guid runId, _) = await SeedVerifiedRunAsync(store, cts.Token);
+
+        ScriptedExecutor executor = new(
+            "FINDING: severity=low; scope=out-of-scope; at=Legacy.cs:40\n"
+            + "Defect: the retry duplicates the effect.\n\nVERDICT: needs-fixes",
+            "FINDING: severity=medium; scope=out-of-scope; at=Legacy.cs:40\n"
+            + "Defect: the retry duplicates the effect.\n\nVERDICT: needs-fixes");
+        bool mergeReady = await NewEngine(store, executor).ReviewAsync(runId, taskId, cts.Token);
+
+        mergeReady.Should().BeTrue("there was nothing in this branch's own work to fix");
+
+        await using IQuerySession query = store.QuerySession();
+        List<object> events = [.. (await query.Events.FetchStreamAsync(runId, token: cts.Token)).Select(e => e.Data)];
+        ReviewFindingRouted routedEvent = events.OfType<ReviewFindingRouted>().Should().ContainSingle(
+            "one place named by both lenses in one cycle is one exported defect").Subject;
+        routedEvent.Severity.Should().Be(
+            ReviewSeverity.Medium, "the more severe stated grade decides the place's destination");
+
+        TaskDetails draft = (await query.LoadAsync<TaskDetails>(routedEvent.DraftTaskId!.Value, cts.Token))!;
+        draft.Type.Should().Be(
+            TaskType.Bugfix, "a Medium at this place must mint its own draft, never fold into the sweep");
+        draft.Objective.Should().Contain("Legacy.cs:40");
+
+        List<TaskListItem> sweepRows = [.. await query.Query<TaskListItem>()
+            .Where(item => item.ProjectId == draft.ProjectId && item.Objective == SweepDraftTask.Objective)
+            .ToListAsync(cts.Token)];
+        sweepRows.Should().BeEmpty(
+            "the Medium must not be buried in the polish sweep just because a Low at the same place also reported it");
+    }
+
+    /// <summary>
     /// The idempotency the sweep exists to provide: a second run's review, on a different task
     /// against the same project, reports the exact same pre-existing Low defect a first run's
     /// review already folded into the sweep. It updates that item's evidence list rather than
