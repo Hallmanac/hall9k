@@ -70,7 +70,8 @@ public sealed class GitHubWorkItemProvider(ProcessRunner? runner = null, TimePro
         try
         {
             using JsonDocument document = JsonDocument.Parse(result.StandardOutput);
-            return ReadString(document.RootElement, "url") is { } url
+            return document.RootElement.ValueKind is JsonValueKind.Object
+                && ReadString(document.RootElement, "url") is { } url
                 && Uri.TryCreate(url, UriKind.Absolute, out Uri? parsed)
                     ? parsed
                     : null;
