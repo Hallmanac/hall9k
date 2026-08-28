@@ -138,4 +138,22 @@ public sealed class VerificationRunnerScopedGateTests
                 """dotnet test --filter "FullyQualifiedName~WidgetTests" && dotnet format --filter "SomethingUnrelated" """
                     .Trim());
     }
+
+    /// <summary>
+    /// The boundary <see cref="VerificationRunner.IsDotnetTestGate"/> exists to draw (independent
+    /// pre-PR review, cycle 1): arbitrary whitespace between the two words, or a shell control
+    /// operator abutting the word, is still a `dotnet test` gate; a longer word that merely starts
+    /// with the same letters — `dotnet testing`, `dotnet tests` — is not (independent pre-PR
+    /// review, cycle 5 finding — the negative-lookahead rewrite that fixed the operator case had
+    /// no test of its own on either side of the boundary it draws).
+    /// </summary>
+    [Theory]
+    [InlineData("dotnet  test --no-build", true)]
+    [InlineData("dotnet\ttest --no-build", true)]
+    [InlineData("dotnet test|tail -200", true)]
+    [InlineData("dotnet test&&dotnet format", true)]
+    [InlineData("dotnet testing --no-build", false)]
+    [InlineData("dotnet tests --no-build", false)]
+    public void The_dotnet_test_gate_boundary_matches_only_the_bare_word(string command, bool expected) =>
+        VerificationRunner.IsDotnetTestGate(command).Should().Be(expected);
 }
