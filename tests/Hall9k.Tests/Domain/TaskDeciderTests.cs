@@ -638,6 +638,26 @@ public sealed class TaskDeciderTests
         act.Should().Throw<DomainConflictException>().WithMessage("*no pull request*");
     }
 
+    /// <summary>
+    /// A pr-review task's PullRequestUrl names the pull request it reviewed, not one this
+    /// platform ever opened or pushed to (AGENTS.md: it "never writes to the pull request or the
+    /// remote in any form"). Reopening it would resume a `pr/&lt;n&gt;` branch that never existed
+    /// and eventually run the remote branch-delete cleanup against that foreign number once it
+    /// merges — h9k pr resolve's ordinary reach never applies here.
+    /// </summary>
+    [Fact]
+    public void Reopen_of_a_done_pr_review_task_conflicts()
+    {
+        TaskAggregate task = DonePrReviewTask();
+
+        Action act = () => TaskDecider.Reopen(
+            task, task.CurrentRunId!.Value, "task/abc", null,
+            FollowUpKind.ReviewFeedback, automatic: false, Now, DomainId.New());
+
+        act.Should().Throw<DomainConflictException>()
+            .WithMessage("*no branch to resume*", "the task's PullRequestUrl names the PR it reviewed, not one it pushed to");
+    }
+
     [Fact]
     public void Reopen_without_a_branch_fails_validation()
     {
@@ -874,6 +894,21 @@ public sealed class TaskDeciderTests
     {
         TaskAggregate task = ClaimedTask();
         task.Apply(TaskDecider.Complete(task, task.CurrentRunId!.Value, pullRequestUrl, Now));
+        return task;
+    }
+
+    private static TaskAggregate DonePrReviewTask()
+    {
+        TaskAggregate task = new();
+        task.Apply(TaskDecider.Add(
+            DomainId.New(), DomainId.New(), "Review the widgets PR", ["The findings report is accurate"],
+            TaskType.PrReview, agentContext: null, constraints: null,
+            externalReference: new ExternalReference(WorkItemProvider.GitHubPullRequest, "acme/widgets#7"),
+            addedAt: Now, addedByOwnerId: Owner));
+        task.Apply(TaskDecider.Publish(task, TaskDependencyGraph.Empty, Now, Owner));
+        task.Apply(TaskDecider.Assign(task, Owner, [], Now, Owner));
+        task.Apply(TaskDecider.Claim(task, DomainId.New(), Owner, DomainId.New(), Now));
+        task.Apply(TaskDecider.Complete(task, task.CurrentRunId!.Value, "https://github.com/acme/widgets/pull/7", Now));
         return task;
     }
 
