@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Linq;
 using System.Text;
 
 namespace Hall9k.Daemon.Execution;
@@ -105,11 +106,77 @@ public static class ReviewPacketAssembler
         }
 
         IReadOnlyList<string> touchedFiles = [.. nameOnly.Split('\0', StringSplitOptions.RemoveEmptyEntries)];
+        IReadOnlyList<string> orderedTouchedFiles =
+            await OrderByDiffFootprintAsync(worktreePath, range, touchedFiles, cancellationToken);
 
         (Dictionary<string, string> contents, List<FileOmission> omissions) =
-            await ReadTouchedFilesAsync(worktreePath, touchedFiles, Encoding.UTF8.GetByteCount(diff), cancellationToken);
-        return new ReviewPacket(range, diff, touchedFiles, contents, omissions);
+            await ReadTouchedFilesAsync(worktreePath, orderedTouchedFiles, Encoding.UTF8.GetByteCount(diff), cancellationToken);
+        return new ReviewPacket(range, diff, orderedTouchedFiles, contents, omissions);
     }
+
+    /// <summary>
+    /// Orders touched files by how much of the diff each one actually carries — added-plus-
+    /// deleted line count from `git diff --numstat`, largest first — rather than the byte-sorted
+    /// path order `git diff --name-only` hands back. <see cref="ReadTouchedFilesAsync"/> spends
+    /// the packet's byte budget on whichever files sort first in this list, so a path-order list
+    /// hands the budget to whatever sorts alphabetically early — a doc, a config file, a test
+    /// fixture — before it ever reaches the source files the diff is actually about, on a
+    /// realistically-sized branch (conformance review, cycle 2). Falls back to the untouched
+    /// path order when the footprint read itself fails: an unobserved footprint is not a reason
+    /// to guess at one, and the path order is at least deterministic.
+    /// </summary>
+    private static async Task<IReadOnlyList<string>> OrderByDiffFootprintAsync(
+        string worktreePath, string range, IReadOnlyList<string> touchedFiles, CancellationToken cancellationToken)
+    {
+        IReadOnlyDictionary<string, long>? footprints = await ReadDiffFootprintsAsync(worktreePath, range, cancellationToken);
+        return footprints is null
+            ? touchedFiles
+            : [.. touchedFiles.OrderByDescending(file => footprints.GetValueOrDefault(file, 0L))];
+    }
+
+    /// <summary>
+    /// Each touched file's added-plus-deleted line count from `git diff --numstat`, read with
+    /// the same `-z` NUL-separated encoding <see cref="AssembleAsync"/> already uses for
+    /// `--name-only` so a non-ASCII path is never C-quoted into a shape that fails to match its
+    /// `--name-only` twin. A normal record is one NUL-terminated `added\tdeleted\tpath` token; a
+    /// rename prints as three NUL-separated tokens instead (`added\tdeleted\t`, the old path, the
+    /// new path) — only the new path is kept, since that is the name `--name-only` itself
+    /// reports. A binary file's counts print as `-` (git does not count binary line changes), so
+    /// its footprint is left at zero, which sinks it to the bottom of the order — exactly where a
+    /// file <see cref="ReadTouchedFilesAsync"/> is going to skip as <see cref="FileOmissionReason.Binary"/>
+    /// belongs anyway.
+    /// </summary>
+    private static async Task<IReadOnlyDictionary<string, long>?> ReadDiffFootprintsAsync(
+        string worktreePath, string range, CancellationToken cancellationToken)
+    {
+        string? numstat = await RunGitAsync(worktreePath, ["diff", "--numstat", "-z", range], cancellationToken);
+        if (numstat is null)
+        {
+            return null;
+        }
+
+        string[] tokens = numstat.Split('\0', StringSplitOptions.RemoveEmptyEntries);
+        Dictionary<string, long> footprints = new();
+        for (int i = 0; i < tokens.Length; i++)
+        {
+            string[] fields = tokens[i].Split('\t');
+            if (fields.Length >= 3 && fields[2].Length > 0)
+            {
+                footprints[fields[2]] = ParseCount(fields[0]) + ParseCount(fields[1]);
+                continue;
+            }
+
+            if (fields.Length == 3 && i + 2 < tokens.Length)
+            {
+                footprints[tokens[i + 2]] = ParseCount(fields[0]) + ParseCount(fields[1]);
+                i += 2;
+            }
+        }
+
+        return footprints;
+    }
+
+    private static long ParseCount(string value) => long.TryParse(value, out long count) ? count : 0;
 
     /// <summary>
     /// Reads each touched file's current worktree text, running total against
