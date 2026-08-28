@@ -13,6 +13,8 @@ public sealed record WorkItemProvider
 {
     public static readonly WorkItemProvider GitHub = new("github");
     public static readonly WorkItemProvider Jira = new("jira");
+    /// <summary>A GitHub pull request under review (a pr-review task's target), never a backlog item.</summary>
+    public static readonly WorkItemProvider GitHubPullRequest = new("github-pr");
 
     /// <summary>Provider not recognized or not yet set. Serializes as an empty string.</summary>
     public static readonly WorkItemProvider Unknown = new("");
