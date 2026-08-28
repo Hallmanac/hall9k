@@ -142,7 +142,23 @@ public sealed class TaskDependencyClosureTests
         dependency.IsDead.Should().BeFalse("it has not ended — it simply has not got there yet");
     }
 
+    [Fact]
+    public void A_done_pr_review_dependency_never_advises_pr_resolve()
+    {
+        TaskDependency dependency = Dependency(
+            TaskState.Done, RunState.Failed, closedOut: false, PullRequest, TaskType.PrReview);
+
+        string death = dependency.DescribeDeath();
+        death.Should().NotContain("h9k pr resolve",
+            "TaskDecider.Reopen refuses a pr-review task outright - its PullRequestUrl names the "
+            + "pull request it reviewed, not one of its own to reopen, so advice must be "
+            + "self-correcting, not self-defeating");
+        death.Should().Contain("revise this task's dependencies");
+    }
+
     private static TaskDependency Dependency(
-        TaskState state, RunState? currentRunState, bool closedOut, string? pullRequestUrl = null) =>
-        new(DomainId.New(), "A blocker", state, closedOut, currentRunState, pullRequestUrl, []);
+        TaskState state, RunState? currentRunState, bool closedOut, string? pullRequestUrl = null,
+        TaskType? type = null) =>
+        new(DomainId.New(), "A blocker", state, closedOut, currentRunState, pullRequestUrl,
+            type ?? TaskType.Chore, []);
 }
