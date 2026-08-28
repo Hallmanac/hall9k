@@ -1230,7 +1230,7 @@ public static class AgentPromptBuilder
         prompt.AppendLine($"Diff (`git diff {packet.RangeDescription}`):");
         prompt.AppendLine();
         string diffText = packet.Diff.Length > 0 ? packet.Diff.TrimEnd('\n') : "(no changes in this range)";
-        string diffFence = FenceFor(diffText);
+        string diffFence = RelayedText.FenceFor(diffText);
         prompt.AppendLine($"{diffFence}diff");
         prompt.AppendLine(diffText);
         prompt.AppendLine(diffFence);
@@ -1263,7 +1263,7 @@ public static class AgentPromptBuilder
         foreach ((string file, string content) in packet.FileContents)
         {
             string fileText = content.TrimEnd('\n');
-            string fence = FenceFor(fileText);
+            string fence = RelayedText.FenceFor(fileText);
             prompt.AppendLine($"### `{file}` (full current text)");
             prompt.AppendLine();
             prompt.AppendLine($"{fence}{FenceLanguage(file)}");
@@ -1293,34 +1293,6 @@ public static class AgentPromptBuilder
         "csproj" or "props" or "targets" or "xml" => "xml",
         _ => "",
     };
-
-    /// <summary>
-    /// A fence one backtick longer than the longest run already present in <paramref name="content"/>
-    /// (minimum three): CommonMark closes a fenced block on any line of three-or-more backticks
-    /// with no info string, so embedding arbitrary repository text — a markdown file's own code
-    /// fences, say — in a fixed three-backtick fence lets that content close the block early and
-    /// read the rest of the packet as unquoted prompt text (adversarial and conformance review,
-    /// cycle 1).
-    /// </summary>
-    private static string FenceFor(string content)
-    {
-        int longestRun = 0;
-        int currentRun = 0;
-        foreach (char character in content)
-        {
-            if (character == '`')
-            {
-                currentRun++;
-                longestRun = Math.Max(longestRun, currentRun);
-            }
-            else
-            {
-                currentRun = 0;
-            }
-        }
-
-        return new string('`', Math.Max(3, longestRun + 1));
-    }
 
     /// <summary>How many prior rulings ride into a review prompt — the newest, since they are the ones most likely still relevant.</summary>
     private const int MaxPriorRulings = 8;
