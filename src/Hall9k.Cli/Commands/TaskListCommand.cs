@@ -197,8 +197,9 @@ public sealed class TaskListCommand : Hall9kAsyncCommand<TaskListCommand.Setting
         int held = matched - shown;
         return held > 0
             ? $"[dim]{scope} · {held} held back — see them with:[/] h9k task list --all"
-              + $"{Repeat(settings, project)} [dim]or[/] --limit {matched}{ArchivedHint(hiddenArchived)}"
-            : $"[dim]{scope} · filter with:[/] h9k task list --project <name> --state <state>{ArchivedHint(hiddenArchived)}";
+              + $"{Repeat(settings, project)} [dim]or[/] --limit {matched}{ArchivedHint(hiddenArchived, settings, project)}"
+            : $"[dim]{scope} · filter with:[/] h9k task list --project <name> --state <state>"
+              + $"{ArchivedHint(hiddenArchived, settings, project)}";
     }
 
     private static string Scope(Settings settings, ProjectDetails? project)
@@ -211,8 +212,10 @@ public sealed class TaskListCommand : Hall9kAsyncCommand<TaskListCommand.Setting
     private static string ArchivedNote(int hiddenArchived) =>
         hiddenArchived > 0 ? $" · {hiddenArchived} archived hidden" : string.Empty;
 
-    private static string ArchivedHint(int hiddenArchived) =>
-        hiddenArchived > 0 ? " [dim]· see them with:[/] h9k task list --include-archived" : string.Empty;
+    private static string ArchivedHint(int hiddenArchived, Settings settings, ProjectDetails? project) =>
+        hiddenArchived > 0
+            ? $" [dim]· see them with:[/] h9k task list --include-archived{Repeat(settings, project)}"
+            : string.Empty;
 
     /// <summary>The active filters, echoed so --all keeps the view the reader is looking at.</summary>
     private static string Repeat(Settings settings, ProjectDetails? project) =>
@@ -220,6 +223,11 @@ public sealed class TaskListCommand : Hall9kAsyncCommand<TaskListCommand.Setting
         + (StateDisplay(settings) is { Length: > 0 } states ? $" --state {states.EscapeMarkup()}" : string.Empty)
         + (settings.IncludeArchived ? " --include-archived" : string.Empty);
 
+    /// <summary>
+    /// The narrowing filters, for messages that suggest dropping one to widen the result.
+    /// <c>--include-archived</c> is deliberately excluded: it only ever adds rows back, so
+    /// dropping it can never turn a zero-match result into a nonzero one.
+    /// </summary>
     private static string Filters(Settings settings, ProjectDetails? project)
     {
         List<string> filters = [];
@@ -232,11 +240,6 @@ public sealed class TaskListCommand : Hall9kAsyncCommand<TaskListCommand.Setting
         if (states.IsNotBlank())
         {
             filters.Add($"--state {states.EscapeMarkup()}");
-        }
-
-        if (settings.IncludeArchived)
-        {
-            filters.Add("--include-archived");
         }
 
         return filters.Count > 0 ? string.Join(" ", filters) : "those filters";

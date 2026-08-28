@@ -253,6 +253,21 @@ public sealed class TaskBrowseTests
     }
 
     /// <summary>
+    /// A scoped reader who follows the archived hint verbatim has to land back in their own
+    /// project, or the hint hands them an unscoped, unbounded listing that will not show the
+    /// rows the footer just counted for them.
+    /// </summary>
+    [Fact]
+    public void The_archived_hint_keeps_the_scope_the_reader_is_looking_at()
+    {
+        ProjectDetails project = new() { Id = DomainId.New(), Name = "hall9k" };
+
+        string footer = TaskListCommand.Footer(20, 20, hiddenArchived: 12, new TaskListCommand.Settings(), project);
+
+        footer.Should().Contain("h9k task list --include-archived --project hall9k");
+    }
+
+    /// <summary>
     /// Each requested word has to come from a different vocabulary — lifecycle, attention group,
     /// run state — or the union only ever exercises one <c>Matches</c> arm and the "three
     /// vocabularies may mix" claim goes unverified. <c>published</c> is a lifecycle word,
