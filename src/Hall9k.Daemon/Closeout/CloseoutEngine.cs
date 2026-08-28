@@ -200,11 +200,11 @@ public sealed class CloseoutEngine(
             }
         }
 
-        foreach (TaskListItem task in await TasksWithMissingRunRecordsAsync(cancellationToken))
+        foreach (Guid missingRunTaskId in await TasksWithMissingRunRecordsAsync(cancellationToken))
         {
             try
             {
-                switch (await InspectMissingRunAsync(task, cancellationToken))
+                switch (await InspectMissingRunAsync(missingRunTaskId, cancellationToken))
                 {
                     case InspectionOutcome.MergeObserved:
                         inspected++;
@@ -226,7 +226,8 @@ public sealed class CloseoutEngine(
             {
                 failures++;
                 logger.LogWarning(
-                    exception, "Closeout missing-run sweep failed for task {TaskId}; will retry next sweep", task.Id);
+                    exception, "Closeout missing-run sweep failed for task {TaskId}; will retry next sweep",
+                    missingRunTaskId);
             }
         }
 
@@ -242,13 +243,24 @@ public sealed class CloseoutEngine(
     /// are: there is no RunDetails row to read a NodeId from, and any node reconstructing this
     /// run record races safely — Marten's StartStream in <see cref="ReconstructAndCompleteAsync"/>
     /// refuses a run id a concurrent winner already started.
+    /// <para>
+    /// Every task that ever merged a pull request stays in this candidate set forever (nothing
+    /// clears <c>PullRequestUrl</c>/<c>CurrentRunId</c> on a Done task), unlike the two
+    /// RunDetails-driven sweeps above, which are bounded by a transient run state. Projected to
+    /// the two scalar fields <see cref="InspectMissingRunAsync"/> actually needs — it re-derives
+    /// everything else from the task's own event stream — rather than materializing the full
+    /// <see cref="TaskListItem"/> document (objective, criteria, dependency lists) for every one
+    /// of them on every sweep (independent pre-PR review, cycle 1; same fix as <see
+    /// cref="ReviewRerequestCountAsync"/>'s <c>ReviewRerequestScalars</c>).
+    /// </para>
     /// </summary>
-    private async Task<IReadOnlyList<TaskListItem>> TasksWithMissingRunRecordsAsync(CancellationToken cancellationToken)
+    private async Task<IReadOnlyList<Guid>> TasksWithMissingRunRecordsAsync(CancellationToken cancellationToken)
     {
         await using IQuerySession query = store.QuerySession();
-        IReadOnlyList<TaskListItem> doneWithPullRequest = await query.Query<TaskListItem>()
+        IReadOnlyList<MissingRunCandidate> doneWithPullRequest = await query.Query<TaskListItem>()
             .Where(t => t.MatchesSql("d.data ->> 'state' = ?", TaskState.Done.Value))
             .Where(t => t.PullRequestUrl != null && t.CurrentRunId != null)
+            .Select(t => new MissingRunCandidate(t.Id, t.CurrentRunId!.Value))
             .ToListAsync(cancellationToken);
 
         if (doneWithPullRequest.Count == 0)
@@ -256,14 +268,16 @@ public sealed class CloseoutEngine(
             return [];
         }
 
-        Guid[] runIds = [.. doneWithPullRequest.Select(t => t.CurrentRunId!.Value)];
+        Guid[] runIds = [.. doneWithPullRequest.Select(t => t.CurrentRunId)];
         HashSet<Guid> recorded = [.. await query.Query<RunDetails>()
             .Where(r => runIds.Contains(r.Id))
             .Select(r => r.Id)
             .ToListAsync(cancellationToken)];
 
-        return [.. doneWithPullRequest.Where(t => !recorded.Contains(t.CurrentRunId!.Value))];
+        return [.. doneWithPullRequest.Where(t => !recorded.Contains(t.CurrentRunId)).Select(t => t.Id)];
     }
+
+    private sealed record MissingRunCandidate(Guid Id, Guid CurrentRunId);
 
     /// <summary>
     /// One read of a Done task's pull request when its own recorded run has no run record to
@@ -273,18 +287,18 @@ public sealed class CloseoutEngine(
     /// run stream that does not exist yet, so an open or closed-without-merge pull request is a
     /// true no-op and stays needs-you until a human or a future sweep observes a merge.
     /// </summary>
-    private async Task<InspectionOutcome> InspectMissingRunAsync(TaskListItem candidate, CancellationToken cancellationToken)
+    private async Task<InspectionOutcome> InspectMissingRunAsync(Guid candidateId, CancellationToken cancellationToken)
     {
         await using IDocumentSession session = store.LightweightSession();
 
-        StreamState? fence = await session.Events.FetchStreamStateAsync(candidate.Id, cancellationToken);
+        StreamState? fence = await session.Events.FetchStreamStateAsync(candidateId, cancellationToken);
         if (fence is null)
         {
             return InspectionOutcome.Skipped;
         }
 
         TaskAggregate? task = await session.Events.AggregateStreamAsync<TaskAggregate>(
-            candidate.Id, version: fence.Version, token: cancellationToken);
+            candidateId, version: fence.Version, token: cancellationToken);
         if (task is null
             || task.State != TaskState.Done
             || task.PullRequestUrl.IsBlank()
@@ -317,12 +331,12 @@ public sealed class CloseoutEngine(
 
         // The inspection is a slow network call; revalidate before acting, exactly as the two
         // RunDetails-driven sweeps above do.
-        StreamState? current = await session.Events.FetchStreamStateAsync(candidate.Id, cancellationToken);
+        StreamState? current = await session.Events.FetchStreamStateAsync(candidateId, cancellationToken);
         if (current is null || current.Version != fence.Version)
         {
             logger.LogDebug(
                 "Task {TaskId} advanced while inspecting its unrecorded run's pull request {Url}; deferring to the next sweep",
-                candidate.Id, task.PullRequestUrl);
+                candidateId, task.PullRequestUrl);
             return InspectionOutcome.Inspected;
         }
 
@@ -344,11 +358,15 @@ public sealed class CloseoutEngine(
     /// Completes a task's closeout for a pull request that is known to be merged, when the run
     /// that would watch it has no run record — RunLauncher's declined-dispatch path (a queued
     /// follow-up whose pull request turned out to already be merged before the run ever spawned)
-    /// and <see cref="InspectMissingRunAsync"/> above both reach here, and either an already-
-    /// terminal <paramref name="runId"/> or a wholly unrecorded one is fine: a minimal run record
-    /// is reconstructed only when nothing is there yet (<see cref="RunRecordReconstructed"/>),
-    /// and the ordinary merged-run closeout (<see cref="CompleteCloseoutAsync"/>) runs unchanged
-    /// either way.
+    /// and <see cref="InspectMissingRunAsync"/> above both reach here. A wholly unrecorded
+    /// <paramref name="runId"/> gets a minimal run record reconstructed (<see
+    /// cref="RunRecordReconstructed"/>) before the ordinary merged-run closeout (<see
+    /// cref="CompleteCloseoutAsync"/>) runs; a <paramref name="runId"/> a concurrent caller has
+    /// already carried all the way to <see cref="RunState.Completed"/> — the declined-dispatch
+    /// path and the missing-run sweep can race the same run id, since the sweep is deliberately
+    /// not node-scoped (see <see cref="TasksWithMissingRunRecordsAsync"/>) — is left alone
+    /// instead: completing it a second time would double the merge comment, the handoff and the
+    /// dependents-unblock (independent pre-PR review, cycle 1).
     /// </summary>
     public async Task ReconstructAndCompleteAsync(
         IDocumentSession session,
@@ -372,6 +390,12 @@ public sealed class CloseoutEngine(
             run = await session.LoadAsync<RunDetails>(runId, cancellationToken)
                 ?? throw new InvalidOperationException(
                     $"Run {runId} was just reconstructed for task {task.Id} but its projection did not materialize.");
+        }
+        else if (run.State == RunState.Completed)
+        {
+            logger.LogDebug(
+                "Run {RunId} was already completed by a concurrent closeout; not completing it twice", runId);
+            return;
         }
 
         await CompleteCloseoutAsync(session, run, project, task, mergedAt, now, cancellationToken);
