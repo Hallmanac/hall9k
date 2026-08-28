@@ -75,7 +75,7 @@ public sealed class RunAggregateTests
         run.LastGateVerifyCommandsFingerprint.Should().Be("fp-2");
     }
 
-    /// <summary>An old stream, or a caller that never resolved either value, defaults to "not full, no known head, no known gate fingerprint" — the conservative reading that never lets an unknown gate stand in for one that actually covered the tip.</summary>
+    /// <summary>An old stream, or a caller that never resolved either value, defaults to "not full, no known head, no known gate fingerprint". <see cref="RunAggregate.LastGateRanFullScope"/> and <see cref="RunAggregate.LastGateHeadSha"/> read conservatively from this default, never letting an unknown gate stand in for one that actually covered the tip — but a null <see cref="RunAggregate.LastGateVerifyCommandsFingerprint"/> is the opposite: <c>ReviewEngine.VerifyCommandsFingerprintMatchesAsync</c> treats it as a match, so it lets a legacy stream's skip fire rather than forcing a mandatory gate.</summary>
     [Fact]
     public void A_verification_passed_with_no_scope_recorded_defaults_conservatively()
     {
