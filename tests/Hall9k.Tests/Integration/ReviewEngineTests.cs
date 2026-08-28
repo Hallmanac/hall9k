@@ -2346,6 +2346,46 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
     }
 
     /// <summary>
+    /// Independent pre-PR review, cycle 1, adversarial lens: <c>NeedsFullGateBeforeSettling</c>'s
+    /// mode/fix-dispatch check alone said nothing about a tip that moved without ever dispatching a
+    /// fix session — a cycle-1 Discovery park resolved merge-ready after a same-session worktree
+    /// commit reached <c>SettleAsync</c> straight from the Settling phase with no full-scope gate
+    /// ever run over the commit about to ship, because <c>FixDispatchedThisCycle</c> stays false
+    /// when the park's own verdict was simply unreadable rather than needs-fixes. Seeds the exact
+    /// shape <see cref="A_park_resolved_merge_ready_proceeds_straight_to_the_pull_request"/> does
+    /// and asserts the mandatory full gate now runs before settling, the same property the
+    /// Verify-mode sibling test below checks for that other mode.
+    /// </summary>
+    [Fact]
+    public async Task A_human_merge_ready_after_a_discovery_mode_park_still_runs_the_full_gate_before_settling()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        using DocumentStore store = NewStore();
+        (Guid taskId, Guid runId, _) = await SeedVerifiedRunAsync(store, cts.Token);
+        await SeedParkedReviewAsync(store, runId, cts.Token);
+
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            session.Events.Append(runId, new ReviewParkResolved(
+                runId, ReviewVerdict.MergeReady, null, Now, DomainId.New()));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        ScriptedExecutor executor = new();
+        bool mergeReady = await NewEngine(store, executor).ReviewAsync(runId, taskId, cts.Token);
+
+        mergeReady.Should().BeTrue("the human's verdict stands in for both lenses'");
+        executor.Spawns.Should().BeEmpty("no further review session second-guesses the human");
+
+        await using IQuerySession query = store.QuerySession();
+        List<object> events = [.. (await query.Events.FetchStreamAsync(runId, token: cts.Token)).Select(e => e.Data)];
+        events.OfType<VerificationPassed>().Should().HaveCount(2,
+            "the run's own first gate pass, plus the mandatory full-scope gate the Settling phase must still "
+                + "run before a human's merge-ready may settle a tip a Discovery-mode cycle-1 park never gated "
+                + "at all — no fix session was ever dispatched, so the mode/fix-dispatch check alone missed it");
+    }
+
+    /// <summary>
     /// Independent pre-PR review, cycle 1 finding: <c>MaySettle</c>'s human exemption was written
     /// for "no reviewer needs to read this diff again," not "the suite ran" — but before this
     /// task's own fix, a human's merge-ready resolution on a park that followed a Verify-mode
