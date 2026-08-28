@@ -409,6 +409,10 @@ enough for the platform to author deterministically, with no agent needed. A pro
 policy** (`h9k project set --backlog none|github-issues|jira`) decides how every published task is
 tracked: `github-issues` has `h9k task publish` run `gh issue create` itself and record the result
 through `h9k task link-issue`, the same observation-gate pattern `link-jira` uses; `jira` makes the
-same publication request `push-to-jira` does.
+same publication request `push-to-jira` does. Either policy gates the publish itself first: a
+draft with no linked item yet, and no publication already pending, is refused until a human or
+orchestrator links what a search of the tracker found or attests none exists with
+`h9k task publish <id> --no-existing-item`, so the platform never mints a duplicate from a search
+it cannot perform itself.
 
-Depth: [PLAN.md §6.2, §6.6, §10](../PLAN.md), Decisions Log #65, #95.
+Depth: [PLAN.md §6.2, §6.6, §10](../PLAN.md), Decisions Log #65, #95, #96.
