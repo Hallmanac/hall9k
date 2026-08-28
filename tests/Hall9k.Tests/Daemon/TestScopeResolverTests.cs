@@ -150,10 +150,18 @@ public sealed class TestScopeResolverTests : IDisposable
     {
         using CancellationTokenSource cts = new(TimeSpan.FromSeconds(30));
         string sinceSha = CycleHeadSha;
+        Dictionary<string, string> notes = [];
         for (int i = 0; i < 25; i++)
         {
-            Commit($"docs/note-{i:00}.md", $"note {i}\n", $"add note {i}");
+            notes[$"docs/note-{i:00}.md"] = $"note {i}\n";
         }
+
+        // One commit for all 25 files rather than 25 separate ones (each spawning its own `git
+        // add`/`git commit` process pair): the diff this test asserts on lists touched files in
+        // git's own path order regardless of how many commits produced them, and a slow CI
+        // runner's process-spawn overhead had room to blow past this test's 30-second deadline
+        // when every file got its own pair.
+        CommitMany(notes, "add 25 docs notes");
 
         TestGateScope scope = await TestScopeResolver.ResolveAsync(_repositoryPath, sinceSha, "cycle 2 fix", cts.Token);
 
@@ -213,6 +221,19 @@ public sealed class TestScopeResolverTests : IDisposable
         string fullPath = Path.Combine(_repositoryPath, relativePath);
         Directory.CreateDirectory(Path.GetDirectoryName(fullPath)!);
         File.WriteAllText(fullPath, content);
+        Git(_repositoryPath, "add -A");
+        Git(_repositoryPath, $"-c user.name=Test -c user.email=test@test commit -q -m \"{message}\"");
+    }
+
+    private void CommitMany(IReadOnlyDictionary<string, string> filesByRelativePath, string message)
+    {
+        foreach ((string relativePath, string content) in filesByRelativePath)
+        {
+            string fullPath = Path.Combine(_repositoryPath, relativePath);
+            Directory.CreateDirectory(Path.GetDirectoryName(fullPath)!);
+            File.WriteAllText(fullPath, content);
+        }
+
         Git(_repositoryPath, "add -A");
         Git(_repositoryPath, $"-c user.name=Test -c user.email=test@test commit -q -m \"{message}\"");
     }
