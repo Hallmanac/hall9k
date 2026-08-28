@@ -229,7 +229,8 @@ cycle's own touched commits, via an injected `--filter`, whenever the diff's tou
 all be mapped to test classes with confidence; anything the resolver cannot read or map falls
 back to the full suite. The run's very first gate pass and the mandatory `FinalFullPass` cycle
 immediately before the pull request always run the whole suite regardless, so nothing merges on
-scoped green alone. `verify-test.log` opens with a `# hall9k test gate:` header recording which
+scoped green alone. Each `dotnet test`-shaped gate's own log (`verify-{gate name}.log`, so a gate
+named `test` writes `verify-test.log`) opens with a `# hall9k test gate:` header recording which
 mode actually ran and why.
 
 ## The pre-PR review loop

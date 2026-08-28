@@ -734,7 +734,7 @@ public sealed partial class VerificationRunner(
     /// itself matched nothing, but the absence of any executed-test summary at all is not the same
     /// observation — a gate that suppresses VSTest's summary (`--logger "console;verbosity=quiet"`,
     /// a `grep`-filtered pipeline) produces zero `Total:` matches on a scoped run that may have
-    /// executed its filtered tests just fine (adversarial... conformance review finding). The
+    /// executed its filtered tests just fine (conformance review finding). The
     /// recorded reason must say which one was actually observed, never assert the filter's own
     /// behavior as fact when only its absence of evidence was seen.
     /// </summary>
