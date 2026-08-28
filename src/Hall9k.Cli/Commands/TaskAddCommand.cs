@@ -362,6 +362,17 @@ public sealed class TaskAddCommand : Hall9kAsyncCommand<TaskAddCommand.Settings>
     /// policy question this command does not get to answer; what it can do is name the one route
     /// that works.
     /// </para>
+    /// <para>
+    /// A pr-review task is the one exception, and only once it is Done. Its Done means the review
+    /// finished, not that the pull request's own work is done — new commits can land and warrant
+    /// another pass, and that second pass is exactly what <c>TaskDecider.Reopen</c> sends the
+    /// owner here for (its own pr-review guard refuses the reopen and names this command as the
+    /// route). A completed review does not hold its pull request hostage the way adopted work
+    /// holds its issue: unlike an issue, closing out the review is not a claim that the pull
+    /// request itself is finished, so a second review is not the two-closeouts contradiction this
+    /// check otherwise guards against. A live (non-Done) pr-review task still blocks a second
+    /// adoption, exactly like any other in-flight task.
+    /// </para>
     /// </summary>
     internal static async Task RefuseSecondAdoptionAsync(
         IQuerySession session, ExternalReference reference, CancellationToken cancellationToken)
@@ -376,6 +387,11 @@ public sealed class TaskAddCommand : Hall9kAsyncCommand<TaskAddCommand.Settings>
             .OrderBy(task => task.AddedAt)
             .FirstOrDefaultAsync(cancellationToken);
         if (existing is null)
+        {
+            return;
+        }
+
+        if (existing.Type == TaskType.PrReview && existing.State == TaskState.Done)
         {
             return;
         }
