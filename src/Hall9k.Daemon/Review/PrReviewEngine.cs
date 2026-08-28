@@ -174,6 +174,24 @@ public sealed class PrReviewEngine(
         // call is, so this is a no-op once the file is actually there.
         await EnsureAdversarialResultRecordedAsync(runDirectory, cancellationToken);
 
+        // Every other review pass gets this check (ReviewEngine.RecordReviewPassAsync); this
+        // engine deliberately never enters that method (own class doc), so nothing else screens
+        // the adversarial lens's raw session summary before it becomes half the findings report.
+        // Read here rather than at write time so a daemon restart re-derives the same verdict
+        // from the same file, with nothing extra to persist (cycle-1 conformance finding,
+        // PrReviewEngine.cs:374).
+        string adversarialPath = RunPaths.ReviewLensFindingsFile(runDirectory, 1, ReviewLens.Adversarial.Slug);
+        if (File.Exists(adversarialPath))
+        {
+            string adversarialSummary = await File.ReadAllTextAsync(adversarialPath, cancellationToken);
+            if (await RejectUnusableVerdictAsync(
+                runId, taskId, run.LeaseGeneration, "adversarial", adversarialSummary, sawTaskContext: false, task,
+                cancellationToken))
+            {
+                return;
+            }
+        }
+
         if (aggregate.PrReviewConformanceSessionId is null
             || aggregate.PrReviewConformanceBudgetExhausted
             || !SessionStillLive(aggregate, runDirectory))
@@ -192,7 +210,7 @@ public sealed class PrReviewEngine(
 
         if (!aggregate.PrReviewConformanceCompleted)
         {
-            if (!await AwaitConformanceAsync(runId, taskId, runDirectory, aggregate, cancellationToken))
+            if (!await AwaitConformanceAsync(runId, taskId, runDirectory, aggregate, task, cancellationToken))
             {
                 return;
             }
@@ -312,7 +330,7 @@ public sealed class PrReviewEngine(
     }
 
     private async Task<bool> AwaitConformanceAsync(
-        Guid runId, Guid taskId, string runDirectory, RunAggregate run, CancellationToken cancellationToken)
+        Guid runId, Guid taskId, string runDirectory, RunAggregate run, TaskDetails task, CancellationToken cancellationToken)
     {
         if (run.PrReviewConformanceSessionId is not { } sessionId
             || run.PrReviewConformanceProcessId is not { } processId
@@ -346,6 +364,14 @@ public sealed class PrReviewEngine(
             return false;
         }
 
+        string conformanceSummary = result.Summary ?? string.Empty;
+        if (await RejectUnusableVerdictAsync(
+            runId, taskId, run.LeaseGeneration, "conformance", conformanceSummary, sawTaskContext: true, task,
+            cancellationToken))
+        {
+            return false;
+        }
+
         // Written before PrReviewConformanceCompleted commits, not after (cycle-1 adversarial
         // finding, PrReviewEngine.cs:324): a daemon stopped in the gap between the two used to
         // leave the event recorded with no file behind it, and DriveAsync trusts the event alone
@@ -354,7 +380,7 @@ public sealed class PrReviewEngine(
         // file. ReviewEngine orders these the same way (ReviewEngine.cs:883) for the same reason.
         string path = RunPaths.ReviewLensFindingsFile(runDirectory, 1, ReviewLens.Conformance.Slug);
         Directory.CreateDirectory(runDirectory);
-        await File.WriteAllTextAsync(path, result.Summary ?? string.Empty, cancellationToken);
+        await File.WriteAllTextAsync(path, conformanceSummary, cancellationToken);
 
         await using IDocumentSession session = store.LightweightSession();
         session.Events.Append(runId, new PrReviewConformanceCompleted(runId, sessionId, DateTimeOffset.UtcNow));
@@ -570,4 +596,78 @@ public sealed class PrReviewEngine(
 
     private static async Task<string> ReadIfExistsAsync(string path, CancellationToken cancellationToken) =>
         File.Exists(path) ? await File.ReadAllTextAsync(path, cancellationToken) : "(no findings recorded)";
+
+    /// <summary>
+    /// The same missing-verdict / unnamed-finding gate <see cref="ReviewEngine.RecordReviewPassAsync"/>
+    /// applies to every other review pass — reused here rather than reimplemented, since this
+    /// engine has neither a fix-and-re-review cycle nor a re-prompt of its own to spend on a bad
+    /// answer (own class doc): a session that fails this check fails the run outright, so
+    /// `h9k task retry` — a real, already-documented lever — is what the owner gets instead of a
+    /// findings report built from a promise never kept (cycle-1 conformance finding,
+    /// PrReviewEngine.cs:374). <paramref name="sawTaskContext"/> mirrors
+    /// <c>ReviewEngine.RecordReviewPassAsync</c>'s own <c>sawTaskContext</c>: true for the
+    /// conformance lens, which is the only one <see cref="AgentPromptBuilder.BuildPrReviewLens"/>
+    /// ever hands the task's objective, acceptance criteria, or agent context; false for the
+    /// adversarial lens, which never sees any of them.
+    /// </summary>
+    private static bool HasUsableVerdict(string summary, bool sawTaskContext, TaskDetails task)
+    {
+        ReviewVerdict verdict = ReviewResultParser.ParseVerdict(summary);
+        if (verdict == ReviewVerdict.Unknown)
+        {
+            return false;
+        }
+
+        return verdict != ReviewVerdict.NeedsFixes
+            || ReviewVerdictValidation.NamesAFinding(
+                summary,
+                sawTaskContext ? task.Objective : null,
+                sawTaskContext ? task.AcceptanceCriteria : null,
+                taskAgentContext: sawTaskContext ? task.AgentContext : null);
+    }
+
+    /// <summary>
+    /// <see cref="HasUsableVerdict"/>'s write half: true (caller must stop) when the summary
+    /// failed the check, false (caller proceeds) when it passed. Fenced the same way every other
+    /// terminal write in this class already is (<see cref="DispatchConformanceAsync"/>,
+    /// <see cref="ComposeReportAndParkAsync"/>, <see cref="FinalizeAsync"/>): a reclaim landing
+    /// between the summary arriving and this check must retire the stale run as
+    /// <see cref="RunSuperseded"/>, never mark it <see cref="RunFailed"/> unconditionally the way
+    /// a bare call into <see cref="FailAsync"/> would — that would leave a run history entry
+    /// blaming a session for a bad verdict on a lane a fresh generation had already taken over.
+    /// </summary>
+    private async Task<bool> RejectUnusableVerdictAsync(
+        Guid runId, Guid taskId, int leaseGeneration, string lensName, string summary, bool sawTaskContext,
+        TaskDetails task, CancellationToken cancellationToken)
+    {
+        if (HasUsableVerdict(summary, sawTaskContext, task))
+        {
+            return false;
+        }
+
+        await using IDocumentSession session = store.LightweightSession();
+        if (!await GenerationFence.AllowsAsync(
+            session, logger, taskId, runId, leaseGeneration, $"PrReview{lensName}VerdictRejected", cancellationToken))
+        {
+            if (await session.Events.FetchStreamStateAsync(runId, cancellationToken) is not null)
+            {
+                TaskDetails? currentTask = await session.LoadAsync<TaskDetails>(taskId, cancellationToken);
+                session.Events.Append(
+                    runId, new RunSuperseded(runId, currentTask?.LeaseGeneration ?? leaseGeneration, DateTimeOffset.UtcNow));
+                await session.SaveChangesAsync(cancellationToken);
+                logger.LogInformation(
+                    "Run {RunId}: retired as superseded — the pr-review {Lens} verdict check found it was no longer task {TaskId}'s current generation",
+                    runId, lensName, taskId);
+            }
+
+            return true;
+        }
+
+        await FailAsync(
+            runId, taskId,
+            $"The pr-review {lensName} session ended without a usable verdict — no VERDICT line, or a "
+            + "needs-fixes verdict naming no finding. Retry the task to dispatch a fresh review.",
+            cancellationToken);
+        return true;
+    }
 }
