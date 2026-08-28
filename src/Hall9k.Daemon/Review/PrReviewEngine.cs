@@ -342,14 +342,20 @@ public sealed class PrReviewEngine(
             return false;
         }
 
+        // Written before PrReviewConformanceCompleted commits, not after (cycle-1 adversarial
+        // finding, PrReviewEngine.cs:324): a daemon stopped in the gap between the two used to
+        // leave the event recorded with no file behind it, and DriveAsync trusts the event alone
+        // to skip both dispatch and await on the next pass, so the report would silently read
+        // "(no findings recorded)" while the real findings sat unread in the session's own stream
+        // file. ReviewEngine orders these the same way (ReviewEngine.cs:883) for the same reason.
+        string path = RunPaths.ReviewLensFindingsFile(runDirectory, 1, ReviewLens.Conformance.Slug);
+        Directory.CreateDirectory(runDirectory);
+        await File.WriteAllTextAsync(path, result.Summary ?? string.Empty, cancellationToken);
+
         await using IDocumentSession session = store.LightweightSession();
         session.Events.Append(runId, new PrReviewConformanceCompleted(runId, sessionId, DateTimeOffset.UtcNow));
         session.Events.Append(runId, result.ToTokensRecorded(runId, DateTimeOffset.UtcNow));
         await session.SaveChangesAsync(cancellationToken);
-
-        string path = RunPaths.ReviewLensFindingsFile(runDirectory, 1, ReviewLens.Conformance.Slug);
-        Directory.CreateDirectory(runDirectory);
-        await File.WriteAllTextAsync(path, result.Summary ?? string.Empty, cancellationToken);
         return true;
     }
 
