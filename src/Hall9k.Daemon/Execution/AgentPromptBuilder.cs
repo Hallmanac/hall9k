@@ -1224,10 +1224,20 @@ public static class AgentPromptBuilder
         AppendFindingContract(prompt, project, mechanicsOverride);
         AppendVerdictContract(prompt, cycle);
         prompt.AppendLine();
-        prompt.AppendLine("Hunting hard and finding nothing is a real outcome: if the work genuinely meets its");
-        prompt.AppendLine("objective and acceptance criteria, say so plainly and return merge-ready. Inventing a");
-        prompt.AppendLine("finding to look thorough spends a fix session on nothing and teaches everyone to");
-        prompt.AppendLine("discount this pass.");
+        if (mechanicsOverride is { DiffIsForeignPullRequest: true })
+        {
+            prompt.AppendLine("Hunting hard and finding nothing is a real outcome: if the pull request genuinely");
+            prompt.AppendLine("meets its own title and description, say so plainly and return merge-ready.");
+            prompt.AppendLine("Inventing a finding to look thorough spends a fix session on nothing and teaches");
+            prompt.AppendLine("everyone to discount this pass.");
+        }
+        else
+        {
+            prompt.AppendLine("Hunting hard and finding nothing is a real outcome: if the work genuinely meets its");
+            prompt.AppendLine("objective and acceptance criteria, say so plainly and return merge-ready. Inventing a");
+            prompt.AppendLine("finding to look thorough spends a fix session on nothing and teaches everyone to");
+            prompt.AppendLine("discount this pass.");
+        }
 
         return prompt.ToString();
     }
@@ -1650,10 +1660,21 @@ public static class AgentPromptBuilder
         prompt.AppendLine("  sits next to it. Check before you tag: the line is out of scope only if it is");
         prompt.AppendLine($"  absent from `git diff origin/{baseBranch}...HEAD`.");
         prompt.AppendLine();
-        prompt.AppendLine("Report out-of-scope defects — they are worth knowing about, and the platform routes the");
-        prompt.AppendLine("smaller ones to their own bug tasks instead of growing this pull request. Do not stretch");
-        prompt.AppendLine("a tag either way: an in-scope defect tagged out-of-scope leaves this branch broken, and");
-        prompt.AppendLine("an out-of-scope one tagged in-scope drags unrelated work into the diff.");
+        if (mechanicsOverride is { DiffIsForeignPullRequest: true })
+        {
+            prompt.AppendLine("Report out-of-scope defects too — they are worth knowing about, and go into the same");
+            prompt.AppendLine("findings report the owner walks by hand, who decides what to do with each one. Do");
+            prompt.AppendLine("not stretch a tag either way: an in-scope defect tagged out-of-scope reads as less");
+            prompt.AppendLine("this pull request's own problem than it is, and an out-of-scope one tagged in-scope");
+            prompt.AppendLine("does the reverse.");
+        }
+        else
+        {
+            prompt.AppendLine("Report out-of-scope defects — they are worth knowing about, and the platform routes the");
+            prompt.AppendLine("smaller ones to their own bug tasks instead of growing this pull request. Do not stretch");
+            prompt.AppendLine("a tag either way: an in-scope defect tagged out-of-scope leaves this branch broken, and");
+            prompt.AppendLine("an out-of-scope one tagged in-scope drags unrelated work into the diff.");
+        }
     }
 
     /// <summary>
