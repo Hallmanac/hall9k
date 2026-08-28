@@ -784,7 +784,8 @@ public sealed partial class VerificationRunner(
         return command.Length;
     }
 
-    [GeneratedRegex("""--filter(?:\s+|=|:)"(?<filter>[^"]*)"|--filter(?:\s+|=|:)(?<filter>\S+)""")]
+    [GeneratedRegex(
+        """--filter(?:\s+|=|:)"(?<filter>[^"]*)"|--filter(?:\s+|=|:)'(?<filter>[^']*)'|--filter(?:\s+|=|:)(?<filter>\S+)""")]
     private static partial Regex ExistingTestFilterPattern();
 
     private static string Sanitize(string name) =>
