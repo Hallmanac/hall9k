@@ -113,7 +113,7 @@ public static partial class TestScopeResolver
                 $"non-C# file(s) touched, not statically mappable to tests: {TestGateScope.Summarize(nonSourceFiles)} ({cycleDescription})");
         }
 
-        IReadOnlyList<TestFile>? testFiles = LoadTestFiles(worktreePath);
+        IReadOnlyList<TestFile>? testFiles = await LoadTestFilesAsync(worktreePath, cancellationToken);
         if (testFiles is null)
         {
             return TestGateScope.Full($"could not enumerate the test tree to map touched files against ({cycleDescription})");
@@ -210,7 +210,8 @@ public static partial class TestScopeResolver
     /// file — `grep` is not guaranteed on every platform this daemon runs on (AGENTS.md: CI covers
     /// both ubuntu and windows). Null when the test tree itself is unreadable.
     /// </summary>
-    private static IReadOnlyList<TestFile>? LoadTestFiles(string worktreePath)
+    private static async Task<IReadOnlyList<TestFile>?> LoadTestFilesAsync(
+        string worktreePath, CancellationToken cancellationToken)
     {
         string testsRoot = Path.Combine(worktreePath, "tests");
         if (!Directory.Exists(testsRoot))
@@ -223,10 +224,12 @@ public static partial class TestScopeResolver
         {
             foreach (string path in Directory.EnumerateFiles(testsRoot, "*Tests.cs", SearchOption.AllDirectories))
             {
+                cancellationToken.ThrowIfCancellationRequested();
+
                 string content;
                 try
                 {
-                    content = File.ReadAllText(path);
+                    content = await File.ReadAllTextAsync(path, cancellationToken);
                 }
                 catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
                 {
