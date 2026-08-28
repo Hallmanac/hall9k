@@ -495,6 +495,13 @@ public sealed class TaskDetailsProjection : SingleStreamProjection<TaskDetails, 
         view.ExternalObservedAt = @event.Data.ObservedAt;
         view.PendingPublicationProvider = null;
         view.PendingPublicationProjectKey = JiraProjectKey.None;
+        // A task published --untracked can still be linked later by hand (link-jira, link-issue,
+        // or push-to-jira); once it carries a real reference, "untracked by choice" is no longer
+        // true of it and must stop rendering alongside the link it just gained (independent
+        // pre-PR review, cycle 5, both lenses).
+        view.UntrackedAttested = false;
+        view.UntrackedAttestedAt = null;
+        view.UntrackedAttestedByOwnerId = null;
         ForgetSession(view);
     }
 

@@ -437,6 +437,35 @@ public sealed class TaskLifecycleProjectionTests
         detail.UntrackedAttestedByOwnerId.Should().BeNull();
     }
 
+    /// <summary>
+    /// The sibling regression to the republish case above (independent pre-PR review, cycle 5,
+    /// both lenses): a task published --untracked can also gain a real reference later without a
+    /// republish at all — a hand-run link-jira, link-issue, or push-to-jira. "Untracked by
+    /// choice" must stop being true the moment a link lands, not only when a fresh publish says so.
+    /// </summary>
+    [Fact]
+    public void A_task_linked_after_an_untracked_publish_stops_reading_as_untracked_by_choice()
+    {
+        Guid id = DomainId.New();
+        Guid ownerId = DomainId.New();
+        TaskDetailsProjection details = new();
+
+        TaskDetails detail = details.Create(new FakeEvent<TaskAdded>(Drafted(id, ownerId)));
+        details.Apply(
+            new FakeEvent<TaskPublished>(new TaskPublished(id, Now, ownerId, UntrackedAttested: true)), detail);
+        detail.UntrackedAttested.Should().BeTrue("the publish attested it");
+
+        WorkItemLinked linked = new(
+            id, new ExternalReference(WorkItemProvider.Jira, "PROJ-123"), "Title", "To Do",
+            Now.AddHours(1), Now.AddHours(1), ownerId);
+        details.Apply(new FakeEvent<WorkItemLinked>(linked), detail);
+
+        detail.UntrackedAttested.Should().BeFalse(
+            "the task now carries a real external item, so it is no longer untracked by choice");
+        detail.UntrackedAttestedAt.Should().BeNull();
+        detail.UntrackedAttestedByOwnerId.Should().BeNull();
+    }
+
     private static TaskAdded Drafted(Guid id, Guid ownerId, params Guid[] blockedBy) => new(
         id, DomainId.New(), "Develop me", ["it is done"], TaskType.Feature,
         null, null, null, Now, ownerId, null, blockedBy, StartsAsDraft: true);
