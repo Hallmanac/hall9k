@@ -252,24 +252,32 @@ public sealed class TaskBrowseTests
         footer.Should().Contain("26 archived hidden").And.Contain("h9k task list --include-archived");
     }
 
+    /// <summary>
+    /// Each requested word has to come from a different vocabulary — lifecycle, attention group,
+    /// run state — or the union only ever exercises one <c>Matches</c> arm and the "three
+    /// vocabularies may mix" claim goes unverified. <c>published</c> is a lifecycle word,
+    /// <c>needs-you</c> is an attention-group word (unreachable through the lifecycle or run-state
+    /// arms), and <c>running</c> is a run-state word (unreachable through the lifecycle or
+    /// attention-group arms, since a Working row's own lifecycle word is "working").
+    /// </summary>
     [Fact]
     public void A_state_filter_with_multiple_values_unions_them_across_all_three_vocabularies()
     {
         Guid runId = DomainId.New();
         TaskStatusRow published = StatusFixtures.Compose(StatusFixtures.Task(TaskState.Published));
-        TaskStatusRow working = StatusFixtures.Compose(
+        TaskStatusRow needsYou = StatusFixtures.Compose(StatusFixtures.Task(TaskState.Failed));
+        TaskStatusRow running = StatusFixtures.Compose(
             StatusFixtures.Task(TaskState.Claimed, runId), StatusFixtures.Run(runId, RunState.Running));
-        TaskStatusRow delivered = Delivered(RunState.AwaitingReview);
         TaskStatusRow draft = StatusFixtures.Compose(StatusFixtures.Task(TaskState.Draft));
 
-        string[] states = [.. TaskStateFilter.Split(["published,working", "delivered"])];
-        states.Should().Equal("published", "working", "delivered");
+        string[] states = [.. TaskStateFilter.Split(["published,needs-you", "running"])];
+        states.Should().Equal("published", "needs-you", "running");
 
         bool AnyMatch(TaskStatusRow row) => states.Any(state => TaskStateFilter.Matches(row, state));
 
-        AnyMatch(published).Should().BeTrue();
-        AnyMatch(working).Should().BeTrue();
-        AnyMatch(delivered).Should().BeTrue();
+        AnyMatch(published).Should().BeTrue("published is a lifecycle word");
+        AnyMatch(needsYou).Should().BeTrue("needs-you is an attention-group word");
+        AnyMatch(running).Should().BeTrue("running is a run-state word");
         AnyMatch(draft).Should().BeFalse("draft was not one of the requested states");
     }
 
@@ -288,5 +296,51 @@ public sealed class TaskBrowseTests
         return StatusFixtures.Compose(
             StatusFixtures.Task(TaskState.Done, runId, "https://github.com/x/y/pull/7"),
             StatusFixtures.Run(runId, state, sessionProcessId: null, pullRequestNumber: 7));
+    }
+
+    /// <summary>
+    /// The branch's headline behaviour, asserted without a database: a bare view hides Archived
+    /// rows, any explicit --state (including --state archived itself) skips the hide entirely,
+    /// and --include-archived does too.
+    /// </summary>
+    [Fact]
+    public void An_unfiltered_view_hides_archived_rows_and_counts_them()
+    {
+        TaskStatusRow[] candidates =
+        [
+            StatusFixtures.Compose(StatusFixtures.Task(TaskState.Published)),
+            StatusFixtures.Compose(StatusFixtures.Task(TaskState.Abandoned)),
+            StatusFixtures.Compose(StatusFixtures.Task(TaskState.Abandoned)),
+        ];
+
+        (IReadOnlyList<TaskStatusRow> visible, int hiddenArchived) =
+            TaskListCommand.ApplyArchivedDefault(candidates, states: [], includeArchived: false);
+
+        visible.Should().ContainSingle().Which.State.Should().Be(LifecycleState.Published);
+        hiddenArchived.Should().Be(2);
+    }
+
+    [Fact]
+    public void An_explicit_state_filter_skips_the_archived_hide_even_when_it_did_not_ask_for_archived()
+    {
+        TaskStatusRow[] candidates = [StatusFixtures.Compose(StatusFixtures.Task(TaskState.Abandoned))];
+
+        (IReadOnlyList<TaskStatusRow> visible, int hiddenArchived) =
+            TaskListCommand.ApplyArchivedDefault(candidates, states: ["published"], includeArchived: false);
+
+        visible.Should().BeEquivalentTo(candidates, "the states filter, not this hide, decides what --state returns");
+        hiddenArchived.Should().Be(0);
+    }
+
+    [Fact]
+    public void Include_archived_skips_the_hide_on_an_otherwise_unfiltered_view()
+    {
+        TaskStatusRow[] candidates = [StatusFixtures.Compose(StatusFixtures.Task(TaskState.Abandoned))];
+
+        (IReadOnlyList<TaskStatusRow> visible, int hiddenArchived) =
+            TaskListCommand.ApplyArchivedDefault(candidates, states: [], includeArchived: true);
+
+        visible.Should().BeEquivalentTo(candidates);
+        hiddenArchived.Should().Be(0);
     }
 }

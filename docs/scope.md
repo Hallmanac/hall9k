@@ -39,8 +39,9 @@ there dispatches on the ordinary fix model exactly as it would have anyway (PLAN
 `h9k status` composes three surfaces (lifecycle state, live phase, attention) from the underlying
 records, and a phase never claims a session is doing something without observing the process.
 Every needs-you cause is quoted from a record and carries the command that clears it. Browsing
-lives under `h9k task list`, filterable by project and state and bounded with a footer saying how
-many rows were held back and how to see them, and under `h9k project list`, which counts every
+lives under `h9k task list`, filterable by project and state, defaulting to live work with
+archived tasks held back behind `--include-archived`, and bounded with a footer saying how many
+rows were held back and how to see them, and under `h9k project list`, which counts every
 project's tasks by attention bucket.
 
 ### The dependency graph

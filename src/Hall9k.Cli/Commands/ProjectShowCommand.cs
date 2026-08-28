@@ -163,7 +163,7 @@ public sealed class ProjectShowCommand : Hall9kAsyncCommand<ProjectShowCommand.S
         int held = rows.Count - newest.Count;
         AnsiConsole.MarkupLine(held > 0
             ? $"[dim]Showing the {newest.Count} newest of {rows.Count}; {held} held back — all of them:[/] "
-              + $"h9k task list --project {name} --all"
+              + $"h9k task list --project {name} --all --include-archived"
             : $"[dim]All {rows.Count} of this project's tasks. Filter them with:[/] "
               + $"h9k task list --project {name} --state <state>");
     }

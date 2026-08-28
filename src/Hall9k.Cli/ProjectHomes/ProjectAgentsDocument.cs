@@ -198,7 +198,8 @@ public static class ProjectAgentsDocument
         document.AppendLine("## Working here");
         document.AppendLine();
         document.AppendLine($"- `h9k project show {project.Name}`: registration, settings, task rollup");
-        document.AppendLine($"- `h9k task list --project {project.Name}`: this project's tasks, newest first");
+        document.AppendLine($"- `h9k task list --project {project.Name}`: this project's live tasks, newest first "
+            + "(add --include-archived for closed-out ones too)");
         document.AppendLine($"- `h9k idea add \"…\" --project {project.Name}`: capture something before it is a task");
         document.AppendLine("- `h9k status`: the attention pane across every project");
         document.AppendLine();
