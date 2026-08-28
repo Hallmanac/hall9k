@@ -71,11 +71,19 @@ public sealed class ReviewResolveCommand : Hall9kAsyncCommand<ReviewResolveComma
             + "(on a thread-dispute park, which happens before the gates, it re-enters at the "
             + "gates and the review loop instead: your call settled the thread, not the diff. "
             + "Refused on a disputed rebase conflict — nothing has been rebased yet, so use "
-            + "--needs-fixes with your resolution instead)")]
+            + "--needs-fixes with your resolution instead). On a pr-review task's park it means "
+            + "something different: the findings report has been walked and directed, and the "
+            + "task completes with no diff, pull request, or merge of its own — the only verdict "
+            + "a pr-review task takes.")]
         public bool MergeReady { get; init; }
 
         [CommandOption("--needs-fixes <REASON>")]
-        [Description("Your verdict: the stated defects are real — a fix session is dispatched with this reason as its findings")]
+        [Description(
+            "Your verdict: the stated defects are real — a fix session is dispatched with this "
+            + "reason as its findings. Refused on a pr-review task's park: it reviews someone "
+            + "else's pull request read-only, so there is no diff of its own for a fix session "
+            + "to apply — direct the findings report by hand instead, then resolve with "
+            + "--merge-ready.")]
         public string? NeedsFixes { get; init; }
 
         [CommandOption("--reason <TEXT>")]

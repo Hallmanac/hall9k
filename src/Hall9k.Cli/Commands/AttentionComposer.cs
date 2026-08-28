@@ -337,16 +337,20 @@ internal static class AttentionComposer
     }
 
     /// <summary>
-    /// The review-parked row's lever, honest about the one park where --merge-ready is refused.
-    /// A disputed rebase conflict raised before any review pass ran (<c>ReviewResolveCommand</c>'s
-    /// own guard: <c>task.FollowUpKind == Rebase &amp;&amp; run.ReviewCycle == 0</c>) has nothing to
-    /// call "ready" — nothing has been rebased yet — so advising --merge-ready here would be the
-    /// never-advise-a-refused-lever rule broken on the one row built to demonstrate it.
+    /// The review-parked row's lever, honest about the two parks where one of the two verdicts
+    /// is refused (<c>ReviewResolveCommand</c>'s own guards, never advertised past their refusal).
+    /// A disputed rebase conflict raised before any review pass ran
+    /// (<c>task.FollowUpKind == Rebase &amp;&amp; run.ReviewCycle == 0</c>) has nothing to call
+    /// "ready" — nothing has been rebased yet — so only --needs-fixes applies. A pr-review task's
+    /// own park (<c>ResolvePrReviewAsync</c>) is the opposite refusal: there is no diff of its own
+    /// to fix, so only --merge-ready applies.
     /// </summary>
     private static string ReviewParkLever(TaskListItem task, RunDetails run, string id) =>
-        task.FollowUpKind == FollowUpKind.Rebase && run.ReviewCycle == 0
-            ? $"h9k review resolve {id} --needs-fixes \"<how to resolve the conflict>\""
-            : $"h9k review resolve {id} --merge-ready (or --needs-fixes \"…\")";
+        task.Type == TaskType.PrReview
+            ? $"h9k review resolve {id} --merge-ready (a pr-review task has no diff of its own for a fix session; direct the findings report by hand first)"
+            : task.FollowUpKind == FollowUpKind.Rebase && run.ReviewCycle == 0
+                ? $"h9k review resolve {id} --needs-fixes \"<how to resolve the conflict>\""
+                : $"h9k review resolve {id} --merge-ready (or --needs-fixes \"…\")";
 
     private static string Reason(string? recorded, string absent) =>
         recorded.IsNotBlank() ? recorded : absent;

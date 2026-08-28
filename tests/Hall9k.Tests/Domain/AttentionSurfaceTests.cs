@@ -75,6 +75,26 @@ public sealed class AttentionSurfaceTests
     }
 
     [Fact]
+    public void A_pr_review_tasks_park_never_advises_the_needs_fixes_form_the_platform_refuses()
+    {
+        // Mirrors ReviewResolveCommand's own refusal guard for a pr-review task: it reviews
+        // someone else's pull request read-only, so there is no diff of this task's own for a
+        // fix session to apply, and --needs-fixes throws a DomainValidationException. The pane
+        // must never advise a lever the platform will refuse.
+        Guid runId = DomainId.New();
+        RunDetails parked = StatusFixtures.Run(runId, RunState.ReviewParked, sessionProcessId: null);
+        parked.ParkedReason = "Pull request review complete. Findings: review-1-findings.md.";
+
+        TaskListItem task = StatusFixtures.Task(TaskState.Claimed, runId);
+        task.Type = TaskType.PrReview;
+
+        TaskStatusRow row = StatusFixtures.Compose(task, parked);
+
+        row.Attention.Lever.Should().Contain("--merge-ready");
+        row.Attention.Lever.Should().NotContain("--needs-fixes");
+    }
+
+    [Fact]
     public void A_parked_closeout_names_its_reason_and_its_own_lever()
     {
         Guid runId = DomainId.New();
