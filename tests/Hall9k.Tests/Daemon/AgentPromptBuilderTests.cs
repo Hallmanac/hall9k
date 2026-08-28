@@ -375,6 +375,35 @@ public sealed class AgentPromptBuilderTests : IDisposable
     }
 
     /// <summary>
+    /// A pr-review lens's mechanics differ from the ordinary pre-PR loop in three ways this
+    /// covers: the diff range is the pull request's own base, never the project's default branch
+    /// (which the packet was actually assembled against — the two disagree whenever the pull
+    /// request targets anything else); the checkout is a detached, branch-less worktree, not a
+    /// named branch; and nothing ever built or tested a foreign pull request, so the gate status
+    /// must say so rather than claim an observation nobody made.
+    /// </summary>
+    [Fact]
+    public void Pr_review_lens_states_the_pull_requests_own_base_branch_never_the_projects()
+    {
+        ProjectDetails project = SomeProject();
+        project.BaseBranch = "main";
+        project.VerifyCommands = [new VerifyCommand("build", "dotnet build"), new VerifyCommand("test", "dotnet test")];
+
+        string prompt = AgentPromptBuilder.BuildPrReviewLens(
+            SomeTask(), project, "pr/42", ReviewLens.Conformance, packet: null, baseBranch: "release/2.0");
+
+        prompt.Should().Contain("git diff origin/release/2.0...HEAD",
+            "the range the packet was actually assembled from, never the project's own default branch");
+        prompt.Should().NotContain("git diff origin/main...HEAD");
+        prompt.Should().NotContain("on branch `pr/42`", "no such ref exists in a detached checkout");
+        prompt.Should().Contain("detached checkout");
+        prompt.Should().Contain("No verification gates ran for this review",
+            "nothing built or tested someone else's pull request, however many gates this project configures");
+        prompt.Should().NotContain("gates already ran and passed");
+        prompt.Should().NotContain("already answered by the", "the criterion-answered-by-gates claim is conformance-only and gate-dependent");
+    }
+
+    /// <summary>
     /// The severity anchors and the scope anchor are stated to the reviewer (Decisions Log
     /// #63), never left to its intuition: a grade every reviewer invents for itself is not a
     /// gate, and a scope tag that is a judgment call is not checkable against the diff.

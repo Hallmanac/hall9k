@@ -828,10 +828,11 @@ public static class AgentPromptBuilder
     /// </param>
     public static string BuildReview(
         TaskDetails task, ProjectDetails project, string branch, int cycle, ReviewLens lens,
-        ReviewPacket? packet = null, IReadOnlyList<ReviewParkResolution>? priorRulings = null) =>
+        ReviewPacket? packet = null, IReadOnlyList<ReviewParkResolution>? priorRulings = null,
+        ReviewMechanicsOverride? mechanicsOverride = null) =>
         lens == ReviewLens.Adversarial
-            ? BuildAdversarialReview(project, branch, cycle, packet, priorRulings)
-            : BuildConformanceReview(task, project, branch, cycle, packet, priorRulings);
+            ? BuildAdversarialReview(project, branch, cycle, packet, priorRulings, mechanicsOverride)
+            : BuildConformanceReview(task, project, branch, cycle, packet, priorRulings, mechanicsOverride);
 
     /// <summary>
     /// A pr-review task's one-shot lens (PrReviewEngine): delegates to <see cref="BuildReview"/>
@@ -842,10 +843,27 @@ public static class AgentPromptBuilder
     /// card it references, imported at task creation — often thinner than a task's own acceptance
     /// criteria, so a thin basis is graded as context for the human rather than as a blocking defect.
     /// Always cycle 1: a pr-review run never re-reviews, so there is no second cycle to number.
+    /// <para>
+    /// <paramref name="baseBranch"/> is the pull request's own base ref — the same one the caller
+    /// already resolved to assemble <paramref name="packet"/> — never <c>project.BaseBranch</c>:
+    /// the two disagree whenever the reviewed pull request targets anything other than the
+    /// project's default branch, and the mechanics section must name the range it can actually
+    /// reproduce. The checkout is a detached, branch-less worktree (<c>CreatePrReviewCheckoutAsync</c>),
+    /// so the mechanics section also says that plainly rather than naming a `pr/&lt;n&gt;` ref that
+    /// does not exist. And no verification ever runs against a foreign pull request — the gate
+    /// status here says so, rather than asserting an observation nobody made.
+    /// </para>
     /// </summary>
     public static string BuildPrReviewLens(
-        TaskDetails task, ProjectDetails project, string branch, ReviewLens lens, ReviewPacket? packet) =>
-        BuildReview(task, project, branch, cycle: 1, lens, packet, priorRulings: null)
+        TaskDetails task, ProjectDetails project, string branch, ReviewLens lens, ReviewPacket? packet,
+        string baseBranch) =>
+        BuildReview(
+            task, project, branch, cycle: 1, lens, packet, priorRulings: null,
+            mechanicsOverride: new ReviewMechanicsOverride(
+                baseBranch,
+                "- You are in a read-only, detached checkout of this pull request's current head — there "
+                + "is no branch to be \"on\"; do not attempt to commit.",
+                GatesObserved: false))
         + "\n\nThis review is of another contributor's already-open pull request, not this task's own "
         + "implementation. There is nothing here to fix, commit, or push — you are reading, never "
         + "writing, and that includes the pull request itself: no comments, no review, no reactions, "
@@ -857,6 +875,14 @@ public static class AgentPromptBuilder
               + "notes for the human reviewer rather than as blocking defects; reserve a blocking severity "
               + "for what the basis actually supports."
             : string.Empty);
+
+    /// <summary>
+    /// What <see cref="AppendReviewMechanics"/> needs overridden when the diff under review is not
+    /// this task's own — currently only <see cref="BuildPrReviewLens"/>. Null everywhere else, so
+    /// the ordinary pre-PR loop keeps reading <c>project.BaseBranch</c>, the real `on branch`
+    /// wording, and the real gate-status observation exactly as it always has.
+    /// </summary>
+    public sealed record ReviewMechanicsOverride(string BaseBranch, string CheckoutDescription, bool GatesObserved);
 
     /// <summary>
     /// The one reviewer a <see cref="ReviewMode.Verify"/> cycle dispatches (task: review cycles
@@ -1064,7 +1090,8 @@ public static class AgentPromptBuilder
     /// </summary>
     private static string BuildConformanceReview(
         TaskDetails task, ProjectDetails project, string branch, int cycle,
-        ReviewPacket? packet, IReadOnlyList<ReviewParkResolution>? priorRulings)
+        ReviewPacket? packet, IReadOnlyList<ReviewParkResolution>? priorRulings,
+        ReviewMechanicsOverride? mechanicsOverride = null)
     {
         StringBuilder prompt = new();
         prompt.AppendLine("# Independent review: verify this diff before its pull request opens");
@@ -1094,15 +1121,15 @@ public static class AgentPromptBuilder
         prompt.AppendLine("  doctrine (AGENTS.md or CLAUDE.md, and whatever they point at). Report criteria the");
         prompt.AppendLine("  diff leaves unmet, work that solves a different problem than the one stated, and");
         prompt.AppendLine("  any house rule it departs from.");
-        if (project.VerifyCommands.Count > 0)
+        if (project.VerifyCommands.Count > 0 && mechanicsOverride is not { GatesObserved: false })
         {
             prompt.AppendLine("- A criterion that asks for a passing build or test suite is already answered by the");
             prompt.AppendLine("  gate run named below: take that as the observation and spend your attention on the");
             prompt.AppendLine("  criteria only a reader can judge.");
         }
 
-        AppendReviewMechanics(prompt, project, branch);
-        AppendFindingContract(prompt, project);
+        AppendReviewMechanics(prompt, project, branch, mechanicsOverride);
+        AppendFindingContract(prompt, project, mechanicsOverride);
         AppendVerdictContract(prompt, cycle);
         prompt.AppendLine();
         prompt.AppendLine("Hunting hard and finding nothing is a real outcome: if the work genuinely meets its");
@@ -1127,7 +1154,7 @@ public static class AgentPromptBuilder
     /// </summary>
     private static string BuildAdversarialReview(
         ProjectDetails project, string branch, int cycle, ReviewPacket? packet,
-        IReadOnlyList<ReviewParkResolution>? priorRulings)
+        IReadOnlyList<ReviewParkResolution>? priorRulings, ReviewMechanicsOverride? mechanicsOverride = null)
     {
         StringBuilder prompt = new();
         prompt.AppendLine("# Adversarial review: assume this diff is wrong somewhere, and find where");
@@ -1174,8 +1201,8 @@ public static class AgentPromptBuilder
         prompt.AppendLine();
         prompt.AppendLine("- Read the changed code in its surroundings, not as isolated hunks: a defect is often");
         prompt.AppendLine("  the interaction between what changed and what did not.");
-        AppendReviewMechanics(prompt, project, branch);
-        AppendFindingContract(prompt, project);
+        AppendReviewMechanics(prompt, project, branch, mechanicsOverride);
+        AppendFindingContract(prompt, project, mechanicsOverride);
         AppendVerdictContract(prompt, cycle);
         prompt.AppendLine();
         prompt.AppendLine("Hunting hard and finding nothing is a real outcome: if no defect survives your own");
@@ -1451,8 +1478,10 @@ public static class AgentPromptBuilder
     /// changed" is checkable against the diff, where "is this really our problem" is not.
     /// </para>
     /// </summary>
-    private static void AppendFindingContract(StringBuilder prompt, ProjectDetails project)
+    private static void AppendFindingContract(
+        StringBuilder prompt, ProjectDetails project, ReviewMechanicsOverride? mechanicsOverride = null)
     {
+        string baseBranch = mechanicsOverride?.BaseBranch ?? project.BaseBranch;
         prompt.AppendLine();
         prompt.AppendLine("## How to report each finding (the platform parses this)");
         prompt.AppendLine();
@@ -1490,9 +1519,9 @@ public static class AgentPromptBuilder
         prompt.AppendLine("**scope** — decide it against the diff, not against your judgment of whose problem it is:");
         prompt.AppendLine();
         prompt.AppendLine("- `in-scope` — the defective line lives in code this branch added or changed.");
-        prompt.AppendLine($"- `out-of-scope` — the defect is pre-existing on `{project.BaseBranch}`; this diff only");
+        prompt.AppendLine($"- `out-of-scope` — the defect is pre-existing on `{baseBranch}`; this diff only");
         prompt.AppendLine("  sits next to it. Check before you tag: the line is out of scope only if it is");
-        prompt.AppendLine($"  absent from `git diff origin/{project.BaseBranch}...HEAD`.");
+        prompt.AppendLine($"  absent from `git diff origin/{baseBranch}...HEAD`.");
         prompt.AppendLine();
         prompt.AppendLine("Report out-of-scope defects — they are worth knowing about, and the platform routes the");
         prompt.AppendLine("smaller ones to their own bug tasks instead of growing this pull request. Do not stretch");
@@ -1509,13 +1538,16 @@ public static class AgentPromptBuilder
     /// finding spends the cycle's one fix run on a platform failure, so the prompt says
     /// plainly that the gates already answered the question and are not to be re-run.
     /// </summary>
-    private static void AppendReviewMechanics(StringBuilder prompt, ProjectDetails project, string branch)
+    private static void AppendReviewMechanics(
+        StringBuilder prompt, ProjectDetails project, string branch, ReviewMechanicsOverride? mechanicsOverride = null)
     {
-        prompt.AppendLine($"- You are in the implementation's git worktree on branch `{branch}`.");
-        prompt.AppendLine($"  The diff under review: `git diff origin/{project.BaseBranch}...HEAD` (commits:");
-        prompt.AppendLine($"  `git log origin/{project.BaseBranch}..HEAD`) — the same range the packet above, when");
-        prompt.AppendLine($"  present, was built from. Fall back to the local `{project.BaseBranch}` ref only when");
-        prompt.AppendLine($"  this worktree carries no `origin/{project.BaseBranch}` at all: a task worktree's local");
+        string baseBranch = mechanicsOverride?.BaseBranch ?? project.BaseBranch;
+        prompt.AppendLine(mechanicsOverride?.CheckoutDescription
+            ?? $"- You are in the implementation's git worktree on branch `{branch}`.");
+        prompt.AppendLine($"  The diff under review: `git diff origin/{baseBranch}...HEAD` (commits:");
+        prompt.AppendLine($"  `git log origin/{baseBranch}..HEAD`) — the same range the packet above, when");
+        prompt.AppendLine($"  present, was built from. Fall back to the local `{baseBranch}` ref only when");
+        prompt.AppendLine($"  this worktree carries no `origin/{baseBranch}` at all: a task worktree's local");
         prompt.AppendLine("  base-branch ref, when one exists, is shared with the project home's `dev/` worktree and");
         prompt.AppendLine("  is routinely stale relative to this task's actual base.");
         prompt.AppendLine("- Report verified findings only. For every suspected defect, read the surrounding");
@@ -1530,7 +1562,7 @@ public static class AgentPromptBuilder
         prompt.AppendLine("  file-in-use errors, and a platform collision reported as a finding costs the");
         prompt.AppendLine("  cycle a fix run it needed for a real defect.");
         prompt.AppendLine("  Reading, searching, and read-only git are what this pass is made of.");
-        AppendReviewGateStatus(prompt, project);
+        AppendReviewGateStatus(prompt, project, mechanicsOverride?.GatesObserved ?? true);
     }
 
     /// <summary>
@@ -1539,8 +1571,17 @@ public static class AgentPromptBuilder
     /// project's gates immediately before the review loop is entered, and again on every
     /// re-verify, so this is a stated observation and not a promise.
     /// </summary>
-    private static void AppendReviewGateStatus(StringBuilder prompt, ProjectDetails project)
+    private static void AppendReviewGateStatus(StringBuilder prompt, ProjectDetails project, bool gatesObserved = true)
     {
+        if (!gatesObserved)
+        {
+            prompt.AppendLine("  No verification gates ran for this review: a pr-review task reads someone else's");
+            prompt.AppendLine("  already-open pull request, and nothing here built or tested it. Whether it compiles");
+            prompt.AppendLine("  or its tests pass is unobserved — judge the code as written, and say so plainly if a");
+            prompt.AppendLine("  finding genuinely turns on it rather than treating either outcome as known.");
+            return;
+        }
+
         IReadOnlyList<VerifyCommand> gates = project.VerifyCommands;
         if (gates.Count == 0)
         {

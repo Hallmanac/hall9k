@@ -173,7 +173,7 @@ public sealed class RunLauncher(
                 string baseBranch = prReviewFacts!.BaseRefName.IsNotBlank() ? prReviewFacts.BaseRefName : project.BaseBranch;
                 ReviewPacket? packet = await ReviewPacketAssembler.AssembleAsync(
                     worktree.Path, baseBranch, sinceSha: null, cancellationToken);
-                prompt = AgentPromptBuilder.BuildPrReviewLens(task, project, worktree.Branch, ReviewLens.Adversarial, packet);
+                prompt = AgentPromptBuilder.BuildPrReviewLens(task, project, worktree.Branch, ReviewLens.Adversarial, packet, baseBranch);
             }
             else if (followUp is { } review)
             {
