@@ -165,13 +165,18 @@ public static class TaskDecider
                 + "--untracked skips tracking this task entirely. Pass one, not both.");
         }
 
-        // --untracked only means something where there is tracking to skip. A policy that is
+        // --untracked only means something where there is tracking to skip, and a policy that is
         // neither Jira nor GitHubIssues — none, or a persisted value this build's closed set no
         // longer recognizes (the same "reads as no tracking" convention needsExistingItemCheck
-        // uses below) — never asks for either attestation, so the flag has nothing to attest and
-        // is refused rather than silently ignored — unlike a defensively-passed
+        // uses below) — is the case where there is categorically none: the flag has nothing to
+        // attest, so it is refused rather than silently ignored — unlike a defensively-passed
         // --no-existing-item, which clamps to false, --untracked is asserting a deliberate
-        // choice, and a choice nobody asked for is worth teaching rather than swallowing.
+        // choice, and a choice nobody asked for is worth teaching rather than swallowing. Below
+        // are two more states the gate never asks an attestation for, and they are NOT treated
+        // alike: an already-linked task's flag clamps silently, because nothing would be created
+        // for it regardless of the attestation, while a publication already pending is refused,
+        // just below, because that session mints a card whether or not this flag is honored, and
+        // a silent clamp there would let it override the operator's choice without a word.
         if (untracked && policy != BacklogPolicy.Jira && policy != BacklogPolicy.GitHubIssues)
         {
             string policyDescription = policy == BacklogPolicy.None
@@ -180,6 +185,23 @@ public static class TaskDecider
             throw new DomainValidationException(
                 $"Task {task.Id}'s project does not track a backlog ({policyDescription}), so --untracked has "
                 + $"nothing to skip. Publish without it: h9k task publish {task.Id}.");
+        }
+
+        // A publication already pending (h9k task push-to-jira, run by hand while the task was
+        // still a Draft) is not "nothing to skip": the session it kicked off keeps running and
+        // still mints the card regardless of what publish does here, so clamping --untracked
+        // silently — the way an already-linked task's flag clamps below, harmlessly, because
+        // nothing would be created for it either way — would instead let that in-flight work
+        // defeat the very choice the operator just made. Refused with the same "teach rather
+        // than swallow" reasoning as the policy check above, before the gate below ever gets to
+        // decide whether an attestation is needed.
+        if (untracked && task.PendingPublicationProvider is { } pendingProvider
+            && (policy == BacklogPolicy.Jira || policy == BacklogPolicy.GitHubIssues))
+        {
+            throw new DomainBusinessRuleException(
+                $"Task {task.Id} already has a {pendingProvider.Value} publication request outstanding, and "
+                + "that request still runs to completion regardless — --untracked cannot cancel work already "
+                + $"in flight. Publish without it: h9k task publish {task.Id}.");
         }
 
         // A pending publication (h9k task push-to-jira, run by hand while the task was still a
@@ -207,8 +229,10 @@ public static class TaskDecider
         }
 
         // Recorded only when the gate actually asked for one — a flag passed defensively on a
-        // publish the gate never gated (policy none, an already-linked task, one with a
-        // publication already pending) would otherwise assert an unobserved fact on the stream.
+        // publish the gate never gated would otherwise assert an unobserved fact on the stream.
+        // noExistingItemRecorded reaches this clamp from policy none, an already-linked task, or
+        // one with a publication pending; untrackedRecorded only ever reaches it from policy none
+        // or an already-linked task, since a publication already pending was refused above.
         bool noExistingItemRecorded = needsExistingItemCheck && noExistingItemAttested;
         bool untrackedRecorded = needsExistingItemCheck && untracked;
         return new TaskPublished(
