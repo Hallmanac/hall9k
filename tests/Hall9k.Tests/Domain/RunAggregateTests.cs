@@ -624,10 +624,16 @@ public sealed class RunAggregateTests
     /// resolve with `h9k review resolve --merge-ready`, exactly as `--needs-fixes` gives itself a
     /// fresh grant by re-measuring <see cref="RunAggregate.ReviewBudgetBaseCycle"/>
     /// (<see cref="Review_park_resolved_needs_fixes_regrants_the_cycle_caps_and_carries_the_human_findings"/>).
-    /// Without the same reset here, nothing else ever lowers <see cref="RunAggregate.FinalFullPassRounds"/>,
-    /// so the Settling branch's own cap check re-parks on the identical reason the instant this
-    /// resolve tries to clear it — the human's merge-ready verdict is silently discarded on every
-    /// attempt (independent pre-PR review, cycle 2, adversarial finding).
+    /// The MergeReady branch keeps the same <see cref="RunAggregate.FinalFullPassRounds"/> reset
+    /// for the same discipline even though the reordering that fixed the cycle-2 finding this
+    /// reset was originally written against also made it unreachable-in-effect here: the Settling
+    /// branch's own settle short-circuit (<c>ReviewEngine.MaySettle</c>) takes
+    /// <see cref="RunAggregate.HumanEndedTheLoop"/> unconditionally, before
+    /// <c>FinalFullPassCapReached</c> is ever consulted. This test still guards a real
+    /// invariant — a stale round count must never carry into whatever the run's next review cycle
+    /// does — not the re-park scenario the reset was first written against (independent pre-PR
+    /// review, cycle 6, conformance finding correcting the cycle-2 note this comment carried
+    /// verbatim after that reordering).
     /// </summary>
     [Fact]
     public void Merge_ready_park_resolution_resets_the_final_full_pass_round_counter()
