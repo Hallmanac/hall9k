@@ -613,7 +613,7 @@ public sealed class VerificationRunnerTests(PostgresFixture postgres) : IClassFi
         await using IQuerySession query = store.QuerySession();
         var events = await query.Events.FetchStreamAsync(runId, token: cts.Token);
         VerificationPassed recorded = events.Select(e => e.Data).OfType<VerificationPassed>().Single();
-        recorded.Note.Should().Contain("Test gate ran full").And.Contain("the scoped filter matched no tests");
+        recorded.Note.Should().Contain("Test gate ran full").And.Contain("no executed tests were recorded");
 
         logger.Lines.Should().Contain(line =>
             line.Contains("matched no tests") && line.Contains("falling back to a full run"));

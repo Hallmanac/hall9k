@@ -257,7 +257,12 @@ public sealed partial class VerificationRunner(
 
             (bool retryPassed, string retrySummary, bool retryIsInfrastructureFailure, _, bool retryFellBackToFull) =
                 await RunGateAsync(runDirectory, run.WorktreePath, gate, scope, cancellationToken);
-            gateFellBackToFull |= retryFellBackToFull;
+
+            // The retry's own outcome replaces the first attempt's, not OR's with it (adversarial
+            // review): only the attempt that actually passed is what the recorded RanFullScope fact
+            // describes, and a first attempt that fell back to full before failing says nothing
+            // about whether the retry — which is what's about to be recorded — also did.
+            gateFellBackToFull = retryFellBackToFull;
             if (retryPassed)
             {
                 if (gateIsDotnetTest && gateFellBackToFull)
@@ -294,6 +299,10 @@ public sealed partial class VerificationRunner(
         bool allTestGatesFellBack = dotnetTestGateCount > 0 && dotnetTestGateFellBackCount == dotnetTestGateCount;
         bool ranFullScope = scope is null || !scope.IsScoped || allTestGatesFellBack;
 
+        // "No executed tests were recorded" rather than "the scoped filter matched no tests"
+        // (conformance review finding): at this point only the per-gate fallback count is known,
+        // not the gate's own output, so the note must not assert the filter itself was the cause
+        // when a suppressed VSTest summary is equally consistent with what was actually observed.
         string? note = scope is null
             ? null
             : !scope.IsScoped
@@ -301,9 +310,9 @@ public sealed partial class VerificationRunner(
                 : !anyTestGateFellBack
                     ? $"Test gate scoped: {scope.Reason}"
                     : allTestGatesFellBack
-                        ? $"Test gate ran full: the scoped filter matched no tests ({scope.Reason})"
+                        ? $"Test gate ran full: no executed tests were recorded for the scoped run ({scope.Reason})"
                         : $"Test gate ran full for {dotnetTestGateFellBackCount} of {dotnetTestGateCount} test gate(s): " +
-                          $"the scoped filter matched no tests for those, while the rest ran scoped ({scope.Reason})";
+                          $"no executed tests were recorded for those, while the rest ran scoped ({scope.Reason})";
         string testGateModeDescription = scope is null
             ? ""
             : !scope.IsScoped || allTestGatesFellBack
@@ -426,14 +435,15 @@ public sealed partial class VerificationRunner(
                 string scopedOutput = ReadFullOutput(logFile);
                 if (ScopedRunExecutedNoTests(scopedOutput))
                 {
+                    string vacuityDescription = DescribeScopedRunVacuity(scopedOutput);
                     logger.LogWarning(
-                        "Gate '{Gate}': the scoped filter \"{Filter}\" matched no tests once combined with the " +
-                        "gate's own configured filter; falling back to a full run of this gate",
-                        gate.Name, scope.FilterExpression);
+                        "Gate '{Gate}': {Description} (filter \"{Filter}\" combined with the gate's own " +
+                        "configured filter); falling back to a full run of this gate",
+                        gate.Name, vacuityDescription, scope.FilterExpression);
                     (bool fallbackPassed, string fallbackSummary, bool fallbackIsInfrastructureFailure, string? fallbackExcerpt, _) =
                         await RunGateAsync(
                             runDirectory, worktreePath, gate,
-                            TestGateScope.Full($"the scoped filter matched no tests ({scope.Reason})"),
+                            TestGateScope.Full($"{vacuityDescription} ({scope.Reason})"),
                             cancellationToken);
                     return (fallbackPassed, fallbackSummary, fallbackIsInfrastructureFailure, fallbackExcerpt, true);
                 }
@@ -702,11 +712,36 @@ public sealed partial class VerificationRunner(
     internal static bool ScopedRunExecutedNoTests(string output)
     {
         MatchCollection totals = ExecutedTestTotalPattern().Matches(output);
-        return totals.Count == 0 || totals.All(match => int.Parse(match.Groups["count"].Value) == 0);
+
+        // TryParse rather than Parse (adversarial review): `\d+` matches any Unicode decimal
+        // digit and any run length, so a localized VSTest build or a pathologically wide count
+        // must degrade to "not confirmed nonzero" — the same honest-fallback direction every
+        // other unreadable signal in this class takes — rather than fault the whole run on a
+        // gate that actually passed.
+        return totals.Count == 0
+            || totals.All(match => !int.TryParse(match.Groups["count"].Value, out int count) || count == 0);
     }
 
     [GeneratedRegex("""Total:\s*(?<count>\d+)""")]
     private static partial Regex ExecutedTestTotalPattern();
+
+    [GeneratedRegex("(?i)no test matches the given testcase filter")]
+    private static partial Regex NoTestMatchesWarningPattern();
+
+    /// <summary>
+    /// The honest description of why <see cref="ScopedRunExecutedNoTests"/> returned true: VSTest's
+    /// own "no test matches" warning or an explicit `Total: 0` line is positive evidence the filter
+    /// itself matched nothing, but the absence of any executed-test summary at all is not the same
+    /// observation — a gate that suppresses VSTest's summary (`--logger "console;verbosity=quiet"`,
+    /// a `grep`-filtered pipeline) produces zero `Total:` matches on a scoped run that may have
+    /// executed its filtered tests just fine (adversarial... conformance review finding). The
+    /// recorded reason must say which one was actually observed, never assert the filter's own
+    /// behavior as fact when only its absence of evidence was seen.
+    /// </summary>
+    private static string DescribeScopedRunVacuity(string output) =>
+        ExecutedTestTotalPattern().IsMatch(output) || NoTestMatchesWarningPattern().IsMatch(output)
+            ? "the scoped filter matched no tests"
+            : "no executed-test summary was found in the gate's output";
 
     /// <summary>
     /// Injects <paramref name="filterExpression"/> into a `dotnet test` command, combining with

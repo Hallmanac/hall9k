@@ -32,6 +32,18 @@ public sealed class VerificationRunnerScopedGateTests
     public void A_genuine_test_run_is_never_mistaken_for_an_empty_one(string gateOutput) =>
         VerificationRunner.ScopedRunExecutedNoTests(gateOutput).Should().BeFalse();
 
+    /// <summary>
+    /// `\d+` matches any Unicode decimal digit and any digit run length, so a localized VSTest
+    /// build's non-ASCII digits or a pathologically wide count must never fault the whole run with
+    /// an unhandled `FormatException`/`OverflowException` — the class degrades honestly everywhere
+    /// else it cannot read a signal confidently, and this is no exception (adversarial... conformance
+    /// review finding).
+    /// </summary>
+    [Fact]
+    public void An_unparseable_total_count_never_faults_the_gate() =>
+        VerificationRunner.ScopedRunExecutedNoTests("Passed!  - Total:     99999999999999999999")
+            .Should().Be(true, "an unparseable count is never confirmed nonzero, so it degrades the same honest direction as a missing summary");
+
     [Fact]
     public void A_multi_project_run_where_one_source_matched_and_one_did_not_is_never_mistaken_for_vacuous() =>
         VerificationRunner.ScopedRunExecutedNoTests(
