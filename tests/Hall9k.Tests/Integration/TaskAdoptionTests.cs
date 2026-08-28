@@ -202,6 +202,40 @@ public sealed class TaskAdoptionTests(PostgresFixture postgres) : IClassFixture<
             .Should().Contain(TaskListCommand.ShortId(reviewId));
     }
 
+    [Fact]
+    public async Task A_live_pr_review_blocks_a_third_adoption_even_behind_an_older_done_one()
+    {
+        // Regression: the guard used to take the *oldest* non-abandoned holder and only then check
+        // whether it was a Done pr-review, so an older Done review permanently shadowed a newer
+        // live one on the same pull request — the exclusion now lives in the query itself, so a
+        // live holder still blocks even when a Done pr-review on the same reference sorts first.
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        using DocumentStore store = DocumentStore.For(opts =>
+        {
+            opts.Connection(postgres.ConnectionString);
+            opts.ConfigureHall9k(AutoCreate.All);
+        });
+
+        ExternalReference pullRequest = new(WorkItemProvider.GitHub, "Hallmanac/hall9k#168");
+        Guid firstReviewId = await AdoptAsync(
+            store, pullRequest, "Review pull request #168", TaskType.PrReview, Now, cts.Token);
+        await AppendAsync(store, firstReviewId,
+            new TaskCompleted(firstReviewId, DomainId.New(), null, Now), cts.Token);
+
+        Guid secondReviewId = await AdoptAsync(
+            store, pullRequest, "Review pull request #168 again", TaskType.PrReview,
+            Now.AddMinutes(5), cts.Token);
+
+        await using IQuerySession session = store.QuerySession();
+        Func<Task> thirdAdoption = () =>
+            TaskAddCommand.RefuseSecondAdoptionAsync(session, pullRequest, cts.Token);
+
+        (await thirdAdoption.Should().ThrowAsync<DomainConflictException>()).Which.Message
+            .Should().Contain(TaskListCommand.ShortId(secondReviewId))
+            .And.NotContain(
+                TaskListCommand.ShortId(firstReviewId), "the Done review no longer holds the reference");
+    }
+
     /// <summary>
     /// The rule is about the item, not about how the task got it — so a card a task caused to
     /// exist holds that card exactly as an imported one does, and <c>h9k task link-jira</c> asks
@@ -254,11 +288,16 @@ public sealed class TaskAdoptionTests(PostgresFixture postgres) : IClassFixture<
 
     private static Task<Guid> AdoptAsync(
         IDocumentStore store, ExternalReference? reference, string objective, CancellationToken cancellationToken) =>
-        AdoptAsync(store, reference, objective, TaskType.Feature, cancellationToken);
+        AdoptAsync(store, reference, objective, TaskType.Feature, Now, cancellationToken);
+
+    private static Task<Guid> AdoptAsync(
+        IDocumentStore store, ExternalReference? reference, string objective, TaskType type,
+        CancellationToken cancellationToken) =>
+        AdoptAsync(store, reference, objective, type, Now, cancellationToken);
 
     private static async Task<Guid> AdoptAsync(
         IDocumentStore store, ExternalReference? reference, string objective, TaskType type,
-        CancellationToken cancellationToken)
+        DateTimeOffset addedAt, CancellationToken cancellationToken)
     {
         Guid taskId = DomainId.New();
         await using IDocumentSession session = store.LightweightSession();
@@ -271,7 +310,7 @@ public sealed class TaskAdoptionTests(PostgresFixture postgres) : IClassFixture<
             agentContext: null,
             constraints: null,
             reference,
-            Now,
+            addedAt,
             DomainId.New()));
         await session.SaveChangesAsync(cancellationToken);
         return taskId;
