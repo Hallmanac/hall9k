@@ -202,6 +202,25 @@ public sealed class TaskDeciderTests
             .WithMessage($"*h9k task publish {task.Id}*");
     }
 
+    /// <summary>
+    /// The same "reads as no tracking" convention <see cref="Publish_under_an_unrecognized_backlog_policy_never_asks_for_an_attestation"/>
+    /// pins for a defensively-passed --no-existing-item must also apply to --untracked, which
+    /// asserts a deliberate choice rather than clamping quietly — refusing it here is what keeps
+    /// the two flags symmetric under both policy none and an unrecognized policy alike.
+    /// </summary>
+    [Fact]
+    public void Publish_refuses_untracked_under_an_unrecognized_backlog_policy_as_meaningless_too()
+    {
+        TaskAggregate task = DraftTask();
+        BacklogPolicy unrecognized = "SomeFutureTracker";
+
+        Action act = () => TaskDecider.Publish(
+            task, TaskDependencyGraph.Empty, Now, Owner, unrecognized, untracked: true);
+
+        act.Should().Throw<DomainValidationException>()
+            .WithMessage($"*h9k task publish {task.Id}*");
+    }
+
     [Fact]
     public void Publish_never_records_an_untracked_attestation_the_gate_did_not_ask_for()
     {

@@ -165,15 +165,20 @@ public static class TaskDecider
                 + "--untracked skips tracking this task entirely. Pass one, not both.");
         }
 
-        // --untracked only means something where there is tracking to skip. A policy of none
-        // never asks for either attestation, so the flag has nothing to attest and is refused
-        // rather than silently ignored — unlike a defensively-passed --no-existing-item, which
-        // clamps to false, --untracked is asserting a deliberate choice, and a choice nobody
-        // asked for is worth teaching rather than swallowing.
-        if (untracked && policy == BacklogPolicy.None)
+        // --untracked only means something where there is tracking to skip. A policy that is
+        // neither Jira nor GitHubIssues — none, or a persisted value this build's closed set no
+        // longer recognizes (the same "reads as no tracking" convention needsExistingItemCheck
+        // uses below) — never asks for either attestation, so the flag has nothing to attest and
+        // is refused rather than silently ignored — unlike a defensively-passed
+        // --no-existing-item, which clamps to false, --untracked is asserting a deliberate
+        // choice, and a choice nobody asked for is worth teaching rather than swallowing.
+        if (untracked && policy != BacklogPolicy.Jira && policy != BacklogPolicy.GitHubIssues)
         {
+            string policyDescription = policy == BacklogPolicy.None
+                ? "policy none"
+                : "an unrecognized policy, which reads as no tracking";
             throw new DomainValidationException(
-                $"Task {task.Id}'s project does not track a backlog (policy none), so --untracked has "
+                $"Task {task.Id}'s project does not track a backlog ({policyDescription}), so --untracked has "
                 + $"nothing to skip. Publish without it: h9k task publish {task.Id}.");
         }
 
