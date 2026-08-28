@@ -18,8 +18,9 @@ namespace Hall9k.Cli.Commands;
 /// The human's unpark lever for the pre-PR review loop (Decisions Log #24 deferred it;
 /// its absence left a parked run with no path forward except abandonment): record a
 /// human verdict on a review-parked run. --merge-ready runs one mandatory full-scope
-/// verification gate over the fix (log #98: nothing merges on scoped green alone) and
-/// sends the run on to its pull request if that passes; --needs-fixes dispatches a fix
+/// verification gate over the fix unless this tip was already gated at full scope
+/// (log #98: nothing merges on scoped green alone) and sends the run on to its pull
+/// request if that passes; --needs-fixes dispatches a fix
 /// session with the stated reason as its findings and, like h9k pr resolve, re-bases the
 /// review's per-track cycle caps on the cycle it resolved (log #63's ReviewBudgetBaseCycle)
 /// — the human asking is a fresh grant, not one cycle before an immediate re-park. It does
@@ -65,7 +66,8 @@ public sealed class ReviewResolveCommand : Hall9kAsyncCommand<ReviewResolveComma
         [CommandOption("--merge-ready")]
         [Description(
             "Your verdict: the diff is sound — one mandatory full-scope verification gate runs "
-            + "over the fix, then the pull request opens if it passes "
+            + "over the fix unless this tip was already gated at full scope, then the pull "
+            + "request opens if it passes "
             + "(on a thread-dispute park, which happens before the gates, it re-enters at the "
             + "gates and the review loop instead: your call settled the thread, not the diff. "
             + "Refused on a disputed rebase conflict — nothing has been rebased yet, so use "
@@ -187,7 +189,7 @@ public sealed class ReviewResolveCommand : Hall9kAsyncCommand<ReviewResolveComma
             (true, true) =>
                 $"[dim]Run {runId} resolved merge-ready — the daemon re-enters the pipeline at the gates, then review; the pull request opens if both pass.[/]",
             (true, false) =>
-                $"[dim]Run {runId} resolved merge-ready — the daemon runs one mandatory full-scope verification gate over the fix, then opens the pull request if it passes.[/]",
+                $"[dim]Run {runId} resolved merge-ready — the daemon runs one mandatory full-scope verification gate over the fix, unless this tip was already gated at full scope, then opens the pull request if it passes.[/]",
             _ =>
                 $"[dim]Run {runId} resolved needs-fixes — the daemon dispatches a fix session with your reason as its findings.[/]",
         };
