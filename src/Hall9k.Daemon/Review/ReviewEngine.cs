@@ -2195,19 +2195,29 @@ public sealed class ReviewEngine(
 
     /// <summary>
     /// Why hitting <see cref="FinalFullPassCapReached"/> parks the run: not a spent budget in the
-    /// ordinary sense, but the mandatory full-rigor read repeatedly finding something new just as
-    /// the run is about to settle — worth a human's look rather than another automatic round.
+    /// ordinary sense, but the mandatory full-rigor read that runs immediately before the run may
+    /// settle has had to repeat itself this many times in a row — worth a human's look rather than
+    /// another automatic round. The reawakened-track explanation is only ever stated when
+    /// <see cref="RunAggregate.ReviewTrackReactivations"/> says one actually happened on this run
+    /// (cycle-3 cap-park finding): the counter itself only counts how many consecutive mandatory
+    /// full passes have run, which can climb without any track ever being reawakened (an ordinary,
+    /// still-active track can keep the cycle going on its own), and the park text must never assert
+    /// a reawakening nobody observed.
     /// </summary>
     private string FinalFullPassCapParkReason(RunAggregate run)
     {
         string findings = RunPaths.ReviewFindingsFile(ParkedRunDirectory(run), run.ReviewCycle);
-        return $"The mandatory final full review pass has now run {run.FinalFullPassRounds} time(s) " +
-            $"without the run ever reaching a clean settle — its cap. A track keeps being reawakened " +
-            "just as the loop is about to conclude, which either means the fixes keep introducing new " +
-            "issues or the loop is oscillating; either way it is worth a human's look rather than " +
-            $"another automatic round. Unresolved findings: {findings}. Fix in the worktree and " +
-            "resolve with h9k review resolve --merge-ready, grant a fresh round with --needs-fixes, " +
-            "or abandon the task.";
+        string why = run.ReviewTrackReactivations > 0
+            ? "A track keeps being reawakened just as the loop is about to conclude, which either " +
+              "means the fixes keep introducing new issues or the loop is oscillating"
+            : "The mandatory pass keeps having to run again, whatever is keeping a track active this " +
+              "many times in a row";
+        return $"This run has dispatched the mandatory final full review pass — every lens, fresh " +
+            $"context, immediately before the run may settle — {run.FinalFullPassRounds} consecutive " +
+            $"time(s) without ever reaching a clean settle: its cap. {why}; either way it is worth a " +
+            $"human's look rather than another automatic round. Unresolved findings: {findings}. Fix " +
+            "in the worktree and resolve with h9k review resolve --merge-ready, grant a fresh round " +
+            "with --needs-fixes, or abandon the task.";
     }
 
     /// <summary>

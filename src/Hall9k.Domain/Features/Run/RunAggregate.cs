@@ -235,6 +235,16 @@ public sealed class RunAggregate
     /// </summary>
     public int FinalFullPassRounds { get; private set; }
 
+    /// <summary>
+    /// How many times <see cref="Events.ReviewTrackReactivated"/> has actually landed on this run's
+    /// stream. Never reset — the park text that reads this (<c>ReviewEngine.FinalFullPassCapParkReason</c>)
+    /// needs to know whether a track was ever genuinely reawakened, not just whether the mandatory
+    /// pass ran more than once: those are different claims, and the park text must never assert the
+    /// former on evidence of only the latter (cycle-3 cap-park finding — never guess at unobserved
+    /// facts).
+    /// </summary>
+    public int ReviewTrackReactivations { get; private set; }
+
     /// <summary>This cycle's findings that are still owed a fix session — the loop's "is there anything to fix" (log #63).</summary>
     public int PendingFixFindings =>
         _completedReviewPasses.Sum(pass =>
@@ -508,6 +518,7 @@ public sealed class RunAggregate
     {
         _concludedReviewTracks.RemoveAll(track => track.Lens == @event.Lens);
         _trackReactivatedAtCycle[@event.Lens] = @event.Cycle;
+        ReviewTrackReactivations++;
         ReviewPhase = DeriveReviewPhase();
     }
 
