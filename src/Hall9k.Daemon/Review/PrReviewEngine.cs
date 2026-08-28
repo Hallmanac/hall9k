@@ -197,7 +197,7 @@ public sealed class PrReviewEngine(
             }
         }
 
-        await ComposeReportAndParkAsync(runId, taskId, runDirectory, cancellationToken);
+        await ComposeReportAndParkAsync(runId, taskId, runDirectory, run.LeaseGeneration, cancellationToken);
     }
 
     /// <summary>
@@ -323,7 +323,7 @@ public sealed class PrReviewEngine(
     }
 
     private async Task ComposeReportAndParkAsync(
-        Guid runId, Guid taskId, string runDirectory, CancellationToken cancellationToken)
+        Guid runId, Guid taskId, string runDirectory, int leaseGeneration, CancellationToken cancellationToken)
     {
         string adversarial = await ReadIfExistsAsync(
             RunPaths.ReviewLensFindingsFile(runDirectory, 1, ReviewLens.Adversarial.Slug), cancellationToken);
@@ -343,6 +343,29 @@ public sealed class PrReviewEngine(
         await File.WriteAllTextAsync(reportPath, report, cancellationToken);
 
         await using IDocumentSession session = store.LightweightSession();
+
+        // Mirrors DispatchConformanceAsync's and FinalizeAsync's own fence-rejection (Copilot
+        // review, PR #30's RunSuperseded fix): without it, a run reclaimed while the
+        // conformance lens was still running would append ReviewParked here unfenced after a
+        // fresh generation already claimed the task, stranding this run non-terminal in
+        // ReviewParked with no monitor and no RunSuperseded (adversarial review, cycle 1).
+        if (!await GenerationFence.AllowsAsync(
+            session, logger, taskId, runId, leaseGeneration, nameof(ReviewParked), cancellationToken))
+        {
+            if (await session.Events.FetchStreamStateAsync(runId, cancellationToken) is not null)
+            {
+                TaskDetails? currentTask = await session.LoadAsync<TaskDetails>(taskId, cancellationToken);
+                session.Events.Append(
+                    runId, new RunSuperseded(runId, currentTask?.LeaseGeneration ?? leaseGeneration, DateTimeOffset.UtcNow));
+                await session.SaveChangesAsync(cancellationToken);
+                logger.LogInformation(
+                    "Run {RunId}: retired as superseded — the pr-review park found it was no longer task {TaskId}'s current generation",
+                    runId, taskId);
+            }
+
+            return;
+        }
+
         session.Events.Append(runId, new ReviewParked(
             runId,
             $"Pull request review complete. Findings: {reportPath}. Walk them, direct each one, then "
