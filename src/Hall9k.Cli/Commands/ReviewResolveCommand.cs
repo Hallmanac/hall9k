@@ -135,6 +135,11 @@ public sealed class ReviewResolveCommand : Hall9kAsyncCommand<ReviewResolveComma
                 "with h9k pr resolve instead.)");
         }
 
+        if (task.Type == TaskType.PrReview)
+        {
+            return await ResolvePrReviewAsync(session, runId, taskId, fence, settings, cancellationToken);
+        }
+
         if (settings.MergeReady && task.FollowUpKind == FollowUpKind.Rebase
             && run.ReviewCycle == 0)
         {
@@ -194,6 +199,64 @@ public sealed class ReviewResolveCommand : Hall9kAsyncCommand<ReviewResolveComma
                 $"[dim]Run {runId} resolved needs-fixes — the daemon dispatches a fix session with your reason as its findings.[/]",
         };
         AnsiConsole.MarkupLineInterpolated(outcome);
+        return ExitCodes.Ok;
+    }
+
+    /// <summary>
+    /// A pr-review task's own verdict shape: there is no diff of this task's own to fix or
+    /// re-review, so --needs-fixes has nothing to dispatch a fix session over and is refused
+    /// outright. --merge-ready instead means "the findings report has been walked and
+    /// directed" — records <see cref="PrReviewDelivered"/>, which moves the run to
+    /// UnderReview exactly as ReviewParkResolved does so the daemon's own resume sweep picks
+    /// it up, but PrReviewEngine finalizes it directly (task Done, no merge ever observed)
+    /// rather than re-entering any review loop.
+    /// </summary>
+    private static async Task<int> ResolvePrReviewAsync(
+        IDocumentSession session, Guid runId, Guid taskId, StreamState fence, Settings settings,
+        CancellationToken cancellationToken)
+    {
+        if (settings.NeedsFixes.IsNotBlank())
+        {
+            throw new DomainValidationException(
+                $"Task {taskId} is a pr-review task: it reviews someone else's pull request read-only, "
+                + "so there is nothing here for a fix session to apply. Direct the findings yourself "
+                + "(dismiss, comment, or have a session post on your behalf), then resolve with "
+                + "--merge-ready when you are done.");
+        }
+
+        if (!settings.MergeReady)
+        {
+            throw new DomainValidationException(
+                "Pass --merge-ready once the findings report has been walked and directed — the only "
+                + "verdict a pr-review task takes.");
+        }
+
+        BootstrapContext context = await NodeBootstrap.EnsureAsync(session, cancellationToken);
+        string? reason = string.IsNullOrWhiteSpace(settings.Reason) ? null : settings.Reason.Trim();
+        session.Events.Append(runId, expectedVersion: fence.Version + 1, new PrReviewDelivered(
+            runId, reason, DateTimeOffset.UtcNow, context.OwnerId));
+
+        TaskLease? lease = await session.LoadAsync<TaskLease>(taskId, cancellationToken);
+        if (lease is not null)
+        {
+            lease.HeartbeatAt = DateTimeOffset.UtcNow;
+            session.Store(lease);
+        }
+
+        try
+        {
+            await session.SaveChangesAsync(cancellationToken);
+        }
+        catch (EventStreamUnexpectedMaxEventIdException)
+        {
+            throw new DomainConflictException(
+                $"Run {runId} changed while resolving — the daemon (or another resolve) got there " +
+                "first. Check h9k status; re-run this command only if the run is still ReviewParked.");
+        }
+
+        await Doorbell.RingAsync($"review-resolve:{taskId}", cancellationToken);
+        AnsiConsole.MarkupLineInterpolated(
+            $"[dim]Run {runId} resolved — the daemon completes the task. Nothing was posted to the pull request.[/]");
         return ExitCodes.Ok;
     }
 }
