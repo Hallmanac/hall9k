@@ -21,10 +21,11 @@ namespace Hall9k.Daemon.Execution;
 /// pr-review branch, PrReviewEngine.DispatchConformanceAsync): WorktreePath is then a
 /// checkout of another contributor's pull-request head, which the child process treats as
 /// its own project configuration the same way it would this platform's own worktrees
-/// (adversarial review, cycle 1) — a `.claude/settings.json` with a hook, or an `.mcp.json`
-/// naming a server, in that checkout would otherwise run under the owner's credentials the
-/// moment the run spawns, before the prompt's own read-only instructions are ever read.
-/// <see cref="ClaudeExecutor"/> reads this to keep the child from loading either.
+/// (adversarial review, cycle 1) — a `.claude/settings.json` with a hook, an `.mcp.json`
+/// naming a server, or a `CLAUDE.md`/`AGENTS.md` read as authoritative doctrine, in that
+/// checkout would otherwise run or load under the owner's credentials the moment the run
+/// spawns, before the prompt's own read-only instructions are ever read.
+/// <see cref="ClaudeExecutor"/> reads this to keep the child from loading any of them.
 /// </summary>
 public sealed record AgentSpawnRequest(
     Guid RunId,

@@ -102,10 +102,15 @@ public sealed class TokenBudgetRetryEngine(
 
         try
         {
+            // A pr-review task's primary session is the adversarial lens reading another
+            // contributor's pull-request head (RunLauncher's UntrustedWorkingDirectory), so a
+            // resume of that same session carries the same distrust forward — otherwise the
+            // resumed --resume spawn would load the foreign checkout's own .claude/ config
+            // and CLAUDE.md/AGENTS.md under the owner's credentials (adversarial review, cycle 2).
             SpawnedAgent agent = await executor.SpawnAsync(new AgentSpawnRequest(
                 run.Id, DomainId.New(), run.WorktreePath, run.RunDirectory, AgentPromptBuilder.BuildBudgetRetry(),
                 run.ExecutorMode, run.Model, project.SkipPermissions,
-                ResumeSessionId: run.SessionId), cancellationToken);
+                ResumeSessionId: run.SessionId, UntrustedWorkingDirectory: task.Type == TaskType.PrReview), cancellationToken);
 
             // The retry's stdout redirect truncates the run's stream file fresh (log #2),
             // so the tail cursor has to restart at zero with it — otherwise the monitor
