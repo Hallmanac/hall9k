@@ -368,6 +368,75 @@ public sealed class TaskLifecycleProjectionTests
         detail.DependencyFailureReason.Should().BeNull();
     }
 
+    /// <summary>
+    /// The three-way distinction acceptance criterion 3 asks h9k task show to render honestly
+    /// (backlog: a task can be published deliberately untracked under a tracking backlog
+    /// policy): an attestation carried on the publish is recorded with its who and when, a
+    /// publish under policy none never asked for one, and a task that predates the field never
+    /// wrote it either — the last two both leave the projection at the same, honestly-false
+    /// default.
+    /// </summary>
+    [Fact]
+    public void An_untracked_attestation_is_recorded_with_its_who_and_when()
+    {
+        Guid id = DomainId.New();
+        Guid ownerId = DomainId.New();
+        TaskDetailsProjection details = new();
+
+        TaskDetails detail = details.Create(new FakeEvent<TaskAdded>(Drafted(id, ownerId)));
+        TaskPublished published = new(id, Now, ownerId, UntrackedAttested: true);
+        details.Apply(new FakeEvent<TaskPublished>(published), detail);
+
+        detail.UntrackedAttested.Should().BeTrue();
+        detail.UntrackedAttestedAt.Should().Be(Now);
+        detail.UntrackedAttestedByOwnerId.Should().Be(ownerId);
+    }
+
+    [Fact]
+    public void A_publish_that_never_carried_the_attestation_leaves_it_honestly_false()
+    {
+        Guid id = DomainId.New();
+        Guid ownerId = DomainId.New();
+        TaskDetailsProjection details = new();
+
+        TaskDetails detail = details.Create(new FakeEvent<TaskAdded>(Drafted(id, ownerId)));
+        details.Apply(new FakeEvent<TaskPublished>(new TaskPublished(id, Now, ownerId)), detail);
+
+        detail.UntrackedAttested.Should().BeFalse();
+        detail.UntrackedAttestedAt.Should().BeNull();
+        detail.UntrackedAttestedByOwnerId.Should().BeNull();
+    }
+
+    /// <summary>
+    /// The regression an adversarial review caught: unassign -> draft -> revise -> publish again,
+    /// this time with tracking, must stop rendering the first publish's attestation as a standing
+    /// fact once a real external item exists.
+    /// </summary>
+    [Fact]
+    public void A_republish_that_drops_the_attestation_clears_the_earlier_one()
+    {
+        Guid id = DomainId.New();
+        Guid ownerId = DomainId.New();
+        TaskDetailsProjection details = new();
+
+        TaskDetails detail = details.Create(new FakeEvent<TaskAdded>(Drafted(id, ownerId)));
+        details.Apply(
+            new FakeEvent<TaskPublished>(new TaskPublished(id, Now, ownerId, UntrackedAttested: true)), detail);
+        detail.UntrackedAttested.Should().BeTrue("the first publish attested it");
+
+        details.Apply(
+            new FakeEvent<TaskReturnedToDraft>(new TaskReturnedToDraft(id, "changed my mind", Now.AddHours(1), ownerId)),
+            detail);
+        TaskPublished republished = new(
+            id, Now.AddHours(2), ownerId, NoExistingItemAttested: true, UntrackedAttested: false);
+        details.Apply(new FakeEvent<TaskPublished>(republished), detail);
+
+        detail.UntrackedAttested.Should().BeFalse(
+            "the newest publish is what the view reports, not a stale attestation from a superseded one");
+        detail.UntrackedAttestedAt.Should().BeNull();
+        detail.UntrackedAttestedByOwnerId.Should().BeNull();
+    }
+
     private static TaskAdded Drafted(Guid id, Guid ownerId, params Guid[] blockedBy) => new(
         id, DomainId.New(), "Develop me", ["it is done"], TaskType.Feature,
         null, null, null, Now, ownerId, null, blockedBy, StartsAsDraft: true);
