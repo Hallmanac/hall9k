@@ -159,7 +159,7 @@ public static partial class SweepDraftTask
             body.AppendLine();
             body.AppendLine($"- Severity: {ReviewDraftBugTask.SeverityName(item.Severity)}");
             string fence = RelayedText.FenceFor(item.FindingExcerpt);
-            body.AppendLine($"- Finding: {fence}{item.FindingExcerpt}{fence}");
+            body.AppendLine($"- Finding: {fence} {item.FindingExcerpt} {fence}");
             body.AppendLine("- Evidence:");
             foreach (Evidence evidence in item.Evidence)
             {
@@ -195,10 +195,16 @@ public static partial class SweepDraftTask
     /// <summary>
     /// The inverse of the <see cref="RelayedText.FenceFor"/> wrapper <see cref="Render"/> puts
     /// around a finding excerpt, so a parsed-back item's <c>FindingExcerpt</c> holds the same bare
-    /// text the finding carried rather than growing a wider fence on every re-render. A line whose
-    /// leading and trailing backtick runs do not match in length is not a fence this method wrote —
-    /// left exactly as read, the same "never a parse failure" posture the rest of this parser
-    /// follows.
+    /// text the finding carried rather than growing a wider fence on every re-render.
+    /// <see cref="Render"/> always separates the fence from the excerpt with a literal space on
+    /// both sides — the CommonMark padding an inline code span needs to close correctly when the
+    /// excerpt itself starts or ends with a backtick (cycle-2 adversarial review) — which doubles
+    /// as this method's unambiguous marker: the fence's own backtick run can never merge with a
+    /// backtick the excerpt happens to start or end with, so counting the leading run and
+    /// requiring the matching "<c>fence space … space fence</c>" shape on both ends recovers
+    /// exactly the excerpt <see cref="Render"/> was given, backticks and all. A line that does not
+    /// have that shape is not a fence this method wrote — left exactly as read, the same "never a
+    /// parse failure" posture the rest of this parser follows.
     /// </summary>
     private static string StripFence(string text)
     {
@@ -208,9 +214,17 @@ public static partial class SweepDraftTask
             run++;
         }
 
-        string closer = new('`', run);
-        return run > 0 && text.Length >= run * 2 && text.EndsWith(closer, StringComparison.Ordinal)
-            ? text[run..^run]
+        if (run == 0)
+        {
+            return text;
+        }
+
+        string opener = $"{new string('`', run)} ";
+        string closer = $" {new string('`', run)}";
+        return text.Length >= opener.Length + closer.Length
+            && text.StartsWith(opener, StringComparison.Ordinal)
+            && text.EndsWith(closer, StringComparison.Ordinal)
+            ? text[opener.Length..^closer.Length]
             : text;
     }
 
