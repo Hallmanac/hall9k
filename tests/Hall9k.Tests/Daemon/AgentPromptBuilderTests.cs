@@ -793,6 +793,29 @@ public sealed class AgentPromptBuilderTests : IDisposable
     }
 
     /// <summary>
+    /// The pr-review lens's own settled-rulings trailer (<c>AppendSettledRulings</c>'s
+    /// <c>DiffIsForeignPullRequest</c> branch) states the same doctrine-trust rule the ordinary
+    /// trailer above states, but originally put a file-shaped location (`AGENTS.md`) and defect
+    /// vocabulary ("not") in the very same sentence doing it (verify cycle-2 adversarial finding,
+    /// `AgentPromptBuilder.cs:1570`): a pr-review lens that quotes or restates this paragraph
+    /// before concluding must not thereby satisfy <see cref="ReviewVerdictValidation.NamesAFinding"/>,
+    /// the same guarantee <see cref="Echoing_the_settled_rulings_trailer_does_not_name_a_finding"/>
+    /// already pins for the same-repo branch.
+    /// </summary>
+    [Fact]
+    public void Echoing_the_pr_review_settled_rulings_trailer_does_not_name_a_finding()
+    {
+        string prompt = AgentPromptBuilder.BuildPrReviewLens(
+            SomeTask(), SomeProject(), "pr/42", ReviewLens.Conformance, packet: null, baseBranch: "main");
+
+        int start = prompt.IndexOf("## How to review", StringComparison.Ordinal);
+        string trailer = prompt[..start];
+
+        ReviewVerdictValidation.NamesAFinding($"{trailer}\n\nVERDICT: needs-fixes")
+            .Should().BeFalse("the pr-review settled-rulings trailer is not a finding just because it quoted it back");
+    }
+
+    /// <summary>
     /// A human's own review-park <c>--reason</c> text is exactly as arbitrary as the task's
     /// objective or an acceptance criterion, and this file already screens both of those out of a
     /// reviewer's output before deciding whether it named a finding
@@ -935,6 +958,28 @@ public sealed class AgentPromptBuilderTests : IDisposable
     {
         string prompt = AgentPromptBuilder.BuildReview(
             SomeTask(), SomeProject(), "task/1-slug", cycle: 1, ReviewLens.Conformance);
+
+        int start = prompt.IndexOf("## How to review", StringComparison.Ordinal);
+        int end = prompt.IndexOf("## ", start + 1, StringComparison.Ordinal);
+        string howToReviewSection = prompt[start..(end < 0 ? prompt.Length : end)];
+
+        ReviewVerdictValidation.NamesAFinding($"{howToReviewSection}\n\nVERDICT: needs-fixes")
+            .Should().BeFalse("the reviewer's own instructions are not a finding just because it quoted them back");
+    }
+
+    /// <summary>
+    /// The pr-review conformance lens's own "How to review" bullet names the same two doctrine
+    /// files right beside the words it uses to describe what the reviewer should look for,
+    /// originally in the very same sentence (verify cycle-2 adversarial finding,
+    /// `AgentPromptBuilder.cs:1570`) — the pr-review analogue of
+    /// <see cref="Echoing_the_conformance_how_to_review_bullet_does_not_name_a_finding"/> above,
+    /// which only ever exercised the ordinary same-repo branch.
+    /// </summary>
+    [Fact]
+    public void Echoing_the_pr_review_how_to_review_bullet_does_not_name_a_finding()
+    {
+        string prompt = AgentPromptBuilder.BuildPrReviewLens(
+            SomeTask(), SomeProject(), "pr/42", ReviewLens.Conformance, packet: null, baseBranch: "main");
 
         int start = prompt.IndexOf("## How to review", StringComparison.Ordinal);
         int end = prompt.IndexOf("## ", start + 1, StringComparison.Ordinal);

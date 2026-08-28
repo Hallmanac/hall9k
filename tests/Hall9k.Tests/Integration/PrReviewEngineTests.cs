@@ -1,3 +1,4 @@
+using System.Text.Json;
 using FluentAssertions;
 using Hall9k.Daemon;
 using Hall9k.Daemon.Execution;
@@ -88,6 +89,122 @@ public sealed class PrReviewEngineTests(PostgresFixture postgres) : IClassFixtur
             Request = request;
             return Task.FromResult(new SpawnedAgent(4242, Now));
         }
+    }
+
+    /// <summary>
+    /// Scripted stand-in for the conformance lens's own claude session: the spawn writes the
+    /// given summary as a terminal result event straight into the session's stream file, so
+    /// <c>SessionResultWaiter</c> reads it back without ever needing the fake process to be
+    /// alive. A null summary spawns nothing and reports a process that never existed — the
+    /// died-without-a-result path — mirroring <c>ReviewEngineTests.ScriptedExecutor</c>.
+    /// </summary>
+    private sealed class ScriptedExecutor(string? summary) : IExecutor
+    {
+        private int _nextProcessId = 7_000;
+
+        public FakeProcessManager Processes { get; } = new();
+
+        public async Task<SpawnedAgent> SpawnAsync(AgentSpawnRequest request, CancellationToken cancellationToken)
+        {
+            int processId = _nextProcessId++;
+            if (summary is null)
+            {
+                return new SpawnedAgent(processId, Now);
+            }
+
+            string line = JsonSerializer.Serialize(new Dictionary<string, object?>
+            {
+                ["type"] = "result",
+                ["subtype"] = "success",
+                ["is_error"] = false,
+                ["usage"] = new Dictionary<string, long> { ["input_tokens"] = 1_000, ["output_tokens"] = 200 },
+                ["total_cost_usd"] = 0.01,
+                ["num_turns"] = 12,
+                ["result"] = summary,
+            });
+            Directory.CreateDirectory(request.RunDirectory);
+            await File.WriteAllTextAsync(
+                RunPaths.SessionStreamFile(request.RunDirectory, request.SessionArtifactName!),
+                line + "\n", cancellationToken);
+
+            Processes.MarkAlive(processId);
+            return new SpawnedAgent(processId, Now);
+        }
+    }
+
+    /// <summary>
+    /// The terminal-failure path <see cref="PrReviewEngine.RejectUnusableVerdictAsync"/> guards
+    /// (verify cycle-2 conformance finding, `PrReviewEngine.cs:639`): no equivalent test existed
+    /// for the conformance lens's own verdict gate, only for the three reclaim-fence points —
+    /// so a regression that silently reverted this gate back to a pass-through would go
+    /// unnoticed. A conformance summary with no `VERDICT:` line at all must fail the run rather
+    /// than hand the owner a findings report built from a promise never kept.
+    /// </summary>
+    [Fact]
+    public async Task A_verdict_less_conformance_session_fails_the_run_instead_of_parking_a_hollow_report()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        using DocumentStore store = NewStore();
+        NodeContext node = new();
+        await node.InitializeAsync(store, cts.Token);
+
+        (Guid taskId, Guid runId, string runDirectory) = await SeedClaimedPrReviewRunAsync(store, node, cts.Token);
+
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            session.Events.Append(runId, new AgentSessionCompleted(runId, Now));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        ScriptedExecutor executor = new("Looked the pull request over; nothing further to add.");
+        PrReviewEngine engine = NewEngine(store, executor, executor.Processes, new NoOpWorktreeManager());
+        await engine.RecordAdversarialResultAsync(runDirectory, "Nothing found.\n\nVERDICT: merge-ready", cts.Token);
+
+        await engine.ReviewAsync(runId, taskId, cts.Token);
+
+        await using IQuerySession query = store.QuerySession();
+        RunAggregate? run = await query.Events.AggregateStreamAsync<RunAggregate>(runId, token: cts.Token);
+        run!.State.Should().Be(RunState.Failed, "a verdict-less conformance session must fail the run, not park a hollow report");
+        run.InputTokens.Should().Be(1_000, "the session's own spend is recorded even though its verdict was unusable");
+
+        TaskDetails task = (await query.LoadAsync<TaskDetails>(taskId, cts.Token))!;
+        task.State.Value.Should().Be("Failed");
+    }
+
+    /// <summary>
+    /// The pass-through half of the same gate: a well-formed verdict must still reach the park,
+    /// not just avoid the failure path above.
+    /// </summary>
+    [Fact]
+    public async Task A_well_formed_conformance_verdict_parks_the_findings_report()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        using DocumentStore store = NewStore();
+        NodeContext node = new();
+        await node.InitializeAsync(store, cts.Token);
+
+        (Guid taskId, Guid runId, string runDirectory) = await SeedClaimedPrReviewRunAsync(store, node, cts.Token);
+
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            session.Events.Append(runId, new AgentSessionCompleted(runId, Now));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        ScriptedExecutor executor = new(
+            "Reviewed the pull request against its own title and description; it matches.\n\nVERDICT: merge-ready");
+        PrReviewEngine engine = NewEngine(store, executor, executor.Processes, new NoOpWorktreeManager());
+        await engine.RecordAdversarialResultAsync(runDirectory, "Nothing found.\n\nVERDICT: merge-ready", cts.Token);
+
+        await engine.ReviewAsync(runId, taskId, cts.Token);
+
+        await using IQuerySession query = store.QuerySession();
+        RunAggregate? run = await query.Events.AggregateStreamAsync<RunAggregate>(runId, token: cts.Token);
+        run!.State.Should().Be(RunState.ReviewParked, "a usable verdict reaches the park, not a failure");
+        run.InputTokens.Should().Be(1_000, "the completed session's spend is recorded on the successful path too");
+
+        File.ReadAllText(RunPaths.ReviewFindingsFile(runDirectory, 1))
+            .Should().Contain("matches", "the conformance lens's own findings text lands in the report");
     }
 
     /// <summary>
