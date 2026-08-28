@@ -308,6 +308,21 @@ public static class TaskDecider
                 + $"revising task {task.Id} to pr-review — it would be left with no pull request to review.");
         }
 
+        // The reverse mismatch: TaskAddCommand refuses --from-pr with any --type but pr-review
+        // at creation ("--from-pr adopts a pull request to review, which is always a pr-review
+        // task"), so revise must hold that same invariant on the way out. Without this, a task
+        // adopted from a foreign pull request could be revised to an ordinary build type and
+        // dispatched as ordinary work against that foreign PR's title and body, while the task
+        // still carries the pull-request ExternalReference the platform recorded it under.
+        if (type.HasValue && type.Value != TaskType.PrReview
+            && task.ExternalReference?.Provider == WorkItemProvider.GitHubPullRequest)
+        {
+            throw new DomainValidationException(
+                $"Task {task.Id} was adopted from a pull request with h9k task add --from-pr, which is "
+                + "always a pr-review task — it cannot be revised to any other type. Abandon it and "
+                + "create a new task instead if the work is not a pull-request review.");
+        }
+
         if (!objective.HasValue && !criteria.HasValue && !agentContext.HasValue
             && !dependencies.HasValue && !type.HasValue && !chosenModel.HasValue)
         {
@@ -639,6 +654,21 @@ public static class TaskDecider
         {
             throw new DomainConflictException(
                 $"Task {task.Id} has no pull request — there is no review feedback to resolve.");
+        }
+
+        // A pr-review task's PullRequestUrl names the pull request it reviewed, not one this
+        // platform ever opened or pushed to (AGENTS.md: it "never writes to the pull request or
+        // the remote in any form"). Reopening it would resume a `pr/<n>` branch that never
+        // existed and eventually run the remote branch-delete cleanup against that foreign
+        // number once it merges — h9k pr resolve is the ordinary lever's reach, and a pr-review
+        // task's only lever is a fresh h9k task add --from-pr.
+        if (task.Type == TaskType.PrReview)
+        {
+            throw new DomainConflictException(
+                $"Task {task.Id} is a pull-request review, not work with a pull request of its own — "
+                + "there is no branch to resume and nothing was ever pushed. Its PullRequestUrl names "
+                + "the pull request it reviewed, not one to reopen. Start a fresh review instead with "
+                + "h9k task add --from-pr.");
         }
 
         if (branch.IsBlank())
