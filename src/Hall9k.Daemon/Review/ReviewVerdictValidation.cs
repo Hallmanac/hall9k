@@ -461,8 +461,17 @@ public static partial class ReviewVerdictValidation
     /// context is an issue body that routinely pairs a filename with defect vocabulary the same
     /// way a criterion does, so a session that restates either before concluding satisfies the
     /// location-plus-defect shape below without having found anything, for the identical reason
-    /// restating the objective does. Screened only when <c>sawTaskContext</c> gates it the same
-    /// way the objective and criteria already are — the adversarial lens is never shown it either.
+    /// restating the objective does. Unlike the objective, an agent context is routinely hundreds
+    /// to thousands of characters — <c>WorkItemContext.Compose</c>'s provenance header, framing
+    /// paragraph and fenced item body — so a whole-string match the way the objective is screened
+    /// almost never fires (cycle-1 adversarial finding, `ReviewVerdictValidation.cs:497`): a
+    /// session restating one paragraph of it produces no span equal to the entire context.
+    /// <see cref="AgentContextParagraphs"/> splits it on the same blank-line boundary
+    /// <see cref="ParagraphBoundary"/> already uses to separate one finding's text from the next,
+    /// so each paragraph — the header lines, the framing sentence, and each paragraph of the
+    /// quoted body, a routed bug task's embedded prior finding included — is screened as its own
+    /// snippet through <see cref="StripVerbatimEchoes"/>, the same way each acceptance-criteria
+    /// bullet already is.
     /// </para>
     /// <para>
     /// A paragraph that is itself only a heading or bold lead-in — the numbered `###` title a
@@ -489,12 +498,12 @@ public static partial class ReviewVerdictValidation
             return false;
         }
 
-        string sanitized = StripObjectiveEcho(
+        string sanitized = StripVerbatimEchoes(
             StripVerbatimEchoes(
                 StripVerbatimEchoes(
                     StripObjectiveEcho(StripPlaceholderLocations(output), taskObjective), taskAcceptanceCriteria),
                 priorRulingReasons),
-            taskAgentContext);
+            AgentContextParagraphs(taskAgentContext));
 
         IReadOnlyList<ReviewFinding> structuredFindings = ReviewResultParser.ParseFindings(sanitized);
         if (structuredFindings.Any(HasStatedDefect))
@@ -869,6 +878,34 @@ public static partial class ReviewVerdictValidation
 
         return sanitized;
     }
+
+    /// <summary>
+    /// The task's own agent context, split into <see cref="StripVerbatimEchoes"/> snippets on the
+    /// same blank-line boundary <see cref="ParagraphBoundary"/> already splits a reviewer's own
+    /// output on — see <see cref="NamesAFinding"/>'s <c>taskAgentContext</c> doc for why a single
+    /// whole-string needle (the way <see cref="StripObjectiveEcho"/> screens the much shorter
+    /// objective) misses everything but the shortest contexts.
+    /// <para>
+    /// A fence delimiter line (<c>WorkItemContext.Compose</c>'s and <c>ReviewDraftBugTask</c>'s own
+    /// <c>RelayedText.FenceFor</c> line, three or more backticks alone on their line) is blanked
+    /// before the split, not left as ordinary text: both composers write it glued directly to the
+    /// quoted body with no blank line of its own — `` ``` `` immediately followed by the body's
+    /// first line, and the body's last line immediately followed by the closing `` ``` `` — so
+    /// without this, the quoted body's first and last paragraphs (its only paragraph, for a short
+    /// one-paragraph body — exactly the shape <see cref="ReviewDraftBugTask"/>'s routed finding
+    /// text is) carry the fence as part of their own needle and never match a reviewer's echo of
+    /// the body alone, fence-free. Blanking the fence line turns it into the blank line the
+    /// composer never wrote, letting the boundary the composer meant fall out on its own.
+    /// </para>
+    /// </summary>
+    private static IReadOnlyList<string>? AgentContextParagraphs(string? taskAgentContext) =>
+        taskAgentContext.IsBlank()
+            ? null
+            : ParagraphBoundary().Split(FenceDelimiterLine().Replace(taskAgentContext, string.Empty));
+
+    /// <summary>A markdown fence delimiter alone on its own line, with nothing else on it.</summary>
+    [GeneratedRegex(@"^[ \t]*`{3,}[ \t]*$", RegexOptions.Multiline)]
+    private static partial Regex FenceDelimiterLine();
 
     /// <summary>
     /// How far past a location's own sentence <see cref="NamesFindingInProse"/> looks for defect
