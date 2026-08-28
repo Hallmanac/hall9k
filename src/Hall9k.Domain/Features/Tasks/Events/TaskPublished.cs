@@ -6,7 +6,19 @@ namespace Hall9k.Domain.Features.Tasks.Events;
 /// a human may assign it at any moment — which is why validation and cycle detection live
 /// here alone and revision stops here.
 /// </summary>
+/// <param name="NoExistingItemAttested">
+/// True when a project tracking its backlog (Jira or GitHub issues) required proof no
+/// existing item already covers this task, and the publisher supplied it via
+/// <c>--no-existing-item</c> instead of a link (backlog: publishing an untracked task under a
+/// tracking backlog policy). <see cref="PublishedAt"/> and <see cref="PublishedByOwnerId"/> are
+/// the attestation's own who and when — it is made in the same breath as the publish it gates.
+/// False for a policy of none, false whenever the task already carried a reference, and false
+/// whenever a publication was already pending (<c>h9k task push-to-jira</c>, run while still a
+/// Draft) — none of those cases ever asks for one, so the flag is clamped to false rather than
+/// recorded verbatim from the caller.
+/// </param>
 public sealed record TaskPublished(
     Guid Id,
     DateTimeOffset PublishedAt,
-    Guid PublishedByOwnerId);
+    Guid PublishedByOwnerId,
+    bool NoExistingItemAttested = false);

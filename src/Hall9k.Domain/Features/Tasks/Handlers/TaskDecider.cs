@@ -1,3 +1,4 @@
+using Hall9k.Domain.Features.Project;
 using Hall9k.Domain.Features.Tasks.Events;
 using Hall9k.Domain.Shared.Exceptions;
 using Hall9k.Domain.Shared.ValueObjects;
@@ -79,12 +80,23 @@ public static class TaskDecider
     /// promises is checked exactly here: the contract is complete, every dependency names a
     /// real task, and no cycle is reachable through the chain. After this the text is frozen —
     /// a Published task may be assigned at any moment, and revising one would break that.
+    /// <para>
+    /// A project tracking its backlog (<paramref name="backlogPolicy"/> is Jira or GitHub
+    /// issues) is also a dedup gate: a task with no <see cref="TaskAggregate.ExternalReference"/>
+    /// refuses to publish unless <paramref name="noExistingItemAttested"/> says a search already
+    /// came back empty (backlog: publishing an untracked task under a tracking backlog policy).
+    /// The platform never searches the tracker itself — that is the human's or the orchestrator's
+    /// job, the same relay pattern every other park uses — so this only ever refuses or accepts
+    /// the attestation, never checks it.
+    /// </para>
     /// </summary>
     public static TaskPublished Publish(
         TaskAggregate task,
         TaskDependencyGraph graph,
         DateTimeOffset publishedAt,
-        Guid publishedByOwnerId)
+        Guid publishedByOwnerId,
+        BacklogPolicy? backlogPolicy = null,
+        bool noExistingItemAttested = false)
     {
         if (task.State != TaskState.Draft)
         {
@@ -134,7 +146,35 @@ public static class TaskDecider
                 "Break the cycle with h9k task revise on any task in it, then publish.");
         }
 
-        return new TaskPublished(task.Id, publishedAt, publishedByOwnerId);
+        BacklogPolicy policy = backlogPolicy ?? BacklogPolicy.None;
+
+        // A pending publication (h9k task push-to-jira, run by hand while the task was still a
+        // Draft) is already a session on its way to minting the card this gate exists to avoid
+        // duplicating — TrackInBacklogAsync already recognises and skips this exact state, so the
+        // gate must too, or the only way through is an attestation that is factually wrong.
+        bool needsExistingItemCheck = policy != BacklogPolicy.None
+            && task.ExternalReference is null
+            && task.PendingPublicationProvider is null;
+        if (needsExistingItemCheck && !noExistingItemAttested)
+        {
+            string tracker = policy == BacklogPolicy.Jira ? "Jira" : "GitHub issues";
+            string linkCommand = policy == BacklogPolicy.Jira
+                ? $"h9k task link-jira {task.Id} <key>"
+                : $"h9k task link-issue {task.Id} <issue>";
+
+            throw new DomainBusinessRuleException(
+                $"This project tracks its backlog in {tracker}, and task {task.Id} carries no linked "
+                + $"item yet. Search {tracker} for an open item that already covers this objective "
+                + "before publishing, so this does not mint a duplicate. Found one? Link it: "
+                + linkCommand + ". Confirmed none exists? Publish anyway with the attestation: "
+                + $"h9k task publish {task.Id} --no-existing-item.");
+        }
+
+        // Recorded only when the gate actually asked for it — a flag passed defensively on a
+        // publish the gate never gated (policy none, an already-linked task, one with a
+        // publication already pending) would otherwise assert an unobserved fact on the stream.
+        bool noExistingItemRecorded = needsExistingItemCheck && noExistingItemAttested;
+        return new TaskPublished(task.Id, publishedAt, publishedByOwnerId, noExistingItemRecorded);
     }
 
     /// <summary>

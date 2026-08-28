@@ -126,6 +126,7 @@ h9k task add --project <name> --from-issue 42     # adopt a GitHub issue (number
 h9k task add --project <name> --from-jira PROJ-1  # adopt a Jira card (key or URL)
 h9k task revise <id> --criteria "…" --blocked-by <id>   # Draft-only; each option replaces that part
 h9k task publish <id> [--assign]                  # the readiness gate; --assign starts it too
+h9k task publish <id> --no-existing-item          # required if a tracking backlog policy finds no linked item yet and has no publication already pending
 h9k task assign <id> [<owner>]                    # the dispatch trigger — Queued, or Blocked on dependencies
 h9k task unassign <id>                            # back to Published (refused while leased)
 h9k task draft <id>                               # Published back to Draft, so it can be revised
@@ -174,15 +175,20 @@ h9k project set <project> --backlog-routing "<TEXT>"          # free text: verba
 h9k task link-issue <task> 123                                # record a GitHub issue, verified against gh first
 ```
 
-`h9k task publish` checks the policy once, after publishing: `jira` appends the same request
-`push-to-jira` does (so a project with no Jira connection registered yet is told once, at publish,
-rather than refused — `push-to-jira` remains the manual retry once one exists); `github-issues`
-runs `gh issue create` itself, reads the created issue straight back the same way `--from-issue`
-does, and records it through `link-issue` — the platform's own creation claim gets the identical
-observation gate an agent's does. A task adopted with `--from-issue` or `--from-jira` already
-carries its reference, so publishing it creates nothing a second time. Closeout comments a merged
-pull request onto a linked GitHub issue exactly as it does a linked Jira card — never a transition,
-same reasoning as above.
+`h9k task publish` checks the policy twice. First, before publishing: a tracking policy (`jira` or
+`github-issues`) on a task that carries no linked item yet and has no publication already pending
+refuses the publish outright, naming the two ways forward — link an existing item
+(`h9k task link-jira` / `h9k task link-issue`), or attest none exists and proceed with
+`h9k task publish <id> --no-existing-item` — so a human or orchestrator confirms no existing item
+covers the objective before a duplicate can be minted. Then, after publishing: `jira` appends the
+same request `push-to-jira` does (so a project with no Jira connection registered yet is told once,
+at publish, rather than refused — `push-to-jira` remains the manual retry once one exists);
+`github-issues` runs `gh issue create` itself, reads the created issue straight back the same way
+`--from-issue` does, and records it through `link-issue` — the platform's own creation claim gets
+the identical observation gate an agent's does. A task adopted with `--from-issue` or `--from-jira`
+already carries its reference, so the pre-publish gate never fires and publishing it creates
+nothing a second time. Closeout comments a merged pull request onto a linked GitHub issue exactly
+as it does a linked Jira card — never a transition, same reasoning as above.
 
 CI runs build + test on ubuntu and windows for every push/PR to main.
 
