@@ -107,7 +107,11 @@ public sealed class GitHubWorkItemProvider(ProcessRunner? runner = null, TimePro
         string url = standardOutput.Trim();
         if (url.IsBlank())
         {
-            throw new DomainValidationException(
+            // Distinct from a create failure for the same reason CreateReadBackAsync's own catch
+            // below is: gh already exited 0, so the issue was very likely created — a caller that
+            // reacted the way it reacts to a real create failure ("create one by hand") would file
+            // a duplicate for whatever exists but printed nothing.
+            throw new DomainConflictException(
                 "gh issue create exited successfully but printed no URL, so whatever it created (if "
                 + "anything) cannot be read back and verified. Check what exists with 'gh issue list' "
                 + "and link it by hand with h9k task link-issue if it is there.");
