@@ -191,8 +191,10 @@ public static class CliCommandTree
             review.SetDescription("Work with the pre-PR review loop (PLAN.md log #24)");
             review.AddCommand<ReviewResolveCommand>("resolve")
                 .WithDescription(
-                    "Record your verdict on a review-parked run: --merge-ready proceeds to the pull request "
-                    + "(pair it with --reason to say why, e.g. the evidence that dismissed a finding), "
+                    "Record your verdict on a review-parked run: --merge-ready runs one mandatory full-scope "
+                    + "verification gate over the fix (unless this tip was already gated at full scope) and "
+                    + "the pull request opens only if it passes (pair it with --reason to say why, e.g. the "
+                    + "evidence that dismissed a finding), "
                     + "--needs-fixes <reason> dispatches a fix session (and, like pr resolve, restores the "
                     + "automatic fix budget). Both verdicts and their reasons are recorded on the task and "
                     + "carried into every later fresh-context review pass, but they are not read the same way: "
