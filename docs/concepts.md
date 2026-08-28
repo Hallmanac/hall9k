@@ -281,10 +281,10 @@ at cycle 2 while adversarial is still working at cycle 5).
 
 When a cycle needs fixes, **one** fix session runs in the same worktree with the merged findings
 of every live track, the gates re-run — scoped to the fix's own touched tests when the resolver
-can map them with confidence, full otherwise — and a fresh set of reviewers looks again. A finding the
-fix session **disputes** (not a defect, human territory, wrongly graded) parks the run
-immediately with both positions written to disk, rather than looping on judgment. That park is
-what `h9k review resolve` answers.
+can map them with confidence, full otherwise — and a fresh set of reviewers looks again. A
+finding the fix session **disputes** (not a defect, human territory, wrongly graded) parks the
+run immediately with both positions written to disk, rather than looping on judgment. That park
+is what `h9k review resolve` answers.
 
 Scope routes findings rather than ranking them. An out-of-scope high (a pre-existing defect on
 the base branch) is fixed here in its own commit; an out-of-scope non-high becomes a **draft bug
