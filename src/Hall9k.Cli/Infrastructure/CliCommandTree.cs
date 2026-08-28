@@ -428,10 +428,15 @@ public static class CliCommandTree
                     + "will not run — assigning it is a separate, explicit act (--assign does both at once). "
                     + "Under a tracking backlog policy (h9k project set --backlog), publishing has an "
                     + "external side effect: github-issues files a GitHub issue itself, through the "
-                    + "operator's own gh credentials, and jira dispatches an agent run to author the card.")
+                    + "operator's own gh credentials, and jira dispatches an agent run to author the card. "
+                    + "That policy is also a dedup gate: a draft with no linked item and no publication "
+                    + "already pending is refused until you search the tracker yourself and either link "
+                    + "what you find (h9k task link-jira / h9k task link-issue) or attest none exists "
+                    + "with --no-existing-item.")
                 .WithExample("task", "publish", "28b19893")
                 .WithExample("task", "publish", "28b19893", "--assign")
-                .WithExample("task", "publish", "28b19893", "--no-assign");
+                .WithExample("task", "publish", "28b19893", "--no-assign")
+                .WithExample("task", "publish", "28b19893", "--no-existing-item");
             task.AddCommand<TaskAssignCommand>("assign")
                 .WithDescription(
                     "Assign a published task to an owner: the dispatch trigger, and the only way a task "

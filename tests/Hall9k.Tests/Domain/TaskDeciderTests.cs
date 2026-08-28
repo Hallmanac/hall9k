@@ -1,4 +1,5 @@
 using FluentAssertions;
+using Hall9k.Domain.Features.Project;
 using Hall9k.Domain.Features.Tasks;
 using Hall9k.Domain.Features.Tasks.Events;
 using Hall9k.Domain.Features.Tasks.Handlers;
@@ -114,6 +115,136 @@ public sealed class TaskDeciderTests
         Action act = () => TaskDecider.Publish(task, TaskDependencyGraph.Empty, Now, Owner);
 
         act.Should().Throw<DomainValidationException>().WithMessage("*acceptance criter*");
+    }
+
+    /// <summary>
+    /// Backlog: publishing an untracked task under a tracking backlog policy. A project that
+    /// tracks its backlog in GitHub issues is also a dedup gate: a draft with no linked item
+    /// refuses to publish until a human or orchestrator either links what a search found, or
+    /// attests none exists. The refusal states both resolutions verbatim.
+    /// </summary>
+    [Fact]
+    public void Publish_under_a_github_issues_backlog_policy_refuses_an_unlinked_draft()
+    {
+        TaskAggregate task = DraftTask();
+
+        Action act = () => TaskDecider.Publish(
+            task, TaskDependencyGraph.Empty, Now, Owner, BacklogPolicy.GitHubIssues);
+
+        act.Should().Throw<DomainBusinessRuleException>()
+            .WithMessage("*GitHub issues*")
+            .WithMessage($"*h9k task link-issue {task.Id}*")
+            .WithMessage($"*h9k task publish {task.Id} --no-existing-item*");
+    }
+
+    [Fact]
+    public void Publish_under_a_jira_backlog_policy_refuses_an_unlinked_draft()
+    {
+        TaskAggregate task = DraftTask();
+
+        Action act = () => TaskDecider.Publish(task, TaskDependencyGraph.Empty, Now, Owner, BacklogPolicy.Jira);
+
+        act.Should().Throw<DomainBusinessRuleException>()
+            .WithMessage("*Jira*")
+            .WithMessage($"*h9k task link-jira {task.Id}*")
+            .WithMessage($"*h9k task publish {task.Id} --no-existing-item*");
+    }
+
+    [Fact]
+    public void Publish_records_the_no_existing_item_attestation_and_proceeds()
+    {
+        TaskAggregate task = DraftTask();
+
+        TaskPublished published = TaskDecider.Publish(
+            task, TaskDependencyGraph.Empty, Now, Owner, BacklogPolicy.GitHubIssues,
+            noExistingItemAttested: true);
+
+        published.NoExistingItemAttested.Should().BeTrue();
+        published.PublishedAt.Should().Be(Now, "the attestation's own when is the publish's when");
+        published.PublishedByOwnerId.Should().Be(Owner, "the attestation's own who is the publisher");
+
+        task.Apply(published);
+        task.State.Should().Be(TaskState.Published);
+    }
+
+    [Fact]
+    public void Publish_under_backlog_policy_none_never_asks_for_an_attestation()
+    {
+        TaskAggregate task = DraftTask();
+
+        TaskPublished published = TaskDecider.Publish(
+            task, TaskDependencyGraph.Empty, Now, Owner, BacklogPolicy.None);
+
+        published.NoExistingItemAttested.Should().BeFalse();
+    }
+
+    [Fact]
+    public void Publish_of_an_already_linked_draft_needs_no_attestation()
+    {
+        TaskAggregate task = new();
+        task.Apply(TaskDecider.Add(
+            DomainId.New(), DomainId.New(), "Add rate limiting to auth endpoints",
+            ["429 returned past the limit"], TaskType.Feature,
+            agentContext: null, constraints: null,
+            externalReference: new ExternalReference(WorkItemProvider.GitHub, "Hallmanac/hall9k#42"),
+            addedAt: Now, addedByOwnerId: Owner));
+
+        TaskPublished published = TaskDecider.Publish(
+            task, TaskDependencyGraph.Empty, Now, Owner, BacklogPolicy.GitHubIssues);
+
+        published.NoExistingItemAttested.Should().BeFalse("a task that already carries a reference is never asked");
+    }
+
+    /// <summary>
+    /// A draft with a publication already pending (h9k task push-to-jira, run while still a
+    /// Draft) is already a session away from a card for this task — TrackInBacklogAsync already
+    /// recognises and skips this exact state, so the gate must not refuse it too, and must not
+    /// record an attestation it never asked for.
+    /// </summary>
+    [Fact]
+    public void Publish_of_a_draft_with_a_pending_publication_needs_no_attestation()
+    {
+        TaskAggregate task = DraftTask();
+        task.Apply(TaskDecider.RequestWorkItemPublication(
+            task, WorkItemProvider.Jira, JiraProjectKey.Parse("PROJ"), Now, Owner));
+
+        TaskPublished published = TaskDecider.Publish(
+            task, TaskDependencyGraph.Empty, Now, Owner, BacklogPolicy.Jira);
+
+        published.NoExistingItemAttested.Should().BeFalse(
+            "a publication already pending is never asked, the same as an already-linked task");
+    }
+
+    [Fact]
+    public void Publish_never_records_an_attestation_the_gate_did_not_ask_for()
+    {
+        TaskAggregate task = DraftTask();
+
+        TaskPublished published = TaskDecider.Publish(
+            task, TaskDependencyGraph.Empty, Now, Owner, BacklogPolicy.None,
+            noExistingItemAttested: true);
+
+        published.NoExistingItemAttested.Should().BeFalse(
+            "policy none never asked for the attestation, so a defensively-passed flag is not recorded");
+    }
+
+    /// <summary>
+    /// The gate checks explicitly for Jira or GitHubIssues, the same convention
+    /// TrackInBacklogAsync's own dispatch already uses, rather than "anything but None" — a
+    /// persisted policy value the closed set no longer recognizes reads as "no tracking" there,
+    /// and the dedup gate must read it identically rather than refuse to publish over it.
+    /// </summary>
+    [Fact]
+    public void Publish_under_an_unrecognized_backlog_policy_never_asks_for_an_attestation()
+    {
+        TaskAggregate task = DraftTask();
+        BacklogPolicy unrecognized = "SomeFutureTracker";
+
+        TaskPublished published = TaskDecider.Publish(
+            task, TaskDependencyGraph.Empty, Now, Owner, unrecognized);
+
+        published.NoExistingItemAttested.Should().BeFalse(
+            "an unrecognized policy is not Jira or GitHubIssues, so the gate never fires");
     }
 
     [Fact]

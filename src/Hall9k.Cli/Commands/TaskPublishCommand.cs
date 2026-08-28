@@ -42,6 +42,16 @@ public sealed class TaskPublishCommand : Hall9kAsyncCommand<TaskPublishCommand.S
             "Publish and stop there, without being asked about assignment. Use it in scripts: an "
             + "interactive terminal is otherwise offered the single-owner assignment as a convenience")]
         public bool NoAssign { get; init; }
+
+        [CommandOption("--no-existing-item")]
+        [Description(
+            "The dedup attestation: you (or an orchestrator session) searched the project's tracker and "
+            + "found no open item covering this objective. Required only when the project's backlog policy "
+            + "is jira or github-issues and this draft carries no linked item yet — the platform never "
+            + "searches the tracker itself, so publish refuses to guess and parks on this flag or a link "
+            + "(h9k task link-jira / h9k task link-issue) instead. Recorded on the task stream with who "
+            + "attested it and when")]
+        public bool NoExistingItem { get; init; }
     }
 
     protected override async Task<int> ExecuteAsync(Settings settings, CancellationToken cancellationToken)
@@ -66,7 +76,8 @@ public sealed class TaskPublishCommand : Hall9kAsyncCommand<TaskPublishCommand.S
             session, task.BlockedBy, cancellationToken);
 
         BootstrapContext context = await NodeBootstrap.EnsureAsync(session, cancellationToken);
-        TaskPublished published = TaskDecider.Publish(task, graph, DateTimeOffset.UtcNow, context.OwnerId);
+        TaskPublished published = TaskDecider.Publish(
+            task, graph, DateTimeOffset.UtcNow, context.OwnerId, project.BacklogPolicy, settings.NoExistingItem);
         session.Events.Append(taskId, published);
         task.Apply(published);
 
