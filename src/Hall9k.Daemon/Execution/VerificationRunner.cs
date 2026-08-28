@@ -711,7 +711,7 @@ public sealed partial class VerificationRunner(
     [GeneratedRegex(@"^\s*dotnet\s+test(?!\w)")]
     private static partial Regex DotnetTestGatePattern();
 
-    private static bool IsDotnetTestGate(string command) => DotnetTestGatePattern().IsMatch(command);
+    internal static bool IsDotnetTestGate(string command) => DotnetTestGatePattern().IsMatch(command);
 
     /// <summary>
     /// Whether a scoped `dotnet test` gate's own output shows VSTest ran zero tests rather than
