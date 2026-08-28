@@ -1665,9 +1665,20 @@ public static class AgentPromptBuilder
         prompt.AppendLine("- `low` — polish: phrasing, comment or doc-string wording, a stale reference that");
         prompt.AppendLine("  misleads nobody, a style nit.");
         prompt.AppendLine();
-        prompt.AppendLine("An unmet acceptance criterion, or work that solves a different problem than the one");
-        prompt.AppendLine("stated, is never `low` and never left ungraded: grade it `medium` at minimum. It");
-        prompt.AppendLine("always meets the fix bar and must never be demoted into a ride-along.");
+        if (mechanicsOverride is { DiffIsForeignPullRequest: true })
+        {
+            prompt.AppendLine("This review never judges the diff against this task's own acceptance criteria —");
+            prompt.AppendLine("they describe the review deliverable, not the diff (stated above). Work that solves");
+            prompt.AppendLine("a different problem than the pull request's own title and description state is never");
+            prompt.AppendLine("`low` and never left ungraded: grade it `medium` at minimum.");
+        }
+        else
+        {
+            prompt.AppendLine("An unmet acceptance criterion, or work that solves a different problem than the one");
+            prompt.AppendLine("stated, is never `low` and never left ungraded: grade it `medium` at minimum. It");
+            prompt.AppendLine("always meets the fix bar and must never be demoted into a ride-along.");
+        }
+
         prompt.AppendLine();
         prompt.AppendLine("Use one of those three words exactly. A grade in any other word is one the platform");
         prompt.AppendLine("cannot read, and it counts as no grade at all rather than as the nearest word to it —");
