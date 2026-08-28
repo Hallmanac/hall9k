@@ -657,8 +657,9 @@ public sealed class RunSupervisorTests(PostgresFixture postgres) : IClassFixture
             Options.Create(new DaemonOptions()), NullLogger<ReviewEngine>.Instance);
         PrReviewEngine prReview = new(
             store, new ClaudeExecutor(NullLogger<ClaudeExecutor>.Instance, processManager), processManager,
-            new GitWorktreeManager(NullLogger<GitWorktreeManager>.Instance), Options.Create(new DaemonOptions()),
-            NullLogger<PrReviewEngine>.Instance);
+            new GitWorktreeManager(NullLogger<GitWorktreeManager>.Instance),
+            RecordingProcessRunner.Failing("this test never reviews a pull request").Runner,
+            Options.Create(new DaemonOptions()), NullLogger<PrReviewEngine>.Instance);
         return new RunSupervisor(store, node, processManager, verification, review, prReview,
             new PullRequestOpener(store, NullLogger<PullRequestOpener>.Instance),
             logger ?? NullLogger<RunSupervisor>.Instance);

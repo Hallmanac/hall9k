@@ -219,7 +219,8 @@ public sealed class ReviewResolveCommand : Hall9kAsyncCommand<ReviewResolveComma
     /// it up, but PrReviewEngine finalizes it directly (task Done, no merge ever observed)
     /// rather than re-entering any review loop.
     /// </summary>
-    private static async Task<int> ResolvePrReviewAsync(
+    /// <summary>Internal so the pr-review verdict rules are testable against a real store without going through <see cref="CliStore.Open"/>'s ambient connection (test: pr-review resolve coverage).</summary>
+    internal static async Task<int> ResolvePrReviewAsync(
         IDocumentSession session, Guid runId, Guid taskId, StreamState fence, Settings settings,
         CancellationToken cancellationToken)
     {
