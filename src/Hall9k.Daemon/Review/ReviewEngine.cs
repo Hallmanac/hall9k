@@ -1603,9 +1603,18 @@ public sealed class ReviewEngine(
             // Both tracks can report the same pre-existing line in one cycle, which the
             // fix prompt already calls agreement rather than two defects; the same list
             // therefore grows as this cycle routes, not only across cycles.
+            //
+            // A place can carry more than one prior routing (a swept Low from an earlier
+            // cycle alongside a drafted Medium from a later one), so the strongest match
+            // decides, never the earliest: picking the earliest would let a place's very
+            // first report — Low or Medium, whichever landed first — silently gate every
+            // later report at that place for good, including a Medium arriving after that
+            // Medium was already drafted, which would mint a fresh duplicate draft every
+            // cycle instead of recognizing it as already routed.
             (int Cycle, ReviewSeverity Severity)? alreadyRoutedIn = routedLocations
                 .Where(routed => ReviewFindingLocations.SamePlace(routed.Location, finding.Location))
                 .Select(routed => ((int Cycle, ReviewSeverity Severity)?)(routed.Cycle, routed.Severity))
+                .OrderByDescending(routed => routed!.Value.Severity.MeetsFixBar)
                 .FirstOrDefault();
             if (alreadyRoutedIn is { } earlier
                 && (earlier.Severity.MeetsFixBar || !finding.Severity.MeetsFixBar))
