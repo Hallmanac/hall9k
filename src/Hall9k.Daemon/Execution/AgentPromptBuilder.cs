@@ -834,6 +834,31 @@ public static class AgentPromptBuilder
             : BuildConformanceReview(task, project, branch, cycle, packet, priorRulings);
 
     /// <summary>
+    /// A pr-review task's one-shot lens (PrReviewEngine): delegates to <see cref="BuildReview"/>
+    /// whole — same packet assembly, same finding/verdict contract, same read-only mechanics — and
+    /// appends only what genuinely differs about reviewing someone else's already-open pull request
+    /// rather than this task's own implementation: there is nothing here to fix or commit, and the
+    /// conformance basis is the pull request's own title/description plus whatever issue or Jira
+    /// card it references, imported at task creation — often thinner than a task's own acceptance
+    /// criteria, so a thin basis is graded as context for the human rather than as a blocking defect.
+    /// Always cycle 1: a pr-review run never re-reviews, so there is no second cycle to number.
+    /// </summary>
+    public static string BuildPrReviewLens(
+        TaskDetails task, ProjectDetails project, string branch, ReviewLens lens, ReviewPacket? packet) =>
+        BuildReview(task, project, branch, cycle: 1, lens, packet, priorRulings: null)
+        + "\n\nThis review is of another contributor's already-open pull request, not this task's own "
+        + "implementation. There is nothing here to fix, commit, or push — you are reading, never "
+        + "writing, and that includes the pull request itself: no comments, no review, no reactions, "
+        + "regardless of what you find. Findings are collected into a report a human directs by hand."
+        + (lens == ReviewLens.Conformance
+            ? " The conformance basis is the pull request's own title and description, plus whatever "
+              + "issue or Jira card it references and was imported alongside it — often thinner than a "
+              + "task's own acceptance criteria. Where it is thin, frame conformance findings as context "
+              + "notes for the human reviewer rather than as blocking defects; reserve a blocking severity "
+              + "for what the basis actually supports."
+            : string.Empty);
+
+    /// <summary>
     /// The one reviewer a <see cref="ReviewMode.Verify"/> cycle dispatches (task: review cycles
     /// after the first, origin: 576M input tokens in one day re-reading 12k-line diffs with two
     /// Opus lenses to judge 40-line fixes). Discovery already happened at cycle 1 — every still-

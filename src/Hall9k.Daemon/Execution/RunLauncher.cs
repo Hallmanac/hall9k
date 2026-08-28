@@ -77,25 +77,50 @@ public sealed class RunLauncher(
                 return;
             }
 
+            // A pr-review task never has a branch or a PR of its own to resume — every
+            // dispatch (including a retry) fetches the reviewed pull request fresh instead,
+            // since nothing is ever committed into its read-only worktree to preserve
+            // between attempts. Checked before the follow-up/retry logic below, which is
+            // written entirely in terms of this task's own branch and PR.
+            bool isPrReview = task.Type == TaskType.PrReview;
+            PullRequestFacts? prReviewFacts = isPrReview
+                ? await FetchOpenPullRequestFactsAsync(task, project, cancellationToken)
+                : null;
+            if (isPrReview && prReviewFacts is null)
+            {
+                await RecordLaunchFailureAsync(
+                    taskId, runId, leaseGeneration,
+                    $"{task.ExternalReference} is no longer open — a pr-review task reviews an open pull "
+                    + "request, so there is nothing to dispatch against.", cancellationToken);
+                return;
+            }
+
             // A reopened task carries the branch of its existing PR: the follow-up run
             // resumes that branch instead of cutting a fresh one off the base (log #20).
             (string Branch, string PullRequestUrl)? followUp =
-                task.FollowUpBranch.IsNotBlank() && task.PullRequestUrl.IsNotBlank()
+                !isPrReview && task.FollowUpBranch.IsNotBlank() && task.PullRequestUrl.IsNotBlank()
                     ? (task.FollowUpBranch, task.PullRequestUrl)
                     : null;
 
-            (Worktree worktree, bool resumesPreviousWork) = followUp is { } resume
-                ? (await worktrees.CheckoutExistingAsync(
-                    new FollowUpWorktreeRequest(project.RepositoryPath, resume.Branch, taskId, runId),
-                    cancellationToken), true)
-                : await CheckoutFreshOrRetryAsync(task, project, taskId, runId, cancellationToken);
+            (Worktree worktree, bool resumesPreviousWork) = isPrReview
+                ? (await worktrees.CreatePrReviewCheckoutAsync(
+                    new PrReviewWorktreeRequest(project.RepositoryPath, prReviewFacts!.Number, taskId, runId),
+                    cancellationToken), false)
+                : followUp is { } resume
+                    ? (await worktrees.CheckoutExistingAsync(
+                        new FollowUpWorktreeRequest(project.RepositoryPath, resume.Branch, taskId, runId),
+                        cancellationToken), true)
+                    : await CheckoutFreshOrRetryAsync(task, project, taskId, runId, cancellationToken);
 
             Guid sessionId = DomainId.New();
             ExecutorMode mode = ExecutorMode.Subscription;
             // Resolved once, here, and carried to both the spawn and the record: the model
             // the run is dispatched on and the model it actually runs on are the same fact
-            // (Decisions Log #33), so they can never disagree.
-            AgentModel model = options.Value.ResolveModel(AgentRole.Build, task.Model, project.Model);
+            // (Decisions Log #33), so they can never disagree. A pr-review task's primary
+            // session IS a review lens (the adversarial one — PrReviewEngine dispatches the
+            // conformance lens second), so it resolves the review role, never build.
+            AgentModel model = options.Value.ResolveModel(
+                isPrReview ? AgentRole.Review : AgentRole.Build, task.Model, project.Model);
 
             // Resolved once, here, exactly like the worktree above: this run's directory is
             // under the task's own directory when the project has a home (backlog 49), and
@@ -140,7 +165,17 @@ public sealed class RunLauncher(
             // The commit style resolves project-over-platform (Decisions Log #26).
             CommitStyle commitStyle = CommitStyle.Resolve(project.CommitStyle, options.Value.DefaultCommitStyle);
             string prompt;
-            if (followUp is { } review)
+            if (isPrReview)
+            {
+                // The adversarial lens, dispatched as this run's ordinary primary session —
+                // PrReviewEngine takes over from here once it completes, dispatching the
+                // conformance lens second and never a build/fix session of any kind.
+                string baseBranch = prReviewFacts!.BaseRefName.IsNotBlank() ? prReviewFacts.BaseRefName : project.BaseBranch;
+                ReviewPacket? packet = await ReviewPacketAssembler.AssembleAsync(
+                    worktree.Path, baseBranch, sinceSha: null, cancellationToken);
+                prompt = AgentPromptBuilder.BuildPrReviewLens(task, project, worktree.Branch, ReviewLens.Adversarial, packet);
+            }
+            else if (followUp is { } review)
             {
                 // A follow-up resumes work the original session already did with its blockers'
                 // context in hand; re-routing it now would pay for a second synthesis to tell
@@ -334,6 +369,27 @@ public sealed class RunLauncher(
         {
             logger.LogWarning(exception, "Branch cleanup failed for {Branch} (safe to delete by hand)", branch);
         }
+    }
+
+    /// <summary>
+    /// A live read of the pull request a pr-review task targets, taken fresh at every
+    /// dispatch (never the task's adoption-time snapshot — a PR's base can move, and only a
+    /// live read tells whether it is still open to review at all). A read failure (gh
+    /// unavailable, the repository unreachable) is let through to <see cref="LaunchAsync"/>'s
+    /// own catch, which fails the run with gh's own words rather than a guessed "not open".
+    /// Null return means the read succeeded and the pull request is genuinely not open.
+    /// </summary>
+    private static async Task<PullRequestFacts?> FetchOpenPullRequestFactsAsync(
+        TaskDetails task, ProjectDetails project, CancellationToken cancellationToken)
+    {
+        if (task.ExternalReference.IsBlank())
+        {
+            return null;
+        }
+
+        PullRequestFacts facts = await new GitHubPullRequestProvider().FetchFactsAsync(
+            ExternalReference.Parse(task.ExternalReference).Reference, project.RepositoryPath, cancellationToken);
+        return facts.State.Equals("OPEN", StringComparison.OrdinalIgnoreCase) ? facts : null;
     }
 
     /// <summary>

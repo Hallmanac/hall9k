@@ -1273,6 +1273,9 @@ public sealed class CardPublicationEngineTests(PostgresFixture postgres) : IClas
         public Task<Worktree> CheckoutExistingAsync(FollowUpWorktreeRequest request, CancellationToken cancellationToken) =>
             throw new InvalidOperationException("A publication session works in an existing checkout.");
 
+        public Task<Worktree> CreatePrReviewCheckoutAsync(PrReviewWorktreeRequest request, CancellationToken cancellationToken) =>
+            throw new InvalidOperationException("A publication session works in an existing checkout.");
+
         public Task RemoveAsync(string repositoryPath, string worktreePath, CancellationToken cancellationToken) =>
             Task.CompletedTask;
 

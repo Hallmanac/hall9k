@@ -14,6 +14,17 @@ public sealed record FollowUpWorktreeRequest(
     Guid TaskId,
     Guid RunId);
 
+/// <summary>
+/// A pr-review task's read-only target: someone else's pull request, fetched fresh at every
+/// dispatch (retry included) rather than resumed — nothing is ever committed into it, so
+/// there is nothing to preserve between attempts the way a follow-up's own branch is.
+/// </summary>
+public sealed record PrReviewWorktreeRequest(
+    string RepositoryPath,
+    int PullRequestNumber,
+    Guid TaskId,
+    Guid RunId);
+
 public sealed record Worktree(string Path, string Branch, string StartPoint);
 
 /// <summary>
@@ -43,6 +54,14 @@ public interface IWorktreeManager
     /// has it (the other-node and purged-artifact cases).
     /// </summary>
     Task<Worktree> CheckoutExistingAsync(FollowUpWorktreeRequest request, CancellationToken cancellationToken);
+
+    /// <summary>
+    /// A read-only, detached checkout of a pull request's head commit (<c>refs/pull/&lt;n&gt;/head</c>,
+    /// which GitHub exposes on the base repository regardless of whether the pull request is
+    /// from a fork — no second remote needed either way). No local branch is created, so there
+    /// is nothing here a session could accidentally push.
+    /// </summary>
+    Task<Worktree> CreatePrReviewCheckoutAsync(PrReviewWorktreeRequest request, CancellationToken cancellationToken);
 
     /// <summary>Removes a worktree (force — done worktrees may hold build debris). The branch survives.</summary>
     Task RemoveAsync(string repositoryPath, string worktreePath, CancellationToken cancellationToken);

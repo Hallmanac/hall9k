@@ -8,6 +8,7 @@ using Hall9k.Daemon.Dispatch;
 using Hall9k.Daemon.Execution;
 using Hall9k.Daemon.ProcessManagement;
 using Hall9k.Daemon.Review;
+using Hall9k.Daemon.Worktrees;
 using Hall9k.Domain.Features.Run;
 using Hall9k.Domain.Features.Run.Events;
 using Hall9k.Domain.Features.Run.Projections;
@@ -654,7 +655,11 @@ public sealed class RunSupervisorTests(PostgresFixture postgres) : IClassFixture
         ReviewEngine review = new(
             store, new ClaudeExecutor(NullLogger<ClaudeExecutor>.Instance, processManager), processManager, verification,
             Options.Create(new DaemonOptions()), NullLogger<ReviewEngine>.Instance);
-        return new RunSupervisor(store, node, processManager, verification, review,
+        PrReviewEngine prReview = new(
+            store, new ClaudeExecutor(NullLogger<ClaudeExecutor>.Instance, processManager), processManager,
+            new GitWorktreeManager(NullLogger<GitWorktreeManager>.Instance), Options.Create(new DaemonOptions()),
+            NullLogger<PrReviewEngine>.Instance);
+        return new RunSupervisor(store, node, processManager, verification, review, prReview,
             new PullRequestOpener(store, NullLogger<PullRequestOpener>.Instance),
             logger ?? NullLogger<RunSupervisor>.Instance);
     }
