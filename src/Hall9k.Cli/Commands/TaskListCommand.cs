@@ -51,10 +51,12 @@ public sealed class TaskListCommand : Hall9kAsyncCommand<TaskListCommand.Setting
 
         [CommandOption("--include-archived")]
         [Description(
-            "Also show Archived rows in an otherwise-unfiltered view. Archived tasks are hidden from the "
-            + "default view so closeouts don't gradually crowd out live work; asking for them directly "
-            + "(--state archived, or the attention group --state closed) already shows them without this "
-            + "flag, and this flag has no extra effect once --state is given.")]
+            "Also show Archived rows in an otherwise-unfiltered view. Archived means a human walked away "
+            + "(LifecycleState.Archived) — a merged, closed-out task stays Done and is never hidden — so "
+            + "Archived rows are hidden from the default view so abandoned work doesn't accumulate "
+            + "alongside it; asking for them directly (--state archived, or the attention group --state "
+            + "closed) already shows them without this flag, and this flag has no extra effect once "
+            + "--state is given.")]
         public bool IncludeArchived { get; init; }
     }
 
@@ -105,7 +107,7 @@ public sealed class TaskListCommand : Hall9kAsyncCommand<TaskListCommand.Setting
                     : $"[dim]Every task matching {Filters(settings, project)} is archived. See them with:[/] "
                       + $"h9k task list --include-archived{Repeat(settings, project)}"
                 : $"[dim]No tasks match {Filters(settings, project)}. Drop a filter, or browse everything:[/] "
-                  + "h9k task list --all";
+                  + "h9k task list --all --include-archived";
             AnsiConsole.MarkupLine(message);
             return ExitCodes.Ok;
         }
@@ -119,13 +121,14 @@ public sealed class TaskListCommand : Hall9kAsyncCommand<TaskListCommand.Setting
     }
 
     /// <summary>
-    /// Archived rows are hidden from an otherwise-unfiltered view by default (a closeout
-    /// gradually crowding out live work otherwise): asking for them by word — --state archived,
-    /// or the attention group --state closed — already returns them via <c>states</c> upstream,
-    /// and this hiding never applies on top of that ask, nor does <c>--include-archived</c> stack
-    /// with it. Extracted as a static predicate over rows so the visibility decision — the
-    /// branch's headline behaviour — can be asserted without a database, the same way
-    /// <see cref="Rows"/> and <see cref="Footer"/> already are.
+    /// Archived rows — <see cref="LifecycleState.Archived"/>, a human walked away, not a merged
+    /// task, which stays Done and is never hidden — are hidden from an otherwise-unfiltered view
+    /// by default so abandoned work doesn't accumulate alongside live and done tasks: asking for
+    /// them by word — --state archived, or the attention group --state closed — already returns
+    /// them via <c>states</c> upstream, and this hiding never applies on top of that ask, nor does
+    /// <c>--include-archived</c> stack with it. Extracted as a static predicate over rows so the
+    /// visibility decision — the branch's headline behaviour — can be asserted without a database,
+    /// the same way <see cref="Rows"/> and <see cref="Footer"/> already are.
     /// </summary>
     internal static (IReadOnlyList<TaskStatusRow> Visible, int HiddenArchived) ApplyArchivedDefault(
         IReadOnlyList<TaskStatusRow> candidates, IReadOnlyList<string> states, bool includeArchived)
