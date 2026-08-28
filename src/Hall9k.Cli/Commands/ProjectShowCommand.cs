@@ -138,7 +138,7 @@ public sealed class ProjectShowCommand : Hall9kAsyncCommand<ProjectShowCommand.S
         }
 
         return $"[dim]none — publishing tracks nothing externally; set one: h9k project set "
-            + $"{project.Name.EscapeMarkup()} --backlog github-issues|jira[/]";
+            + $"{project.Name.EscapeMarkup()} --backlog github-issues|jira[/]{routing}";
     }
 
     private static void WriteTasks(ProjectDetails project, IReadOnlyList<TaskStatusRow> rows)
