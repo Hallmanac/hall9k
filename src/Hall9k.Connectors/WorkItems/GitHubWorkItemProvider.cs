@@ -38,6 +38,49 @@ public sealed class GitHubWorkItemProvider(ProcessRunner? runner = null, TimePro
     /// </summary>
     public static bool SupportsRepository(Uri repositoryUrl) => IsGitHubDotCom(repositoryUrl.Host);
 
+    /// <summary>
+    /// The host <c>gh</c> would actually create against, for a project that carries no recorded
+    /// <c>RepositoryUrl</c> at all (registered with <c>--repo</c> and no <c>--repo-url</c>) — the
+    /// case <see cref="SupportsRepository"/> has nothing to check, because the never-guess rule
+    /// (AGENTS.md) means the platform never assumed one. One cheap <c>gh repo view</c> round trip
+    /// observes the same host <see cref="CreateReadBackAsync"/> would otherwise only discover
+    /// after an issue already exists there, so a caller can refuse before creating rather than
+    /// only explain after. Best-effort: <c>gh</c> failing to resolve a remote at all (not
+    /// installed, no network, no origin configured) leaves nothing observed, so the caller falls
+    /// back to letting <see cref="CreateAsync"/>'s own read-back guard catch a foreign host after
+    /// the fact, exactly as it always has.
+    /// </summary>
+    public async Task<Uri?> TryObserveRepositoryHostAsync(string workingDirectory, CancellationToken cancellationToken)
+    {
+        ProcessResult result;
+        try
+        {
+            result = await runner("gh", ["repo", "view", "--json", "url"], workingDirectory, cancellationToken);
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            return null;
+        }
+
+        if (result.ExitCode != 0)
+        {
+            return null;
+        }
+
+        try
+        {
+            using JsonDocument document = JsonDocument.Parse(result.StandardOutput);
+            return ReadString(document.RootElement, "url") is { } url
+                && Uri.TryCreate(url, UriKind.Absolute, out Uri? parsed)
+                    ? parsed
+                    : null;
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
+    }
+
     public async Task<ImportedWorkItem> ImportAsync(
         WorkItemImportRequest request, CancellationToken cancellationToken)
     {

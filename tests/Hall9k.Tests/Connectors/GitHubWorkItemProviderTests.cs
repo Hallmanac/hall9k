@@ -491,6 +491,55 @@ public sealed class GitHubWorkItemProviderTests
     }
 
     [Fact]
+    public async Task Observing_the_repository_host_reads_it_from_gh_repo_view()
+    {
+        RecordingProcessRunner gh = RecordingProcessRunner.Succeeding(
+            """{"url": "https://github.example.com/acme/api"}""");
+
+        Uri? host = await new GitHubWorkItemProvider(gh.Runner).TryObserveRepositoryHostAsync(
+            "/repos/api", CancellationToken.None);
+
+        host.Should().Be(new Uri("https://github.example.com/acme/api"));
+        gh.Calls.Should().ContainSingle().Which.Arguments.Should().Equal("repo", "view", "--json", "url");
+    }
+
+    [Theory]
+    [InlineData(1, """{"url": "https://github.com/Hallmanac/hall9k"}""")]
+    [InlineData(0, "not json")]
+    [InlineData(0, """{"nameWithOwner": "Hallmanac/hall9k"}""")]
+    public async Task Observing_the_repository_host_yields_nothing_it_cannot_read(int exitCode, string standardOutput)
+    {
+        RecordingProcessRunner gh = new(() => new ProcessResult(exitCode, standardOutput, string.Empty));
+
+        Uri? host = await new GitHubWorkItemProvider(gh.Runner).TryObserveRepositoryHostAsync(
+            "/repos/api", CancellationToken.None);
+
+        host.Should().BeNull();
+    }
+
+    /// <summary>
+    /// gh not being on PATH, or gh going quiet, is not a fact worth failing the whole publish
+    /// over — the caller (TaskPublishCommand) falls back to letting CreateAsync's own read-back
+    /// guard catch a foreign host after the fact, exactly as it did before this observation
+    /// existed at all.
+    /// </summary>
+    [Theory]
+    [MemberData(nameof(UnstartableOrUnresponsive))]
+    public async Task Observing_the_repository_host_yields_nothing_when_gh_cannot_answer(RecordingProcessRunner gh)
+    {
+        Uri? host = await new GitHubWorkItemProvider(gh.Runner).TryObserveRepositoryHostAsync(
+            "/repos/api", CancellationToken.None);
+
+        host.Should().BeNull();
+    }
+
+    public static TheoryData<RecordingProcessRunner> UnstartableOrUnresponsive() => new()
+    {
+        RecordingProcessRunner.Unstartable(new Win32Exception("The system cannot find the file specified")),
+        RecordingProcessRunner.NeverAnswering(),
+    };
+
+    [Fact]
     public void A_github_reference_places_itself_on_the_web()
     {
         GitHubWorkItemProvider provider = new();
