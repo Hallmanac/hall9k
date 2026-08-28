@@ -507,6 +507,8 @@ public sealed class GitHubWorkItemProviderTests
     [InlineData(1, """{"url": "https://github.com/Hallmanac/hall9k"}""")]
     [InlineData(0, "not json")]
     [InlineData(0, """{"nameWithOwner": "Hallmanac/hall9k"}""")]
+    [InlineData(0, "[]")]
+    [InlineData(0, "null")]
     public async Task Observing_the_repository_host_yields_nothing_it_cannot_read(int exitCode, string standardOutput)
     {
         RecordingProcessRunner gh = new(() => new ProcessResult(exitCode, standardOutput, string.Empty));
