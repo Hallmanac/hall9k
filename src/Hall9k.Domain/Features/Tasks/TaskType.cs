@@ -13,6 +13,12 @@ public sealed record TaskType
     public static readonly TaskType Refactor = new("Refactor");
     public static readonly TaskType Chore = new("Chore");
     public static readonly TaskType Research = new("Research");
+    /// <summary>
+    /// Reviews another contributor's pull request on the owner's behalf: read-only, no fix
+    /// loop, no merge to watch for — the deliverable is a findings report the owner directs
+    /// (dismiss, comment themselves, or have the session post on their behalf), never a diff.
+    /// </summary>
+    public static readonly TaskType PrReview = new("PrReview");
     /// <summary>Not recognized or not yet set. Serializes as an empty string.</summary>
     public static readonly TaskType Unknown = new("");
 
@@ -37,8 +43,9 @@ public sealed record TaskType
         "refactor" => Refactor,
         "chore" => Chore,
         "research" => Research,
+        "pr-review" or "pr_review" or "prreview" => PrReview,
         _ => throw new DomainValidationException(
-            $"Unknown task type '{value}'. Use feature, bugfix, refactor, chore, or research."),
+            $"Unknown task type '{value}'. Use feature, bugfix, refactor, chore, research, or pr-review."),
     };
 
     public bool Equals(TaskType? other) => other is not null && Value == other.Value;
