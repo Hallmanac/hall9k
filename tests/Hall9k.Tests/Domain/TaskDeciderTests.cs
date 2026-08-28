@@ -304,6 +304,28 @@ public sealed class TaskDeciderTests
             "a publication already pending is never asked, the same as an already-linked task");
     }
 
+    /// <summary>
+    /// A publication already pending still runs to completion regardless of what publish does
+    /// here, so clamping --untracked the way an already-linked task's flag clamps would let that
+    /// in-flight session defeat the operator's choice without a word. Refused instead, with the
+    /// same "teach rather than swallow" reasoning as the policy-none refusal above.
+    /// </summary>
+    [Fact]
+    public void Publish_refuses_untracked_on_a_draft_with_a_pending_publication()
+    {
+        TaskAggregate task = DraftTask();
+        task.Apply(TaskDecider.RequestWorkItemPublication(
+            task, WorkItemProvider.Jira, JiraProjectKey.Parse("PROJ"), Now, Owner));
+
+        Action act = () => TaskDecider.Publish(
+            task, TaskDependencyGraph.Empty, Now, Owner, BacklogPolicy.Jira, untracked: true);
+
+        act.Should().Throw<DomainBusinessRuleException>()
+            .WithMessage("*jira*")
+            .WithMessage("*publication request outstanding*")
+            .WithMessage($"*h9k task publish {task.Id}*");
+    }
+
     [Fact]
     public void Publish_never_records_an_attestation_the_gate_did_not_ask_for()
     {
