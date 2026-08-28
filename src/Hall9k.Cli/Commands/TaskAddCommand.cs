@@ -373,25 +373,31 @@ public sealed class TaskAddCommand : Hall9kAsyncCommand<TaskAddCommand.Settings>
     /// check otherwise guards against. A live (non-Done) pr-review task still blocks a second
     /// adoption, exactly like any other in-flight task.
     /// </para>
+    /// <para>
+    /// The Done-pr-review exclusion is applied inside the query rather than to whichever holder
+    /// happens to sort first: with the exception in place, more than one non-abandoned task can
+    /// now legitimately carry the same reference (a Done pr-review alongside a later live one),
+    /// so "oldest by AddedAt" no longer means "the holder that matters." Filtering the excluded
+    /// holders out server-side and taking the oldest survivor keeps the guard's promise — any
+    /// live holder blocks — regardless of how many completed pr-reviews sort ahead of it.
+    /// </para>
     /// </summary>
     internal static async Task RefuseSecondAdoptionAsync(
         IQuerySession session, ExternalReference reference, CancellationToken cancellationToken)
     {
         string canonical = reference.ToString();
-        // The state is matched as SQL rather than compared in LINQ, which is how every state filter
-        // in this repo is written (DispatchEngine, TaskDependencyResolver): TaskState is a value
-        // object, and Marten refuses to translate a comparison against one.
+        // The state and type are matched as SQL rather than compared in LINQ, which is how every
+        // state filter in this repo is written (DispatchEngine, TaskDependencyResolver): TaskState
+        // and TaskType are value objects, and Marten refuses to translate a comparison against one.
         TaskListItem? existing = await session.Query<TaskListItem>()
             .Where(task => task.ExternalReference == canonical)
             .Where(task => task.MatchesSql("d.data ->> 'state' <> ?", TaskState.Abandoned.Value))
+            .Where(task => task.MatchesSql(
+                "NOT (d.data ->> 'type' = ? AND d.data ->> 'state' = ?)",
+                TaskType.PrReview.Value, TaskState.Done.Value))
             .OrderBy(task => task.AddedAt)
             .FirstOrDefaultAsync(cancellationToken);
         if (existing is null)
-        {
-            return;
-        }
-
-        if (existing.Type == TaskType.PrReview && existing.State == TaskState.Done)
         {
             return;
         }

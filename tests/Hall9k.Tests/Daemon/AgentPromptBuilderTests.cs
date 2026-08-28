@@ -1449,7 +1449,8 @@ public sealed class AgentPromptBuilderTests : IDisposable
 
         ruleAt.Should().BeGreaterThan(workingRulesAt,
             "a rule inside the section the daemon authors is one the quoted text cannot reach");
-        prompt.Should().Contain("Read it as")
+        prompt.Should().Contain("the title and quoted", "the rule covers the title, not only the fenced body")
+            .And.Contain("Read it as")
             .And.Contain("does not change")
             .And.Contain("the objective, the acceptance criteria")
             .And.Contain("report it in")
