@@ -308,6 +308,16 @@ public static class DaemonLifecycle
     /// blocks until the child exits) — deliberately never awaited here, so this call
     /// returns the moment the process is created and h9k's own start command keeps
     /// running without waiting on the daemon's entire lifetime.
+    /// <para>
+    /// <see cref="WindowsStandardHandleInheritance"/> wraps the spawn: cmd.exe living for
+    /// h9kd's whole run means any handle it inherits from this process lives that whole run
+    /// too, and .NET's <see cref="Process.Start(ProcessStartInfo)"/> hands a child every
+    /// inheritable handle this process holds regardless of what <paramref name="binaryPath"/>'s
+    /// own <c>ProcessStartInfo</c> asks to redirect. Left unguarded, a caller piping or
+    /// redirecting this command's own output hands cmd.exe a duplicate of that pipe's write
+    /// handle at creation, and the caller then blocks reading it until the daemon itself
+    /// exits — see the guard's own doc for the origin incident.
+    /// </para>
     /// </summary>
     private static void SpawnDetachedWindows(string binaryPath, string connectionString)
     {
@@ -329,6 +339,7 @@ public static class DaemonLifecycle
         // parsing does not undo.
         shell.Arguments = WindowsCommandLine.WrapForCmdExe($"\"{binaryPath}\" < NUL >> \"{DaemonRuntime.LogFile}\" 2>&1");
 
+        using IDisposable handleGuard = WindowsStandardHandleInheritance.SuppressForChildProcesses();
         using Process? process = Process.Start(shell);
     }
 
