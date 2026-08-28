@@ -139,6 +139,33 @@ public sealed class TaskLifecycleTests
         task.Type.Should().Be(TaskType.PrReview);
     }
 
+    /// <summary>
+    /// The reverse of <see cref="Revising_an_ordinary_task_to_pr_review_is_refused_since_it_carries_no_pull_request"/>:
+    /// a task adopted from a pull request holds its pr-review type just as firmly on the way out.
+    /// Without this, a task adopted with h9k task add --from-pr could be revised to an ordinary
+    /// build type and dispatched as ordinary work against a foreign pull request's title and
+    /// body, while still carrying the pull-request ExternalReference the platform recorded it
+    /// under.
+    /// </summary>
+    [Fact]
+    public void Revising_a_pull_request_adopted_task_away_from_pr_review_is_refused()
+    {
+        TaskAggregate task = new();
+        task.Apply(TaskDecider.Add(
+            DomainId.New(), DomainId.New(), "Review the widgets PR", acceptanceCriteria: [], TaskType.PrReview,
+            agentContext: null, constraints: null,
+            externalReference: new ExternalReference(WorkItemProvider.GitHubPullRequest, "acme/widgets#7"),
+            addedAt: Now, addedByOwnerId: Owner));
+
+        Action act = () => TaskDecider.Revise(
+            task, Optional<string>.None, Optional<IReadOnlyList<string>>.None, Optional<string>.None,
+            Optional<IReadOnlyList<Guid>>.None, Optional<TaskType>.Of(TaskType.Feature), Optional<AgentModel>.None,
+            Now, Owner);
+
+        act.Should().Throw<DomainValidationException>()
+            .WithMessage("*always a pr-review task*", "the task still carries the foreign pull request's reference");
+    }
+
     [Fact]
     public void The_edit_after_the_fact_path_is_unassign_then_draft_then_revise_then_publish_then_assign()
     {
