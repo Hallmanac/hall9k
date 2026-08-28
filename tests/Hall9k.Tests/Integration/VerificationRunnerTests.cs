@@ -620,6 +620,48 @@ public sealed class VerificationRunnerTests(PostgresFixture postgres) : IClassFi
     }
 
     /// <summary>
+    /// A project can configure more than one `dotnet test`-shaped gate (task: a fix cycle's
+    /// verification gate, independent pre-PR review cycle 4): when one of them falls back to a
+    /// full run because its own filter intersects to nothing while a sibling gate runs genuinely
+    /// scoped, the pass as a whole must not be recorded as full-scope over this HEAD — a sibling
+    /// gate that never ran unscoped is exactly the gap the mandatory pre-Settling full gate exists
+    /// to close, so <see cref="VerificationPassed.RanFullScope"/> must stay false and the note must
+    /// say the pass was mixed rather than either "scoped" or "full".
+    /// </summary>
+    [Fact]
+    public async Task A_mixed_scope_pass_across_multiple_test_gates_is_never_recorded_as_fully_scoped()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        using DocumentStore store = NewStore();
+        string sinceSha = await InitScopableRepoAsync(cts.Token);
+        await CommitAsync(
+            "src/Hall9k.Domain/Widget.cs", "public sealed class Widget\n{\n    public int Count;\n}\n", "fix widget", cts.Token);
+        (Guid taskId, Guid runId) = await SeedAsync(store,
+            [
+                new VerifyCommand("unit", "dotnet test --help; echo 'No test matches the given testcase filter'"),
+                new VerifyCommand(
+                    "integration",
+                    "dotnet test --help; echo 'Passed!  - Failed: 0, Passed: 3, Skipped: 0, Total: 3, Duration: 1 s'"),
+            ],
+            cts.Token);
+
+        bool passed = await NewRunner(store).VerifyAsync(runId, taskId, sinceSha, "cycle 2 fix (Discovery)", cts.Token);
+
+        passed.Should().BeTrue();
+        File.ReadAllText(Path.Combine(RunPaths.GlobalDirectory(runId), "verify-unit.log"))
+            .Should().Contain("hall9k test gate: full").And.Contain("the scoped filter matched no tests");
+        File.ReadAllText(Path.Combine(RunPaths.GlobalDirectory(runId), "verify-integration.log"))
+            .Should().Contain("hall9k test gate: scoped");
+
+        await using IQuerySession query = store.QuerySession();
+        var events = await query.Events.FetchStreamAsync(runId, token: cts.Token);
+        VerificationPassed recorded = events.Select(e => e.Data).OfType<VerificationPassed>().Single();
+        recorded.RanFullScope.Should().BeFalse(
+            "the integration gate ran genuinely scoped and was never covered at full scope over this HEAD");
+        recorded.Note.Should().Contain("1 of 2 test gate(s)").And.Contain("the rest ran scoped");
+    }
+
+    /// <summary>
     /// Seeds the worktree as a real repo shaped like this one — `main`, a task branch ahead of it
     /// (the same shape <see cref="InitGitWorktreeAsync"/> gives the uncommitted-files tests,
     /// needed here too: <see cref="VerificationRunner"/>'s own no-commit check would otherwise

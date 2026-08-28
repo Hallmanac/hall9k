@@ -185,19 +185,35 @@ public sealed partial class VerificationRunner(
                 runId, scope.IsScoped ? "scoped" : "full", scope.Reason);
         }
 
-        // Set when any gate's scoped filter matched no tests and RunGateAsync fell back to a full
-        // run of that one gate (never guess an unobserved fact into the pass note): the top-level
-        // `scope` above is decided once, before any gate runs, so the note below must say so
-        // itself rather than keep repeating "scoped" once a gate actually ran full underneath it.
-        bool testScopeFellBackToFull = false;
+        // Counted per gate rather than OR'd into one flag (independent pre-PR review, cycle 4):
+        // a project can configure more than one `dotnet test`-shaped gate, and a single shared
+        // flag recorded the whole pass as full-scope the moment ANY one of them fell back, even
+        // while a sibling test gate ran genuinely scoped and was never covered at full scope over
+        // this HEAD — exactly the gap the mandatory pre-Settling full gate exists to close.
+        // dotnetTestGateCount and dotnetTestGateFellBackCount together answer "did every
+        // configured test gate actually run at full scope", never guessed from a single gate's
+        // own outcome.
+        int dotnetTestGateCount = 0;
+        int dotnetTestGateFellBackCount = 0;
 
         foreach (VerifyCommand gate in gates)
         {
+            bool gateIsDotnetTest = IsDotnetTestGate(gate.Command);
+            if (gateIsDotnetTest)
+            {
+                dotnetTestGateCount++;
+            }
+
             (bool passed, string summary, bool isInfrastructureFailure, string? excerpt, bool fellBackToFull) =
                 await RunGateAsync(runDirectory, run.WorktreePath, gate, scope, cancellationToken);
-            testScopeFellBackToFull |= fellBackToFull;
+            bool gateFellBackToFull = fellBackToFull;
             if (passed)
             {
+                if (gateIsDotnetTest && gateFellBackToFull)
+                {
+                    dotnetTestGateFellBackCount++;
+                }
+
                 logger.LogInformation("Run {RunId} gate '{Gate}' passed", runId, gate.Name);
                 continue;
             }
@@ -241,9 +257,14 @@ public sealed partial class VerificationRunner(
 
             (bool retryPassed, string retrySummary, bool retryIsInfrastructureFailure, _, bool retryFellBackToFull) =
                 await RunGateAsync(runDirectory, run.WorktreePath, gate, scope, cancellationToken);
-            testScopeFellBackToFull |= retryFellBackToFull;
+            gateFellBackToFull |= retryFellBackToFull;
             if (retryPassed)
             {
+                if (gateIsDotnetTest && gateFellBackToFull)
+                {
+                    dotnetTestGateFellBackCount++;
+                }
+
                 logger.LogInformation("Run {RunId} gate '{Gate}' passed on retry", runId, gate.Name);
                 continue;
             }
@@ -263,27 +284,40 @@ public sealed partial class VerificationRunner(
             return false;
         }
 
+        // Whether the WHOLE pass covered every configured `dotnet test`-shaped gate at full
+        // scope, never guessed from any single gate's own outcome: a project can configure more
+        // than one such gate, and only when every one of them ran unscoped (either because the
+        // top-level scope decision itself resolved to full, or because each one individually fell
+        // back to full after its own filter intersected to nothing) does the pass as a whole earn
+        // "full scope" — a sibling gate that ran genuinely scoped means the pass did not.
+        bool anyTestGateFellBack = dotnetTestGateFellBackCount > 0;
+        bool allTestGatesFellBack = dotnetTestGateCount > 0 && dotnetTestGateFellBackCount == dotnetTestGateCount;
+        bool ranFullScope = scope is null || !scope.IsScoped || allTestGatesFellBack;
+
         string? note = scope is null
             ? null
-            : scope.IsScoped && !testScopeFellBackToFull
-                ? $"Test gate scoped: {scope.Reason}"
-                : testScopeFellBackToFull
-                    ? $"Test gate ran full: the scoped filter matched no tests ({scope.Reason})"
-                    : $"Test gate ran full: {scope.Reason}";
-        // Whether THIS pass covered every configured gate at full scope, never guessed from the
-        // caller's own request (task: a fix cycle's verification gate) — a scope is null when no
-        // gate is `dotnet test`-shaped, in which case nothing was ever narrowed, so the whole pass
-        // trivially counts as full; otherwise it is full only when the top-level scope decision
-        // itself resolved to full (an explicit unscoped request, or TestScopeResolver's own
-        // fallback — the doc-touching case) or a scoped gate's filter fell back to a full run
-        // after intersecting to nothing (RunGateAsync's own ScopedRunExecutedNoTests check).
-        bool ranFullScope = scope is null || !scope.IsScoped || testScopeFellBackToFull;
+            : !scope.IsScoped
+                ? $"Test gate ran full: {scope.Reason}"
+                : !anyTestGateFellBack
+                    ? $"Test gate scoped: {scope.Reason}"
+                    : allTestGatesFellBack
+                        ? $"Test gate ran full: the scoped filter matched no tests ({scope.Reason})"
+                        : $"Test gate ran full for {dotnetTestGateFellBackCount} of {dotnetTestGateCount} test gate(s): " +
+                          $"the scoped filter matched no tests for those, while the rest ran scoped ({scope.Reason})";
+        string testGateModeDescription = scope is null
+            ? ""
+            : !scope.IsScoped || allTestGatesFellBack
+                ? "full"
+                : anyTestGateFellBack
+                    ? "mixed"
+                    : "scoped";
+
         string? passHeadSha = await GetHeadShaAsync(run.WorktreePath, cancellationToken);
         await RecordPassAsync(runId, note, ranFullScope, passHeadSha, cancellationToken);
         logger.LogInformation(
             "Run {RunId} verification passed ({Count} gate(s)){TestGateSummary}",
             runId, gates.Count,
-            scope is null ? "" : $"; test gate ran {(scope.IsScoped && !testScopeFellBackToFull ? "scoped" : "full")}");
+            scope is null ? "" : $"; test gate ran {testGateModeDescription}");
         return true;
     }
 
