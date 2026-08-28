@@ -470,6 +470,26 @@ public sealed class GitHubWorkItemProviderTests
         message.Should().Contain("is a pull request, not an issue");
     }
 
+    [Theory]
+    [InlineData("https://github.com/Hallmanac/hall9k")]
+    [InlineData("https://www.github.com/Hallmanac/hall9k")]
+    public void A_github_dot_com_repository_supports_issue_creation(string url)
+    {
+        GitHubWorkItemProvider.SupportsRepository(new Uri(url)).Should().BeTrue();
+    }
+
+    [Theory]
+    [InlineData("https://github.example.com/acme/api")]
+    [InlineData("https://github.com.example.net/acme/api")]
+    public void An_enterprise_repository_does_not_support_issue_creation(string url)
+    {
+        // gh issue create would happily file an issue there, but ExternalReference records
+        // owner/repo with no host, so it could never be read back or linked afterwards —
+        // TaskPublishCommand checks this before CreateAsync ever runs, to avoid filing an
+        // orphan issue on every publish.
+        GitHubWorkItemProvider.SupportsRepository(new Uri(url)).Should().BeFalse();
+    }
+
     [Fact]
     public void A_github_reference_places_itself_on_the_web()
     {

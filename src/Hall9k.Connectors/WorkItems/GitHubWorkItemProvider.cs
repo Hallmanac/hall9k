@@ -25,6 +25,19 @@ public sealed class GitHubWorkItemProvider(ProcessRunner? runner = null, TimePro
 
     public WorkItemProvider Provider => WorkItemProvider.GitHub;
 
+    /// <summary>
+    /// Whether a project's registered repository is one this provider can create and later find
+    /// an issue in. <c>gh issue create</c> takes any host <c>gh</c> is configured against,
+    /// including a GitHub Enterprise one, and succeeds there — but <see cref="ExternalReference"/>
+    /// records <c>owner/repo</c> with no host (the same reasoning <see cref="IsGitHubDotCom"/>
+    /// documents for import), so an issue created on another host could never be read back by
+    /// <see cref="CreateReadBackAsync"/> or linked by hand afterwards. Checked by
+    /// <c>TaskPublishCommand.TrackInBacklogAsync</c> before <see cref="CreateAsync"/> is ever
+    /// called, so an enterprise-remoted project is told once, rather than filing an orphan issue
+    /// on every publish that this provider can never confirm or link.
+    /// </summary>
+    public static bool SupportsRepository(Uri repositoryUrl) => IsGitHubDotCom(repositoryUrl.Host);
+
     public async Task<ImportedWorkItem> ImportAsync(
         WorkItemImportRequest request, CancellationToken cancellationToken)
     {

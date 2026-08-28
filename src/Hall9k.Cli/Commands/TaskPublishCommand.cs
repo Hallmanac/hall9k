@@ -197,6 +197,25 @@ public sealed class TaskPublishCommand : Hall9kAsyncCommand<TaskPublishCommand.S
             return;
         }
 
+        // gh issue create takes any host gh is configured against, including a GitHub Enterprise
+        // one, and succeeds there — but ExternalReference records owner/repo with no host, so an
+        // issue created on another host could never be read back or linked afterwards
+        // (GitHubWorkItemProvider.SupportsRepository's own doc comment has the fuller argument).
+        // Checked here, before CreateAsync is ever called, so an enterprise-remoted project is
+        // told once rather than filing an unlinkable orphan issue on every publish. A project
+        // registered with --repo and no --repo-url carries no RepositoryUrl at all, and that is
+        // not this check's business to guess at — it only refuses a host it has actually observed.
+        if (project.RepositoryUrl is { } repositoryUrl && !GitHubWorkItemProvider.SupportsRepository(repositoryUrl))
+        {
+            AnsiConsole.MarkupLine(
+                $"[yellow]  Note:[/] [dim]{project.Name.EscapeMarkup()} tracks its backlog in GitHub "
+                + $"issues, but its repository is on {repositoryUrl.Host.EscapeMarkup()}, and Hall9k's "
+                + "GitHub issue backlog only supports github.com — an issue filed there could never be "
+                + "read back or linked. Change the backlog policy, or point --repo-url at a github.com "
+                + $"remote:[/] h9k project set {project.Name.EscapeMarkup()} --backlog none");
+            return;
+        }
+
         GitHubWorkItemProvider provider = new();
         string oneLineObjective = ExternalText.OneLine(task.Objective);
         string title = RelayedText.Truncate(oneLineObjective, GitHubIssueTitleMaxLength);
