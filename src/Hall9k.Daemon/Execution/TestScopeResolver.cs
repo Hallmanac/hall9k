@@ -43,11 +43,30 @@ public sealed record TestGateScope
         IReadOnlyList<string> touchedFiles, IReadOnlyList<string> testClasses, string cycleDescription)
     {
         string filter = string.Join('|', testClasses.Select(name => $"FullyQualifiedName~{name}"));
+
+        // A filter the resolver can compute but the platform cannot execute must degrade to Full
+        // the same as every other unmappable condition does, rather than fail the gate process at
+        // start (conformance review finding): the composed filter is only PART of the eventual
+        // command line — the gate's own command, the run directory's log-redirect path, and on
+        // Windows the cmd.exe /c wrapper all add to it before cmd.exe's 8,191-character limit is
+        // what actually governs — so the cap here is deliberately conservative headroom, not the
+        // limit itself.
+        if (filter.Length > MaxFilterExpressionLength)
+        {
+            return Full(
+                $"the scoped filter for {testClasses.Count} test class(es) reachable from " +
+                $"{touchedFiles.Count} touched file(s) is {filter.Length} characters, over the " +
+                $"{MaxFilterExpressionLength}-character safety cap on how much a gate's own command " +
+                $"line can absorb ({cycleDescription})");
+        }
+
         string reason =
             $"scoped to {testClasses.Count} test class(es) reachable from {touchedFiles.Count} " +
             $"touched file(s) ({cycleDescription}): {Summarize(testClasses)}";
         return new TestGateScope(true, filter, touchedFiles, testClasses, reason);
     }
+
+    private const int MaxFilterExpressionLength = 4000;
 
     private const int MaxListedNames = 20;
 
