@@ -280,7 +280,11 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
         List<object> events = [.. (await query.Events.FetchStreamAsync(runId, token: cts.Token)).Select(e => e.Data)];
         events.OfType<ReviewCompleted>().Should().HaveCount(3, "one merged verdict per cycle, not one per lens");
         events.OfType<ReviewFixDispatched>().Should().HaveCount(1, "one fix session per cycle, however many lenses spoke");
-        events.OfType<VerificationPassed>().Should().HaveCount(2, "gates re-ran after the fix");
+        events.OfType<VerificationPassed>().Should().HaveCount(
+            3, "gates re-ran after the fix, and again — full scope, unconditionally (task: a fix cycle's "
+                + "verification gate) — right before the mandatory final full pass dispatches, since the "
+                + "clean Verify cycle in between concluded straight to Settling with no fix of its own to "
+                + "gate");
         events.OfType<ReviewDispatched>().Select(e => e.Mode).Should().Equal(
             [ReviewMode.Discovery, ReviewMode.Discovery, ReviewMode.Verify, ReviewMode.FinalFullPass, ReviewMode.FinalFullPass],
             "the mode each cycle actually ran under is on the stream");
@@ -2211,6 +2215,57 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
 
         mergeReady.Should().BeTrue("the human's verdict stands in for both lenses'");
         executor.Spawns.Should().BeEmpty("no further session second-guesses the human");
+    }
+
+    /// <summary>
+    /// Independent pre-PR review, cycle 1 finding: <c>MaySettle</c>'s human exemption was written
+    /// for "no reviewer needs to read this diff again," not "the suite ran" — but before this
+    /// task's own fix, a human's merge-ready resolution on a park that followed a Verify-mode
+    /// cycle's own (possibly scoped) gate reached <c>SettleAsync</c> straight from the Settling
+    /// phase, skipping the mandatory full-scope gate entirely. A run parked mid-<see
+    /// cref="ReviewMode.Verify"/> is exactly that shape: its own gate pass may have been scoped to
+    /// the fix's own touched files, and no reviewer or full gate has looked at the whole tree
+    /// since. This seeds that shape directly (a Verify-mode cycle 2 that parked on an
+    /// unreadable verdict) rather than driving a full cycle through the scripted executor, since
+    /// the property under test is the Settling phase's own gate decision, not how the park was
+    /// reached.
+    /// </summary>
+    [Fact]
+    public async Task A_human_merge_ready_after_a_verify_mode_park_still_runs_the_full_gate_before_settling()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        using DocumentStore store = NewStore();
+        (Guid taskId, Guid runId, _) = await SeedVerifiedRunAsync(store, cts.Token);
+
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            session.Events.Append(runId,
+                new ReviewDispatched(runId, DomainId.New(), 2, 6_001, Now, Now, null, ReviewLens.Verify, ReviewMode.Verify),
+                new ReviewPassCompleted(runId, 2, ReviewLens.Verify, ReviewVerdict.Unknown, Now),
+                new ReviewCompleted(runId, 2, ReviewVerdict.Unknown, Now),
+                new ReviewParked(runId, "No parseable verdict, even after a re-prompt.", Now));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            session.Events.Append(runId, new ReviewParkResolved(
+                runId, ReviewVerdict.MergeReady, null, Now, DomainId.New()));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        ScriptedExecutor executor = new();
+        bool mergeReady = await NewEngine(store, executor).ReviewAsync(runId, taskId, cts.Token);
+
+        mergeReady.Should().BeTrue("the human's verdict stands in for the review");
+        executor.Spawns.Should().BeEmpty(
+            "the human already looked, or deliberately chose not to; no fresh reviewer second-guesses that");
+
+        await using IQuerySession query = store.QuerySession();
+        List<object> events = [.. (await query.Events.FetchStreamAsync(runId, token: cts.Token)).Select(e => e.Data)];
+        events.OfType<VerificationPassed>().Should().HaveCount(2,
+            "the run's own first gate pass, plus the mandatory full-scope gate the Settling phase must still run "
+                + "before a human's merge-ready may settle a tip a Verify-mode cycle last gated, possibly scoped");
     }
 
     [Fact]

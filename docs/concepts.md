@@ -224,6 +224,14 @@ task is `Failed` and waiting on one of the three human exits.
 Gates are deterministic and cheap to trust, which is why they come first. Everything after them
 is judgment.
 
+A `dotnet test`-shaped gate inside a fix cycle is narrowed to the tests reachable from that
+cycle's own touched commits, via an injected `--filter`, whenever the diff's touched files can
+all be mapped to test classes with confidence; anything the resolver cannot read or map falls
+back to the full suite. The run's very first gate pass and the mandatory `FinalFullPass` cycle
+immediately before the pull request always run the whole suite regardless, so nothing merges on
+scoped green alone. `verify-test.log` opens with a `# hall9k test gate:` header recording which
+mode actually ran and why.
+
 ## The pre-PR review loop
 
 A passing gate does not open a pull request. The daemon dispatches **independent review agents**
@@ -272,7 +280,8 @@ cycle counts on one run are the design, not a fault** (a clean conformance track
 at cycle 2 while adversarial is still working at cycle 5).
 
 When a cycle needs fixes, **one** fix session runs in the same worktree with the merged findings
-of every live track, the gates re-run, and a fresh set of reviewers looks again. A finding the
+of every live track, the gates re-run — scoped to the fix's own touched tests when the resolver
+can map them with confidence, full otherwise — and a fresh set of reviewers looks again. A finding the
 fix session **disputes** (not a defect, human territory, wrongly graded) parks the run
 immediately with both positions written to disk, rather than looping on judgment. That park is
 what `h9k review resolve` answers.
