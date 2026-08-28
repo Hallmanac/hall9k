@@ -236,8 +236,16 @@ public static partial class TestScopeResolver
     private static IReadOnlyList<string> ExtractTypeNames(string content) =>
         [.. TypeDeclarationPattern().Matches(content).Select(match => match.Groups["name"].Value).Distinct()];
 
+    /// <summary>
+    /// The kind group tries <c>record class</c>/<c>record struct</c> before the bare <c>record</c>
+    /// alternative, so <c>record class Widget</c> consumes both keywords instead of stopping after
+    /// <c>record</c> and letting the name group capture the literal word <c>class</c> — a captured
+    /// keyword's reference pattern (<see cref="TypeReferencePattern"/>) matches the word in nearly
+    /// every test file, so a keyword-captured name does not fail to map, it silently over-maps
+    /// (cycle-6 finding: a 6,905-character filter that blew Windows' cmd.exe 8,191-character limit).
+    /// </summary>
     [GeneratedRegex(
-        """^\s*(?:\[[^\]]*\]\s*)*(?:public|internal|private|protected)?\s*(?:sealed\s+|abstract\s+|static\s+|partial\s+)*(?:class|record|interface|struct|enum)\s+(?<name>\w+)""",
+        """^\s*(?:\[[^\]]*\]\s*)*(?:public|internal|private|protected)?\s*(?:sealed\s+|abstract\s+|static\s+|partial\s+|readonly\s+|file\s+)*(?:record\s+(?:class|struct)|class|record|interface|struct|enum)\s+(?<name>\w+)""",
         RegexOptions.Multiline)]
     private static partial Regex TypeDeclarationPattern();
 
