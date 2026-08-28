@@ -10,7 +10,9 @@ namespace Hall9k.Daemon.Execution;
 /// Turns is claude's own `num_turns` count — the session's own record of how many round trips
 /// it took, which is what a packet-assembled review session (task: a dispatched review session
 /// starts with the diff already assembled) is trying to cut, and what a before-versus-after
-/// production comparison needs read back per pass.
+/// production comparison needs read back per pass. Null when the result payload carried no
+/// `num_turns` field or an unparseable one — never guessed at as zero, which would read as a
+/// session that took no round trips at all rather than one this parser could not measure.
 /// </summary>
 public sealed record AgentResult(
     bool IsError,
@@ -19,7 +21,7 @@ public sealed record AgentResult(
     long CacheCreationInputTokens,
     long OutputTokens,
     decimal? CostUsd,
-    int Turns,
+    int? Turns,
     string? Summary = null)
 {
     public TokensRecorded ToTokensRecorded(Guid runId, DateTimeOffset recordedAt) =>
@@ -38,7 +40,7 @@ public static class StreamJsonParser
 {
     public static bool TryParseResult(string line, out AgentResult result)
     {
-        result = new AgentResult(true, 0, 0, 0, 0, null, 0);
+        result = new AgentResult(true, 0, 0, 0, 0, null, null);
         if (!line.Contains("\"result\"", StringComparison.Ordinal))
         {
             return false;
@@ -76,12 +78,15 @@ public static class StreamJsonParser
                 : null;
 
             // Top-level on the result payload, alongside total_cost_usd — not under usage,
-            // which only ever carries token counts.
-            int turns = root.TryGetProperty("num_turns", out JsonElement turnsElement)
+            // which only ever carries token counts. Null rather than 0 when absent or
+            // unparseable: this is what a before-versus-after production comparison measures
+            // per pass, and a guessed zero would read as an observed fact about a session that
+            // never happened.
+            int? turns = root.TryGetProperty("num_turns", out JsonElement turnsElement)
                 && turnsElement.ValueKind == JsonValueKind.Number
                 && turnsElement.TryGetInt32(out int turnsValue)
                 ? turnsValue
-                : 0;
+                : null;
 
             string? summary = root.TryGetProperty("result", out JsonElement text)
                 && text.ValueKind == JsonValueKind.String

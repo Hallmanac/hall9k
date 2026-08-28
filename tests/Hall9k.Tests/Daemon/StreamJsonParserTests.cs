@@ -33,14 +33,15 @@ public sealed class StreamJsonParserTests
     }
 
     [Fact]
-    public void A_result_with_no_num_turns_field_records_zero_rather_than_a_guess()
+    public void A_result_with_no_num_turns_field_records_null_rather_than_a_guess()
     {
         const string turnless =
             """{"type":"result","subtype":"success","is_error":false,"usage":{"input_tokens":10,"output_tokens":5}}""";
 
         StreamJsonParser.TryParseResult(turnless, out AgentResult result).Should().BeTrue();
 
-        result.Turns.Should().Be(0);
+        result.Turns.Should().BeNull(
+            "an absent num_turns is a session this parser could not measure, not one that took no round trips");
     }
 
     [Fact]
