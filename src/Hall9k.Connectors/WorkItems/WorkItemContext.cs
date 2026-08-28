@@ -43,6 +43,7 @@ public static class WorkItemContext
     {
         StringBuilder context = new();
         context.AppendLine($"Imported from {item.Reference}.");
+        context.AppendLine($"Title: {item.Title}");
         context.AppendLine(
             $"State as observed at import ({item.ObservedStamp}): {item.Status}. "
             + "Hall9k took a one-time snapshot and does not track the item afterwards, so treat "
