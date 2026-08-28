@@ -87,7 +87,9 @@ public sealed class GitHubWorkItemProvider(ProcessRunner? runner = null, TimePro
                     + "something it started was still holding its output open when Hall9k stopped "
                     + "waiting, so the new issue's URL was never printed to read back. The issue was "
                     + "very likely created — check what exists with 'gh issue list' and link it by hand "
-                    + $"with h9k task link-issue rather than creating another. {exception.Message}"));
+                    + $"with h9k task link-issue rather than creating another. {exception.Message}"),
+                onStoppedAnswering: exception =>
+                    GhStoppedAnsweringOnCreate(exception, request.WorkingDirectory, request.Title));
             if (result.ExitCode != 0)
             {
                 throw ExplainCreate(result.StandardError, request);
@@ -129,9 +131,9 @@ public sealed class GitHubWorkItemProvider(ProcessRunner? runner = null, TimePro
         catch (DomainException exception)
         {
             throw new DomainConflictException(
-                $"gh issue create succeeded and reported {url}, but reading it back to verify failed: "
-                + $"{exception.Message} The issue was not recorded, but it likely exists at that URL — "
-                + "link it by hand with h9k task link-issue rather than creating another.");
+                $"gh issue create succeeded and reported {Head(url)}, but reading it back to verify "
+                + $"failed: {exception.Message} The issue was not recorded, but it likely exists at "
+                + "that URL — link it by hand with h9k task link-issue rather than creating another.");
         }
     }
 
@@ -359,15 +361,32 @@ public sealed class GitHubWorkItemProvider(ProcessRunner? runner = null, TimePro
     /// <paramref name="onStoppedAnswering"/> is the same idea for a call that never went quiet
     /// before answering at all: <see cref="GhStoppedAnswering"/>'s wording is written for a read
     /// (<c>ImportAsync</c>) and tells the reader to "import again", which is wrong for
-    /// <see cref="CommentAsync"/> — a write that is never retried automatically. Left null, a
-    /// caller keeps the import wording, which is the right read for a call that is, in fact, a read.
+    /// <see cref="CommentAsync"/> — a write that is never retried automatically — and wrong in a
+    /// second way for <see cref="CreateAsync"/>, whose outcome is genuinely unknown (gh may have
+    /// created the issue before it went quiet), so its own override returns a
+    /// <see cref="DomainConflictException"/> rather than the <see cref="DomainValidationException"/>
+    /// the type used to require, the same distinction <see cref="CreateReadBackAsync"/> draws for
+    /// the same reason: a caller must be able to tell "nothing happened, create one" apart from
+    /// "something might have happened, check and link". Left null, a caller keeps the import
+    /// wording, which is the right read for a call that is, in fact, a read.
+    /// <para>
+    /// A <see cref="ProcessOutputStuckException"/> whose <see cref="ProcessOutputStuckException.ExitCode"/>
+    /// is non-zero carries none of that ambiguity, for every caller: gh already reported failure
+    /// before its output got stuck draining, so this is a definite failure with an unreadable
+    /// reason, never an unknown success. It is handled ahead of, and the same way regardless of,
+    /// <paramref name="onOutputStuckAfterSuccess"/> and <paramref name="onStoppedAnswering"/>
+    /// (see <see cref="GhFailedWithUnreadableError"/>) rather than falling through to the
+    /// <see cref="TimeoutException"/> handler below, which it would otherwise reach because
+    /// <see cref="ProcessOutputStuckException"/> is one and would be misread as the "did this even
+    /// run" uncertainty that handler exists for.
+    /// </para>
     /// </summary>
     private async Task<ProcessResult> RunGhAsync(
         IReadOnlyList<string> arguments,
         string workingDirectory,
         CancellationToken cancellationToken,
         Func<ProcessOutputStuckException, DomainException>? onOutputStuckAfterSuccess = null,
-        Func<TimeoutException, DomainValidationException>? onStoppedAnswering = null)
+        Func<TimeoutException, DomainException>? onStoppedAnswering = null)
     {
         try
         {
@@ -380,6 +399,10 @@ public sealed class GitHubWorkItemProvider(ProcessRunner? runner = null, TimePro
         catch (ProcessOutputStuckException exception) when (exception.ExitCode == 0 && onOutputStuckAfterSuccess is not null)
         {
             throw onOutputStuckAfterSuccess(exception);
+        }
+        catch (ProcessOutputStuckException exception) when (exception.ExitCode != 0)
+        {
+            throw GhFailedWithUnreadableError(exception, workingDirectory);
         }
         catch (TimeoutException exception)
         {
@@ -412,6 +435,21 @@ public sealed class GitHubWorkItemProvider(ProcessRunner? runner = null, TimePro
         + "import again.");
 
     /// <summary>
+    /// gh exited with a failure code and then something it started kept holding its output open
+    /// past <see cref="ExternalProcess.DrainGrace"/>, so the exit code arrived but the stderr that
+    /// would explain it never drained. Unlike <see cref="GhStoppedAnswering"/> and its siblings,
+    /// this carries no "did this even run" uncertainty — an exit code was actually observed, and
+    /// it says failure — so every caller (a read, a create, a comment) gets the same shape of
+    /// answer: a definite failure whose reason has to be read by hand. Naming the exit code rather
+    /// than guessing at gh's reason keeps this honest about what was, and was not, observed
+    /// (AGENTS.md — never guess at unobserved facts).
+    /// </summary>
+    private static DomainValidationException GhFailedWithUnreadableError(
+        ProcessOutputStuckException exception, string workingDirectory) => new(
+        $"{exception.Message} Run the same gh command by hand from {workingDirectory} to read the "
+        + "error it could not print here, then try again.");
+
+    /// <summary>
     /// The comment-flavoured sibling of <see cref="GhStoppedAnswering"/>: a comment is a write,
     /// never retried automatically, so telling the reader to "import again" points at a command
     /// that has nothing to do with what stalled and never runs on its own. Names the issue the
@@ -425,6 +463,24 @@ public sealed class GitHubWorkItemProvider(ProcessRunner? runner = null, TimePro
         + "by hand from that directory to see what it is waiting on. The comment is not retried "
         + $"automatically; check 'gh issue view {number} --repo {repository}' to see whether it "
         + "posted, and add it by hand if it did not.");
+
+    /// <summary>
+    /// The create-flavoured sibling of <see cref="GhStoppedAnswering"/>, and a
+    /// <see cref="DomainConflictException"/> rather than a <see cref="DomainValidationException"/>
+    /// for the same reason <see cref="CreateReadBackAsync"/>'s own two branches are: gh going quiet
+    /// here says nothing about whether the issue was created before it stopped answering, so the
+    /// generic "reading the issue... import again" wording is doubly wrong — there is no import
+    /// under way, and a caller reacting to it as an ordinary failure ("create one by hand") risks
+    /// filing a duplicate for an issue that already exists.
+    /// </summary>
+    private static DomainException GhStoppedAnsweringOnCreate(
+        TimeoutException exception, string workingDirectory, string title) => new DomainConflictException(
+        $"{exception.Message} It was creating an issue for '{RelayedText.OneLine(title)}' from "
+        + $"{workingDirectory}. gh stopping here is usually gh, or something gh started, waiting on "
+        + "input it cannot ask for — an unlocked keychain or a credential helper — and whether the "
+        + "issue was created before that happened is unknown. Run 'gh auth status' by hand from that "
+        + "directory to see what it is waiting on, then check what exists with 'gh issue list' and "
+        + "link it by hand with h9k task link-issue rather than creating another.");
 
     /// <summary>
     /// A missing gh and a missing working directory arrive as the same exception: .NET reports
