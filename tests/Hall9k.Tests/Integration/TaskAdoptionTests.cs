@@ -149,6 +149,59 @@ public sealed class TaskAdoptionTests(PostgresFixture postgres) : IClassFixture<
             .And.NotContain("h9k task abandon", "a Done task cannot be abandoned, so offering it is a dead end");
     }
 
+    [Fact]
+    public async Task A_done_pr_review_does_not_block_a_fresh_review_of_the_same_pull_request()
+    {
+        // TaskDecider.Reopen refuses to reopen a Done pr-review task, and points the owner here
+        // instead: "Start a fresh review instead with h9k task add --from-pr." A completed review
+        // is not the same claim a Done adopted-work task makes — it says the review finished, not
+        // that the pull request's own work is done — so it must not hold its reference the way an
+        // ordinary Done adoption does, or that lever the decider names would refuse too and strand
+        // the owner with no way to re-review the pull request.
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        using DocumentStore store = DocumentStore.For(opts =>
+        {
+            opts.Connection(postgres.ConnectionString);
+            opts.ConfigureHall9k(AutoCreate.All);
+        });
+
+        ExternalReference pullRequest = new(WorkItemProvider.GitHub, "Hallmanac/hall9k#142");
+        Guid firstReviewId = await AdoptAsync(
+            store, pullRequest, "Review pull request #142", TaskType.PrReview, cts.Token);
+        await AppendAsync(store, firstReviewId,
+            new TaskCompleted(firstReviewId, DomainId.New(), null, Now), cts.Token);
+
+        await using IQuerySession session = store.QuerySession();
+        Func<Task> secondAdoption = () =>
+            TaskAddCommand.RefuseSecondAdoptionAsync(session, pullRequest, cts.Token);
+
+        await secondAdoption.Should().NotThrowAsync();
+    }
+
+    [Fact]
+    public async Task A_live_pr_review_still_blocks_a_second_adoption_of_the_same_pull_request()
+    {
+        // The exception is for a *completed* review only. While a review is still in flight there
+        // is no reason to run a second one over the same pull request concurrently.
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        using DocumentStore store = DocumentStore.For(opts =>
+        {
+            opts.Connection(postgres.ConnectionString);
+            opts.ConfigureHall9k(AutoCreate.All);
+        });
+
+        ExternalReference pullRequest = new(WorkItemProvider.GitHub, "Hallmanac/hall9k#155");
+        Guid reviewId = await AdoptAsync(
+            store, pullRequest, "Review pull request #155", TaskType.PrReview, cts.Token);
+
+        await using IQuerySession session = store.QuerySession();
+        Func<Task> secondAdoption = () =>
+            TaskAddCommand.RefuseSecondAdoptionAsync(session, pullRequest, cts.Token);
+
+        (await secondAdoption.Should().ThrowAsync<DomainConflictException>()).Which.Message
+            .Should().Contain(TaskListCommand.ShortId(reviewId));
+    }
+
     /// <summary>
     /// The rule is about the item, not about how the task got it — so a card a task caused to
     /// exist holds that card exactly as an imported one does, and <c>h9k task link-jira</c> asks
@@ -199,8 +252,13 @@ public sealed class TaskAdoptionTests(PostgresFixture postgres) : IClassFixture<
         await session.SaveChangesAsync(cancellationToken);
     }
 
+    private static Task<Guid> AdoptAsync(
+        IDocumentStore store, ExternalReference? reference, string objective, CancellationToken cancellationToken) =>
+        AdoptAsync(store, reference, objective, TaskType.Feature, cancellationToken);
+
     private static async Task<Guid> AdoptAsync(
-        IDocumentStore store, ExternalReference? reference, string objective, CancellationToken cancellationToken)
+        IDocumentStore store, ExternalReference? reference, string objective, TaskType type,
+        CancellationToken cancellationToken)
     {
         Guid taskId = DomainId.New();
         await using IDocumentSession session = store.LightweightSession();
@@ -209,7 +267,7 @@ public sealed class TaskAdoptionTests(PostgresFixture postgres) : IClassFixture<
             DomainId.New(),
             objective,
             ["The importer refuses a closed issue"],
-            TaskType.Feature,
+            type,
             agentContext: null,
             constraints: null,
             reference,
