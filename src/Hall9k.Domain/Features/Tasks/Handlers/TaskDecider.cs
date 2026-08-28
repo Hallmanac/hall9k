@@ -292,6 +292,22 @@ public static class TaskDecider
             ? Optional<AgentModel>.Of(VetModel(model.Value))
             : Optional<AgentModel>.None;
 
+        // TaskAddCommand refuses the same mismatch at adoption time — --type pr-review needs
+        // --from-pr, and --from-pr implies --type pr-review — but that check runs only once,
+        // there. Revise is the other door onto a task's type (Decisions Log, "the edit-after-
+        // the-fact path"), so an ordinary task revised to pr-review with no pull-request
+        // reference would otherwise pass here and only fail at dispatch, with a message naming
+        // neither the mismatch nor the fix (RunLauncher's ExternalReference.IsBlank() guard has
+        // no idea why the reference is missing).
+        if (type.HasValue && type.Value == TaskType.PrReview
+            && task.ExternalReference?.Provider != WorkItemProvider.GitHubPullRequest)
+        {
+            throw new DomainValidationException(
+                "A pr-review task reviews an existing pull request, so --type pr-review needs a task "
+                + "already adopted from one. Create it with h9k task add --from-pr <url> instead of "
+                + $"revising task {task.Id} to pr-review — it would be left with no pull request to review.");
+        }
+
         if (!objective.HasValue && !criteria.HasValue && !agentContext.HasValue
             && !dependencies.HasValue && !type.HasValue && !chosenModel.HasValue)
         {
