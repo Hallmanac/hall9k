@@ -4,10 +4,12 @@ using Hall9k.Daemon.ProcessManagement;
 using Hall9k.Daemon.Worktrees;
 using Hall9k.Domain.Features.Project.Projections;
 using Hall9k.Domain.Features.Run;
+using Hall9k.Domain.Features.Run.Documents;
 using Hall9k.Domain.Features.Run.Events;
 using Hall9k.Domain.Features.Run.Projections;
 using Hall9k.Domain.Features.Tasks;
 using Hall9k.Domain.Features.Tasks.Documents;
+using Hall9k.Domain.Features.Tasks.Events;
 using Hall9k.Domain.Features.Tasks.Handlers;
 using Hall9k.Domain.Features.Tasks.Projections;
 using Hall9k.Domain.Infrastructure.Ids;
@@ -75,6 +77,48 @@ public sealed class PrReviewEngine(
     }
 
     /// <summary>
+    /// The recovery half of <see cref="RecordAdversarialResultAsync"/>: called unconditionally
+    /// at the top of <see cref="DriveAsync"/> so a daemon restart landing between the primary
+    /// session's <c>AgentSessionCompleted</c> commit and RunSupervisor's own (immediate but not
+    /// atomic with it) call to <see cref="RecordAdversarialResultAsync"/> still gets the file
+    /// written before anything downstream reads it. Re-derives the primary session's own result
+    /// from its stream file the same way <see cref="RunResultFile.AlreadyWrittenAsync"/> detects
+    /// it, rather than assuming; a no-op once the file already exists.
+    /// </summary>
+    private async Task EnsureAdversarialResultRecordedAsync(string runDirectory, CancellationToken cancellationToken)
+    {
+        string path = RunPaths.ReviewLensFindingsFile(runDirectory, 1, ReviewLens.Adversarial.Slug);
+        if (File.Exists(path))
+        {
+            return;
+        }
+
+        string streamFile = RunPaths.StreamFile(runDirectory);
+        if (!File.Exists(streamFile))
+        {
+            return;
+        }
+
+        string? summary = null;
+        using (StreamReader reader = new(new FileStream(
+            streamFile, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete)))
+        {
+            while (await reader.ReadLineAsync(cancellationToken) is { } line)
+            {
+                if (StreamJsonParser.TryParseResult(line, out AgentResult result))
+                {
+                    summary = result.Summary ?? string.Empty;
+                }
+            }
+        }
+
+        if (summary is not null)
+        {
+            await RecordAdversarialResultAsync(runDirectory, summary, cancellationToken);
+        }
+    }
+
+    /// <summary>
     /// Drives a pr-review run to its park (first entry) or its finalization (re-entry after
     /// h9k review resolve). Re-entrant from any point a daemon restart could have caught: the
     /// adversarial lens's findings are already on disk by the time this is ever called (see
@@ -120,7 +164,18 @@ public sealed class PrReviewEngine(
         }
 
         string runDirectory = RunPaths.ResolveCurrentDirectory(run.RunDirectory);
-        if (aggregate.PrReviewConformanceSessionId is null || !SessionStillLive(aggregate, runDirectory))
+
+        // RecordAdversarialResultAsync's own doc comment claims this is already on disk by the
+        // time ReviewAsync is ever entered — true of the live-monitor path (RunSupervisor calls
+        // it immediately after AgentSessionCompleted commits), but a daemon restart landing in
+        // the gap between that commit and the file write reaches here instead through the
+        // Verifying-adoption sweep, with nothing written yet. Idempotent the same way the direct
+        // call is, so this is a no-op once the file is actually there.
+        await EnsureAdversarialResultRecordedAsync(runDirectory, cancellationToken);
+
+        if (aggregate.PrReviewConformanceSessionId is null
+            || aggregate.PrReviewConformanceBudgetExhausted
+            || !SessionStillLive(aggregate, runDirectory))
         {
             if (!await DispatchConformanceAsync(runId, taskId, runDirectory, run, task, project, cancellationToken))
             {
@@ -177,11 +232,26 @@ public sealed class PrReviewEngine(
         Guid runId, Guid taskId, string runDirectory, RunDetails run, TaskDetails task, ProjectDetails project,
         CancellationToken cancellationToken)
     {
-        await using (IQuerySession fenceQuery = store.QuerySession())
+        await using (IDocumentSession fenceSession = store.LightweightSession())
         {
             if (!await GenerationFence.AllowsAsync(
-                fenceQuery, logger, taskId, runId, run.LeaseGeneration, nameof(PrReviewConformanceDispatched), cancellationToken))
+                fenceSession, logger, taskId, runId, run.LeaseGeneration, nameof(PrReviewConformanceDispatched), cancellationToken))
             {
+                // Mirrors ReviewEngine.ParkAsync's own fence-rejection (Copilot review, PR
+                // #30's RunSuperseded fix): retiring the run here, rather than just returning
+                // false, is what stops a reclaimed task's stale lane from being left
+                // non-terminal in Verifying with no monitor watching it.
+                if (await fenceSession.Events.FetchStreamStateAsync(runId, cancellationToken) is not null)
+                {
+                    TaskDetails? currentTask = await fenceSession.LoadAsync<TaskDetails>(taskId, cancellationToken);
+                    fenceSession.Events.Append(
+                        runId, new RunSuperseded(runId, currentTask?.LeaseGeneration ?? run.LeaseGeneration, DateTimeOffset.UtcNow));
+                    await fenceSession.SaveChangesAsync(cancellationToken);
+                    logger.LogInformation(
+                        "Run {RunId}: retired as superseded — the pr-review conformance dispatch found it was no longer task {TaskId}'s current generation",
+                        runId, taskId);
+                }
+
                 return false;
             }
         }
@@ -190,7 +260,7 @@ public sealed class PrReviewEngine(
         ReviewPacket? packet = await ReviewPacketAssembler.AssembleAsync(run.WorktreePath, baseBranch, sinceSha: null, cancellationToken);
 
         Guid sessionId = DomainId.New();
-        string prompt = AgentPromptBuilder.BuildPrReviewLens(task, project, run.Branch, ReviewLens.Conformance, packet);
+        string prompt = AgentPromptBuilder.BuildPrReviewLens(task, project, run.Branch, ReviewLens.Conformance, packet, baseBranch);
         AgentModel model = _options.ResolveModel(AgentRole.Review, task.Model, project.Model);
         SpawnedAgent agent = await executor.SpawnAsync(new AgentSpawnRequest(
             runId, sessionId, run.WorktreePath, runDirectory, prompt, (ExecutorMode)run.ExecutorMode, model,
@@ -219,7 +289,8 @@ public sealed class PrReviewEngine(
 
         string streamFile = RunPaths.SessionStreamFile(runDirectory, ConformanceArtifactName(sessionId));
         AgentResult? result = await SessionResultWaiter.WaitAsync(
-            streamFile, processId, processStartedAt, processManager, onOutput: null, cancellationToken);
+            streamFile, processId, processStartedAt, processManager,
+            token => TouchActivityAsync(runId, token), cancellationToken);
 
         if (result is { IsError: true, Summary: { } summary } && BudgetExhaustionParser.IsBudgetExhausted(summary))
         {
@@ -300,13 +371,42 @@ public sealed class PrReviewEngine(
             logger.LogWarning(exception, "Worktree removal failed for {Path} (safe to prune later)", run.WorktreePath);
         }
 
+        DateTimeOffset now = DateTimeOffset.UtcNow;
+        await using IDocumentSession session = store.LightweightSession();
+
+        // LoadFencedAsync's read must happen before the AllowsAsync identity check below —
+        // not after — so a reclaim landing between the two is caught by AllowsAsync's fresh
+        // read rather than baked into `current.Task` as an already-stale ownership fact
+        // (the same ordering ReviewEngine.FailAsync and RunLauncher.RecordLaunchFailureAsync
+        // use for the same reason).
+        (TaskAggregate Task, long Version)? fenced = await GenerationFence.LoadFencedAsync(session, taskId, cancellationToken);
+        if (!await GenerationFence.AllowsAsync(
+            session, logger, taskId, runId, run.LeaseGeneration, nameof(RunCompleted), cancellationToken))
+        {
+            // A reclaim landed between the owner's resolve and this finalize: the live
+            // generation now owns the task and its own lease, so this stale run must retire
+            // instead of completing a task — or deleting a lease — that is no longer its own.
+            // Mirrors ReviewEngine.ParkAsync's own fence-rejection: leaving the run
+            // non-terminal here would strand it with no monitor until the next adoption
+            // sweep stumbled onto it (Copilot review, PR #30's RunSuperseded fix).
+            if (await session.Events.FetchStreamStateAsync(runId, cancellationToken) is not null)
+            {
+                TaskDetails? currentTask = await session.LoadAsync<TaskDetails>(taskId, cancellationToken);
+                session.Events.Append(
+                    runId, new RunSuperseded(runId, currentTask?.LeaseGeneration ?? run.LeaseGeneration, now));
+                await session.SaveChangesAsync(cancellationToken);
+                logger.LogInformation(
+                    "Run {RunId}: retired as superseded — the pr-review finalize found it was no longer task {TaskId}'s current generation",
+                    runId, taskId);
+            }
+
+            return;
+        }
+
         string? pullRequestUrl = task.ExternalReference.IsNotBlank()
             ? new GitHubPullRequestProvider().WebUrl(ExternalReference.Parse(task.ExternalReference))?.ToString()
             : null;
 
-        DateTimeOffset now = DateTimeOffset.UtcNow;
-        await using IDocumentSession session = store.LightweightSession();
-        (TaskAggregate Task, long Version)? fenced = await GenerationFence.LoadFencedAsync(session, taskId, cancellationToken);
         if (fenced is { } current && current.Task.State == TaskState.Claimed)
         {
             session.Events.Append(taskId, expectedVersion: current.Version + 1, TaskDecider.Complete(current.Task, runId, pullRequestUrl, now));
@@ -353,8 +453,17 @@ public sealed class PrReviewEngine(
         DateTimeOffset now = DateTimeOffset.UtcNow;
         await using IDocumentSession session = store.LightweightSession();
         session.Events.Append(runId, new RunFailed(runId, reason, now));
+
+        // LoadFencedAsync's read must happen before the AllowsAsync identity check below —
+        // not after — so a reclaim landing between the two is caught by AllowsAsync's fresh
+        // read rather than baked into `current.Task` as an already-stale ownership fact
+        // (ReviewEngine.FailAsync uses the same ordering for the same reason).
         (TaskAggregate Task, long Version)? fenced = await GenerationFence.LoadFencedAsync(session, taskId, cancellationToken);
-        if (fenced is { } current && TaskDecider.CanFail(current.Task))
+        RunDetails? run = await session.LoadAsync<RunDetails>(runId, cancellationToken);
+        if (fenced is { } current
+            && TaskDecider.CanFail(current.Task)
+            && (run is null || await GenerationFence.AllowsAsync(
+                session, logger, taskId, runId, run.LeaseGeneration, nameof(TaskFailed), cancellationToken)))
         {
             session.Events.Append(taskId, expectedVersion: current.Version + 1, TaskDecider.Fail(current.Task, runId, reason, now));
             session.Delete<TaskLease>(taskId);
@@ -373,6 +482,17 @@ public sealed class PrReviewEngine(
         }
 
         logger.LogWarning("Run {RunId} pr-review failed: {Reason}", runId, reason);
+    }
+
+    /// <summary>Keeps the run's last-activity fresh while the conformance lens works, so h9k status stall detection covers it the same way ReviewEngine's own passes are covered.</summary>
+    private async Task TouchActivityAsync(Guid runId, CancellationToken cancellationToken)
+    {
+        await using IDocumentSession session = store.LightweightSession();
+        RunActivity activity = await session.LoadAsync<RunActivity>(runId, cancellationToken)
+            ?? new RunActivity { Id = runId };
+        activity.LastActivityAt = DateTimeOffset.UtcNow;
+        session.Store(activity);
+        await session.SaveChangesAsync(cancellationToken);
     }
 
     private static string ConformanceArtifactName(Guid sessionId) => $"pr-review-conformance-{sessionId:N}";

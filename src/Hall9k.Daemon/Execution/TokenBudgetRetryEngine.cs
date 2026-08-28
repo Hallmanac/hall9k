@@ -88,6 +88,18 @@ public sealed class TokenBudgetRetryEngine(
             return true;
         }
 
+        if (task.Type == TaskType.PrReview && aggregate.PrReviewConformanceBudgetExhausted)
+        {
+            // The pr-review task's own loop never touches ReviewPhase (PrReviewEngine's class
+            // doc comment explains why), so this is its equivalent of the branch above: the
+            // park caught the conformance lens, not the primary adversarial session, and there
+            // is no process left to --resume — PrReviewEngine.ReviewAsync redispatches it fresh.
+            supervisor.ResumeReviewLoop(run, cancellationToken);
+            logger.LogInformation(
+                "Run {RunId}: retried after token-budget exhaustion mid-pr-review-conformance — resuming the review loop", run.Id);
+            return true;
+        }
+
         try
         {
             SpawnedAgent agent = await executor.SpawnAsync(new AgentSpawnRequest(

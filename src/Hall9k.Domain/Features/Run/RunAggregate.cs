@@ -102,6 +102,17 @@ public sealed class RunAggregate
     public DateTimeOffset? PrReviewConformanceProcessStartedAt { get; private set; }
     public bool PrReviewConformanceCompleted { get; private set; }
 
+    /// <summary>
+    /// Set when <see cref="RunBudgetExhausted"/> catches the conformance lens mid-flight
+    /// (deliberately not <see cref="ReviewPhase"/>, which pr-review runs never touch — see the
+    /// class doc comment). This is what tells <see cref="TokenBudgetRetryEngine"/> to re-enter
+    /// the pr-review loop instead of resuming the primary session's process, and what tells
+    /// PrReviewEngine's own redispatch check to treat the exhausted session's leftover stream
+    /// file as stale rather than a resumable result. Cleared the moment a fresh conformance
+    /// session dispatches.
+    /// </summary>
+    public bool PrReviewConformanceBudgetExhausted { get; private set; }
+
     /// <summary>The owner's h9k review resolve --merge-ready verdict on a pr-review park: walk done, close the task.</summary>
     public bool PrReviewDelivered { get; private set; }
 
@@ -678,6 +689,7 @@ public sealed class RunAggregate
         PrReviewConformanceProcessId = @event.ProcessId;
         PrReviewConformanceProcessStartedAt = @event.ProcessStartedAt;
         PrReviewConformanceCompleted = false;
+        PrReviewConformanceBudgetExhausted = false;
         State = RunState.UnderReview;
     }
 
@@ -1067,6 +1079,11 @@ public sealed class RunAggregate
                 ClearActiveFixSession();
                 ReviewPhase = ReviewPhase.FixNeeded;
                 break;
+        }
+
+        if (PrReviewConformanceSessionId is not null && !PrReviewConformanceCompleted)
+        {
+            PrReviewConformanceBudgetExhausted = true;
         }
     }
 

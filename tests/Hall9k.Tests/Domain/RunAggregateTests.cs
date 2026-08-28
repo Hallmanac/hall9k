@@ -906,6 +906,41 @@ public sealed class RunAggregateTests
     }
 
     /// <summary>
+    /// The pr-review conformance lens's own budget-exhaustion recovery: PrReviewEngine
+    /// deliberately never touches ReviewPhase (it stays None throughout, asserted elsewhere), so
+    /// TokenBudgetRetryEngine cannot tell a pr-review park apart from a primary-session park by
+    /// ReviewPhase alone — PrReviewConformanceBudgetExhausted is what it reads instead. Without
+    /// it the retry sweep would resume the wrong process (the already-finished adversarial
+    /// session) forever rather than redispatching a fresh conformance session.
+    /// </summary>
+    [Fact]
+    public void Budget_exhausted_pr_review_conformance_lens_parks_and_marks_itself_for_a_fresh_redispatch()
+    {
+        RunAggregate run = new();
+        Guid id = DomainId.New();
+        run.Apply(new RunDispatched(
+            id, DomainId.New(), DomainId.New(), DomainId.New(), 1, DomainId.New(),
+            "/wt/x", "task/x", ExecutorMode.Subscription, Now));
+        run.Apply(new AgentSessionCompleted(id, Now));
+        Guid conformanceSessionId = DomainId.New();
+        run.Apply(new PrReviewConformanceDispatched(id, conformanceSessionId, 5501, Now, Now, AgentModel.Unknown));
+
+        run.Apply(new RunBudgetExhausted(id, "Claude AI usage limit reached|1762952400", Now));
+
+        run.State.Should().Be(RunState.BudgetParked);
+        run.ReviewPhase.Should().Be(ReviewPhase.None, "the pr-review loop never touches this field");
+        run.PrReviewConformanceBudgetExhausted.Should().BeTrue(
+            "TokenBudgetRetryEngine's only signal that this park is the conformance lens's, not the primary session's");
+        run.PrReviewConformanceSessionId.Should().Be(
+            conformanceSessionId, "the dead session's identity is left alone; PrReviewEngine's own redispatch check reads the flag, not this");
+
+        run.Apply(new PrReviewConformanceDispatched(id, DomainId.New(), 6001, Now, Now, AgentModel.Unknown));
+
+        run.State.Should().Be(RunState.UnderReview, "redispatching a fresh conformance session is what clears the park");
+        run.PrReviewConformanceBudgetExhausted.Should().BeFalse("cleared the moment a fresh session actually dispatches");
+    }
+
+    /// <summary>
     /// A fix session dispatched over a human's own resolution (h9k review resolve) that then
     /// hits the recognized usage-limit shape must redispatch over the SAME human guidance, not
     /// silently fall back to the automated findings file (backlog 40): PendingHumanFindings is
