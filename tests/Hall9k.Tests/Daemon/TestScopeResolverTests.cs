@@ -126,6 +126,87 @@ public sealed class TestScopeResolverTests : IDisposable
         scope.Reason.Should().Contain("could not read");
     }
 
+    /// <summary>
+    /// Copilot review, PR #62: continuing past a per-file read failure while loading the test
+    /// tree (the prior behavior) could leave the resolve "confident" on an incomplete map — the
+    /// unreadable class is exactly as likely as any other to be the one that references the
+    /// touched file, and its silent absence reads as "nothing references it" rather than "this
+    /// could not be checked". An unreadable <c>*Tests.cs</c> file must fall the whole resolve
+    /// back to full, the same as the enumeration-level failure <see
+    /// cref="An_unreadable_git_range_falls_back_to_full"/> already covers.
+    /// </summary>
+    [Fact]
+    public async Task An_unreadable_test_file_falls_back_to_full_rather_than_an_incomplete_map()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromSeconds(30));
+        string sinceSha = CycleHeadSha;
+        Commit("src/Hall9k.Domain/Widget.cs", "public sealed class Widget\n{\n    public int Count;\n}\n", "fix widget");
+
+        string widgetTestsPath = Path.Combine(_repositoryPath, "tests", "Hall9k.Tests", "WidgetTests.cs");
+        if (!MadeUnreadable(widgetTestsPath))
+        {
+            // Windows has no POSIX mode, and root reads through one; the case this test
+            // describes cannot be staged on either, so there is nothing to assert.
+            return;
+        }
+
+        try
+        {
+            TestGateScope scope =
+                await TestScopeResolver.ResolveAsync(_repositoryPath, sinceSha, "cycle 2 fix", cts.Token);
+
+            scope.IsScoped.Should().BeFalse(
+                "WidgetTests.cs could not be read — it might be the very class that references the "
+                    + "touched file, and a scoped result here would be a guess rather than a fact");
+            // Continuing past the unreadable file (the prior behavior) reaches the identical
+            // IsScoped == false outcome by a different route: OtherTests never references Widget,
+            // so matchedAnyTestClass stays false and the fallback reason blames "no test class
+            // references any type declared in touched file" rather than the unreadable file.
+            // Asserting the reason names the file this change actually reads — not enumeration,
+            // not "nothing references it" — is what distinguishes the new behavior from the old
+            // one (independent pre-PR review, cycle 3, conformance lens).
+            scope.Reason.Should().Contain("could not read test file").And.Contain("WidgetTests.cs");
+        }
+        finally
+        {
+            // MadeUnreadable already returned false, and returned early, on Windows — this only
+            // ever runs having actually stripped the mode below, on a platform that has one.
+            if (!OperatingSystem.IsWindows())
+            {
+                File.SetUnixFileMode(widgetTestsPath, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Strips every permission bit and confirms the read is actually denied. False when the
+    /// platform or the caller's privileges make the denial impossible to stage — in which case
+    /// the stripped mode is restored before returning, since a caller getting false back never
+    /// reaches its own restoring `finally` (Copilot review, PR #86: running as root reads
+    /// straight through the stripped mode, and the mode would otherwise stay stripped on the
+    /// repo's temp file rather than only for the duration of a denial that was never staged).
+    /// </summary>
+    private static bool MadeUnreadable(string path)
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            return false;
+        }
+
+        UnixFileMode originalMode = File.GetUnixFileMode(path);
+        File.SetUnixFileMode(path, UnixFileMode.None);
+        try
+        {
+            File.ReadAllText(path);
+            File.SetUnixFileMode(path, originalMode);
+            return false;
+        }
+        catch (UnauthorizedAccessException)
+        {
+            return true;
+        }
+    }
+
     [Fact]
     public async Task A_touched_non_csharp_file_falls_back_to_full()
     {
