@@ -224,6 +224,29 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
         Git(worktreePath, "-c user.name=Test -c user.email=test@test commit -q -m widget");
     }
 
+    private static string GitOutput(string workingDirectory, string arguments)
+    {
+        using Process process = new();
+        process.StartInfo = new ProcessStartInfo
+        {
+            FileName = "git",
+            Arguments = $"-C \"{workingDirectory}\" {arguments}",
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false,
+        };
+        process.Start();
+        string output = process.StandardOutput.ReadToEnd();
+        string error = process.StandardError.ReadToEnd();
+        process.WaitForExit();
+        if (process.ExitCode != 0)
+        {
+            throw new InvalidOperationException($"git {arguments} failed: {output}{error}");
+        }
+
+        return output.Trim();
+    }
+
     private static void Git(string workingDirectory, string arguments)
     {
         using Process process = new();
@@ -356,7 +379,7 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
         using DocumentStore store = NewStore();
-        (Guid taskId, Guid runId, string worktreePath) = await SeedVerifiedRunWithTestGateAsync(store, cts.Token);
+        (Guid taskId, Guid runId, string worktreePath, _) = await SeedVerifiedRunWithTestGateAsync(store, cts.Token);
 
         ScriptedExecutor executor = new(
             "1. `Auth.cs:42` — the limiter never resets.\n\nVERDICT: needs-fixes",
@@ -392,6 +415,156 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
                 + "the fix's doc-only commit to any test class");
     }
 
+    /// <summary>
+    /// Copilot review, PR #62: a HEAD match alone cannot tell "the same gates ran" from "a human
+    /// changed the project's verify commands between the last full gate and now" — the tip stays
+    /// put, but the gates about to be trusted at Settling never themselves ran at full scope.
+    /// Seeds the identical skip-eligible shape the sibling test above exercises, then changes the
+    /// project's verify commands in the same window right after the reverify gate has already
+    /// recorded its pass against the ORIGINAL commands and before the cycle's Verify-mode reviewer
+    /// spawns, which is the same window a project setting change mid-run would land in. The
+    /// Settling branch's own mandatory gate must run anyway rather than trust a full pass recorded
+    /// against gates that no longer exist.
+    /// </summary>
+    [Fact]
+    public async Task A_verify_commands_change_after_the_reverify_gate_still_runs_the_settling_gate()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        using DocumentStore store = NewStore();
+        (Guid taskId, Guid runId, string worktreePath, Guid projectId) =
+            await SeedVerifiedRunWithTestGateAsync(store, cts.Token);
+
+        ScriptedExecutor executor = new(
+            "1. `Auth.cs:42` — the limiter never resets.\n\nVERDICT: needs-fixes",
+            "Nothing survived verification.\n\nVERDICT: merge-ready",
+            "Reset the limiter window.\n\nRESOLUTION: fixed",
+            // Cycle 2: only conformance is still active, so it gets one Verify pass.
+            "Criteria met.\n\nVERDICT: merge-ready",
+            // Cycle 3: the mandatory final full pass, both lenses fresh.
+            "Confirmed clean.\n\nVERDICT: merge-ready",
+            "Confirmed clean too.\n\nVERDICT: merge-ready");
+        executor.OnSpawnByIndex[2] = () => CommitDocOnlyChange(worktreePath);
+        executor.OnSpawnByIndex[3] = () => ChangeVerifyCommandsAsync(store, projectId, cts.Token).GetAwaiter().GetResult();
+
+        bool mergeReady = await NewEngine(store, executor).ReviewAsync(runId, taskId, cts.Token);
+
+        mergeReady.Should().BeTrue();
+
+        await using IQuerySession query = store.QuerySession();
+        List<object> events = [.. (await query.Events.FetchStreamAsync(runId, token: cts.Token)).Select(e => e.Data)];
+        List<VerificationPassed> passes = [.. events.OfType<VerificationPassed>()];
+        passes.Should().HaveCount(
+            3, "the run's own first gate pass, the cycle-2 reverify gate that fell back to full, and the "
+                + "Settling branch's own mandatory gate — run again because the verify commands changed "
+                + "since the reverify gate ran even though HEAD never moved");
+        passes[^1].RanFullScope.Should().BeTrue("the mandatory Settling gate always runs full-scope");
+    }
+
+    /// <summary>
+    /// Independent pre-PR review, cycle 1, adversarial lens: the sibling test above changes verify
+    /// commands during a cycle-2 Verify reverify, where <c>NeedsFullGateBeforeSettling</c> is
+    /// already true on its own (the mode check alone forces entry). It never exercises the plain
+    /// cycle-1 Discovery path — both lenses clean on their first look, no fix ever dispatched, no
+    /// human involved — which is the ONE Settling entry neither the mode/fix check nor
+    /// <see cref="RunAggregate.HumanEndedTheLoop"/> ever visits, so it is the one place a verify
+    /// commands change would previously go unseen entirely: the old code defaulted
+    /// <c>gateAlreadyRanFullOverCurrentHead</c> to a bare <c>true</c> on this path without ever
+    /// comparing anything, and fell straight through to <c>SettleAsync</c>. The seed's own initial
+    /// gate pass records a genuinely comparable full scope (real HEAD, real fingerprint) so this
+    /// change is the only thing that moves. The mandatory gate still runs, but the run settles
+    /// straight after it rather than paying for a whole second <see cref="ReviewMode.FinalFullPass"/>
+    /// round over a tip both lenses already read clean this very cycle (independent pre-PR review,
+    /// cycle 3, adversarial lens: a fingerprint-only trigger is not a moved HEAD or a dispatched fix,
+    /// so it never earns another reviewer pass — <c>NeedsFullGateBeforeSettling</c> is what decides
+    /// that, and it is false on this clean, fix-free path).
+    /// </summary>
+    [Fact]
+    public async Task A_clean_discovery_only_convergence_still_runs_the_settling_gate_over_the_current_verify_commands()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        using DocumentStore store = NewStore();
+        (Guid taskId, Guid runId, _, Guid projectId) = await SeedVerifiedRunWithTestGateAsync(store, cts.Token);
+
+        ScriptedExecutor executor = new(
+            "Every acceptance criterion is met.\n\nVERDICT: merge-ready",
+            "Nothing survived verification.\n\nVERDICT: merge-ready");
+        // Fires as the cycle's first pass spawns — the same window a human's own out-of-band
+        // `h9k project set --verify` would land in, since nothing else touches the worktree or
+        // the run stream between the seeded gate and Settling on this clean, fix-free path.
+        executor.OnSpawnByIndex[0] = () => ChangeVerifyCommandsAsync(store, projectId, cts.Token).GetAwaiter().GetResult();
+
+        bool mergeReady = await NewEngine(store, executor).ReviewAsync(runId, taskId, cts.Token);
+
+        mergeReady.Should().BeTrue();
+        executor.Spawns.Should().HaveCount(
+            2, "the verify-commands change forces the mandatory Settling gate, but the diff itself "
+                + "already converged clean under this cycle's own two-lens read, so the run settles "
+                + "right after the gate instead of paying for a second FinalFullPass over an unchanged tip");
+
+        await using IQuerySession query = store.QuerySession();
+        List<object> events = [.. (await query.Events.FetchStreamAsync(runId, token: cts.Token)).Select(e => e.Data)];
+        List<VerificationPassed> passes = [.. events.OfType<VerificationPassed>()];
+        passes.Should().HaveCount(
+            2, "the run's own first (seeded) gate pass, plus the Settling branch's own mandatory gate — "
+                + "run again because the verify commands changed after that seeded gate ran, even though "
+                + "this clean, human-free, fix-free path never asked the mode/fix or human check about it");
+        passes[^1].RanFullScope.Should().BeTrue("the mandatory Settling gate always runs full-scope");
+    }
+
+    /// <summary>
+    /// Independent pre-PR review, cycle 3, adversarial lens: <c>VerifyCommandsFingerprintMatchesAsync</c>
+    /// must read a never-recorded <see cref="RunAggregate.LastGateVerifyCommandsFingerprint"/> — a
+    /// stream written before that field existed — as "unknown", not as "the gates changed". Seeds
+    /// the same genuinely-comparable-full-scope shape (real <c>RanFullScope</c>, real
+    /// <c>HeadSha</c>) the sibling tests above rely on, but with no fingerprint ever recorded on
+    /// that seeded pass, and nothing else touches the worktree, the project, or the run stream. A
+    /// clean cycle-1 Discovery convergence must settle without paying for a redundant Settling gate
+    /// or an extra review round: the fingerprint question is moot on a stream that never observed
+    /// one, exactly as it already is when <c>RanFullScope</c>/<c>HeadSha</c> themselves are missing.
+    /// </summary>
+    [Fact]
+    public async Task A_never_recorded_verify_commands_fingerprint_settles_without_a_redundant_gate()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        using DocumentStore store = NewStore();
+        (Guid taskId, Guid runId, _, _) = await SeedVerifiedRunWithTestGateAsync(
+            store, cts.Token, recordVerifyCommandsFingerprint: false);
+
+        ScriptedExecutor executor = new(
+            "Every acceptance criterion is met.\n\nVERDICT: merge-ready",
+            "Nothing survived verification.\n\nVERDICT: merge-ready");
+
+        bool mergeReady = await NewEngine(store, executor).ReviewAsync(runId, taskId, cts.Token);
+
+        mergeReady.Should().BeTrue();
+        executor.Spawns.Should().HaveCount(
+            2, "an unrecorded fingerprint is unknown, not a detected change — it must never force the "
+                + "mandatory Settling gate or an extra review round on its own");
+
+        await using IQuerySession query = store.QuerySession();
+        List<object> events = [.. (await query.Events.FetchStreamAsync(runId, token: cts.Token)).Select(e => e.Data)];
+        events.OfType<VerificationPassed>().Should().ContainSingle(
+            "only the run's own first (seeded) gate pass — the Settling branch never re-gates over a "
+                + "fingerprint that was simply never observed");
+    }
+
+    private async Task ChangeVerifyCommandsAsync(DocumentStore store, Guid projectId, CancellationToken cancellationToken)
+    {
+        await using IDocumentSession session = store.LightweightSession();
+        Hall9k.Domain.Features.Project.ProjectAggregate? project =
+            await session.Events.AggregateStreamAsync<Hall9k.Domain.Features.Project.ProjectAggregate>(
+                projectId, token: cancellationToken);
+        session.Events.Append(projectId, Hall9k.Domain.Features.Project.Handlers.ProjectDecider.ChangeSettings(
+            project!,
+            verifyCommands: Optional<IReadOnlyList<Hall9k.Domain.Features.Project.VerifyCommand>>.Of(
+                [new Hall9k.Domain.Features.Project.VerifyCommand("test", "dotnet test --help --verbosity quiet")]),
+            skipPermissions: Optional<bool>.None,
+            maxParallelAgents: Optional<int>.None,
+            contextLinks: Optional<IReadOnlyList<Hall9k.Domain.Features.Project.ContextLink>>.None,
+            Now, project!.OwnerId));
+        await session.SaveChangesAsync(cancellationToken);
+    }
+
     private static void CommitDocOnlyChange(string worktreePath)
     {
         File.WriteAllText(Path.Combine(worktreePath, "NOTES.md"), "fix notes\n");
@@ -400,8 +573,8 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
     }
 
     /// <summary>Like <see cref="SeedVerifiedRunAsync(DocumentStore, CancellationToken)"/>, but a real git worktree and a real `dotnet test`-shaped gate, for tests that need <see cref="VerificationRunner"/>'s own scoping to run for real rather than short-circuit on "no gates configured".</summary>
-    private async Task<(Guid TaskId, Guid RunId, string WorktreePath)> SeedVerifiedRunWithTestGateAsync(
-        DocumentStore store, CancellationToken cancellationToken)
+    private async Task<(Guid TaskId, Guid RunId, string WorktreePath, Guid ProjectId)> SeedVerifiedRunWithTestGateAsync(
+        DocumentStore store, CancellationToken cancellationToken, bool recordVerifyCommandsFingerprint = true)
     {
         NodeContext node = new();
         await node.InitializeAsync(store, cancellationToken);
@@ -424,6 +597,7 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
         File.WriteAllText(Path.Combine(worktreePath, "Widget.cs"), "class Widget { }\n");
         Git(worktreePath, "add -A");
         Git(worktreePath, "-c user.name=Test -c user.email=test@test commit -q -m widget");
+        string headSha = GitOutput(worktreePath, "rev-parse HEAD");
 
         await using IDocumentSession session = store.LightweightSession();
 
@@ -431,12 +605,13 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
         var registered = Hall9k.Domain.Features.Project.Handlers.ProjectDecider.Register(
             projectId, node.OwnerId, DomainId.New(), $"review-{taskId:N}", worktreePath, null, "main", Now);
         project.Apply(registered);
+        IReadOnlyList<Hall9k.Domain.Features.Project.VerifyCommand> verifyCommands =
+            [new Hall9k.Domain.Features.Project.VerifyCommand("test", "dotnet test --help")];
         session.Events.StartStream<Hall9k.Domain.Features.Project.ProjectAggregate>(
             projectId, registered,
             Hall9k.Domain.Features.Project.Handlers.ProjectDecider.ChangeSettings(
                 project,
-                verifyCommands: Optional<IReadOnlyList<Hall9k.Domain.Features.Project.VerifyCommand>>.Of(
-                    [new Hall9k.Domain.Features.Project.VerifyCommand("test", "dotnet test --help")]),
+                verifyCommands: Optional<IReadOnlyList<Hall9k.Domain.Features.Project.VerifyCommand>>.Of(verifyCommands),
                 skipPermissions: Optional<bool>.None,
                 maxParallelAgents: Optional<int>.None,
                 contextLinks: Optional<IReadOnlyList<Hall9k.Domain.Features.Project.ContextLink>>.None,
@@ -451,14 +626,25 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
         session.Events.StartStream<TaskAggregate>(taskId, [.. lifecycle, claimed]);
         session.Store(new TaskLease { Id = taskId, NodeId = node.NodeId, LeaseGeneration = 1, HeartbeatAt = Now });
 
+        // RanFullScope, HeadSha and VerifyCommandsFingerprint set to what a real first gate pass
+        // (VerificationRunner's own always-full initial gate) would actually record, rather than
+        // the fields' own conservative defaults — several Settling-gate tests below rely on this
+        // seed representing a genuinely comparable prior full gate. recordVerifyCommandsFingerprint
+        // lets a caller instead seed the shape a stream written before that field existed has: a
+        // real RanFullScope/HeadSha pair with no fingerprint ever recorded (independent pre-PR
+        // review, cycle 3, adversarial lens).
         session.Events.StartStream<RunAggregate>(runId,
             new RunDispatched(runId, taskId, node.NodeId, node.OwnerId, 1, mainSessionId,
                 worktreePath, "task/review-me", ExecutorMode.Subscription, Now),
             new AgentSessionCompleted(runId, Now),
-            new VerificationPassed(runId, Now));
+            new VerificationPassed(
+                runId, Now, RanFullScope: true, HeadSha: headSha,
+                VerifyCommandsFingerprint: recordVerifyCommandsFingerprint
+                    ? Hall9k.Domain.Features.Project.VerifyCommand.Fingerprint(verifyCommands)
+                    : null));
         await session.SaveChangesAsync(cancellationToken);
 
-        return (taskId, runId, worktreePath);
+        return (taskId, runId, worktreePath, projectId);
     }
 
     private static string SettingsArgument(AgentSpawnRequest request) =>

@@ -330,6 +330,18 @@ public sealed class RunAggregate
     /// <summary>The worktree HEAD <see cref="LastGateRanFullScope"/>'s gate ran against; null when it could not be read. Never trusted alone — a full scope over a HEAD that has since moved is not a full scope over the tip about to settle.</summary>
     public string? LastGateHeadSha { get; private set; }
 
+    /// <summary>
+    /// The project's <see cref="Hall9k.Domain.Features.Project.VerifyCommand.Fingerprint"/> at the
+    /// time <see cref="LastGateRanFullScope"/>'s gate ran (Copilot review, PR #62). A HEAD match
+    /// alone cannot tell "the same gates ran" from "a human changed the project's verify commands
+    /// mid-run while the tip stayed put" — this is the other half of that check, compared against
+    /// a fresh read of the project's current gates at settling time. Null on any stream written
+    /// before this field existed — read by <c>ReviewEngine.VerifyCommandsFingerprintMatchesAsync</c>
+    /// as a match rather than a mismatch, since an unrecorded fingerprint is an unobserved fact, not
+    /// an observed change (independent pre-PR review, cycle 3, adversarial lens).
+    /// </summary>
+    public string? LastGateVerifyCommandsFingerprint { get; private set; }
+
     /// <summary>The <see cref="PendingHumanFindings"/> value in force when <see cref="LastFixRoundCycle"/>'s round dispatched — see that field's own doc for why this pairing matters.</summary>
     public string? LastFixRoundHumanFindings { get; private set; }
 
@@ -487,6 +499,7 @@ public sealed class RunAggregate
         _failedGates.Clear();
         LastGateRanFullScope = @event.RanFullScope;
         LastGateHeadSha = @event.HeadSha;
+        LastGateVerifyCommandsFingerprint = @event.VerifyCommandsFingerprint;
     }
 
     public void Apply(GateRetried @event) => GateRetries++;

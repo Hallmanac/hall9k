@@ -153,12 +153,13 @@ public sealed partial class VerificationRunner(
         }
 
         IReadOnlyList<VerifyCommand> gates = project?.VerifyCommands ?? [];
+        string gatesFingerprint = VerifyCommand.Fingerprint(gates);
         if (gates.Count == 0)
         {
             string? noGatesHeadSha = await GetHeadShaAsync(run.WorktreePath, cancellationToken);
             await RecordPassAsync(
                 runId, "No verification gates configured for this project.", ranFullScope: true, noGatesHeadSha,
-                cancellationToken);
+                gatesFingerprint, cancellationToken);
             logger.LogInformation("Run {RunId} verification passed: no gates configured", runId);
             return true;
         }
@@ -322,7 +323,7 @@ public sealed partial class VerificationRunner(
                     : "scoped";
 
         string? passHeadSha = await GetHeadShaAsync(run.WorktreePath, cancellationToken);
-        await RecordPassAsync(runId, note, ranFullScope, passHeadSha, cancellationToken);
+        await RecordPassAsync(runId, note, ranFullScope, passHeadSha, gatesFingerprint, cancellationToken);
         logger.LogInformation(
             "Run {RunId} verification passed ({Count} gate(s)){TestGateSummary}",
             runId, gates.Count,
@@ -621,10 +622,13 @@ public sealed partial class VerificationRunner(
     }
 
     private async Task RecordPassAsync(
-        Guid runId, string? note, bool ranFullScope, string? headSha, CancellationToken cancellationToken)
+        Guid runId, string? note, bool ranFullScope, string? headSha, string verifyCommandsFingerprint,
+        CancellationToken cancellationToken)
     {
         await using IDocumentSession session = store.LightweightSession();
-        session.Events.Append(runId, new VerificationPassed(runId, DateTimeOffset.UtcNow, note, ranFullScope, headSha));
+        session.Events.Append(
+            runId,
+            new VerificationPassed(runId, DateTimeOffset.UtcNow, note, ranFullScope, headSha, verifyCommandsFingerprint));
         await session.SaveChangesAsync(cancellationToken);
     }
 

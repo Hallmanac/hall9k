@@ -199,17 +199,48 @@ public sealed class ReviewEngine(
                     // reachable only through a human's own resolve (DeriveReviewPhase's own route to
                     // Settling — every review pass in the cycle already concluded clean — can never
                     // land here with HEAD having moved, since nothing commits to the worktree between
-                    // a cycle's own gate and its passes landing), so the extra check is scoped to
-                    // <see cref="RunAggregate.HumanEndedTheLoop"/> rather than applied unconditionally:
-                    // widening it to every Settling entry forced a redundant full gate and a whole
-                    // extra FinalFullPass dispatch onto the run's own clean, human-free convergence
-                    // path too, which is not this finding's defect and not worth paying for on every
-                    // settle.
+                    // a cycle's own gate and its passes landing), so the HEAD comparison's own extra
+                    // git call is scoped to <see cref="RunAggregate.HumanEndedTheLoop"/> rather than
+                    // applied unconditionally: widening THAT half to every Settling entry forced a
+                    // redundant full gate and a whole extra FinalFullPass dispatch onto the run's own
+                    // clean, human-free convergence path too, which is not this finding's defect and
+                    // not worth paying for on every settle. The verify-commands fingerprint below is
+                    // a different, cheaper check with a different gap (a human editing verify
+                    // settings mid-run, which moves nothing this HEAD argument covers), so it runs
+                    // unconditionally rather than sharing that scoping.
                     bool needsFullGateBeforeSettling = NeedsFullGateBeforeSettling(run);
-                    bool gateAlreadyRanFullOverCurrentHead = needsFullGateBeforeSettling || run.HumanEndedTheLoop
-                        ? await GateAlreadyRanFullOverCurrentHeadAsync(context, run, cancellationToken)
-                        : true;
+
+                    // A pure store read (Marten only, no git call), so unlike the HEAD comparison
+                    // below it can run on every Settling entry — including the ordinary
+                    // clean-convergence path (mode never left Discovery, no fix dispatched, no
+                    // human involved), which is the one path neither needsFullGateBeforeSettling
+                    // nor HumanEndedTheLoop ever visits and so is the one path a human editing the
+                    // project's verify commands mid-run — nothing else moves: no commit, no fix,
+                    // no resolve — would otherwise never be caught by (independent pre-PR review,
+                    // cycle 1, adversarial lens: the fingerprint half of
+                    // GateAlreadyRanFullOverCurrentHeadAsync was reachable only from inside that
+                    // method, which this path never called). Only consulted when there is a
+                    // genuinely comparable full gate on record (RanFullScope and a HeadSha) —
+                    // when there is not, the fingerprint question is moot and this defers to the
+                    // needsFullGateBeforeSettling/HumanEndedTheLoop checks below exactly as before,
+                    // rather than forcing a mandatory gate for a run whose most recent pass never
+                    // claimed to be a comparable full one in the first place.
+                    bool lastGateHasComparableFullScope = run.LastGateRanFullScope && run.LastGateHeadSha is not null;
+                    bool verifyCommandsFingerprintChanged = lastGateHasComparableFullScope
+                        && !await VerifyCommandsFingerprintMatchesAsync(context, run, cancellationToken);
+                    // A fingerprint mismatch already answers the "already ran full over this
+                    // head" question on its own (GateAlreadyRanFullOverCurrentHeadAsync's own doc:
+                    // a mismatch falls through to false before ever reaching its HEAD comparison),
+                    // so this skips calling back into it and paying its store read a second time
+                    // (Copilot review, PR #86 — the fingerprint-only trigger path re-queried the
+                    // same fingerprint it had just computed above).
+                    bool gateAlreadyRanFullOverCurrentHead = verifyCommandsFingerprintChanged
+                        ? false
+                        : needsFullGateBeforeSettling || run.HumanEndedTheLoop
+                            ? await GateAlreadyRanFullOverCurrentHeadAsync(context, run, cancellationToken)
+                            : true;
                     if (needsFullGateBeforeSettling
+                        || verifyCommandsFingerprintChanged
                         || (run.HumanEndedTheLoop && !gateAlreadyRanFullOverCurrentHead))
                     {
                         // The per-track cycle caps cannot bound this on their own (cycle-3 finding):
@@ -243,12 +274,20 @@ public sealed class ReviewEngine(
                             return false;
                         }
 
-                        if (run.HumanEndedTheLoop)
+                        // needsFullGateBeforeSettling is the only reason left standing that means a
+                        // fresh-context reviewer has never read this cycle's own commits (its own doc:
+                        // a Verify-mode cycle's own reverify was scoped, or a fix landed this cycle) —
+                        // that is what "a moved HEAD or a dispatched fix earns another reviewer pass"
+                        // actually means. A human's own resolution, or a bare verify-commands change
+                        // with neither of those true, never moved anything a reviewer would read
+                        // differently: the diff already converged clean under this very cycle's own
+                        // fresh-context passes (independent pre-PR review, cycle 3, adversarial lens —
+                        // dispatching a whole extra FinalFullPass here re-reads a byte-identical tip a
+                        // second time and spends it against MaxFinalFullPassRounds for nothing). The
+                        // gate above is what neither case ever covered, and it has now actually run,
+                        // so the run may settle.
+                        if (run.HumanEndedTheLoop || !needsFullGateBeforeSettling)
                         {
-                            // The human already gave their verdict on this diff; MaySettle's own
-                            // exemption is precisely that dispatching another agent pass over it
-                            // would be presumptuous. The full gate above is what that exemption
-                            // never covered, and it has now actually run, so the run may settle.
                             await SettleAsync(run, cancellationToken);
                             break;
                         }
@@ -2240,23 +2279,64 @@ public sealed class ReviewEngine(
         run.CurrentCycleMode == ReviewMode.Verify || run.FixDispatchedThisCycle;
 
     /// <summary>
+    /// Whether the project's CURRENT <see cref="VerifyCommand.Fingerprint"/> still matches
+    /// <see cref="RunAggregate.LastGateVerifyCommandsFingerprint"/> — a pure store read, deliberately
+    /// split out of <see cref="GateAlreadyRanFullOverCurrentHeadAsync"/> so the call site can consult
+    /// it on every Settling entry without paying that method's git call too. Read fresh here rather
+    /// than off <see cref="ReviewContext.Project"/>: that snapshot is loaded once at the very top of
+    /// <see cref="DriveAsync"/>, before this run's own review passes and fix sessions — which can
+    /// each run for real wall-clock minutes to hours — ever dispatch, so a setting changed anywhere
+    /// in this run's lifetime would otherwise never be seen by this check. A null
+    /// <see cref="RunAggregate.LastGateVerifyCommandsFingerprint"/> — a stream written before this
+    /// field existed — reads as a match rather than a mismatch (independent pre-PR review, cycle 3,
+    /// adversarial lens): the fingerprint was never observed, not observed-and-different, and
+    /// treating an unobserved field as an observed change is exactly the guess AGENTS.md's "never
+    /// guess at unobserved facts" rule forbids. Both callers rely on this: it is what keeps a
+    /// never-recorded fingerprint from forcing a redundant Settling gate on its own, and what lets
+    /// <see cref="GateAlreadyRanFullOverCurrentHeadAsync"/>'s skip fire on such a stream instead of
+    /// being permanently denied by a comparison that could never succeed.
+    /// </summary>
+    private async Task<bool> VerifyCommandsFingerprintMatchesAsync(
+        ReviewContext context, RunAggregate run, CancellationToken cancellationToken)
+    {
+        if (run.LastGateVerifyCommandsFingerprint is null)
+        {
+            return true;
+        }
+
+        await using IQuerySession query = store.QuerySession();
+        ProjectDetails? project = await query.LoadAsync<ProjectDetails>(context.Project.Id, cancellationToken);
+        return project is not null
+            && run.LastGateVerifyCommandsFingerprint == VerifyCommand.Fingerprint(project.VerifyCommands);
+    }
+
+    /// <summary>
     /// Whether the run's own most recently recorded gate pass already covered the worktree's
     /// current tip at full scope (cycle-3 finding), so the Settling branch's own mandatory full
     /// pass would be re-running the identical suite over the identical commits. True only when
-    /// <see cref="RunAggregate.LastGateRanFullScope"/> is set AND a fresh read of the worktree's
-    /// HEAD matches <see cref="RunAggregate.LastGateHeadSha"/> exactly — a scoped preceding gate,
-    /// an unread HEAD, or a HEAD that moved (a fix landed more commits since) all fall through to
-    /// false, which is what keeps the unconditional full gate whenever the preceding one was
-    /// scoped or the tip has moved (task: a fix cycle's verification gate). The common case this
-    /// actually fires for is a "scoped" <see cref="ReviewMode.Verify"/> reverify whose own gate
-    /// fell back to full because the fix's commits touched something <see cref="TestScopeResolver"/>
-    /// cannot map (a doc file, most often) — the reverify already paid full price for this exact
-    /// tip, so a second full pass here would buy nothing.
+    /// <see cref="RunAggregate.LastGateRanFullScope"/> is set, a fresh read of the worktree's HEAD
+    /// matches <see cref="RunAggregate.LastGateHeadSha"/> exactly, AND the project's CURRENT
+    /// <see cref="VerifyCommand.Fingerprint"/> — via <see cref="VerifyCommandsFingerprintMatchesAsync"/>
+    /// — matches <see cref="RunAggregate.LastGateVerifyCommandsFingerprint"/>: a scoped preceding
+    /// gate, an unread HEAD, a HEAD that moved (a fix landed more commits since), or a project
+    /// whose verify commands changed since that gate ran (Copilot review, PR #62 — a human editing
+    /// verify settings mid-run while HEAD stays put would otherwise skip the gate the new settings
+    /// have never actually run) all fall through to false, which is what keeps the unconditional
+    /// full gate in every one of those cases (task: a fix cycle's verification gate). The common
+    /// case this actually fires for is a "scoped" <see cref="ReviewMode.Verify"/> reverify whose
+    /// own gate fell back to full because the fix's commits touched something
+    /// <see cref="TestScopeResolver"/> cannot map (a doc file, most often) — the reverify already
+    /// paid full price for this exact tip, so a second full pass here would buy nothing.
     /// </summary>
     private async Task<bool> GateAlreadyRanFullOverCurrentHeadAsync(
         ReviewContext context, RunAggregate run, CancellationToken cancellationToken)
     {
         if (!run.LastGateRanFullScope || run.LastGateHeadSha is null)
+        {
+            return false;
+        }
+
+        if (!await VerifyCommandsFingerprintMatchesAsync(context, run, cancellationToken))
         {
             return false;
         }
