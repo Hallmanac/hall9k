@@ -94,6 +94,16 @@ public static class Hall9kDatabase
     }
 
     /// <summary>
+    /// The raw connection string sitting in the platform config file, ignoring the
+    /// higher-precedence environment variable that <see cref="Resolve"/> would return instead
+    /// when it is set — the value an autostarted daemon (no shell, so no environment variable
+    /// of its own) would actually resolve to. <c>null</c> when the file is missing, malformed,
+    /// or present without the key; callers that need to tell those apart use
+    /// <see cref="ConnectionStringStateInConfigFile"/> first.
+    /// </summary>
+    public static string? ConnectionStringInConfigFile() => ReadConfigFile(out _);
+
+    /// <summary>
     /// Missing, malformed, and present-without-the-key each want their own remedy text (cycle-6
     /// review), so a caller writing a warning needs to tell them apart rather than reporting all
     /// three as "does not exist".
