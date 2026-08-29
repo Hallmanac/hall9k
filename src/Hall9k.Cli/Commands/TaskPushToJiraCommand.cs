@@ -18,15 +18,17 @@ namespace Hall9k.Cli.Commands;
 
 /// <summary>
 /// Ask for this task to be written up as a Jira card (backlog 18). It records the request and
-/// rings the doorbell; the daemon dispatches an agent session that actually writes the card.
+/// rings the doorbell; the daemon dispatches an agent session that composes the card payload.
 /// <para>
-/// The platform does not create the card itself, and that is the central design decision rather
-/// than a staging limitation. Reading Jira is configuration-agnostic — a GET answers the same
-/// shape however exotic a project's issue types are — but writing it is configuration all the way
-/// down: which type a "dev task" is, which fields are mandatory, which board a support request is
-/// routed to. Those rules belong to the organisation, and a team that has them already has them
-/// written down. So the session is dispatched into the project's repository, where its own Claude
-/// skills are, and it uses the owner's MCP access exactly as a person on that team would.
+/// The platform does not decide the card's content itself, and that is the central design
+/// decision rather than a staging limitation. Reading Jira is configuration-agnostic — a GET
+/// answers the same shape however exotic a project's issue types are — but writing it is
+/// configuration all the way down: which type a "dev task" is, which fields are mandatory, which
+/// board a support request is routed to. Those rules belong to the organisation, and a team that
+/// has them already has them written down. So the session is dispatched into the project's
+/// repository, where its own Claude skills are, to work out what the card should look like — but
+/// it makes no Jira call itself (Decisions Log #99): it composes a payload and submits it through
+/// <c>h9k task write-jira</c>, which is the sole executor of every Jira write.
 /// </para>
 /// </summary>
 public sealed class TaskPushToJiraCommand : Hall9kAsyncCommand<TaskPushToJiraCommand.Settings>
