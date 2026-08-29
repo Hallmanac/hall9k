@@ -1013,18 +1013,18 @@ and the daemon routes it away instead (`ReviewFindingRouted`), inert until a hum
 it — but where it lands then splits by grade (`ReviewSeverity.MeetsFixBar`): a **Medium**
 still mints its own **draft bug task**, exactly as every non-high did before this split
 existed, while a **Low** instead folds into the project's one standing **sweep** draft
-(`SweepDraftTask`, Decisions Log #99) — so a serious
-pre-existing defect can never be buried in a polish pile, and eight one-line Low findings
-cost one build-gate-review pipeline instead of eight. A failed draft creation, of either
-kind, is recorded as a failed routing and never fails the review loop; it is counted apart
-from the routings that worked, because no draft exists for it. A defect is routed **once
-per run**: the fix session is told to leave
-a routed line alone and every later reviewer has fresh context, so the same line comes back
-for as long as anything else keeps the loop alive, and re-routing it would turn one defect
-into one inert draft per cycle. Two reports are the same defect when they name the same
-*place* rather than the same string (`ReviewFindingLocations`), so `src/Legacy.cs:40` and
-`./Legacy.cs:40` match; a different stated line in the same file deliberately does not, because
-collapsing by file would swallow a second, genuinely different defect.
+(`SweepDraftTask`, Decisions Log #99) — so a serious pre-existing defect can never be
+buried in a polish pile, and eight one-line Low findings cost one build-gate-review
+pipeline instead of eight. A failed draft creation, of either kind, is recorded as a failed
+routing and never fails the review loop; it is counted apart from the routings that worked,
+because no draft exists for it. A defect is routed **once per run**: the fix session is
+told to leave a routed line alone and every later reviewer has fresh context, so the same
+line comes back for as long as anything else keeps the loop alive, and re-routing it would
+turn one defect into one inert draft per cycle. Two reports are the same defect when they
+name the same *place* rather than the same string (`ReviewFindingLocations`), so
+`src/Legacy.cs:40` and `./Legacy.cs:40` match; a different stated line in the same file
+deliberately does not, because collapsing by file would swallow a second, genuinely
+different defect.
 
 **A ride-along (Decisions Log #87) is settled within its own cycle, never carried into a later
 one.** It lands in the cycle's own merged findings artifact under its own disposition group.
