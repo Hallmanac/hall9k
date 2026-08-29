@@ -74,7 +74,7 @@ public static class Hall9kDatabase
                 fromEnvironment, ConnectionStringOrigin.EnvironmentVariable, EnvironmentVariableName);
         }
 
-        string? fromConfigFile = ReadConfigFile(out bool configFileMalformed);
+        string? fromConfigFile = ReadConfigFile(out bool configFileMalformed, out bool configFileUnreadable);
         if (fromConfigFile is { Length: > 0 })
         {
             return new ConnectionStringResolution(fromConfigFile, ConnectionStringOrigin.PlatformConfigFile, ConfigFile);
@@ -87,6 +87,15 @@ public static class Hall9kDatabase
             // stops here rather than falling through to the project override tier as though
             // the platform config file had never been touched.
             return new ConnectionStringResolution(null, ConnectionStringOrigin.PlatformConfigFileMalformed, ConfigFile);
+        }
+
+        if (configFileUnreadable)
+        {
+            // Distinct from the malformed case above: the file may be perfectly valid JSON that
+            // this process simply could not open, so the remedy is access, not syntax, and
+            // reporting it as "not valid JSON" would send an operator hunting for a typo that
+            // is not there.
+            return new ConnectionStringResolution(null, ConnectionStringOrigin.PlatformConfigFileUnreadable, ConfigFile);
         }
 
         if (FindProjectOverride(startDirectory ?? Directory.GetCurrentDirectory()) is { } projectOverride)
@@ -103,10 +112,12 @@ public static class Hall9kDatabase
     /// higher-precedence environment variable that <see cref="Resolve"/> would return instead
     /// when it is set, which is the value an autostarted daemon (no shell, so no environment
     /// variable of its own) would actually resolve to — together with which of missing,
-    /// malformed, present-without-the-key, or supplied it is (each wants its own remedy text,
-    /// cycle-6 review). Reads state and value in a single pass rather than as two separate
-    /// calls, which would risk the file changing in between (a concurrent <c>h9k config set</c>,
-    /// an editor save) and leaving the two answers disagreeing with each other (cycle-6 review).
+    /// malformed, unreadable, present-without-the-key, or supplied it is (each wants its own
+    /// remedy text, cycle-6 review), so a caller writing a warning needs to tell them apart
+    /// rather than reporting all four as "does not exist". Reads state and value in a single pass
+    /// rather than as two separate calls, which would risk the file changing in between (a
+    /// concurrent <c>h9k config set</c>, an editor save) and leaving the two answers disagreeing
+    /// with each other (cycle-6 review).
     /// </summary>
     public static (ConfigFileConnectionStringState State, string? Value) ConnectionStringStateAndValueInConfigFile()
     {
@@ -115,10 +126,15 @@ public static class Hall9kDatabase
             return (ConfigFileConnectionStringState.Missing, null);
         }
 
-        string? value = ReadConfigFile(out bool malformed);
+        string? value = ReadConfigFile(out bool malformed, out bool unreadable);
         if (malformed)
         {
             return (ConfigFileConnectionStringState.Malformed, null);
+        }
+
+        if (unreadable)
+        {
+            return (ConfigFileConnectionStringState.Unreadable, null);
         }
 
         return value is { Length: > 0 }
@@ -146,8 +162,15 @@ public static class Hall9kDatabase
     /// <summary>
     /// This is the doctor's own write, run only after an operator has explicitly accepted the
     /// start-offer — a config file broken beyond parsing is not a reason to crash mid-fix.
-    /// Whatever else was in it is unrecoverable anyway (it could not be parsed), so a
-    /// malformed file starts fresh rather than taking the write down with the read.
+    /// Whatever else was in it is unrecoverable anyway (it could not be parsed), so a malformed
+    /// file starts fresh rather than taking the write down with the read. A file that exists but
+    /// cannot be read at all is a different case and is deliberately not caught here: unlike
+    /// invalid JSON, an unreadable file's other keys (the operating-settings section among them)
+    /// are not lost, just momentarily inaccessible, so collapsing it into "start fresh" would let
+    /// the write silently overwrite them the moment the read failure clears. <see
+    /// cref="IOException"/>/<see cref="UnauthorizedAccessException"/> propagate instead, exactly
+    /// as they did before this file could tell "unreadable" apart from "malformed" at all
+    /// (cycle-1 adversarial finding, `Hall9kDatabase.cs:185`).
     /// </summary>
     private static async Task<PlatformConfigDocument> ReadExistingDocumentAsync(CancellationToken cancellationToken)
     {
@@ -168,14 +191,29 @@ public static class Hall9kDatabase
     }
 
     /// <summary>
-    /// <paramref name="malformed"/> is true only when the file exists but is not valid JSON —
-    /// distinct from "absent", so a caller can tell "nothing configured" apart from "something
-    /// is configured, but this file is broken", rather than sending an operator whose
-    /// config.json has a typo in it toward "configure a connection string".
+    /// <paramref name="malformed"/> and <paramref name="unreadable"/> are each true only when the
+    /// file exists but could not be read as a connection string, and name two different causes
+    /// rather than one: <paramref name="malformed"/> for invalid JSON, <paramref name="unreadable"/>
+    /// for an <see cref="IOException"/>/<see cref="UnauthorizedAccessException"/> reading it (an
+    /// existing file this process simply could not open, e.g. permissions dropped by another
+    /// account or an exclusive lock held elsewhere) — kept apart because they call for different
+    /// remedies (fix the JSON vs. fix access to the file), and both distinct from "absent", so a
+    /// caller can tell "nothing configured" apart from "something is configured, but this file is
+    /// broken". <see cref="PlatformConfigFile"/>'s own <c>ReadDocumentAsync</c> and
+    /// <c>Hall9k.Daemon.PlatformConfigFileSource.Insert</c> guard two other readers of this file
+    /// the identical way, distinguishing the same two causes rather than collapsing them. A third
+    /// reader, <see cref="ReadExistingDocumentAsync"/> just above — called by
+    /// <see cref="WriteConfiguredConnectionStringAsync"/>, both from the doctor's own start-offer
+    /// write and from <c>h9k install</c>'s unconfigured-machine write (Decisions Log #99) — keeps
+    /// the same distinction rather than collapsing it: a malformed file still starts fresh (its
+    /// content is unrecoverable either way), but an unreadable one propagates the read exception
+    /// instead of silently overwriting keys that are only momentarily inaccessible, not actually
+    /// lost (cycle-1 adversarial finding, `Hall9kDatabase.cs:185`).
     /// </summary>
-    private static string? ReadConfigFile(out bool malformed)
+    private static string? ReadConfigFile(out bool malformed, out bool unreadable)
     {
         malformed = false;
+        unreadable = false;
         if (!File.Exists(ConfigFile))
         {
             return null;
@@ -190,6 +228,11 @@ public static class Hall9kDatabase
         catch (JsonException)
         {
             malformed = true;
+            return null;
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            unreadable = true;
             return null;
         }
     }
