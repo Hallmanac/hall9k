@@ -274,26 +274,33 @@ public static class JiraWriteCoordinator
     }
 
     /// <summary>
-    /// Link a card twg just created and verified, tolerant of the one race worth naming: a human
-    /// or another node linking this task to something else in the moment between the create being
+    /// Link a card twg just created and verified, tolerant of any failure at all: the write itself
+    /// is already safely recorded by the time this runs (<see cref="RecordSuccessAsync"/> saves it
+    /// first), so nothing here may ever be allowed to propagate back into <see cref="AttemptAsync"/>'s
+    /// own catch clauses, which record a <em>write</em> failure — and would find
+    /// <c>PendingJiraWriteId</c> already cleared by the success just saved, so
+    /// <see cref="TaskDecider.RecordJiraWriteFailure"/> would throw its own <see cref="DomainConflictException"/>
+    /// out of the coordinator entirely, replacing the real error with an unrelated one (independent
+    /// pre-PR review, adversarial lens, cycle 9). The two named causes are a lost race — a human or
+    /// another node linking this task to something else in the moment between the create being
     /// requested (which the decider refuses unless the task carries no reference yet) and this
-    /// call. The write itself is already safely recorded by the time this runs
-    /// (<see cref="RecordSuccessAsync"/> saves it first), so a lost race here costs a card that is
-    /// not yet reflected in <see cref="ExternalReference"/> rather than an unrecorded write.
+    /// call — and a validation refusal from a key twg answered with but left blank; either way a
+    /// lost race or a refusal here costs a card that is not yet reflected in
+    /// <see cref="ExternalReference"/> rather than an unrecorded write.
     /// </summary>
     private static async Task<JiraWriteAttemptResult> LinkCreatedCardAsync(
         IDocumentSession session, Guid taskId, TwgWriteResult result, Guid requestedByOwnerId, CancellationToken cancellationToken)
     {
-        TaskAggregate task = await session.Events.AggregateStreamAsync<TaskAggregate>(taskId, token: cancellationToken)
-            ?? throw new DomainNotFoundException($"No task {taskId}.");
-        ExternalReference reference = new(WorkItemProvider.Jira, result.IssueKey);
-        if (TaskDecider.AlreadyLinkedTo(task, reference))
-        {
-            return new JiraWriteAttemptResult(JiraWriteOutcome.Succeeded, result.IssueKey, result.Summary);
-        }
-
         try
         {
+            TaskAggregate task = await session.Events.AggregateStreamAsync<TaskAggregate>(taskId, token: cancellationToken)
+                ?? throw new DomainNotFoundException($"No task {taskId}.");
+            ExternalReference reference = new(WorkItemProvider.Jira, result.IssueKey);
+            if (TaskDecider.AlreadyLinkedTo(task, reference))
+            {
+                return new JiraWriteAttemptResult(JiraWriteOutcome.Succeeded, result.IssueKey, result.Summary);
+            }
+
             // Neither the title nor the status was actually read here: the create's own
             // verification search only ever confirms the key exists (TwgJiraExecutor.VerifyAsync),
             // so both observed fields are the honest "unknown" WorkItemLinked's own contract asks
@@ -306,7 +313,7 @@ public static class JiraWriteCoordinator
             await session.SaveChangesAsync(cancellationToken);
             return new JiraWriteAttemptResult(JiraWriteOutcome.Succeeded, result.IssueKey, result.Summary);
         }
-        catch (DomainConflictException exception)
+        catch (Exception exception) when (exception is not OperationCanceledException)
         {
             return new JiraWriteAttemptResult(
                 JiraWriteOutcome.Succeeded,
