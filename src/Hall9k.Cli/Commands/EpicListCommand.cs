@@ -41,8 +41,8 @@ public sealed class EpicListCommand : Hall9kAsyncCommand<EpicListCommand.Setting
             return ExitCodes.Ok;
         }
 
-        List<EpicDetails> matched = [.. epics
-            .Where(epic => project is null || epic.ProjectId == project.Id)
+        List<EpicDetails> scoped = [.. epics.Where(epic => project is null || epic.ProjectId == project.Id)];
+        List<EpicDetails> matched = [.. scoped
             .Where(epic => state is null || epic.State == state)
             .OrderByDescending(epic => epic.AddedAt)];
         if (matched.Count == 0)
@@ -56,7 +56,7 @@ public sealed class EpicListCommand : Hall9kAsyncCommand<EpicListCommand.Setting
             session, DateTimeOffset.UtcNow, cancellationToken);
         Dictionary<Guid, TaskRollup> rollups = rows
             .Where(row => row.EpicId is not null)
-            .GroupBy(row => row.EpicId!.Value)
+            .GroupBy(row => row.EpicId is { } epicId ? epicId : default)
             .ToDictionary(group => group.Key, TaskRollup.From);
         Dictionary<Guid, string> projects = (await session.Query<ProjectDetails>()
             .ToListAsync(cancellationToken)).ToDictionary(p => p.Id, p => p.Name);
@@ -88,12 +88,53 @@ public sealed class EpicListCommand : Hall9kAsyncCommand<EpicListCommand.Setting
         }
 
         AnsiConsole.Write(table);
-        AnsiConsole.MarkupLine(
-            $"[dim]{matched.Count} epic{(matched.Count == 1 ? string.Empty : "s")} — see one's tasks:[/] "
-            + $"h9k epic show {TaskListCommand.ShortId(matched[0].Id)} [dim]· filter tasks by epic:[/] "
-            + $"h9k task list --epic {TaskListCommand.ShortId(matched[0].Id)}");
+        AnsiConsole.MarkupLine(Footer(matched, scoped, project, state));
         return ExitCodes.Ok;
     }
+
+    /// <summary>
+    /// Names the state scope actually shown, and what the default open-only filter left out — the
+    /// same discipline <c>TaskListCommand.Footer</c> and <c>IdeaListCommand.Footer</c> already hold,
+    /// so a bare count here never reads as a claim about every epic on the install.
+    /// </summary>
+    internal static string Footer(
+        IReadOnlyList<EpicDetails> matched, IReadOnlyList<EpicDetails> scoped, ProjectDetails? project,
+        EpicState? state)
+    {
+        string scope = $"{matched.Count} epic{(matched.Count == 1 ? string.Empty : "s")}{Scope(project, state)}";
+        return $"[dim]{scope}{Elsewhere(scoped, project, state)} — see one's tasks:[/] "
+            + $"h9k epic show {TaskListCommand.ShortId(matched[0].Id)} [dim]· filter tasks by epic:[/] "
+            + $"h9k task list --epic {TaskListCommand.ShortId(matched[0].Id)}";
+    }
+
+    private static string Scope(ProjectDetails? project, EpicState? state)
+    {
+        string scope = project is null ? string.Empty : $" in {project.Name.EscapeMarkup()}";
+        return state is null ? $"{scope}, every state" : $"{scope} {state.Value.ToLowerInvariant()}";
+    }
+
+    /// <summary>What the state filter is hiding, counted and named by the state it is actually in.</summary>
+    private static string Elsewhere(IReadOnlyList<EpicDetails> scoped, ProjectDetails? project, EpicState? state)
+    {
+        if (state is null)
+        {
+            return string.Empty;
+        }
+
+        string[] named = [.. scoped
+            .Where(epic => epic.State != state)
+            .GroupBy(epic => epic.State)
+            .OrderBy(group => group.Key == EpicState.Open ? 0 : 1)
+            .Select(group => $"{group.Count()} {group.Key.Value.ToLowerInvariant()}")];
+
+        return named.Length == 0
+            ? string.Empty
+            : $" · {string.Join(", ", named)} — see them with: h9k epic list --state all{Repeat(project)}";
+    }
+
+    /// <summary>The active filters, echoed so --state all keeps the view the reader is looking at.</summary>
+    private static string Repeat(ProjectDetails? project) =>
+        project is null ? string.Empty : $" --project {project.Name.EscapeMarkup()}";
 
     private static string StateMarkup(EpicState state) => state.Value switch
     {
