@@ -44,4 +44,12 @@ public sealed class TaskReviseCommandTests
     {
         TaskReviseCommand.NamesCurrentEpic(DomainId.New().ToString(), currentEpicId: null).Should().BeFalse();
     }
+
+    [Fact]
+    public void A_dashes_only_fragment_never_matches_any_epic()
+    {
+        Guid currentEpicId = DomainId.New();
+
+        TaskReviseCommand.NamesCurrentEpic("-", currentEpicId).Should().BeFalse();
+    }
 }

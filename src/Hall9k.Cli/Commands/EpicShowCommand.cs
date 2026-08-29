@@ -31,7 +31,7 @@ public sealed class EpicShowCommand : Hall9kAsyncCommand<EpicShowCommand.Setting
         Table header = new Table().Border(TableBorder.None).HideHeaders();
         header.AddColumns("k", "v");
         header.AddRow("[bold]Epic[/]", $"[bold]{epic.Title.EscapeMarkup()}[/]");
-        header.AddRow("State", epic.State == EpicState.Open ? "[green]Open[/]" : "[dim]Closed[/]");
+        header.AddRow("State", EpicListCommand.StateMarkup(epic.State));
         header.AddRow("Id", $"[dim]{epic.Id}[/]");
         header.AddRow("Project", project?.Name.EscapeMarkup() ?? $"[dim]id {epic.ProjectId}[/]");
         if (epic.JiraReference.IsNotBlank())

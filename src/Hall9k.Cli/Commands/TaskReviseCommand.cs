@@ -140,12 +140,21 @@ public sealed class TaskReviseCommand : Hall9kAsyncCommand<TaskReviseCommand.Set
                 ? Optional<IReadOnlyList<Guid>>.Of(await ResolveAsync(session, blockedBy, cancellationToken))
                 : Optional<IReadOnlyList<Guid>>.None;
 
+        bool namesCurrentEpic = !settings.ClearEpic && epic.IsNotBlank() && NamesCurrentEpic(epic, task.EpicId);
         Optional<Guid?> epicId = settings.ClearEpic
             ? Optional<Guid?>.Of(null)
-            : epic.IsNotBlank() && !NamesCurrentEpic(epic, task.EpicId)
+            : epic.IsNotBlank() && !namesCurrentEpic
                 ? Optional<Guid?>.Of(await EpicIdResolver.ResolveForMembershipAsync(
                     session, epic, task.ProjectId, cancellationToken))
                 : Optional<Guid?>.None;
+
+        if (namesCurrentEpic && objective.IsBlank() && criteria.Count == 0 && agentContext.IsBlank()
+            && !dependencies.HasValue && type.IsBlank() && model.IsBlank())
+        {
+            AnsiConsole.MarkupLine(
+                $"[green]Already in epic[/] {TaskListCommand.ShortId(task.EpicId!.Value)}. [dim]Nothing to do.[/]");
+            return ExitCodes.Ok;
+        }
 
         BootstrapContext context = await NodeBootstrap.EnsureAsync(session, cancellationToken);
         TaskRevised revised = TaskDecider.Revise(
@@ -235,6 +244,11 @@ public sealed class TaskReviseCommand : Hall9kAsyncCommand<TaskReviseCommand.Set
         }
 
         string fragment = epic.Replace("-", "");
+        if (fragment.Length == 0)
+        {
+            return false;
+        }
+
         string full = id.ToString("N");
         return full.StartsWith(fragment, StringComparison.OrdinalIgnoreCase)
             || full.EndsWith(fragment, StringComparison.OrdinalIgnoreCase);
