@@ -245,8 +245,15 @@ public static partial class ReviewVerdictValidation
     /// AGENTS.md. A candidate that contains this shape cannot be trusted for either signal, code
     /// reference or defect vocabulary alike, because there is no way to tell which list item
     /// either one actually belongs to.
+    /// <para>
+    /// Captured in its own group (cycle-1 pre-PR review on the bullet-first split added to
+    /// <see cref="NamesFindingInProse"/>) so <see cref="Regex.Split(string)"/> preserves each
+    /// marker as its own element of the returned array, rather than consuming it: that is what
+    /// lets <see cref="StatesDefectWithinLookahead"/> still see the boundary between two bullets
+    /// after they have been split apart, and stop its walk there instead of reading across it.
+    /// </para>
     /// </summary>
-    [GeneratedRegex(@"\n[ \t]*[-*][ \t]")]
+    [GeneratedRegex(@"(\n[ \t]*[-*][ \t])")]
     private static partial Regex EmbeddedListMarkerPattern();
 
     /// <summary>
@@ -361,12 +368,97 @@ public static partial class ReviewVerdictValidation
     /// forward lookahead, and <see cref="NamesFindingInProse"/>'s backward-pointer branch. Also
     /// screened against the lead-in paragraph's own text now that <see cref="HeadingLikeLeadInPattern"/>
     /// can match a bold lead-in with a same-line trailing label (cycle-2 review): a label that
-    /// already denies its own location ("**`Foo.cs:10`** — nothing wrong here.") must not be read
+    /// already denies its own location ("**`Foo.cs:10`** — nothing here is wrong.") must not be read
     /// as a heading needing to borrow from whatever unrelated defect language happens to sit in
-    /// the next paragraph.
+    /// the next paragraph. <see cref="NamesFindingInProse"/>'s same-sentence check screens against
+    /// this pattern too (cycle-3 review, both lenses): a bullet item that denies a defect at its
+    /// own location ("`Foo.cs:10` — the catch order is correct; nothing is wrong here.") shares its
+    /// sentence with the location rather than borrowing from another one, so this is the one branch
+    /// where the location's own sentence supplies both the "nothing/none" and the vocabulary word,
+    /// not text external to it — which is exactly why <c>nothing</c>/<c>none</c> must be read as
+    /// the sentence's own grammatical subject (followed, within a few words, by a copula —
+    /// "is"/"are"/"was"/"were" — before the vocabulary word) rather than merely co-occurring with
+    /// it anywhere in the same sentence: "does nothing about the problem" or "logs nothing about
+    /// the defect" use "nothing" as a verb's object to describe a real omission, not as the
+    /// sentence's subject denying one, and "there is nothing wrong with the naming, but `Auth.cs:42`
+    /// never disposes the stream" has its copula in front of "nothing", denying a problem with the
+    /// naming rather than with the location that follows. None of these should read as a denial of
+    /// the location's own defect, and requiring the subject-copula shape is what keeps them out
+    /// without narrowing the two idioms above, which already state their copula explicitly
+    /// ("Nothing is wrong", "no defect(s) stand"). The bridging verb need not be a literal copula:
+    /// "Nothing about it stands as a defect." denies the same way "is wrong" does, so
+    /// <c>stands</c>/<c>remains</c>/<c>exists</c> count alongside <c>is</c>/<c>are</c>/<c>was</c>/
+    /// <c>were</c> — the same verbs the "no defect(s) stand(s)" idiom already uses, just with
+    /// "nothing"/"none" as the subject instead of the defect noun.
+    /// <para>
+    /// The subject-copula requirement above closed the two object-of-verb false positives it
+    /// names, but it overshot (cycle-6 verify finding): it also stopped recognizing the most
+    /// canonical denial shape of all, where the vocabulary word directly post-modifies
+    /// "nothing"/"none" with no verb between them at all — "found nothing wrong", "nothing wrong
+    /// here", "found nothing I could verify as broken" (the last one drawn verbatim from a
+    /// recorded adversarial pass on this install). Because all three sentence-scoped branches
+    /// share this one pattern, that regression reopened the denial screen everywhere, not just on
+    /// the heading branch it was written for. A second alternative restores that coverage, but a
+    /// bare "nothing/none … wrong" cannot by itself tell that shape apart from "there is nothing
+    /// wrong with the naming, but `Auth.cs:42` never disposes the stream" — a denial of one thing
+    /// that leaves a different, real defect standing — since both are direct post-modification.
+    /// What distinguishes them is what precedes "nothing": the false-positive shape always has an
+    /// existential copula immediately in front of it ("there IS nothing wrong"), where the
+    /// genuine denial does not ("I found nothing wrong", "nothing wrong here"). The second
+    /// alternative excludes exactly that one preceding shape rather than solving the general
+    /// contrastive-clause question, the same literal, narrow discipline the rest of this pattern
+    /// already follows — it does not, for instance, exclude "nothing wrong" preceded by some
+    /// other copula-free contrastive clause, which is left as the same kind of accepted recall
+    /// gap <see cref="NamesAFinding"/>'s own doc comment already discloses elsewhere in this file.
+    /// </para>
+    /// <para>
+    /// The exclusion above overshot in the other direction (cycle-8 conformance and adversarial
+    /// findings, both independently reproducing the same regression): keying the exclusion off
+    /// whatever precedes "nothing" ("there IS nothing wrong") throws out the single most common
+    /// denial of all, "There is nothing wrong here.", along with every other existential-"there"
+    /// denial that never continues into a contrastive clause at all. What actually distinguishes
+    /// the false-positive shape this exclusion exists for ("there is nothing wrong with the
+    /// naming, but `Auth.cs:42` never disposes the stream") from a plain denial is not what comes
+    /// before "nothing", it is the "but"-led contrastive clause that follows the adjective and
+    /// names a different, real defect — so the exclusion now looks forward for that clause
+    /// instead of backward for the copula, bounded the same 20-30 characters the rest of this
+    /// pattern already bounds its proximity checks to.
+    /// </para>
+    /// <para>
+    /// A verbless denial can also link "nothing"/"none" to its vocabulary word with something
+    /// other than a bare copula (cycle-8 conformance and adversarial findings): "I found nothing
+    /// that qualifies as a defect", "Nothing here amounts to a defect" and "turned up nothing
+    /// worth calling a bug" all deny the same way "nothing is wrong" does, just with a bridging
+    /// verb phrase instead of a one-word copula, so the first alternative's bridging-verb list
+    /// grows to include them rather than treating them as a fourth, structurally separate
+    /// alternative. A partitive denial ("I found none of the defects the objective describes")
+    /// has no verb between "none" and the noun at all, so it gets its own alternative rather than
+    /// stretching the bridging-verb grammar to cover a construction that isn't verb-shaped.
+    /// </para>
+    /// <para>
+    /// The bridging-verb list named only the copula-like verbs a reviewer happened to use when
+    /// this alternative was first written (cycle-9 verify finding, `ReviewVerdictValidation.cs:440`):
+    /// "Nothing else in this delta introduced a defect.", "Nothing there survived verification as
+    /// a defect." and "Nothing else in the delta raised a defect" all deny the same way "nothing
+    /// is wrong" does — "nothing"/"none" as the sentence's own subject, denying that any defect
+    /// exists — just with a verb the list did not enumerate, so they fell through to
+    /// <see cref="DefectLanguagePattern"/> matching the bare noun and crediting a hollow verdict.
+    /// "Introduced"/"raised"/"survived" join the list, drawn verbatim from recorded lens output
+    /// rather than invented, the same discipline every other entry here already follows. The
+    /// intervening-word cap widens from three to four words to reach "else in this/the delta",
+    /// the modifier phrase separating "nothing" from its verb in two of the three recorded
+    /// sentences — four is the exact width those two sentences need, not a round number picked
+    /// for headroom — and it does not reopen the object-of-verb false positives above, since a
+    /// verb reached only by walking past four unrelated words is never one this list enumerates.
+    /// </para>
     /// </summary>
     [GeneratedRegex(
-        @"\b(?:nothing|none)\b[^.!?]{0,40}\b(?:wrong|broken|amiss|defects?|bugs?|issues?|problems?)\b"
+        @"\b(?:nothing|none)\b(?:\s+\w+){0,4}?\s+(?:is|are|was|were|stands?|remains?|exists?|"
+        + @"qualif(?:y|ies)(?:\s+as)?|amounts?\s+to|counts?\s+as|worth\s+calling|"
+        + @"introduced|raised|survived)\b[^.!?]{0,40}"
+        + @"\b(?:wrong|broken|amiss|defects?|bugs?|issues?|problems?)\b"
+        + @"|\b(?:nothing|none)\b[^.!?]{0,30}?\b(?:wrong|broken|amiss)\b(?![^.!?]{0,20}\bbut\b)"
+        + @"|\b(?:nothing|none)\b\s+of\s+the\s+(?:defects?|bugs?|issues?|problems?)\b"
         + @"|\bno\b[^.!?]{0,10}\b(?:defects?|bugs?|issues?|problems?)\s+(?:stands?|remains?|exists?|found)\b",
         RegexOptions.IgnoreCase)]
     private static partial Regex HeadingDenialPattern();
@@ -946,20 +1038,36 @@ public static partial class ReviewVerdictValidation
     /// is only a backward pointer (per <see cref="BackwardPointerPattern"/>), in which case the
     /// defect language is looked for in the sentence before it instead.
     /// <para>
-    /// The same-sentence check is guarded by <see cref="EmbeddedListMarkerPattern"/> too
-    /// (independent pre-PR review, cycle 2, adversarial finding), not only the lookahead
-    /// candidates <see cref="StatesDefectWithinLookahead"/> already guards: <see cref="SentenceBoundary"/>
-    /// cannot split at a bare markdown bullet, so two adjacent list items — a location in one, a
-    /// coincidentally-worded closing remark in the next — arrive here as a single merged
-    /// "sentence" and, without this guard, credited each other directly rather than through the
-    /// lookahead this pattern already screens. The same doc comment on <see cref="EmbeddedListMarkerPattern"/>
-    /// already states the rule: a candidate containing this shape cannot be trusted for either
-    /// signal, because there is no way to tell which list item either one actually belongs to.
+    /// Split at a markdown bullet marker first, one bullet item's own text at a time, and only
+    /// then at <see cref="SentenceBoundary"/> within each bullet (task a77503ff, origin: task
+    /// f39bff24's PR #49 review cycle 3, both lenses independently): <see cref="SentenceBoundary"/>
+    /// alone cannot break at a bare bullet, so a tight list — each item its own complete finding,
+    /// a location and its defect stated together — used to arrive here as one merged "sentence"
+    /// spanning every item, wrongly demoting a real finding. Splitting on the bullet marker first
+    /// keeps each item's own text — and only its own text — in one "sentence", so a self-contained
+    /// bullet finding is credited on the same-sentence check exactly as an ordinary prose finding
+    /// would be. <see cref="EmbeddedListMarkerPattern"/> captures the marker it splits on (cycle-1
+    /// pre-PR review on this very change) rather than consuming it, so it survives as its own
+    /// element between one bullet's sentences and the next's; <see cref="StatesDefectWithinLookahead"/>'s
+    /// own guard against that same pattern is what stops its walk the moment it reaches one, so a
+    /// location in one item still cannot borrow defect language from an unrelated next item, and
+    /// the lookahead below still requires <see cref="ContinuationPattern"/> or
+    /// <see cref="CodeReferencePattern"/> on top of that to credit anything past the boundary. The
+    /// same-sentence check below screens against <see cref="HeadingDenialPattern"/> rather than
+    /// against <see cref="EmbeddedListMarkerPattern"/> itself (cycle-3 pre-PR review, both lenses):
+    /// once a bullet's own text is isolated this way, no element that reaches this check can ever
+    /// contain a list marker (a bare marker element carries no location, so it never passes the
+    /// <see cref="LocationPattern"/> gate above), which made the marker guard here permanently
+    /// unreachable and left one bullet item's own denial idiom ("`Foo.cs:10` — the catch order is
+    /// correct; nothing is wrong here.") credited as a finding purely because "wrong" shares its
+    /// sentence with the location — the same shape <see cref="HeadingDenialPattern"/> already
+    /// screens for the heading branch and the backward-pointer branch just below.
     /// </para>
     /// </summary>
     private static bool NamesFindingInProse(string paragraph)
     {
-        string[] sentences = SentenceBoundary().Split(paragraph);
+        string[] sentences = [.. EmbeddedListMarkerPattern().Split(paragraph)
+            .SelectMany(bullet => SentenceBoundary().Split(bullet))];
         for (int index = 0; index < sentences.Length; index++)
         {
             if (!LocationPattern().IsMatch(sentences[index]))
@@ -968,7 +1076,7 @@ public static partial class ReviewVerdictValidation
             }
 
             if ((DefectLanguagePattern().IsMatch(sentences[index])
-                    && !EmbeddedListMarkerPattern().IsMatch(sentences[index]))
+                    && !HeadingDenialPattern().IsMatch(sentences[index]))
                 || StatesDefectWithinLookahead(sentences, index))
             {
                 return true;
