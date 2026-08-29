@@ -3,7 +3,6 @@ using Hall9k.Connectors.WorkItems;
 using Hall9k.Domain.Features.Project.Projections;
 using Hall9k.Domain.Features.Tasks.Projections;
 using Marten;
-using Microsoft.Extensions.Options;
 
 namespace Hall9k.Daemon.JiraWrites;
 
@@ -27,11 +26,8 @@ public sealed record JiraWriteRetrySweepResult(int Retried, int Succeeded);
 public sealed class JiraWriteRetryEngine(
     IDocumentStore store,
     ProcessRunner twgRunner,
-    IOptions<DaemonOptions> options,
     ILogger<JiraWriteRetryEngine> logger)
 {
-    private readonly DaemonOptions _options = options.Value;
-
     public async Task<JiraWriteRetrySweepResult> PollOnceAsync(CancellationToken cancellationToken)
     {
         IReadOnlyList<TaskDetails> pending;
