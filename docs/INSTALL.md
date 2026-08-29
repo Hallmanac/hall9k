@@ -53,7 +53,7 @@ Both scripts do the same five things, in order:
    string to `config.json` when nothing else resolved and nothing is already listening on
    `localhost:5432`, publishes the skill set, and puts `h9k` on your `PATH`.
 5. Run **`h9k doctor`** — so the bootstrap ends by telling you exactly what still needs
-   attention (usually: a Postgres connection string) rather than declaring victory silently.
+   attention (usually: starting Hall9k's own Postgres) rather than declaring victory silently.
 
 Pass `--yes` (bash) or `-Yes` (PowerShell) to skip the consent prompt — the shape an agent
 driving this file end to end should use. `iwr | iex` runs the downloaded script with no way
@@ -173,16 +173,18 @@ removes the PATH link, and removes everything under `~/.hall9k` that `h9k
 install` itself ever wrote — `bin/`, the skill set, the Postgres compose file, the daemon's
 log and pid files — and deletes `~/.hall9k` itself once that leaves it empty. `config.json`
 (an operator, `h9k install` itself when nothing was configured yet, or `h9k doctor`'s
-start-offer may have written it — uninstall keeps it regardless, since it is what lets a later
+start-offer may have written it; uninstall keeps it regardless, since it is what lets a later
 `h9k install` reconnect to the surviving database instead of finding nothing configured all over
-again) is the one exception: a machine that installed onto a genuinely unconfigured Postgres
-keeps a `config.json` naming the default connection string, so `~/.hall9k` survives empty of
-everything else rather than being removed outright — the same machine that had something already
-configured before install ran gets no `config.json` of install's making at all, and a plain
-install-then-uninstall does delete the whole home. A registered project's home
+again) is the one exception, and it is why a plain install-then-uninstall on a genuinely fresh
+machine usually does **not** delete the whole home: install itself wrote a `config.json` naming
+the default connection string, so `~/.hall9k` survives, empty of everything else install owns.
+The whole home is removed only when no `config.json` ever existed there at all: a machine where
+something already resolved before install ran (the environment variable or a per-project
+override file, not the platform config file itself), or where Postgres was already listening on
+`localhost:5432`, so install's own write never ran. A registered project's home
 (`~/.hall9k/projects/<name>`, real git clones and worktrees), your credentials, and anything else
-you or another tool put there are left alone too — none of that is the install's to remove, and
-this command never guesses otherwise.
+you or another tool (`h9k install` included) put there are left alone too — none of that is the
+uninstall's to remove, and this command never guesses otherwise.
 
 **Your database survives by default.** The `hall9k-postgres` Docker container is stopped,
 never removed, and its data volume is never touched — the data lives in Docker, not in the
