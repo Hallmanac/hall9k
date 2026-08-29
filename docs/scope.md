@@ -86,8 +86,10 @@ through the `twg` CLI, and reads the item back to verify before recording anythi
 link-issue` / `h9k task link-jira` cover the adoption half — recording a pre-existing item, read
 back through gh or the registered connection first — so an agent's claim, or the platform's own
 creation call, is never taken as the recorded fact either way. An adopted task never gets a second
-item created for it, and a retried or replayed Jira create cannot mint a duplicate: `write-jira`
-searches for a marker an earlier attempt's own card would carry before creating anything new.
+item created for it, and a retried or replayed Jira create narrows the window for a duplicate
+rather than closing it outright: `write-jira` searches for a marker an earlier attempt's own card
+would carry before creating anything new, but Jira's search index updates asynchronously, so a
+retry inside that index-lag window can still find nothing even though the card genuinely exists.
 `h9k task publish` refuses a draft with no linked item and no publication already pending under a
 tracking policy until a human or orchestrator either links what a search of the tracker found,
 attests none exists with `--no-existing-item`, or attests that the task should skip tracking
