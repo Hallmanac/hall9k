@@ -2439,6 +2439,56 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
         task.PendingJiraWriteId.Should().BeNull("a non-auth failure ends the write rather than leaving it pending");
     }
 
+    /// <summary>
+    /// A write already outstanding on the task when the merge is observed — an operator's own
+    /// <c>write-jira</c>, say — must not cost the merge comment: two writes in flight could race
+    /// twg against itself, so <see cref="JiraWriteCoordinator.SubmitAsync"/> refuses the comment
+    /// with a <see cref="Hall9k.Domain.Shared.Exceptions.DomainConflictException"/>, and closeout
+    /// queues it instead of dropping it (Brian's design, 2026-08-28). The queued notice is not
+    /// this test's job to drain — <c>JiraWriteRetryEngineTests</c> covers that — only that
+    /// closeout itself never loses it.
+    /// </summary>
+    [Fact]
+    public async Task A_write_already_outstanding_queues_the_merge_comment_instead_of_losing_it()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        (DocumentStore store, NodeContext node, GitWorktreeManager worktrees, _, string repoPath) =
+            await SetUpAsync(cts.Token);
+        using IDisposable storeLifetime = store;
+
+        (Guid taskId, _, _) = await SeedAwaitingReviewAsync(
+            store, node, worktrees, repoPath, cts.Token,
+            externalReference: new ExternalReference(WorkItemProvider.Jira, "PROJ-123"));
+
+        RecordingProcessRunner stuckTwg = RecordingProcessRunner.Failing("twg is not authenticated: run 'twg login'");
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            JiraWriteAttemptResult outstanding = await JiraWriteCoordinator.SubmitAsync(
+                session, taskId, JiraWriteOperation.Comment, issueKey: "PROJ-123",
+                new JiraWritePayload(null, null, "An operator's own note."), JiraProjectKey.None,
+                node.OwnerId, new TwgJiraExecutor(stuckTwg.Runner), repoPath, cts.Token);
+            outstanding.Outcome.Should().Be(JiraWriteOutcome.PendingAuthentication);
+        }
+
+        RecordingProcessRunner mustNotRun = RecordingProcessRunner.RespondingTo(
+            _ => throw new InvalidOperationException("a second write in flight would race twg against itself"));
+        FakeInspector inspector = new()
+        {
+            Snapshot = FakeInspector.Quiet() with { IsMerged = true, MergedAt = Now.AddHours(2) },
+        };
+        await NewEngine(store, node, inspector, worktrees, github: mustNotRun).PollOnceAsync(cts.Token);
+
+        mustNotRun.Calls.Should().BeEmpty("twg is not touched again while the first write is still outstanding");
+
+        await using IQuerySession query = store.QuerySession();
+        (await query.LoadAsync<TaskListItem>(taskId, cts.Token))!.State.Should().Be(
+            TaskState.Done, "the merge itself is not held up by the queued notice");
+
+        TaskAggregate task = (await query.Events.AggregateStreamAsync<TaskAggregate>(taskId, token: cts.Token))!;
+        task.HasQueuedJiraMergeNotice.Should().BeTrue("the merge comment was queued rather than lost");
+        task.PendingJiraWriteId.Should().NotBeNull("the earlier write is still the one outstanding");
+    }
+
     private async Task<(DocumentStore Store, NodeContext Node, GitWorktreeManager Worktrees, string OriginPath, string RepoPath)>
         SetUpAsync(CancellationToken cancellationToken)
     {

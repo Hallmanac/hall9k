@@ -56,6 +56,13 @@ public sealed class TaskAggregate
     /// </summary>
     public bool PendingJiraWriteIsAuthFailure { get; private set; }
 
+    /// <summary>
+    /// True when closeout's own merge notice could not be submitted because another Jira write
+    /// was already outstanding on this task, and is waiting for that write to clear so the
+    /// daemon's retry sweep can attempt it (Brian's design, 2026-08-28).
+    /// </summary>
+    public bool HasQueuedJiraMergeNotice { get; private set; }
+
     /// <summary>The task's model override, the most specific link in the resolution chain (Decisions Log #33).</summary>
     public AgentModel Model { get; private set; } = AgentModel.Unknown;
     public int LeaseGeneration { get; private set; }
@@ -570,6 +577,10 @@ public sealed class TaskAggregate
         }
     }
 
+    public void Apply(JiraMergeNoticeQueued @event) => HasQueuedJiraMergeNotice = true;
+
+    public void Apply(JiraMergeNoticeAttempted @event) => HasQueuedJiraMergeNotice = false;
+
     private void ClearPendingJiraWrite()
     {
         PendingJiraWriteId = null;
@@ -609,5 +620,11 @@ public sealed class TaskAggregate
             PendingPublicationProvider = null;
             PendingPublicationProjectKey = JiraProjectKey.None;
         }
+
+        // A queued merge notice is the same kind of marker: nothing here is still owed once a
+        // human has walked away from the task, and leaving it set would have the retry sweep
+        // deliver a "the pull request merged" comment for work nobody intends to do the moment
+        // whatever was blocking it happens to clear (independent pre-PR review, cycle 5).
+        HasQueuedJiraMergeNotice = false;
     }
 }

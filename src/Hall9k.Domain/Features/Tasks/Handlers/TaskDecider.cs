@@ -877,6 +877,18 @@ public static class TaskDecider
                 "A Jira write needs a known operation: create, update, or comment.");
         }
 
+        // An abandoned task is one a human walked away from; filing or updating a real card for
+        // it would put work nobody intends to do on a team's board, and — for a create — leave it
+        // permanently unlinkable, since LinkWorkItem refuses an abandoned task too (mirrors the
+        // guard RequestWorkItemPublication already applies for the same reason; independent
+        // pre-PR review, cycle 5).
+        if (task.State == TaskState.Abandoned)
+        {
+            throw new DomainConflictException(
+                $"Task {task.Id} was abandoned, so there is no work to write to Jira. "
+                + "Write a new task if the work came back.");
+        }
+
         if (task.PendingJiraWriteId is { } outstanding)
         {
             throw new DomainConflictException(
@@ -931,6 +943,38 @@ public static class TaskDecider
         }
 
         return new JiraWriteSucceeded(task.Id, writeId, issueKey, summary, succeededAt);
+    }
+
+    /// <summary>
+    /// Closeout could not submit its merge notice because another Jira write was already
+    /// outstanding on this task, so the notice is queued instead of lost (Brian's design,
+    /// 2026-08-28). Refused when one is already queued: closeout's merge notice runs exactly once
+    /// per task (the closeout step that calls this is itself one-shot), so a second queue attempt
+    /// would only mean something else appended this event out of turn.
+    /// </summary>
+    public static JiraMergeNoticeQueued QueueJiraMergeNotice(TaskAggregate task, DateTimeOffset queuedAt)
+    {
+        if (task.HasQueuedJiraMergeNotice)
+        {
+            throw new DomainConflictException($"Task {task.Id} already has a merge notice queued.");
+        }
+
+        return new JiraMergeNoticeQueued(task.Id, queuedAt);
+    }
+
+    /// <summary>
+    /// Marks a queued merge notice attempted, clearing the marker regardless of what the attempt
+    /// itself came to — that outcome lands on the ordinary Jira write event trail exactly like any
+    /// other write's does.
+    /// </summary>
+    public static JiraMergeNoticeAttempted RecordJiraMergeNoticeAttempted(TaskAggregate task, DateTimeOffset attemptedAt)
+    {
+        if (!task.HasQueuedJiraMergeNotice)
+        {
+            throw new DomainConflictException($"Task {task.Id} has no queued merge notice to attempt.");
+        }
+
+        return new JiraMergeNoticeAttempted(task.Id, attemptedAt);
     }
 
     /// <summary>

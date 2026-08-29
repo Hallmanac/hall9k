@@ -111,6 +111,18 @@ public sealed class TaskJiraWriteTests
     }
 
     [Fact]
+    public void A_write_is_refused_against_a_task_a_human_has_abandoned()
+    {
+        TaskAggregate task = Draft(new ExternalReference(WorkItemProvider.Jira, "PROJ-123"));
+        task.Apply(new TaskAbandoned(task.Id, "work no longer needed", Now, Owner));
+
+        Action write = () => TaskDecider.RequestJiraWrite(
+            task, JiraWriteOperation.Comment, null, "{}", DomainId.New(), Now, Owner);
+
+        write.Should().Throw<DomainConflictException>().WithMessage("*was abandoned*");
+    }
+
+    [Fact]
     public void A_second_write_is_refused_while_one_is_outstanding()
     {
         TaskAggregate task = Draft(new ExternalReference(WorkItemProvider.Jira, "PROJ-123"));
@@ -228,5 +240,48 @@ public sealed class TaskJiraWriteTests
 
         row.PendingJiraWriteIsAuthFailure.Should().BeFalse();
         row.PendingJiraWriteFailureReason.Should().BeNull();
+    }
+
+    [Fact]
+    public void A_merge_notice_queued_behind_another_write_is_drained_exactly_once()
+    {
+        TaskAggregate task = Draft(new ExternalReference(WorkItemProvider.Jira, "PROJ-123"));
+
+        task.Apply(TaskDecider.QueueJiraMergeNotice(task, Now));
+        task.HasQueuedJiraMergeNotice.Should().BeTrue();
+
+        Action queueAgain = () => TaskDecider.QueueJiraMergeNotice(task, Now);
+        queueAgain.Should().Throw<DomainConflictException>().WithMessage("*already has a merge notice queued*");
+
+        task.Apply(TaskDecider.RecordJiraMergeNoticeAttempted(task, Now));
+        task.HasQueuedJiraMergeNotice.Should().BeFalse();
+
+        Action attemptAgain = () => TaskDecider.RecordJiraMergeNoticeAttempted(task, Now);
+        attemptAgain.Should().Throw<DomainConflictException>().WithMessage("*no queued merge notice*");
+    }
+
+    [Fact]
+    public void Abandoning_a_task_drops_its_queued_merge_notice_on_the_aggregate_and_the_projection()
+    {
+        TaskAdded added = TaskDecider.Add(
+            DomainId.New(), DomainId.New(), "Objective", ["A criterion"], TaskType.Feature,
+            agentContext: null, constraints: null,
+            externalReference: new ExternalReference(WorkItemProvider.Jira, "PROJ-123"), Now, Owner);
+
+        TaskAggregate task = new();
+        task.Apply(added);
+        task.Apply(TaskDecider.QueueJiraMergeNotice(task, Now));
+        task.Apply(new TaskAbandoned(added.Id, "work no longer needed", Now, Owner));
+
+        task.HasQueuedJiraMergeNotice.Should().BeFalse(
+            "nothing is still owed once a human has walked away from the task");
+
+        TaskDetailsProjection details = new();
+        TaskDetails detail = details.Create(new FakeEvent<TaskAdded>(added));
+        details.Apply(new FakeEvent<JiraMergeNoticeQueued>(new JiraMergeNoticeQueued(added.Id, Now)), detail);
+        details.Apply(new FakeEvent<TaskAbandoned>(new TaskAbandoned(added.Id, "work no longer needed", Now, Owner)), detail);
+
+        detail.HasQueuedJiraMergeNotice.Should().BeFalse(
+            "this view is what the retry sweep queries to decide whether to drain a notice");
     }
 }

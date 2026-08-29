@@ -80,6 +80,8 @@ public sealed class TaskDetails
     public string? PendingJiraWriteFailureReason { get; set; }
     /// <summary>True when the most recent failed attempt was an expired or missing twg login — the retry sweep's own filter.</summary>
     public bool PendingJiraWriteIsAuthFailure { get; set; }
+    /// <summary>True when closeout's own merge notice is waiting on another Jira write to clear before the retry sweep can attempt it (Brian's design, 2026-08-28).</summary>
+    public bool HasQueuedJiraMergeNotice { get; set; }
     /// <summary>Whose work this is; null until an explicit assignment says (Decisions Log #34).</summary>
     public Guid? AssignedOwnerId { get; set; }
     /// <summary>
@@ -464,6 +466,11 @@ public sealed class TaskDetailsProjection : SingleStreamProjection<TaskDetails, 
             view.PendingPublicationProvider = null;
             view.PendingPublicationProjectKey = JiraProjectKey.None;
         }
+
+        // A queued merge notice is the same kind of marker (TaskAggregate.Apply(TaskAbandoned)'s
+        // own comment has the reasoning): nothing here is still owed once a human has walked away,
+        // and this view is exactly what the retry sweep queries to decide whether to drain it.
+        view.HasQueuedJiraMergeNotice = false;
     }
 
     // Publication is a side errand, so none of these touch State: what they move is the pending
@@ -582,6 +589,12 @@ public sealed class TaskDetailsProjection : SingleStreamProjection<TaskDetails, 
         view.PendingJiraWriteFailureReason = null;
         view.PendingJiraWriteIsAuthFailure = false;
     }
+
+    // Mirrors TaskAggregate.Apply for the same two events: this view is what the daemon's retry
+    // sweep queries to find a merge notice worth draining, so it needs the identical marker.
+    public void Apply(IEvent<JiraMergeNoticeQueued> @event, TaskDetails view) => view.HasQueuedJiraMergeNotice = true;
+
+    public void Apply(IEvent<JiraMergeNoticeAttempted> @event, TaskDetails view) => view.HasQueuedJiraMergeNotice = false;
 
     /// <summary>
     /// The publication session's identity, dropped the moment it stops being the live one. Kept in
