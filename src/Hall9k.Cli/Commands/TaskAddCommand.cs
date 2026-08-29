@@ -118,6 +118,12 @@ public sealed class TaskAddCommand : Hall9kAsyncCommand<TaskAddCommand.Settings>
             + "the node's per-role default, then the project default, then the platform default decide. "
             + "Reach for it when THIS task is unusual, not to express a standing preference")]
         public string? Model { get; init; }
+
+        [CommandOption("--epic <EPIC>")]
+        [Description(
+            "The epic this task joins: its id or an unambiguous fragment (h9k epic list shows them "
+            + "all). Optional — a task belongs to at most one epic, and most tasks belong to none")]
+        public string? Epic { get; init; }
     }
 
     protected override async Task<int> ExecuteAsync(Settings settings, CancellationToken cancellationToken)
@@ -201,6 +207,9 @@ public sealed class TaskAddCommand : Hall9kAsyncCommand<TaskAddCommand.Settings>
         }
 
         AgentModel taskModel = TaskDecider.VetModel(AgentModel.FromInput(model));
+        Guid? epicId = settings.Epic.IsNotBlank()
+            ? await EpicIdResolver.ResolveAsync(session, settings.Epic, cancellationToken)
+            : null;
 
         ImportedWorkItem? imported = adoption is null
             ? null
@@ -231,7 +240,8 @@ public sealed class TaskAddCommand : Hall9kAsyncCommand<TaskAddCommand.Settings>
             DateTimeOffset.UtcNow,
             context.OwnerId,
             taskModel,
-            dependencies);
+            dependencies,
+            epicId: epicId);
         session.Events.StartStream<TaskAggregate>(taskId, added);
 
         await session.SaveChangesAsync(cancellationToken);
@@ -250,6 +260,11 @@ public sealed class TaskAddCommand : Hall9kAsyncCommand<TaskAddCommand.Settings>
                 $"[dim]  adopted {imported.Reference.ToString().EscapeMarkup()}, "
                 + $"{ExternalText.OneLineMarkup(imported.Status.ToString())} when read at "
                 + $"{imported.ObservedStamp}[/]");
+        }
+
+        if (epicId is { } joinedEpic)
+        {
+            AnsiConsole.MarkupLine($"[dim]  in epic {TaskListCommand.ShortId(joinedEpic)}[/]");
         }
 
         if (dependencies.Length > 0)

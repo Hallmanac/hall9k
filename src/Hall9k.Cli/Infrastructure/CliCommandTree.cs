@@ -459,7 +459,9 @@ public static class CliCommandTree
                     "--from-issue", "https://github.com/Hallmanac/hall9k/issues/42",
                     "--criteria", "\"The importer refuses a closed issue\"")
                 .WithExample("task", "add", "--project", "hall9k", "--objective", "\"Wire the new pane in\"",
-                    "--blocked-by", "28b19893");
+                    "--blocked-by", "28b19893")
+                .WithExample("task", "add", "--project", "hall9k", "--objective", "\"Wire the new pane in\"",
+                    "--epic", "28b19893");
             task.AddCommand<TaskReviseCommand>("revise")
                 .WithDescription(
                     "Revise a draft: objective, acceptance criteria, agent context, type, model, dependencies. "
@@ -468,7 +470,9 @@ public static class CliCommandTree
                     + "Each option passed replaces that part; each one left off is left alone.")
                 .WithExample("task", "revise", "28b19893", "--criteria", "\"h9k status shows the blocked reason\"")
                 .WithExample("task", "revise", "28b19893", "--blocked-by", "3f2a91b2", "--blocked-by", "91bd44c0")
-                .WithExample("task", "revise", "28b19893", "--clear-dependencies");
+                .WithExample("task", "revise", "28b19893", "--clear-dependencies")
+                .WithExample("task", "revise", "28b19893", "--epic", "3f2a91b2")
+                .WithExample("task", "revise", "28b19893", "--clear-epic");
             task.AddCommand<TaskPublishCommand>("publish")
                 .WithDescription(
                     "Publish a draft: the readiness gate. Enforces the full contract (an outcome-phrased "
@@ -528,7 +532,8 @@ public static class CliCommandTree
                 .WithExample("task", "list", "--state", "AwaitingReview")
                 .WithExample("task", "list", "--state", "published,working", "--state", "delivered")
                 .WithExample("task", "list", "--state", "archived")
-                .WithExample("task", "list", "--include-archived");
+                .WithExample("task", "list", "--include-archived")
+                .WithExample("task", "list", "--epic", "28b19893");
             task.AddCommand<TaskShowCommand>("show")
                 .WithDescription(
                     "One task in full: the readiness contract it was published against, its dependencies "

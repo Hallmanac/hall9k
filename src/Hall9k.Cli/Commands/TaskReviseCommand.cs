@@ -69,6 +69,14 @@ public sealed class TaskReviseCommand : Hall9kAsyncCommand<TaskReviseCommand.Set
             "Take the revision from a task file (frontmatter + markdown body), the same format "
             + "h9k task add --file reads. Explicit options win over the file")]
         public string? File { get; init; }
+
+        [CommandOption("--epic <EPIC>")]
+        [Description("Join this epic: its id or an unambiguous fragment. A task belongs to at most one epic")]
+        public string? Epic { get; init; }
+
+        [CommandOption("--clear-epic")]
+        [Description("Leave the epic this task currently belongs to")]
+        public bool ClearEpic { get; init; }
     }
 
     protected override async Task<int> ExecuteAsync(Settings settings, CancellationToken cancellationToken)
@@ -77,6 +85,11 @@ public sealed class TaskReviseCommand : Hall9kAsyncCommand<TaskReviseCommand.Set
         {
             throw new DomainValidationException(
                 "--clear-dependencies and --blocked-by say opposite things; pass one.");
+        }
+
+        if (settings.ClearEpic && settings.Epic.IsNotBlank())
+        {
+            throw new DomainValidationException("--clear-epic and --epic say opposite things; pass one.");
         }
 
         string? objective = settings.Objective;
@@ -116,6 +129,12 @@ public sealed class TaskReviseCommand : Hall9kAsyncCommand<TaskReviseCommand.Set
                 ? Optional<IReadOnlyList<Guid>>.Of(await ResolveAsync(session, blockedBy, cancellationToken))
                 : Optional<IReadOnlyList<Guid>>.None;
 
+        Optional<Guid?> epicId = settings.ClearEpic
+            ? Optional<Guid?>.Of(null)
+            : settings.Epic.IsNotBlank()
+                ? Optional<Guid?>.Of(await EpicIdResolver.ResolveAsync(session, settings.Epic, cancellationToken))
+                : Optional<Guid?>.None;
+
         BootstrapContext context = await NodeBootstrap.EnsureAsync(session, cancellationToken);
         TaskRevised revised = TaskDecider.Revise(
             task,
@@ -126,7 +145,8 @@ public sealed class TaskReviseCommand : Hall9kAsyncCommand<TaskReviseCommand.Set
             type.IsBlank() ? Optional<TaskType>.None : Optional<TaskType>.Of(TaskType.Parse(type)),
             model.IsBlank() ? Optional<AgentModel>.None : Optional<AgentModel>.Of(AgentModel.FromInput(model)),
             DateTimeOffset.UtcNow,
-            context.OwnerId);
+            context.OwnerId,
+            epicId);
 
         session.Events.Append(taskId, revised);
         await session.SaveChangesAsync(cancellationToken);
@@ -172,6 +192,13 @@ public sealed class TaskReviseCommand : Hall9kAsyncCommand<TaskReviseCommand.Set
             yield return revised.Model.Value == AgentModel.Unknown
                 ? "model override cleared"
                 : $"model {revised.Model.Value?.Value}";
+        }
+
+        if (revised.EpicId.HasValue)
+        {
+            yield return revised.EpicId.Value is { } epicId
+                ? $"epic {TaskListCommand.ShortId(epicId)}"
+                : "epic cleared";
         }
     }
 
