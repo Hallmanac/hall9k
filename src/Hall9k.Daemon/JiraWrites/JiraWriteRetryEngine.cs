@@ -48,6 +48,17 @@ public sealed class JiraWriteRetryEngine(
     private readonly DaemonOptions _options = options.Value;
 
     /// <summary>
+    /// Test-only seam (independent pre-PR review, cycle 6): runs, when set, immediately before
+    /// <see cref="DrainMergeNoticeAsync"/> calls <see cref="JiraWriteCoordinator.SubmitAsync"/> —
+    /// the narrow window after this method's own outstanding-write guard has already read
+    /// <c>PendingJiraWriteId</c> as null but before <c>SubmitAsync</c>'s own
+    /// <c>FetchStreamStateAsync</c> fences the stream for its append. A racing write landing there
+    /// is otherwise unreachable from a test without a second engine or process actually running
+    /// concurrently.
+    /// </summary>
+    internal Func<CancellationToken, Task>? OnBeforeMergeNoticeSubmitAsync { get; set; }
+
+    /// <summary>
     /// Two independent things this sweep drains, both left behind by a write that could not run
     /// immediately: a write itself, stuck on an expired or missing twg login
     /// (<see cref="TaskDetails.PendingJiraWriteIsAuthFailure"/>), and closeout's own merge notice,
@@ -112,15 +123,15 @@ public sealed class JiraWriteRetryEngine(
                     continue;
                 }
 
-                // The strict lookup, not the permissive WorkItemConnections.TryFindJiraSiteAsync: a
-                // pending write retried here can be closeout's own merge comment (recorded pending
-                // rather than queued, when its first attempt reached twg but failed to authenticate),
-                // so a null site would reach TwgJiraExecutor exactly as it would for the drain half
-                // below and target whatever tenant twg's own ambient auth.conf resolves to — the same
-                // hazard DrainMergeNoticeAsync's own doc comment already guards against (independent
-                // pre-PR review, adversarial lens, cycle 5). Skipping this task for one sweep on an
-                // unresolved connection, rather than guessing, still leaves the write for the next
-                // sweep — nothing here is lost, only deferred.
+                // The strict lookup: a pending write retried here can be closeout's own merge
+                // comment (recorded pending rather than queued, when its first attempt reached twg
+                // but failed to authenticate), so a null site would reach TwgJiraExecutor exactly as
+                // it would for the drain half below and target whatever tenant twg's own ambient
+                // auth.conf resolves to — the same hazard DrainMergeNoticeAsync's own doc comment
+                // already guards against (independent pre-PR review, adversarial lens, cycle 5).
+                // Skipping this task for one sweep on an unresolved connection, rather than
+                // guessing, still leaves the write for the next sweep — nothing here is lost, only
+                // deferred.
                 Uri site;
                 try
                 {
@@ -300,8 +311,7 @@ public sealed class JiraWriteRetryEngine(
     /// <para>
     /// The site is resolved with the strict <see cref="WorkItemConnections.FindJiraConnectionAsync"/>,
     /// the same lookup this sweep's own pending-write loop above now uses too (independent pre-PR
-    /// review, adversarial lens, cycle 5 — the permissive <see cref="WorkItemConnections.TryFindJiraSiteAsync"/>
-    /// used to be that loop's own lookup): this is the queued half of closeout's own merge comment, posting the identical
+    /// review, adversarial lens, cycle 5): this is the queued half of closeout's own merge comment, posting the identical
     /// <see cref="CloseoutEngine.MergeComment"/>, so it gets the same guard
     /// <see cref="CloseoutEngine.TellJiraAsync"/>'s own doc comment describes — a null site here
     /// reaches <see cref="TwgJiraExecutor"/> exactly the same way and targets whatever tenant
@@ -357,6 +367,11 @@ public sealed class JiraWriteRetryEngine(
         JiraWriteAttemptResult result;
         try
         {
+            if (OnBeforeMergeNoticeSubmitAsync is { } beforeSubmit)
+            {
+                await beforeSubmit(cancellationToken);
+            }
+
             result = await JiraWriteCoordinator.SubmitAsync(
                 session,
                 taskId,
@@ -372,26 +387,24 @@ public sealed class JiraWriteRetryEngine(
         catch (Exception exception) when (exception is not OperationCanceledException)
         {
             // What tells "nothing from this attempt ever reached the stream" apart from "our own
-            // intent was appended, and twg may already have run" is not the stream's version (a
-            // version-based check used to stand here, and could not tell a genuine race where
-            // somebody else's write — an operator's own write-jira, say — landed on this task in
-            // the same window apart from our own intent actually committing: both move the version
-            // identically, so the old check misread the former as the latter and permanently
-            // dropped a notice nothing had ever tried to send). It is whether a write is still
-            // outstanding on the task by the time this catch runs. This method's own guard above
-            // required PendingJiraWriteId null before SubmitAsync was ever called, and SubmitAsync
-            // resolves (to success or failure) whatever write it itself appends before it returns
-            // or throws — there is no in-flight window left to observe once we are back here. So a
-            // write still pending now can only be somebody else's: TaskDecider.RequestJiraWrite's
-            // own "already has a Jira write outstanding" guard (TaskDecider.cs) and a lost
-            // optimistic-concurrency race on the intent append itself (JiraWriteCoordinator.cs) are
-            // exactly the two ways SubmitAsync refuses before ever appending anything of its own,
-            // and both leave that other write's id sitting in PendingJiraWriteId — the same
-            // DomainConflictException CloseoutEngine.TellJiraAsync's own one-shot attempt already
-            // treats as "queue it, nothing lost" (independent pre-PR review, cycle 5, conformance
-            // lens).
+            // intent was appended, and twg may already have run" is not whether a write is
+            // outstanding now (independent pre-PR review, cycle 6): PendingJiraWriteId being set,
+            // or clear, says a write is or is not outstanding, not whose it was — a write our own
+            // attempt genuinely appended and got executed by twg can still read back as null later
+            // (something else, racing the outcome-recording step itself, can resolve that exact
+            // same write out from under us), the identical final state a write that never got
+            // appended in the first place leaves too. So this does not re-derive "was it ours" from
+            // whatever the task shows now; JiraWriteCoordinator.SubmitAsync already knows the answer
+            // at the only moment it is unambiguous — immediately after the append itself either
+            // committed or did not — and hands it down as a JiraWriteSubmissionException exactly
+            // when it did commit: TaskDecider.RequestJiraWrite's own "already has a Jira write
+            // outstanding" guard (an operator's own write-jira racing in between this method's own
+            // guard above and SubmitAsync's own fence) and a lost optimistic-concurrency race on the
+            // intent append itself (JiraWriteCoordinator.cs) are the two ways SubmitAsync refuses
+            // before ever appending anything of its own, and neither is wrapped — so their absence
+            // is itself the "somebody else's, nothing of ours got in" answer.
             TaskAggregate? afterFailure = await session.Events.AggregateStreamAsync<TaskAggregate>(taskId, token: cancellationToken);
-            if (afterFailure?.PendingJiraWriteId is not null)
+            if (exception is not JiraWriteSubmissionException)
             {
                 logger.LogWarning(exception,
                     "Task {TaskId}: the queued merge notice for {Reference} was refused before "
@@ -400,17 +413,17 @@ public sealed class JiraWriteRetryEngine(
                 return false;
             }
 
-            // No write is outstanding, so this attempt's own intent was appended and resolved (twg
-            // may genuinely have run) before something else raced the outcome-recording step itself
-            // out from under it — JiraWriteCoordinator.AttemptAsync's own doc comment is why that
-            // failure is left to propagate rather than being swallowed into an ordinary
-            // JiraWriteFailed. But unlike an operator's own write-jira, this notice retries itself
-            // automatically on the very next sweep once JiraWriteRetryEngine's own stale-pending
-            // ceiling clears the pending marker — and a Comment write has no dedup gate the way a
-            // Create's own marker search does, so leaving the notice queued here would let a later
-            // sweep post the identical comment a second time with nobody watching, exactly the
-            // "retry loop around an unwatched write" this refuses to become (independent pre-PR
-            // review, cycle 4). Marked attempted here instead of risking a duplicate.
+            // This attempt's own write was appended and twg may genuinely have run for it before
+            // something raced the outcome-recording step itself out from under it —
+            // JiraWriteCoordinator.AttemptAsync's own doc comment is why that failure is left to
+            // propagate rather than being swallowed into an ordinary JiraWriteFailed. But unlike an
+            // operator's own write-jira, this notice retries itself automatically on the very next
+            // sweep once JiraWriteRetryEngine's own stale-pending ceiling clears the pending marker
+            // — and a Comment write has no dedup gate the way a Create's own marker search does, so
+            // leaving the notice queued here would let a later sweep post the identical comment a
+            // second time with nobody watching, exactly the "retry loop around an unwatched write"
+            // this refuses to become (independent pre-PR review, cycle 4). Marked attempted here
+            // instead of risking a duplicate.
             if (afterFailure is { HasQueuedJiraMergeNotice: true })
             {
                 session.Events.Append(taskId, TaskDecider.RecordJiraMergeNoticeAttempted(afterFailure, DateTimeOffset.UtcNow));

@@ -152,19 +152,22 @@ public sealed class JiraWriteRetryEngineTests(PostgresFixture postgres) : IClass
 
     /// <summary>
     /// The race independent pre-PR review, cycle 5 (conformance lens) found: a second Jira write —
-    /// an operator's own <c>h9k task write-jira</c>, stood in for here by a write requested on the
-    /// target task as a side effect of this same sweep's own retry of an unrelated task — lands on
-    /// the target task in the narrow window between this sweep's own upfront query (which read
-    /// <c>PendingJiraWriteId</c> as null) and its attempt at the queued notice.
+    /// an operator's own <c>h9k task write-jira</c> — lands on the target task in the narrow window
+    /// after <c>DrainMergeNoticeAsync</c>'s own guard has already read <c>PendingJiraWriteId</c> as
+    /// null but before <c>SubmitAsync</c>'s own <c>FetchStreamStateAsync</c> fences the stream for
+    /// its append; <see cref="JiraWriteRetryEngine.OnBeforeMergeNoticeSubmitAsync"/> is the seam
+    /// this test uses to land the race exactly there, since nothing about this window is otherwise
+    /// reachable without a second engine or process actually running concurrently.
     /// <c>TaskDecider.RequestJiraWrite</c>'s own "already has a write outstanding" guard then refuses
     /// the notice's own <c>SubmitAsync</c> call before its <c>JiraWriteRequested</c> ever reaches the
-    /// stream, so nothing about this attempt was ever attempted. A version-based discriminator used
+    /// stream, so nothing about this attempt was ever appended. A version-based discriminator used
     /// to stand in <c>DrainMergeNoticeAsync</c>'s own catch instead, and could not tell that apart
     /// from this attempt's own intent having committed — the racing write moves the stream version
     /// exactly as this attempt's own append would have, so the notice was marked attempted and
-    /// dropped for a write it never got the chance to send. The fix reads <c>PendingJiraWriteId</c>
-    /// after the failure instead: still set means somebody else's write is what is actually
-    /// outstanding, not this attempt's own.
+    /// dropped for a write it never got the chance to send; a later discriminator read
+    /// <c>PendingJiraWriteId</c> after the failure instead, but a write merely being outstanding
+    /// still does not say whose it is (independent pre-PR review, cycle 6) — this test's own
+    /// twg process throws if it is ever called, since the fixed code must refuse before reaching it.
     /// </summary>
     [Fact]
     public async Task A_queued_merge_notice_survives_a_racing_write_that_beats_it_to_the_outstanding_write_guard()
@@ -180,47 +183,29 @@ public sealed class JiraWriteRetryEngineTests(PostgresFixture postgres) : IClass
             await session.SaveChangesAsync(cts.Token);
         }
 
-        // An unrelated task, stuck on an expired login, so it lands in this sweep's own
-        // pending-write loop — which runs before the queued-notice loop below, giving this test a
-        // place to inject the race without reaching into the engine's own internals.
-        Guid racingTaskId = await SeedTaskAsync(store, new ExternalReference(WorkItemProvider.Jira, "PROJ-333"), cts.Token);
-        RecordingProcessRunner stuckTwg = RecordingProcessRunner.TwgAuthExpired();
-        await using (IDocumentSession session = store.LightweightSession())
+        RecordingProcessRunner mustNotRun = RecordingProcessRunner.RespondingTo(
+            _ => throw new InvalidOperationException(
+                "the notice's own submit must be refused before it ever reaches twg"));
+        NodeContext node = await NewNodeAsync(store, cts.Token);
+        JiraWriteRetryEngine engine = new(store, node, mustNotRun.Runner, DefaultOptions(), NullLogger<JiraWriteRetryEngine>.Instance)
         {
-            JiraWriteAttemptResult submitted = await JiraWriteCoordinator.SubmitAsync(
-                session, racingTaskId, JiraWriteOperation.Comment, issueKey: null,
-                new JiraWritePayload(null, null, "An unrelated comment."), JiraProjectKey.None,
-                DomainId.New(), new TwgJiraExecutor(stuckTwg.Runner), "/repo", cts.Token);
-            submitted.Outcome.Should().Be(JiraWriteOutcome.PendingAuthentication);
-        }
-
-        // The sweep's own pending-write loop retries the unrelated task first; the moment its own
-        // twg call runs, a second write is requested on the target task directly through the
-        // decider — the same shape an operator's own write-jira racing in would leave behind,
-        // without needing a second engine or process actually running concurrently.
-        bool raced = false;
-        RecordingProcessRunner sweepTwg = RecordingProcessRunner.RespondingTo(arguments =>
-        {
-            if (!raced)
+            // Fires in the exact window DrainMergeNoticeAsync's own guard cannot see: it already
+            // read PendingJiraWriteId as null, and SubmitAsync has not yet fetched the stream's own
+            // fence, so this racing write — the same shape an operator's own write-jira landing in
+            // that window would leave behind — commits between the two reads.
+            OnBeforeMergeNoticeSubmitAsync = async ct =>
             {
-                raced = true;
                 using IDocumentSession racingSession = store.LightweightSession();
-                TaskAggregate target = racingSession.Events.AggregateStreamAsync<TaskAggregate>(targetTaskId, token: cts.Token)
-                    .GetAwaiter().GetResult()!;
+                TaskAggregate target = (await racingSession.Events.AggregateStreamAsync<TaskAggregate>(targetTaskId, token: ct))!;
                 racingSession.Events.Append(targetTaskId, TaskDecider.RequestJiraWrite(
                     target, JiraWriteOperation.Comment, issueKey: null, "{}", DomainId.New(), Now, DomainId.New()));
-                racingSession.SaveChangesAsync(cts.Token).GetAwaiter().GetResult();
-            }
-
-            return new ProcessResult(0, """{"key":"PROJ-333"}""", string.Empty);
-        });
-
-        NodeContext node = await NewNodeAsync(store, cts.Token);
-        JiraWriteRetryEngine engine = new(store, node, sweepTwg.Runner, DefaultOptions(), NullLogger<JiraWriteRetryEngine>.Instance);
+                await racingSession.SaveChangesAsync(ct);
+            },
+        };
 
         JiraWriteRetrySweepResult sweep = await engine.PollOnceAsync(cts.Token);
 
-        sweep.Should().Be(new JiraWriteRetrySweepResult(Retried: 1, Succeeded: 1, MergeNoticesDrained: 0));
+        sweep.Should().Be(new JiraWriteRetrySweepResult(Retried: 0, Succeeded: 0, MergeNoticesDrained: 0));
 
         TaskAggregate? afterSweep = await LoadAsync(store, targetTaskId, cts.Token);
         afterSweep!.HasQueuedJiraMergeNotice.Should().BeTrue(

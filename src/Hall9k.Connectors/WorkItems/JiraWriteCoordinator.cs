@@ -22,6 +22,22 @@ public enum JiraWriteOutcome
 public sealed record JiraWriteAttemptResult(JiraWriteOutcome Outcome, string? IssueKey, string Message);
 
 /// <summary>
+/// Thrown by <see cref="JiraWriteCoordinator.SubmitAsync"/> only once this write's own intent has
+/// already been durably appended, when something afterward — recording twg's own outcome, or
+/// linking a created card — fails before that outcome could be recorded (independent pre-PR
+/// review, cycle 6). Carries the write id <see cref="JiraWriteCoordinator.SubmitAsync"/> minted
+/// for it, because <c>PendingJiraWriteId</c> alone answers only "is a write outstanding", not
+/// whose: a caller that needs to tell "my own write may already have reached twg" apart from "a
+/// different write raced in before mine was ever appended" has to compare this id against the
+/// task's current pending write, not merely check whether one exists.
+/// </summary>
+public sealed class JiraWriteSubmissionException(Guid writeId, Exception innerException)
+    : Exception(innerException.Message, innerException)
+{
+    public Guid WriteId { get; } = writeId;
+}
+
+/// <summary>
 /// The one place that turns a composed <see cref="JiraWritePayload"/> into a recorded, audited,
 /// verified write against Jira (Brian's design, 2026-08-28). Every caller — an operator or an
 /// agent invoking <c>h9k task write-jira</c>, the daemon's own retry sweep once <c>twg login</c>
@@ -90,9 +106,22 @@ public static class JiraWriteCoordinator
                 + $"Check it with h9k task show {taskId} and submit again if it still needs this write.");
         }
 
-        return await AttemptAsync(
-            session, taskId, writeId, operation, requested.IssueKey, payload, defaultBoard, executor,
-            workingDirectory, cancellationToken);
+        // Our own intent is durably on the stream by this point, so any exception from here on is
+        // ambiguous in a way nothing earlier in this method is: it can no longer mean "nothing of
+        // ours was appended" the way the two throws above do. Wrapped with the write id it minted
+        // so a caller that needs to tell those two cases apart (JiraWriteRetryEngine's merge-notice
+        // drain) can compare it against whatever write the task shows outstanding afterward, rather
+        // than guessing from presence alone (independent pre-PR review, cycle 6).
+        try
+        {
+            return await AttemptAsync(
+                session, taskId, writeId, operation, requested.IssueKey, payload, defaultBoard, executor,
+                workingDirectory, cancellationToken);
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            throw new JiraWriteSubmissionException(writeId, exception);
+        }
     }
 
     /// <summary>
