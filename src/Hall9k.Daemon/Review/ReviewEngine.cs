@@ -305,8 +305,9 @@ public sealed class ReviewEngine(
                         // human's merge-ready resolve now settles straight from here without ever
                         // reaching FinalFullPassCapReached below — see RunAggregate.Apply(ReviewParkResolved)'s
                         // own note on what that means for its FinalFullPassRounds reset.
-                        if (MaySettle(run))
+                        if (MaySettleReason(run) is { } settlingReason)
                         {
+                            LogSettleReason(run, settlingReason);
                             await SettleAsync(run, cancellationToken);
                             break;
                         }
@@ -344,6 +345,14 @@ public sealed class ReviewEngine(
                         break;
                     }
 
+                    // Reached only when none of needsFullGateBeforeSettling, a fingerprint change,
+                    // or an ungated human resolution held — which is exactly
+                    // NeedsFullGateBeforeSettling's own negation, so MaySettleReason is guaranteed
+                    // non-null here (its NothingOwed clause is that same negation restated) rather
+                    // than a fact this call site has to re-establish on its own.
+                    LogSettleReason(run, MaySettleReason(run) ?? throw new InvalidOperationException(
+                        $"Run {run.Id}: reached the ordinary settle path with no settle reason — " +
+                        "NeedsFullGateBeforeSettling's own negation should have guaranteed one."));
                     await SettleAsync(run, cancellationToken);
                     break;
 
@@ -430,13 +439,14 @@ public sealed class ReviewEngine(
                         return false;
                     }
 
-                    if (run.ActiveReviewLenses.Count == 0 && MaySettle(run))
+                    if (run.ActiveReviewLenses.Count == 0 && MaySettleReason(run) is { } reverifySettleReason)
                     {
                         // Every track has concluded AND the mandatory final full pass already ran
-                        // (or a human overruled the loop), so there is nobody left to re-review for
-                        // and the loop goes on to record that it settled (log #63). The gates above
-                        // still ran: a settled ending ships the terminal fix unread by a reviewer,
-                        // never unbuilt and untested.
+                        // (or a human overruled the loop, or the severity bar already called it),
+                        // so there is nobody left to re-review for and the loop goes on to record
+                        // that it settled (log #63). The gates above still ran: a settled ending
+                        // ships the terminal fix unread by a reviewer, never unbuilt and untested.
+                        LogSettleReason(run, reverifySettleReason);
                         await SettleAsync(run, cancellationToken);
                         break;
                     }
@@ -2459,14 +2469,82 @@ public sealed class ReviewEngine(
     /// also blocks settling, sending the caller back to dispatch one more fresh-context pass over
     /// the fix it just applied.
     /// </para>
+    /// <para>
+    /// <see cref="SettleReason.Bar"/> (task: a final full pass whose verdict is merge-ready and
+    /// whose findings are all below the fix bar counts as a clean settle) names a case this method
+    /// already accepted before it had a name of its own: a <see cref="ReviewMode.FinalFullPass"/>
+    /// cycle whose merged verdict came back <see cref="ReviewVerdict.MergeReady"/> can only do so
+    /// when every finding either lens attached is <see cref="ReviewFindingDisposition.RideAlong"/>
+    /// (<c>ReviewEngine.RecordReviewPassAsync</c>'s own reclassification guarantees it), which means
+    /// no track was ever left <c>Continues: true</c> for a genuine defect and no fix session ever
+    /// dispatched — so the third clause below (nothing owed) was already true for it. Stating it as
+    /// its own named clause, checked first, is what lets a track a stray below-bar finding
+    /// reawakened on its way to that same conclusion settle on the strength of the severity bar
+    /// (Decisions Log #87) rather than by accident of an unrelated flag happening to agree, and what
+    /// gives the settle log (<c>LogSettleReason</c>) a name to print: an operator reading it can tell
+    /// "the bar closed this out" from "a reviewer read the tip and found nothing at all" instead of
+    /// inferring it from the residual tally. Origin (2026-08-29): runs 514ffa6c and 430decdb parked
+    /// at <see cref="FinalFullPassCapReached"/> although each one's last final pass had already
+    /// concluded merge-ready with nothing but low-severity findings — the bar's own definition of
+    /// done — because nothing before this named the case, so a reviewer restating a below-bar
+    /// finding on its way to that same clean verdict read as "still oscillating" rather than as the
+    /// settle it already was everywhere else in this method's own logic.
+    /// </para>
     /// </summary>
-    private static bool MaySettle(RunAggregate run) =>
-        run.HumanEndedTheLoop
-        || (run.CurrentCycleMode != ReviewMode.Verify && !run.FixDispatchedThisCycle);
+    private static SettleReason? MaySettleReason(RunAggregate run) => true switch
+    {
+        _ when run.HumanEndedTheLoop => SettleReason.Human,
+        _ when run.CurrentCycleMode == ReviewMode.FinalFullPass && run.LastReviewVerdict == ReviewVerdict.MergeReady =>
+            SettleReason.Bar,
+        _ when run.CurrentCycleMode != ReviewMode.Verify && !run.FixDispatchedThisCycle => SettleReason.NothingOwed,
+        _ => null,
+    };
+
+    /// <summary>Which of <see cref="MaySettleReason"/>'s clauses is about to end the review loop.</summary>
+    private enum SettleReason
+    {
+        /// <summary>A human's own <c>h9k review resolve --merge-ready</c> ended the loop.</summary>
+        Human,
+
+        /// <summary>
+        /// A mandatory <see cref="ReviewMode.FinalFullPass"/> concluded merge-ready with every
+        /// finding below the fix bar (Decisions Log #87) — settled by the severity bar's own
+        /// definition of done, not by a reviewer confirming a tip with nothing on it at all.
+        /// </summary>
+        Bar,
+
+        /// <summary>
+        /// Nothing this cycle is owed a fix session and the cycle was a full, fresh-context read
+        /// (<see cref="ReviewMode.Discovery"/> or <see cref="ReviewMode.FinalFullPass"/>) — a
+        /// reviewer read the tip and found nothing that needed doing.
+        /// </summary>
+        NothingOwed,
+    }
+
+    /// <summary>
+    /// The daemon log line for a settle (task: a final full pass whose verdict is merge-ready and
+    /// whose findings are all below the fix bar counts as a clean settle) — named separately from
+    /// <see cref="SettleAsync"/>'s own log line, which reports what the settlement tally found, not
+    /// which of <see cref="MaySettleReason"/>'s clauses is what let the loop stop looking.
+    /// </summary>
+    private void LogSettleReason(RunAggregate run, SettleReason reason)
+    {
+        string why = reason switch
+        {
+            SettleReason.Human => "a human's merge-ready resolution ended the loop",
+            SettleReason.Bar =>
+                "the mandatory final full pass concluded merge-ready with every finding below the " +
+                "fix bar (Decisions Log #87) — a bar settle, not a reviewer confirming a fully clean " +
+                "tip; its findings are recorded as residuals",
+            SettleReason.NothingOwed => "nothing this cycle is owed a fix session",
+            _ => throw new ArgumentOutOfRangeException(nameof(reason), reason, "Unrecognized settle reason."),
+        };
+        logger.LogInformation("Run {RunId}: settling at cycle {Cycle} — {Reason}", run.Id, run.ReviewCycle, why);
+    }
 
     /// <summary>
     /// Whether the Settling branch must run one more full-scope gate pass before the run may
-    /// settle (task: a fix cycle's verification gate) — <see cref="MaySettle"/>'s own non-human
+    /// settle (task: a fix cycle's verification gate) — <see cref="MaySettleReason"/>'s own non-human
     /// condition, deliberately without its human exemption: a human's merge-ready resolution
     /// excuses another reviewer's fresh-context read, never the suite actually running at full
     /// scope over the fix's own commits (independent pre-PR review, cycle 1). This mode/fix-dispatch
