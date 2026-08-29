@@ -534,10 +534,10 @@ public sealed class TwgJiraExecutor(ProcessRunner? runner = null, Uri? site = nu
 
     /// <summary>
     /// The key twg's own answer carries, tolerant of the shapes actually observed: a query's
-    /// <c>data.issues[]</c>, a single-key get's <c>data</c> object directly, a batch get's
-    /// <c>data.items[].data</c>, or a create's own <c>data.issue</c> — the first entity found with
-    /// a "key" property, searched in that order of directness rather than assumed to be any one of
-    /// them.
+    /// <c>data.issues[]</c>, a single-key get's own <c>data[]</c> (verified against the installed
+    /// binary directly, independent pre-PR review, cycle 7), a batch get's <c>data.items[].data</c>,
+    /// or a create's own <c>data.issue</c> — the first entity found with a "key" property, searched
+    /// in that order of directness rather than assumed to be any one of them.
     /// </summary>
     private static string? ExtractFirstKey(string envelopeOutput)
     {

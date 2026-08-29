@@ -31,9 +31,14 @@ public sealed class TwgJiraExecutorTests
     private const string RealisticCreateAnswer =
         """{"apiVersion":"v2","command":"jira.workitem.create","data":{"success":true,"issue":{"id":"10001","key":"PROJ-999","self":"https://your-org.atlassian.net/rest/api/3/issue/10001"}}}""";
 
-    /// <summary>twg's real <c>jira workitem get</c> answer for a single key: the card sits directly under <c>data</c>.</summary>
+    /// <summary>
+    /// twg's real <c>jira workitem get</c> answer for a single key, verified against the installed
+    /// binary directly (independent pre-PR review, cycle 7): the card is the sole element of a
+    /// <c>data</c> array, not an object sitting directly under <c>data</c> — the shape this fixture
+    /// used to model before that verification.
+    /// </summary>
     private static string RealisticGetAnswer(string key) =>
-        $"{{\"apiVersion\":\"v2\",\"command\":\"jira.workitem.get\",\"data\":{{\"key\":\"{key}\",\"summary\":\"Found it\"}}}}";
+        $"{{\"apiVersion\":\"v2\",\"command\":\"jira.workitem.get\",\"data\":[{{\"key\":\"{key}\",\"summary\":\"Found it\"}}]}}";
 
     [Fact]
     public async Task A_create_embeds_the_tasks_marker_and_verifies_the_returned_key()
