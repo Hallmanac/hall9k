@@ -49,8 +49,9 @@ Both scripts do the same five things, in order:
 4. Unpack the release and run the release's own `h9k install --from-release <payload>` —
    the same idempotent publish-and-refresh `h9k install` has always done, just fed from a
    downloaded archive instead of a local `dotnet publish`. This is what places the binaries,
-   writes Hall9k's own Postgres definition (not started), publishes the skill set, and puts
-   `h9k` on your `PATH`.
+   writes Hall9k's own Postgres definition (not started), writes the matching connection
+   string to `config.json` when nothing else resolved and nothing is already listening on
+   `localhost:5432`, publishes the skill set, and puts `h9k` on your `PATH`.
 5. Run **`h9k doctor`** — so the bootstrap ends by telling you exactly what still needs
    attention (usually: a Postgres connection string) rather than declaring victory silently.
 
@@ -75,10 +76,19 @@ Nothing, mechanically — the bootstrap script is the same either way. The two d
   prompt, and the scripts read from `/dev/tty` when one exists but fall back to failing
   closed otherwise (they never guess consent). On Windows, `-Yes` cannot reach a script run
   with `iwr | iex` — use the scriptblock form shown above instead.
-- **Read what `h9k doctor` says at the end, and act on it or report it.** A fresh machine
-  almost always ends bootstrap with "no connection string configured" — that is expected,
-  not a failure of install. Setting up Postgres is a separate, deliberate step (see below);
-  install stays boring on purpose (Decisions Log #58).
+- **Read what `h9k doctor` says at the end, and act on it or report it.** Install now writes
+  the matching connection string to `config.json` when nothing else resolved and nothing is
+  listening on `localhost:5432`, so a fresh machine's bootstrap ends with `h9k doctor`
+  reporting a configured-but-unreachable database ("Configured (from the platform config file
+  …) to connect to localhost:5432, but nothing is listening there") rather than "no connection
+  string configured" — that is still expected, not a failure of install. Follow it with
+  `h9k doctor --yes` to remediate non-interactively (starts Hall9k's own Postgres via the
+  generated compose file and creates the schema, when Docker is running) instead of the
+  interactive prompts a human would answer by hand. The one machine that ends up somewhere
+  else is one already running a Postgres on that port: install says what it skipped and
+  writes nothing, doctor reports "no connection string configured" exactly as it always did,
+  and the decision of which server to use is a human's. See *Connecting a database* below
+  (Decisions Log #99).
 
 ## After bootstrap: staying current
 
@@ -100,7 +110,14 @@ fresh binaries — no repo checkout, no .NET SDK, on the machine that runs it. `
 `h9k` needs a Postgres connection string; nothing is *started* automatically, and nothing
 is guessed (Decisions Log #57, #58, #99). If nothing resolved before you ran the installer,
 install already wrote the one connection string that matches the compose file it just wrote,
-so there is usually nothing left to configure by hand. Run `h9k doctor` any time — it is the
+so there is usually nothing left to configure by hand. The one case it deliberately leaves
+alone is a machine with something already listening on `localhost:5432`, your own native
+Postgres, say, which is a supported way to run this (Decisions Log #57 takes no position on
+where Postgres runs). Install cannot tell whose server that is, so rather than write its own
+compose credentials against it and turn doctor's "something is already listening" into a
+confusing authentication failure, it prints what it skipped and leaves the machine
+unconfigured: point `HALL9K_CONNECTION_STRING` or `~/.hall9k/config.json` at your own server,
+or stop that Postgres if you want Hall9k's. Run `h9k doctor` any time — it is the
 same check, forever, and it teaches the fix at the moment you can act on it: is a connection
 string configured, is it reachable, is the schema there, and (if nothing is configured) what is
 available on this machine to point at, including a stopped `hall9k-postgres` container from
