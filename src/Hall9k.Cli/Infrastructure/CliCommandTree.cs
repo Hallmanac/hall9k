@@ -624,8 +624,9 @@ public static class CliCommandTree
                 .WithDescription(
                     "Run the project's build and test gates on demand against an interactive claim's worktree, "
                     + "and record the outcome as the same gate events a headless run's own verification records. "
-                    + "Refuses on uncommitted files first, the same check h9k task deliver runs. Only for a task "
-                    + "you hold interactively (h9k task work).")
+                    + "Reports modified-but-uncommitted files rather than refusing on them — the gates run "
+                    + "against the worktree as it stands; h9k task deliver is the one that refuses on them, "
+                    + "before it pushes. Only for a task you hold interactively (h9k task work).")
                 .WithExample("task", "verify", "28b19893");
             task.AddCommand<TaskDeliverCommand>("deliver")
                 .WithDescription(
