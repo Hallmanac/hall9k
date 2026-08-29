@@ -1167,8 +1167,13 @@ public sealed class CloseoutEngine(
     /// organisation's card, the exact hazard <c>TaskWriteJiraCommand</c> already refuses outright.
     /// No connection, or one recorded before the site field existed, is treated the same way
     /// <c>main</c> always did — skipped with a logged reason, since there is nothing here to keep
-    /// retrying. Two connections registered at once still resolves to null and is left to the
-    /// generic catch below exactly as before this diff, an accepted, unrelated gap
+    /// retrying. Two connections registered at once throws <see cref="DomainConflictException"/>
+    /// from <see cref="WorkItemConnections.FindJiraConnectionAsync"/> itself, caught by this
+    /// method's own site-resolution catch just below (not the generic catch further down, which
+    /// only ever sees a failure from the write attempt itself) and skipped the same way — before
+    /// this diff, the same case reached no catch at all: the best-effort lookup this method used to
+    /// call resolved it to null instead, and the comment proceeded against whatever tenant twg's
+    /// own ambient <c>auth.conf</c> resolves to, an accepted, unrelated gap
     /// (<see cref="WorkItemConnections.FindJiraConnectionAsync"/>'s own doc comment).
     /// </para>
     /// </summary>
