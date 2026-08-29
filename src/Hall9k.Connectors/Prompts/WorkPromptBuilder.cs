@@ -25,7 +25,8 @@ public static class WorkPromptBuilder
         string branch,
         string worktreePath,
         bool resumesPreviousWork = false,
-        string? blockerContext = null)
+        string? blockerContext = null,
+        string? resumeReason = null)
     {
         StringBuilder prompt = new();
         prompt.AppendLine("# Task");
@@ -35,18 +36,32 @@ public static class WorkPromptBuilder
 
         if (resumesPreviousWork)
         {
-            // A retry resumes the failed run's branch, and the retained worktree carries
-            // whatever that attempt left — including uncommitted work (origin incident,
+            // This branch resumes a retained worktree, and the retained worktree carries
+            // whatever the prior attempt left — including uncommitted work (origin incident,
             // 2026-08-18: gen 2-4 of a review-parked task each rebuilt the same feature
             // from scratch instead of finding the finished work already in the worktree).
+            // Worded without a cause on purpose: this same flag is true for a genuine failure
+            // retry (h9k task retry), a deliberate hand-off with nothing having failed (h9k
+            // task handback), and an operator simply re-entering their own still-open
+            // interactive claim (h9k task work) — asserting "a previous attempt failed" here
+            // would be exactly the unobserved-fact guess AGENTS.md forbids on the feature's
+            // own headline path (adversarial review, cycle 1).
             prompt.AppendLine("## A previous attempt worked here first");
             prompt.AppendLine();
-            prompt.AppendLine("This run retries a failed attempt and resumes its branch in its retained");
-            prompt.AppendLine("worktree. The previous attempt's work may already be present — committed on the");
-            prompt.AppendLine("branch, uncommitted in the working tree, or both. Before writing anything, review");
-            prompt.AppendLine("what is there (`git status`, `git log`, `git diff`), judge it against the");
-            prompt.AppendLine("acceptance criteria, and continue from it. Do not start over when usable work");
-            prompt.AppendLine("exists; redoing finished work is the failure mode this note exists to prevent.");
+            prompt.AppendLine("This run resumes an existing branch in a retained worktree. That is not");
+            prompt.AppendLine("necessarily because anything failed — it may be a deliberate hand-off, or an");
+            prompt.AppendLine("operator simply picking their own work back up. The previous attempt's work may");
+            prompt.AppendLine("already be present — committed on the branch, uncommitted in the working tree,");
+            prompt.AppendLine("or both. Before writing anything, review what is there (`git status`, `git log`,");
+            prompt.AppendLine("`git diff`), judge it against the acceptance criteria, and continue from it.");
+            prompt.AppendLine("Do not start over when usable work exists; redoing finished work is the");
+            prompt.AppendLine("failure mode this note exists to prevent.");
+            if (resumeReason.IsNotBlank())
+            {
+                prompt.AppendLine();
+                prompt.AppendLine($"Why this run resumes here, in the requester's own words: {resumeReason}");
+            }
+
             prompt.AppendLine();
         }
 

@@ -42,7 +42,8 @@ public static class AgentPromptBuilder
         string worktreePath,
         bool resumesPreviousWork = false,
         string? blockerContext = null) =>
-        WorkPromptBuilder.Build(task, project, branch, worktreePath, resumesPreviousWork, blockerContext);
+        WorkPromptBuilder.Build(
+            task, project, branch, worktreePath, resumesPreviousWork, blockerContext, task.RetryReason);
 
     /// <summary>
     /// The line a follow-up ends with when a review thread is a disagreement it cannot
