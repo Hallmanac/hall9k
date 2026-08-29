@@ -110,7 +110,7 @@ public sealed class TaskWorkCommand : Hall9kAsyncCommand<TaskWorkCommand.Setting
         try
         {
             exitCode = await LaunchInteractiveClaudeAsync(
-                worktreePath, prompt, claudeSessionId, settingsFile, project.SkipPermissions,
+                worktreePath, prompt, claudeSessionId, settingsFile, project.SkipPermissions, runId,
                 (processId, startedAt) => AppendSessionStartedAsync(store, runId, claudeSessionId, processId, startedAt, cancellationToken),
                 cancellationToken);
         }
@@ -197,6 +197,14 @@ public sealed class TaskWorkCommand : Hall9kAsyncCommand<TaskWorkCommand.Setting
                 $"Task {task.Id}'s worktree {run.WorktreePath} no longer exists on disk. "
                 + $"h9k task release {task.Id} to put it back in the queue, or investigate by hand.");
         }
+
+        // A second h9k task work on the same task is the same collision every other command in
+        // this claim's surface already guards against: without this, a second terminal launches
+        // a second claude into the same worktree, and RunDetailsProjection.StartSession's
+        // single-slot ActiveSessions record overwrites the first session's liveness record with
+        // the second's — so the first session becomes invisible to verify/deliver/handback too
+        // (adversarial review, cycle 2).
+        InteractiveSessionLiveness.EnsureNotAttachedElsewhere(run, task.Id, "work");
 
         AnsiConsole.MarkupLineInterpolated($"[dim]Re-entering task {task.Id}'s interactive claim.[/]");
         // Whatever the earlier session left — committed or not — is already sitting in this
@@ -309,7 +317,19 @@ public sealed class TaskWorkCommand : Hall9kAsyncCommand<TaskWorkCommand.Setting
                 IsFollowUp: false, Model: AgentModel.Fable, RunDirectory: runDirectory));
             await session.SaveChangesAsync(cancellationToken);
         }
-        catch (Exception exception) when (exception is not OperationCanceledException)
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            // A Ctrl-C in this exact window used to leave the task stuck Claimed with no run
+            // record — the raw-event-stream-surgery case the comment above describes — because
+            // the filter this catch replaces let cancellation fall straight through uncaught.
+            // CancellationToken.None here mirrors AppendSessionEndedAsync's own reasoning: the
+            // token that just fired is the one this cleanup exists for (adversarial review,
+            // cycle 2).
+            await FailInteractiveClaimAsync(
+                store, task.Id, claimedVersion, runId, "cancelled while preparing the worktree", CancellationToken.None);
+            throw;
+        }
+        catch (Exception exception)
         {
             await FailInteractiveClaimAsync(store, task.Id, claimedVersion, runId, exception.Message, cancellationToken);
             throw new DomainConflictException(
@@ -384,7 +404,14 @@ public sealed class TaskWorkCommand : Hall9kAsyncCommand<TaskWorkCommand.Setting
         DocumentStore store, Guid runId, Guid claudeSessionId, int processId, DateTimeOffset startedAt, CancellationToken cancellationToken)
     {
         await using IDocumentSession startSession = store.LightweightSession();
-        startSession.Events.Append(runId, new InteractiveSessionStarted(runId, claudeSessionId, startedAt, processId));
+        // MachineName is what lets InteractiveSessionLiveness tell "this session, checkable on
+        // this machine's own process table" from "a pid recorded by some other machine sharing
+        // the database" (adversarial review, cycle 2) — an interactive claim's RunDispatched
+        // carries no usable node identity (NodeId is deliberately the Guid.Empty sentinel, so
+        // NodeLoad's ceiling never counts it), so this event is the only place that identity is
+        // ever recorded.
+        startSession.Events.Append(runId, new InteractiveSessionStarted(
+            runId, claudeSessionId, startedAt, processId, Environment.MachineName));
         await startSession.SaveChangesAsync(cancellationToken);
     }
 
@@ -401,7 +428,7 @@ public sealed class TaskWorkCommand : Hall9kAsyncCommand<TaskWorkCommand.Setting
     }
 
     private static async Task<int> LaunchInteractiveClaudeAsync(
-        string worktreePath, string prompt, Guid sessionId, string settingsFile, bool skipPermissions,
+        string worktreePath, string prompt, Guid sessionId, string settingsFile, bool skipPermissions, Guid runId,
         Func<int, DateTimeOffset, Task> onStarted, CancellationToken cancellationToken)
     {
         using Process process = new();
@@ -411,6 +438,12 @@ public sealed class TaskWorkCommand : Hall9kAsyncCommand<TaskWorkCommand.Setting
             WorkingDirectory = worktreePath,
             UseShellExecute = false,
         };
+        // Inherited by claude and every descendant it spawns, so a nested h9k task verify the
+        // operator runs from inside this very session can recognise itself: it is the one case
+        // InteractiveSessionLiveness's pid check cannot tell apart from a second terminal, since
+        // that session is blocked waiting on the command it just started rather than racing it
+        // (conformance review, cycle 2).
+        process.StartInfo.EnvironmentVariables[InteractiveSessionLiveness.InteractiveRunEnvironmentVariable] = runId.ToString();
         process.StartInfo.ArgumentList.Add("--session-id");
         process.StartInfo.ArgumentList.Add(sessionId.ToString());
         process.StartInfo.ArgumentList.Add("--model");

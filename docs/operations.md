@@ -9,6 +9,7 @@ means, and how to get out of trouble.
 - [What lands on disk](#what-lands-on-disk)
 - [Configuration](#configuration)
 - [What "needs you" means](#what-needs-you-means)
+- [Working a task interactively](#working-a-task-interactively)
 - [The recovery levers](#the-recovery-levers)
 - [Reading a run](#reading-a-run)
 - [Known operational gaps](#known-operational-gaps)
@@ -519,6 +520,26 @@ exactly that.
 There is one more thing the pane can say, and it is not needs-you either: **waiting but handled**.
 A task whose blockers are all still alive, or a pull request the closeout monitor still owns the
 next move on, renders dim as its own level. It is there so you can consciously ignore it.
+
+## Working a task interactively
+
+`h9k task work | verify | deliver | handback | release` (Decisions Log #99)
+
+An operator can work a Queued task in their own terminal instead of dispatching it headless. The
+claim is held by the human, not a process — there is no lease and no heartbeat reclaim — so
+closing the terminal is a normal way to leave, and re-running `h9k task work <id>` re-enters the
+same worktree and branch with a fresh session.
+
+| Command | What it does |
+|---|---|
+| `h9k task work <id>` | Claims a Queued task, cuts the same branch/worktree/prompt headless dispatch would, and opens a regular interactive Claude Code session. On a task you already hold, re-enters that same worktree instead of claiming again. |
+| `h9k task verify <id>` | Runs the project's verification gates on demand against the claim's worktree, recording the outcome on the run's own stream exactly as a headless gate pass would. |
+| `h9k task deliver <id>` | Pushes the branch and hands the claim into the standard delivery pipeline — from here the run is indistinguishable from a headless one: gates, the pre-PR review loop, and the pull request all follow. |
+| `h9k task handback <id>` | Releases the human claim and queues the task through normal dispatch, so a headless agent resumes the branch from wherever the operator left it. |
+| `h9k task release <id>` | Gives an untouched claim back to the dispatch queue. Refused once the branch holds commits beyond the base branch — `handback` (to a headless agent) or `deliver` (yourself) is the lever once there is committed work. |
+
+`work` (on re-entry), `verify`, `deliver`, and `handback` are all refused while the claim's own
+interactive session is still attached in another terminal — exit it first (Ctrl+D or `/exit`).
 
 ## The recovery levers
 

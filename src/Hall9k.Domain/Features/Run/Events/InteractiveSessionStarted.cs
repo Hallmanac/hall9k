@@ -17,5 +17,14 @@ namespace Hall9k.Domain.Features.Run.Events;
 /// session is still attached to rather than silently colliding with it (adversarial review,
 /// cycle 1).
 /// </para>
+/// <para>
+/// MachineName is <see cref="Environment.MachineName"/> at the moment the process was spawned —
+/// the only place an interactive claim's machine identity is ever recorded, since its
+/// <c>RunDispatched</c> deliberately carries the <see cref="Guid.Empty"/> node sentinel. Without
+/// it, a reader on a different machine sharing the same database has no way to tell that a
+/// recorded pid names a process in a process table it cannot see, and would answer about a
+/// stranger (adversarial review, cycle 2). Blank on a stream written before this field existed.
+/// </para>
 /// </summary>
-public sealed record InteractiveSessionStarted(Guid Id, Guid ClaudeSessionId, DateTimeOffset StartedAt, int ProcessId);
+public sealed record InteractiveSessionStarted(
+    Guid Id, Guid ClaudeSessionId, DateTimeOffset StartedAt, int ProcessId, string MachineName = "");

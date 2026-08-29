@@ -20,6 +20,20 @@ namespace Hall9k.Cli.Commands;
 /// </summary>
 internal static class InteractiveSessionLiveness
 {
+    /// <summary>
+    /// Carries the claiming run's id into the launched Claude Code process's own environment
+    /// (<c>TaskWorkCommand.LaunchInteractiveClaudeAsync</c>), inherited by every descendant it
+    /// spawns. A nested <c>h9k task verify</c> invoked from inside that very session reads it back
+    /// to recognise itself — the one case <see cref="EnsureNotAttachedElsewhere"/> cannot
+    /// otherwise tell apart from a second terminal, since that session is blocked waiting on the
+    /// command it just started rather than racing it (conformance review, cycle 2). Checked by
+    /// callers for whom self-invocation is actually safe rather than built into this guard itself:
+    /// <c>h9k task work</c>'s own re-entry spawns a second, concurrent session rather than
+    /// blocking on this one, so the same exemption there would open the collision this guard
+    /// exists to prevent.
+    /// </summary>
+    public const string InteractiveRunEnvironmentVariable = "HALL9K_INTERACTIVE_RUN_ID";
+
     // Mirrors ProcessManagerBase.StartTimeTolerance: start times can drift slightly between
     // recording and reading, and a match within this window means "same process", not a pid the
     // OS already recycled for something else.
@@ -35,6 +49,12 @@ internal static class InteractiveSessionLiveness
     {
         if (run.ActiveSessions.Find(session => session.Role == AgentRole.Interactive) is not { } session
             || session.StartedAt is not { } startedAt
+            // A blank MachineName (a stream written before the field existed) is an unknown
+            // machine, never assumed to be this one — the same never-guess reading a mismatched
+            // name gets. Checking a pid this machine did not record the process start time for
+            // would be exactly the stranger-process risk this guard exists to avoid (adversarial
+            // review, cycle 2).
+            || session.MachineName != Environment.MachineName
             || !IsAlive(session.ProcessId, startedAt))
         {
             return;
