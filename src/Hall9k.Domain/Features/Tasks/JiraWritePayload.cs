@@ -107,7 +107,13 @@ public sealed record JiraWritePayload(
 
     /// <summary>
     /// A composed field, matched case-insensitively the same way <see cref="Hall9k.Connectors.WorkItems.TwgJiraExecutor"/>
-    /// itself pulls a first-class field out of the composed dictionary, with actual text in it.
+    /// itself pulls a first-class field out of the composed dictionary, with actual text in it once
+    /// decoded the same way that executor's own <c>ExtractField</c> decodes it: a field from
+    /// <see cref="FromJson"/> stores its raw JSON text, so a blank value composed as the JSON string
+    /// <c>""</c> is two quote characters here, not blank, until it is unwrapped the same way the
+    /// executor itself unwraps it before deciding whether to send <c>--summary</c> at all
+    /// (independent pre-PR review, cycle 7) — checking the raw text let an empty summary through
+    /// this validation only for twg to refuse it after the intent was already recorded.
     /// </summary>
     private static bool HasField(IReadOnlyDictionary<string, string>? fields, string name)
     {
@@ -118,13 +124,36 @@ public sealed record JiraWritePayload(
 
         foreach ((string key, string value) in fields)
         {
-            if (string.Equals(key, name, StringComparison.OrdinalIgnoreCase) && value.IsNotBlank())
+            if (string.Equals(key, name, StringComparison.OrdinalIgnoreCase) && DecodeFieldText(value).IsNotBlank())
             {
                 return true;
             }
         }
 
         return false;
+    }
+
+    /// <summary>
+    /// Unwraps a field's own raw JSON text back to plain content, the same decoding
+    /// <see cref="Hall9k.Connectors.WorkItems.TwgJiraExecutor"/>'s own <c>DecodeFieldText</c>
+    /// applies before it reaches twg's non-JSON-coercing <c>--summary</c>/<c>--description</c>
+    /// flags — duplicated rather than shared because <c>Hall9k.Domain</c> references no other
+    /// Hall9k project. A value that is not itself valid JSON (a payload built directly rather than
+    /// through <see cref="FromJson"/>) passes through unchanged, the plain text it always was.
+    /// </summary>
+    private static string DecodeFieldText(string value)
+    {
+        try
+        {
+            using JsonDocument document = JsonDocument.Parse(value);
+            return document.RootElement.ValueKind == JsonValueKind.String
+                ? document.RootElement.GetString() ?? value
+                : value;
+        }
+        catch (JsonException)
+        {
+            return value;
+        }
     }
 
     /// <summary>

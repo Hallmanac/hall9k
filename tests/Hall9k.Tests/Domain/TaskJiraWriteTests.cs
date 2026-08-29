@@ -66,6 +66,35 @@ public sealed class TaskJiraWriteTests
     }
 
     [Fact]
+    public void A_create_needs_a_summary_field_because_twg_itself_refuses_without_one()
+    {
+        JiraWritePayload payload = new(WorkItemType: "Dev Task", Fields: null, Comment: null);
+
+        Action validate = () => payload.Validate(JiraWriteOperation.Create);
+
+        validate.Should().Throw<DomainValidationException>().WithMessage("*needs a \"summary\" field*");
+    }
+
+    /// <summary>
+    /// A field composed through <see cref="JiraWritePayload.FromJson"/> is stored as its own raw
+    /// JSON text, so an empty summary arrives here as the two-character string <c>""</c> rather
+    /// than an empty one — this validation has to decode it the same way
+    /// <see cref="Hall9k.Connectors.WorkItems.TwgJiraExecutor"/>'s own field extraction does before
+    /// deciding whether it is blank (independent pre-PR review, cycle 7), or an empty summary
+    /// passes this gate only for twg to refuse it after the intent is already recorded.
+    /// </summary>
+    [Fact]
+    public void A_json_composed_blank_summary_is_refused_the_same_as_a_missing_one()
+    {
+        JiraWritePayload payload = JiraWritePayload.FromJson(
+            """{"workItemType":"Dev Task","fields":{"summary":"","description":"Fixes the thing"}}""");
+
+        Action validate = () => payload.Validate(JiraWriteOperation.Create);
+
+        validate.Should().Throw<DomainValidationException>().WithMessage("*needs a \"summary\" field*");
+    }
+
+    [Fact]
     public void An_unrecognized_text_format_is_refused_before_anything_is_recorded()
     {
         JiraWritePayload payload = new(
