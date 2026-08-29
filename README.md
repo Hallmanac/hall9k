@@ -148,8 +148,9 @@ Two install paths exist; pick the one that matches the machine, and run its step
 | Claude Code CLI (`claude`), logged in | The executor: every agent session is a detached `claude -p` |
 
 Nothing else is required: no repo checkout, no .NET SDK. `gh` is what the bootstrap script
-itself needs; Docker is the only one of the other three `h9k doctor` ever checks, and it does so
-in *Verify the install* below, not up front. `git` and the Claude Code CLI aren't checked by
+itself needs; Docker is the only one of the other three `h9k doctor` ever checks, and the
+bootstrap script already runs that check for you as its last step — the same check you can
+re-run yourself in *Verify the install* below. `git` and the Claude Code CLI aren't checked by
 anything in this install path — they matter once a project is registered and a dispatched
 session actually runs, so their absence surfaces there instead.
 
@@ -246,8 +247,9 @@ for "installed", and nothing past it, registering a project included, is require
 
 On Windows, run these in a new terminal rather than the one that just ran the installer: adding
 `h9k` to the user PATH doesn't reach a process already running, so the shell that just installed
-it still can't resolve a bare `h9k` (an agent driving this in one persistent session can instead
-call it by its full path, `%USERPROFILE%\.hall9k\bin\h9k.exe`, for the commands below).
+it still can't resolve a bare `h9k` (an agent driving this in one persistent PowerShell session
+can instead call it by its full path, `"$env:USERPROFILE\.hall9k\bin\h9k.exe"`, for the commands
+below).
 
 ```bash
 h9k doctor --yes       # remediate non-interactively: start Hall9k's own Postgres, create the schema
