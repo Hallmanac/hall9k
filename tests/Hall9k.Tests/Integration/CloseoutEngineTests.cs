@@ -2460,7 +2460,7 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
             store, node, worktrees, repoPath, cts.Token,
             externalReference: new ExternalReference(WorkItemProvider.Jira, "PROJ-123"));
 
-        RecordingProcessRunner stuckTwg = RecordingProcessRunner.Failing("twg is not authenticated: run 'twg login'");
+        RecordingProcessRunner stuckTwg = RecordingProcessRunner.TwgAuthExpired();
         await using (IDocumentSession session = store.LightweightSession())
         {
             JiraWriteAttemptResult outstanding = await JiraWriteCoordinator.SubmitAsync(

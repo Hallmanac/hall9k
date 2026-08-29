@@ -396,35 +396,95 @@ public sealed class TwgJiraExecutor(ProcessRunner? runner = null, Uri? site = nu
             return result;
         }
 
-        throw Explain(result.StandardError);
+        throw Explain(result);
     }
 
+    private const int AuthRequiredExitCode = 77;
+
     /// <summary>
-    /// twg's stderr, classified rather than parsed for content: the only distinction this makes
-    /// is expired-or-missing login (a handled, expected state, Brian's design) against everything
-    /// else, which the caller is responsible for reporting verbatim. Deliberately no bare "401"
-    /// substring check: a digit sequence appears in plenty of ordinary refusals that have nothing
-    /// to do with authentication — an issue key (PROJ-401), a custom field id
-    /// (customfield_10401) — and matching on it converted a permanent refusal into a write
-    /// retried forever (independent pre-PR review, cycle 1). "unauthorized" already covers the
-    /// genuine "HTTP 401 Unauthorized" phrasing without that false-positive surface.
+    /// twg reports a runtime failure — including an expired or missing login — through its own
+    /// JSON error envelope on stdout, exit code 77, with stderr left empty (verified live against
+    /// an installed twg, independent pre-PR review, cycle 3): none of the earlier stderr substring
+    /// checks could ever match, because the answer was never on that stream. The envelope is read
+    /// with the same <see cref="ReadPayloadJson"/>/<see cref="StdoutFilePathPattern"/> machinery
+    /// <see cref="ExtractFirstKey"/> already uses for a success answer; stderr stays a fallback for
+    /// whatever this class has not seen twg do yet (a spawn-level refusal outside twg's own
+    /// control, for one). Whichever stream answered, the text is twg's and Jira's rather than
+    /// ours — it routinely quotes a composed field value or a card's own adopted text back — so it
+    /// goes through <see cref="RelayedText.OneLine"/> before it reaches an exception message the
+    /// CLI writes straight to stderr and the coordinator records as a failure reason.
     /// </summary>
-    private static TwgExecutionException Explain(string standardError)
+    private static TwgExecutionException Explain(ProcessResult result)
     {
-        string reported = RelayedText.OneLine(standardError).Trim();
-        bool authExpired = reported.Contains("twg login", StringComparison.OrdinalIgnoreCase)
+        (string? code, string? message) = ReadErrorEnvelope(result.StandardOutput);
+        string reported = RelayedText.OneLine(message.IsNotBlank() ? message : result.StandardError).Trim();
+
+        bool authExpired = result.ExitCode == AuthRequiredExitCode
+            || string.Equals(code, "AUTH_REQUIRED", StringComparison.OrdinalIgnoreCase)
+            || reported.Contains("twg login", StringComparison.OrdinalIgnoreCase)
             || reported.Contains("not authenticated", StringComparison.OrdinalIgnoreCase)
             || reported.Contains("unauthorized", StringComparison.OrdinalIgnoreCase)
+            || reported.Contains("authentication required", StringComparison.OrdinalIgnoreCase)
+            // Deliberately no bare "401" substring check: a digit sequence appears in plenty of
+            // ordinary refusals that have nothing to do with authentication — an issue key
+            // (PROJ-401), a custom field id (customfield_10401) — and matching on it converted a
+            // permanent refusal into a write retried forever (independent pre-PR review, cycle 1).
             || reported.Contains("token", StringComparison.OrdinalIgnoreCase)
                 && reported.Contains("expired", StringComparison.OrdinalIgnoreCase);
+
+        string detail = reported.IsNotBlank() ? reported : Head(result.StandardOutput);
 
         return authExpired
             ? new TwgExecutionException(
                 TwgFailureKind.AuthExpired,
-                $"twg is not authenticated (its login expires periodically): {reported}. Run 'twg login' "
+                $"twg is not authenticated (its login expires periodically): {detail}. Run 'twg login' "
                 + "in your own terminal — it is a browser-based login twg cannot do unattended — and this "
                 + "write will retry automatically once it succeeds.")
-            : new TwgExecutionException(TwgFailureKind.Other, $"twg refused the write: {reported}");
+            : new TwgExecutionException(TwgFailureKind.Other, $"twg refused the write: {detail}");
+    }
+
+    /// <summary>
+    /// The <c>error.code</c>/<c>error.message</c> a failing twg call's own envelope carries,
+    /// tolerant of there being none at all (a spawn-level refusal never reaches twg's own JSON
+    /// output, so it has nothing to read here and falls back to stderr in <see cref="Explain"/>).
+    /// </summary>
+    private static (string? Code, string? Message) ReadErrorEnvelope(string standardOutput)
+    {
+        string json = ReadPayloadJson(standardOutput);
+        if (json.IsBlank())
+        {
+            return (null, null);
+        }
+
+        JsonDocument document;
+        try
+        {
+            document = JsonDocument.Parse(json);
+        }
+        catch (JsonException)
+        {
+            return (null, null);
+        }
+
+        using (document)
+        {
+            if (document.RootElement.ValueKind != JsonValueKind.Object
+                || !document.RootElement.TryGetProperty("error", out JsonElement error)
+                || error.ValueKind != JsonValueKind.Object)
+            {
+                return (null, null);
+            }
+
+            string? code = error.TryGetProperty("code", out JsonElement codeElement)
+                && codeElement.ValueKind == JsonValueKind.String
+                ? codeElement.GetString()
+                : null;
+            string? message = error.TryGetProperty("message", out JsonElement messageElement)
+                && messageElement.ValueKind == JsonValueKind.String
+                ? messageElement.GetString()
+                : null;
+            return (code, message);
+        }
     }
 
     /// <summary>
