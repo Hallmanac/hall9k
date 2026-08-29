@@ -310,7 +310,8 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
     /// How the newest run's pre-PR review ended (Decisions Log #63). Merge-ready is one word for
     /// two different things, and this line is what keeps them apart: clean means a reviewer read
     /// the final tip and found nothing, while settled means the severity gate ended the loop
-    /// over findings that were fixed but never read again, or routed to bug tasks of their own.
+    /// over findings that were fixed but never read again, or routed away — to a draft bug task
+    /// of their own, or folded into the project's standing sweep draft (Decisions Log #99).
     /// A reader deciding how much to trust a pull request should not have to dig through the run
     /// stream to learn which of those happened.
     /// </summary>
@@ -358,14 +359,14 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
     }
 
     /// <summary>
-    /// The residuals that were meant to become draft bug tasks and did not, said out loud
-    /// rather than counted as routed. "Routed" is what tells a reader the defect is written
-    /// down somewhere they can find it; for these it is written down nowhere but the run
-    /// stream, and that is the opposite fact. Normally there are none and the line says
-    /// nothing extra.
+    /// The residuals that were meant to be routed away — to a draft bug task or the standing
+    /// sweep — and were not, said out loud rather than counted as routed. "Routed" is what tells
+    /// a reader the defect is written down somewhere they can find it; for these it is written
+    /// down nowhere but the run stream, and that is the opposite fact. Normally there are none
+    /// and the line says nothing extra.
     /// </summary>
     private static string UnroutedClause(RunDetails run) => run.ReviewResidualsRoutingFailed > 0
-        ? $", {run.ReviewResidualsRoutingFailed} not routed — creating the draft bug task failed"
+        ? $", {run.ReviewResidualsRoutingFailed} not routed — routing failed"
         : string.Empty;
 
     /// <summary>
