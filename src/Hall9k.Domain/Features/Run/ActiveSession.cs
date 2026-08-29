@@ -21,8 +21,15 @@ namespace Hall9k.Domain.Features.Run;
 /// a resumed build session, whose event records only a pid (<see cref="Events.RunResumed"/>) — a
 /// bare pid is a lie waiting to happen, so liveness stays unobserved rather than guessed.
 /// </param>
+/// <param name="MachineName">
+/// Which machine's process table <paramref name="ProcessId"/> names, carried only for
+/// <see cref="AgentRole.Interactive"/> (from <see cref="Events.InteractiveSessionStarted"/>) —
+/// every other role dispatches through the daemon, whose own <c>NodeId</c> already answers this.
+/// Blank when unknown, which is never treated as "this machine" (adversarial review, cycle 2).
+/// </param>
 public sealed record ActiveSession(
     AgentRole Role,
     ReviewLens Lens,
     int ProcessId,
-    DateTimeOffset? StartedAt);
+    DateTimeOffset? StartedAt,
+    string MachineName = "");

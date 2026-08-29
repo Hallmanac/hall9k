@@ -56,8 +56,14 @@ public sealed class TaskVerifyCommand : Hall9kAsyncCommand<TaskVerifyCommand.Set
         // An operator's own session, still attached in another terminal, is editing and possibly
         // rebuilding this same worktree right now — running gates here would collide with it in
         // shared obj/bin output exactly as the daemon's own gates and review sessions would
-        // (adversarial review, cycle 1).
-        InteractiveSessionLiveness.EnsureNotAttachedElsewhere(run, taskId, "verify");
+        // (adversarial review, cycle 1). Skipped when this invocation is that very session asking
+        // for itself (the environment variable h9k task work's own launch set): it is blocked
+        // waiting on this command to finish rather than racing it, so there is nothing to collide
+        // with (conformance review, cycle 2).
+        if (Environment.GetEnvironmentVariable(InteractiveSessionLiveness.InteractiveRunEnvironmentVariable) != runId.ToString())
+        {
+            InteractiveSessionLiveness.EnsureNotAttachedElsewhere(run, taskId, "verify");
+        }
 
         // Mirrors TaskWorkCommand.ReenterAsync's own guard: once h9k task deliver or handback
         // hands the run to the standard pipeline, the task can still read Claimed+interactive

@@ -598,7 +598,9 @@ public sealed class RunDetailsProjection : SingleStreamProjection<RunDetails, Gu
     {
         view.InteractiveClaudeSessionId = @event.Data.ClaudeSessionId;
         view.InteractiveSessionCount++;
-        StartSession(view, AgentRole.Interactive, ReviewLens.Unknown, @event.Data.ProcessId, @event.Data.StartedAt);
+        StartSession(
+            view, AgentRole.Interactive, ReviewLens.Unknown, @event.Data.ProcessId, @event.Data.StartedAt,
+            @event.Data.MachineName);
         view.State = RunState.Running;
     }
 
@@ -633,7 +635,8 @@ public sealed class RunDetailsProjection : SingleStreamProjection<RunDetails, Gu
     /// </para>
     /// </summary>
     private static void StartSession(
-        RunDetails view, AgentRole role, ReviewLens? lens, int processId, DateTimeOffset? startedAt)
+        RunDetails view, AgentRole role, ReviewLens? lens, int processId, DateTimeOffset? startedAt,
+        string machineName = "")
     {
         ReviewLens track = lens ?? ReviewLens.Unknown;
         if (role == AgentRole.Review)
@@ -645,7 +648,7 @@ public sealed class RunDetailsProjection : SingleStreamProjection<RunDetails, Gu
             view.ActiveSessions.Clear();
         }
 
-        view.ActiveSessions.Add(new ActiveSession(role, track, processId, startedAt));
+        view.ActiveSessions.Add(new ActiveSession(role, track, processId, startedAt, machineName));
     }
 
     /// <summary>

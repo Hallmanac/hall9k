@@ -76,7 +76,17 @@ public sealed class TaskReleaseCommand : Hall9kAsyncCommand<TaskReleaseCommand.S
             ProjectDetails project = await session.LoadAsync<ProjectDetails>(task.ProjectId, cancellationToken)
                 ?? throw new DomainNotFoundException($"Task {taskId}'s project no longer exists.");
             int commits = await InteractiveWorktreeGit.CountBranchCommitsAsync(run.WorktreePath, project.BaseBranch, cancellationToken);
-            if (commits > 0)
+            if (commits < 0)
+            {
+                // Never guessed at as empty (InteractiveWorktreeGit's own contract, mirrored by
+                // TaskDeliverCommand and TaskVerifyCommand's own unreadable-git cases): neither
+                // origin/<base>..HEAD nor <base>..HEAD resolved, so the check is honestly skipped
+                // rather than silently letting the orphaning this guard exists to prevent through
+                // (adversarial review, cycle 2).
+                AnsiConsole.MarkupLineInterpolated(
+                    $"[yellow]Could not read the worktree's git status at {run.WorktreePath}; skipping the commits-beyond-base check.[/]");
+            }
+            else if (commits > 0)
             {
                 throw new DomainConflictException(
                     $"Task {taskId}'s branch {run.Branch} holds {commits} commit(s) beyond {project.BaseBranch} — "
