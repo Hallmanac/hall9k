@@ -27,18 +27,23 @@ public static class DatabaseDoctor
 
     /// <summary>
     /// Run the full check, printing teaching messages as it goes, and — when
-    /// <paramref name="offerFixes"/> is set and the session is interactive — offering to
-    /// fix what it can (starting Hall9k's own Postgres, creating the schema). Returns the
+    /// <paramref name="offerFixes"/> is set — offering to fix what it can (starting
+    /// Hall9k's own Postgres, creating the schema): interactively, by asking, or — when
+    /// <paramref name="assumeYes"/> is set (<c>h9k doctor --yes</c>) — without asking at
+    /// all, the shape a script or a dispatched agent needs. A session that is neither
+    /// interactive nor carrying <paramref name="assumeYes"/> gets a named reason for the
+    /// skip and the flag to re-run with, never a silent fall-through to advice. Returns the
     /// connection string this process resolved and proved reachable, or <see langword="null"/>
     /// if it could not. A caller like <c>h9k daemon start</c> needs the string itself, not
     /// just a yes/no: the process it spawns runs from a different working directory
     /// (<c>RunPaths.Root</c>), so re-resolving there could walk up for a project override
     /// file from the wrong place and land on a different answer than the one just checked.
     /// </summary>
-    public static Task<string?> RunAsync(bool offerFixes, CancellationToken cancellationToken) =>
-        RunAsync(offerFixes, ExternalProcess.Runner, cancellationToken);
+    public static Task<string?> RunAsync(bool offerFixes, bool assumeYes, CancellationToken cancellationToken) =>
+        RunAsync(offerFixes, assumeYes, ExternalProcess.Runner, cancellationToken);
 
-    internal static async Task<string?> RunAsync(bool offerFixes, ProcessRunner runner, CancellationToken cancellationToken)
+    internal static async Task<string?> RunAsync(
+        bool offerFixes, bool assumeYes, ProcessRunner runner, CancellationToken cancellationToken)
     {
         ConnectionStringResolution resolution = Hall9kDatabase.Resolve();
         if (resolution.Origin == ConnectionStringOrigin.PlatformConfigFileMalformed)
@@ -53,21 +58,21 @@ public static class DatabaseDoctor
 
         if (!resolution.IsConfigured)
         {
-            resolution = await DiagnoseNotConfiguredAsync(offerFixes, runner, cancellationToken);
+            resolution = await DiagnoseNotConfiguredAsync(offerFixes, assumeYes, runner, cancellationToken);
             if (resolution.Value is not { } configured)
             {
                 return null;
             }
 
-            return await CheckReachabilityAndSchemaAsync(configured, resolution, offerFixes, runner, cancellationToken);
+            return await CheckReachabilityAndSchemaAsync(configured, resolution, offerFixes, assumeYes, runner, cancellationToken);
         }
 
-        return await CheckReachabilityAndSchemaAsync(resolution.Value, resolution, offerFixes, runner, cancellationToken);
+        return await CheckReachabilityAndSchemaAsync(resolution.Value, resolution, offerFixes, assumeYes, runner, cancellationToken);
     }
 
     /// <summary>Question 1 failed, so question 4 is what is left to say: what is available to point at.</summary>
     private static async Task<ConnectionStringResolution> DiagnoseNotConfiguredAsync(
-        bool offerFixes, ProcessRunner runner, CancellationToken cancellationToken)
+        bool offerFixes, bool assumeYes, ProcessRunner runner, CancellationToken cancellationToken)
     {
         AnsiConsole.MarkupLine(
             "[yellow]No connection string is configured.[/] That is the whole problem — nothing else has been checked yet.");
@@ -88,7 +93,7 @@ public static class DatabaseDoctor
         }
 
         if (runtime == ContainerRuntimeStatus.Running && offerFixes
-            && await OfferAndStartAsync(Hall9kDatabase.DefaultConnectionString, containerConfirmed, container, runner, cancellationToken))
+            && await OfferAndStartAsync(Hall9kDatabase.DefaultConnectionString, containerConfirmed, container, assumeYes, runner, cancellationToken))
         {
             await Hall9kDatabase.WriteConfiguredConnectionStringAsync(Hall9kDatabase.DefaultConnectionString, cancellationToken);
             AnsiConsole.MarkupLine($"[green]Configured[/]: wrote the connection string to {Hall9kDatabase.ConfigFile.EscapeMarkup()}.");
@@ -107,6 +112,7 @@ public static class DatabaseDoctor
         string connectionString,
         ConnectionStringResolution resolution,
         bool offerFixes,
+        bool assumeYes,
         ProcessRunner runner,
         CancellationToken cancellationToken)
     {
@@ -133,7 +139,7 @@ public static class DatabaseDoctor
                     (ContainerRuntimeStatus runtime, bool containerConfirmed, PostgresContainerStatus container) =
                         await ReportContainerRuntimeStatusAsync(runner, cancellationToken);
                     if (offerFixes && runtime == ContainerRuntimeStatus.Running
-                        && await OfferAndStartAsync(connectionString, containerConfirmed, container, runner, cancellationToken))
+                        && await OfferAndStartAsync(connectionString, containerConfirmed, container, assumeYes, runner, cancellationToken))
                     {
                         reachability = await DatabaseReachability.ProbeAsync(connectionString, cancellationToken);
                     }
@@ -176,11 +182,21 @@ public static class DatabaseDoctor
             AnsiConsole.MarkupLine(
                 $"[yellow]Connected to {reachability.Host.EscapeMarkup()}:{reachability.Port}/{reachability.Database.EscapeMarkup()}[/] "
                 + $"({resolution.Description.EscapeMarkup()}), but Hall9k's schema is not there yet. Marten creates its own tables.");
-            if (offerFixes && AnsiConsole.Profile.Capabilities.Interactive
-                && AnsiConsole.Confirm("Shall I set that up now?", defaultValue: true))
+            if (offerFixes && (assumeYes
+                || (AnsiConsole.Profile.Capabilities.Interactive && AnsiConsole.Confirm("Shall I set that up now?", defaultValue: true))))
             {
                 await ApplySchemaAsync(connectionString);
                 AnsiConsole.MarkupLine("[green]Schema created.[/]");
+            }
+            else if (offerFixes && !AnsiConsole.Profile.Capabilities.Interactive)
+            {
+                // The AC-3 rule, applied here too: a skipped prompt is never silent
+                // advice-only — it names why, and what to run instead of it (origin:
+                // Windows install friction log item 3, which surfaced this exact
+                // fall-through as "prints advice and exits nonzero silently").
+                AnsiConsole.MarkupLine(
+                    "[dim]Skipping — stdin is not a terminal, so there is nobody to confirm this. "
+                    + "Re-run with h9k doctor --yes to create it automatically.[/]");
             }
             else
             {
@@ -272,12 +288,20 @@ public static class DatabaseDoctor
     /// means that report could not tell absent from stopped (<c>docker ps -a</c> itself failed) —
     /// this sits the offer out entirely rather than guess, since picking either branch below
     /// (restart what is presumed stopped, or bring up what is presumed absent) would act on a
-    /// fact nobody actually observed this pass.
+    /// fact nobody actually observed this pass. <paramref name="assumeYes"/> (<c>h9k doctor --yes</c>)
+    /// takes the place of the interactive confirm — the offer still runs, it just is not asked —
+    /// and a non-interactive session carrying neither an answer nor that flag is told exactly
+    /// that, rather than skipped without a word.
     /// </summary>
     private static async Task<bool> OfferAndStartAsync(
-        string connectionStringToPoll, bool containerConfirmed, PostgresContainerStatus container, ProcessRunner runner, CancellationToken cancellationToken)
+        string connectionStringToPoll,
+        bool containerConfirmed,
+        PostgresContainerStatus container,
+        bool assumeYes,
+        ProcessRunner runner,
+        CancellationToken cancellationToken)
     {
-        if (!AnsiConsole.Profile.Capabilities.Interactive || !containerConfirmed)
+        if (!containerConfirmed)
         {
             return false;
         }
@@ -288,12 +312,27 @@ public static class DatabaseDoctor
             return false;
         }
 
-        string prompt = container == PostgresContainerStatus.Stopped
-            ? "Start it now via Docker?"
-            : "Postgres isn't running. Start it now via Docker?";
-        if (!AnsiConsole.Confirm(prompt, defaultValue: true))
+        if (!assumeYes && !AnsiConsole.Profile.Capabilities.Interactive)
         {
+            // Same rule as the schema offer below: a skipped prompt names itself and the
+            // flag that answers it, rather than falling through to generic advice as though
+            // nothing here could have been fixed automatically (origin: Windows install
+            // friction log item 3).
+            AnsiConsole.MarkupLine(
+                "[dim]Skipping the start offer — stdin is not a terminal, so there is nobody to confirm this. "
+                + "Re-run with h9k doctor --yes to start it automatically.[/]");
             return false;
+        }
+
+        if (!assumeYes)
+        {
+            string prompt = container == PostgresContainerStatus.Stopped
+                ? "Start it now via Docker?"
+                : "Postgres isn't running. Start it now via Docker?";
+            if (!AnsiConsole.Confirm(prompt, defaultValue: true))
+            {
+                return false;
+            }
         }
 
         if (container == PostgresContainerStatus.Stopped)

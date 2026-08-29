@@ -232,8 +232,10 @@ public static class CliCommandTree
                 + "(nothing listening vs. credentials rejected are named separately), and is the schema "
                 + "there — offering to fix what it can along the way (starting Hall9k's own Postgres, "
                 + "creating the schema). The same check any other command runs automatically the moment "
-                + "it cannot reach a database, available here on demand (Decisions Log #58, #73).")
-            .WithExample("doctor");
+                + "it cannot reach a database, available here on demand (Decisions Log #58, #73). "
+                + "--yes remediates non-interactively, for a script or a dispatched agent.")
+            .WithExample("doctor")
+            .WithExample("doctor", "--yes");
 
         config.AddCommand<InstallCommand>("install")
             .WithDescription(

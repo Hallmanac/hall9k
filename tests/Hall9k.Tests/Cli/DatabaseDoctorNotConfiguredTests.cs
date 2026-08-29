@@ -1,7 +1,9 @@
 using FluentAssertions;
 using Hall9k.Cli.Diagnostics;
+using Hall9k.Connectors.Processes;
 using Hall9k.Domain.Infrastructure.Persistence;
 using Hall9k.Tests.Fakes;
+using Spectre.Console;
 using Xunit;
 
 namespace Hall9k.Tests.Cli;
@@ -45,7 +47,7 @@ public sealed class DatabaseDoctorNotConfiguredTests : IDisposable
         // same fixed stdout, and "exited" is what a stopped hall9k-postgres reports.
         RecordingProcessRunner runner = RecordingProcessRunner.Succeeding("exited\n");
 
-        string? resolved = await DatabaseDoctor.RunAsync(offerFixes: false, runner.Runner, CancellationToken.None);
+        string? resolved = await DatabaseDoctor.RunAsync(offerFixes: false, assumeYes: false, runner.Runner, CancellationToken.None);
 
         resolved.Should().BeNull("nothing is configured and no fix was offered");
         runner.Calls.Should().Contain(
@@ -58,11 +60,79 @@ public sealed class DatabaseDoctorNotConfiguredTests : IDisposable
     {
         RecordingProcessRunner runner = RecordingProcessRunner.Succeeding("exited\n");
 
-        string? resolved = await DatabaseDoctor.RunAsync(offerFixes: true, runner.Runner, CancellationToken.None);
+        string? resolved = await DatabaseDoctor.RunAsync(offerFixes: true, assumeYes: false, runner.Runner, CancellationToken.None);
 
         resolved.Should().BeNull("nothing is configured and this test process is never an interactive console");
         runner.Calls.Should().Contain(
             call => call.Arguments.Count > 0 && call.Arguments[0] == "ps",
             "a non-interactive h9k doctor still has to name a stopped container, not just an interactive one");
+    }
+
+    [Fact]
+    public async Task A_non_interactive_session_without_yes_skips_the_start_offer_and_names_the_flag()
+    {
+        RecordingProcessRunner runner = RecordingProcessRunner.Succeeding("exited\n");
+
+        string output = await CaptureAsync(() =>
+            DatabaseDoctor.RunAsync(offerFixes: true, assumeYes: false, runner.Runner, CancellationToken.None));
+
+        runner.Calls.Should().NotContain(
+            call => call.Arguments.Count > 0 && call.Arguments[0] == "start",
+            "a session with nobody there to confirm must never start anything on its own say-so");
+        output.Should().Contain("h9k doctor --yes",
+            "a skipped prompt has to name the exact flag that answers it, not just advise trying again");
+    }
+
+    [Fact]
+    public async Task Yes_bypasses_the_interactive_gate_and_attempts_the_fix_anyway()
+    {
+        // "docker info" (Running) and "docker ps -a" (no container yet — Absent) both
+        // succeed with empty output; everything past that (ComposeUpAsync's own
+        // "docker volume ls" preflight) fails, which is enough to prove the offer was
+        // actually attempted without waiting out a real docker compose up or the 30s
+        // Postgres readiness poll that would follow a genuine start.
+        List<IReadOnlyList<string>> calls = [];
+        ProcessRunner runner = (_, arguments, _, _) =>
+        {
+            calls.Add(arguments);
+            bool recognized = arguments.Count > 0 && arguments[0] is "info" or "ps";
+            return Task.FromResult(recognized
+                ? new ProcessResult(0, string.Empty, string.Empty)
+                : new ProcessResult(1, string.Empty, "docker volume ls failed"));
+        };
+
+        string? resolved = await DatabaseDoctor.RunAsync(offerFixes: true, assumeYes: true, runner, CancellationToken.None);
+
+        resolved.Should().BeNull("nothing was actually started — the volume preflight failed");
+        calls.Should().Contain(
+            call => call.Count > 0 && call[0] == "volume",
+            "--yes has to reach the actual start attempt without anybody confirming it first");
+    }
+
+    /// <summary>The global console, swapped for a writer so a skipped prompt's own
+    /// explanation can be asserted on, then put back — same shape as InstallCommandTests'
+    /// own Capture, async because <see cref="DatabaseDoctor.RunAsync(bool, bool, Hall9k.Connectors.Processes.ProcessRunner, CancellationToken)"/> is.</summary>
+    private static async Task<string> CaptureAsync(Func<Task> action)
+    {
+        IAnsiConsole original = AnsiConsole.Console;
+        StringWriter writer = new();
+        IAnsiConsole captured = AnsiConsole.Create(new AnsiConsoleSettings
+        {
+            Ansi = AnsiSupport.No,
+            ColorSystem = ColorSystemSupport.NoColors,
+            Interactive = InteractionSupport.No,
+            Out = new AnsiConsoleOutput(writer),
+        });
+        captured.Profile.Width = 4096;
+        AnsiConsole.Console = captured;
+        try
+        {
+            await action();
+            return writer.ToString();
+        }
+        finally
+        {
+            AnsiConsole.Console = original;
+        }
     }
 }
