@@ -1,6 +1,7 @@
 using Hall9k.Domain.Infrastructure.Storage;
 using System.Diagnostics;
 using System.Text.RegularExpressions;
+using Hall9k.Connectors.Worktrees;
 using Hall9k.Domain.Features.Project;
 using Hall9k.Domain.Features.Project.Projections;
 using Hall9k.Domain.Features.Run.Events;
@@ -490,12 +491,12 @@ public sealed partial class VerificationRunner(
     /// a non-ASCII character (`core.quotePath`'s octal-escaping) comes back verbatim instead of
     /// quoted (conformance review finding), and with untracked files fully expanded rather than
     /// collapsed to one entry per new directory, so a brand-new vertical slice never `git add`ed
-    /// is named file by file (conformance review, independent pre-PR review cycle 2). A rename or
-    /// copy entry emits the new path first and the
-    /// old path as a second NUL-terminated field with no ` -&gt; ` marker; the old path is
-    /// consumed and discarded, since the new path is the one that still exists. Untracked
-    /// files are reported separately rather than folded into the failing list: a gate's own
-    /// build or test output (a coverage report, `TestResults/`, a lint cache) the project's
+    /// is named file by file (conformance review, independent pre-PR review cycle 2). The parsing
+    /// itself — including the rename/copy entry's second NUL-terminated field — is
+    /// <see cref="WorktreeGitStatus.ParsePorcelain"/>, shared with the interactive claim's own
+    /// checks (<c>InteractiveWorktreeGit</c>) rather than duplicated (adversarial review, cycle 4).
+    /// Untracked files are reported separately rather than folded into the failing list: a gate's
+    /// own build or test output (a coverage report, `TestResults/`, a lint cache) the project's
     /// `.gitignore` does not yet name is not stranded agent work, and failing a run on it is a
     /// defect a retry can never clear, since the next session's gates regenerate the same file
     /// (adversarial review, independent pre-PR review cycle 1). The modified-list slot is null
@@ -516,38 +517,7 @@ public sealed partial class VerificationRunner(
             return (null, []);
         }
 
-        List<string> modified = [];
-        List<string> untracked = [];
-        string[] entries = output.Split('\0', StringSplitOptions.RemoveEmptyEntries);
-        for (int i = 0; i < entries.Length; i++)
-        {
-            string entry = entries[i];
-            if (entry.Length < 4)
-            {
-                continue;
-            }
-
-            char indexStatus = entry[0];
-            char worktreeStatus = entry[1];
-            string path = entry[3..];
-
-            if (indexStatus is 'R' or 'C' || worktreeStatus is 'R' or 'C')
-            {
-                // The old path is the next NUL-terminated field; it no longer exists, so it is
-                // consumed here and never added to either list.
-                i++;
-            }
-
-            if (indexStatus == '?' && worktreeStatus == '?')
-            {
-                untracked.Add(path);
-            }
-            else
-            {
-                modified.Add(path);
-            }
-        }
-
+        (IReadOnlyList<string> modified, IReadOnlyList<string> untracked) = WorktreeGitStatus.ParsePorcelain(output);
         return (modified, untracked);
     }
 

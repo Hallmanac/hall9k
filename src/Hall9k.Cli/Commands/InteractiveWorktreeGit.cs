@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using Hall9k.Connectors.Worktrees;
 
 namespace Hall9k.Cli.Commands;
 
@@ -16,9 +17,11 @@ internal static class InteractiveWorktreeGit
 {
     /// <summary>
     /// Every tracked file the worktree holds modified or staged, or null when git could not be
-    /// asked (never guessed at as clean). Mirrors the modified/untracked split
-    /// <c>VerificationRunner.ListUncommittedFilesAsync</c> already uses — an untracked file is
-    /// often a gate byproduct the project's .gitignore has not caught up with, never blocking.
+    /// asked (never guessed at as clean). The parsing itself — the subtle part — is
+    /// <see cref="WorktreeGitStatus.ParsePorcelain"/>, shared with
+    /// <c>VerificationRunner.ListUncommittedFilesAsync</c> rather than duplicated: an untracked
+    /// file is often a gate byproduct the project's .gitignore has not caught up with, never
+    /// blocking, and that split is exactly what the shared parser hands back.
     /// </summary>
     public static async Task<(IReadOnlyList<string>? Modified, IReadOnlyList<string> Untracked)> ListUncommittedFilesAsync(
         string worktreePath, CancellationToken cancellationToken)
@@ -30,37 +33,7 @@ internal static class InteractiveWorktreeGit
             return (null, []);
         }
 
-        List<string> modified = [];
-        List<string> untracked = [];
-        string[] entries = output.Split('\0', StringSplitOptions.RemoveEmptyEntries);
-        for (int i = 0; i < entries.Length; i++)
-        {
-            string entry = entries[i];
-            if (entry.Length < 4)
-            {
-                continue;
-            }
-
-            char indexStatus = entry[0];
-            char worktreeStatus = entry[1];
-            string path = entry[3..];
-
-            if (indexStatus is 'R' or 'C' || worktreeStatus is 'R' or 'C')
-            {
-                // The old path is the next NUL-terminated field; it no longer exists.
-                i++;
-            }
-
-            if (indexStatus == '?' && worktreeStatus == '?')
-            {
-                untracked.Add(path);
-            }
-            else
-            {
-                modified.Add(path);
-            }
-        }
-
+        (IReadOnlyList<string> modified, IReadOnlyList<string> untracked) = WorktreeGitStatus.ParsePorcelain(output);
         return (modified, untracked);
     }
 
