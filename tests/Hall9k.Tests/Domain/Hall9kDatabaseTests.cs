@@ -1,3 +1,4 @@
+using System.Text.Json;
 using FluentAssertions;
 using Hall9k.Domain.Infrastructure.Persistence;
 using Xunit;
@@ -57,6 +58,35 @@ public sealed class Hall9kDatabaseTests : IDisposable
             ConnectionStringOrigin.PlatformConfigFileMalformed,
             "a broken config file needs repair, not the 'nothing configured' guidance — and it must not silently fall through to the project override behind it");
         resolution.Source.Should().Be(Path.Combine(home, "config.json"));
+    }
+
+    /// <summary>
+    /// Origin: routed finding 8e056196, and cycle-1 pre-PR review on the fix for it. <c>ReadConfigFile</c>
+    /// used to catch only <see cref="JsonException"/>, so a config file that exists but cannot be
+    /// read — locked by another process, permissions dropped by another account — escaped
+    /// <see cref="Hall9kDatabase.Resolve"/> as a raw <see cref="IOException"/>. The first fix
+    /// collapsed it into the same <see cref="ConnectionStringOrigin.PlatformConfigFileMalformed"/>
+    /// outcome a broken-JSON file gets, but that tells an operator their JSON is invalid — untrue
+    /// here — and invites them to delete a file that has nothing wrong with its syntax, so this
+    /// now resolves to its own distinct <see cref="ConnectionStringOrigin.PlatformConfigFileUnreadable"/>
+    /// instead. An exclusive lock on the same file, taken within this test process, is enough to
+    /// make the read fail on every platform .NET runs this suite on, since .NET's own
+    /// <see cref="FileShare"/> enforcement is honored between two <see cref="FileStream"/>
+    /// instances in one process regardless of the OS's own locking semantics.
+    /// </summary>
+    [Fact]
+    public void An_unreadable_existing_config_file_resolves_as_unreadable_not_a_raw_io_exception()
+    {
+        string path = Path.Combine(home, "config.json");
+        File.WriteAllText(path, "{}");
+        using FileStream exclusive = new(path, FileMode.Open, FileAccess.Read, FileShare.None);
+
+        ConnectionStringResolution resolution = Hall9kDatabase.Resolve(startDirectory: home);
+
+        resolution.IsConfigured.Should().BeFalse();
+        resolution.Origin.Should().Be(
+            ConnectionStringOrigin.PlatformConfigFileUnreadable,
+            "an unreadable file is not the same defect as invalid JSON, and must not be reported as one");
     }
 
     [Fact]
@@ -198,6 +228,18 @@ public sealed class Hall9kDatabaseTests : IDisposable
         File.WriteAllText(Path.Combine(home, "config.json"), "{ not valid json");
 
         Hall9kDatabase.ConnectionStringStateAndValueInConfigFile().State.Should().Be(ConfigFileConnectionStringState.Malformed);
+    }
+
+    [Fact]
+    public void An_unreadable_config_file_reports_unreadable_rather_than_malformed()
+    {
+        string path = Path.Combine(home, "config.json");
+        File.WriteAllText(path, "{}");
+        using FileStream exclusive = new(path, FileMode.Open, FileAccess.Read, FileShare.None);
+
+        Hall9kDatabase.ConnectionStringStateAndValueInConfigFile().State.Should().Be(
+            ConfigFileConnectionStringState.Unreadable,
+            "an unreadable file is not the same defect as invalid JSON, and must not be reported as one");
     }
 
     [Fact]

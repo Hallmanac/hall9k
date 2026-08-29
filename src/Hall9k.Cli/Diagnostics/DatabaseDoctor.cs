@@ -56,6 +56,17 @@ public static class DatabaseDoctor
             return null;
         }
 
+        if (resolution.Origin == ConnectionStringOrigin.PlatformConfigFileUnreadable)
+        {
+            AnsiConsole.MarkupLine(
+                $"[red]The platform config file ({resolution.Source!.EscapeMarkup()}) exists but could not be read.[/] "
+                + "Fix its permissions (or whatever else is holding it, e.g. another process with an exclusive "
+                + "lock), then run h9k doctor again — this is not the same as invalid JSON, so deleting the file "
+                + "is not the fix, and the project override file underneath it in the precedence chain is never "
+                + "consulted while this one stays unreadable.");
+            return null;
+        }
+
         if (!resolution.IsConfigured)
         {
             resolution = await DiagnoseNotConfiguredAsync(offerFixes, assumeYes, runner, cancellationToken);

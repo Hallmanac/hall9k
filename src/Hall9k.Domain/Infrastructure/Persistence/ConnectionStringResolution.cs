@@ -21,6 +21,7 @@ public sealed record ConnectionStringResolution(string? Value, ConnectionStringO
         ConnectionStringOrigin.EnvironmentVariable => $"the {Source} environment variable",
         ConnectionStringOrigin.PlatformConfigFile => $"the platform config file ({Source})",
         ConnectionStringOrigin.PlatformConfigFileMalformed => $"the platform config file ({Source}) — but it isn't valid JSON",
+        ConnectionStringOrigin.PlatformConfigFileUnreadable => $"the platform config file ({Source}) — but it could not be read",
         ConnectionStringOrigin.ProjectOverride => $"the project override file ({Source})",
         _ => "nowhere — nothing is configured",
     };
