@@ -96,7 +96,7 @@ public sealed class CardPublicationEngine(
     /// </summary>
     private const string CheckTheBoard =
         "Check the board before running h9k task push-to-jira again: a session that created a card "
-        + "and never reported it back through h9k task link-jira leaves the card there and this task "
+        + "and never reported it back through h9k task write-jira leaves the card there and this task "
         + "unlinked.";
 
     private readonly DaemonOptions _options = options.Value;
@@ -181,7 +181,7 @@ public sealed class CardPublicationEngine(
     /// and the completion is not, and nothing else clears that: the dispatch sweep skips a request
     /// whose session has already been spawned (the rule that stops a second card),
     /// <c>h9k task push-to-jira</c> refuses while a publication is outstanding, and
-    /// <c>h9k task link-jira</c> needs a card key that may not exist — so the task reads "a session
+    /// <c>h9k task write-jira</c> needs a card key that may not exist — so the task reads "a session
     /// is writing the card" forever with nothing writing anything. Origin incident (2026-08-21):
     /// the pre-PR review of this branch traced it from <c>h9k daemon stop</c> during the
     /// publication timeout window, which killed the session between the two events.
@@ -552,7 +552,7 @@ public sealed class CardPublicationEngine(
             checkout,
             site.GetLeftPart(UriPartial.Authority),
             aggregate.PendingPublicationProjectKey,
-            $"h9k task link-jira {task.Id}",
+            $"h9k task write-jira {task.Id}",
             project.BacklogRoutingGuidance);
 
         // Recorded before anything is spawned, which is RunLauncher's order (RunDispatched, then
@@ -706,7 +706,7 @@ public sealed class CardPublicationEngine(
     /// That order is the observation gate closing. The session's own last words are recorded as
     /// the outcome because they are what a human reads when something went wrong, but whether the
     /// publication succeeded is read off the task's own reference, which only
-    /// <c>h9k task link-jira</c> can have set, and only after reading the card back from Jira. A
+    /// <c>h9k task write-jira</c> can have set, and only after reading the card back from Jira. A
     /// session that reported a beautiful success and never got a key past that command completed
     /// without a link, and the record says exactly that.
     /// </para>
@@ -743,7 +743,7 @@ public sealed class CardPublicationEngine(
         if (linked)
         {
             return (true, Summarize(result)
-                ?? "The session created the card and reported it through h9k task link-jira.");
+                ?? "The session created the card and reported it through h9k task write-jira.");
         }
 
         // Everything from here ends the errand with no link, and completing clears the pending
@@ -765,7 +765,7 @@ public sealed class CardPublicationEngine(
     /// <summary>
     /// Whether the task now carries an external reference. Read fresh from the store rather than
     /// from anything held in memory: the reference was written by a different process — the agent's
-    /// own <c>h9k task link-jira</c> — while this method was waiting.
+    /// own <c>h9k task write-jira</c> — while this method was waiting.
     /// </summary>
     private async Task<bool> IsLinkedAsync(Guid taskId, CancellationToken cancellationToken)
     {
@@ -780,7 +780,7 @@ public sealed class CardPublicationEngine(
     /// a fact it may then state.
     /// <para>
     /// Every one of those paths used to record <c>Linked: false</c> outright, and that is a guess
-    /// wherever the session's own <c>h9k task link-jira</c> landed before the failure did. The
+    /// wherever the session's own <c>h9k task write-jira</c> landed before the failure did. The
     /// event's contract is that Linked is read off the task's own state rather than assumed, and
     /// an adopted session is precisely the case where the agent has been running unwatched for a
     /// daemon restart's worth of time. Origin incident (2026-08-22): the third cycle of this
@@ -812,7 +812,7 @@ public sealed class CardPublicationEngine(
     /// </summary>
     private static string WhatTheLinkSays(bool? linked) => linked switch
     {
-        true => "The task carries a verified card key, reported by the session through h9k task link-jira "
+        true => "The task carries a verified card key, reported by the session through h9k task write-jira "
             + "before this, so the card exists and is recorded.",
         false => CheckTheBoard,
         _ => $"Whether the task ended up carrying a card key could not be read either. {CheckTheBoard}",

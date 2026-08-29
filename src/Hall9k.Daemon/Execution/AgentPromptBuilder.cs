@@ -2095,8 +2095,8 @@ public static class AgentPromptBuilder
     }
 
     /// <summary>
-    /// The prompt for a card-publication session (backlog 18): write this task up as a card in an
-    /// external tracker, then report it back through the command that verifies.
+    /// The prompt for a card-publication session (backlog 18): compose this task as a card in
+    /// Jira, then submit the composed payload through the surface that actually writes it.
     /// <para>
     /// What this prompt deliberately does not contain is any instruction about what a card should
     /// look like — no issue type, no field list, no routing rule. That is the whole design: those
@@ -2106,10 +2106,12 @@ public static class AgentPromptBuilder
     /// are, is pointed at them, and is otherwise told what the work is and left to it.
     /// </para>
     /// <para>
-    /// The ending is the part that is not left open. The session finishes by running
-    /// <c>h9k task link-jira</c>, and that command reads the key back through the registered
-    /// connection before recording anything — so the prompt says outright that saying a card exists
-    /// is not the same as the platform believing it, and that a refusal from that command is
+    /// The ending is the part that is not left open, and it changed shape with the compose/execute
+    /// split (Brian's design, 2026-08-28): the session performs no direct Jira access at all. It
+    /// finishes by running <c>h9k task write-jira --op create</c> with its composed payload, and
+    /// that command — never the agent — validates it, executes it through twg, and reads the key
+    /// back before recording anything, so the prompt says outright that composing a payload is not
+    /// the same as the platform believing a card exists, and that a refusal from that command is
     /// information to act on rather than a wall. An agent that understands the gate retries against
     /// it correctly; one that does not would report success into a void.
     /// </para>
@@ -2120,14 +2122,18 @@ public static class AgentPromptBuilder
         string workingDirectory,
         string site,
         JiraProjectKey board,
-        string linkCommand,
+        string writeCommand,
         string? routingGuidance = null)
     {
         StringBuilder prompt = new();
-        prompt.AppendLine("# Write this task up as a Jira card");
+        prompt.AppendLine("# Compose this task as a Jira card");
         prompt.AppendLine();
-        prompt.AppendLine($"Create one card at {site} for the work below, then report its key back to Hall9k.");
-        prompt.AppendLine("Creating the card is the whole job: you are not implementing anything here.");
+        prompt.AppendLine($"Work out what one card at {site} should look like for the work below, then submit it");
+        prompt.AppendLine("through Hall9k's own write surface. Composing the card is the whole job: you are not");
+        prompt.AppendLine("implementing anything here, and you make no Jira call yourself — Hall9k is the sole");
+        prompt.AppendLine("executor of every Jira write (Brian's design, 2026-08-28). Do not create, update, or");
+        prompt.AppendLine("comment on anything in Jira directly, through MCP or otherwise: your job ends at a");
+        prompt.AppendLine("composed payload, and hall9k validates it, executes it through twg, and verifies it.");
         prompt.AppendLine();
 
         prompt.AppendLine("## The work");
@@ -2229,23 +2235,26 @@ public static class AgentPromptBuilder
 
         prompt.AppendLine("## Reporting back (this is what finishes the run)");
         prompt.AppendLine();
-        prompt.AppendLine("When the card exists, run exactly this with the key you created:");
+        prompt.AppendLine("Write your composed payload to a JSON file — a work item type, the built-in and custom");
+        prompt.AppendLine("fields the card needs (use the customfield_* id a field's own metadata reports, not its");
+        prompt.AppendLine("display name), and projectKey if this repository's own rules say a board other than the");
+        prompt.AppendLine("one named above. Then submit it with exactly this:");
         prompt.AppendLine();
         prompt.AppendLine("```");
-        prompt.AppendLine($"{linkCommand} <ISSUE-KEY>");
+        prompt.AppendLine($"{writeCommand} --op create --file <PATH-TO-YOUR-PAYLOAD.json>");
         prompt.AppendLine("```");
         prompt.AppendLine();
-        prompt.AppendLine("Telling Hall9k a card exists is not the same as Hall9k believing it. That command");
-        prompt.AppendLine("reads the key back from Jira through the platform's own connection and records what");
-        prompt.AppendLine("comes back, so the key you pass is an argument to be checked rather than a fact to be");
-        prompt.AppendLine("accepted. If it refuses, the message says what it looked for and where — read it, fix");
-        prompt.AppendLine("the key or the board, and run it again. A run that never gets a key past that command");
-        prompt.AppendLine("has not published anything, however the card looked in the browser.");
+        prompt.AppendLine("Composing a payload is not the same as a card existing. That command validates it,");
+        prompt.AppendLine("creates it through twg, reads it back to verify, and records the result — so if it");
+        prompt.AppendLine("refuses, the message says what was wrong; read it, fix the payload, and run it again.");
+        prompt.AppendLine("If it reports twg is not authenticated, stop: that is a handled state Hall9k retries");
+        prompt.AppendLine("on its own once a human runs 'twg login', and you cannot fix it from here. A run that");
+        prompt.AppendLine("never gets a verified key past that command has not published anything, however the");
+        prompt.AppendLine("payload looked to you.");
         prompt.AppendLine();
         prompt.AppendLine("This session ends at your final message — nothing runs after it. Run that command in");
         prompt.AppendLine("the foreground and read its result before you finish: backgrounding it, or ending the");
-        prompt.AppendLine("session before it returns, means nobody ever reads whether it succeeded, and the card");
-        prompt.AppendLine("exists with nothing having linked it back.");
+        prompt.AppendLine("session before it returns, means nobody ever reads whether it succeeded.");
         prompt.AppendLine();
 
         prompt.AppendLine("## Working rules");
@@ -2253,8 +2262,9 @@ public static class AgentPromptBuilder
         prompt.AppendLine($"- You are in {workingDirectory}, this project's own repository — not an isolated");
         prompt.AppendLine("  worktree. Read whatever you need. Do NOT modify files, commit, push, or open pull");
         prompt.AppendLine("  requests: another agent may be working in this repository right now.");
-        prompt.AppendLine("- Create exactly one card. If you cannot tell whether an earlier attempt already made");
-        prompt.AppendLine("  one, search for it before creating a second — a duplicate is a human's cleanup.");
+        prompt.AppendLine("- Compose exactly one payload and submit it once. Hall9k itself refuses to file a");
+        prompt.AppendLine("  second card for this task if an earlier attempt already created one, so a retried");
+        prompt.AppendLine("  submission is safe — you do not need to search Jira for a duplicate yourself.");
         prompt.AppendLine("- The card's audience is people, not agents. Write it the way this team writes cards;");
         prompt.AppendLine("  the operational detail above stays on the Hall9k task, which is what owns it.");
         AppendAdoptedContextRule(prompt, task);

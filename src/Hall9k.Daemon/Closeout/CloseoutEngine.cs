@@ -84,7 +84,6 @@ public sealed class CloseoutEngine(
     DaemonConnection connection,
     IPullRequestInspector inspector,
     IWorktreeManager worktrees,
-    JiraRequester jiraRequester,
     ProcessRunner githubRunner,
     IOptions<DaemonOptions> options,
     ILogger<CloseoutEngine> logger)
@@ -1132,24 +1131,53 @@ public sealed class CloseoutEngine(
         }
     }
 
+    /// <summary>
+    /// Comment the merge onto the card through the same write surface an operator or an agent
+    /// uses (Brian's design, 2026-08-28): hall9k is the sole executor of every Jira write, closeout
+    /// included, so a merge comment is recorded, executed through twg, and verified by read-back
+    /// exactly like any other write — and an expired or missing twg login is handled the same way
+    /// too, leaving the comment pending for the daemon's own retry sweep rather than lost.
+    /// <para>
+    /// <see cref="githubRunner"/> is reused for twg rather than a second injected seam: the
+    /// delegate is process-agnostic (it takes the tool's file name as an argument), and it is
+    /// already registered once, generically, precisely so a write like this one is testable
+    /// against a recorded process instead of the real, machine-authenticated twg.
+    /// </para>
+    /// </summary>
     private async Task TellJiraAsync(
         Guid taskId, ProjectDetails project, TaskAggregate task, ExternalReference reference, CancellationToken cancellationToken)
     {
         try
         {
-            await using IQuerySession session = store.QuerySession();
-            JiraWorkItemProvider? jira = await WorkItemConnections.TryJiraProviderAsync(
-                session, cancellationToken, requester: jiraRequester);
-            if (jira is null || !JiraIssueKey.TryParseBareKey(reference.Reference, out JiraIssueKey key))
-            {
-                logger.LogWarning(
-                    "Task {TaskId} is linked to {Reference} but this node has no usable Jira connection, "
-                    + "so the merge was not commented on the card", taskId, reference);
-                return;
-            }
+            await using IDocumentSession session = store.LightweightSession();
+            JiraWriteAttemptResult result = await JiraWriteCoordinator.SubmitAsync(
+                session,
+                taskId,
+                JiraWriteOperation.Comment,
+                reference.Reference,
+                new JiraWritePayload(WorkItemType: null, Fields: null, Comment: MergeComment(project, task)),
+                project.JiraProjectKey,
+                node.OwnerId,
+                new TwgJiraExecutor(githubRunner),
+                project.RepositoryPath,
+                cancellationToken);
 
-            await jira.CommentAsync(key, MergeComment(project, task), cancellationToken);
-            logger.LogInformation("Task {TaskId}: told {Reference} that {Url} merged", taskId, reference, task.PullRequestUrl);
+            switch (result.Outcome)
+            {
+                case JiraWriteOutcome.Succeeded:
+                    logger.LogInformation("Task {TaskId}: told {Reference} that {Url} merged", taskId, reference, task.PullRequestUrl);
+                    break;
+                case JiraWriteOutcome.PendingAuthentication:
+                    logger.LogWarning(
+                        "Task {TaskId}: the merge comment for {Reference} is pending — twg is not "
+                        + "authenticated. It retries automatically once 'twg login' runs", taskId, reference);
+                    break;
+                default:
+                    logger.LogWarning(
+                        "Could not comment the merge of {Url} on {Reference}: {Reason}",
+                        task.PullRequestUrl, reference, result.Message);
+                    break;
+            }
         }
         catch (Exception exception) when (exception is not OperationCanceledException)
         {
@@ -1169,10 +1197,10 @@ public sealed class CloseoutEngine(
     /// free.
     /// <para>
     /// Built on <see cref="githubRunner"/> rather than a bare <c>new GitHubWorkItemProvider()</c>,
-    /// the same reason this engine takes <see cref="jiraRequester"/> instead of reaching Jira
-    /// statically: the seam is what lets this write be exercised in the test suite against a
-    /// recorded gh instead of a live, machine-authenticated one (independent pre-PR review,
-    /// cycle 4).
+    /// the same reason <see cref="TellJiraAsync"/> builds its <see cref="TwgJiraExecutor"/> on the
+    /// same seam instead of reaching twg statically: it is what lets this write be exercised in
+    /// the test suite against a recorded process instead of a live, machine-authenticated one
+    /// (independent pre-PR review, cycle 4).
     /// </para>
     /// </summary>
     private async Task TellGitHubAsync(

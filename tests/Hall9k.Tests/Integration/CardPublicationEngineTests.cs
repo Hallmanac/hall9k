@@ -33,7 +33,7 @@ namespace Hall9k.Tests.Integration;
 /// and what is recorded afterwards is read off the task rather than off what the session said.
 /// <para>
 /// The assertions worth having here are all about the gap between claiming and being believed. A
-/// session that reports a beautiful success and never gets a key past h9k task link-jira has
+/// session that reports a beautiful success and never gets a key past h9k task write-jira has
 /// published nothing, and the record has to say so — because the alternative is a task that
 /// looks linked and a card that does not exist.
 /// </para>
@@ -77,7 +77,7 @@ public sealed class CardPublicationEngineTests(PostgresFixture postgres) : IClas
 
     /// <summary>
     /// A session that ends with a scripted result. <paramref name="beforeFinishing"/> is what a
-    /// real one does just before it ends: call h9k task link-jira, modelled here as the
+    /// real one does just before it ends: call h9k task write-jira, modelled here as the
     /// WorkItemLinked append that command makes once it has read the card back.
     /// <para>
     /// That work runs detached and only once the whole launch is on the stream, because that is
@@ -140,7 +140,7 @@ public sealed class CardPublicationEngineTests(PostgresFixture postgres) : IClas
                 }
 
                 // Written whatever became of the work above, because that is what a real session
-                // does: one whose h9k task link-jira failed still ends and still says what it did.
+                // does: one whose h9k task write-jira failed still ends and still says what it did.
                 // Swallowing the result here would leave the engine waiting on a session that is
                 // over, and the assertion reading a timeout instead of the failure that caused it.
                 string line = JsonSerializer.Serialize(new Dictionary<string, object?>
@@ -193,11 +193,11 @@ public sealed class CardPublicationEngineTests(PostgresFixture postgres) : IClas
         CardPublicationSweepResult sweep = await NewEngine(store, node, session, processes)
             .PollOnceAsync(cts.Token);
 
-        session.Failure.Should().BeNull("the scripted h9k task link-jira is what the sweep below is read against");
+        session.Failure.Should().BeNull("the scripted h9k task write-jira is what the sweep below is read against");
         sweep.Should().Be(new CardPublicationSweepResult(1, 1));
         AgentSpawnRequest spawn = session.Spawns.Should().ContainSingle().Subject;
         spawn.WorktreePath.Should().Be(_repository, "the card rules live in the project's own repository");
-        spawn.Prompt.Should().Contain("Publish me").And.Contain($"h9k task link-jira {taskId}");
+        spawn.Prompt.Should().Contain("Publish me").And.Contain($"h9k task write-jira {taskId}");
 
         await using IQuerySession query = store.QuerySession();
         TaskDetails task = (await query.LoadAsync<TaskDetails>(taskId, cts.Token))!;
@@ -848,7 +848,7 @@ public sealed class CardPublicationEngineTests(PostgresFixture postgres) : IClas
     /// rather than assume it carries nothing. The flag on
     /// <see cref="WorkItemPublicationCompleted"/> is read off the task's own state by contract,
     /// and the paths that end a publication on a failure are the ones where assuming is easiest
-    /// and wrong: a session's own h9k task link-jira may already have landed. The state seeded
+    /// and wrong: a session's own h9k task write-jira may already have landed. The state seeded
     /// here is the one the projection can hold — a request appended behind a link, then
     /// dispatched — because it is the one an outcome can be observed against without breaking
     /// the store underneath the engine. Origin incident (2026-08-22): the third cycle of this
@@ -1006,7 +1006,7 @@ public sealed class CardPublicationEngineTests(PostgresFixture postgres) : IClas
     /// of this branch found the prompt built from the sweep's opening snapshot while every guard
     /// beside it re-read the aggregate, so a task revised during an earlier session would have had its
     /// card written from a contract it no longer carried, with nothing downstream to catch it:
-    /// h9k task link-jira verifies that the card exists, never that it matches the task.
+    /// h9k task write-jira verifies that the card exists, never that it matches the task.
     /// </summary>
     [Fact]
     public async Task A_task_revised_while_an_earlier_publication_ran_is_written_up_as_it_now_stands()
@@ -1155,7 +1155,7 @@ public sealed class CardPublicationEngineTests(PostgresFixture postgres) : IClas
         await File.WriteAllTextAsync(RunPaths.StreamFile(RunPaths.GlobalDirectory(sessionId)), line + "\n", cancellationToken);
     }
 
-    /// <summary>What h9k task link-jira appends once it has read the card back from Jira.</summary>
+    /// <summary>What h9k task write-jira appends once it has read the card back from Jira.</summary>
     private static async Task LinkAsync(DocumentStore store, Guid taskId, CancellationToken cancellationToken)
     {
         await using IDocumentSession session = store.LightweightSession();
