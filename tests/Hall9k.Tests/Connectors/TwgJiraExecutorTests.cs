@@ -26,7 +26,7 @@ public sealed class TwgJiraExecutorTests
     {
         Guid taskId = Guid.Parse("00000000-0000-0000-0000-000000000001");
         RecordingProcessRunner twg = RecordingProcessRunner.RespondingTo(arguments => new ProcessResult(
-            0, arguments.Contains("search") ? """{"key":"PROJ-123"}""" : """{"key":"PROJ-123"}""", string.Empty));
+            0, arguments.Contains("search") ? """{"key":"PROJ-123"}""" : """{"key":"PROJ-999"}""", string.Empty));
         TwgJiraExecutor executor = new(twg.Runner);
         JiraWritePayload payload = new(
             "Dev Task", new Dictionary<string, string> { ["description"] = "Fixes the thing" }, null);
@@ -173,6 +173,28 @@ public sealed class TwgJiraExecutorTests
         TwgExecutionException exception = (await comment.Should().ThrowAsync<TwgExecutionException>()).Which;
         exception.Kind.Should().Be(TwgFailureKind.MissingBinary);
         exception.IsAuthFailure.Should().BeFalse();
+    }
+
+    /// <summary>
+    /// A long composed description or comment can push the whole command line over the OS's own
+    /// limit, and .NET reports that refused spawn with the identical exception type a missing
+    /// binary throws. Windows reports ERROR_FILENAME_EXCED_RANGE (206); this asserts the fix
+    /// treats that distinctly rather than telling an operator to install a twg that is already
+    /// there (independent pre-PR review, cycle 5).
+    /// </summary>
+    [Fact]
+    public async Task A_command_line_refused_for_its_length_is_not_misread_as_a_missing_binary()
+    {
+        RecordingProcessRunner twg = RecordingProcessRunner.Unstartable(
+            new Win32Exception(206, "The filename or extension is too long"));
+        TwgJiraExecutor executor = new(twg.Runner);
+
+        Func<Task> comment = () => executor.CommentAsync("PROJ-123", "note", "/repo", CancellationToken.None);
+
+        TwgExecutionException exception = (await comment.Should().ThrowAsync<TwgExecutionException>()).Which;
+        exception.Kind.Should().Be(TwgFailureKind.Other);
+        exception.IsAuthFailure.Should().BeFalse();
+        exception.Message.Should().Contain("command line was too long");
     }
 
     [Fact]
