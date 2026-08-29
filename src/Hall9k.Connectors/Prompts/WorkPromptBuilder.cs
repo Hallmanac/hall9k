@@ -26,7 +26,8 @@ public static class WorkPromptBuilder
         string worktreePath,
         bool resumesPreviousWork = false,
         string? blockerContext = null,
-        string? resumeReason = null)
+        string? resumeReason = null,
+        bool isInteractive = false)
     {
         StringBuilder prompt = new();
         prompt.AppendLine("# Task");
@@ -111,7 +112,14 @@ public static class WorkPromptBuilder
         prompt.AppendLine("- Implement the objective so every acceptance criterion is satisfied.");
         prompt.AppendLine("- Commit your work with clear messages. Do NOT push, do NOT open a pull request —");
         prompt.AppendLine("  the platform verifies and opens the PR after you finish.");
-        AppendSessionEndsAtFinalMessageRule(prompt);
+        if (isInteractive)
+        {
+            AppendCommitDisciplineRuleForInteractiveSession(prompt);
+        }
+        else
+        {
+            AppendSessionEndsAtFinalMessageRule(prompt);
+        }
 
         IReadOnlyList<RepoSkill> skills = DiscoverRepoSkills(worktreePath);
         if (skills.Count > 0)
@@ -271,9 +279,11 @@ public static class WorkPromptBuilder
     /// to prevent than to diagnose after the fact, which is what this prompt rule is for.
     /// </para>
     /// <para>
-    /// Left in the interactive prompt too — it costs an interactive session nothing to see it,
-    /// and the same commit-everything discipline is what lets `h9k task deliver` push a clean
-    /// tree.
+    /// Headless only (<see cref="Build"/>'s <c>isInteractive</c> flag routes to
+    /// <see cref="AppendCommitDisciplineRuleForInteractiveSession"/> instead): an operator's
+    /// attached session is not killed at its final message, so telling it otherwise would be a
+    /// false claim about its own runtime, and would wrongly talk it out of backgrounding a long
+    /// gate while it waits (adversarial review, cycle 4).
     /// </para>
     /// </summary>
     public static void AppendSessionEndsAtFinalMessageRule(StringBuilder prompt)
@@ -290,6 +300,23 @@ public static class WorkPromptBuilder
         prompt.AppendLine("  untracked file only warns rather than fails — a gate's own build output can land");
         prompt.AppendLine("  there too — but it still never ships, so `git add` it and commit rather than");
         prompt.AppendLine("  counting on the warning to catch it.");
+    }
+
+    /// <summary>
+    /// The interactive counterpart of <see cref="AppendSessionEndsAtFinalMessageRule"/>: an
+    /// operator's own attached session keeps running background commands, scheduled wakeups, and
+    /// monitors exactly as any other interactive session does, so this drops the false
+    /// process-dies-at-final-message claim rather than repeating it (adversarial review, cycle
+    /// 4). The commit-everything discipline still applies, for a different reason —
+    /// <c>h9k task verify</c> and <c>h9k task deliver</c> read this worktree, and
+    /// <c>h9k task deliver</c> refuses to push while it holds modified-but-uncommitted files.
+    /// </summary>
+    public static void AppendCommitDisciplineRuleForInteractiveSession(StringBuilder prompt)
+    {
+        prompt.AppendLine("- Commit as you go, new files included. `h9k task deliver` refuses to push while the");
+        prompt.AppendLine("  worktree holds modified-but-uncommitted files, naming them, and an untracked file");
+        prompt.AppendLine("  never ships even though it only warns — `git add` it and commit rather than leaving");
+        prompt.AppendLine("  it for the warning to catch.");
     }
 
     /// <summary>
