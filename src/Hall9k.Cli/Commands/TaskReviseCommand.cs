@@ -4,6 +4,7 @@ using Hall9k.Domain.Features.Tasks;
 using Hall9k.Domain.Features.Tasks.Events;
 using Hall9k.Domain.Features.Tasks.Handlers;
 using Hall9k.Domain.Infrastructure.Bootstrap;
+using Hall9k.Domain.Infrastructure.Ids;
 using Hall9k.Domain.Shared.Exceptions;
 using Hall9k.Domain.Shared.ValueObjects;
 using Marten;
@@ -224,12 +225,15 @@ public sealed class TaskReviseCommand : Hall9kAsyncCommand<TaskReviseCommand.Set
     }
 
     /// <summary>
-    /// True when <paramref name="epic"/> (a full id or fragment) already names
-    /// <paramref name="currentEpicId"/>. The renderer always writes a member task's current
-    /// epic into task.md, so a --file revision that changes nothing else round-trips that same
-    /// value back in; re-running <see cref="EpicIdResolver.ResolveForMembershipAsync"/> on it
-    /// would re-gate a no-op edit on the epic still being Open, refusing an unrelated edit to a
-    /// task whose epic has since closed.
+    /// True when <paramref name="epic"/> is exactly the full id of <paramref name="currentEpicId"/>,
+    /// or exactly its rendered short form (<see cref="DomainId.Short"/>). The renderer always
+    /// writes a member task's current epic into task.md using that exact short form, so a --file
+    /// revision that changes nothing else round-trips that same value back in; re-running
+    /// <see cref="EpicIdResolver.ResolveForMembershipAsync"/> on it would re-gate a no-op edit on
+    /// the epic still being Open, refusing an unrelated edit to a task whose epic has since
+    /// closed. Anything less than an exact match falls through to the resolver instead of
+    /// guessing: a shorter fragment may equally (or unambiguously) name a *different* epic, and
+    /// only the resolver, which sees every epic, can tell (adversarial review, cycle 1).
     /// </summary>
     internal static bool NamesCurrentEpic(string epic, Guid? currentEpicId)
     {
@@ -243,15 +247,7 @@ public sealed class TaskReviseCommand : Hall9kAsyncCommand<TaskReviseCommand.Set
             return parsed == id;
         }
 
-        string fragment = epic.Replace("-", "");
-        if (fragment.Length == 0)
-        {
-            return false;
-        }
-
-        string full = id.ToString("N");
-        return full.StartsWith(fragment, StringComparison.OrdinalIgnoreCase)
-            || full.EndsWith(fragment, StringComparison.OrdinalIgnoreCase);
+        return string.Equals(epic, DomainId.Short(id), StringComparison.OrdinalIgnoreCase);
     }
 
     private static async Task<Guid[]> ResolveAsync(
