@@ -1,6 +1,7 @@
 using System.ComponentModel;
 using Hall9k.Cli.Infrastructure;
 using Hall9k.Connectors.WorkItems;
+using Hall9k.Domain.Features.Epic;
 using Hall9k.Domain.Features.Owner;
 using Hall9k.Domain.Features.Run;
 using Hall9k.Domain.Features.Run.Projections;
@@ -58,6 +59,17 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
             header.AddRow("From idea",
                 $"[dim]{TaskListCommand.ShortId(sourceIdeaId)}[/] "
                 + $"[dim](h9k idea show {TaskListCommand.ShortId(sourceIdeaId)})[/]");
+        }
+
+        if (details.EpicId is { } epicId)
+        {
+            // Membership, independent of provenance above (Brian's ruling, 2026-08-28): a task
+            // promoted from an idea and one hand-added with no lineage can sit in the same epic.
+            EpicDetails? epic = await session.LoadAsync<EpicDetails>(epicId, cancellationToken);
+            string shortEpicId = TaskListCommand.ShortId(epicId);
+            header.AddRow("Epic", epic is null
+                ? $"[dim]{shortEpicId}[/]"
+                : $"{epic.Title.EscapeMarkup()} [dim]({shortEpicId}, h9k epic show {shortEpicId})[/]");
         }
 
         if (details.ExternalReference.IsNotBlank())
