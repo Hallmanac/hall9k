@@ -7,9 +7,29 @@ using Spectre.Console.Cli;
 CommandApp app = new();
 app.Configure(CliCommandTree.Configure);
 
+// Without this, Ctrl-C takes SIGINT's default action and the process terminates immediately —
+// no command's own cancellation handling (e.g. TaskWorkCommand's started/ended pairing, PLAN.md
+// #99) ever runs, because RunAsync(args) alone is handed CancellationToken.None and nothing else
+// requests a stop (independent pre-PR review, cycle 2). Cancelling here instead of letting the
+// default handler fire is what lets a command's own try/catch(OperationCanceledException) close
+// out cleanly before the process actually exits.
+using CancellationTokenSource cancellation = new();
+Console.CancelKeyPress += (_, e) =>
+{
+    e.Cancel = true;
+    cancellation.Cancel();
+};
+
 try
 {
-    return await app.RunAsync(args);
+    return await app.RunAsync(args, cancellation.Token);
+}
+catch (OperationCanceledException) when (cancellation.IsCancellationRequested)
+{
+    // The command's own cleanup (if any) already ran against this same token before this
+    // propagated here; there is nothing left to explain to the operator that Ctrl-C did not
+    // already tell them.
+    return ExitCodes.Error;
 }
 catch (CommandAppException exception)
 {

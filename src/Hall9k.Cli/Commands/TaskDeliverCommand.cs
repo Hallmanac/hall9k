@@ -140,8 +140,19 @@ public sealed class TaskDeliverCommand : Hall9kAsyncCommand<TaskDeliverCommand.S
 
     private static async Task WriteHandoffAsync(string runDirectory, string handoff, CancellationToken cancellationToken)
     {
-        string resolvedRunDirectory = RunPaths.ResolveCurrentDirectory(runDirectory);
-        Directory.CreateDirectory(resolvedRunDirectory);
-        await File.WriteAllTextAsync(RunPaths.HandoffFile(resolvedRunDirectory), handoff, cancellationToken);
+        try
+        {
+            string resolvedRunDirectory = RunPaths.ResolveCurrentDirectory(runDirectory);
+            Directory.CreateDirectory(resolvedRunDirectory);
+            await File.WriteAllTextAsync(RunPaths.HandoffFile(resolvedRunDirectory), handoff, cancellationToken);
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            // Mirrors RunSupervisor.CaptureHandoffAsync: the branch is already pushed, so the
+            // delivery itself succeeded — losing the artifact must not abort it. Closeout then
+            // reads an absent file and records NotCaptured, which is exactly what happened.
+            AnsiConsole.MarkupLineInterpolated(
+                $"[yellow]Could not write the handoff artifact ({exception.Message}); delivery proceeds without it.[/]");
+        }
     }
 }
