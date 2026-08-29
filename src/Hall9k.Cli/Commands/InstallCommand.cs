@@ -232,10 +232,13 @@ public sealed class InstallCommand : Hall9kAsyncCommand<InstallCommand.Settings>
             // running module's own share-delete access (an antivirus scan holding a file
             // exclusively), reported instead of an unhandled IOException so the operator
             // gets a sentence instead of a stack trace (origin incident: exactly that
-            // stack trace, Brian's first real Windows update). SwapFilesIntoPlace merges
-            // files one at a time, so bin can be left partially updated when this throws —
-            // the message says so rather than claiming an all-or-nothing outcome nothing
-            // here actually provides.
+            // stack trace, Brian's first real Windows update). SwapFilesIntoPlace retires
+            // every conflicting file before placing any of them, so a lock that surfaces
+            // during retirement rolls the whole merge back and bin is left exactly as it
+            // started; a lock or I/O failure that instead surfaces while placing (every
+            // name already vacated by then) can still leave bin with a mix of old and new
+            // files, but never with a file missing under both names — the message says so
+            // rather than claiming a stronger guarantee than that.
             await Console.Error.WriteLineAsync(exception.Message);
             return ExitCodes.Error;
         }
@@ -781,14 +784,18 @@ public sealed class InstallCommand : Hall9kAsyncCommand<InstallCommand.Settings>
     /// staging's manifest while it still carries the full staged payload, before anything
     /// touches it (running this after the merge instead read an already-drained staging
     /// directory and classified every file this run had just installed as stale — origin
-    /// incident: cycle 2 review, caught by the repo's own update tests on Windows CI before it
-    /// shipped). Then <see cref="SwapFilesIntoPlace"/> merges every file staging carries into
-    /// <paramref name="bin"/> in place, retiring a same-named file it cannot overwrite (a
-    /// locked <c>h9k.exe</c> or <c>h9kd.exe</c> — no special case needed for either one, since
-    /// a locked file retires the same way regardless of which process holds it) to a
-    /// <c>.old</c> sibling right where it sits, exactly like <see cref="RetireDirectory"/>
-    /// does one level up on Unix. Together the two leave <paramref name="bin"/> as exactly
-    /// staging's contents rather than the union of every version ever installed.
+    /// incident: caught by the cycle-2 pre-PR review reading the diff; the Windows-CI update
+    /// tests cover it once a pull request runs them). Then <see cref="SwapFilesIntoPlace"/> merges every file staging carries into
+    /// <paramref name="bin"/> in two flat passes — retire every conflicting name first, place
+    /// every staged file second — rather than one interleaved walk, so a lock discovered on
+    /// any one file rolls the whole merge back instead of leaving some files on the new
+    /// version and others on the old one: a same-named file it cannot overwrite (a locked
+    /// <c>h9k.exe</c> or <c>h9kd.exe</c> — no special case needed for either one, since a
+    /// locked file retires the same way regardless of which process holds it) still retires
+    /// to a <c>.old</c> sibling right where it sits, exactly like <see cref="RetireDirectory"/>
+    /// does one level up on Unix, but nothing is placed until every retirement this call needs
+    /// has succeeded. Together the two leave <paramref name="bin"/> as exactly staging's
+    /// contents rather than the union of every version ever installed.
     /// </para>
     /// </summary>
     private static void SwapIntoPlace(string staging, string bin)
@@ -807,12 +814,13 @@ public sealed class InstallCommand : Hall9kAsyncCommand<InstallCommand.Settings>
                 Directory.Move(staging, bin);
             }
 
-            // No trailing sweep here: anything RetireFile just retired above is still
-            // locked by construction (a file that could be released would have been
-            // deleted rather than retired a few lines up), so an immediate sweep can only
-            // print "still in use" noise on the success path of every Windows update —
-            // never actually reclaim anything. The leading sweep on the *next* run is the
-            // one that can.
+            // No trailing sweep here: SwapFilesIntoPlace already reclaims every retiree of
+            // its own that placement freed up, the moment the merge finishes successfully.
+            // Whatever it could not reclaim is still locked by construction (a file that
+            // could be released would have already been deleted), so a second sweep here
+            // can only print "still in use" noise on the success path of every Windows
+            // update — never actually reclaim anything. The leading sweep on the *next* run
+            // is the one that can.
             return;
         }
 
@@ -828,24 +836,117 @@ public sealed class InstallCommand : Hall9kAsyncCommand<InstallCommand.Settings>
         SweepRetiredDirectories(bin, retired);
     }
 
-    /// <summary>The Windows half of <see cref="SwapIntoPlace"/>: walks <paramref name="sourceDirectory"/>
-    /// (staging, or one of its subdirectories) and merges each entry into
-    /// <paramref name="destinationDirectory"/> (bin, or the matching subdirectory), retiring
-    /// whatever it cannot overwrite via <see cref="SwapFileIntoPlace"/>.</summary>
+    /// <summary>The Windows half of <see cref="SwapIntoPlace"/>: merges every file <see
+    /// cref="CollectFilePairs"/> finds under <paramref name="sourceDirectory"/> (staging) into
+    /// <paramref name="destinationDirectory"/> (bin) in two flat passes rather than one
+    /// interleaved walk, so the merge is transactional rather than merely safe file by file.
+    /// Phase one retires every file bin already has under a name staging also carries (<see
+    /// cref="RetireFile"/>) — ordinarily an in-place rename, permitted on Windows even for a
+    /// file a running module still executes from (see <see cref="SwapIntoPlace"/>'s doc
+    /// comment) — before anything staged is placed anywhere; if any one retirement fails (a
+    /// lock stronger than share-delete access, most likely an antivirus scan holding a file
+    /// exclusively), every retirement this call already made is undone and the whole merge
+    /// throws having placed nothing, so bin is left exactly at the old version rather than a
+    /// mix. Phase two only starts once every retirement in phase one has succeeded, so every
+    /// name it moves a staged file into is already vacated and this essentially cannot fail;
+    /// if it somehow still does, whatever this call had already placed stays on the new
+    /// version and everything it had not yet reached is restored to the version it retired
+    /// aside — so no file this call touches is ever left present under neither name, even
+    /// though a failure here (unlike one in phase one) can still leave bin with a genuine mix
+    /// of old and new files. Once every file is placed, a retiree that turned out not to be
+    /// locked — almost every file, in practice; only the module a running process still
+    /// executes from stays locked through its own rename — is reclaimed immediately rather
+    /// than left for the next run's leading <see cref="SweepRetiredFiles"/>.</summary>
     [SupportedOSPlatform("windows")]
     private static void SwapFilesIntoPlace(string sourceDirectory, string destinationDirectory)
+    {
+        List<(string Source, string Destination)> files = [];
+        CollectFilePairs(sourceDirectory, destinationDirectory, files);
+
+        List<(string Original, string Retired)> retired = [];
+        foreach ((_, string destination) in files)
+        {
+            if (!File.Exists(destination))
+            {
+                continue;
+            }
+
+            try
+            {
+                retired.Add((destination, RetireFile(destination)));
+            }
+            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+            {
+                RestoreRetiredPairs(retired);
+                throw new InvalidOperationException(
+                    $"Could not finish updating {destination} — it is locked and could not even be retired "
+                        + "aside. Close whatever holds it (a running h9k or h9kd, an antivirus scan) and run "
+                        + "h9k update again; nothing has been swapped into place yet.",
+                    exception);
+            }
+        }
+
+        foreach ((string source, string destination) in files)
+        {
+            try
+            {
+                File.Move(source, destination);
+            }
+            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+            {
+                RestoreRetiredPairs(retired);
+                throw new InvalidOperationException(
+                    $"Could not finish installing {destination} — {exception.Message} Run h9k update again "
+                        + "once that is resolved; anything already installed by this run is left on the new "
+                        + "version and everything else on the version it started with.",
+                    exception);
+            }
+        }
+
+        foreach ((_, string retiredPath) in retired)
+        {
+            TryDeleteFile(retiredPath);
+        }
+    }
+
+    /// <summary>Walks <paramref name="sourceDirectory"/> (staging, or one of its subdirectories)
+    /// against <paramref name="destinationDirectory"/> (bin, or the matching subdirectory),
+    /// creating destination directories as it goes and recording where each staged file lands —
+    /// the enumeration half of <see cref="SwapFilesIntoPlace"/>'s two-phase swap, kept separate
+    /// so retiring and placing can each run as one flat pass over every file instead of being
+    /// interleaved directory by directory, which is what lets the whole merge roll back
+    /// together instead of one directory at a time.</summary>
+    [SupportedOSPlatform("windows")]
+    private static void CollectFilePairs(
+        string sourceDirectory, string destinationDirectory, List<(string Source, string Destination)> files)
     {
         Directory.CreateDirectory(destinationDirectory);
 
         foreach (string sourceFile in Directory.EnumerateFiles(sourceDirectory))
         {
-            SwapFileIntoPlace(sourceFile, Path.Combine(destinationDirectory, Path.GetFileName(sourceFile)));
+            files.Add((sourceFile, Path.Combine(destinationDirectory, Path.GetFileName(sourceFile))));
         }
 
         foreach (string sourceSubdirectory in Directory.EnumerateDirectories(sourceDirectory))
         {
-            SwapFilesIntoPlace(
-                sourceSubdirectory, Path.Combine(destinationDirectory, Path.GetFileName(sourceSubdirectory)));
+            CollectFilePairs(
+                sourceSubdirectory,
+                Path.Combine(destinationDirectory, Path.GetFileName(sourceSubdirectory)),
+                files);
+        }
+    }
+
+    /// <summary>Restores every pair <see cref="SwapFilesIntoPlace"/> retired this call back to
+    /// its original name — a full rollback when phase one fails partway, or the identical call
+    /// applied to a phase-two failure, where <see cref="RestoreRetiredFile"/>'s own
+    /// already-placed check makes it a no-op for every file that made it onto the new version
+    /// before the failure.</summary>
+    [SupportedOSPlatform("windows")]
+    private static void RestoreRetiredPairs(List<(string Original, string Retired)> pairs)
+    {
+        foreach ((string original, string retiredPath) in pairs)
+        {
+            RestoreRetiredFile(retiredPath, original);
         }
     }
 
@@ -932,85 +1033,7 @@ public sealed class InstallCommand : Hall9kAsyncCommand<InstallCommand.Settings>
         }
     }
 
-    /// <summary>Moves one staged file into place. The ordinary case (nothing has
-    /// <paramref name="destination"/> open) is a single atomic replace — <c>overwrite: true</c>
-    /// rather than a separate delete-then-move — so a delete that succeeds followed by a move
-    /// that then fails can never leave <paramref name="destination"/> gone outright (origin:
-    /// exactly that gap, caught by review before this shipped). A locked destination — a
-    /// running <c>h9k.exe</c> or <c>h9kd.exe</c> — is retired aside first via
-    /// <see cref="RetireFile"/> and the staged file takes its vacated name. Every step past
-    /// that first attempt is guarded the same way: if retiring the destination aside fails too
-    /// (a lock stronger than a running module's own share-delete access — an antivirus scan
-    /// holding the file exclusively), or the move that follows a successful retire fails (a
-    /// lock the retire survived but this did not — vanishingly unlikely, but not impossible),
-    /// this throws <see cref="InvalidOperationException"/> instead of letting a raw
-    /// <see cref="IOException"/> or <see cref="UnauthorizedAccessException"/> escape
-    /// <see cref="SwapIntoPlace"/> uncaught. The second case best-effort restores the retired
-    /// file under its original name first; if even that fails, the previous copy is left
-    /// sitting at its <c>.old</c> name instead, and the exception message says so.</summary>
-    [SupportedOSPlatform("windows")]
-    private static void SwapFileIntoPlace(string source, string destination)
-    {
-        if (!File.Exists(destination))
-        {
-            try
-            {
-                File.Move(source, destination);
-            }
-            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
-            {
-                throw new InvalidOperationException(
-                    $"Could not finish installing {destination} — {exception.Message} Run h9k update again once "
-                        + "that is resolved.",
-                    exception);
-            }
-
-            return;
-        }
-
-        try
-        {
-            File.Move(source, destination, overwrite: true);
-            return;
-        }
-        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
-        {
-            // destination is locked — most likely this very h9k.exe, or a running h9kd.exe.
-            // Fall through to the retire-aside path below.
-        }
-
-        string retired;
-        try
-        {
-            retired = RetireFile(destination);
-        }
-        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
-        {
-            throw new InvalidOperationException(
-                $"Could not finish updating {destination} — it is locked and could not even be retired aside. "
-                    + "Close whatever holds it (a running h9k or h9kd, an antivirus scan) and run h9k update "
-                    + $"again; {Path.GetFileName(destination)} was left on the version it started with.",
-                exception);
-        }
-
-        try
-        {
-            File.Move(source, destination);
-        }
-        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
-        {
-            RestoreRetiredFile(retired, destination);
-
-            throw new InvalidOperationException(
-                $"Could not finish updating {destination} — it is locked and the previous copy could not be "
-                    + "put back in its place either. Close whatever holds it (a running h9k or h9kd, an antivirus "
-                    + $"scan) and run h9k update again. If {Path.GetFileName(destination)} is missing, the "
-                    + $"previous copy is sitting beside it as {Path.GetFileName(retired)} until then.",
-                exception);
-        }
-    }
-
-    /// <summary>Best-effort restore for <see cref="SwapFileIntoPlace"/>'s failure path: puts a
+    /// <summary>Best-effort restore for <see cref="SwapFilesIntoPlace"/>'s failure paths: puts a
     /// file <see cref="RetireFile"/> just retired back under its original name. Swallows its
     /// own failure — the caller is already mid-throw and reports the original cause; a restore
     /// that cannot complete leaves the file at <paramref name="retired"/> instead, which
@@ -1033,14 +1056,14 @@ public sealed class InstallCommand : Hall9kAsyncCommand<InstallCommand.Settings>
         }
     }
 
-    /// <summary>Renames a file Windows will not let <see cref="SwapFileIntoPlace"/> overwrite —
+    /// <summary>Renames a file Windows will not let <see cref="SwapFilesIntoPlace"/> overwrite —
     /// a running <c>h9k.exe</c> or <c>h9kd.exe</c> most likely — to a <c>.old</c> sibling right
     /// beside it: the file-granularity version of <see cref="RetireDirectory"/>, permitted on
     /// Windows for the identical reason a directory-level rename is not (see
     /// <see cref="SwapIntoPlace"/>'s doc comment). Falls back to a uniquely suffixed name when
     /// an earlier update's own <c>.old</c> file is itself still locked — the same double-lock
     /// fallback <see cref="RetireDirectory"/> uses for a whole directory — and returns
-    /// whichever name it actually used, so the caller can restore it if the move that follows
+    /// whichever name it actually used, so the caller can restore it if placement that follows
     /// fails.</summary>
     [SupportedOSPlatform("windows")]
     private static string RetireFile(string path)
