@@ -53,7 +53,7 @@ public sealed class PullRequestOpener(
             // Always --force-with-lease, never a plain push and never plain --force. A
             // follow-up may have rewritten the branch's history (narrative commit style:
             // fixups folded into their owning commits, Decisions Log #26), and a fresh build
-            // session's own end-of-work checkpoint recompose (Decisions Log #102) rewrites it
+            // session's own end-of-work checkpoint recompose (Decisions Log #104) rewrites it
             // too — a mixed reset to the branch's fork point followed by commit-plan composing
             // new history means a retried task resuming a branch this same opener already
             // pushed once (push succeeded, `gh pr create` then failed) diverges from that
