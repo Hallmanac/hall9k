@@ -37,8 +37,10 @@ public sealed record SweepFindingRoute(ReviewFinding Finding, Guid RunId, int Cy
 /// reported by a later run's review — updates that item's evidence list instead of duplicating
 /// the item (<see cref="Append"/>), using the identical same-place test the rest of the routing
 /// pipeline already applies (<see cref="ReviewFindingLocations.SamePlace"/>). A finding the
-/// reviewer never placed on a line cannot be shown to repeat one already on the sweep, so it
-/// always becomes a new item — the same conservative reading <c>SamePlace</c> itself documents.
+/// reviewer never placed on a line cannot be shown to repeat one already on the sweep by
+/// location, so it becomes a new item unless the very same run's own review track reported the
+/// identical finding text before — the one case where "no location" still leaves enough to
+/// recognize a repeat rather than guess at one (cycle-5 adversarial review).
 /// </para>
 /// <para>
 /// The AgentContext this composes is regenerated whole on every append — a fixed preamble, then
@@ -104,8 +106,21 @@ public static partial class SweepDraftTask
         {
             string location = SanitizeLocation(route.Finding.Location);
             Evidence evidence = new(route.RunId, route.Cycle, route.FindingsFile, location);
-            int matchIndex = merged.FindIndex(
-                item => ReviewFindingLocations.SamePlace(item.Location, location));
+
+            // A blank location cannot use SamePlace (it deliberately matches nothing, so two
+            // genuinely different unplaced defects are never folded into one). But the SAME run's
+            // own review track re-reporting the identical unplaced finding text cycle after cycle
+            // is not a different defect coincidentally sharing wording — it is one observation
+            // repeated, and without a match here it re-appends as a brand-new item every cycle,
+            // never reaching the run/cycle/location repeat guard below at all (cycle-5 adversarial
+            // review). Keying the fallback on the reporting run, not just the text, keeps two
+            // different runs' coincidentally identical boilerplate apart, which is the case the
+            // conservative SamePlace reading exists to protect in the first place.
+            int matchIndex = merged.FindIndex(item => location.IsNotBlank()
+                ? ReviewFindingLocations.SamePlace(item.Location, location)
+                : item.Location.IsBlank()
+                    && item.FindingText == route.Finding.Text
+                    && item.Evidence.Any(entry => entry.RunId == route.RunId));
             if (matchIndex < 0)
             {
                 merged.Add(new Item(location, route.Finding.Severity, route.Finding.Text, [evidence]));
@@ -135,17 +150,21 @@ public static partial class SweepDraftTask
     /// <summary>
     /// A finding's <c>Location</c> defused before it becomes part of the sweep's structure — a
     /// bare "### " heading, outside every fence the rest of an item lives inside (cycle-4
-    /// adversarial review). Folded onto one line and closing-keyword-defused the way
-    /// <see cref="ReviewDraftBugTask"/> already treats the identical field, then every backtick
-    /// backslash-escaped — CommonMark reads <c>\`</c> as a literal character rather than a span
-    /// delimiter — so a stray one cannot pair with a later backtick run and swallow everything
-    /// between them into an unintended code span. A heading carries more risk than the sibling's
-    /// inline prose does: its corruption can reach past its own paragraph into the rest of the
-    /// document.
+    /// adversarial review). Folded onto one line, every backtick the reviewer's own text carried
+    /// backslash-escaped first — CommonMark reads <c>\`</c> as a literal character rather than a
+    /// span delimiter, so a stray one cannot pair with a later backtick run and swallow
+    /// everything between them into an unintended code span — and only then closing-keyword-
+    /// defused the way <see cref="ReviewDraftBugTask"/> already treats the identical field.
+    /// Escaping first, rather than after, matters here specifically: <c>WithoutClosingKeywords</c>
+    /// wraps a closing-keyword reference in its own fresh, unescaped backtick pair, and escaping
+    /// afterward would turn that very pair into literal characters too, defeating the code span it
+    /// just inserted (cycle-5 conformance and adversarial review). A heading carries more risk
+    /// than the sibling's inline prose does: its corruption can reach past its own paragraph into
+    /// the rest of the document.
     /// </summary>
     private static string SanitizeLocation(string location) =>
-        RelayedText.WithoutClosingKeywords(RelayedText.OneLine(location).Trim())
-            .Replace("`", "\\`", StringComparison.Ordinal);
+        RelayedText.WithoutClosingKeywords(
+            RelayedText.OneLine(location).Trim().Replace("`", "\\`", StringComparison.Ordinal));
 
     private static string Render(IReadOnlyList<Item> items)
     {
