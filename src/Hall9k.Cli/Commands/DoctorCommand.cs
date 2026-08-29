@@ -22,8 +22,14 @@ public sealed class DoctorCommand : Hall9kAsyncCommand<DoctorCommand.Settings>
         public bool Yes { get; init; }
     }
 
-    protected override async Task<int> ExecuteAsync(Settings settings, CancellationToken cancellationToken) =>
-        await DatabaseDoctor.RunAsync(offerFixes: true, settings.Yes, cancellationToken) is not null
-            ? ExitCodes.Ok
-            : ExitCodes.Error;
+    protected override async Task<int> ExecuteAsync(Settings settings, CancellationToken cancellationToken)
+    {
+        if (await DatabaseDoctor.RunAsync(offerFixes: true, settings.Yes, cancellationToken) is null)
+        {
+            return ExitCodes.Error;
+        }
+
+        await TwgDoctor.RunAsync(cancellationToken);
+        return ExitCodes.Ok;
+    }
 }

@@ -544,13 +544,15 @@ public static class CliCommandTree
                 .WithExample("task", "show", "28b19893");
             task.AddCommand<TaskPushToJiraCommand>("push-to-jira")
                 .WithDescription(
-                    "Publish this task as a Jira card, by dispatching an agent run that writes it. The "
+                    "Publish this task as a Jira card, by dispatching an agent run that composes it. The "
                     + "platform never authors the card itself: issue types, required fields, and routing "
                     + "rules are the organisation's configuration, so the session runs in the project's "
-                    + "repository with its own Claude skills and your MCP access. It finishes by calling "
-                    + "h9k task link-jira, which reads the card back before Hall9k records anything. Needs a "
-                    + "registered Jira connection; the project's bound board (h9k project set --jira) tells "
-                    + "the agent where to file it.")
+                    + "repository with its own Claude skills and works out the fields. It performs no "
+                    + "direct Jira access: it finishes by submitting the composed payload through "
+                    + "h9k task write-jira, which is the sole executor — hall9k validates it, executes it "
+                    + "through twg, and reads the card back before recording anything. Needs a registered "
+                    + "Jira connection; the project's bound board (h9k project set --jira) tells the agent "
+                    + "where to file it.")
                 .WithExample("task", "push-to-jira", "28b19893");
             task.AddCommand<TaskLinkJiraCommand>("link-jira")
                 .WithDescription(
@@ -561,6 +563,17 @@ public static class CliCommandTree
                     + "for a card a human made by hand.")
                 .WithExample("task", "link-jira", "28b19893", "PROJ-123")
                 .WithExample("task", "link-jira", "28b19893", "https://your-org.atlassian.net/browse/PROJ-123");
+            task.AddCommand<TaskWriteJiraCommand>("write-jira")
+                .WithDescription(
+                    "Submit a composed Jira create, update, or comment for hall9k to execute (the write "
+                    + "surface, Brian's design 2026-08-28). hall9k validates the payload, records the "
+                    + "intent before anything is sent, executes it through twg with JSON output, verifies "
+                    + "by reading the item back, and records the outcome including the returned key. A "
+                    + "transition or a close is refused whatever the payload says. Used by the agent "
+                    + "h9k task push-to-jira dispatches to create the card, and equally usable by hand for "
+                    + "an update or a comment on a task's own linked item.")
+                .WithExample("task", "write-jira", "28b19893", "--op", "create", "--file", "card.json")
+                .WithExample("task", "write-jira", "28b19893", "--op", "comment", "--file", "note.json");
             task.AddCommand<TaskLinkIssueCommand>("link-issue")
                 .WithDescription(
                     "Record the GitHub issue this task belongs to, verified first. The issue you pass is "

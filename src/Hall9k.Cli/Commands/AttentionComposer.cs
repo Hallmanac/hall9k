@@ -55,6 +55,20 @@ internal static class AttentionComposer
             return TaskAttention.None;
         }
 
+        // A Jira write is stuck on an expired or missing twg login (Brian's design, 2026-08-28) —
+        // a handled, expected state rather than a crash, and one the operator clears in their own
+        // terminal rather than through an h9k command. Checked ahead of the ordinary lifecycle
+        // arms below because the write itself carries no lifecycle state of its own: a task could
+        // otherwise be Queued, Done, or anything else while a closeout comment sits pending on it,
+        // and a row with nothing else amiss would report no attention at all.
+        if (task.PendingJiraWriteIsAuthFailure)
+        {
+            return new TaskAttention(
+                AttentionLevel.NeedsYou,
+                Reason(task.PendingJiraWriteFailureReason, "a Jira write is pending and could not authenticate"),
+                "twg login");
+        }
+
         // An agent asked a question and stopped. The ask-a-human loop records the question but
         // no command answers it yet, so the lever is the one that shows it rather than one the
         // platform does not have (never advise a lever the platform will refuse).

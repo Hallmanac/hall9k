@@ -116,6 +116,11 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
             header.AddRow("Publication", $"[yellow]{ExternalText.OneLineMarkup(details.PublicationOutcome)}[/]");
         }
 
+        if (details.PendingJiraWriteId is not null)
+        {
+            header.AddRow("Jira write", JiraWriteMarkup(details));
+        }
+
         if (details.PullRequestUrl.IsNotBlank())
         {
             header.AddRow("PR", $"[link]{details.PullRequestUrl.EscapeMarkup()}[/]");
@@ -514,6 +519,24 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
               + "finishes by running h9k task link-jira[/]"
             : $"[yellow]{provider.EscapeMarkup()}[/]{board} [dim]— requested, waiting for the daemon "
               + "to dispatch the session (h9k daemon status)[/]";
+    }
+
+    /// <summary>
+    /// A Jira write outstanding on this task (Brian's design, 2026-08-28): pending on an expired
+    /// or missing twg login reads red, since that is exactly what h9k status's needs-you section
+    /// surfaces for the same row; a write nobody has retried yet reads dim, since nothing has
+    /// gone wrong — it is only waiting for the daemon's retry sweep or a fresh attempt.
+    /// </summary>
+    private static string JiraWriteMarkup(TaskDetails details)
+    {
+        string target = details.PendingJiraWriteIssueKey.IsNotBlank()
+            ? $" [dim]on {details.PendingJiraWriteIssueKey.EscapeMarkup()}[/]"
+            : string.Empty;
+        return details.PendingJiraWriteIsAuthFailure
+            ? $"[red]{details.PendingJiraWriteOperation.Value.EscapeMarkup()}[/]{target} [dim]— "
+              + $"{ExternalText.OneLineMarkup(details.PendingJiraWriteFailureReason ?? "twg could not authenticate")}[/]"
+            : $"[yellow]{details.PendingJiraWriteOperation.Value.EscapeMarkup()}[/]{target} "
+              + "[dim]— recorded, executing[/]";
     }
 
     /// <summary>
