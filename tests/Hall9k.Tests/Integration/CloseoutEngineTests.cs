@@ -2,6 +2,7 @@ using System.Diagnostics;
 using FluentAssertions;
 using Hall9k.Daemon;
 using Hall9k.Daemon.Closeout;
+using Hall9k.Connectors.Processes;
 using Hall9k.Connectors.WorkItems;
 using Hall9k.Daemon.Worktrees;
 using Hall9k.Domain.Features.Owner;
@@ -47,9 +48,6 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
     private static readonly DateTimeOffset Now = new(2026, 8, 17, 12, 0, 0, TimeSpan.Zero);
 
     private const string PullRequestUrl = "https://github.com/x/y/pull/7";
-
-    /// <summary>Where the seeded Jira connection's token lives; set and cleared by this class.</summary>
-    private const string JiraTokenVariable = "HALL9K_TEST_CLOSEOUT_JIRA_TOKEN";
 
     private readonly string _root = Path.Combine(Path.GetTempPath(), $"hall9k-closeout-{Guid.NewGuid():N}");
 
@@ -2341,37 +2339,44 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
         (DocumentStore store, NodeContext node, GitWorktreeManager worktrees, _, string repoPath) =
             await SetUpAsync(cts.Token);
         using IDisposable storeLifetime = store;
-        await SeedJiraConnectionAsync(store, node, cts.Token);
 
         (Guid taskId, _, _) = await SeedAwaitingReviewAsync(
             store, node, worktrees, repoPath, cts.Token,
             externalReference: new ExternalReference(WorkItemProvider.Jira, "PROJ-123"));
 
-        RecordingJira jira = new();
+        RecordingProcessRunner twg = TwgRunner("PROJ-123");
         FakeInspector inspector = new()
         {
             Snapshot = FakeInspector.Quiet() with { IsMerged = true, MergedAt = Now.AddHours(2) },
         };
-        await NewEngine(store, node, inspector, worktrees, jira: jira).PollOnceAsync(cts.Token);
+        await NewEngine(store, node, inspector, worktrees, github: twg).PollOnceAsync(cts.Token);
 
-        JiraRequest request = jira.Requests.Should().ContainSingle().Subject;
-        request.Method.Should().Be(HttpMethod.Post);
-        request.Url.ToString().Should().Be("https://hall9k.atlassian.net/rest/api/2/issue/PROJ-123/comment");
-        request.JsonBody.Should().Contain(PullRequestUrl).And.Contain(taskId.ToString());
+        // The write goes through the same surface an operator's own h9k task write-jira uses
+        // (Brian's design, 2026-08-28): twg carries out the comment, then a search reads the card
+        // back to verify it landed before hall9k records the outcome.
+        (string FileName, IReadOnlyList<string> Arguments, string WorkingDirectory) commentCall =
+            twg.Calls.Should().ContainSingle(call => call.Arguments.Contains("--comment")).Subject;
+        commentCall.FileName.Should().Be("twg");
+        commentCall.Arguments.Should().ContainInOrder("jira", "update", "PROJ-123");
+        string comment = commentCall.Arguments[commentCall.Arguments.ToList().IndexOf("--comment") + 1];
+        comment.Should().Contain(PullRequestUrl).And.Contain(taskId.ToString());
         // JSON-encodes the apostrophe in "item's", so the assertion splits either side of it
         // rather than matching the contraction as one literal string.
-        request.JsonBody.Should().Contain("does not change this item")
+        comment.Should().Contain("does not change this item")
             .And.Contain("status or close it",
                 "a card that silently gains a comment and never moves reads like an integration that half worked");
+
+        twg.Calls.Should().Contain(
+            call => call.Arguments.Contains("search"), "the write is read back and verified before it is recorded");
     }
 
     /// <summary>
-    /// A GitHub-adopted task is told through gh, not Jira: GitHub already cross-references the
+    /// A GitHub-adopted task is told through gh, not twg: GitHub already cross-references the
     /// merge on the issue's own timeline the moment the pull request body mentions it, but this
     /// platform comment exists anyway, for parity with Jira (PLAN.md #60, backlog: every
     /// published task is tracked automatically). The write goes through <c>CloseoutEngine</c>'s
-    /// injected <c>ProcessRunner</c> seam rather than a live gh, the same way the Jira write goes
-    /// through <see cref="RecordingJira"/> instead of a live Atlassian tenant.
+    /// injected <c>ProcessRunner</c> seam rather than a live gh — the same seam a Jira reference's
+    /// twg write reuses, since the delegate is process-agnostic.
     /// </summary>
     [Fact]
     public async Task A_merge_with_a_github_reference_comments_the_issue_and_says_nothing_to_jira()
@@ -2380,31 +2385,31 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
         (DocumentStore store, NodeContext node, GitWorktreeManager worktrees, _, string repoPath) =
             await SetUpAsync(cts.Token);
         using IDisposable storeLifetime = store;
-        await SeedJiraConnectionAsync(store, node, cts.Token);
 
         (Guid taskId, _, _) = await SeedAwaitingReviewAsync(
             store, node, worktrees, repoPath, cts.Token,
             externalReference: new ExternalReference(WorkItemProvider.GitHub, "o/r#42"));
 
-        RecordingJira jira = new();
         RecordingProcessRunner github = RecordingProcessRunner.Succeeding(string.Empty);
         FakeInspector inspector = new()
         {
             Snapshot = FakeInspector.Quiet() with { IsMerged = true, MergedAt = Now.AddHours(2) },
         };
-        await NewEngine(store, node, inspector, worktrees, jira: jira, github: github).PollOnceAsync(cts.Token);
+        await NewEngine(store, node, inspector, worktrees, github: github).PollOnceAsync(cts.Token);
 
-        jira.Requests.Should().BeEmpty("a GitHub reference is told through gh, not Jira");
         (string FileName, IReadOnlyList<string> Arguments, string WorkingDirectory) call =
-            github.Calls.Should().ContainSingle().Subject;
+            github.Calls.Should().ContainSingle("a GitHub reference is told through gh, not twg").Subject;
+        call.FileName.Should().Be("gh");
         call.Arguments.Should().ContainInOrder("issue", "comment", "42", "--repo", "o/r", "--body");
         call.Arguments[^1].Should().Contain(PullRequestUrl).And.Contain(taskId.ToString());
     }
 
     /// <summary>
     /// The merge is already recorded and the dependents already unblocked by the time the card is
-    /// told, so a Jira outage costs the note and nothing else — and it is not retried, because a
+    /// told, so a twg refusal costs the note and nothing else — and it is not retried, because a
     /// retry loop around an unwatched write is how one card ends up with four identical comments.
+    /// The refused write is still recorded on the task's stream (JiraWriteFailed), which is the
+    /// write-audit-only discipline this whole surface is built on.
     /// </summary>
     [Fact]
     public async Task A_jira_that_refuses_the_comment_does_not_undo_the_closeout()
@@ -2413,23 +2418,25 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
         (DocumentStore store, NodeContext node, GitWorktreeManager worktrees, _, string repoPath) =
             await SetUpAsync(cts.Token);
         using IDisposable storeLifetime = store;
-        await SeedJiraConnectionAsync(store, node, cts.Token);
 
         (Guid taskId, Guid runId, _) = await SeedAwaitingReviewAsync(
             store, node, worktrees, repoPath, cts.Token,
             externalReference: new ExternalReference(WorkItemProvider.Jira, "PROJ-123"));
 
-        RecordingJira jira = new(statusCode: 403, body: "{\"errorMessages\":[\"No permission\"]}");
+        RecordingProcessRunner twg = RecordingProcessRunner.Failing("No permission");
         FakeInspector inspector = new()
         {
             Snapshot = FakeInspector.Quiet() with { IsMerged = true, MergedAt = Now.AddHours(2) },
         };
-        await NewEngine(store, node, inspector, worktrees, jira: jira).PollOnceAsync(cts.Token);
+        await NewEngine(store, node, inspector, worktrees, github: twg).PollOnceAsync(cts.Token);
 
-        jira.Requests.Should().ContainSingle("the write is attempted once and never retried blind");
+        twg.Calls.Should().ContainSingle("the write is attempted once and never retried blind");
         await using IQuerySession query = store.QuerySession();
         (await query.LoadAsync<RunDetails>(runId, cts.Token))!.State.Should().Be(RunState.Completed);
         (await query.LoadAsync<TaskListItem>(taskId, cts.Token))!.State.Should().Be(TaskState.Done);
+
+        TaskAggregate task = (await query.Events.AggregateStreamAsync<TaskAggregate>(taskId, token: cts.Token))!;
+        task.PendingJiraWriteId.Should().BeNull("a non-auth failure ends the write rather than leaving it pending");
     }
 
     private async Task<(DocumentStore Store, NodeContext Node, GitWorktreeManager Worktrees, string OriginPath, string RepoPath)>
@@ -2565,12 +2572,10 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
         IPullRequestInspector inspector,
         GitWorktreeManager worktrees,
         int maxReviewRerequests = 2,
-        RecordingJira? jira = null,
         RecordingProcessRunner? github = null,
         int maxAutomaticCloseoutRuns = 2,
         int maxCloseoutLapsPerObstruction = 2) =>
         new(store, node, new DaemonConnection(postgres.ConnectionString), inspector, worktrees,
-            (jira ?? new RecordingJira()).Requester,
             (github ?? RecordingProcessRunner.Succeeding(string.Empty)).Runner,
             Options.Create(new DaemonOptions
             {
@@ -2579,6 +2584,16 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
                 MaxReviewRerequestsAfterFixes = maxReviewRerequests,
             }),
             NullLogger<CloseoutEngine>.Instance);
+
+    /// <summary>
+    /// A twg fake whose search calls answer with the card this test cares about, and whose every
+    /// other call (a create, an update, a comment) answers success with nothing to parse — the
+    /// same JSON-shape distinction <see cref="TwgJiraExecutor"/> itself makes between a write and
+    /// its own read-back.
+    /// </summary>
+    private static RecordingProcessRunner TwgRunner(string key) => RecordingProcessRunner.RespondingTo(
+        arguments => new ProcessResult(
+            0, arguments.Contains("search") ? $$"""{"key":"{{key}}"}""" : "{}", string.Empty));
 
     /// <summary>
     /// Leaves the watch set as the test found it. One node and one database back this whole
@@ -2724,50 +2739,6 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
     }
 
 
-    /// <summary>
-    /// The Jira connector's network seam, recorded. It is registered on the engine even when a
-    /// test seeds no Jira connection, which is itself the assertion in that case: a call that
-    /// should never happen is one this fake would have kept.
-    /// </summary>
-    private sealed class RecordingJira(int statusCode = 201, string body = "{}")
-    {
-        public List<JiraRequest> Requests { get; } = [];
-
-        public JiraRequester Requester => (request, _) =>
-        {
-            Requests.Add(request);
-            return Task.FromResult(new JiraResponse(statusCode, body));
-        };
-    }
-
-    /// <summary>
-    /// A registered Jira connection, with its token in an environment variable so the test
-    /// touches no keychain and writes no file. The credential still travels as a reference —
-    /// the discipline is exercised rather than sidestepped.
-    /// </summary>
-    private static async Task SeedJiraConnectionAsync(
-        DocumentStore store, NodeContext node, CancellationToken cancellationToken)
-    {
-        Environment.SetEnvironmentVariable(JiraTokenVariable, "a-token");
-        await using IDocumentSession session = store.LightweightSession();
-
-        // Once per database, not once per test: every test in this class shares the fixture's
-        // Postgres, and a second registered Jira connection is a state the connector refuses on
-        // purpose (nothing says which account a project uses) — which would make these tests
-        // assert the refusal rather than the comment.
-        if (await WorkItemConnections.FindJiraConnectionAsync(session, cancellationToken) is not null)
-        {
-            return;
-        }
-
-        Guid connectionId = DomainId.New();
-        session.Events.StartStream<ConnectionAggregate>(connectionId, ConnectionDecider.Register(
-            connectionId, node.OwnerId, WorkItemProvider.Jira, "brian@example.com",
-            CredentialReference.EnvironmentVariable(JiraTokenVariable), Now,
-            new Uri("https://hall9k.atlassian.net")));
-        await session.SaveChangesAsync(cancellationToken);
-    }
-
     private static void Git(string workingDirectory, string arguments)
     {
         (int exitCode, string output) = TryGit(workingDirectory, arguments);
@@ -2797,7 +2768,6 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
     public void Dispose()
     {
         Environment.SetEnvironmentVariable("HALL9K_HOME", null);
-        Environment.SetEnvironmentVariable(JiraTokenVariable, null);
         try
         {
             if (Directory.Exists(_home))

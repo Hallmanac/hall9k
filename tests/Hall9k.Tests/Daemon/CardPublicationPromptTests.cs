@@ -34,7 +34,7 @@ public sealed class CardPublicationPromptTests : IDisposable
             _repository,
             "https://hall9k.atlassian.net",
             JiraProjectKey.Parse(board),
-            "h9k task link-jira 3f689fba",
+            "h9k task write-jira 3f689fba",
             routingGuidance);
 
     [Fact]
@@ -78,13 +78,33 @@ public sealed class CardPublicationPromptTests : IDisposable
     }
 
     [Fact]
-    public void The_run_finishes_at_the_command_that_verifies_and_the_prompt_says_why()
+    public void The_run_finishes_at_the_command_that_validates_executes_and_verifies()
     {
         string prompt = Build();
 
-        prompt.Should().Contain("h9k task link-jira 3f689fba <ISSUE-KEY>")
-            .And.Contain("Telling Hall9k a card exists is not the same as Hall9k believing it")
+        prompt.Should().Contain("h9k task write-jira 3f689fba --op create --file")
+            .And.Contain("Composing a payload is not the same as a card existing")
             .And.Contain("read it, fix", "a refusal is information to act on rather than a wall");
+    }
+
+    [Fact]
+    public void The_prompt_says_the_agent_makes_no_direct_jira_access()
+    {
+        string prompt = Build();
+
+        prompt.Should().Contain("Do not create, update, or")
+            .And.Contain("comment on anything in Jira directly, through MCP or otherwise")
+            .And.Contain("Hall9k is the sole");
+    }
+
+    [Fact]
+    public void An_authentication_refusal_is_told_apart_from_an_ordinary_payload_error()
+    {
+        string prompt = Build();
+
+        prompt.Should().Contain("twg is not authenticated, stop")
+            .And.Contain("Hall9k retries")
+            .And.Contain("you cannot fix it from here");
     }
 
     [Fact]
