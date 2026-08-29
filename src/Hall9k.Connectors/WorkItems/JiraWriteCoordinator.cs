@@ -128,7 +128,7 @@ public static class JiraWriteCoordinator
         try
         {
             TwgWriteResult result = operation == JiraWriteOperation.Create
-                ? await CreateWithDedupAsync(executor, defaultBoard, payload, writeId, workingDirectory, cancellationToken)
+                ? await CreateWithDedupAsync(executor, defaultBoard, payload, taskId, workingDirectory, cancellationToken)
                 : operation == JiraWriteOperation.Comment
                     ? await executor.CommentAsync(
                         RequireKey(issueKey, taskId), payload.Comment ?? string.Empty, workingDirectory, cancellationToken)
@@ -138,34 +138,49 @@ public static class JiraWriteCoordinator
         }
         catch (TwgExecutionException exception)
         {
-            return await RecordFailureAsync(session, taskId, writeId, exception, cancellationToken);
+            return await RecordFailureAsync(session, taskId, writeId, exception.Message, exception.IsAuthFailure, cancellationToken);
+        }
+        // Anything else — a malformed board key from JiraProjectKey.Parse, a missing target key
+        // from RequireKey, any bug — is caught here too rather than left to escape (independent
+        // pre-PR review, cycle 1): the intent was already recorded before this attempt ran, and
+        // nothing but this method's own outcome append can ever clear PendingJiraWriteId. Left
+        // uncaught, the task is wedged with a permanently pending write and every later Jira
+        // write on it — including closeout's own merge comment — refused forever. Recorded as a
+        // non-auth failure, since none of these are "run it again once twg login succeeds".
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            return await RecordFailureAsync(session, taskId, writeId, exception.Message, isAuthFailure: false, cancellationToken);
         }
     }
 
     /// <summary>
-    /// Search for a card this write already made before creating a second one — the physical dedup
-    /// gate, run on every attempt (first and retried alike), because the failure it guards against
-    /// is exactly a retry: twg creating the card, then hall9k crashing or losing its login before
-    /// recording that it did.
+    /// Search for a card already carrying this task's marker before creating a second one — the
+    /// physical dedup gate, run on every attempt (first and every later one alike), because the
+    /// failure it guards against is exactly a repeat: twg creating the card, then hall9k failing
+    /// to record that it did for any reason, before a fresh attempt (with its own new write id)
+    /// tries again. Keyed to the task rather than to <paramref name="writeId"/> would-be-marker,
+    /// because a fresh attempt always mints a fresh write id — a marker scoped to it could never
+    /// be found by the very retry it exists to protect (independent pre-PR review, cycle 1, both
+    /// lenses).
     /// </summary>
     private static async Task<TwgWriteResult> CreateWithDedupAsync(
         TwgJiraExecutor executor,
         JiraProjectKey defaultBoard,
         JiraWritePayload payload,
-        Guid writeId,
+        Guid taskId,
         string workingDirectory,
         CancellationToken cancellationToken)
     {
-        if (await executor.FindByMarkerAsync(writeId, workingDirectory, cancellationToken) is { } existingKey)
+        if (await executor.FindByMarkerAsync(taskId, workingDirectory, cancellationToken) is { } existingKey)
         {
             return new TwgWriteResult(
                 existingKey,
-                $"A card carrying this write's marker already exists ({existingKey}); an earlier attempt "
+                $"A card carrying this task's marker already exists ({existingKey}); an earlier attempt "
                 + "created it, so nothing new was created.");
         }
 
         JiraProjectKey board = payload.ProjectKey.IsNotBlank() ? JiraProjectKey.Parse(payload.ProjectKey) : defaultBoard;
-        return await executor.CreateAsync(board, payload, writeId, workingDirectory, cancellationToken);
+        return await executor.CreateAsync(board, payload, taskId, workingDirectory, cancellationToken);
     }
 
     private static string RequireKey(string? issueKey, Guid taskId) =>
@@ -226,8 +241,13 @@ public static class JiraWriteCoordinator
 
         try
         {
+            // Neither the title nor the status was actually read here: the create's own
+            // verification search only ever confirms the key exists (TwgJiraExecutor.VerifyAsync),
+            // so both observed fields are the honest "unknown" WorkItemLinked's own contract asks
+            // for, rather than the key masquerading as a title nobody read (independent pre-PR
+            // review, cycle 1, both lenses).
             WorkItemLinked linked = TaskDecider.LinkWorkItem(
-                task, reference, result.IssueKey, "unknown", DateTimeOffset.UtcNow, DateTimeOffset.UtcNow,
+                task, reference, "unknown", "unknown", DateTimeOffset.UtcNow, DateTimeOffset.UtcNow,
                 requestedByOwnerId);
             session.Events.Append(taskId, linked);
             await session.SaveChangesAsync(cancellationToken);
@@ -245,19 +265,16 @@ public static class JiraWriteCoordinator
     }
 
     private static async Task<JiraWriteAttemptResult> RecordFailureAsync(
-        IDocumentSession session, Guid taskId, Guid writeId, TwgExecutionException exception, CancellationToken cancellationToken)
+        IDocumentSession session, Guid taskId, Guid writeId, string reason, bool isAuthFailure, CancellationToken cancellationToken)
     {
         TaskAggregate task = await session.Events.AggregateStreamAsync<TaskAggregate>(taskId, token: cancellationToken)
             ?? throw new DomainNotFoundException($"No task {taskId}.");
 
-        JiraWriteFailed failed = TaskDecider.RecordJiraWriteFailure(
-            task, writeId, exception.Message, exception.IsAuthFailure, DateTimeOffset.UtcNow);
+        JiraWriteFailed failed = TaskDecider.RecordJiraWriteFailure(task, writeId, reason, isAuthFailure, DateTimeOffset.UtcNow);
         session.Events.Append(taskId, failed);
         await session.SaveChangesAsync(cancellationToken);
 
         return new JiraWriteAttemptResult(
-            exception.IsAuthFailure ? JiraWriteOutcome.PendingAuthentication : JiraWriteOutcome.Failed,
-            null,
-            exception.Message);
+            isAuthFailure ? JiraWriteOutcome.PendingAuthentication : JiraWriteOutcome.Failed, null, reason);
     }
 }

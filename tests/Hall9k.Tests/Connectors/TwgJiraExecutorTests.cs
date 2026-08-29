@@ -22,16 +22,16 @@ public sealed class TwgJiraExecutorTests
     private static readonly JiraProjectKey Project = JiraProjectKey.Parse("PROJ");
 
     [Fact]
-    public async Task A_create_embeds_the_writes_marker_and_verifies_the_returned_key()
+    public async Task A_create_embeds_the_tasks_marker_and_verifies_the_returned_key()
     {
-        Guid writeId = Guid.Parse("00000000-0000-0000-0000-000000000001");
+        Guid taskId = Guid.Parse("00000000-0000-0000-0000-000000000001");
         RecordingProcessRunner twg = RecordingProcessRunner.RespondingTo(arguments => new ProcessResult(
             0, arguments.Contains("search") ? """{"key":"PROJ-123"}""" : """{"key":"PROJ-123"}""", string.Empty));
         TwgJiraExecutor executor = new(twg.Runner);
         JiraWritePayload payload = new(
             "Dev Task", new Dictionary<string, string> { ["description"] = "Fixes the thing" }, null);
 
-        TwgWriteResult result = await executor.CreateAsync(Project, payload, writeId, "/repo", CancellationToken.None);
+        TwgWriteResult result = await executor.CreateAsync(Project, payload, taskId, "/repo", CancellationToken.None);
 
         result.IssueKey.Should().Be("PROJ-123");
         (string FileName, IReadOnlyList<string> Arguments, string WorkingDirectory) create =
@@ -40,13 +40,13 @@ public sealed class TwgJiraExecutorTests
         create.Arguments.Should().ContainInOrder("jira", "create", "--project", "PROJ", "--type", "Dev Task");
         string description = create.Arguments.Should().ContainSingle(argument =>
             argument.StartsWith("description=", StringComparison.Ordinal)).Subject;
-        description.Should().Contain("Fixes the thing").And.Contain(TwgJiraExecutor.Marker(writeId));
+        description.Should().Contain("Fixes the thing").And.Contain(TwgJiraExecutor.Marker(taskId));
 
         twg.Calls.Should().Contain(call => call.Arguments.Contains("search"), "a create is always read back and verified");
     }
 
     [Fact]
-    public async Task A_create_searches_for_the_writes_marker_before_creating_anything()
+    public async Task A_create_searches_for_the_tasks_marker_before_creating_anything()
     {
         RecordingProcessRunner twg = RecordingProcessRunner.RespondingTo(_ => new ProcessResult(0, "[]", string.Empty));
         TwgJiraExecutor executor = new(twg.Runner);
@@ -55,7 +55,28 @@ public sealed class TwgJiraExecutorTests
 
         (string FileName, IReadOnlyList<string> Arguments, string WorkingDirectory) call = twg.Calls.Should().ContainSingle().Subject;
         call.Arguments.Should().ContainInOrder("jira", "search", "--jql");
-        call.Arguments.Should().Contain(argument => argument.Contains("hall9k-write:"));
+        call.Arguments.Should().Contain(argument => argument.Contains("hall9k-task:"));
+    }
+
+    /// <summary>
+    /// The marker survives across attempts because it is keyed to the task rather than to any one
+    /// write's own guid — a fresh write id every attempt means a per-write marker could never be
+    /// found by the retry it exists to protect (independent pre-PR review, cycle 1).
+    /// </summary>
+    [Fact]
+    public async Task The_same_tasks_marker_is_found_by_a_later_attempt_with_a_different_write_id()
+    {
+        Guid taskId = Guid.NewGuid();
+        RecordingProcessRunner twg = RecordingProcessRunner.Succeeding("""[{"key":"PROJ-999"}]""");
+        TwgJiraExecutor executor = new(twg.Runner);
+
+        string? foundByFirstAttempt = await executor.FindByMarkerAsync(taskId, "/repo", CancellationToken.None);
+        string? foundByRetry = await executor.FindByMarkerAsync(taskId, "/repo", CancellationToken.None);
+
+        foundByFirstAttempt.Should().Be("PROJ-999");
+        foundByRetry.Should().Be("PROJ-999");
+        twg.Calls.Should().OnlyContain(
+            call => call.Arguments.Any(argument => argument.Contains(TwgJiraExecutor.Marker(taskId))));
     }
 
     [Fact]
