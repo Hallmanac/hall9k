@@ -161,19 +161,23 @@ public static class WorkItemConnections
     }
 
     /// <summary>
-    /// Best-effort tenant lookup for a background write, where nobody is watching synchronously
-    /// to act on <see cref="FindJiraConnectionAsync"/>'s own ambiguity refusal: the daemon's
-    /// <c>JiraWriteRetryEngine</c> sweep and closeout's own merge comment both call this rather
-    /// than the strict lookup, because a period where an install carries more than one registered
-    /// Jira connection (two overlapping <c>h9k connection add jira</c> runs, per that method's own
-    /// doc comment) must not turn into every future sweep throwing identically and silently for
-    /// every pending write, forever, until a human happens to read the daemon log — a background
-    /// loop that stops retrying without telling anyone is worse than the gap this exists to close
-    /// (a write landing on <c>twg</c>'s own ambient tenant rather than the registered one). Falling
-    /// back to null here reproduces exactly the behavior every caller had before that plumbing
-    /// existed, so the regression this guards against is a strict downgrade, never a new failure
-    /// mode. A human-facing command (<c>write-jira</c>, <c>doctor</c>) keeps calling the strict
-    /// lookup instead, since a person reading its refusal can actually act on it.
+    /// Best-effort tenant lookup for a persistent background sweep, where nobody is watching
+    /// synchronously to act on <see cref="FindJiraConnectionAsync"/>'s own ambiguity refusal:
+    /// <c>JiraWriteRetryEngine</c> calls this rather than the strict lookup, because a period
+    /// where an install carries more than one registered Jira connection (two overlapping
+    /// <c>h9k connection add jira</c> runs, per that method's own doc comment) must not turn into
+    /// every future sweep throwing identically and silently for every pending write, forever,
+    /// until a human happens to read the daemon log — a background loop that stops retrying
+    /// without telling anyone is worse than the gap this exists to close (a write landing on
+    /// <c>twg</c>'s own ambient tenant rather than the registered one). Falling back to null here
+    /// reproduces exactly the behavior every caller had before that plumbing existed, so the
+    /// regression this guards against is a strict downgrade, never a new failure mode. A
+    /// human-facing command (<c>write-jira</c>, <c>doctor</c>) keeps calling the strict lookup
+    /// instead, since a person reading its refusal can actually act on it — and so does closeout's
+    /// own merge comment (<c>CloseoutEngine.TellJiraAsync</c>), which runs once per merge rather
+    /// than in a loop, so a null here would otherwise let a comment through against whatever
+    /// tenant twg's own ambient config resolves to, for a connection this lookup could not
+    /// resolve (independent pre-PR review, cycle 3, adversarial lens).
     /// </summary>
     public static async Task<Uri?> TryFindJiraSiteAsync(IQuerySession session, CancellationToken cancellationToken)
     {
