@@ -159,7 +159,8 @@ public static class JiraWriteCoordinator
                 ? await CreateWithDedupAsync(executor, defaultBoard, payload, taskId, workingDirectory, cancellationToken)
                 : operation == JiraWriteOperation.Comment
                     ? await executor.CommentAsync(
-                        RequireKey(issueKey, taskId), payload.Comment ?? string.Empty, workingDirectory, cancellationToken)
+                        RequireKey(issueKey, taskId), payload.Comment ?? string.Empty, payload.EffectiveFormat,
+                        workingDirectory, cancellationToken)
                     : await executor.UpdateAsync(RequireKey(issueKey, taskId), payload, workingDirectory, cancellationToken);
 
             return await RecordSuccessAsync(session, taskId, writeId, operation, result, cancellationToken);

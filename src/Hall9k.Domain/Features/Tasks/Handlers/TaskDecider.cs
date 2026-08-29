@@ -902,8 +902,8 @@ public static class TaskDecider
             // The decider's cheap half of the dedup gate (backlog: mirroring the GitHub read-back
             // gate): a task already carrying an item refuses here before twg is ever asked. The
             // executor's own physical dedup — searching for a task marker before it calls
-            // twg jira create — is what catches the harder case, a crash between twg creating the
-            // card and this event ever landing.
+            // twg jira workitem create — is what catches the harder case, a crash between twg
+            // creating the card and this event ever landing.
             if (task.ExternalReference is { } existing)
             {
                 throw new DomainConflictException(

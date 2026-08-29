@@ -63,13 +63,18 @@ public enum TwgAuthProbeResult
 /// project and first-class <c>--summary</c>/<c>--description</c>; <c>update</c> takes
 /// <c>--id</c> rather than a positional key. <c>--output json</c> never prints raw JSON to
 /// stdout by itself — every call still carries a YAML summary envelope naming a temp file that
-/// holds the real payload, which is what <see cref="ExtractFirstKey"/> reads. If a later twg
-/// version changes either shape, this file — and only this file — is where the adjustment
-/// belongs; every caller above it speaks in <see cref="JiraWritePayload"/> and
+/// holds the real payload, which is what <see cref="ExtractFirstKey"/> reads. Every call also
+/// names <c>--site</c> explicitly and, wherever it carries a description or a comment body,
+/// <c>--description-format</c>/<c>--body-format</c> — twg's own defaults for both (whatever
+/// ambient tenant the machine resolves to, and HTML) are the wrong default for a payload composed
+/// against a specific registered connection in whatever text a project's own card-authoring
+/// skills produce, which is markdown more often than not (independent pre-PR review, cycle 2). If
+/// a later twg version changes either shape, this file — and only this file — is where the
+/// adjustment belongs; every caller above it speaks in <see cref="JiraWritePayload"/> and
 /// <see cref="TwgWriteResult"/>, never in twg's own flags.
 /// </para>
 /// </summary>
-public sealed class TwgJiraExecutor(ProcessRunner? runner = null)
+public sealed class TwgJiraExecutor(ProcessRunner? runner = null, Uri? site = null)
 {
     public const string Binary = "twg";
 
@@ -95,6 +100,20 @@ public sealed class TwgJiraExecutor(ProcessRunner? runner = null)
     private const string ProbeJql = "created > \"2999-01-01\"";
 
     private readonly ProcessRunner runner = runner ?? ExternalProcess.Runner;
+
+    /// <summary>
+    /// The tenant every call this executor makes is told to target explicitly, rather than left to
+    /// whatever <c>twg</c>'s own ambient <c>auth.conf</c>/<c>TWG_SITE</c> ends up resolving to on the
+    /// machine that runs it. <c>twg --help</c> documents <c>-s, --site &lt;site&gt;</c> as
+    /// "auto-loaded" precisely because a bare install needs no flag at all — but a registered Jira
+    /// connection (<c>h9k connection add jira --site …</c>) names a specific tenant for a reason,
+    /// and without this, every write and its own read-back verification silently ran against the
+    /// machine's ambient tenant instead, so a mismatch between the two would still read back as
+    /// "verified" (independent pre-PR review, cycle 2). Null is the one honest exception: a caller
+    /// with no resolvable connection (an install probing before one is registered) has nothing
+    /// truer to hand this than twg's own ambient default.
+    /// </summary>
+    private readonly Uri? site = site;
 
     /// <summary>
     /// The physical half of the dedup gate: does a card already carry this task's marker. Called
@@ -133,7 +152,8 @@ public sealed class TwgJiraExecutor(ProcessRunner? runner = null)
 
         List<string> arguments =
             ["jira", "workitem", "create", "--space", project.Value, "--type", payload.WorkItemType ?? string.Empty,
-             "--description", description, "--output", "json", "--output-summary", "stats"];
+             "--description", description, "--description-format", payload.EffectiveFormat,
+             "--output", "json", "--output-summary", "stats"];
         if (summary.IsNotBlank())
         {
             arguments.Add("--summary");
@@ -146,8 +166,8 @@ public sealed class TwgJiraExecutor(ProcessRunner? runner = null)
         string key = ExtractFirstKey(result.StandardOutput)
             ?? throw new TwgExecutionException(
                 TwgFailureKind.Other,
-                "twg jira create exited successfully but printed no card key, so nothing here can be "
-                + $"verified: {Head(result.StandardOutput)}");
+                "twg jira workitem create exited successfully but printed no card key, so nothing here can "
+                + $"be verified: {Head(result.StandardOutput)}");
 
         return await VerifyAsync(key, workingDirectory, cancellationToken, "created", confirmsExistenceOnly: false);
     }
@@ -179,6 +199,8 @@ public sealed class TwgJiraExecutor(ProcessRunner? runner = null)
         {
             arguments.Add("--description");
             arguments.Add(description);
+            arguments.Add("--description-format");
+            arguments.Add(payload.EffectiveFormat);
         }
 
         AppendFields(arguments, fields);
@@ -192,11 +214,11 @@ public sealed class TwgJiraExecutor(ProcessRunner? runner = null)
     /// existence only, not the comment text itself.
     /// </summary>
     public async Task<TwgWriteResult> CommentAsync(
-        string issueKey, string comment, string workingDirectory, CancellationToken cancellationToken)
+        string issueKey, string comment, string format, string workingDirectory, CancellationToken cancellationToken)
     {
         List<string> arguments =
             ["jira", "workitem", "comment", "create", "--issue-id", issueKey, "--body", comment,
-             "--output", "json", "--output-summary", "stats"];
+             "--body-format", format, "--output", "json", "--output-summary", "stats"];
         await RunAsync(arguments, workingDirectory, cancellationToken);
         return await VerifyAsync(issueKey, workingDirectory, cancellationToken, "commented on", confirmsExistenceOnly: true);
     }
@@ -302,10 +324,16 @@ public sealed class TwgJiraExecutor(ProcessRunner? runner = null)
     private async Task<ProcessResult> RunAsync(
         IReadOnlyList<string> arguments, string workingDirectory, CancellationToken cancellationToken)
     {
+        // --site is a root-level twg option, accepted interspersed with a subcommand's own flags
+        // (verified against an installed twg), so appending it here rather than threading it
+        // through every argument list above is exactly the same "one file, one adjustment" seam
+        // this class already keeps for twg's own grammar.
+        IReadOnlyList<string> withSite = site is null ? arguments : [.. arguments, "--site", site.Host];
+
         ProcessResult result;
         try
         {
-            result = await runner(Binary, arguments, workingDirectory, cancellationToken);
+            result = await runner(Binary, withSite, workingDirectory, cancellationToken);
         }
         // A long composed description or comment can push the whole command line (every field is
         // passed inline, per twg's own grammar) over the OS's own limit — Windows'

@@ -66,6 +66,34 @@ public sealed class TaskJiraWriteTests
     }
 
     [Fact]
+    public void An_unrecognized_text_format_is_refused_before_anything_is_recorded()
+    {
+        JiraWritePayload payload = new(WorkItemType: "Dev Task", Fields: null, Comment: null, Format: "wiki");
+
+        Action validate = () => payload.Validate(JiraWriteOperation.Create);
+
+        validate.Should().Throw<DomainValidationException>().WithMessage("*not a text format twg accepts*");
+    }
+
+    [Fact]
+    public void A_payload_naming_no_format_defaults_to_markdown()
+    {
+        JiraWritePayload payload = new(WorkItemType: "Dev Task", Fields: null, Comment: null);
+
+        payload.EffectiveFormat.Should().Be("markdown");
+    }
+
+    [Fact]
+    public void A_payloads_named_format_round_trips_through_json()
+    {
+        JiraWritePayload payload = new(WorkItemType: "Dev Task", Fields: null, Comment: "note", Format: "plain");
+
+        JiraWritePayload roundTripped = JiraWritePayload.FromJson(payload.ToJson());
+
+        roundTripped.EffectiveFormat.Should().Be("plain");
+    }
+
+    [Fact]
     public void A_create_is_requested_with_no_target_key_because_it_has_none_yet()
     {
         TaskAggregate task = Draft();
