@@ -55,20 +55,6 @@ internal static class AttentionComposer
             return TaskAttention.None;
         }
 
-        // A Jira write is stuck on an expired or missing twg login (Brian's design, 2026-08-28) —
-        // a handled, expected state rather than a crash, and one the operator clears in their own
-        // terminal rather than through an h9k command. Checked ahead of the ordinary lifecycle
-        // arms below because the write itself carries no lifecycle state of its own: a task could
-        // otherwise be Queued, Done, or anything else while a closeout comment sits pending on it,
-        // and a row with nothing else amiss would report no attention at all.
-        if (task.PendingJiraWriteIsAuthFailure)
-        {
-            return new TaskAttention(
-                AttentionLevel.NeedsYou,
-                Reason(task.PendingJiraWriteFailureReason, "a Jira write is pending and could not authenticate"),
-                "twg login");
-        }
-
         // An agent asked a question and stopped. The ask-a-human loop records the question but
         // no command answers it yet, so the lever is the one that shows it rather than one the
         // platform does not have (never advise a lever the platform will refuse).
@@ -110,6 +96,21 @@ internal static class AttentionComposer
         {
             return new TaskAttention(AttentionLevel.NeedsYou, FailureCause(task, run),
                 $"h9k task retry {id} --reason \"…\" (or resolve, or abandon)");
+        }
+
+        // A Jira write is stuck on an expired or missing twg login (Brian's design, 2026-08-28) —
+        // a handled, expected state rather than a crash, and one the operator clears in their own
+        // terminal rather than through an h9k command. Checked after every park and failure arm
+        // above rather than ahead of them (independent pre-PR review, cycle 1): the write carries
+        // no lifecycle state of its own, so it must not be shadowed when nothing else is amiss —
+        // but a stuck write is never the reason a run is parked or a task failed, and putting it
+        // first hid whichever of those actually stopped the work behind "run twg login" instead.
+        if (task.PendingJiraWriteIsAuthFailure)
+        {
+            return new TaskAttention(
+                AttentionLevel.NeedsYou,
+                Reason(task.PendingJiraWriteFailureReason, "a Jira write is pending and could not authenticate"),
+                "twg login");
         }
 
         // A blocker observed dead will never close out on its own, so the task cannot unblock
