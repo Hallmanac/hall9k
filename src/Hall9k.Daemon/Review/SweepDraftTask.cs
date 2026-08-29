@@ -63,11 +63,17 @@ public static partial class SweepDraftTask
 
     private const string NoLocationMarker = "(no location stated)";
 
-    [GeneratedRegex(@"^\s*-\s*Run\s+(?<runId>[0-9a-fA-F-]{36}),\s*cycle\s+(?<cycle>\d+)\s*→\s*(?<path>.+)$")]
+    [GeneratedRegex(
+        @"^\s*-\s*Run\s+(?<runId>[0-9a-fA-F-]{36}),\s*cycle\s+(?<cycle>\d+),\s*at\s+(?<location>.+?)\s*→\s*(?<path>.+)$")]
     private static partial Regex EvidenceLine();
 
-    /// <summary>One item's provenance: which run and cycle observed it, and where that run wrote the full findings.</summary>
-    private sealed record Evidence(Guid RunId, int Cycle, string FindingsFile);
+    /// <summary>
+    /// One item's provenance: which run and cycle observed it, where that run wrote the full
+    /// findings, and the sanitized location it was stated at — carried here (not just on
+    /// <see cref="Item"/>) so a repeat guard can tell "the same finding replayed" from "a
+    /// different finding that happens to land on the same item" (cycle-4 conformance review).
+    /// </summary>
+    private sealed record Evidence(Guid RunId, int Cycle, string FindingsFile, string Location);
 
     /// <summary>One defect on the sweep: the place it was found, how it was graded, and every time it was seen.</summary>
     private sealed record Item(string Location, ReviewSeverity Severity, string FindingText, IReadOnlyList<Evidence> Evidence);
@@ -96,22 +102,27 @@ public static partial class SweepDraftTask
         List<Item> merged = [.. items];
         foreach (SweepFindingRoute route in routes)
         {
-            Evidence evidence = new(route.RunId, route.Cycle, route.FindingsFile);
+            string location = SanitizeLocation(route.Finding.Location);
+            Evidence evidence = new(route.RunId, route.Cycle, route.FindingsFile, location);
             int matchIndex = merged.FindIndex(
-                item => ReviewFindingLocations.SamePlace(item.Location, route.Finding.Location));
+                item => ReviewFindingLocations.SamePlace(item.Location, location));
             if (matchIndex < 0)
             {
-                merged.Add(new Item(
-                    route.Finding.Location, route.Finding.Severity, route.Finding.Text, [evidence]));
+                merged.Add(new Item(location, route.Finding.Severity, route.Finding.Text, [evidence]));
                 continue;
             }
 
             Item existing = merged[matchIndex];
-            if (existing.Evidence.Any(entry => entry.RunId == evidence.RunId && entry.Cycle == evidence.Cycle))
+            if (existing.Evidence.Any(entry =>
+                entry.RunId == evidence.RunId && entry.Cycle == evidence.Cycle && entry.Location == evidence.Location))
             {
-                // The exact same run and cycle already recorded this item — a resumed daemon
-                // re-processing a batch whose write landed but whose acknowledgement did not, for
-                // instance. Recording it twice would make one observation read as two.
+                // The exact same run, cycle, and location already recorded this item — a resumed
+                // daemon re-processing a batch whose write landed but whose acknowledgement did
+                // not, for instance. Recording it twice would make one observation read as two.
+                // Location is part of the key, not just run and cycle, because SamePlace is not
+                // transitive: two distinct findings from the same run and cycle can each match
+                // this item without matching each other (cycle-4 conformance review), and both
+                // deserve their own evidence entry.
                 continue;
             }
 
@@ -120,6 +131,21 @@ public static partial class SweepDraftTask
 
         return merged;
     }
+
+    /// <summary>
+    /// A finding's <c>Location</c> defused before it becomes part of the sweep's structure — a
+    /// bare "### " heading, outside every fence the rest of an item lives inside (cycle-4
+    /// adversarial review). Folded onto one line and closing-keyword-defused the way
+    /// <see cref="ReviewDraftBugTask"/> already treats the identical field, then every backtick
+    /// backslash-escaped — CommonMark reads <c>\`</c> as a literal character rather than a span
+    /// delimiter — so a stray one cannot pair with a later backtick run and swallow everything
+    /// between them into an unintended code span. A heading carries more risk than the sibling's
+    /// inline prose does: its corruption can reach past its own paragraph into the rest of the
+    /// document.
+    /// </summary>
+    private static string SanitizeLocation(string location) =>
+        RelayedText.WithoutClosingKeywords(RelayedText.OneLine(location).Trim())
+            .Replace("`", "\\`", StringComparison.Ordinal);
 
     private static string Render(IReadOnlyList<Item> items)
     {
@@ -168,8 +194,9 @@ public static partial class SweepDraftTask
             body.AppendLine("- Evidence:");
             foreach (Evidence evidence in item.Evidence)
             {
+                string evidenceLocation = evidence.Location.IsBlank() ? NoLocationMarker : evidence.Location;
                 body.AppendLine(
-                    $"  - Run {evidence.RunId}, cycle {evidence.Cycle} → {CurrentFindingsFile(evidence)}");
+                    $"  - Run {evidence.RunId}, cycle {evidence.Cycle}, at {evidenceLocation} → {CurrentFindingsFile(evidence)}");
             }
         }
 
@@ -355,7 +382,10 @@ public static partial class SweepDraftTask
                     && Guid.TryParse(match.Groups["runId"].Value, out Guid runId)
                     && int.TryParse(match.Groups["cycle"].Value, out int parsedCycle))
                 {
-                    evidence.Add(new Evidence(runId, parsedCycle, match.Groups["path"].Value));
+                    string evidenceLocation = match.Groups["location"].Value;
+                    evidence.Add(new Evidence(
+                        runId, parsedCycle, match.Groups["path"].Value,
+                        evidenceLocation == NoLocationMarker ? string.Empty : evidenceLocation));
                 }
             }
         }
