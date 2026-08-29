@@ -62,7 +62,8 @@ named grouping of tasks — its own id, title, and Open/Closed state — with op
 membership: a task joins or leaves at `h9k task add --epic` / `h9k task revise --epic`/
 `--clear-epic`, must share the epic's project, and only an Open epic accepts new members. Closing
 is always an explicit human act with a reason, never automatic, and there is no `reopen` yet. Jira
-linking is identity-only, the same discipline a task's own `link-jira` follows.
+linking is identity-only, stored verbatim, and unlike a task's own `link-jira`, never read back
+against Jira.
 
 ### Ideas
 

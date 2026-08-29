@@ -75,11 +75,11 @@ that moment and never re-checked. Acceptance criteria are never read out of a de
 them with `--criteria` or at the prompt.
 
 `--file task.md` reads a whole task from a markdown file: a minimal `---` frontmatter block
-(project, type, objective, criteria, an optional model, optional blocked-by) followed by a body
-that becomes the agent context. It is deliberately not YAML, since a handful of known keys does
-not warrant the dependency. The numbered [`backlog/`](../backlog) files are written in that
-format; the `IDEA-` notes beside them are earlier-stage prose with no frontmatter, so they are
-read and authored from rather than fed to `--file`.
+(project, type, objective, criteria, an optional model, optional blocked-by, optional epic)
+followed by a body that becomes the agent context. It is deliberately not YAML, since a handful
+of known keys does not warrant the dependency. The numbered [`backlog/`](../backlog) files are
+written in that format; the `IDEA-` notes beside them are earlier-stage prose with no
+frontmatter, so they are read and authored from rather than fed to `--file`.
 
 ### Pull-request review
 
@@ -102,8 +102,9 @@ Open/Closed state. Membership is optional and no-ceremony — a task joins or le
 command — and must belong to the same project as the epic and target an Open one; a closed or
 another project's epic is refused. `close` is the only way an epic ends, always an explicit human
 act with a reason; there is no `reopen` yet, and nothing closes an epic automatically, including
-its last member task closing out. `link-jira` is identity-only, the same as a task's own
-`link-jira`: a key or URL stored verbatim, never read from or written to Jira.
+its last member task closing out. `link-jira` is identity-only: a key or URL stored verbatim,
+never read from or written to Jira — unlike a task's own `link-jira`, which reads the key back
+through the registered connection before recording it.
 
 ### Recovery
 
