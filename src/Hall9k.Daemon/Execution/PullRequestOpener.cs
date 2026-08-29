@@ -50,17 +50,22 @@ public sealed class PullRequestOpener(
             // first run adopted after another run completed the task would get wrong.
             bool followUp = run.IsFollowUp;
 
-            // A follow-up may have rewritten the branch's history (narrative commit style:
-            // fixups folded into their owning commits, Decisions Log #26), so its push
-            // must be --force-with-lease: it lands the rebase yet still refuses a tip this
-            // node has not fetched (a human or another node moved the branch). Never plain
-            // --force. A failed lease fails the run honestly below — no blind retry — and
-            // h9k pr resolve is the requeue lever. Origin incident (2026-08-17): the first
-            // two automatic follow-up runs rebased per the authored-history rule and this
-            // plain push rejected both, stranding completed, gated work in the worktrees.
-            string[] pushArguments = followUp
-                ? ["push", "--force-with-lease", "origin", run.Branch]
-                : ["push", "origin", run.Branch];
+            // Always --force-with-lease, never a plain push and never plain --force. A
+            // follow-up may have rewritten the branch's history (narrative commit style:
+            // fixups folded into their owning commits, Decisions Log #26), and --force-with-
+            // lease lands that rebase while still refusing a tip this node has not fetched (a
+            // human or another node moved the branch). A first-time push is unaffected: with
+            // no remote-tracking ref to protect, the lease is satisfied trivially (verified:
+            // `git push --force-with-lease` creates a brand-new remote branch exactly like a
+            // plain push does) — which matters because `h9k task deliver` now publishes an
+            // interactive claim's branch itself before this run reaches here, so `IsFollowUp`
+            // is no longer a reliable proxy for "does a remote copy already exist" (conformance
+            // review, cycle 1). A failed lease fails the run honestly below — no blind retry —
+            // and h9k pr resolve is the requeue lever. Origin incident (2026-08-17): the first
+            // two automatic follow-up runs rebased per the authored-history rule and a
+            // conditional plain push rejected both, stranding completed, gated work in the
+            // worktrees.
+            string[] pushArguments = ["push", "--force-with-lease", "origin", run.Branch];
             await RunInWorktreeAsync(run.WorktreePath, "git", pushArguments, cancellationToken);
             (string? pullRequestUrl, int pullRequestNumber) = task.PullRequestUrl is { } existingUrl
                 ? (existingUrl, PullRequestUrls.ParseNumber(existingUrl))

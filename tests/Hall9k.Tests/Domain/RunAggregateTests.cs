@@ -55,7 +55,7 @@ public sealed class RunAggregateTests
         run.State.Should().Be(RunState.Dispatched);
 
         Guid claudeSessionId = DomainId.New();
-        run.Apply(new InteractiveSessionStarted(id, claudeSessionId, Now));
+        run.Apply(new InteractiveSessionStarted(id, claudeSessionId, Now, ProcessId: 4242));
 
         run.State.Should().Be(RunState.Running);
         run.InteractiveClaudeSessionId.Should().Be(claudeSessionId);
@@ -77,7 +77,7 @@ public sealed class RunAggregateTests
             SessionId: id, WorktreePath: "/wt/x", Branch: "task/x",
             ExecutorMode.Subscription, Now));
         Guid claudeSessionId = DomainId.New();
-        run.Apply(new InteractiveSessionStarted(id, claudeSessionId, Now));
+        run.Apply(new InteractiveSessionStarted(id, claudeSessionId, Now, ProcessId: 4242));
 
         run.Apply(new InteractiveSessionEnded(
             id, claudeSessionId, Now, Turns: null, InputTokens: null, OutputTokens: null, CostUsd: null));
@@ -88,7 +88,7 @@ public sealed class RunAggregateTests
 
         // Re-entry: h9k task work launches a fresh session on the same run.
         Guid secondSessionId = DomainId.New();
-        run.Apply(new InteractiveSessionStarted(id, secondSessionId, Now));
+        run.Apply(new InteractiveSessionStarted(id, secondSessionId, Now, ProcessId: 4343));
         run.Apply(new InteractiveSessionEnded(
             id, secondSessionId, Now, Turns: null, InputTokens: 1200, OutputTokens: 400, CostUsd: 0.5m));
 

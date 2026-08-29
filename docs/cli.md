@@ -108,6 +108,18 @@ through the registered connection before recording it. `h9k task list --epic <id
 epic's member tasks; `h9k epic show <id>` answers the same give-me-all-tasks-in-this-epic question
 with each member's state already composed.
 
+### Working a task interactively
+
+`h9k task work | verify | deliver | handback | release`
+
+An operator can work a Queued task in their own terminal instead of dispatching it headless:
+`work` claims it, cuts the same branch/worktree/prompt headless dispatch would, and opens a
+regular interactive Claude Code session — the claim is held by the human, not a process, so
+closing the terminal is a normal way to leave and re-running `work` re-enters the same worktree.
+From there, `verify` runs the project's gates on demand, `deliver` pushes the branch and hands the
+claim into the standard delivery pipeline, `handback` releases the claim to a headless agent
+partway through (resuming the branch), and `release` gives an untouched claim back to the queue.
+
 ### Recovery
 
 `h9k task retry | resolve | abandon` · `h9k pr resolve` · `h9k review resolve`

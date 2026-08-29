@@ -59,6 +59,11 @@ public sealed class TaskDeliverCommand : Hall9kAsyncCommand<TaskDeliverCommand.S
         ProjectDetails project = await session.LoadAsync<ProjectDetails>(task.ProjectId, cancellationToken)
             ?? throw new DomainNotFoundException($"Task {taskId}'s project no longer exists.");
 
+        // An operator's own session, still attached in another terminal, may still be editing
+        // this worktree — pushing and handing it into the standard pipeline out from under it
+        // risks delivering a tree mid-edit (adversarial review, cycle 1).
+        InteractiveSessionLiveness.EnsureNotAttachedElsewhere(run, taskId, "deliver");
+
         if (run.State != RunState.Dispatched && run.State != RunState.Running)
         {
             throw new DomainConflictException(

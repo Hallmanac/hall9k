@@ -72,9 +72,10 @@ internal static class InteractiveWorktreeGit
 
     /// <summary>
     /// The branch's first push: plain, never force — a fresh branch cut by h9k task work has no
-    /// remote history to overwrite, unlike a follow-up's rewritten one (which the daemon's own
-    /// PullRequestOpener pushes with --force-with-lease, after the run this branch hands into
-    /// re-verifies).
+    /// remote history to overwrite. Any later rewrite (the review loop's own fixup/rebase
+    /// doctrine, once this branch hands into the standard pipeline) is pushed by the daemon's own
+    /// PullRequestOpener, unconditionally with --force-with-lease so it always protects a tip
+    /// this push already published.
     /// </summary>
     public static async Task<(bool Succeeded, string Error)> PushAsync(
         string worktreePath, string branch, CancellationToken cancellationToken)

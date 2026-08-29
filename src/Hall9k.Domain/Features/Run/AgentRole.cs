@@ -22,6 +22,12 @@ public sealed record AgentRole
     public static readonly AgentRole Synthesis = new("Synthesis");
     public static readonly AgentRole Refinement = new("Refinement");
     /// <summary>
+    /// An operator's own attached Claude Code session (h9k task work), not a spawned agent —
+    /// its own role so a reader can tell an interactive claim's process from a headless one's on
+    /// <see cref="Projections.RunDetails.ActiveSessions"/> rather than conflating the two under Build.
+    /// </summary>
+    public static readonly AgentRole Interactive = new("Interactive");
+    /// <summary>
     /// Writes a task up as a card in an external tracker (backlog 18). Its own role because it
     /// is the one session that writes nothing to the repository and reads almost none of it: its
     /// work is the project's card-authoring skill and one <c>h9k task write-jira</c> command at
