@@ -228,21 +228,21 @@ public sealed class InstallCommand : Hall9kAsyncCommand<InstallCommand.Settings>
         }
         catch (InvalidOperationException exception)
         {
-            // The one failure SwapIntoPlace can throw on Windows: a lock stronger than a
-            // running module's own share-delete access (an antivirus scan holding a file
-            // exclusively), reported instead of an unhandled IOException so the operator
-            // gets a sentence instead of a stack trace (origin incident: exactly that
-            // stack trace, Brian's first real Windows update). SwapFilesIntoPlace retires
-            // every conflicting file before placing any of them, so a lock that surfaces
-            // during retirement rolls the whole VERSION SWAP back and every file that
-            // retirement touched is restored under its original name; a lock or I/O failure
-            // that instead surfaces while placing (every name already vacated by then) can
-            // still leave bin with a mix of old and new files, but never with a file missing
-            // under both names. RemoveStaleFiles only runs once both phases have already
-            // succeeded, so either failure means bin still holds every file the old release
-            // shipped, exactly as this method left it — the messages below describe only what
-            // SwapFilesIntoPlace itself did or did not do, which on this path is bin's whole
-            // condition.
+            // What SwapIntoPlace can throw on Windows, reported instead of an unhandled
+            // IOException so the operator gets a sentence instead of a stack trace (origin
+            // incident: exactly that stack trace, Brian's first real Windows update): a lock
+            // stronger than a running module's own share-delete access (an antivirus scan
+            // holding a file exclusively) surfacing while retiring a conflicting file or while
+            // placing a staged one, or a directory junction, symlink, file, or directory
+            // conflicting with what staging ships that could not be cleared before either phase
+            // started. All three roll back completely — a lock during retirement undoes every
+            // retirement already made; a lock during placement undoes every placement AND every
+            // retirement already made, exactly as fully; and an unclearable conflict is caught
+            // before anything is retired or placed at all — so however this throws, bin still
+            // holds every file the old release shipped, exactly as this method left it.
+            // RemoveStaleFiles only runs once every phase has fully succeeded, so it never sees
+            // a partial merge either. The messages below describe only what SwapFilesIntoPlace
+            // itself did or did not do, which on this path is bin's whole condition.
             await Console.Error.WriteLineAsync(exception.Message);
             return ExitCodes.Error;
         }
@@ -863,11 +863,13 @@ public sealed class InstallCommand : Hall9kAsyncCommand<InstallCommand.Settings>
     /// and deleted nothing, so bin is left exactly at the old version rather than a mix in every
     /// case but that one. Phase two only starts once every retirement in phase one has
     /// succeeded, so every name it moves a staged file into is already vacated and this
-    /// essentially cannot fail; if it somehow still does, whatever this call had already placed
-    /// stays on the new version and everything it had not yet reached is restored to the version
-    /// it retired aside — so no file this call touches is ever left present under neither name,
-    /// even though a failure here (unlike one in phase one) can still leave bin with a genuine
-    /// mix of old and new files. Once every file is placed, every retiree gets one immediate
+    /// essentially cannot fail; if it somehow still does, everything this call had already
+    /// placed is moved back to the staging path it came from (<see
+    /// cref="RollBackPlacedFiles"/>) before every retirement is restored the same way phase
+    /// one's own failure restores them (<see cref="RestoreRetiredPairs"/>) — so a phase-two
+    /// failure rolls back exactly as completely as a phase-one failure does, and bin is left at
+    /// the old version in both cases rather than a mix in either one. Once every file is placed,
+    /// every retiree gets one immediate
     /// reclaim attempt, quietly: on a self-contained publish the running process (this very
     /// h9k, and h9kd if it is up) has every one of its own loaded assemblies mapped, not just
     /// its main executable, so staying locked through this reclaim is the ordinary outcome for
@@ -916,19 +918,24 @@ public sealed class InstallCommand : Hall9kAsyncCommand<InstallCommand.Settings>
             }
         }
 
+        List<(string Source, string Destination)> placed = [];
         foreach ((string source, string destination) in files)
         {
             try
             {
                 File.Move(source, destination);
+                placed.Add((source, destination));
             }
             catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
             {
+                RollBackPlacedFiles(placed);
                 RestoreRetiredPairs(retired);
                 throw new InvalidOperationException(
                     $"Could not finish installing {destination} — {exception.Message} Run h9k update again "
-                        + "once that is resolved; anything already installed by this run is left on the new "
-                        + "version and everything else on the version it started with.",
+                        + "once that is resolved; bin is unchanged by this run's version swap, short of the "
+                        + "vanishingly rare case where undoing an earlier placement or retirement in this same "
+                        + "run hits a second, independent lock of its own — those files are cleaned up "
+                        + "automatically by a future install or update.",
                     exception);
             }
         }
@@ -962,7 +969,18 @@ public sealed class InstallCommand : Hall9kAsyncCommand<InstallCommand.Settings>
     /// did) reopened; clearing it here instead, before <see cref="Directory.CreateDirectory"/> or
     /// <see cref="File.Move"/> ever see the entry, restores the same guarantee without moving the
     /// genuinely-stale cleanup back ahead of a swap that might still fail (origin: cycle-5
-    /// pre-PR review).</summary>
+    /// pre-PR review). A conflict <see cref="ClearConflictingDestinationEntry"/> cannot actually
+    /// clear (an undeletable junction, or a locked file or directory sitting where staging's own
+    /// kind belongs) refuses the merge for that one entry with an <see
+    /// cref="InvalidOperationException"/> rather than walking through it — the entry is still a
+    /// conflict, and neither <see cref="Directory.CreateDirectory"/> nor <see cref="File.Move"/>
+    /// is safe to let discover that on their own (origin: cycle-1 pre-PR adversarial review,
+    /// which traced the swallowed-failure case through to writes landing outside <c>bin</c> via
+    /// an unclearable junction, and to a raw, unhandled <see cref="IOException"/> from <see
+    /// cref="Directory.CreateDirectory"/> on the type-mismatch case). Thrown here, before
+    /// anything in <paramref name="destinationDirectory"/> has been retired or placed, so bin is
+    /// left exactly as this run found it, the same guarantee phase one's own failure
+    /// provides.</summary>
     [SupportedOSPlatform("windows")]
     private static void CollectFilePairs(
         string sourceDirectory,
@@ -970,14 +988,14 @@ public sealed class InstallCommand : Hall9kAsyncCommand<InstallCommand.Settings>
         List<(string Source, string Destination)> files,
         HashSet<string> directories)
     {
-        ClearConflictingDestinationEntry(destinationDirectory, isDirectory: true);
+        RequireConflictCleared(destinationDirectory, isDirectory: true);
         Directory.CreateDirectory(destinationDirectory);
         directories.Add(destinationDirectory);
 
         foreach (string sourceFile in Directory.EnumerateFiles(sourceDirectory))
         {
             string destinationFile = Path.Combine(destinationDirectory, Path.GetFileName(sourceFile));
-            ClearConflictingDestinationEntry(destinationFile, isDirectory: false);
+            RequireConflictCleared(destinationFile, isDirectory: false);
             files.Add((sourceFile, destinationFile));
         }
 
@@ -989,6 +1007,24 @@ public sealed class InstallCommand : Hall9kAsyncCommand<InstallCommand.Settings>
                 files,
                 directories);
         }
+    }
+
+    /// <summary>Calls <see cref="ClearConflictingDestinationEntry"/> and throws when it reports
+    /// the conflict is still there — see <see cref="CollectFilePairs"/>'s own doc comment for
+    /// why refusing beats proceeding through an unresolved conflict.</summary>
+    [SupportedOSPlatform("windows")]
+    private static void RequireConflictCleared(string destinationPath, bool isDirectory)
+    {
+        if (ClearConflictingDestinationEntry(destinationPath, isDirectory))
+        {
+            return;
+        }
+
+        throw new InvalidOperationException(
+            $"Could not finish updating {destinationPath} — an existing junction, symlink, file, or "
+                + "directory there conflicts with what the new version ships and could not be removed "
+                + "(something still has it locked). Close whatever holds it and run h9k update again; "
+                + "bin is unchanged by this run's version swap.");
     }
 
     /// <summary>Clears whatever <paramref name="destinationPath"/> currently holds when it
@@ -1007,37 +1043,72 @@ public sealed class InstallCommand : Hall9kAsyncCommand<InstallCommand.Settings>
     /// throws on the former and <see cref="File.Move"/> throws on the latter.</item>
     /// </list>
     /// A destination that does not exist yet, or already matches staging's own kind, is left
-    /// alone.</summary>
+    /// alone. Returns whether <paramref name="destinationPath"/> is actually clear of a conflict
+    /// once this call returns — <see langword="false"/> means whatever was there is still there,
+    /// most likely locked, and <see cref="RequireConflictCleared"/> is what turns that into a
+    /// refused merge instead of a walk-through.</summary>
     [SupportedOSPlatform("windows")]
-    private static void ClearConflictingDestinationEntry(string destinationPath, bool isDirectory)
+    private static bool ClearConflictingDestinationEntry(string destinationPath, bool isDirectory)
     {
         if (new DirectoryInfo(destinationPath).LinkTarget is not null)
         {
-            TryDeleteDirectoryRecursively(destinationPath);
-            return;
+            return TryDeleteDirectoryRecursively(destinationPath);
         }
 
         if (isDirectory && File.Exists(destinationPath))
         {
-            TryDeleteFile(destinationPath, report: false);
+            return TryDeleteFile(destinationPath, report: false);
         }
-        else if (!isDirectory && Directory.Exists(destinationPath))
+
+        if (!isDirectory && Directory.Exists(destinationPath))
         {
-            TryDeleteDirectoryRecursively(destinationPath);
+            return TryDeleteDirectoryRecursively(destinationPath);
         }
+
+        return true;
     }
 
     /// <summary>Restores every pair <see cref="SwapFilesIntoPlace"/> retired this call back to
-    /// its original name — a full rollback when phase one fails partway, or the identical call
-    /// applied to a phase-two failure, where <see cref="RestoreRetiredFile"/>'s own
-    /// already-placed check makes it a no-op for every file that made it onto the new version
-    /// before the failure.</summary>
+    /// its original name — a full rollback when phase one fails partway, or the second half of
+    /// a phase-two failure's rollback (see <see cref="RollBackPlacedFiles"/> for the first half),
+    /// where <see cref="RestoreRetiredFile"/>'s own already-placed check is what makes this a
+    /// no-op for a pair <see cref="RollBackPlacedFiles"/> has not reached yet.</summary>
     [SupportedOSPlatform("windows")]
     private static void RestoreRetiredPairs(List<(string Original, string Retired)> pairs)
     {
         foreach ((string original, string retiredPath) in pairs)
         {
             RestoreRetiredFile(retiredPath, original);
+        }
+    }
+
+    /// <summary>The first half of a phase-two failure's rollback in <see
+    /// cref="SwapFilesIntoPlace"/>: moves every file phase two had already placed on the new
+    /// version back to the staging path it came from, so the retirees <see
+    /// cref="RestoreRetiredPairs"/> restores immediately after are not restored underneath a
+    /// destination phase two already overwrote — without this, an already-placed file's
+    /// original stayed a permanent no-op in <see cref="RestoreRetiredFile"/> and bin was left a
+    /// genuine mix of old and new files, which is the gap the cycle-1 pre-PR review found.
+    /// Best-effort and silent on failure, matching <see cref="RestoreRetiredFile"/>'s own
+    /// reasoning: the caller is already mid-throw and reports the original cause, and a move
+    /// that cannot complete (a second, independent lock on top of the one that triggered the
+    /// rollback) leaves that one file on the new version rather than back in staging — staging
+    /// is not deleted on this failure path, so it is still there for a future install or update
+    /// to clean up regardless.</summary>
+    [SupportedOSPlatform("windows")]
+    private static void RollBackPlacedFiles(List<(string Source, string Destination)> placed)
+    {
+        foreach ((string source, string destination) in placed)
+        {
+            try
+            {
+                File.Move(destination, source);
+            }
+            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+            {
+                // Left on the new version at `destination` — see this method's own doc
+                // comment for why that is the one case this rollback does not fully hold.
+            }
         }
     }
 
@@ -1121,9 +1192,13 @@ public sealed class InstallCommand : Hall9kAsyncCommand<InstallCommand.Settings>
     /// rather than let one locked file abort removing everything else the old subdirectory
     /// held. <see cref="RemoveStaleFiles"/> already keeps a top-level directory symlink or
     /// junction out of this call entirely, but a symlink or junction nested deeper (reached via
-    /// the recursive call below) needs the identical guard, so it is checked again here.</summary>
+    /// the recursive call below) needs the identical guard, so it is checked again here. Returns
+    /// whether <paramref name="destinationDirectory"/> is actually gone once this call returns —
+    /// <see cref="RemoveStaleFiles"/>'s own two call sites ignore it (a locked leftover there is
+    /// simply left for a later sweep), but <see cref="ClearConflictingDestinationEntry"/> needs
+    /// it to know whether the merge can proceed through this path or must refuse instead.</summary>
     [SupportedOSPlatform("windows")]
-    private static void TryDeleteDirectoryRecursively(string destinationDirectory)
+    private static bool TryDeleteDirectoryRecursively(string destinationDirectory)
     {
         if (new DirectoryInfo(destinationDirectory).LinkTarget is null)
         {
@@ -1141,10 +1216,12 @@ public sealed class InstallCommand : Hall9kAsyncCommand<InstallCommand.Settings>
         try
         {
             Directory.Delete(destinationDirectory);
+            return true;
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
         {
             // Not empty — something inside is still locked. Left for a later sweep.
+            return false;
         }
     }
 
@@ -1185,12 +1262,11 @@ public sealed class InstallCommand : Hall9kAsyncCommand<InstallCommand.Settings>
     /// fallback <see cref="RetireDirectory"/> uses for a whole directory — and returns
     /// whichever name it actually used, so the caller can restore it if placement that follows
     /// fails. <paramref name="reportedStuck"/> names every file this run's leading <see
-    /// cref="SweepRetiredFiles"/> already named to the operator individually — the single-stuck-
-    /// file case, where the message actually said which file; the multi-file case names only a
-    /// count, so it contributes nothing to this set, since taking the fallback there would not be
-    /// repeating news the operator already has. Where a name was given, taking the fallback
-    /// because <c>retired</c> is one of those says nothing the operator was not just told, so
-    /// that case stays quiet instead of printing a second line about the same file.</summary>
+    /// cref="SweepRetiredFiles"/> already found still locked, whether that sweep named it to the
+    /// operator individually or only as part of a count — either way, taking the fallback here
+    /// because <c>retired</c> is one of those says nothing the operator has not already been
+    /// told, so that case stays quiet instead of printing a second line about the same
+    /// file.</summary>
     [SupportedOSPlatform("windows")]
     private static string RetireFile(string path, HashSet<string> reportedStuck)
     {
@@ -1229,10 +1305,16 @@ public sealed class InstallCommand : Hall9kAsyncCommand<InstallCommand.Settings>
     /// loaded assemblies is a retiree this sweep cannot yet reclaim, and a "still in use" line
     /// per file would be tens of lines of noise ahead of an update's real output for the ordinary
     /// case of one still-running daemon, not the exceptional one. Returns the full path of every
-    /// file it found still locked when — and only when — it named that file to the operator
-    /// individually (the single-file case; the multi-file case names only a count), so <see
-    /// cref="RetireFile"/> can skip repeating the same "still in use" news a moment later without
-    /// ever suppressing a name the operator was not actually given.</summary>
+    /// file it found still locked, named individually (the single-file case) or only as part of
+    /// the count in the summary line below (the multi-file case) — either way, the operator has
+    /// already been told about it here, so <see cref="RetireFile"/> uses the same set to skip
+    /// printing its own "still in use" line for the exact same file a moment later, whether the
+    /// name behind it was actually given or only counted (origin: cycle-1 pre-PR adversarial
+    /// review — the multi-file case used to return no suppression set at all, so a run with
+    /// dozens of retirees still locked from an earlier update printed this method's one summary
+    /// line followed immediately by one more "still in use" line per retiree from <see
+    /// cref="RetireFile"/>, right back to the wall of noise this method's own summary line exists
+    /// to avoid).</summary>
     [SupportedOSPlatform("windows")]
     private static HashSet<string> SweepRetiredFiles(string bin)
     {
@@ -1250,11 +1332,7 @@ public sealed class InstallCommand : Hall9kAsyncCommand<InstallCommand.Settings>
             default:
                 AnsiConsole.MarkupLineInterpolated(
                     $"[dim]{stillStuck.Count} retired files from an earlier install or update are still in use — they will be cleaned up on the next one.[/]");
-                // The line above names a count, never a file, so RetireFile's own "is still in
-                // use" message for any of these paths would not be repeating news the operator
-                // already has — only the single-file case above actually named one, so only that
-                // case is worth returning as a suppression set.
-                return new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                break;
         }
 
         return stillStuck;
