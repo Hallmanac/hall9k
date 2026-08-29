@@ -1,14 +1,22 @@
 # Hall9k
 
-**Local-first agentic task orchestration.** You write a piece of work down, publish it, and
-assign it. A daemon on your own machine claims it, prepares an isolated git worktree, spawns a
-detached Claude Code session to do the work, runs your build and test gates, puts the diff
-through an independent review loop, and opens a pull request. Then it watches that pull request:
-it dispatches follow-up sessions to answer review threads and fix failing CI, and it tells you
-the one thing left that only you can do. Nothing is hosted. `h9k` is a CLI on your PATH, `h9kd`
-is a background process on your machine, and a Postgres container holds every fact. The point is
-not that agents write code unattended; the point is that you stop being the message bus between
-ten terminals and get to engage on your own schedule.
+**Local-first agentic task orchestration.**
+
+You write a piece of work down, publish it, and assign it. A daemon on your own machine takes it
+from there:
+
+- claims the task and prepares an isolated git worktree
+- spawns a detached Claude Code session to do the work
+- runs your build and test gates
+- puts the diff through an independent review loop
+- opens a pull request, then watches it: follow-up sessions answer review threads and fix failing CI
+- tells you the one thing left that only you can do
+
+Nothing is hosted. `h9k` is a CLI on your PATH, `h9kd` is a background process on your machine,
+and a Postgres container holds every fact.
+
+The point is not that agents write code unattended. The point is that you stop being the message
+bus between ten terminals and get to engage on your own schedule.
 
 The name is the thesis. Hall (the owner) plus HAL 9000: HAL is the AI that escaped supervision,
 and Hall9k exists to keep the human in the loop. The platform never merges a pull request, never
@@ -19,19 +27,79 @@ Hall9k is built by Hall9k. Since the pipeline first ran end to end, every platfo
 been dispatched as a Hall9k task, which is why the documentation below is written from practice
 rather than from intent.
 
-**What it is not.** Not a work tracker: Jira and GitHub already do that, and once work is
-published the external item is the source of truth for its content. Not an agent runtime: Claude
-Code already does that, and Hall9k spawns it rather than reimplementing it. Not a hosted service:
-local-first is the identity, not a stopgap on the way to SaaS.
+**What it is not:**
+
+- **Not a work tracker.** Jira and GitHub already do that, and once work is published the
+  external item is the source of truth for its content.
+- **Not an agent runtime.** Claude Code already does that; Hall9k spawns it rather than
+  reimplementing it.
+- **Not a hosted service.** Local-first is the identity, not a stopgap on the way to SaaS.
 
 ---
 
 ## What it looks like to use
 
-### Write the work down
+Work moves through the system in one flow. Each step below is a section of this document; the
+deeper dives live in [docs/](docs/).
 
-Creation asks for identity, not readiness: a project and an objective. Acceptance criteria are
-what the readiness gate will demand, so it is worth writing them here.
+1. **[Register a project](#register-a-project)** tells Hall9k where your repository lives and
+   builds the project's home directory. Everything else happens inside a registered project.
+2. **[Capture an idea](#capture-an-idea)** records a thought in whatever words you had it in.
+   Discovery is what happens to it next: figuring out what it actually is.
+3. **[Promote it into a task](#promote-an-idea-into-a-task)** is the hinge from thinking to
+   intent. A task can also be written directly when the work arrives already formed.
+4. **[Refine the draft](#refine-the-draft)** until it carries checkable acceptance criteria.
+   A draft is invisible to the dispatcher, so this is the safe place to iterate.
+5. **[Publish it, then assign it](#publish-it-then-assign-it)** is the readiness gate followed
+   by the go signal. Nothing runs until a human does both.
+6. **[Watch the pipeline](#watch-the-pipeline)** as the daemon claims the task, builds, gates,
+   and reviews. `h9k status` tells you the one thing that needs you.
+7. **[Review the pull request](#review-the-pull-request)** is where the flow ends: the daemon
+   opens it, follow-up sessions tend it, and you merge it.
+
+### Register a project
+
+Registration takes a name and a repository URL, and builds the project's home directory: a
+generated `AGENTS.md`, the repository cloned with a working worktree, and folders for ideas,
+tasks, and skills. The location is yours (`--home` puts it on any drive); the shape is the
+platform's. The [install section](#register-a-project-only-with-the-users-own-repository)
+covers it in full, including what first use sets up.
+
+```
+$ h9k project add --name demo --repo-url https://github.com/you/demo --home ~/work/demo
+```
+
+### Capture an idea
+
+Not every piece of work starts fully formed. An idea is one command with no ceremony, and a
+project is optional at capture:
+
+```
+$ h9k idea add "Rate limiting on the auth endpoints" --project demo
+```
+
+Every idea owns a discovery workspace where notes, gathered files, and prototypes accumulate
+while you figure out what it is. Revise the note as discovery sharpens it; every version stays
+on the record.
+
+```
+$ h9k idea list                              # what is still in discovery
+$ h9k idea show 3ba186b6                     # note, workspace path, history
+$ h9k idea revise 3ba186b6 "Sharper wording"
+$ h9k idea discard 3ba186b6 --reason "…"     # closed honestly, never deleted
+```
+
+### Promote an idea into a task
+
+A task is an idea with intent, and `h9k idea promote` is the hinge between the two:
+
+```
+$ h9k idea promote 3ba186b6
+```
+
+Work that arrives already formed can skip the idea and be written down directly. Creation asks
+for identity, not readiness: a project and an objective. Acceptance criteria are what the
+readiness gate will demand, so it is worth writing them here.
 
 ```
 $ h9k task add --project demo \
@@ -45,9 +113,19 @@ Next: h9k task publish 2088f4fc (a draft never dispatches; publishing then
 assigning is what starts it)
 ```
 
+### Refine the draft
+
 A draft is invisible to the dispatcher. You can revise it as many times as you like, add
-dependencies with `--blocked-by`, or throw it away. Every command takes that short form, or any
-unambiguous fragment from either end of the full id.
+dependencies with `--blocked-by`, or throw it away. Every command takes the short id form, or
+any unambiguous fragment from either end of the full id.
+
+```
+$ h9k task revise 2088f4fc --criteria "…" --blocked-by 81d8bca0
+```
+
+Refinement ends when the contract is honest: an outcome-phrased objective and criteria a
+reviewer could actually check. A published task is immutable; the edit-after-the-fact path is
+`unassign`, `draft`, `revise`, `publish`, `assign`, each step an explicit act.
 
 ### Publish it, then assign it
 
@@ -95,12 +173,14 @@ ago
 slot — 1 of 1 running
 ```
 
-Three things are worth reading off that. The row's **state** is the lifecycle in one word. The
-line under it is the **phase**, composed from the run's records plus an observation of the
-recorded process: "building · session alive" means a process was actually seen, and a phase that
-cannot see one says "liveness not observed here" rather than guessing. The **needs you** marker
-is followed by the cause and the command that clears it, both quoted from something the platform
-recorded.
+Three things are worth reading off that:
+
+- The row's **state** is the lifecycle in one word.
+- The line under it is the **phase**, composed from the run's records plus an observation of the
+  recorded process: "building · session alive" means a process was actually seen, and a phase
+  that cannot see one says "liveness not observed here" rather than guessing.
+- The **needs you** marker is followed by the cause and the command that clears it, both quoted
+  from something the platform recorded.
 
 The "1 of 1 running" on that last row is the shipped default, not a stalled node: the ceiling is
 configured in agent sessions and spent in runs, and a run is charged the two review sessions a
@@ -125,13 +205,13 @@ completes, dependents unblock, and the worktree is removed.
 
 ## Install
 
-Point your AI agent — Claude Code or any coding agent with shell access — at this README and
+Point your AI agent (Claude Code or any coding agent with shell access) at this README and
 tell it to install Hall9k for you. The steps below are exactly what a human runs by hand,
 written to be followed in order by either one: no placeholder is left for an agent to fill in
 with whatever it has at hand, because every one says explicitly whose value it wants.
 
 **Installing Hall9k never registers a project.** `h9k project add` is a separate, later step
-covered in its own section below, and it is run only against a repository the user names —
+covered in its own section below, and it is run only against a repository the user names:
 never against this repository, Hall9k's own source, and never a placeholder an agent has picked
 for itself. If no repository has been named, stop after *Verify the install* below and ask
 rather than guessing one.
@@ -149,9 +229,9 @@ Two install paths exist; pick the one that matches the machine, and run its step
 
 Nothing else is required: no repo checkout, no .NET SDK. `gh` is what the bootstrap script
 itself needs; Docker is the only one of the other three `h9k doctor` ever checks, and the
-bootstrap script already runs that check for you as its last step — the same check you can
+bootstrap script already runs that check for you as its last step, the same check you can
 re-run yourself in *Verify the install* below. `git` and the Claude Code CLI aren't checked by
-anything in this install path — they matter once a project is registered and a dispatched
+anything in this install path; they matter once a project is registered and a dispatched
 session actually runs, so their absence surfaces there instead.
 
 ### Prerequisites for building from source
@@ -188,28 +268,29 @@ lean agent a capable one.
 
 A bootstrap script fetches the latest release for your platform (macOS arm64, Windows x64,
 Linux x64), verifies its checksum, asks consent, and finishes by running `h9k doctor`. Run the
-plain form at an interactive terminal; run the non-interactive form — the one an agent should
-use, since there is no terminal at a pipe's other end to answer a consent prompt — anywhere else.
+plain form at an interactive terminal; run the non-interactive form anywhere else. The
+non-interactive form is the one an agent should use, since there is no terminal at a pipe's
+other end to answer a consent prompt.
 
 ```bash
-# macOS / Linux — interactive
+# macOS / Linux - interactive
 curl -fsSL https://raw.githubusercontent.com/Hallmanac/hall9k/main/scripts/install.sh | bash
 
-# macOS / Linux — non-interactive (agent-driven)
+# macOS / Linux - non-interactive (agent-driven)
 curl -fsSL https://raw.githubusercontent.com/Hallmanac/hall9k/main/scripts/install.sh | bash -s -- --yes
 ```
 
 ```powershell
-# Windows — interactive
+# Windows - interactive
 iwr https://raw.githubusercontent.com/Hallmanac/hall9k/main/scripts/install.ps1 | iex
 
-# Windows — non-interactive (agent-driven): `iwr | iex` can't take a parameter, so download the
+# Windows - non-interactive (agent-driven): `iwr | iex` can't take a parameter, so download the
 # script into a scriptblock first and invoke that with -Yes
 & ([scriptblock]::Create((iwr https://raw.githubusercontent.com/Hallmanac/hall9k/main/scripts/install.ps1).Content)) -Yes
 ```
 
 See [docs/INSTALL.md](docs/INSTALL.md) for the full walkthrough. Once installed, `h9k update` is
-the one-command path to stay current — no repo checkout needed there either.
+the one-command path to stay current; no repo checkout is needed there either.
 
 ### Build from source
 
@@ -234,15 +315,15 @@ release), `h9k update` does the same idempotent refresh from the latest GitHub r
 no repo checkout needed.
 
 The daemon's lifecycle (`h9k daemon start` / `stop` / `status`) runs on macOS, Windows, and
-Linux; start-at-login (`autostart enable`) runs on macOS and Windows — a launchd LaunchAgent on
-the former, a Task Scheduler logon task (never a service) on the latter — and is unbuilt only on
+Linux; start-at-login (`autostart enable`) runs on macOS and Windows (a launchd LaunchAgent on
+the former, a Task Scheduler logon task on the latter, never a service) and is unbuilt only on
 Linux, which otherwise runs the daemon fine started by hand.
 
 ### Verify the install
 
 Neither path above starts anything by itself: `h9k install` (and the bootstrap scripts that wrap
 it) write Hall9k's own Postgres definition but leave it stopped, and nothing checks the daemon
-until you do. Run these, in order, whether by hand or as an agent — this is the stopping point
+until you do. Run these, in order, whether by hand or as an agent; this is the stopping point
 for "installed", and nothing past it, registering a project included, is required to reach it:
 
 On Windows, run these in a new terminal rather than the one that just ran the installer: adding
@@ -261,10 +342,10 @@ h9k daemon status      # verify: h9kd running, with a pid and uptime
 A verified install is `h9k doctor` reporting nothing outstanding and `h9k daemon status`
 printing `h9kd: running` with a pid.
 
-### Register a project — only with the user's own repository
+### Register a project (only with the user's own repository)
 
 Registering a project is a separate act, taken later, once there is a repository to hand
-Hall9k. **Never run this against Hall9k's own repository** — Hall9k does not manage itself as a
+Hall9k. **Never run this against Hall9k's own repository.** Hall9k does not manage itself as a
 registered project. Run it only when the user has named their own repository; an agent that was
 asked only to install Hall9k stops at *Verify the install* above.
 
@@ -272,7 +353,7 @@ asked only to install Hall9k stops at *Verify the install* above.
 h9k project add --name <the-user's-project-name> --repo-url <https-url-of-the-user's-own-repository>
 ```
 
-Both placeholders take the user's own values — never this repository's name or URL.
+Both placeholders take the user's own values, never this repository's name or URL.
 
 First use also registers your owner record (from `git config user.name` / `user.email`), this
 machine as a node, and a GitHub connection pointing at your `gh` login. Nothing to configure; it
@@ -308,7 +389,7 @@ dotnet test                   # unit and integration tiers; integration needs Do
 
 ### Pointing at a different database
 
-Nothing is *started* at install time — no prompt, no provisioning (Decisions Log #58) — though
+Nothing is *started* at install time (no prompt, no provisioning, Decisions Log #58), though
 install does write the matching connection string to `config.json` when nothing else resolved
 and nothing is already listening on `localhost:5432` (a port in use might be a Postgres of your
 own, and install will not write its own credentials over a server it cannot identify; Decisions
