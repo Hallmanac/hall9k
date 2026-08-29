@@ -248,6 +248,23 @@ public sealed class TaskWorkCommand : Hall9kAsyncCommand<TaskWorkCommand.Setting
         ProjectDetails project = await session.LoadAsync<ProjectDetails>(taskDetails.ProjectId, cancellationToken)
             ?? throw new DomainNotFoundException($"Task {task.Id}'s project no longer exists.");
 
+        // A pr-review task dispatches through a completely different path (RunLauncher.LaunchAsync's
+        // own branch: a detached checkout of refs/pull/<n>/head, AgentRole.Review, the pr-review
+        // prompt lens, PrReviewBaseRefName recorded on RunDispatched, UntrustedWorkingDirectory) —
+        // none of which this command can build (that builder lives in Hall9k.Daemon, which the CLI
+        // cannot reference). Claiming it here anyway would cut a fresh branch off the base and hand
+        // the operator the ordinary build prompt, exactly the reopened-task failure the FollowUpBranch
+        // refusal below exists to prevent, and h9k task deliver would then hand a run with no
+        // PrReviewBaseRefName and no adversarial report into PrReviewEngine.DriveAsync (conformance
+        // review, cycle 1).
+        if (task.Type == TaskType.PrReview)
+        {
+            throw new DomainConflictException(
+                $"Task {task.Id} is a pr-review task — it has no diff of its own for an interactive session to "
+                + "build; it dispatches headlessly against the pull request instead. h9k task show "
+                + $"{task.Id} to see where it stands.");
+        }
+
         // A reopened task carries its existing PR's branch and expects the follow-up prompt
         // RunLauncher.LaunchAsync builds for it (BuildFixChecks/BuildRebase/BuildFollowUp) —
         // that builder lives in Hall9k.Daemon, which the CLI cannot reference (Reference graph:
