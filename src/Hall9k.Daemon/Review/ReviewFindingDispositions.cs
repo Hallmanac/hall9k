@@ -23,8 +23,8 @@ public static class ReviewFindingDispositions
     /// <summary>The group holding pre-existing defects worth cleaning up here, each in its own commit.</summary>
     public const string FixHereInItsOwnCommit = "Fix in this pull request, in a commit of its own";
 
-    /// <summary>The group holding the findings routed away to draft bug tasks.</summary>
-    public const string DoNotFixHere = "Do NOT fix here — routed to draft bug tasks";
+    /// <summary>The group holding the findings routed away — to a draft bug task or the standing sweep.</summary>
+    public const string DoNotFixHere = "Do NOT fix here — routed away";
 
     /// <summary>
     /// The group holding ride-alongs (Decisions Log #87): in-scope findings graded below the fix

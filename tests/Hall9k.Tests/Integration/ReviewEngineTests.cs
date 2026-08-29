@@ -941,7 +941,7 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
             .And.Contain("charges twice", "the reviewer's own words travel verbatim");
 
         string merged = File.ReadAllText(RunPaths.ReviewFindingsFile(RunPaths.GlobalDirectory(runId), 1));
-        merged.Should().Contain("routed to draft bug tasks").And.Contain(routed.DraftTaskId!.Value.ToString());
+        merged.Should().Contain("Do NOT fix here").And.Contain(routed.DraftTaskId!.Value.ToString());
         executor.Spawns[2].Prompt.Should().Contain("Do NOT fix here",
             "the fix session is told which findings are not its work");
 
