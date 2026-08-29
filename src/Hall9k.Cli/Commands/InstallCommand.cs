@@ -213,11 +213,11 @@ public sealed class InstallCommand : Hall9kAsyncCommand<InstallCommand.Settings>
             // retirement touched is restored under its original name; a lock or I/O failure
             // that instead surfaces while placing (every name already vacated by then) can
             // still leave bin with a mix of old and new files, but never with a file missing
-            // under both names. Neither guarantee covers RemoveStaleFiles, which runs before
-            // either phase and has already deleted whatever bin held that the new release
-            // does not ship — a rollback here undoes the swap, not that earlier removal — so
-            // the messages below describe only what SwapFilesIntoPlace itself did or did not
-            // do, not bin's condition as a whole.
+            // under both names. RemoveStaleFiles only runs once both phases have already
+            // succeeded, so either failure means bin still holds every file the old release
+            // shipped, exactly as this method left it — the messages below describe only what
+            // SwapFilesIntoPlace itself did or did not do, which on this path is bin's whole
+            // condition.
             await Console.Error.WriteLineAsync(exception.Message);
             return ExitCodes.Error;
         }
@@ -638,23 +638,25 @@ public sealed class InstallCommand : Hall9kAsyncCommand<InstallCommand.Settings>
     /// already fetched, verified, and fully staged the new release before this call threw).
     /// Renaming the locked file ITSELF, though, is exactly as permitted on Windows as it is
     /// assumed to be above — the OS loader shares delete access on the module it maps — so on
-    /// Windows the swap runs file by file instead of directory by directory:
-    /// <see cref="RemoveStaleFiles"/> first deletes whatever <paramref name="bin"/> has that
-    /// staging does not — a file an earlier release shipped and this one dropped — reading
-    /// staging's manifest while it still carries the full staged payload, before anything
-    /// touches it (running this after the merge instead read an already-drained staging
-    /// directory and classified every file this run had just installed as stale — origin
-    /// incident: caught by the cycle-2 pre-PR review reading the diff; the Windows-CI update
-    /// tests cover it once a pull request runs them). Then <see cref="SwapFilesIntoPlace"/> merges every file staging carries into
-    /// <paramref name="bin"/> in two flat passes — retire every conflicting name first, place
-    /// every staged file second — rather than one interleaved walk, so a lock discovered on
-    /// any one file rolls the whole merge back instead of leaving some files on the new
-    /// version and others on the old one: a same-named file it cannot overwrite (a locked
-    /// <c>h9k.exe</c> or <c>h9kd.exe</c> — no special case needed for either one, since a
-    /// locked file retires the same way regardless of which process holds it) still retires
-    /// to a <c>.old</c> sibling right where it sits, exactly like <see cref="RetireDirectory"/>
-    /// does one level up on Unix, but nothing is placed until every retirement this call needs
-    /// has succeeded. Together the two leave <paramref name="bin"/> as exactly staging's
+    /// Windows the swap runs file by file instead of directory by directory, entirely inside
+    /// <see cref="SwapFilesIntoPlace"/>: retire every conflicting name first, place every staged
+    /// file second, and only once both of those have fully succeeded does
+    /// <see cref="RemoveStaleFiles"/> delete whatever <paramref name="bin"/> still has that
+    /// staging never carried — a file an earlier release shipped and this one dropped — so a
+    /// lock discovered anywhere in either phase rolls the whole merge back with nothing yet
+    /// removed, rather than leaving some files on the new version, some on the old one, and a
+    /// stale file gone from both (an earlier revision of this method ran the removal first,
+    /// reading staging's manifest before the merge touched anything; that avoided a different
+    /// bug — reading staging's manifest AFTER the merge finds it already drained by
+    /// <see cref="SwapFilesIntoPlace"/>'s own <c>File.Move</c> calls and classifies every file
+    /// this run had just installed as stale, caught by the cycle-2 pre-PR review reading the
+    /// diff — but left the removal outside the rollback either phase provides. Running it last,
+    /// gated on both phases having already succeeded, keeps the fix for the first bug without
+    /// re-opening the second: a same-named file <see cref="SwapFilesIntoPlace"/> cannot overwrite
+    /// (a locked <c>h9k.exe</c> or <c>h9kd.exe</c> — no special case needed for either one, since
+    /// a locked file retires the same way regardless of which process holds it) still retires to
+    /// a <c>.old</c> sibling right where it sits, exactly like <see cref="RetireDirectory"/> does
+    /// one level up on Unix. Together the three leave <paramref name="bin"/> as exactly staging's
     /// contents rather than the union of every version ever installed.
     /// </para>
     /// </summary>
@@ -672,7 +674,6 @@ public sealed class InstallCommand : Hall9kAsyncCommand<InstallCommand.Settings>
             HashSet<string> reportedStuck = SweepRetiredFiles(bin);
             if (Directory.Exists(bin))
             {
-                RemoveStaleFiles(staging, bin);
                 SwapFilesIntoPlace(staging, bin, reportedStuck);
                 TryDelete(staging);
             }
@@ -705,22 +706,24 @@ public sealed class InstallCommand : Hall9kAsyncCommand<InstallCommand.Settings>
 
     /// <summary>The Windows half of <see cref="SwapIntoPlace"/>: merges every file <see
     /// cref="CollectFilePairs"/> finds under <paramref name="sourceDirectory"/> (staging) into
-    /// <paramref name="destinationDirectory"/> (bin) in two flat passes rather than one
-    /// interleaved walk, so the merge is transactional rather than merely safe file by file.
+    /// <paramref name="destinationDirectory"/> (bin) in three steps rather than one interleaved
+    /// walk, so the merge is transactional rather than merely safe file by file.
     /// Phase one retires every file bin already has under a name staging also carries (<see
     /// cref="RetireFile"/>) — ordinarily an in-place rename, permitted on Windows even for a
     /// file a running module still executes from (see <see cref="SwapIntoPlace"/>'s doc
     /// comment) — before anything staged is placed anywhere; if any one retirement fails (a
     /// lock stronger than share-delete access, most likely an antivirus scan holding a file
-    /// exclusively), every retirement this call already made is undone and the whole merge
-    /// throws having placed nothing, so bin is left exactly at the old version rather than a
-    /// mix. Phase two only starts once every retirement in phase one has succeeded, so every
-    /// name it moves a staged file into is already vacated and this essentially cannot fail;
-    /// if it somehow still does, whatever this call had already placed stays on the new
-    /// version and everything it had not yet reached is restored to the version it retired
-    /// aside — so no file this call touches is ever left present under neither name, even
-    /// though a failure here (unlike one in phase one) can still leave bin with a genuine mix
-    /// of old and new files. Once every file is placed, every retiree gets one immediate
+    /// exclusively), every retirement this call already made is undone (see <see
+    /// cref="RestoreRetiredFile"/> for the one way even that can fall short — a second,
+    /// independent lock on the restore itself) and the whole merge throws having placed nothing
+    /// and deleted nothing, so bin is left exactly at the old version rather than a mix in every
+    /// case but that one. Phase two only starts once every retirement in phase one has
+    /// succeeded, so every name it moves a staged file into is already vacated and this
+    /// essentially cannot fail; if it somehow still does, whatever this call had already placed
+    /// stays on the new version and everything it had not yet reached is restored to the version
+    /// it retired aside — so no file this call touches is ever left present under neither name,
+    /// even though a failure here (unlike one in phase one) can still leave bin with a genuine
+    /// mix of old and new files. Once every file is placed, every retiree gets one immediate
     /// reclaim attempt, quietly: on a self-contained publish the running process (this very
     /// h9k, and h9kd if it is up) has every one of its own loaded assemblies mapped, not just
     /// its main executable, so staying locked through this reclaim is the ordinary outcome for
@@ -730,14 +733,18 @@ public sealed class InstallCommand : Hall9kAsyncCommand<InstallCommand.Settings>
     /// name="reportedStuck"/> is that same leading sweep's own set of files it just told the
     /// operator were still locked, so a retirement that lands on one of those names because
     /// its plain <c>.old</c> slot is still occupied does not print a second, redundant "still
-    /// in use" line about the exact file the operator was already told about a moment
-    /// ago.</summary>
+    /// in use" line about the exact file the operator was already told about a moment ago. Only
+    /// once both phases have fully succeeded does <see cref="RemoveStaleFiles"/> run, against
+    /// the file manifest <see cref="CollectFilePairs"/> already captured rather than a fresh
+    /// read of staging (which phase two has by now emptied) — so a failure in either phase
+    /// leaves every stale file exactly where it was too.</summary>
     [SupportedOSPlatform("windows")]
     private static void SwapFilesIntoPlace(
         string sourceDirectory, string destinationDirectory, HashSet<string> reportedStuck)
     {
         List<(string Source, string Destination)> files = [];
-        CollectFilePairs(sourceDirectory, destinationDirectory, files);
+        HashSet<string> directories = new(StringComparer.OrdinalIgnoreCase);
+        CollectFilePairs(sourceDirectory, destinationDirectory, files, directories);
 
         List<(string Original, string Retired)> retired = [];
         foreach ((_, string destination) in files)
@@ -757,9 +764,10 @@ public sealed class InstallCommand : Hall9kAsyncCommand<InstallCommand.Settings>
                 throw new InvalidOperationException(
                     $"Could not finish updating {destination} — it is locked and could not even be retired "
                         + "aside. Close whatever holds it (a running h9k or h9kd, an antivirus scan) and run "
-                        + "h9k update again; no file has been replaced by this run's version swap (a file the "
-                        + "old version needed but the new one does not ship may already be gone, removed "
-                        + "before the swap itself started).",
+                        + "h9k update again; bin is unchanged by this run's version swap, short of the "
+                        + "vanishingly rare case where undoing an earlier retirement in this same run hits a "
+                        + "second, independent lock of its own — that one file is cleaned up automatically by "
+                        + "a future install or update.",
                     exception);
             }
         }
@@ -785,24 +793,48 @@ public sealed class InstallCommand : Hall9kAsyncCommand<InstallCommand.Settings>
         {
             TryDeleteFile(retiredPath, report: false);
         }
+
+        RemoveStaleFiles(
+            destinationDirectory,
+            new HashSet<string>(files.Select(pair => pair.Destination), StringComparer.OrdinalIgnoreCase),
+            directories);
     }
 
     /// <summary>Walks <paramref name="sourceDirectory"/> (staging, or one of its subdirectories)
     /// against <paramref name="destinationDirectory"/> (bin, or the matching subdirectory),
-    /// creating destination directories as it goes and recording where each staged file lands —
-    /// the enumeration half of <see cref="SwapFilesIntoPlace"/>'s two-phase swap, kept separate
-    /// so retiring and placing can each run as one flat pass over every file instead of being
-    /// interleaved directory by directory, which is what lets the whole merge roll back
-    /// together instead of one directory at a time.</summary>
+    /// creating destination directories as it goes and recording where each staged file lands,
+    /// and every destination directory it created or found along the way — the enumeration half
+    /// of <see cref="SwapFilesIntoPlace"/>'s merge, kept separate so retiring and placing can
+    /// each run as one flat pass over every file instead of being interleaved directory by
+    /// directory, which is what lets the whole merge roll back together instead of one directory
+    /// at a time. <paramref name="directories"/> is the same manifest idea one level up: it is
+    /// what lets <see cref="RemoveStaleFiles"/> run once, after the merge, against a captured
+    /// picture of what staging held rather than a live read of a staging directory the merge has
+    /// by then already drained. Every destination entry is cleared of a conflict with <see
+    /// cref="ClearConflictingDestinationEntry"/> before this walk touches it — a junction or
+    /// type mismatch left for the post-merge <see cref="RemoveStaleFiles"/> to find would by then
+    /// have already been merged into or through, which is exactly the hazard <see
+    /// cref="RemoveStaleFiles"/> moving to run after both phases (rather than before, as it once
+    /// did) reopened; clearing it here instead, before <see cref="Directory.CreateDirectory"/> or
+    /// <see cref="File.Move"/> ever see the entry, restores the same guarantee without moving the
+    /// genuinely-stale cleanup back ahead of a swap that might still fail (origin: cycle-5
+    /// pre-PR review).</summary>
     [SupportedOSPlatform("windows")]
     private static void CollectFilePairs(
-        string sourceDirectory, string destinationDirectory, List<(string Source, string Destination)> files)
+        string sourceDirectory,
+        string destinationDirectory,
+        List<(string Source, string Destination)> files,
+        HashSet<string> directories)
     {
+        ClearConflictingDestinationEntry(destinationDirectory, isDirectory: true);
         Directory.CreateDirectory(destinationDirectory);
+        directories.Add(destinationDirectory);
 
         foreach (string sourceFile in Directory.EnumerateFiles(sourceDirectory))
         {
-            files.Add((sourceFile, Path.Combine(destinationDirectory, Path.GetFileName(sourceFile))));
+            string destinationFile = Path.Combine(destinationDirectory, Path.GetFileName(sourceFile));
+            ClearConflictingDestinationEntry(destinationFile, isDirectory: false);
+            files.Add((sourceFile, destinationFile));
         }
 
         foreach (string sourceSubdirectory in Directory.EnumerateDirectories(sourceDirectory))
@@ -810,7 +842,44 @@ public sealed class InstallCommand : Hall9kAsyncCommand<InstallCommand.Settings>
             CollectFilePairs(
                 sourceSubdirectory,
                 Path.Combine(destinationDirectory, Path.GetFileName(sourceSubdirectory)),
-                files);
+                files,
+                directories);
+        }
+    }
+
+    /// <summary>Clears whatever <paramref name="destinationPath"/> currently holds when it
+    /// conflicts with what staging is about to place there, so <see cref="CollectFilePairs"/>'s
+    /// own <see cref="Directory.CreateDirectory"/> and <see cref="SwapFilesIntoPlace"/>'s later
+    /// <see cref="File.Move"/> land on a genuine, empty slot rather than merge into or through
+    /// something staging never shipped:
+    /// <list type="bullet">
+    /// <item>a directory junction or symlink (an operator's own, or an earlier tool's) is
+    /// unlinked without ever being followed — <see cref="TryDeleteDirectoryRecursively"/> already
+    /// has this guard, so reusing it here is what keeps every write inside <c>bin</c> instead of
+    /// walking through to whatever the link points at (the same hazard <see
+    /// cref="RemoveStaleFiles"/> guards on its own, later walk);</item>
+    /// <item>a type mismatch — a file where staging ships a directory, or a directory where
+    /// staging ships a file — is removed outright, since <see cref="Directory.CreateDirectory"/>
+    /// throws on the former and <see cref="File.Move"/> throws on the latter.</item>
+    /// </list>
+    /// A destination that does not exist yet, or already matches staging's own kind, is left
+    /// alone.</summary>
+    [SupportedOSPlatform("windows")]
+    private static void ClearConflictingDestinationEntry(string destinationPath, bool isDirectory)
+    {
+        if (new DirectoryInfo(destinationPath).LinkTarget is not null)
+        {
+            TryDeleteDirectoryRecursively(destinationPath);
+            return;
+        }
+
+        if (isDirectory && File.Exists(destinationPath))
+        {
+            TryDeleteFile(destinationPath, report: false);
+        }
+        else if (!isDirectory && Directory.Exists(destinationPath))
+        {
+            TryDeleteDirectoryRecursively(destinationPath);
         }
     }
 
@@ -828,22 +897,28 @@ public sealed class InstallCommand : Hall9kAsyncCommand<InstallCommand.Settings>
         }
     }
 
-    /// <summary>The other half of the Windows merge in <see cref="SwapIntoPlace"/>:
-    /// <see cref="SwapFilesIntoPlace"/> only ever adds or overwrites, so without this a file an
-    /// earlier release shipped and the new one dropped survives every reinstall or update —
-    /// unlike the Unix directory swap, which replaces <paramref name="destinationDirectory"/>
-    /// outright, this merge would otherwise leave it the union of every version ever installed.
-    /// Runs BEFORE <see cref="SwapFilesIntoPlace"/> touches either directory, while
-    /// <paramref name="sourceDirectory"/> (staging) still carries its full payload: deletes
-    /// whatever <paramref name="destinationDirectory"/> has that staging does not, skipping
+    /// <summary>The third step of the Windows merge in <see cref="SwapIntoPlace"/>:
+    /// <see cref="SwapFilesIntoPlace"/>'s two phases only ever add or overwrite, so without this
+    /// a file an earlier release shipped and the new one dropped survives every reinstall or
+    /// update — unlike the Unix directory swap, which replaces <paramref
+    /// name="destinationDirectory"/> outright, the merge would otherwise leave it the union of
+    /// every version ever installed. Runs only after both of <see cref="SwapFilesIntoPlace"/>'s
+    /// phases have fully succeeded, against <paramref name="stagedFiles"/> and <paramref
+    /// name="stagedDirectories"/> — the manifest <see cref="CollectFilePairs"/> captured from
+    /// staging before phase two started moving files out of it — rather than a live read of
+    /// staging itself, which by now phase two has drained (an earlier revision called this
+    /// first, against staging's live contents, specifically to avoid reading a drained staging
+    /// directory; running it last instead of reading it live is what keeps both properties at
+    /// once — see <see cref="SwapIntoPlace"/>'s doc comment for the fuller history). Deletes
+    /// whatever <paramref name="destinationDirectory"/> has that the manifest does not, skipping
     /// this run's own <c>*.old</c> retirees via <see cref="IsRetiredFileName"/> — those are not
-    /// stale, they are this run's locked files waiting on <see cref="SweepRetiredFiles"/> — and
-    /// best-effort, same as the rest of this file, so a file still locked this run is simply
-    /// left for a later one. Reading staging after the merge instead would find it already
-    /// drained by <see cref="SwapFilesIntoPlace"/>'s own <c>File.Move</c> calls and delete
-    /// every file this run just installed as if it were stale.</summary>
+    /// stale, they are this run's files that stayed locked through <see
+    /// cref="SwapFilesIntoPlace"/>'s own immediate reclaim and are now waiting on the next run's
+    /// leading <see cref="SweepRetiredFiles"/> — and best-effort, same as the rest of this file,
+    /// so a file still locked this run is simply left for a later one.</summary>
     [SupportedOSPlatform("windows")]
-    private static void RemoveStaleFiles(string sourceDirectory, string destinationDirectory)
+    private static void RemoveStaleFiles(
+        string destinationDirectory, HashSet<string> stagedFiles, HashSet<string> stagedDirectories)
     {
         if (!Directory.Exists(destinationDirectory))
         {
@@ -853,7 +928,7 @@ public sealed class InstallCommand : Hall9kAsyncCommand<InstallCommand.Settings>
         foreach (string destinationFile in Directory.EnumerateFiles(destinationDirectory))
         {
             string fileName = Path.GetFileName(destinationFile);
-            if (IsRetiredFileName(fileName) || File.Exists(Path.Combine(sourceDirectory, fileName)))
+            if (IsRetiredFileName(fileName) || stagedFiles.Contains(destinationFile))
             {
                 continue;
             }
@@ -864,7 +939,7 @@ public sealed class InstallCommand : Hall9kAsyncCommand<InstallCommand.Settings>
         foreach (string destinationSubdirectory in Directory.EnumerateDirectories(destinationDirectory))
         {
             // A directory symlink or junction inside bin (an operator's own, or an earlier
-            // tool's) still passes Directory.Exists; matching it against a same-named staging
+            // tool's) still passes Directory.Exists; matching it against a same-named staged
             // subdirectory, or recursing into it as stale, would walk through to whatever it
             // points at and delete that instead. No release ships a symlink of its own, so a
             // link found here is always removed as leftover debris via
@@ -877,10 +952,9 @@ public sealed class InstallCommand : Hall9kAsyncCommand<InstallCommand.Settings>
                 continue;
             }
 
-            string sourceSubdirectory = Path.Combine(sourceDirectory, Path.GetFileName(destinationSubdirectory));
-            if (Directory.Exists(sourceSubdirectory))
+            if (stagedDirectories.Contains(destinationSubdirectory))
             {
-                RemoveStaleFiles(sourceSubdirectory, destinationSubdirectory);
+                RemoveStaleFiles(destinationSubdirectory, stagedFiles, stagedDirectories);
             }
             else
             {
@@ -933,8 +1007,12 @@ public sealed class InstallCommand : Hall9kAsyncCommand<InstallCommand.Settings>
     /// <summary>Best-effort restore for <see cref="SwapFilesIntoPlace"/>'s failure paths: puts a
     /// file <see cref="RetireFile"/> just retired back under its original name. Swallows its
     /// own failure — the caller is already mid-throw and reports the original cause; a restore
-    /// that cannot complete leaves the file at <paramref name="retired"/> instead, which
-    /// <see cref="SweepRetiredFiles"/> reclaims once nothing holds it.</summary>
+    /// that cannot complete (a second, independent lock on top of the one that triggered the
+    /// rollback in the first place — rare, but not impossible) leaves the file at <paramref
+    /// name="retired"/> instead of back at <paramref name="destination"/>, which a later <see
+    /// cref="SweepRetiredFiles"/> DELETES once nothing holds it — not a recovery of the file,
+    /// the same one-way meaning "reclaim" has everywhere else in this class — so this is the one
+    /// path where the rollback this method exists to provide does not fully hold.</summary>
     [SupportedOSPlatform("windows")]
     private static void RestoreRetiredFile(string retired, string destination)
     {
@@ -949,7 +1027,8 @@ public sealed class InstallCommand : Hall9kAsyncCommand<InstallCommand.Settings>
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
         {
-            // Left at `retired` — reclaimed by a later SweepRetiredFiles once nothing holds it.
+            // Left at `retired` — a later SweepRetiredFiles deletes it once nothing holds it,
+            // rather than restoring it; see this method's own doc comment.
         }
     }
 
@@ -962,10 +1041,12 @@ public sealed class InstallCommand : Hall9kAsyncCommand<InstallCommand.Settings>
     /// fallback <see cref="RetireDirectory"/> uses for a whole directory — and returns
     /// whichever name it actually used, so the caller can restore it if placement that follows
     /// fails. <paramref name="reportedStuck"/> names every file this run's leading <see
-    /// cref="SweepRetiredFiles"/> already told the operator was still locked; taking the
-    /// fallback because <c>retired</c> is one of those says nothing the operator was not just
-    /// told, so that case stays quiet instead of printing a second line about the same
-    /// file.</summary>
+    /// cref="SweepRetiredFiles"/> already named to the operator individually — the single-stuck-
+    /// file case, where the message actually said which file; the multi-file case names only a
+    /// count, so it contributes nothing to this set, since taking the fallback there would not be
+    /// repeating news the operator already has. Where a name was given, taking the fallback
+    /// because <c>retired</c> is one of those says nothing the operator was not just told, so
+    /// that case stays quiet instead of printing a second line about the same file.</summary>
     [SupportedOSPlatform("windows")]
     private static string RetireFile(string path, HashSet<string> reportedStuck)
     {
@@ -998,14 +1079,40 @@ public sealed class InstallCommand : Hall9kAsyncCommand<InstallCommand.Settings>
     /// otherwise a junction pointing outside <paramref name="bin"/> gets followed and files
     /// under its target matching <c>*.old</c> or <c>*.old.*</c> are deleted, well outside the
     /// install directory, before <see cref="RemoveStaleFiles"/> ever gets a chance to unlink
-    /// the junction itself (origin: cycle-2 pre-PR adversarial review). Returns the full path
-    /// of every file it found still locked, so <see cref="RetireFile"/> can skip repeating the
-    /// same "still in use" news a moment later.</summary>
+    /// the junction itself (origin: cycle-2 pre-PR adversarial review). Reports quietly per file
+    /// (<see cref="TryDeleteFile"/> with <c>report: false</c>) and prints one summary line of its
+    /// own instead: on a self-contained publish with <c>h9kd</c> still up, every one of its
+    /// loaded assemblies is a retiree this sweep cannot yet reclaim, and a "still in use" line
+    /// per file would be tens of lines of noise ahead of an update's real output for the ordinary
+    /// case of one still-running daemon, not the exceptional one. Returns the full path of every
+    /// file it found still locked when — and only when — it named that file to the operator
+    /// individually (the single-file case; the multi-file case names only a count), so <see
+    /// cref="RetireFile"/> can skip repeating the same "still in use" news a moment later without
+    /// ever suppressing a name the operator was not actually given.</summary>
     [SupportedOSPlatform("windows")]
     private static HashSet<string> SweepRetiredFiles(string bin)
     {
         HashSet<string> stillStuck = new(StringComparer.OrdinalIgnoreCase);
         SweepRetiredFiles(bin, stillStuck);
+
+        switch (stillStuck.Count)
+        {
+            case 0:
+                break;
+            case 1:
+                AnsiConsole.MarkupLineInterpolated(
+                    $"[dim]Could not remove {stillStuck.First()} yet (still in use) — it will be cleaned up on the next install or update.[/]");
+                break;
+            default:
+                AnsiConsole.MarkupLineInterpolated(
+                    $"[dim]{stillStuck.Count} retired files from an earlier install or update are still in use — they will be cleaned up on the next one.[/]");
+                // The line above names a count, never a file, so RetireFile's own "is still in
+                // use" message for any of these paths would not be repeating news the operator
+                // already has — only the single-file case above actually named one, so only that
+                // case is worth returning as a suppression set.
+                return new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        }
+
         return stillStuck;
     }
 
@@ -1019,7 +1126,7 @@ public sealed class InstallCommand : Hall9kAsyncCommand<InstallCommand.Settings>
 
         foreach (string file in Directory.EnumerateFiles(directory, "*.old"))
         {
-            if (!TryDeleteFile(file))
+            if (!TryDeleteFile(file, report: false))
             {
                 stillStuck.Add(file);
             }
@@ -1037,7 +1144,7 @@ public sealed class InstallCommand : Hall9kAsyncCommand<InstallCommand.Settings>
                 continue;
             }
 
-            if (!TryDeleteFile(file))
+            if (!TryDeleteFile(file, report: false))
             {
                 stillStuck.Add(file);
             }
@@ -1054,12 +1161,14 @@ public sealed class InstallCommand : Hall9kAsyncCommand<InstallCommand.Settings>
 
     /// <summary>Best-effort delete for a single file, the file-granularity sibling of
     /// <see cref="TryDelete"/>. Returns whether <paramref name="file"/> is gone (deleted, or
-    /// already absent) once this call returns. <paramref name="report"/> is false only for
-    /// <see cref="SwapFilesIntoPlace"/>'s own immediate reclaim of its retirees, where a
-    /// still-locked file is the ordinary case (a self-contained publish's own loaded
-    /// assemblies, not just its main executable) rather than something worth telling the
-    /// operator about on an otherwise successful run — the next run's leading
-    /// <see cref="SweepRetiredFiles"/> reports it if it is still there then.</summary>
+    /// already absent) once this call returns. <paramref name="report"/> is false for <see
+    /// cref="SwapFilesIntoPlace"/>'s own immediate reclaim of its retirees and for <see
+    /// cref="SweepRetiredFiles"/>'s walk, where a still-locked file is the ordinary case (a
+    /// self-contained publish's own loaded assemblies, not just its main executable — on a
+    /// running <c>h9kd</c> that can be dozens of files) rather than something worth a line of
+    /// its own on an otherwise successful run; both report what they collectively found still
+    /// stuck through their own return value instead, and <see cref="SweepRetiredFiles"/> prints
+    /// one summary line for its own findings rather than one per file.</summary>
     [SupportedOSPlatform("windows")]
     private static bool TryDeleteFile(string file, bool report = true)
     {
