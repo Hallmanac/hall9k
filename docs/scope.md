@@ -37,6 +37,22 @@ that has never set `--model-review`/`--model-fix` resolves them identically, so 
 there dispatches on the ordinary fix model exactly as it would have anyway (PLAN.md Decisions Log
 #90).
 
+### Interactive claims
+
+`h9k task work <id>` lets an operator work a Queued task themselves instead of dispatching it
+headless: it claims the task, cuts the same branch and worktree headless dispatch would, and
+opens a regular interactive Claude Code session attached to the operator's own terminal, with the
+same prompt and settings a headless spawn gets. The claim is held by the human rather than a
+process — no lease, no heartbeat reclaim — so closing the terminal is a normal way to leave, and
+running `h9k task work` again re-enters the same worktree and branch with a fresh session. It
+occupies zero concurrency slots (the run's `NodeId` is the sentinel `Guid.Empty`, which the
+node's session-ceiling accounting never counts), so it starts even when the daemon's queue is
+full. `h9k task verify` runs the project's gates on demand against the claim's worktree; `h9k task
+deliver` pushes the branch and hands the run into the standard delivery pipeline — from there it
+is indistinguishable from a headless run; `h9k task handback` releases the claim to a headless
+agent partway through, resuming the same branch; `h9k task release` gives an untouched claim back
+to the dispatch queue. See [PLAN.md Decisions Log #99](../PLAN.md).
+
 ### The board
 
 `h9k status` composes three surfaces (lifecycle state, live phase, attention) from the underlying

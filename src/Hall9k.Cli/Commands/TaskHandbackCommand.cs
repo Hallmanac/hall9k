@@ -57,7 +57,15 @@ public sealed class TaskHandbackCommand : Hall9kAsyncCommand<TaskHandbackCommand
             ?? throw new DomainConflictException($"Task {taskId} is claimed interactively but run {runId} has no record.");
 
         (IReadOnlyList<string>? modified, _) = await InteractiveWorktreeGit.ListUncommittedFilesAsync(run.WorktreePath, cancellationToken);
-        if (modified is { Count: > 0 })
+        if (modified is null)
+        {
+            // Never guessed at as clean (InteractiveWorktreeGit's own contract): git could not
+            // be asked, so the operator is told the check was skipped rather than handback
+            // silently proceeding over a tree nobody actually looked at.
+            AnsiConsole.MarkupLineInterpolated(
+                $"[yellow]Could not read the worktree's git status at {run.WorktreePath}; skipping the uncommitted-files check.[/]");
+        }
+        else if (modified.Count > 0)
         {
             AnsiConsole.MarkupLineInterpolated(
                 $"[red]Task {taskId}'s worktree has uncommitted file(s); commit or discard them first:[/]");

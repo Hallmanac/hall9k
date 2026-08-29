@@ -155,6 +155,19 @@ h9k epic link-jira <id> <key-or-url>              # record the Jira epic this on
 h9k epic close <id> --reason "<why>"              # the only way an epic ends
 ```
 
+An operator can work a Queued task interactively instead of dispatching it headless — the claim
+is held by the human, not a process, so there is no lease and no heartbeat reclaim; closing the
+terminal is a normal way to leave, and running `h9k task work` again re-enters the same worktree
+(Decisions Log #99):
+
+```bash
+h9k task work <id>          # claim it, cut the same branch/worktree/prompt headless dispatch would, open an interactive session
+h9k task verify <id>        # run the project's gates on demand against the claim's worktree
+h9k task deliver <id>       # push and hand the claim into the standard delivery pipeline
+h9k task handback <id>      # release the claim to a headless agent partway through, resuming the branch
+h9k task release <id>       # give an untouched claim back to the dispatch queue
+```
+
 `--from-issue` and `--from-jira` adopt existing external work (PLAN.md §3.1a, Decisions Log #60,
 #65): the item's title seeds the objective, its description becomes agent context, and the item is
 recorded as the task's `ExternalReference`. Acceptance criteria are never read out of a description;

@@ -1,3 +1,4 @@
+using Hall9k.Connectors.Prompts;
 using Hall9k.Domain.Infrastructure.Storage;
 using Hall9k.Daemon.ProcessManagement;
 using Hall9k.Domain.Features.Run;
@@ -49,7 +50,7 @@ public sealed class ClaudeExecutor(ILogger<ClaudeExecutor> logger, IProcessManag
                 RunPaths.StandardErrorFile(runDirectory));
 
         await File.WriteAllTextAsync(promptFile, request.Prompt, cancellationToken);
-        await File.WriteAllTextAsync(SettingsFile(request, runDirectory), SettingsContent, cancellationToken);
+        await File.WriteAllTextAsync(SettingsFile(request, runDirectory), ClaudeSettingsFile.Content, cancellationToken);
 
         string command = $"\"{ClaudeBinary()}\" {string.Join(' ', Arguments(request, runDirectory))}";
 
@@ -66,9 +67,6 @@ public sealed class ClaudeExecutor(ILogger<ClaudeExecutor> logger, IProcessManag
 
     private static string ClaudeBinary() =>
         Environment.GetEnvironmentVariable("HALL9K_CLAUDE_PATH") ?? "claude";
-
-    /// <summary>The one platform-imposed setting: agents never author co-authored-by trailers (PLAN.md §6.6).</summary>
-    private const string SettingsContent = """{"includeCoAuthoredBy": false}""";
 
     /// <summary>
     /// The settings file this spawn writes and hands its child, under <paramref name="runDirectory"/>

@@ -62,9 +62,15 @@ public sealed class TaskWorkCommand : Hall9kAsyncCommand<TaskWorkCommand.Setting
 
         BootstrapContext context = await NodeBootstrap.EnsureAsync(session, cancellationToken);
 
-        (Guid runId, string worktreePath, string branch) = task.State == TaskState.Claimed && task.IsInteractiveClaim
+        // Minted once per invocation and carried through: the first claim records it as
+        // RunDispatched.SessionId — the same "session id is the first spawned session's own
+        // id" convention headless dispatch's RunLauncher follows — and every re-entry records
+        // its own fresh session under InteractiveSessionStarted regardless.
+        Guid claudeSessionId = DomainId.New();
+
+        (Guid runId, string worktreePath, string branch, string runDirectory) = task.State == TaskState.Claimed && task.IsInteractiveClaim
             ? await ReenterAsync(session, task, cancellationToken)
-            : await ClaimAndCutAsync(session, task, fence, context, cancellationToken);
+            : await ClaimAndCutAsync(session, task, fence, context, claudeSessionId, cancellationToken);
 
         TaskDetails taskDetails = await session.LoadAsync<TaskDetails>(taskId, cancellationToken)
             ?? throw new DomainNotFoundException($"No task {taskId}.");
@@ -78,7 +84,14 @@ public sealed class TaskWorkCommand : Hall9kAsyncCommand<TaskWorkCommand.Setting
         // WorkPromptBuilder headless dispatch calls too.
         string prompt = WorkPromptBuilder.Build(taskDetails, project, branch, worktreePath, resumesPreviousWork: false, blockerContext: null);
 
-        Guid claudeSessionId = DomainId.New();
+        // The same settings file every headless spawn writes (ClaudeExecutor), so the one
+        // platform-imposed override — no co-authored-by trailers (PLAN.md §6.6) — applies to
+        // an operator's commits exactly as it does an agent's.
+        string resolvedRunDirectory = RunPaths.ResolveCurrentDirectory(runDirectory);
+        Directory.CreateDirectory(resolvedRunDirectory);
+        string settingsFile = RunPaths.SettingsFile(resolvedRunDirectory);
+        await File.WriteAllTextAsync(settingsFile, ClaudeSettingsFile.Content, cancellationToken);
+
         await using (IDocumentSession startSession = store.LightweightSession())
         {
             startSession.Events.Append(runId, new InteractiveSessionStarted(runId, claudeSessionId, DateTimeOffset.UtcNow));
@@ -89,17 +102,24 @@ public sealed class TaskWorkCommand : Hall9kAsyncCommand<TaskWorkCommand.Setting
         AnsiConsole.MarkupLineInterpolated($"[dim]Branch: {branch}[/]");
         AnsiConsole.MarkupLine("[dim]Launching an interactive Claude Code session — exit it normally (Ctrl+D or /exit) to return here.[/]");
 
-        int exitCode = await LaunchInteractiveClaudeAsync(worktreePath, prompt, claudeSessionId, project.SkipPermissions, cancellationToken);
-
-        await using (IDocumentSession endSession = store.LightweightSession())
+        int exitCode;
+        try
         {
-            // Attached to the operator's terminal, not driven headlessly through
-            // --output-format stream-json — there is no result payload to read usage off, so
-            // every field is honestly null (the nullable-Turns convention).
-            endSession.Events.Append(runId, new InteractiveSessionEnded(
-                runId, claudeSessionId, DateTimeOffset.UtcNow, Turns: null, InputTokens: null, OutputTokens: null, CostUsd: null));
-            await endSession.SaveChangesAsync(cancellationToken);
+            exitCode = await LaunchInteractiveClaudeAsync(worktreePath, prompt, claudeSessionId, settingsFile, project.SkipPermissions, cancellationToken);
         }
+        catch (Exception exception) when (exception is Win32Exception or InvalidOperationException)
+        {
+            // The claude binary is missing, or the worktree directory vanished between the
+            // claim and the launch: the started/ended pair still has to close (the run stream
+            // otherwise reads a session that never ended), and DomainConflictException is what
+            // Program.cs maps to a readable message instead of a raw stack trace.
+            await AppendSessionEndedAsync(store, runId, claudeSessionId, cancellationToken);
+            throw new DomainConflictException(
+                $"Could not launch the interactive Claude Code session for task {taskId}: {exception.Message} "
+                + $"The claim is preserved — h9k task work {taskId} to try again, or h9k task release {taskId} to give it back.");
+        }
+
+        await AppendSessionEndedAsync(store, runId, claudeSessionId, cancellationToken);
 
         AnsiConsole.MarkupLineInterpolated(exitCode == 0
             ? (FormattableString)$"[dim]Session ended (exit {exitCode}). Task {taskId} is still claimed —[/]"
@@ -112,7 +132,7 @@ public sealed class TaskWorkCommand : Hall9kAsyncCommand<TaskWorkCommand.Setting
         return ExitCodes.Ok;
     }
 
-    private static async Task<(Guid RunId, string WorktreePath, string Branch)> ReenterAsync(
+    private static async Task<(Guid RunId, string WorktreePath, string Branch, string RunDirectory)> ReenterAsync(
         IDocumentSession session, TaskAggregate task, CancellationToken cancellationToken)
     {
         Guid runId = task.CurrentRunId
@@ -122,6 +142,21 @@ public sealed class TaskWorkCommand : Hall9kAsyncCommand<TaskWorkCommand.Setting
             ?? throw new DomainConflictException(
                 $"Task {task.Id} is claimed interactively but run {runId} has no record — this needs a human look.");
 
+        // Mirrors TaskDeliverCommand's own guard: once h9k task deliver hands the run to the
+        // daemon's pipeline (AgentSessionCompleted moves it to Verifying), the task can still
+        // read Claimed+interactive for the whole review loop — closeout only moves the task
+        // off Claimed once the pull request opens. Re-entering here anyway would rewrite the
+        // worktree the pipeline's own gates and review sessions are reading, and would reset
+        // the run's own State back to Running underneath whichever pipeline stage owns it now
+        // (adversarial review, cycle 1).
+        if (run.State != RunState.Dispatched && run.State != RunState.Running)
+        {
+            throw new DomainConflictException(
+                $"Task {task.Id}'s run {runId} is already {run.State.Value} — it was handed off with "
+                + $"h9k task deliver (or handback) and is now in the standard pipeline. h9k task show {task.Id} "
+                + "to see where it stands.");
+        }
+
         if (!Directory.Exists(run.WorktreePath))
         {
             throw new DomainConflictException(
@@ -130,11 +165,12 @@ public sealed class TaskWorkCommand : Hall9kAsyncCommand<TaskWorkCommand.Setting
         }
 
         AnsiConsole.MarkupLineInterpolated($"[dim]Re-entering task {task.Id}'s interactive claim.[/]");
-        return (runId, run.WorktreePath, run.Branch);
+        return (runId, run.WorktreePath, run.Branch, run.RunDirectory);
     }
 
-    private static async Task<(Guid RunId, string WorktreePath, string Branch)> ClaimAndCutAsync(
-        IDocumentSession session, TaskAggregate task, StreamState fence, BootstrapContext context, CancellationToken cancellationToken)
+    private static async Task<(Guid RunId, string WorktreePath, string Branch, string RunDirectory)> ClaimAndCutAsync(
+        IDocumentSession session, TaskAggregate task, StreamState fence, BootstrapContext context,
+        Guid claudeSessionId, CancellationToken cancellationToken)
     {
         if (task.State != TaskState.Queued)
         {
@@ -187,9 +223,12 @@ public sealed class TaskWorkCommand : Hall9kAsyncCommand<TaskWorkCommand.Setting
 
         // Fable is the human-interactive model tier (AgentModel's own doc comment, Decisions
         // Log #33) — a fixed platform choice for an operator-attended session, not the
-        // project/task role-resolution chain a headless build session runs through.
+        // project/task role-resolution chain a headless build session runs through. SessionId
+        // is claudeSessionId — the actual Claude session about to be spawned — the same
+        // "SessionId names the first spawned session" convention RunLauncher's own RunDispatched
+        // follows, rather than the run's own id, which no agent session ever runs under.
         session.Events.StartStream<RunAggregate>(runId, new RunDispatched(
-            runId, task.Id, Guid.Empty, context.OwnerId, claimed.LeaseGeneration, runId,
+            runId, task.Id, Guid.Empty, context.OwnerId, claimed.LeaseGeneration, claudeSessionId,
             worktree.Path, worktree.Branch, ExecutorMode.Subscription, DateTimeOffset.UtcNow,
             IsFollowUp: false, Model: AgentModel.Fable, RunDirectory: runDirectory));
 
@@ -205,11 +244,23 @@ public sealed class TaskWorkCommand : Hall9kAsyncCommand<TaskWorkCommand.Setting
 
         await Doorbell.RingAsync($"task-claimed-interactively:{task.Id}", cancellationToken);
         AnsiConsole.MarkupLineInterpolated($"[dim]Claimed task {task.Id} interactively.[/]");
-        return (runId, worktree.Path, worktree.Branch);
+        return (runId, worktree.Path, worktree.Branch, runDirectory);
+    }
+
+    private static async Task AppendSessionEndedAsync(
+        DocumentStore store, Guid runId, Guid claudeSessionId, CancellationToken cancellationToken)
+    {
+        await using IDocumentSession endSession = store.LightweightSession();
+        // Attached to the operator's terminal, not driven headlessly through
+        // --output-format stream-json — there is no result payload to read usage off, so
+        // every field is honestly null (the nullable-Turns convention).
+        endSession.Events.Append(runId, new InteractiveSessionEnded(
+            runId, claudeSessionId, DateTimeOffset.UtcNow, Turns: null, InputTokens: null, OutputTokens: null, CostUsd: null));
+        await endSession.SaveChangesAsync(cancellationToken);
     }
 
     private static async Task<int> LaunchInteractiveClaudeAsync(
-        string worktreePath, string prompt, Guid sessionId, bool skipPermissions, CancellationToken cancellationToken)
+        string worktreePath, string prompt, Guid sessionId, string settingsFile, bool skipPermissions, CancellationToken cancellationToken)
     {
         using Process process = new();
         process.StartInfo = new ProcessStartInfo
@@ -222,6 +273,8 @@ public sealed class TaskWorkCommand : Hall9kAsyncCommand<TaskWorkCommand.Setting
         process.StartInfo.ArgumentList.Add(sessionId.ToString());
         process.StartInfo.ArgumentList.Add("--model");
         process.StartInfo.ArgumentList.Add(AgentModel.Fable.Value);
+        process.StartInfo.ArgumentList.Add("--settings");
+        process.StartInfo.ArgumentList.Add(settingsFile);
         if (skipPermissions)
         {
             process.StartInfo.ArgumentList.Add("--dangerously-skip-permissions");

@@ -117,7 +117,18 @@ internal static class InteractiveWorktreeGit
             process.StartInfo.ArgumentList.Add(argument);
         }
 
-        process.Start();
+        try
+        {
+            process.Start();
+        }
+        catch (Exception exception) when (exception is System.ComponentModel.Win32Exception or InvalidOperationException)
+        {
+            // git missing from PATH, or the worktree directory vanished — the same
+            // unobservable-git case VerificationRunner.RunGitAsync produces its own (-1, "")
+            // sentinel for, so every caller's null-modified-list handling reaches identically.
+            return (-1, string.Empty, string.Empty);
+        }
+
         Task<string> standardOutput = process.StandardOutput.ReadToEndAsync(cancellationToken);
         Task<string> standardError = process.StandardError.ReadToEndAsync(cancellationToken);
         await process.WaitForExitAsync(cancellationToken);
