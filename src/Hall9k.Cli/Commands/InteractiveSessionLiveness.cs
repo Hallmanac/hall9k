@@ -48,14 +48,29 @@ internal static class InteractiveSessionLiveness
     public static void EnsureNotAttachedElsewhere(RunDetails run, Guid taskId, string action)
     {
         if (run.ActiveSessions.Find(session => session.Role == AgentRole.Interactive) is not { } session
-            || session.StartedAt is not { } startedAt
-            // A blank MachineName (a stream written before the field existed) is an unknown
-            // machine, never assumed to be this one — the same never-guess reading a mismatched
-            // name gets. Checking a pid this machine did not record the process start time for
-            // would be exactly the stranger-process risk this guard exists to avoid (adversarial
-            // review, cycle 2).
-            || session.MachineName != Environment.MachineName
-            || !IsAlive(session.ProcessId, startedAt))
+            || session.StartedAt is not { } startedAt)
+        {
+            return;
+        }
+
+        // A blank MachineName (a stream written before the field existed) is an unknown machine —
+        // nothing was ever observed either way, so this proceeds exactly as an absent session
+        // would. A non-blank name that does not match this machine IS an observation (a session
+        // recorded somewhere), and this machine cannot read that machine's process table to tell
+        // whether it is still alive — unobservable is not evidence of "gone", so this refuses
+        // rather than silently proceeding (adversarial review, cycle 4; the earlier cycle-2
+        // reading collapsed both cases into "proceed", which let a second machine race an
+        // operator's still-attached session on the first one).
+        if (session.MachineName.IsNotBlank() && session.MachineName != Environment.MachineName)
+        {
+            throw new DomainConflictException(
+                $"Task {taskId}'s interactive session (pid {session.ProcessId}) was recorded on machine "
+                + $"'{session.MachineName}' — this machine ('{Environment.MachineName}') cannot check whether "
+                + $"it is still attached there. Confirm on {session.MachineName} that the session has exited "
+                + $"before you {action} from here.");
+        }
+
+        if (session.MachineName.IsBlank() || !IsAlive(session.ProcessId, startedAt))
         {
             return;
         }
