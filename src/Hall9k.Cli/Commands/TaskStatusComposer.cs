@@ -194,6 +194,7 @@ internal static class TaskStatusComposer
         return new TaskStatusRow(
             task.Id,
             task.ProjectId,
+            task.EpicId,
             state,
             run?.State ?? RunState.Unknown,
             phase,
