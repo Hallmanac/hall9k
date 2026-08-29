@@ -353,7 +353,7 @@ public sealed class GitWorktreeManager(ILogger<GitWorktreeManager> logger) : IWo
         if (await WasEverLocalHeadAsync(worktreePath, branch, originTip.Trim(), cancellationToken))
         {
             logger.LogInformation(
-                "Branch {Branch} diverged from a tip this worktree pushed itself — a local checkpoint " +
+                "Branch {Branch} diverged from a tip this branch held itself — a local checkpoint " +
                 "recompose that never reached origin, not a rewrite — keeping the local tip",
                 branch);
             return;

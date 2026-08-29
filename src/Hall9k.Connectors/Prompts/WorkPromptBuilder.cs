@@ -356,8 +356,11 @@ public static class WorkPromptBuilder
         }
 
         prompt.AppendLine("  0. With every last increment committed as a checkpoint — `git status` must show");
-        prompt.AppendLine("     nothing uncommitted before this step, or step 3 below will fail against a tip");
-        prompt.AppendLine("     that never held it — record the pre-reset tip: `git rev-parse HEAD`. Step 3");
+        prompt.AppendLine("     nothing uncommitted or untracked before this step, or step 3 below will fail");
+        prompt.AppendLine("     against a tip that never held it: an untracked file only warns at the final");
+        prompt.AppendLine("     contract, but here it would recompose into the new history while `old-tip`");
+        prompt.AppendLine("     predates it, so the diff comes back non-empty for something that was added,");
+        prompt.AppendLine("     not omitted — record the pre-reset tip: `git rev-parse HEAD`. Step 3");
         prompt.AppendLine("     checks against it, so this is not optional bookkeeping.");
         prompt.AppendLine($"  1. Reset to the branch's own fork point, not the tip of `origin/{baseBranch}`");
         prompt.AppendLine("     itself: that ref lives in the shared repository and can move during this");
