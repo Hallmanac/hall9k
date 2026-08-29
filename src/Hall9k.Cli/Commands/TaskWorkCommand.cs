@@ -111,7 +111,11 @@ public sealed class TaskWorkCommand : Hall9kAsyncCommand<TaskWorkCommand.Setting
         {
             exitCode = await LaunchInteractiveClaudeAsync(
                 worktreePath, prompt, claudeSessionId, settingsFile, project.SkipPermissions, runId,
-                (processId, startedAt) => AppendSessionStartedAsync(store, runId, claudeSessionId, processId, startedAt, cancellationToken),
+                // CancellationToken.None: by the time this runs, process.Start() has already
+                // spawned a real, terminal-attached claude — a Ctrl-C landing in the window before
+                // this append completes must not turn into a lost append (adversarial review,
+                // cycle 3), the same reasoning AppendSessionEndedAsync's own call already applies.
+                (processId, startedAt) => AppendSessionStartedAsync(store, runId, claudeSessionId, processId, startedAt, CancellationToken.None),
                 cancellationToken);
         }
         catch (Exception exception) when (exception is Win32Exception or InvalidOperationException)
@@ -462,7 +466,23 @@ public sealed class TaskWorkCommand : Hall9kAsyncCommand<TaskWorkCommand.Setting
 
         process.Start();
         DateTimeOffset startedAt = DateTimeOffset.UtcNow;
-        await onStarted(process.Id, startedAt);
+        try
+        {
+            await onStarted(process.Id, startedAt);
+        }
+        catch (Exception exception)
+        {
+            // The child is already alive and attached to this terminal at this point — a failure
+            // recording it (a transient database error; the caller's own CancellationToken.None
+            // already rules out a cancelled-token race here) must never propagate out of this
+            // method and orphan that live process, since nothing below would then wait for it to
+            // exit or ever try the append again (adversarial review, cycle 3). Worst case with
+            // this catch is an unrecorded session until the operator re-enters or ends it —
+            // recoverable, and exactly the launch-never-started case's inverse this method's own
+            // comment above already names as unhandled.
+            AnsiConsole.MarkupLineInterpolated(
+                $"[yellow]Could not record the interactive session start ({exception.Message}); continuing.[/]");
+        }
 
         // The child shares h9k's foreground process group, so the terminal delivers Ctrl-C to it
         // directly and independently of the token below — the ordinary Claude Code keystroke for
