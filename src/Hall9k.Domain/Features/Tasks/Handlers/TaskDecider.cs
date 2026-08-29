@@ -921,9 +921,6 @@ public static class TaskDecider
         return new JiraWriteRequested(task.Id, writeId, operation, targetKey, payloadJson, requestedByOwnerId, requestedAt);
     }
 
-    /// <summary>The Jira write this task has outstanding, or null when none is (the retry sweep's own read).</summary>
-    public static bool HasPendingJiraWrite(TaskAggregate task, Guid writeId) => task.PendingJiraWriteId == writeId;
-
     public static JiraWriteSucceeded RecordJiraWriteSuccess(
         TaskAggregate task, Guid writeId, string issueKey, string summary, DateTimeOffset succeededAt)
     {
