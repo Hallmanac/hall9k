@@ -849,11 +849,21 @@ public sealed class InstallCommand : Hall9kAsyncCommand<InstallCommand.Settings>
     /// retired aside rather than gone (see <see cref="ClearConflictingDestinationEntry"/>), the
     /// one exception being a conflicting file an earlier entry in this walk already deleted
     /// outright, replaced by simply running the command again — the same hedge phase one's own
-    /// failure carries. Enumerating <paramref name="sourceDirectory"/> is inside its own try
-    /// block for the identical reason every other walk in this file now is: a listing failure
-    /// (a permission dropped, staging removed from under this walk) must report as this same
-    /// refusal rather than escape as an unhandled exception (origin: cycle-4 pre-PR adversarial
-    /// review).</summary>
+    /// failure carries. This frame's own <see cref="RequireConflictCleared"/> and <see
+    /// cref="Directory.CreateDirectory"/> call, and its own enumeration of <paramref
+    /// name="sourceDirectory"/>, are each inside their own try block for the identical reason
+    /// every other walk in this file now is: a failure at either step (a permission dropped,
+    /// staging removed from under this walk) must report as this same refusal, naming *this*
+    /// frame's own directories, rather than escape unhandled or surface with a recursive call's
+    /// frame misnamed as the one that failed (origin: cycle-4 pre-PR adversarial review; cycle-5
+    /// pre-PR verify pass, which found the top-level call's own conflict-check-and-create pair
+    /// still outside every try, and a nested frame's own failure there surfacing through the
+    /// parent's listing-failure message naming the wrong directory and the wrong cause). An
+    /// <see cref="InvalidOperationException"/> a recursive call already raised — whether from its
+    /// own conflict-check-and-create pair or its own enumeration — is already wrapped with the
+    /// frame it actually concerns, so it is deliberately left out of the <c>IOException</c>/
+    /// <c>UnauthorizedAccessException</c> filters below and simply propagates rather than being
+    /// re-wrapped a second time under this frame's directories.</summary>
     [SupportedOSPlatform("windows")]
     private static void CollectFilePairs(
         string sourceDirectory,
@@ -861,8 +871,21 @@ public sealed class InstallCommand : Hall9kAsyncCommand<InstallCommand.Settings>
         List<(string Source, string Destination)> files,
         HashSet<string> directories)
     {
-        RequireConflictCleared(destinationDirectory, isDirectory: true);
-        Directory.CreateDirectory(destinationDirectory);
+        try
+        {
+            RequireConflictCleared(destinationDirectory, isDirectory: true);
+            Directory.CreateDirectory(destinationDirectory);
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            throw new InvalidOperationException(
+                $"Could not finish updating {destinationDirectory} — {exception.Message} Run h9k update "
+                    + "again once that is resolved; bin is unchanged by this run's version swap, short of "
+                    + "a directory conflict this same run already cleared, which is retired aside rather "
+                    + "than gone.",
+                exception);
+        }
+
         directories.Add(destinationDirectory);
 
         try
@@ -909,7 +932,8 @@ public sealed class InstallCommand : Hall9kAsyncCommand<InstallCommand.Settings>
             $"Could not finish updating {destinationPath} — an existing junction, symlink, file, or "
                 + "directory there conflicts with what the new version ships and could not be removed "
                 + "(something still has it locked). Close whatever holds it and run h9k update again; "
-                + "bin is unchanged by this run's version swap.");
+                + "bin is unchanged by this run's version swap, short of a directory conflict this same "
+                + "run already cleared, which is retired aside rather than gone.");
     }
 
     /// <summary>Clears whatever <paramref name="destinationPath"/> currently holds when it
@@ -924,20 +948,24 @@ public sealed class InstallCommand : Hall9kAsyncCommand<InstallCommand.Settings>
     /// walking through to whatever the link points at (the same hazard <see
     /// cref="RemoveStaleFiles"/> guards on its own, later walk); a <em>file</em> symlink reports a
     /// link target too, but is a file as far as <see cref="File.Delete(string)"/> is concerned,
-    /// so it is dispatched to <see cref="TryDeleteFile"/> instead — <see
+    /// so it is dispatched to <see cref="TryDeleteReparsePointFile"/> instead — <see
     /// cref="TryDeleteDirectoryRecursively"/> can never delete one (origin: cycle-2 pre-PR
     /// adversarial review, which traced a file symlink through to a permanent, misdiagnosed
     /// "something still has it locked" refusal). The dispatch reads <see
-    /// cref="File.GetAttributes(string)"/> rather than <see cref="File.Exists(string)"/> to tell
-    /// the two kinds of reparse point apart: <see cref="File.GetAttributes(string)"/> reads the
-    /// reparse point's own directory entry without opening its target, so a <em>dangling</em>
-    /// file symlink (its target since removed) still carries no <see
-    /// cref="FileAttributes.Directory"/> flag and is still routed to <see cref="TryDeleteFile"/>;
-    /// <see cref="File.Exists(string)"/> opens the target to answer, so a dangling one used to
-    /// read as neither a file nor a directory and fall to <see
-    /// cref="TryDeleteDirectoryRecursively"/>, which cannot delete a file reparse point and left
-    /// the merge refused permanently with the same misdiagnosed message (origin: cycle-4 pre-PR
-    /// conformance review);</item>
+    /// cref="File.GetAttributes(string)"/>, not <see cref="File.Exists(string)"/>, to tell the two
+    /// kinds of reparse point apart, because only <see cref="File.GetAttributes(string)"/> is
+    /// documented to read the reparse point's own directory entry without opening its target — a
+    /// <em>dangling</em> file symlink (its target since removed) still carries no <see
+    /// cref="FileAttributes.Directory"/> flag under that read (origin: cycle-4 pre-PR conformance
+    /// review, which traced a dangling link through <see cref="File.Exists(string)"/> to a
+    /// permanent, misdiagnosed refusal one way or another depending on which of <see
+    /// cref="File.Exists(string)"/>'s two possible target-resolution behaviors actually holds on
+    /// Windows). The file branch itself deletes the entry directly, through <see
+    /// cref="TryDeleteReparsePointFile"/>, rather than through <see cref="TryDeleteFile"/>'s own
+    /// <see cref="File.Exists(string)"/> pre-check, so clearing a dangling link no longer depends
+    /// on which of those two behaviors is true either (origin: cycle-5 pre-PR verify pass, which
+    /// found the dispatch here still routed through that same unresolved <see
+    /// cref="File.Exists(string)"/> premise one level down);</item>
     /// <item>a type mismatch — a file where staging ships a directory, or a directory where
     /// staging ships a file — is cleared. A conflicting <em>file</em> is deleted outright: a
     /// single <see cref="File.Delete(string)"/> either lands whole or not at all, so there is no
@@ -969,7 +997,7 @@ public sealed class InstallCommand : Hall9kAsyncCommand<InstallCommand.Settings>
         {
             return (File.GetAttributes(destinationPath) & FileAttributes.Directory) != 0
                 ? TryDeleteDirectoryRecursively(destinationPath)
-                : TryDeleteFile(destinationPath, report: false);
+                : TryDeleteReparsePointFile(destinationPath);
         }
 
         if (isDirectory && File.Exists(destinationPath))
@@ -1366,6 +1394,30 @@ public sealed class InstallCommand : Hall9kAsyncCommand<InstallCommand.Settings>
             // summary line above instead of escaping as an unhandled exception (origin: cycle-4
             // pre-PR adversarial review).
             stillStuck.Add(directory);
+        }
+    }
+
+    /// <summary>Deletes a file reparse point directly for <see
+    /// cref="ClearConflictingDestinationEntry"/>'s file-symlink branch, without <see
+    /// cref="TryDeleteFile"/>'s own leading <see cref="File.Exists(string)"/> check: whether that
+    /// check reads a dangling link's own directory entry or opens its target to answer is not
+    /// settled here (see <see cref="ClearConflictingDestinationEntry"/>'s own doc comment), so
+    /// gating the delete on it either silently reports a still-present dangling link already gone,
+    /// or is merely redundant — this call cannot afford to depend on which. <see
+    /// cref="File.Delete(string)"/> is documented to no-op rather than throw when <paramref
+    /// name="path"/> is already gone, so skipping the existence check costs nothing (origin:
+    /// cycle-5 pre-PR verify pass).</summary>
+    [SupportedOSPlatform("windows")]
+    private static bool TryDeleteReparsePointFile(string path)
+    {
+        try
+        {
+            File.Delete(path);
+            return true;
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            return false;
         }
     }
 
