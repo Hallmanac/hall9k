@@ -12,23 +12,56 @@ namespace Hall9k.Cli.Commands;
 internal static class EpicIdResolver
 {
     public static async Task<Guid> ResolveAsync(
+        IQuerySession session, string idOrFragment, CancellationToken cancellationToken) =>
+        (await ResolveDetailsAsync(session, idOrFragment, cancellationToken)).Id;
+
+    /// <summary>
+    /// Resolves and validates an epic a task is about to join: it must exist, belong to the
+    /// same project as the task, and be Open — "the only state a task can join"
+    /// (<see cref="EpicState.Open"/>). Every join point (task add, task revise) calls this
+    /// rather than <see cref="ResolveAsync"/> so a mistyped id, a cross-project id, or a closed
+    /// epic is refused instead of recorded as a silent dangling reference.
+    /// </summary>
+    public static async Task<Guid> ResolveForMembershipAsync(
+        IQuerySession session, string idOrFragment, Guid projectId, CancellationToken cancellationToken)
+    {
+        EpicDetails epic = await ResolveDetailsAsync(session, idOrFragment, cancellationToken);
+
+        if (epic.ProjectId != projectId)
+        {
+            throw new DomainConflictException(
+                $"Epic '{epic.Title}' belongs to a different project; a task can only join an epic "
+                + "in its own project.");
+        }
+
+        if (epic.State != EpicState.Open)
+        {
+            throw new DomainConflictException(
+                $"Epic '{epic.Title}' is {epic.State.Value} — Open is the only state a task can join.");
+        }
+
+        return epic.Id;
+    }
+
+    private static async Task<EpicDetails> ResolveDetailsAsync(
         IQuerySession session, string idOrFragment, CancellationToken cancellationToken)
     {
         if (Guid.TryParse(idOrFragment, out Guid id))
         {
-            return id;
+            return await session.LoadAsync<EpicDetails>(id, cancellationToken)
+                ?? throw new DomainNotFoundException(
+                    $"No epic {id}. See what exists: h9k epic list");
         }
 
         string fragment = idOrFragment.Replace("-", "");
         IReadOnlyList<EpicDetails> all = await session.Query<EpicDetails>().ToListAsync(cancellationToken);
-        Guid[] matches = [.. all
+        EpicDetails[] matches = [.. all
             .Where(epic => epic.Id.ToString("N").StartsWith(fragment, StringComparison.OrdinalIgnoreCase)
-                        || epic.Id.ToString("N").EndsWith(fragment, StringComparison.OrdinalIgnoreCase))
-            .Select(epic => epic.Id)];
+                        || epic.Id.ToString("N").EndsWith(fragment, StringComparison.OrdinalIgnoreCase))];
 
         return matches switch
         {
-            [Guid single] => single,
+            [EpicDetails single] => single,
             [] => throw new DomainNotFoundException(
                 $"No epic matches '{idOrFragment}'. See what exists: h9k epic list"),
             _ => throw new DomainConflictException(

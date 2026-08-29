@@ -102,7 +102,7 @@ public sealed class TaskAggregate
     public Guid? SourceIdeaId { get; private set; }
 
     /// <summary>
-    /// The epic this task belongs to, or null when ungrouped (Brian's ruling, 2026-08-28).
+    /// The epic this task belongs to, or null when ungrouped (Decisions Log #99).
     /// Independent of <see cref="SourceIdeaId"/>: membership and provenance are separate
     /// records, and a task belongs to at most one epic at a time.
     /// </summary>

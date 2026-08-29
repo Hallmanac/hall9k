@@ -6,9 +6,8 @@ namespace Hall9k.Domain.Features.Epic;
 /// <summary>
 /// An epic's whole lifecycle, deliberately two words wide: an epic is open until a human
 /// closes it, and nothing else moves it — not its last member task closing out, not every
-/// member leaving. Closing is always an explicit act with a reason (Brian's ruling,
-/// 2026-08-28): the standing never-auto-close doctrine applies here exactly as it does to a
-/// task.
+/// member leaving. Closing is always an explicit act with a reason (Decisions Log #99): the
+/// standing never-auto-close doctrine applies here exactly as it does to a task.
 /// </summary>
 [JsonConverter(typeof(EpicStateJsonConverter))]
 public sealed record EpicState

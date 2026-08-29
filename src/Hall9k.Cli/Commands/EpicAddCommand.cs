@@ -22,7 +22,7 @@ public sealed class EpicAddCommand : Hall9kAsyncCommand<EpicAddCommand.Settings>
         public string? Project { get; init; }
 
         [CommandOption("--title <TITLE>")]
-        [Description("The epic's name — a cohesive family of tasks worth naming (Brian's ruling, 2026-08-28). Required.")]
+        [Description("The epic's name — a cohesive family of tasks worth naming (Decisions Log #99). Required.")]
         public string? Title { get; init; }
     }
 
@@ -57,7 +57,9 @@ public sealed class EpicAddCommand : Hall9kAsyncCommand<EpicAddCommand.Settings>
             $"[blue]Epic created[/] in '{project.Name.EscapeMarkup()}': {added.Title.EscapeMarkup()} [dim]({shortId})[/]");
         AnsiConsole.MarkupLine(
             $"[dim]Next:[/] h9k task add --project {project.Name.EscapeMarkup()} --objective \"…\" --epic {shortId} "
-            + $"[dim]or[/] h9k task revise <id> --epic {shortId}");
+            + $"[dim]for a new task, or for an existing draft:[/] h9k task revise <id> --epic {shortId} "
+            + $"[dim](revision is Draft-only — a published task joins by[/] h9k task unassign <id> "
+            + $"[dim]then[/] h9k task draft <id> [dim]first)[/]");
         return ExitCodes.Ok;
     }
 }

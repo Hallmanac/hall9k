@@ -38,6 +38,7 @@ h9k project show <name>      # one project: home, registration, settings, rollup
 h9k task list --project <name> --state <state>   # browse live and done tasks, newest first (--all, --limit, --include-archived)
 h9k status                   # the attention pane: state, phase, and attention on every row
 h9k idea add "<text>"        # capture an idea; discovery starts, a project is optional
+h9k epic add --project <name> --title "<name>"    # name a first-class grouping of tasks (Decisions Log #99)
 h9k connection list          # every external account this install can reach, and where its credential lives
 ```
 
@@ -137,6 +138,22 @@ h9k task draft <id>                               # Published back to Draft, so 
 The edit-after-the-fact path is `unassign → draft → revise → publish → assign`, each step an
 explicit act. A dependency counts as met only at true closeout (the pull request merged and the
 closeout monitor observed it); TASK-MODEL.md §2.3 has the whole picture.
+
+An epic is a first-class named grouping of tasks (Decisions Log #99): its own id, title, and
+Open/Closed state, event-sourced like everything else. Membership is optional and no-ceremony —
+it rides the task's own stream, so the flat task model is undisturbed for everything ungrouped —
+and a task joins or leaves at `h9k task add --epic` or `h9k task revise --epic`/`--clear-epic`,
+must belong to the same project as the epic, and only an Open epic accepts new members. An epic
+closes only by explicit human act with a reason, never automatically, not even when its last
+member task closes out; there is no `h9k epic reopen` yet.
+
+```bash
+h9k epic add --project <name> --title "<name>"    # name a new epic: a project and a title
+h9k epic list [--project <name>] [--state <state>]   # every epic with a member-task rollup; open|closed|all
+h9k epic show <id>                                # one epic: title, state, Jira link, every member task
+h9k epic link-jira <id> <key-or-url>              # record the Jira epic this one corresponds to; identity only
+h9k epic close <id> --reason "<why>"              # the only way an epic ends
+```
 
 `--from-issue` and `--from-jira` adopt existing external work (PLAN.md §3.1a, Decisions Log #60,
 #65): the item's title seeds the objective, its description becomes agent context, and the item is

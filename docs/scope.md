@@ -7,7 +7,7 @@ Hall9k has been building Hall9k since the pipeline first ran end to end. Anythin
 but unbuilt" names the file that holds the design, so you can read it rather than take this
 page's word for it.
 
-Last reconciled against the tree on 2026-08-23.
+Last reconciled against the tree on 2026-08-28.
 
 ---
 
@@ -54,6 +54,15 @@ refused at publish and named hop by hop. A dependency counts as met only at true
 blocker that dies holds its dependents visibly rather than silently unblocking them, and a
 blocker that recovers clears the hold on its own. The same edges route context: a run receives
 what its immediate blockers handed down at their closeout, exactly one hop.
+
+### Epics
+
+`h9k epic add | list | show | link-jira | close` (PLAN.md Decisions Log #99). A first-class
+named grouping of tasks — its own id, title, and Open/Closed state — with optional, no-ceremony
+membership: a task joins or leaves at `h9k task add --epic` / `h9k task revise --epic`/
+`--clear-epic`, must share the epic's project, and only an Open epic accepts new members. Closing
+is always an explicit human act with a reason, never automatic, and there is no `reopen` yet. Jira
+linking is identity-only, the same discipline a task's own `link-jira` follows.
 
 ### Ideas
 
