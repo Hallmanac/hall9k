@@ -154,15 +154,18 @@ h9k uninstall --purge-data    # the only path that destroys the database too
 a running daemon, unregisters autostart (a macOS LaunchAgent, or a Windows logon task),
 removes the PATH link, and removes everything under `~/.hall9k` that `h9k
 install` itself ever wrote — `bin/`, the skill set, the Postgres compose file, the daemon's
-log and pid files — and deletes `~/.hall9k` itself once that leaves it empty. On a machine
-that has done nothing but install and uninstall, that is everything: a removed home is a
-removed home. A registered project's home (`~/.hall9k/projects/<name>`, real git clones and
-worktrees), `config.json` (an operator, `h9k install` itself when nothing was configured yet,
-or `h9k doctor`'s start-offer may have written it — uninstall keeps it regardless, since it is
-what lets a later `h9k install` reconnect to the surviving database instead of finding nothing
-configured all over again), your credentials, and anything else you or another tool put there
-are left alone — none of that is the install's to remove, and this command never guesses
-otherwise.
+log and pid files — and deletes `~/.hall9k` itself once that leaves it empty. `config.json`
+(an operator, `h9k install` itself when nothing was configured yet, or `h9k doctor`'s
+start-offer may have written it — uninstall keeps it regardless, since it is what lets a later
+`h9k install` reconnect to the surviving database instead of finding nothing configured all over
+again) is the one exception: a machine that installed onto a genuinely unconfigured Postgres
+keeps a `config.json` naming the default connection string, so `~/.hall9k` survives empty of
+everything else rather than being removed outright — the same machine that had something already
+configured before install ran gets no `config.json` of install's making at all, and a plain
+install-then-uninstall does delete the whole home. A registered project's home
+(`~/.hall9k/projects/<name>`, real git clones and worktrees), your credentials, and anything else
+you or another tool put there are left alone too — none of that is the install's to remove, and
+this command never guesses otherwise.
 
 **Your database survives by default.** The `hall9k-postgres` Docker container is stopped,
 never removed, and its data volume is never touched — the data lives in Docker, not in the
@@ -198,9 +201,9 @@ worth knowing:
   connection string is deliberately left out, because a durable copy belongs in the platform
   config file (`h9k install` or `h9k doctor`'s start-offer writes it there when nothing was
   configured yet) rather than a second, weaker plaintext copy in the launch script. If you
-  configured Postgres purely by
-  exporting the variable, `enable` warns you at enable time — an autostarted daemon would
-  otherwise exit immediately at every logon with no connection string configured. `h9k doctor`
+  configured Postgres purely by exporting the variable, `enable` warns you at enable time — an
+  autostarted daemon would otherwise exit immediately at every logon with no connection string
+  configured. `h9k doctor`
   will not fix this for you here: your shell already resolves a connection string from the
   variable, so doctor reports healthy and never touches `config.json`. Add
   `{"connectionString": "…"}` to `~/.hall9k/config.json` by hand instead.

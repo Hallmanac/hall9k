@@ -84,5 +84,11 @@ public sealed class InstallCommandConnectionStringTests : IDisposable
             restart: false,
             noRestart: false,
             linkOntoPath: false,
+            writeDefaultConnectionStringIfUnconfigured: true,
+            // Anchors the project-override walk-up at the isolated home directory rather than
+            // wherever the test host's own working directory happens to sit, so a contributor
+            // whose real checkout carries a .hall9k-connection file at its root does not make
+            // this test's outcome depend on their local environment (cycle-1 review).
+            connectionStringStartDirectory: home,
             cancellationToken: CancellationToken.None);
 }
