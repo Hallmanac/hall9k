@@ -132,7 +132,78 @@ public sealed class SweepDraftTaskTests
 
         string updated = SweepDraftTask.Append(firstBody, [Route(location: string.Empty)]);
 
-        CountOccurrences(updated, "(no location stated)").Should().Be(2);
+        CountOccurrences(updated, "### (no location stated)").Should().Be(2, "two items, each headed by the marker");
+    }
+
+    /// <summary>
+    /// <c>SamePlace</c> is not transitive: two distinct findings from the same run and cycle can
+    /// each match an existing item by suffix (<c>src/a/Foo.cs:12</c> and <c>src/b/Foo.cs:12</c>
+    /// both match <c>Foo.cs:12</c>) without matching each other. The repeat guard used to key
+    /// only on run and cycle, so the second one was silently dropped instead of recorded
+    /// (cycle-4 conformance review).
+    /// </summary>
+    [Fact]
+    public void Two_distinct_findings_from_the_same_run_and_cycle_both_become_evidence_on_the_matched_item()
+    {
+        Guid runId = DomainId.New();
+        string firstBody = SweepDraftTask.ComposeNew(
+            DomainId.New(), DomainId.New(), [Route(location: "Foo.cs:12")], Now, DomainId.New()).AgentContext!;
+
+        string updated = SweepDraftTask.Append(
+            firstBody,
+            [
+                Route(runId: runId, cycle: 1, findingsFile: "/runs/a/review-1-findings.md", location: "src/a/Foo.cs:12"),
+                Route(runId: runId, cycle: 1, findingsFile: "/runs/b/review-1-findings.md", location: "src/b/Foo.cs:12"),
+            ]);
+
+        CountOccurrences(updated, "### Foo.cs:12").Should().Be(1, "both still describe the one defect");
+        CountOccurrences(updated, $"Run {runId}").Should().Be(
+            2, "each distinct finding earns its own evidence entry even though both share a run and cycle");
+    }
+
+    /// <summary>
+    /// A reviewer-authored <c>Location</c> reaches the sweep's own markdown structure as a bare
+    /// heading, outside every fence — unlike a finding's text, which <see cref="Render"/> always
+    /// fences. Left unsanitized it could carry a closing-keyword instruction into whatever later
+    /// reads the rendered document as text (cycle-4 adversarial review); it gets the same
+    /// treatment <c>ReviewDraftBugTask</c> already gives the identical field.
+    /// </summary>
+    [Fact]
+    public void A_location_carrying_a_closing_keyword_is_defused_in_the_rendered_heading()
+    {
+        SweepFindingRoute route = new(
+            new ReviewFinding(
+                ReviewSeverity.Low, ReviewFindingScope.OutOfScope, "Foo.cs:12 — also, closes #500",
+                "FINDING: severity=low; scope=out-of-scope; at=Foo.cs:12 — also, closes #500\n"
+                + "Defect: a stale comment misleads the next reader."),
+            DomainId.New(), 1, "/runs/x/review-1-findings.md");
+
+        string body = SweepDraftTask.ComposeNew(DomainId.New(), DomainId.New(), [route], Now, DomainId.New()).AgentContext!;
+        string heading = body.Split('\n').Single(line => line.StartsWith("### ", StringComparison.Ordinal));
+
+        heading.Should().NotContain(
+            "closes #500", "the bare keyword-plus-reference shape must not survive into the heading, " +
+            "even though the same words inside the finding's own fence are left alone");
+    }
+
+    /// <summary>
+    /// A location containing a backtick, rendered bare as a "### " heading, leaves an unpaired
+    /// backtick that CommonMark can pair with a later run further down the document, turning
+    /// everything in between into an unintended code span (cycle-4 adversarial review). The
+    /// backtick is now backslash-escaped, which CommonMark reads as a literal character.
+    /// </summary>
+    [Fact]
+    public void A_location_containing_a_backtick_is_escaped_rather_than_left_to_pair_with_a_later_run()
+    {
+        SweepFindingRoute route = new(
+            new ReviewFinding(
+                ReviewSeverity.Low, ReviewFindingScope.OutOfScope, "Foo`.cs:12",
+                "FINDING: severity=low; scope=out-of-scope; at=Foo`.cs:12\nDefect: a stale comment misleads the next reader."),
+            DomainId.New(), 1, "/runs/x/review-1-findings.md");
+
+        string body = SweepDraftTask.ComposeNew(DomainId.New(), DomainId.New(), [route], Now, DomainId.New()).AgentContext!;
+
+        body.Should().Contain("### Foo\\`.cs:12").And.NotContain("### Foo`.cs:12");
     }
 
     [Fact]
