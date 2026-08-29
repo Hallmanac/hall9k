@@ -247,6 +247,22 @@ public sealed class TwgJiraExecutor(ProcessRunner? runner = null)
         {
             result = await runner(Binary, arguments, workingDirectory, cancellationToken);
         }
+        // A long composed description or comment can push the whole command line (every field is
+        // passed inline, per twg's own grammar) over the OS's own limit — Windows'
+        // ERROR_FILENAME_EXCED_RANGE (206) or POSIX's E2BIG (7, reported identically on Linux and
+        // macOS) — and .NET reports that refused spawn as the same Win32Exception a missing binary
+        // throws. Left unclassified, that misdiagnoses an installed, authenticated twg as not
+        // installed at all, contradicting h9k doctor's own probe (whose short command line never
+        // hits this), the exact trap GitHubWorkItemProvider.CreateAsync already sidesteps with a
+        // body file for gh (independent pre-PR review, cycle 5).
+        catch (Win32Exception exception) when (exception.NativeErrorCode is 206 or 7)
+        {
+            throw new TwgExecutionException(
+                TwgFailureKind.Other,
+                $"Could not run twg: the command line was too long ({exception.Message}). This is a long "
+                + "description or comment on the write, not a missing install — twg is installed; "
+                + "shorten the payload and try again.");
+        }
         catch (Win32Exception exception)
         {
             throw new TwgExecutionException(
