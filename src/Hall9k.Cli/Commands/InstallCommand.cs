@@ -214,7 +214,10 @@ public sealed class InstallCommand : Hall9kAsyncCommand<InstallCommand.Settings>
             // retirement already made; a lock during placement undoes every placement AND every
             // retirement already made, exactly as fully; and an unclearable conflict is caught
             // before anything is retired or placed at all — so however this throws, bin still
-            // holds every file the old release shipped, exactly as this method left it.
+            // holds every file the old release shipped, exactly as this method left it, short of
+            // the vanishingly rare case where undoing an earlier placement or retirement in this
+            // same run hits a second, independent lock of its own (that file is cleaned up
+            // automatically by a future install or update instead).
             // RemoveStaleFiles only runs once every phase has fully succeeded, so it never sees
             // a partial merge either. The messages below describe only what SwapFilesIntoPlace
             // itself did or did not do, which on this path is bin's whole condition.
@@ -893,7 +896,12 @@ public sealed class InstallCommand : Hall9kAsyncCommand<InstallCommand.Settings>
     /// unlinked without ever being followed — <see cref="TryDeleteDirectoryRecursively"/> already
     /// has this guard, so reusing it here is what keeps every write inside <c>bin</c> instead of
     /// walking through to whatever the link points at (the same hazard <see
-    /// cref="RemoveStaleFiles"/> guards on its own, later walk);</item>
+    /// cref="RemoveStaleFiles"/> guards on its own, later walk); a <em>file</em> symlink reports a
+    /// link target too, but is a file as far as <see cref="File.Exists"/> and <see
+    /// cref="File.Delete(string)"/> are concerned, so it is dispatched to <see
+    /// cref="TryDeleteFile"/> instead — <see cref="TryDeleteDirectoryRecursively"/> can never
+    /// delete one (origin: cycle-2 pre-PR adversarial review, which traced a file symlink through
+    /// to a permanent, misdiagnosed "something still has it locked" refusal);</item>
     /// <item>a type mismatch — a file where staging ships a directory, or a directory where
     /// staging ships a file — is removed outright, since <see cref="Directory.CreateDirectory"/>
     /// throws on the former and <see cref="File.Move"/> throws on the latter.</item>
@@ -908,7 +916,9 @@ public sealed class InstallCommand : Hall9kAsyncCommand<InstallCommand.Settings>
     {
         if (new DirectoryInfo(destinationPath).LinkTarget is not null)
         {
-            return TryDeleteDirectoryRecursively(destinationPath);
+            return File.Exists(destinationPath)
+                ? TryDeleteFile(destinationPath, report: false)
+                : TryDeleteDirectoryRecursively(destinationPath);
         }
 
         if (isDirectory && File.Exists(destinationPath))
