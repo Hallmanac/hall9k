@@ -163,7 +163,7 @@ import is recorded as an observation of that moment and never re-checked. Every 
 `IWorkItemProvider` in `Hall9k.Connectors`, so a new one is a resolver rather than a new command.
 
 Jira is connected as a **read** credential plus a compose/execute write path (Decisions Log #65,
-#99), because reading Jira is configuration-agnostic and writing it is not, but writing it also
+#102), because reading Jira is configuration-agnostic and writing it is not, but writing it also
 has to be deterministic and auditable rather than left entirely to an agent's own judgment:
 
 ```bash
@@ -179,7 +179,7 @@ The platform never authors a card's *content*: issue types, required fields and 
 the organisation's configuration, so `push-to-jira` dispatches a session into the project's own
 repository, where its card-authoring skills live, to work out what the card should look like — but
 that session makes no Jira call itself. It composes a payload and submits it through
-`write-jira`, which is the sole executor of every Jira write (Decisions Log #99): hall9k validates
+`write-jira`, which is the sole executor of every Jira write (Decisions Log #102): hall9k validates
 the payload (a transition or a close is refused regardless of who composed it — that is a team's
 workflow, done in Jira directly, never a write hall9k performs), records the intent with the full
 payload before anything is sent, executes it through the Atlassian CLI (`twg`) with JSON output,

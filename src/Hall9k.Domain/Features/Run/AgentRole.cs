@@ -25,7 +25,7 @@ public sealed record AgentRole
     /// Writes a task up as a card in an external tracker (backlog 18). Its own role because it
     /// is the one session that writes nothing to the repository and reads almost none of it: its
     /// work is the project's card-authoring skill and one <c>h9k task write-jira</c> command at
-    /// the end — it makes no Jira call itself, through MCP or otherwise (Decisions Log #99).
+    /// the end — it makes no Jira call itself, through MCP or otherwise (Decisions Log #102).
     /// </summary>
     public static readonly AgentRole Publication = new("Publication");
     /// <summary>Not recognized or not yet set. Serializes as an empty string.</summary>

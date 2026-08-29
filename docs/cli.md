@@ -237,7 +237,7 @@ since the recorded repository path of a project with a home names the bare clone
 has no files to read; a project registered before homes existed still points at an ordinary
 checkout, and that is where its session runs. That session makes no Jira call itself: it submits
 the composed payload through `write-jira`, which is the sole executor of every Jira write
-(Decisions Log #99). `write-jira` validates the payload (a transition or a close is refused
+(Decisions Log #102). `write-jira` validates the payload (a transition or a close is refused
 regardless of who composed it), records the intent before anything is sent, executes it through
 the Atlassian CLI (`twg`), and verifies by reading the item back before recording the outcome — the
 same observation-gate pattern `link-jira` uses for a pre-existing card. A project set to `--backlog

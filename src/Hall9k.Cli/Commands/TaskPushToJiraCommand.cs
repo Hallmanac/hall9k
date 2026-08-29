@@ -27,7 +27,7 @@ namespace Hall9k.Cli.Commands;
 /// board a support request is routed to. Those rules belong to the organisation, and a team that
 /// has them already has them written down. So the session is dispatched into the project's
 /// repository, where its own Claude skills are, to work out what the card should look like — but
-/// it makes no Jira call itself (Decisions Log #99): it composes a payload and submits it through
+/// it makes no Jira call itself (Decisions Log #102): it composes a payload and submits it through
 /// <c>h9k task write-jira</c>, which is the sole executor of every Jira write.
 /// </para>
 /// </summary>
