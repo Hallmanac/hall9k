@@ -143,6 +143,7 @@ public sealed class InstallCommand : Hall9kAsyncCommand<InstallCommand.Settings>
         bool writeDefaultConnectionStringIfUnconfigured = false,
         string? connectionStringStartDirectory = null,
         Func<CancellationToken, Task<bool>>? portListeningProbe = null,
+        string? currentDirectoryOverride = null,
         CancellationToken cancellationToken = default)
     {
         // The actual last point before staging becomes ~/.hall9k/bin, run for every caller —
@@ -180,7 +181,7 @@ public sealed class InstallCommand : Hall9kAsyncCommand<InstallCommand.Settings>
         if (writeDefaultConnectionStringIfUnconfigured)
         {
             await WriteDefaultConnectionStringIfUnconfiguredAsync(
-                connectionStringStartDirectory, portListeningProbe, cancellationToken);
+                connectionStringStartDirectory, portListeningProbe, currentDirectoryOverride, cancellationToken);
         }
 
         if (skillsSource is not null)
@@ -281,9 +282,19 @@ public sealed class InstallCommand : Hall9kAsyncCommand<InstallCommand.Settings>
     /// whether the host actually running the test suite happens to have Postgres on 5432
     /// (a dev machine running this repository's own <c>docker compose</c> Postgres, say);
     /// <c>null</c> uses the real <see cref="ContainerRuntimeProbe.PortListeningAsync"/> check.
+    /// <paramref name="currentDirectoryOverride"/> stands in for the real
+    /// <see cref="Directory.GetCurrentDirectory"/> consulted below, for the identical reason:
+    /// without a seam of its own, a test asserting this method's outcome depends on wherever
+    /// the test host process actually happens to be running from, which can carry its own
+    /// <c>.hall9k-connection</c> override (a contributor's checkout root, or an ancestor of it)
+    /// and make the test's result depend on that machine's layout rather than on the scenario
+    /// under test (cycle-6 review); <c>null</c> uses the real current directory.
     /// </summary>
     private static async Task WriteDefaultConnectionStringIfUnconfiguredAsync(
-        string? startDirectory, Func<CancellationToken, Task<bool>>? portListeningProbe, CancellationToken cancellationToken)
+        string? startDirectory,
+        Func<CancellationToken, Task<bool>>? portListeningProbe,
+        string? currentDirectoryOverride,
+        CancellationToken cancellationToken)
     {
         ConnectionStringResolution resolution = Hall9kDatabase.Resolve(startDirectory: startDirectory);
         if (resolution.Origin != ConnectionStringOrigin.None)
@@ -291,7 +302,7 @@ public sealed class InstallCommand : Hall9kAsyncCommand<InstallCommand.Settings>
             return;
         }
 
-        string currentDirectory = Directory.GetCurrentDirectory();
+        string currentDirectory = currentDirectoryOverride ?? Directory.GetCurrentDirectory();
         if (startDirectory is not null
             && !ProjectHomePaths.SameDirectory(Path.GetFullPath(startDirectory), Path.GetFullPath(currentDirectory))
             && Hall9kDatabase.Resolve(startDirectory: currentDirectory).Origin != ConnectionStringOrigin.None)

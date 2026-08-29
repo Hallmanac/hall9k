@@ -112,5 +112,14 @@ public sealed class InstallCommandConnectionStringTests : IDisposable
             // own dev-loop compose Postgres, say) — stubbed false unless a test overrides it,
             // so "nothing configured" stays hermetic regardless (cycle-1 review).
             portListeningProbe: portListeningProbe ?? (static _ => Task.FromResult(false)),
+            // The production method also consults the real current directory in addition to
+            // connectionStringStartDirectory (both directions of the walk-up, cycle-1 review),
+            // so connectionStringStartDirectory alone does not make this hermetic — anchoring
+            // this one at home too closes the gap: a contributor whose real checkout (or an
+            // ancestor of it, e.g. ~/.hall9k itself) carries a .hall9k-connection file no
+            // longer makes this test's outcome depend on the test host's own working
+            // directory (cycle-6 review, which found the earlier comment above claiming
+            // hermeticity that connectionStringStartDirectory alone did not actually provide).
+            currentDirectoryOverride: home,
             cancellationToken: CancellationToken.None);
 }
