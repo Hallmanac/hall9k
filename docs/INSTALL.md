@@ -123,9 +123,10 @@ string configured, is it reachable, is the schema there, and (if nothing is conf
 available on this machine to point at, including a stopped `hall9k-postgres` container from
 an earlier session. `h9k doctor --yes` runs the same check and remediates without asking —
 starts Hall9k's own Postgres via the generated compose file and creates the schema — so a
-fresh install on a machine with Docker running reaches a passing doctor in one command:
-`h9k doctor --yes`, then a plain `h9k daemon start`. See `docs/operations.md` for the full
-precedence chain and the two provisioning paths.
+fresh install on a machine with Docker running reaches a verified install in three commands:
+`h9k doctor --yes`, then a plain `h9k daemon start`, then `h9k daemon status` to confirm `h9kd`
+is running. See `docs/operations.md` for the full precedence chain and the two provisioning
+paths.
 
 ## Daemon operating settings
 
