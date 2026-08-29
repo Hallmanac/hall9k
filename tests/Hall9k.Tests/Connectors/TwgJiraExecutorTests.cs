@@ -40,6 +40,18 @@ public sealed class TwgJiraExecutorTests
     private static string RealisticGetAnswer(string key) =>
         $"{{\"apiVersion\":\"v2\",\"command\":\"jira.workitem.get\",\"data\":[{{\"key\":\"{key}\",\"summary\":\"Found it\"}}]}}";
 
+    /// <summary>
+    /// twg's real <c>jira workitem get --fields description</c> answer shape: the description
+    /// comes back as Atlassian Document Format, a JSON tree, with the plain text — the marker
+    /// included — sitting inside nested "text" nodes rather than as a flat string (verified
+    /// against the installed binary directly, independent pre-PR review, conformance and
+    /// adversarial lenses, cycle 1).
+    /// </summary>
+    private static string RealisticDescriptionGetAnswer(string key, string descriptionText) =>
+        """{"apiVersion":"v2","command":"jira.workitem.get","data":[{"key":"@KEY@","description":{"type":"doc","version":1,"content":[{"type":"paragraph","content":[{"type":"text","text":"@TEXT@"}]}]}}]}"""
+            .Replace("@KEY@", key)
+            .Replace("@TEXT@", descriptionText);
+
     [Fact]
     public async Task A_create_embeds_the_tasks_marker_and_verifies_the_returned_key()
     {
@@ -177,10 +189,17 @@ public sealed class TwgJiraExecutorTests
     [Fact]
     public async Task A_search_reads_the_key_out_of_twgs_real_envelope_and_file_shape()
     {
+        Guid taskId = Guid.NewGuid();
         string file = Path.GetTempFileName();
         try
         {
-            await File.WriteAllTextAsync(file, """{"apiVersion":"v2","command":"jira.workitem.query","data":{"issues":[{"key":"PROJ-777","summary":"Found it"}]}}""");
+            // The same file content stands in for both twg calls this dedup hit makes: the
+            // query's own answer (read for "key") and the confirmation get's answer (read for
+            // the marker text) — a real envelope only needs to carry both once.
+            string queryAnswer =
+                """{"apiVersion":"v2","command":"jira.workitem.query","data":{"issues":[{"key":"PROJ-777","summary":"Found it","description":"@MARKER@"}]}}"""
+                    .Replace("@MARKER@", TwgJiraExecutor.Marker(taskId));
+            await File.WriteAllTextAsync(file, queryAnswer);
             string envelope =
                 $"""
                 output_files:
@@ -194,7 +213,7 @@ public sealed class TwgJiraExecutorTests
             RecordingProcessRunner twg = RecordingProcessRunner.Succeeding(envelope);
             TwgJiraExecutor executor = new(twg.Runner);
 
-            string? found = await executor.FindByMarkerAsync(Guid.NewGuid(), "/repo", CancellationToken.None);
+            string? found = await executor.FindByMarkerAsync(taskId, "/repo", CancellationToken.None);
 
             found.Should().Be("PROJ-777");
         }
@@ -213,7 +232,9 @@ public sealed class TwgJiraExecutorTests
     public async Task The_same_tasks_marker_is_found_by_a_later_attempt_with_a_different_write_id()
     {
         Guid taskId = Guid.NewGuid();
-        RecordingProcessRunner twg = RecordingProcessRunner.Succeeding("""[{"key":"PROJ-999"}]""");
+        RecordingProcessRunner twg = RecordingProcessRunner.RespondingTo(arguments => arguments.Contains("get")
+            ? new ProcessResult(0, RealisticDescriptionGetAnswer("PROJ-999", TwgJiraExecutor.Marker(taskId)), string.Empty)
+            : new ProcessResult(0, """[{"key":"PROJ-999"}]""", string.Empty));
         TwgJiraExecutor executor = new(twg.Runner);
 
         string? foundByFirstAttempt = await executor.FindByMarkerAsync(taskId, "/repo", CancellationToken.None);
@@ -221,19 +242,50 @@ public sealed class TwgJiraExecutorTests
 
         foundByFirstAttempt.Should().Be("PROJ-999");
         foundByRetry.Should().Be("PROJ-999");
-        twg.Calls.Should().OnlyContain(
+        twg.Calls.Where(call => call.Arguments.Contains("query")).Should().OnlyContain(
             call => call.Arguments.Any(argument => argument.Contains(TwgJiraExecutor.Marker(taskId))));
+        twg.Calls.Where(call => call.Arguments.Contains("get")).Should().OnlyContain(
+            call => call.Arguments.Contains("PROJ-999"));
     }
 
+    /// <summary>
+    /// The JQL search alone is not proof of identity — it is fuzzy, tokenized text matching, not
+    /// equality — so a dedup hit is only trusted once the candidate's own description is read
+    /// back and confirmed to actually carry this task's exact marker (independent pre-PR review,
+    /// conformance and adversarial lenses, cycle 1).
+    /// </summary>
     [Fact]
     public async Task A_dedup_hit_is_read_as_the_card_an_earlier_attempt_already_made()
     {
-        RecordingProcessRunner twg = RecordingProcessRunner.Succeeding("""[{"key":"PROJ-999"}]""");
+        Guid taskId = Guid.NewGuid();
+        RecordingProcessRunner twg = RecordingProcessRunner.RespondingTo(arguments => arguments.Contains("get")
+            ? new ProcessResult(0, RealisticDescriptionGetAnswer("PROJ-999", TwgJiraExecutor.Marker(taskId)), string.Empty)
+            : new ProcessResult(0, """[{"key":"PROJ-999"}]""", string.Empty));
         TwgJiraExecutor executor = new(twg.Runner);
 
-        string? found = await executor.FindByMarkerAsync(Guid.NewGuid(), "/repo", CancellationToken.None);
+        string? found = await executor.FindByMarkerAsync(taskId, "/repo", CancellationToken.None);
 
         found.Should().Be("PROJ-999");
+    }
+
+    /// <summary>
+    /// The physical dedup gate's own defect this fixes (independent pre-PR review, conformance
+    /// and adversarial lenses, cycle 1): the JQL search can return a candidate whose tokens merely
+    /// overlap this task's marker — a different task's own card — and trusting that match without
+    /// reading the candidate back would silently link this task to someone else's card.
+    /// </summary>
+    [Fact]
+    public async Task A_search_hit_that_does_not_actually_carry_the_marker_is_not_trusted()
+    {
+        Guid taskId = Guid.NewGuid();
+        RecordingProcessRunner twg = RecordingProcessRunner.RespondingTo(arguments => arguments.Contains("get")
+            ? new ProcessResult(0, RealisticDescriptionGetAnswer("PROJ-999", TwgJiraExecutor.Marker(Guid.NewGuid())), string.Empty)
+            : new ProcessResult(0, """[{"key":"PROJ-999"}]""", string.Empty));
+        TwgJiraExecutor executor = new(twg.Runner);
+
+        string? found = await executor.FindByMarkerAsync(taskId, "/repo", CancellationToken.None);
+
+        found.Should().BeNull("the candidate's own description carries a different task's marker, not this one's");
     }
 
     [Fact]
@@ -488,7 +540,7 @@ public sealed class TwgJiraExecutorTests
 
     /// <summary>
     /// A select-list option id composed as the JSON string "10501" — the ordinary shape for a
-    /// custom field, per the same acceptance criterion (Decisions Log #99) that hands field
+    /// custom field, per the same acceptance criterion (Decisions Log #102) that hands field
     /// composition to an agent in the first place — has to reach twg still carrying its quotes:
     /// twg's own <c>--field</c> parses its argument as JSON when valid, so an unquoted "10501"
     /// is read back as the number 10501 rather than the string it actually is (independent pre-PR

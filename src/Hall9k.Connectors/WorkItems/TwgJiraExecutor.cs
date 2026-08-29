@@ -125,14 +125,48 @@ public sealed class TwgJiraExecutor(ProcessRunner? runner = null, Uri? site = nu
     /// <summary>
     /// The physical half of the dedup gate: does a card already carry this task's marker. Called
     /// before every create, first attempt and every later one alike, so a create that twg
-    /// completed but hall9k never recorded is found rather than duplicated.
+    /// completed but hall9k never recorded is found rather than duplicated. The JQL search that
+    /// finds a candidate is confirmed against the candidate's own description before it is
+    /// trusted (<see cref="CandidateCarriesMarkerAsync"/>), because the search itself is not proof.
     /// </summary>
     public async Task<string?> FindByMarkerAsync(Guid taskId, string workingDirectory, CancellationToken cancellationToken)
     {
         ProcessResult result = await RunAsync(
             ["jira", "workitem", "query", "--jql", $"text ~ \"{Marker(taskId)}\"", "--output", "json", "--output-summary", "stats"],
             workingDirectory, cancellationToken);
-        return ExtractFirstKey(result.StandardOutput);
+        string? candidate = ExtractFirstKey(result.StandardOutput);
+        if (candidate is null)
+        {
+            return null;
+        }
+
+        return await CandidateCarriesMarkerAsync(candidate, taskId, workingDirectory, cancellationToken)
+            ? candidate
+            : null;
+    }
+
+    /// <summary>
+    /// <c>text ~</c> is Jira's CONTAINS operator, evaluated through Lucene text analysis rather
+    /// than as an equality check, and the marker's own reserved characters (<c>:</c>, <c>-</c>)
+    /// are tokenized apart rather than matched whole — so a search for this task's marker can
+    /// return a different card whose tokens merely overlap, and nothing about the search itself
+    /// proves the candidate actually carries this task's marker (independent pre-PR review,
+    /// conformance and adversarial lenses, cycle 1). This reads the candidate's own description
+    /// directly, by key, and confirms the exact marker text is present in it before
+    /// <see cref="FindByMarkerAsync"/> is allowed to trust the match — the same "prove it, do not
+    /// infer it" discipline <see cref="VerifyAsync"/> already applies to a write's own success.
+    /// A plain substring check against the raw answer is enough: the description comes back as
+    /// Atlassian Document Format (a JSON tree, not plain text), but the marker's own characters
+    /// need no JSON escaping, so it survives unchanged as a "text" node's value and a substring
+    /// check against the whole payload finds it without needing to walk that tree.
+    /// </summary>
+    private async Task<bool> CandidateCarriesMarkerAsync(
+        string candidateKey, Guid taskId, string workingDirectory, CancellationToken cancellationToken)
+    {
+        ProcessResult result = await RunAsync(
+            ["jira", "workitem", "get", candidateKey, "--fields", "description", "--output", "json", "--output-summary", "stats"],
+            workingDirectory, cancellationToken);
+        return ReadPayloadJson(result.StandardOutput).Contains(Marker(taskId), StringComparison.Ordinal);
     }
 
     /// <summary>
