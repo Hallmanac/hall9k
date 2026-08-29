@@ -3,20 +3,24 @@ using Hall9k.Connectors.WorkItems;
 using Hall9k.Daemon.Closeout;
 using Hall9k.Domain.Features.Project.Projections;
 using Hall9k.Domain.Features.Tasks;
+using Hall9k.Domain.Features.Tasks.Events;
 using Hall9k.Domain.Features.Tasks.Handlers;
 using Hall9k.Domain.Features.Tasks.Projections;
 using Hall9k.Domain.Shared.ValueObjects;
 using Marten;
 using Marten.Linq.MatchesSql;
+using Microsoft.Extensions.Options;
 
 namespace Hall9k.Daemon.JiraWrites;
 
 /// <summary>
 /// One sweep's tally: how many stuck writes this node re-attempted, how many of those finally
-/// went through, and how many queued merge notices (<see cref="JiraWriteRetryEngine.PollOnceAsync"/>'s
-/// own doc comment) it drained.
+/// went through, how many queued merge notices (<see cref="JiraWriteRetryEngine.PollOnceAsync"/>'s
+/// own doc comment) it drained, and how many writes it ended on
+/// <see cref="DaemonOptions.PendingJiraWriteCeiling"/> alone because nothing was working on them
+/// any more.
 /// </summary>
-public sealed record JiraWriteRetrySweepResult(int Retried, int Succeeded, int MergeNoticesDrained = 0);
+public sealed record JiraWriteRetrySweepResult(int Retried, int Succeeded, int MergeNoticesDrained = 0, int Expired = 0);
 
 /// <summary>
 /// What makes an expired or missing twg login a handled state rather than a lost write (Brian's
@@ -36,8 +40,11 @@ public sealed class JiraWriteRetryEngine(
     IDocumentStore store,
     NodeContext node,
     ProcessRunner twgRunner,
+    IOptions<DaemonOptions> options,
     ILogger<JiraWriteRetryEngine> logger)
 {
+    private readonly DaemonOptions _options = options.Value;
+
     /// <summary>
     /// Two independent things this sweep drains, both left behind by a write that could not run
     /// immediately: a write itself, stuck on an expired or missing twg login
@@ -53,6 +60,7 @@ public sealed class JiraWriteRetryEngine(
     {
         IReadOnlyList<TaskDetails> pending;
         IReadOnlyList<TaskDetails> queuedMergeNotices;
+        IReadOnlyList<TaskDetails> stalePending;
         await using (IQuerySession query = store.QuerySession())
         {
             // Abandoned is excluded on purpose (independent pre-PR review, cycle 5):
@@ -70,6 +78,19 @@ public sealed class JiraWriteRetryEngine(
             queuedMergeNotices = await query.Query<TaskDetails>()
                 .Where(task => task.HasQueuedJiraMergeNotice && task.PendingJiraWriteId == null)
                 .Where(task => task.MatchesSql("d.data ->> 'state' != ?", TaskState.Abandoned.Value))
+                .ToListAsync(cancellationToken);
+
+            // Not auth-failure and still pending is not the ordinary case: JiraWriteCoordinator
+            // records an outcome for every write it attempts, in the same call, before returning —
+            // so a write sitting here with PendingJiraWriteIsAuthFailure false was cut short
+            // mid-attempt (a cancellation the coordinator's own grace period could not outrun, or a
+            // harder process death) rather than merely slow. The age check runs in memory below,
+            // the same shape CardPublicationEngine.ExpireForeignAsync uses for its own ceiling,
+            // rather than in this query, so every candidate is read the same way regardless of how
+            // old it turns out to be.
+            stalePending = await query.Query<TaskDetails>()
+                .Where(task => task.PendingJiraWriteId != null)
+                .Where(task => !task.PendingJiraWriteIsAuthFailure)
                 .ToListAsync(cancellationToken);
         }
 
@@ -165,7 +186,76 @@ public sealed class JiraWriteRetryEngine(
             }
         }
 
-        return new JiraWriteRetrySweepResult(retried, succeeded, drained);
+        int expired = 0;
+        foreach (TaskDetails task in stalePending)
+        {
+            if (task.PendingJiraWriteRequestedAt is not { } requestedAt
+                || DateTimeOffset.UtcNow - requestedAt <= _options.PendingJiraWriteCeiling)
+            {
+                continue;
+            }
+
+            try
+            {
+                if (await ExpireStaleWriteAsync(task, requestedAt, cancellationToken))
+                {
+                    expired++;
+                }
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception exception)
+            {
+                logger.LogError(exception, "Could not end the stale Jira write for task {TaskId}; it stays pending", task.Id);
+            }
+        }
+
+        return new JiraWriteRetrySweepResult(retried, succeeded, drained, expired);
+    }
+
+    /// <summary>
+    /// Ends a write that has sat pending, not stuck on authentication, longer than
+    /// <see cref="DaemonOptions.PendingJiraWriteCeiling"/> — the only way out of a write cut short
+    /// by a cancellation the coordinator's own recording grace could not outrun, or a harder
+    /// process death, since neither leaves anything else behind for this platform to ever observe
+    /// (independent pre-PR review, cycle 1, both lenses). Records an ordinary
+    /// <c>JiraWriteFailed</c>, exactly as if the write itself had failed for this reason — the
+    /// same event a live attempt appends, so a resubmission through <c>h9k task write-jira</c> and
+    /// a queued merge notice both find nothing outstanding once this runs.
+    /// </summary>
+    private async Task<bool> ExpireStaleWriteAsync(TaskDetails task, DateTimeOffset requestedAt, CancellationToken cancellationToken)
+    {
+        await using IDocumentSession session = store.LightweightSession();
+        TaskAggregate? aggregate = await session.Events.AggregateStreamAsync<TaskAggregate>(task.Id, token: cancellationToken);
+        if (aggregate?.PendingJiraWriteId is not { } writeId)
+        {
+            // Resolved by something else between the read above and this attempt — an operator's
+            // own retry, or another node's sweep.
+            return false;
+        }
+
+        logger.LogWarning(
+            "Task {TaskId}: a Jira write requested at {RequestedAt:u} has stood pending longer than "
+            + "{Ceiling} with no outcome and no authentication problem — ending it here",
+            task.Id, requestedAt, _options.PendingJiraWriteCeiling);
+
+        JiraWriteFailed failed = TaskDecider.RecordJiraWriteFailure(
+            aggregate,
+            writeId,
+            $"This write was requested at {requestedAt:u} and no outcome was ever recorded for it — most "
+            + "likely a cancellation (an operator's own Ctrl-C, or the daemon stopping) that outran the "
+            + $"time it was given to record that outcome. Nothing has stood a chance to finish it in over "
+            + $"{_options.PendingJiraWriteCeiling}, so it is ended here rather than left blocking every "
+            + "later Jira write on this task. Resubmit with h9k task write-jira if the board still needs "
+            + "it; a create's own marker search will find the card first if it turns out twg made one "
+            + "before this write was cut short.",
+            isAuthFailure: false,
+            DateTimeOffset.UtcNow);
+        session.Events.Append(task.Id, failed);
+        await session.SaveChangesAsync(cancellationToken);
+        return true;
     }
 
     /// <summary>

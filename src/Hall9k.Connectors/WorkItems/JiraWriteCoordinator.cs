@@ -40,6 +40,15 @@ public sealed record JiraWriteAttemptResult(JiraWriteOutcome Outcome, string? Is
 public static class JiraWriteCoordinator
 {
     /// <summary>
+    /// How long <see cref="AttemptAsync"/> gets to record a cancelled write's own outcome once the
+    /// caller's own token has already fired. Short on purpose, the same reasoning
+    /// <c>CardPublicationEngine.ShutdownRecordTimeout</c> documents: this runs while something is
+    /// already stopping, and a stop that waits long on Postgres is worse than a write left for the
+    /// daemon's own <c>JiraWriteRetryEngine</c> ceiling sweep to end later.
+    /// </summary>
+    private static readonly TimeSpan CancellationRecordingGrace = TimeSpan.FromSeconds(5);
+
+    /// <summary>
     /// Submit a freshly composed write: validate it against the executor's own guardrails, record
     /// the intent with the full payload, then attempt it once.
     /// </summary>
@@ -158,6 +167,30 @@ public static class JiraWriteCoordinator
         catch (TwgExecutionException exception)
         {
             return await RecordFailureAsync(session, taskId, writeId, exception.Message, exception.IsAuthFailure, cancellationToken);
+        }
+        // A Ctrl-C on an operator's own h9k task write-jira, or the daemon stopping mid-sweep,
+        // used to leave this write's own outcome unrecorded: PendingJiraWriteId was already set by
+        // SubmitAsync before this method ran, and — unlike CardPublicationEngine's own spawned
+        // agent sessions, which a later sweep can adopt by pid — a synchronous twg call leaves no
+        // process behind for anything to adopt, so nothing else in the platform could ever clear
+        // it (independent pre-PR review, cycle 1, both lenses). Recorded here with a grace period
+        // of its own — cancellationToken has already fired and cannot also be the token this save
+        // waits on, the same shape CardPublicationEngine.StopForShutdownAsync uses for the
+        // identical reason. If even that grace is not enough (a hard kill, not a graceful stop),
+        // nothing in-process can finish the job; JiraWriteRetryEngine's own ceiling sweep is the
+        // backstop that ends a write still pending this long on the clock alone.
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            using CancellationTokenSource grace = new(CancellationRecordingGrace);
+            return await RecordFailureAsync(
+                session, taskId, writeId,
+                "The write was interrupted (Ctrl-C, or the daemon stopping) before twg's own answer was "
+                + "read back, so whether it went through could not be observed here. For a create, "
+                + "resubmit with h9k task write-jira — the marker search this executor runs first will "
+                + "find the card if it exists rather than filing a second one; for an update or a "
+                + "comment, check the board before resubmitting.",
+                isAuthFailure: false,
+                grace.Token);
         }
         // Anything else — a malformed board key from JiraProjectKey.Parse, a missing target key
         // from RequireKey, any bug — is caught here too rather than left to escape (independent

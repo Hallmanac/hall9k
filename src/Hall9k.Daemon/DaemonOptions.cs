@@ -247,6 +247,23 @@ public sealed class DaemonOptions
     public TimeSpan JiraWriteRetryInterval { get; set; } = TimeSpan.FromMinutes(5);
 
     /// <summary>
+    /// How long a Jira write may sit pending with no outstanding authentication problem before
+    /// <see cref="JiraWrites.JiraWriteRetryEngine"/> ends it on the clock alone (independent
+    /// pre-PR review, cycle 1, both lenses). A write stuck on an expired or missing login stays
+    /// pending on purpose (see <see cref="JiraWriteRetryInterval"/>), but a write cancelled — an
+    /// operator's own Ctrl-C, or the daemon stopping mid-sweep — between
+    /// <c>JiraWriteRequested</c> and its outcome has no such excuse and no spawned session for
+    /// anything to adopt later, unlike <see cref="ForeignPublicationCeiling"/>'s own pid-tracked
+    /// counterpart: every twg call <c>TwgJiraExecutor</c> makes is synchronous and bounded well
+    /// inside this window, so a write still pending this long was not merely slow. Generous next
+    /// to how long any single write can actually take, for the same reason
+    /// <see cref="ForeignPublicationCeiling"/> is generous next to
+    /// <see cref="CardPublicationTimeout"/>: only a write nothing is working on any more should
+    /// ever reach it.
+    /// </summary>
+    public TimeSpan PendingJiraWriteCeiling { get; set; } = TimeSpan.FromMinutes(30);
+
+    /// <summary>
     /// Platform-default commit style for follow-up runs (Narrative or Append), applied
     /// when a project sets none of its own (Decisions Log #26). Narrative folds fixes
     /// into their owning commits per the AGENTS.md authored-history rule. This is the

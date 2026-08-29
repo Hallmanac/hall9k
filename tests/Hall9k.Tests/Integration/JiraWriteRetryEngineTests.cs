@@ -16,6 +16,7 @@ using Hall9k.Tests.Fakes;
 using JasperFx;
 using Marten;
 using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Options;
 using Xunit;
 
 namespace Hall9k.Tests.Integration;
@@ -64,7 +65,7 @@ public sealed class JiraWriteRetryEngineTests(PostgresFixture postgres) : IClass
         RecordingProcessRunner reauthenticatedTwg = RecordingProcessRunner.RespondingTo(
             _ => new ProcessResult(0, """{"key":"PROJ-123"}""", string.Empty));
         NodeContext node = await NewNodeAsync(store, cts.Token);
-        JiraWriteRetryEngine engine = new(store, node, reauthenticatedTwg.Runner, NullLogger<JiraWriteRetryEngine>.Instance);
+        JiraWriteRetryEngine engine = new(store, node, reauthenticatedTwg.Runner, DefaultOptions(), NullLogger<JiraWriteRetryEngine>.Instance);
 
         JiraWriteRetrySweepResult sweep = await engine.PollOnceAsync(cts.Token);
 
@@ -95,7 +96,7 @@ public sealed class JiraWriteRetryEngineTests(PostgresFixture postgres) : IClass
         RecordingProcessRunner mustNotRun = RecordingProcessRunner.RespondingTo(
             _ => throw new InvalidOperationException("a non-auth failure must not be retried by the sweep"));
         NodeContext node = await NewNodeAsync(store, cts.Token);
-        JiraWriteRetryEngine engine = new(store, node, mustNotRun.Runner, NullLogger<JiraWriteRetryEngine>.Instance);
+        JiraWriteRetryEngine engine = new(store, node, mustNotRun.Runner, DefaultOptions(), NullLogger<JiraWriteRetryEngine>.Instance);
 
         JiraWriteRetrySweepResult sweep = await engine.PollOnceAsync(cts.Token);
 
@@ -129,7 +130,7 @@ public sealed class JiraWriteRetryEngineTests(PostgresFixture postgres) : IClass
         RecordingProcessRunner reauthenticatedTwg = RecordingProcessRunner.RespondingTo(
             _ => new ProcessResult(0, """{"key":"PROJ-789"}""", string.Empty));
         NodeContext node = await NewNodeAsync(store, cts.Token);
-        JiraWriteRetryEngine engine = new(store, node, reauthenticatedTwg.Runner, NullLogger<JiraWriteRetryEngine>.Instance);
+        JiraWriteRetryEngine engine = new(store, node, reauthenticatedTwg.Runner, DefaultOptions(), NullLogger<JiraWriteRetryEngine>.Instance);
 
         // First sweep: the outstanding write clears, but the queued notice was read as still
         // blocked (PendingJiraWriteId was set at query time) and is not drained in the same pass.
@@ -148,6 +149,48 @@ public sealed class JiraWriteRetryEngineTests(PostgresFixture postgres) : IClass
         afterSecond!.HasQueuedJiraMergeNotice.Should().BeFalse("the retry sweep drained it exactly once");
         afterSecond.PendingJiraWriteId.Should().BeNull("the merge comment itself went through");
     }
+
+    /// <summary>
+    /// A write requested and never given an outcome — the shape a cancellation the coordinator's
+    /// own recording grace could not outrun, or a harder process death, leaves behind (independent
+    /// pre-PR review, cycle 1, both lenses). Appended directly through the decider rather than by
+    /// letting a real attempt run and fail: the whole point of the fix under test is that nothing
+    /// else in the platform ever gets the chance to record an outcome for this write, so a fake
+    /// twg that fails or cancels here would only be testing the wrong path.
+    /// </summary>
+    [Fact]
+    public async Task A_write_stuck_pending_past_the_ceiling_is_ended_on_the_clock_alone()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        using DocumentStore store = OpenStore();
+
+        Guid taskId = await SeedTaskAsync(store, new ExternalReference(WorkItemProvider.Jira, "PROJ-321"), cts.Token);
+        Guid writeId;
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            TaskAggregate task = (await session.Events.AggregateStreamAsync<TaskAggregate>(taskId, token: cts.Token))!;
+            writeId = DomainId.New();
+            session.Events.Append(taskId, TaskDecider.RequestJiraWrite(
+                task, JiraWriteOperation.Comment, "PROJ-321", "{}", writeId, Now, DomainId.New()));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        RecordingProcessRunner mustNotRun = RecordingProcessRunner.RespondingTo(
+            _ => throw new InvalidOperationException("the ceiling sweep must never call twg — it only ends a stale write"));
+        NodeContext node = await NewNodeAsync(store, cts.Token);
+        JiraWriteRetryEngine engine = new(
+            store, node, mustNotRun.Runner, Options.Create(new DaemonOptions { PendingJiraWriteCeiling = TimeSpan.Zero }),
+            NullLogger<JiraWriteRetryEngine>.Instance);
+
+        JiraWriteRetrySweepResult sweep = await engine.PollOnceAsync(cts.Token);
+
+        sweep.Should().Be(new JiraWriteRetrySweepResult(Retried: 0, Succeeded: 0, MergeNoticesDrained: 0, Expired: 1));
+        TaskAggregate? ended = await LoadAsync(store, taskId, cts.Token);
+        ended!.PendingJiraWriteId.Should().BeNull("the ceiling clears the wedge even though nothing ever attempted the write");
+        ended.PendingJiraWriteIsAuthFailure.Should().BeFalse();
+    }
+
+    private static IOptions<DaemonOptions> DefaultOptions() => Options.Create(new DaemonOptions());
 
     private DocumentStore OpenStore() => DocumentStore.For(opts =>
     {
