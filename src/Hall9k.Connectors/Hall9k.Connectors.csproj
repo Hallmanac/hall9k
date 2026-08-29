@@ -5,6 +5,11 @@
   </ItemGroup>
 
   <ItemGroup>
+    <!-- Worktree/prompt services (shared with the CLI, so they cannot pull in Microsoft.Extensions.Hosting) need ILogger<T> -->
+    <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" />
+  </ItemGroup>
+
+  <ItemGroup>
     <ProjectReference Include="..\Hall9k.Domain\Hall9k.Domain.csproj" />
   </ItemGroup>
 

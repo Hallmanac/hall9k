@@ -2,7 +2,7 @@ using System.Diagnostics;
 using FluentAssertions;
 using Hall9k.Daemon;
 using Hall9k.Daemon.Execution;
-using Hall9k.Daemon.Worktrees;
+using Hall9k.Connectors.Worktrees;
 using Hall9k.Domain.Features.Run;
 using Hall9k.Domain.Features.Run.Events;
 using Hall9k.Domain.Features.Tasks;

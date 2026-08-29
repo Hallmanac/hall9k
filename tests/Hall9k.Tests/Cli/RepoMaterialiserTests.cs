@@ -1,7 +1,7 @@
 using System.Diagnostics;
 using FluentAssertions;
 using Hall9k.Cli.ProjectHomes;
-using Hall9k.Daemon.Worktrees;
+using Hall9k.Connectors.Worktrees;
 using Hall9k.Domain.Infrastructure.Ids;
 using Hall9k.Domain.Infrastructure.Storage;
 using Microsoft.Extensions.Logging.Abstractions;

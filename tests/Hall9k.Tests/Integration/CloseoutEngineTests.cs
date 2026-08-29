@@ -4,7 +4,7 @@ using Hall9k.Daemon;
 using Hall9k.Daemon.Closeout;
 using Hall9k.Connectors.Processes;
 using Hall9k.Connectors.WorkItems;
-using Hall9k.Daemon.Worktrees;
+using Hall9k.Connectors.Worktrees;
 using Hall9k.Domain.Features.Owner;
 using Hall9k.Domain.Features.Project;
 using Hall9k.Domain.Features.Project.Events;

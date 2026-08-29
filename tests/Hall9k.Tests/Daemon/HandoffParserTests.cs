@@ -1,5 +1,5 @@
 using FluentAssertions;
-using Hall9k.Daemon.Execution;
+using Hall9k.Connectors.Prompts;
 using Hall9k.Domain.Infrastructure.Ids;
 using Hall9k.Domain.Infrastructure.Storage;
 using Xunit;

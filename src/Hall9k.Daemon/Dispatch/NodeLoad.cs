@@ -52,7 +52,7 @@ public sealed record NodeLoad(int LiveRuns, int MaxConcurrentAgentSessions)
     /// <para>
     /// It is deliberately not a guarantee about what is resident, and the gap is one recorded
     /// exception rather than an oversight (Decisions Log #64). A run whose review park a human
-    /// resolves re-enters the pipeline through <c>RunSupervisor.ResumeResolvedReviewsAsync</c>,
+    /// resolves re-enters the pipeline through <c>RunSupervisor.ResumeStrandedPipelinesAsync</c>,
     /// and a stranded one re-enters through startup adoption; neither asks this record anything,
     /// and both hand a worktree back to a session tree the node had already released. So
     /// <see cref="LiveRuns"/> can sit above <see cref="MaxConcurrentRuns"/>. That overshoot is

@@ -9,7 +9,7 @@ using Hall9k.Daemon.ProcessManagement;
 using Hall9k.Daemon.ProjectHomes;
 using Hall9k.Daemon.Publication;
 using Hall9k.Daemon.Review;
-using Hall9k.Daemon.Worktrees;
+using Hall9k.Connectors.Worktrees;
 using Hall9k.Domain;
 using Hall9k.Domain.Infrastructure.Persistence;
 using Hall9k.Domain.Infrastructure.Storage;

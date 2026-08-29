@@ -1,6 +1,6 @@
 using Hall9k.Daemon.Closeout;
 using Hall9k.Daemon.Execution;
-using Hall9k.Daemon.Worktrees;
+using Hall9k.Connectors.Worktrees;
 using Hall9k.Domain.Features.Project.Projections;
 using Hall9k.Domain.Infrastructure.Persistence;
 using Hall9k.Domain.Infrastructure.Storage;
@@ -67,8 +67,9 @@ public sealed class DispatchLoop(
             try
             {
                 // Adopt-before-sweep in miniature: a review park resolved by the human
-                // (h9k review resolve) re-enters the pipeline before anything else acts.
-                await supervisor.ResumeResolvedReviewsAsync(stoppingToken);
+                // (h9k review resolve) or a branch an operator just delivered interactively
+                // (h9k task deliver) re-enters the pipeline before anything else acts.
+                await supervisor.ResumeStrandedPipelinesAsync(stoppingToken);
                 await engine.SweepExpiredLeasesAsync(stoppingToken);
                 // Before claiming: whose dependencies have closed out (or died) since last time.
                 await engine.ReevaluateBlockedTasksAsync(stoppingToken);

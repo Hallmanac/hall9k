@@ -1,6 +1,7 @@
 using Hall9k.Domain.Infrastructure.Storage;
 using System.Collections.Concurrent;
 using System.Text;
+using Hall9k.Connectors.Prompts;
 using Hall9k.Daemon.ProcessManagement;
 using Hall9k.Daemon.Review;
 using Hall9k.Domain.Features.Run;
@@ -179,24 +180,38 @@ public sealed class RunSupervisor(
     }
 
     /// <summary>
-    /// The running-daemon counterpart of adoption for h9k review resolve: a resolved
-    /// park moves the run back to UnderReview while no monitor owns it, and this sweep
-    /// (each dispatch cycle; the resolve rings the doorbell) re-enters the pipeline.
-    /// Runs already being driven are in the monitor set and are never double-entered.
+    /// The running-daemon counterpart of adoption for two cases where a run sits mid-pipeline
+    /// with no monitor watching it: a resolved review park (a resolved park moves the run back
+    /// to UnderReview; the resolve rings the doorbell) and an interactive delivery
+    /// (h9k task deliver pushes the branch and appends AgentSessionCompleted, moving the run to
+    /// Verifying, then rings the doorbell). Both land here rather than in
+    /// <see cref="AdoptOrphansAsync"/> because that method runs once, at startup — this sweep
+    /// runs every dispatch cycle, which is what lets a live daemon notice either case without a
+    /// restart. An interactive run's NodeId is the sentinel <see cref="Guid.Empty"/>
+    /// (<c>TaskAggregate.IsInteractiveClaim</c>'s own discriminator) rather than this node's own
+    /// id — deliberately, so it never counts against this node's concurrency ceiling
+    /// (<c>NodeLoad</c> measures strictly by <c>NodeId == nodeId</c>) — so it is matched here by
+    /// that sentinel instead of by node ownership: any live daemon watching the shared database
+    /// picks it up, which is the only sense "this node's own work" can have for a claim no node
+    /// ever made. Runs already being driven are in the monitor set and are never double-entered.
     /// </summary>
-    public async Task ResumeResolvedReviewsAsync(CancellationToken cancellationToken)
+    public async Task ResumeStrandedPipelinesAsync(CancellationToken cancellationToken)
     {
         await using IQuerySession query = store.QuerySession();
         Guid nodeId = node.NodeId;
-        IReadOnlyList<RunDetails> underReview = await query.Query<RunDetails>()
-            .Where(r => r.NodeId == nodeId)
-            .Where(r => r.MatchesSql("d.data ->> 'state' = ?", RunState.UnderReview.Value))
+        IReadOnlyList<RunDetails> stranded = await query.Query<RunDetails>()
+            .Where(r => r.NodeId == nodeId || r.NodeId == Guid.Empty)
+            .Where(r => r.MatchesSql(
+                "d.data ->> 'state' in (?, ?)", RunState.UnderReview.Value, RunState.Verifying.Value))
             .ToListAsync(cancellationToken);
 
-        foreach (RunDetails run in underReview.Where(r => !_monitors.ContainsKey(r.Id)))
+        foreach (RunDetails run in stranded.Where(r => !_monitors.ContainsKey(r.Id)))
         {
             logger.LogInformation(
-                "Run {RunId} is under review with no monitor (review park resolved) — resuming the pipeline", run.Id);
+                run.NodeId == Guid.Empty
+                    ? "Run {RunId} is {State} with no monitor (interactive delivery) — resuming the pipeline"
+                    : "Run {RunId} is {State} with no monitor (review park resolved) — resuming the pipeline",
+                run.Id, run.State.Value);
             ResumePipeline(run, cancellationToken);
         }
     }

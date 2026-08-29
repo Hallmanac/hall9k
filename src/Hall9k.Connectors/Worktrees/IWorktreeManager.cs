@@ -1,4 +1,4 @@
-namespace Hall9k.Daemon.Worktrees;
+namespace Hall9k.Connectors.Worktrees;
 
 public sealed record WorktreeRequest(
     string RepositoryPath,

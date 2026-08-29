@@ -2252,7 +2252,7 @@ public sealed class ReviewEngine(
             // this one, so the rejection here must retire the run with RunSuperseded like
             // every other fence rejection in this file — returning bare would leave the
             // run live in a non-terminal ReviewPhase with no monitor watching it until the
-            // next poll cycle's ResumeResolvedReviewsAsync stumbled onto it (Copilot
+            // next poll cycle's ResumeStrandedPipelinesAsync stumbled onto it (Copilot
             // review, PR #30).
             if (await session.Events.FetchStreamStateAsync(runId, cancellationToken) is not null)
             {
@@ -2355,7 +2355,7 @@ public sealed class ReviewEngine(
     /// reporting false: returning false alone only unwinds this call stack and lets the
     /// supervisor drop its monitor, but the run itself stays in a non-terminal
     /// <see cref="RunState"/> — NodeLoad keeps counting it live, and
-    /// <c>ResumeResolvedReviewsAsync</c> or the next startup adoption sweep would relaunch it
+    /// <c>ResumeStrandedPipelinesAsync</c> or the next startup adoption sweep would relaunch it
     /// (Copilot review, PR #30).
     /// </para>
     /// </summary>
