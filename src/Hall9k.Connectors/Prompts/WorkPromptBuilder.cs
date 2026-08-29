@@ -137,10 +137,22 @@ public static class WorkPromptBuilder
 
         AppendAdoptedContextRule(prompt, task);
         AppendBlockerContextRule(prompt, blockerContext);
-        prompt.AppendLine("- If something is genuinely ambiguous, make the most reasonable choice and record");
-        prompt.AppendLine("  the assumption in your final summary (the ask-a-human loop is not available yet).");
+        if (isInteractive)
+        {
+            prompt.AppendLine("- If something is genuinely ambiguous, ask the operator at this terminal rather than");
+            prompt.AppendLine("  guessing — they are attached to this session for exactly this reason.");
+        }
+        else
+        {
+            prompt.AppendLine("- If something is genuinely ambiguous, make the most reasonable choice and record");
+            prompt.AppendLine("  the assumption in your final summary (the ask-a-human loop is not available yet).");
+        }
+
         prompt.AppendLine("- End with a short summary: what you did, decisions made, assumptions, open questions.");
-        AppendHandoffRules(prompt);
+        if (!isInteractive)
+        {
+            AppendHandoffRules(prompt);
+        }
 
         return prompt.ToString();
     }
@@ -233,6 +245,14 @@ public static class WorkPromptBuilder
     /// Brevity is instructed rather than merely enforced: the event that carries this text is
     /// a milestone on the run stream (log #6), and a handoff nobody finishes reading routes no
     /// context at all.
+    /// </para>
+    /// <para>
+    /// Headless only (<see cref="Build"/> skips this call when <c>isInteractive</c> is true): the
+    /// parser this text promises — <c>RunSupervisor.CaptureHandoffAsync</c> — reads a headless
+    /// session's own <c>--output-format stream-json</c> result payload, which an attached
+    /// interactive session never produces and no "final message" ever ends. An operator's own
+    /// handoff is instead the one <c>TaskDeliverCommand.PromptForHandoff</c> asks for at delivery
+    /// time (adversarial review, cycle 6).
     /// </para>
     /// </summary>
     public static void AppendHandoffRules(StringBuilder prompt)
