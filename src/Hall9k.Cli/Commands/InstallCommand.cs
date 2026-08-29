@@ -210,17 +210,24 @@ public sealed class InstallCommand : Hall9kAsyncCommand<InstallCommand.Settings>
             // holding a file exclusively) surfacing while retiring a conflicting file or while
             // placing a staged one, or a directory junction, symlink, file, or directory
             // conflicting with what staging ships that could not be cleared before either phase
-            // started. All three roll back completely — a lock during retirement undoes every
-            // retirement already made; a lock during placement undoes every placement AND every
-            // retirement already made, exactly as fully; and an unclearable conflict is caught
-            // before anything is retired or placed at all — so however this throws, bin still
-            // holds every file the old release shipped, exactly as this method left it, short of
-            // the vanishingly rare case where undoing an earlier placement or retirement in this
-            // same run hits a second, independent lock of its own (that file is cleaned up
-            // automatically by a future install or update instead).
+            // started. The first two roll back completely — a lock during retirement undoes
+            // every retirement already made; a lock during placement undoes every placement AND
+            // every retirement already made, exactly as fully — so bin holds every file the old
+            // release shipped, exactly as this method left it, short of the vanishingly rare
+            // case where undoing an earlier placement or retirement in this same run hits a
+            // second, independent lock of its own (that file is cleaned up automatically by a
+            // future install or update instead). An unclearable conflict is caught before
+            // anything is retired or placed, and a conflicting directory it clears along the way
+            // is retired aside rather than deleted (see ClearConflictingDestinationEntry), so
+            // that case is non-destructive too — the one exception is a conflicting file an
+            // earlier entry in the same walk already deleted outright before this one's own
+            // conflict proved unclearable: a single file, replaced by simply running the command
+            // again, not the broken half-state a partial directory delete used to risk (origin:
+            // cycle-4 pre-PR adversarial review).
             // RemoveStaleFiles only runs once every phase has fully succeeded, so it never sees
             // a partial merge either. The messages below describe only what SwapFilesIntoPlace
-            // itself did or did not do, which on this path is bin's whole condition.
+            // itself did or did not do, which on this path is bin's whole condition, short of
+            // that one file.
             await Console.Error.WriteLineAsync(exception.Message);
             return ExitCodes.Error;
         }
@@ -838,8 +845,15 @@ public sealed class InstallCommand : Hall9kAsyncCommand<InstallCommand.Settings>
     /// an unclearable junction, and to a raw, unhandled <see cref="IOException"/> from <see
     /// cref="Directory.CreateDirectory"/> on the type-mismatch case). Thrown here, before
     /// anything in <paramref name="destinationDirectory"/> has been retired or placed, so bin is
-    /// left exactly as this run found it, the same guarantee phase one's own failure
-    /// provides.</summary>
+    /// left as this run found it — a directory conflict this same walk already cleared is
+    /// retired aside rather than gone (see <see cref="ClearConflictingDestinationEntry"/>), the
+    /// one exception being a conflicting file an earlier entry in this walk already deleted
+    /// outright, replaced by simply running the command again — the same hedge phase one's own
+    /// failure carries. Enumerating <paramref name="sourceDirectory"/> is inside its own try
+    /// block for the identical reason every other walk in this file now is: a listing failure
+    /// (a permission dropped, staging removed from under this walk) must report as this same
+    /// refusal rather than escape as an unhandled exception (origin: cycle-4 pre-PR adversarial
+    /// review).</summary>
     [SupportedOSPlatform("windows")]
     private static void CollectFilePairs(
         string sourceDirectory,
@@ -851,20 +865,32 @@ public sealed class InstallCommand : Hall9kAsyncCommand<InstallCommand.Settings>
         Directory.CreateDirectory(destinationDirectory);
         directories.Add(destinationDirectory);
 
-        foreach (string sourceFile in Directory.EnumerateFiles(sourceDirectory))
+        try
         {
-            string destinationFile = Path.Combine(destinationDirectory, Path.GetFileName(sourceFile));
-            RequireConflictCleared(destinationFile, isDirectory: false);
-            files.Add((sourceFile, destinationFile));
-        }
+            foreach (string sourceFile in Directory.EnumerateFiles(sourceDirectory))
+            {
+                string destinationFile = Path.Combine(destinationDirectory, Path.GetFileName(sourceFile));
+                RequireConflictCleared(destinationFile, isDirectory: false);
+                files.Add((sourceFile, destinationFile));
+            }
 
-        foreach (string sourceSubdirectory in Directory.EnumerateDirectories(sourceDirectory))
+            foreach (string sourceSubdirectory in Directory.EnumerateDirectories(sourceDirectory))
+            {
+                CollectFilePairs(
+                    sourceSubdirectory,
+                    Path.Combine(destinationDirectory, Path.GetFileName(sourceSubdirectory)),
+                    files,
+                    directories);
+            }
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
         {
-            CollectFilePairs(
-                sourceSubdirectory,
-                Path.Combine(destinationDirectory, Path.GetFileName(sourceSubdirectory)),
-                files,
-                directories);
+            throw new InvalidOperationException(
+                $"Could not finish updating {destinationDirectory} — {sourceDirectory} could not be listed "
+                    + $"({exception.Message}). Run h9k update again once that is resolved; bin is unchanged "
+                    + "by this run's version swap, short of a directory conflict this same run already "
+                    + "cleared, which is retired aside rather than gone.",
+                exception);
         }
     }
 
@@ -897,14 +923,39 @@ public sealed class InstallCommand : Hall9kAsyncCommand<InstallCommand.Settings>
     /// has this guard, so reusing it here is what keeps every write inside <c>bin</c> instead of
     /// walking through to whatever the link points at (the same hazard <see
     /// cref="RemoveStaleFiles"/> guards on its own, later walk); a <em>file</em> symlink reports a
-    /// link target too, but is a file as far as <see cref="File.Exists"/> and <see
-    /// cref="File.Delete(string)"/> are concerned, so it is dispatched to <see
-    /// cref="TryDeleteFile"/> instead — <see cref="TryDeleteDirectoryRecursively"/> can never
-    /// delete one (origin: cycle-2 pre-PR adversarial review, which traced a file symlink through
-    /// to a permanent, misdiagnosed "something still has it locked" refusal);</item>
+    /// link target too, but is a file as far as <see cref="File.Delete(string)"/> is concerned,
+    /// so it is dispatched to <see cref="TryDeleteFile"/> instead — <see
+    /// cref="TryDeleteDirectoryRecursively"/> can never delete one (origin: cycle-2 pre-PR
+    /// adversarial review, which traced a file symlink through to a permanent, misdiagnosed
+    /// "something still has it locked" refusal). The dispatch reads <see
+    /// cref="File.GetAttributes(string)"/> rather than <see cref="File.Exists(string)"/> to tell
+    /// the two kinds of reparse point apart: <see cref="File.GetAttributes(string)"/> reads the
+    /// reparse point's own directory entry without opening its target, so a <em>dangling</em>
+    /// file symlink (its target since removed) still carries no <see
+    /// cref="FileAttributes.Directory"/> flag and is still routed to <see cref="TryDeleteFile"/>;
+    /// <see cref="File.Exists(string)"/> opens the target to answer, so a dangling one used to
+    /// read as neither a file nor a directory and fall to <see
+    /// cref="TryDeleteDirectoryRecursively"/>, which cannot delete a file reparse point and left
+    /// the merge refused permanently with the same misdiagnosed message (origin: cycle-4 pre-PR
+    /// conformance review);</item>
     /// <item>a type mismatch — a file where staging ships a directory, or a directory where
-    /// staging ships a file — is removed outright, since <see cref="Directory.CreateDirectory"/>
-    /// throws on the former and <see cref="File.Move"/> throws on the latter.</item>
+    /// staging ships a file — is cleared. A conflicting <em>file</em> is deleted outright: a
+    /// single <see cref="File.Delete(string)"/> either lands whole or not at all, so there is no
+    /// partial state to worry about. A conflicting <em>directory</em> is retired aside instead of
+    /// deleted — moved to a <c>.old</c> sibling via <see cref="TryRetireConflictingDirectory"/>,
+    /// the same rename trick <see cref="RetireFile"/> and <see cref="RetireDirectory"/> already
+    /// use to retire a locked file or the whole of <c>bin</c>: <see
+    /// cref="TryDeleteDirectoryRecursively"/> deletes file by file, so a lock partway through (the
+    /// ordinary case this whole feature exists for) used to leave the directory gutted of
+    /// everything but the locked file instead of the "bin is unchanged" guarantee <see
+    /// cref="RequireConflictCleared"/>'s own message asserts; a rename either lands whole or
+    /// throws with nothing touched, so the guarantee now actually holds. The retired sibling
+    /// carries no staged counterpart, so <see cref="RemoveStaleFiles"/>'s own post-merge walk
+    /// (which runs over the very directory this landed in) sweeps it away as stale the same way
+    /// it reclaims anything else staging no longer ships, or leaves it for a later run's own
+    /// sweep if something inside is still locked (origin: cycle-4 pre-PR conformance review,
+    /// which traced a partial delete here through to a directory left runnable by neither the old
+    /// release nor the new one).</item>
     /// </list>
     /// A destination that does not exist yet, or already matches staging's own kind, is left
     /// alone. Returns whether <paramref name="destinationPath"/> is actually clear of a conflict
@@ -916,9 +967,9 @@ public sealed class InstallCommand : Hall9kAsyncCommand<InstallCommand.Settings>
     {
         if (new DirectoryInfo(destinationPath).LinkTarget is not null)
         {
-            return File.Exists(destinationPath)
-                ? TryDeleteFile(destinationPath, report: false)
-                : TryDeleteDirectoryRecursively(destinationPath);
+            return (File.GetAttributes(destinationPath) & FileAttributes.Directory) != 0
+                ? TryDeleteDirectoryRecursively(destinationPath)
+                : TryDeleteFile(destinationPath, report: false);
         }
 
         if (isDirectory && File.Exists(destinationPath))
@@ -928,10 +979,41 @@ public sealed class InstallCommand : Hall9kAsyncCommand<InstallCommand.Settings>
 
         if (!isDirectory && Directory.Exists(destinationPath))
         {
-            return TryDeleteDirectoryRecursively(destinationPath);
+            return TryRetireConflictingDirectory(destinationPath);
         }
 
         return true;
+    }
+
+    /// <summary>Best-effort rename of a conflicting directory <see
+    /// cref="ClearConflictingDestinationEntry"/> found where staging is about to place a file —
+    /// the retire-aside half of that method's directory case, kept separate so the rename's own
+    /// fallback (a <c>.old</c> slot an earlier run's own leftover already occupies) reads the
+    /// same as <see cref="RetireFile"/>'s. <see cref="Directory.Move(string, string)"/> is a
+    /// single directory-entry rename — it either lands whole or throws with nothing touched — so
+    /// unlike a recursive delete this can never leave <paramref name="path"/> half gone. Returns
+    /// whether <paramref name="path"/> is actually gone from its original name once this call
+    /// returns; <see langword="false"/> means the rename itself failed (something under it is
+    /// locked, most plausibly a loaded module whose path the rename would change out from under
+    /// it — see <see cref="SwapIntoPlace"/>'s own doc comment) and nothing moved.</summary>
+    [SupportedOSPlatform("windows")]
+    private static bool TryRetireConflictingDirectory(string path)
+    {
+        string retired = path + ".old";
+        if (Directory.Exists(retired))
+        {
+            retired = $"{retired}.{Path.GetRandomFileName()}";
+        }
+
+        try
+        {
+            Directory.Move(path, retired);
+            return true;
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            return false;
+        }
     }
 
     /// <summary>Restores every pair <see cref="SwapFilesIntoPlace"/> retired this call back to
@@ -996,7 +1078,11 @@ public sealed class InstallCommand : Hall9kAsyncCommand<InstallCommand.Settings>
     /// stale, they are this run's files that stayed locked through <see
     /// cref="SwapFilesIntoPlace"/>'s own immediate reclaim and are now waiting on the next run's
     /// leading <see cref="SweepRetiredFiles"/> — and best-effort, same as the rest of this file,
-    /// so a file still locked this run is simply left for a later one.</summary>
+    /// so a file still locked this run is simply left for a later one; listing <paramref
+    /// name="destinationDirectory"/> failing outright (a permission dropped, or the directory
+    /// removed from under this walk) is swallowed the same way, rather than left to escape as an
+    /// unhandled exception on a run whose merge has, by the time this runs, already fully
+    /// succeeded (origin: cycle-4 pre-PR adversarial review).</summary>
     [SupportedOSPlatform("windows")]
     private static void RemoveStaleFiles(
         string destinationDirectory, HashSet<string> stagedFiles, HashSet<string> stagedDirectories)
@@ -1006,6 +1092,21 @@ public sealed class InstallCommand : Hall9kAsyncCommand<InstallCommand.Settings>
             return;
         }
 
+        try
+        {
+            RemoveStaleEntries(destinationDirectory, stagedFiles, stagedDirectories);
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            // Listing destinationDirectory itself failed, rather than a per-entry failure the
+            // loops below already swallow individually — left for a later run's own sweep.
+        }
+    }
+
+    [SupportedOSPlatform("windows")]
+    private static void RemoveStaleEntries(
+        string destinationDirectory, HashSet<string> stagedFiles, HashSet<string> stagedDirectories)
+    {
         foreach (string destinationFile in Directory.EnumerateFiles(destinationDirectory))
         {
             string fileName = Path.GetFileName(destinationFile);
@@ -1062,31 +1163,40 @@ public sealed class InstallCommand : Hall9kAsyncCommand<InstallCommand.Settings>
     /// whether <paramref name="destinationDirectory"/> is actually gone once this call returns —
     /// <see cref="RemoveStaleFiles"/>'s own two call sites ignore it (a locked leftover there is
     /// simply left for a later sweep), but <see cref="ClearConflictingDestinationEntry"/> needs
-    /// it to know whether the merge can proceed through this path or must refuse instead.</summary>
+    /// it to know whether the merge can proceed through this path or must refuse instead. The
+    /// enumeration calls below sit inside the same try block as the final <see
+    /// cref="Directory.Delete(string)"/> rather than left bare, so a listing failure partway
+    /// through (a permission dropped, or the directory removed out from under this walk by a
+    /// concurrent process) reports as "still locked" the same as everything else this method
+    /// already handles, instead of escaping as an unhandled exception past every caller up to
+    /// <c>FinishAsync</c>'s <see cref="InvalidOperationException"/>-only catch — the exact
+    /// stack-trace outcome this whole file exists to remove (origin: cycle-4 pre-PR adversarial
+    /// review).</summary>
     [SupportedOSPlatform("windows")]
     private static bool TryDeleteDirectoryRecursively(string destinationDirectory)
     {
-        if (new DirectoryInfo(destinationDirectory).LinkTarget is null)
-        {
-            foreach (string file in Directory.EnumerateFiles(destinationDirectory))
-            {
-                TryDeleteFile(file);
-            }
-
-            foreach (string nested in Directory.EnumerateDirectories(destinationDirectory))
-            {
-                TryDeleteDirectoryRecursively(nested);
-            }
-        }
-
         try
         {
+            if (new DirectoryInfo(destinationDirectory).LinkTarget is null)
+            {
+                foreach (string file in Directory.EnumerateFiles(destinationDirectory))
+                {
+                    TryDeleteFile(file);
+                }
+
+                foreach (string nested in Directory.EnumerateDirectories(destinationDirectory))
+                {
+                    TryDeleteDirectoryRecursively(nested);
+                }
+            }
+
             Directory.Delete(destinationDirectory);
             return true;
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
         {
-            // Not empty — something inside is still locked. Left for a later sweep.
+            // Not empty, or listing/deleting it failed outright — either way, something inside
+            // (or the directory itself) is still locked. Left for a later sweep.
             return false;
         }
     }
@@ -1212,38 +1322,50 @@ public sealed class InstallCommand : Hall9kAsyncCommand<InstallCommand.Settings>
             return;
         }
 
-        foreach (string file in Directory.EnumerateFiles(directory, "*.old"))
+        try
         {
-            if (!TryDeleteFile(file, report: false))
+            foreach (string file in Directory.EnumerateFiles(directory, "*.old"))
             {
-                stillStuck.Add(file);
+                if (!TryDeleteFile(file, report: false))
+                {
+                    stillStuck.Add(file);
+                }
+            }
+
+            // FileSystemName's Win32-expression translation rewrites a trailing ".*" into
+            // DOS_DOT, which also matches zero characters — so "*.old.*" matches a bare "*.old"
+            // too, the same quirk SweepRetiredDirectories documents and skips for "bin.old.*"
+            // one level up. Those are already handled by the loop above, so skip them here
+            // rather than let a still-locked one print its "still in use" warning twice.
+            foreach (string file in Directory.EnumerateFiles(directory, "*.old.*"))
+            {
+                if (file.EndsWith(".old", StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
+                if (!TryDeleteFile(file, report: false))
+                {
+                    stillStuck.Add(file);
+                }
+            }
+
+            foreach (string subdirectory in Directory.EnumerateDirectories(directory))
+            {
+                if (new DirectoryInfo(subdirectory).LinkTarget is null)
+                {
+                    SweepRetiredFiles(subdirectory, stillStuck);
+                }
             }
         }
-
-        // FileSystemName's Win32-expression translation rewrites a trailing ".*" into
-        // DOS_DOT, which also matches zero characters — so "*.old.*" matches a bare "*.old"
-        // too, the same quirk SweepRetiredDirectories documents and skips for "bin.old.*"
-        // one level up. Those are already handled by the loop above, so skip them here
-        // rather than let a still-locked one print its "still in use" warning twice.
-        foreach (string file in Directory.EnumerateFiles(directory, "*.old.*"))
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
         {
-            if (file.EndsWith(".old", StringComparison.OrdinalIgnoreCase))
-            {
-                continue;
-            }
-
-            if (!TryDeleteFile(file, report: false))
-            {
-                stillStuck.Add(file);
-            }
-        }
-
-        foreach (string subdirectory in Directory.EnumerateDirectories(directory))
-        {
-            if (new DirectoryInfo(subdirectory).LinkTarget is null)
-            {
-                SweepRetiredFiles(subdirectory, stillStuck);
-            }
+            // Listing `directory` itself failed (a permission dropped, or the directory removed
+            // from under this walk) rather than a per-file failure the loops above already
+            // record individually — reported the same way, so it still counts toward the
+            // summary line above instead of escaping as an unhandled exception (origin: cycle-4
+            // pre-PR adversarial review).
+            stillStuck.Add(directory);
         }
     }
 
