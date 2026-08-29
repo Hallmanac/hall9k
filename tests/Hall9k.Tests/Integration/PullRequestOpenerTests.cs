@@ -391,6 +391,112 @@ public sealed class PullRequestOpenerTests(PostgresFixture postgres) : IClassFix
         runView.PullRequestNumber.Should().Be(9);
     }
 
+    /// <summary>
+    /// Task: build sessions stop stranding finished work uncommitted. Every push is now
+    /// --force-with-lease, not only a follow-up's — a fresh <c>Build</c> session's own
+    /// end-of-work checkpoint recompose can diverge a retried run's branch from a tip this
+    /// same opener already pushed once (push succeeded, `gh pr create` then failed). The
+    /// sibling test above (<see cref="Follow_up_with_rewritten_history_force_pushes_the_rebased_branch"/>)
+    /// covers exactly this shape for <c>IsFollowUp: true</c>; this covers the non-follow-up
+    /// arm the review found untested (cycle 1, adversarial lens).
+    /// </summary>
+    [Fact]
+    public async Task A_retried_non_follow_up_run_with_a_diverged_recompose_still_lands_via_force_with_lease()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        using DocumentStore store = DocumentStore.For(opts =>
+        {
+            opts.Connection(postgres.ConnectionString);
+            opts.ConfigureHall9k(AutoCreate.All);
+        });
+
+        Directory.CreateDirectory(_root);
+        string originPath = Path.Combine(_root, "origin.git");
+        string repoPath = Path.Combine(_root, "repo");
+        Git(_root, $"init --bare -b main \"{originPath}\"");
+        Git(_root, $"clone \"{originPath}\" \"{repoPath}\"");
+        File.WriteAllText(Path.Combine(repoPath, "README.md"), "# recompose retry test\n");
+        Git(repoPath, "add -A");
+        Git(repoPath, "-c user.name=Test -c user.email=t@t commit -qm init");
+        Git(repoPath, "push -q origin main");
+
+        GitWorktreeManager worktrees = new(NullLogger<GitWorktreeManager>.Instance);
+        Guid taskId = DomainId.New();
+        Guid firstRunId = DomainId.New();
+        Worktree worktree = await worktrees.CreateAsync(
+            new WorktreeRequest(repoPath, "main", taskId, firstRunId, "Recompose retry lands via lease"), cts.Token);
+        File.WriteAllText(Path.Combine(worktree.Path, "WORK.md"), "checkpoint\n");
+        Git(worktree.Path, "add -A");
+        Git(worktree.Path, "-c user.name=Test -c user.email=t@t commit -qm checkpoint");
+        Git(worktree.Path, $"push -q origin {worktree.Branch}");
+
+        // Run 2 resumes the SAME worktree after run 1's push landed but the run still failed
+        // (the exact shape: push succeeded, `gh pr create` then failed) and follows the
+        // checkpoint-recompose protocol: reset to the fork point, then compose fresh history
+        // over it. The new tip shares no ancestry with the tip already on origin.
+        Git(worktree.Path, "reset --mixed HEAD~1");
+        File.WriteAllText(Path.Combine(worktree.Path, "WORK.md"), "recomposed\n");
+        Git(worktree.Path, "add -A");
+        Git(worktree.Path, "-c user.name=Test -c user.email=t@t commit -qm recomposed");
+
+        Guid secondRunId = DomainId.New();
+        Guid ownerId = DomainId.New();
+        Guid projectId = DomainId.New();
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            TaskAggregate task = new();
+            (task, object[] lifecycle) = TaskSeed.Start(
+                TaskDecider.Add(taskId, projectId, "Recompose retry lands via lease", ["branch lands despite divergence"],
+                    TaskType.Chore, null, null, null, Now, ownerId),
+                ownerId, Now);
+            var firstClaim = TaskDecider.Claim(task, DomainId.New(), ownerId, firstRunId, Now);
+            task.Apply(firstClaim);
+            var failed = TaskDecider.Fail(task, firstRunId, "PR opening failed: gh pr create failed", Now);
+            task.Apply(failed);
+            var retried = TaskDecider.Retry(task, firstRunId, worktree.Branch, "retry after PR creation failure", Now, ownerId);
+            task.Apply(retried);
+            var secondClaim = TaskDecider.Claim(task, DomainId.New(), ownerId, secondRunId, Now);
+            task.Apply(secondClaim);
+            session.Events.StartStream<TaskAggregate>(taskId,
+                [.. lifecycle, firstClaim, failed, retried, secondClaim]);
+            session.Store(new TaskLease { Id = taskId, NodeId = secondClaim.NodeId, LeaseGeneration = 2, HeartbeatAt = Now });
+
+            session.Events.StartStream<RunAggregate>(firstRunId,
+                new RunDispatched(firstRunId, taskId, firstClaim.NodeId, ownerId, 1, DomainId.New(),
+                    worktree.Path, worktree.Branch, ExecutorMode.Subscription, Now),
+                new AgentSessionCompleted(firstRunId, Now),
+                new VerificationPassed(firstRunId, Now),
+                new RunFailed(firstRunId, "PR opening failed: gh pr create failed", Now));
+
+            session.Events.StartStream<RunAggregate>(secondRunId,
+                new RunDispatched(secondRunId, taskId, secondClaim.NodeId, ownerId, 2, DomainId.New(),
+                    worktree.Path, worktree.Branch, ExecutorMode.Subscription, Now),
+                new AgentSessionCompleted(secondRunId, Now),
+                new VerificationPassed(secondRunId, Now));
+
+            var registered = Hall9k.Domain.Features.Project.Handlers.ProjectDecider.Register(
+                projectId, ownerId, DomainId.New(), $"pr-{taskId:N}", repoPath, null, "main", Now);
+            session.Events.StartStream<Hall9k.Domain.Features.Project.ProjectAggregate>(registered.Id, registered);
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        PullRequestOpener opener = new(store, NullLogger<PullRequestOpener>.Instance);
+        await opener.OpenAsync(secondRunId, taskId, cts.Token);
+
+        // The diverged, recomposed tip landed on origin despite sharing no ancestry with the
+        // tip run 1 already pushed there — a plain push would have been rejected outright.
+        (int exitCode, string remoteMessage) = TryGit(originPath, $"log -1 --format=%s {worktree.Branch}");
+        exitCode.Should().Be(0);
+        remoteMessage.Trim().Should().Be("recomposed", "the recomposed tip must have landed via force-with-lease");
+        (_, string localTip) = TryGit(worktree.Path, "rev-parse HEAD");
+        (_, string remoteTip) = TryGit(originPath, $"rev-parse {worktree.Branch}");
+        remoteTip.Trim().Should().Be(localTip.Trim());
+
+        await using IQuerySession query = store.QuerySession();
+        TaskListItem taskView = (await query.LoadAsync<TaskListItem>(taskId, cts.Token))!;
+        taskView.State.Value.Should().Be("Done", "the retried run completes once its diverged tip lands");
+    }
+
     private static void Git(string workingDirectory, string arguments)
     {
         (int exitCode, string output) = TryGit(workingDirectory, arguments);

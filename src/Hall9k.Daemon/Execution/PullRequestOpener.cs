@@ -53,22 +53,28 @@ public sealed class PullRequestOpener(
             // Always --force-with-lease, never a plain push and never plain --force. A
             // follow-up may have rewritten the branch's history (narrative commit style:
             // fixups folded into their owning commits, Decisions Log #26), and a fresh build
-            // session's own end-of-work checkpoint recompose (task: build sessions stop
-            // stranding finished work uncommitted) rewrites it too — a mixed reset to the
-            // branch's fork point followed by commit-plan composing new history means a
-            // retried task resuming a branch this same opener already pushed once (push
-            // succeeded, `gh pr create` then failed) diverges from that earlier push.
-            // --force-with-lease lands either rewrite while still refusing a tip this node
-            // has not fetched (a human or another node moved the branch). A first-time push
-            // is unaffected: with no remote-tracking ref to protect, the lease is satisfied
-            // trivially (verified: `git push --force-with-lease` creates a brand-new remote
-            // branch exactly like a plain push does) — which matters because `h9k task
-            // deliver` now publishes an interactive claim's branch itself before this run
-            // reaches here, so `IsFollowUp` is no longer a reliable proxy for "does a remote
-            // copy already exist" (conformance review, cycle 1). A failed lease fails the run
+            // session's own end-of-work checkpoint recompose (Decisions Log #102) rewrites it
+            // too — a mixed reset to the branch's fork point followed by commit-plan composing
+            // new history means a retried task resuming a branch this same opener already
+            // pushed once (push succeeded, `gh pr create` then failed) diverges from that
+            // earlier push. A plain push rejects that as non-fast-forward and strands the
+            // completed, gated work; --force-with-lease lands either rewrite while still
+            // refusing a tip this node has not fetched (a human or another node moved the
+            // branch). For the ordinary case — this node's own remote-tracking ref for the
+            // branch is current, which BestEffortFetchAsync keeps true on every worktree
+            // create/checkout — that behaves exactly like a plain push, including for a
+            // branch never pushed before, which matters because `h9k task deliver` now
+            // publishes an interactive claim's branch itself before this run reaches here, so
+            // `IsFollowUp` is no longer a reliable proxy for "does a remote copy already
+            // exist" (conformance review, cycle 1). It is narrower than a plain push only
+            // when this node holds no tracking ref at all for a branch origin already has (a
+            // best-effort fetch that never landed, or a bare clone missing the fetch refspec
+            // RepoMaterialiser corrects): there, the lease has nothing to compare against and
+            // git rejects the push outright rather than fast-forwarding (conformance and
+            // adversarial review, cycle 1). Never plain --force. A failed lease fails the run
             // honestly below — no blind retry — and h9k pr resolve is the requeue lever.
             // Origin incident (2026-08-17): the first two automatic follow-up runs rebased
-            // per the authored-history rule and a conditional plain push rejected both,
+            // per the authored-history rule and a then-plain push rejected both,
             // stranding completed, gated work in the worktrees.
             string[] pushArguments = ["push", "--force-with-lease", "origin", run.Branch];
             await RunInWorktreeAsync(run.WorktreePath, "git", pushArguments, cancellationToken);
