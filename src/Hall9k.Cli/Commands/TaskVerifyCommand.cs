@@ -8,6 +8,7 @@ using Hall9k.Domain.Features.Run.Events;
 using Hall9k.Domain.Features.Run.Projections;
 using Hall9k.Domain.Features.Tasks;
 using Hall9k.Domain.Features.Tasks.Projections;
+using Hall9k.Domain.Infrastructure.Storage;
 using Hall9k.Domain.Shared.Exceptions;
 using Marten;
 using Spectre.Console;
@@ -150,7 +151,13 @@ public sealed class TaskVerifyCommand : Hall9kAsyncCommand<TaskVerifyCommand.Set
         if (OperatingSystem.IsWindows())
         {
             process.StartInfo.FileName = "cmd.exe";
-            process.StartInfo.Arguments = $"/c {gate.Command}";
+            // WindowsCommandLine.WrapForCmdExe's own doc comment records why: cmd.exe's /c
+            // parsing does not follow the CommandLineToArgvW convention ArgumentList assumes, so
+            // a gate command carrying its own embedded quotes gets mangled unless it is wrapped
+            // in one extra pair and set as the raw Arguments string exactly as
+            // VerificationRunner.RunGateAsync already does for the identical cmd.exe path
+            // (adversarial review, cycle 1).
+            process.StartInfo.Arguments = WindowsCommandLine.WrapForCmdExe(gate.Command);
         }
         else
         {
