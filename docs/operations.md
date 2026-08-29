@@ -126,7 +126,13 @@ Hall9k requires a Postgres connection string and takes no position on where Post
 (Decisions Log #58). The one thing install does write is the connection string itself, and only
 when nothing resolves yet anywhere in the precedence chain below: the compose file it just wrote
 fully determines what that string has to be, so recording it is not a guess, and it is never
-written over a value that already resolves (Decisions Log #99).
+written over a value that already resolves (Decisions Log #99). It also skips the write when
+something is already listening on `localhost:5432`, because a native Postgres of your own is a
+supported deployment, and writing install's compose credentials against it would turn doctor's
+honest "something is already listening" diagnosis into a manufactured authentication failure. You
+get a line saying the machine was left unconfigured for that reason; run `h9k doctor` to see what
+is listening, or set `HALL9K_CONNECTION_STRING` (or `~/.hall9k/config.json`) to your own server
+yourself.
 
 ### The doctor check
 
@@ -438,9 +444,9 @@ current state while the daemon keeps running on whatever it read when it started
 
 `h9k update` never touches the config file. `h9k install` touches it in exactly one case — merging
 in `connectionString` when nothing resolves yet anywhere in the [precedence chain](#postgres)
-above (Decisions Log #99) — and otherwise leaves it alone the same as update does; a missing file
-is created (with defaults, and only the settings you asked to change) the first time
-`h9k config set` needs it, and it says so.
+above and nothing is already listening on `localhost:5432` (Decisions Log #99) — and otherwise
+leaves it alone the same as update does; a missing file is created (with defaults, and only the
+settings you asked to change) the first time `h9k config set` needs it, and it says so.
 
 ### Per project and per owner
 
