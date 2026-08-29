@@ -666,7 +666,7 @@ public sealed class RunAggregateTests
     /// The MergeReady branch keeps the same <see cref="RunAggregate.FinalFullPassRounds"/> reset
     /// for the same discipline even though the reordering that fixed the cycle-2 finding this
     /// reset was originally written against also made it unreachable-in-effect here: the Settling
-    /// branch's own settle short-circuit (<c>ReviewEngine.MaySettle</c>) takes
+    /// branch's own settle short-circuit (<c>ReviewEngine.MaySettleReason</c>) takes
     /// <see cref="RunAggregate.HumanEndedTheLoop"/> unconditionally, before
     /// <c>FinalFullPassCapReached</c> is ever consulted. This test still guards a real
     /// invariant — a stale round count must never carry into whatever the run's next review cycle

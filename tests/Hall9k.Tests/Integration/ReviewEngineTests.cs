@@ -371,7 +371,7 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
     /// fell back to full because the fix's commit touched something <see cref="TestScopeResolver"/>
     /// cannot map to a test class — a doc file, here — so re-running the full suite a second time
     /// over the identical commits would buy nothing. Only the redundant GATE call is skipped: the
-    /// review pass immediately after still runs, since <c>MaySettle</c>'s own "another fresh-context
+    /// review pass immediately after still runs, since <c>MaySettleReason</c>'s own "another fresh-context
     /// read is still owed" rule for a Verify-mode cycle is a separate question this does not touch.
     /// </summary>
     [Fact]
@@ -2844,7 +2844,7 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
     }
 
     /// <summary>
-    /// Independent pre-PR review, cycle 1 finding: <c>MaySettle</c>'s human exemption was written
+    /// Independent pre-PR review, cycle 1 finding: <c>MaySettleReason</c>'s human exemption was written
     /// for "no reviewer needs to read this diff again," not "the suite ran" — but before this
     /// task's own fix, a human's merge-ready resolution on a park that followed a Verify-mode
     /// cycle's own (possibly scoped) gate reached <c>SettleAsync</c> straight from the Settling

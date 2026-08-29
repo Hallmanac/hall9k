@@ -748,15 +748,15 @@ public sealed class RunAggregate
             // The same fresh-grant reset the NeedsFixes branch below gives itself, kept for the
             // same discipline even though it no longer guards the scenario it was written for
             // (independent pre-PR review, cycle 5): ReviewEngine.ReviewPhase.Settling's own settle
-            // short-circuit (ReviewEngine.cs, MaySettle(run)) takes HumanEndedTheLoop
+            // short-circuit (ReviewEngine.cs, MaySettleReason(run)) takes HumanEndedTheLoop
             // unconditionally, before FinalFullPassCapReached is ever consulted, so a merge-ready
             // resolve now always settles straight through rather than re-parking on the cap — the
             // re-ordering that fixed the cycle-2 finding this reset was originally written against
             // also made the reset itself unreachable-in-effect on this branch (there is nothing
             // left downstream of it for a fresh FinalFullPassRounds to matter to). It stays rather
             // than being dropped: an old value must never carry into whatever the run's next
-            // review cycle does, and the moment something changes MaySettle's ordering back, this
-            // reset is what keeps that path correct without needing to be rediscovered.
+            // review cycle does, and the moment something changes MaySettleReason's ordering back,
+            // this reset is what keeps that path correct without needing to be rediscovered.
             FinalFullPassRounds = 0;
         }
         else
