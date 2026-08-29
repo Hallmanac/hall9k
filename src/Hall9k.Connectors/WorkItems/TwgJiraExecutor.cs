@@ -1,5 +1,6 @@
 using System.ComponentModel;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using Hall9k.Connectors.Processes;
 using Hall9k.Connectors.Text;
 using Hall9k.Domain.Features.Tasks;
@@ -53,12 +54,19 @@ public enum TwgAuthProbeResult
 /// models nothing about a card's shape — it only shells out, reads twg's own JSON answer back,
 /// and classifies a failure as an expected auth problem or a real one.
 /// <para>
-/// twg's exact CLI grammar comes from live <c>twg help</c> on the machine it runs on; this class
-/// assumes the shape the task that built it described: <c>twg jira create/update/search</c> with
-/// <c>--output json</c>, a comment carried as an update's own field, and login state read from
-/// whether an ordinary read call succeeds. If a later twg version changes that shape, this file —
-/// and only this file — is where the adjustment belongs; every caller above it speaks in
-/// <see cref="JiraWritePayload"/> and <see cref="TwgWriteResult"/>, never in twg's own flags.
+/// twg's exact CLI grammar comes from live <c>twg help</c> and <c>twg help describe</c> on the
+/// machine it runs on: work items live under <c>twg jira workitem</c>
+/// (<c>create</c>/<c>update</c>/<c>query</c>/<c>comment create</c>), never the bare
+/// <c>twg jira create/update/search</c> an earlier version of this class assumed and which does
+/// not exist on any installed twg (independent pre-PR review, cycle 1) — AGENTS.md's "never guess
+/// at unobserved facts" is written for exactly this. <c>create</c> takes <c>--space</c> for the
+/// project and first-class <c>--summary</c>/<c>--description</c>; <c>update</c> takes
+/// <c>--id</c> rather than a positional key. <c>--output json</c> never prints raw JSON to
+/// stdout by itself — every call still carries a YAML summary envelope naming a temp file that
+/// holds the real payload, which is what <see cref="ExtractFirstKey"/> reads. If a later twg
+/// version changes either shape, this file — and only this file — is where the adjustment
+/// belongs; every caller above it speaks in <see cref="JiraWritePayload"/> and
+/// <see cref="TwgWriteResult"/>, never in twg's own flags.
 /// </para>
 /// </summary>
 public sealed class TwgJiraExecutor(ProcessRunner? runner = null)
@@ -96,7 +104,7 @@ public sealed class TwgJiraExecutor(ProcessRunner? runner = null)
     public async Task<string?> FindByMarkerAsync(Guid taskId, string workingDirectory, CancellationToken cancellationToken)
     {
         ProcessResult result = await RunAsync(
-            ["jira", "search", "--jql", $"text ~ \"{Marker(taskId)}\"", "--output", "json"],
+            ["jira", "workitem", "query", "--jql", $"text ~ \"{Marker(taskId)}\"", "--output", "json", "--output-summary", "stats"],
             workingDirectory, cancellationToken);
         return ExtractFirstKey(result.StandardOutput);
     }
@@ -120,10 +128,18 @@ public sealed class TwgJiraExecutor(ProcessRunner? runner = null)
         Dictionary<string, string> fields = payload.Fields is null
             ? []
             : new Dictionary<string, string>(payload.Fields);
-        fields["description"] = AppendMarker(fields.GetValueOrDefault("description"), Marker(taskId));
+        string? summary = ExtractField(fields, "summary");
+        string description = AppendMarker(ExtractField(fields, "description"), Marker(taskId));
 
         List<string> arguments =
-            ["jira", "create", "--project", project.Value, "--type", payload.WorkItemType ?? string.Empty, "--output", "json"];
+            ["jira", "workitem", "create", "--space", project.Value, "--type", payload.WorkItemType ?? string.Empty,
+             "--description", description, "--output", "json", "--output-summary", "stats"];
+        if (summary.IsNotBlank())
+        {
+            arguments.Add("--summary");
+            arguments.Add(summary);
+        }
+
         AppendFields(arguments, fields);
 
         ProcessResult result = await RunAsync(arguments, workingDirectory, cancellationToken);
@@ -146,8 +162,26 @@ public sealed class TwgJiraExecutor(ProcessRunner? runner = null)
     public async Task<TwgWriteResult> UpdateAsync(
         string issueKey, JiraWritePayload payload, string workingDirectory, CancellationToken cancellationToken)
     {
-        List<string> arguments = ["jira", "update", issueKey, "--output", "json"];
-        AppendFields(arguments, payload.Fields ?? new Dictionary<string, string>());
+        Dictionary<string, string> fields = payload.Fields is null
+            ? []
+            : new Dictionary<string, string>(payload.Fields);
+        string? summary = ExtractField(fields, "summary");
+        string? description = ExtractField(fields, "description");
+
+        List<string> arguments = ["jira", "workitem", "update", "--id", issueKey, "--output", "json", "--output-summary", "stats"];
+        if (summary.IsNotBlank())
+        {
+            arguments.Add("--summary");
+            arguments.Add(summary);
+        }
+
+        if (description.IsNotBlank())
+        {
+            arguments.Add("--description");
+            arguments.Add(description);
+        }
+
+        AppendFields(arguments, fields);
         await RunAsync(arguments, workingDirectory, cancellationToken);
         return await VerifyAsync(issueKey, workingDirectory, cancellationToken, "updated", confirmsExistenceOnly: true);
     }
@@ -160,7 +194,9 @@ public sealed class TwgJiraExecutor(ProcessRunner? runner = null)
     public async Task<TwgWriteResult> CommentAsync(
         string issueKey, string comment, string workingDirectory, CancellationToken cancellationToken)
     {
-        List<string> arguments = ["jira", "update", issueKey, "--comment", comment, "--output", "json"];
+        List<string> arguments =
+            ["jira", "workitem", "comment", "create", "--issue-id", issueKey, "--body", comment,
+             "--output", "json", "--output-summary", "stats"];
         await RunAsync(arguments, workingDirectory, cancellationToken);
         return await VerifyAsync(issueKey, workingDirectory, cancellationToken, "commented on", confirmsExistenceOnly: true);
     }
@@ -178,7 +214,8 @@ public sealed class TwgJiraExecutor(ProcessRunner? runner = null)
         bool confirmsExistenceOnly)
     {
         ProcessResult result = await RunAsync(
-            ["jira", "search", "--jql", $"key = {issueKey}", "--output", "json"], workingDirectory, cancellationToken);
+            ["jira", "workitem", "query", "--jql", $"key = {issueKey}", "--output", "json", "--output-summary", "stats"],
+            workingDirectory, cancellationToken);
         string? found = ExtractFirstKey(result.StandardOutput);
         if (found is null)
         {
@@ -205,7 +242,9 @@ public sealed class TwgJiraExecutor(ProcessRunner? runner = null)
     {
         try
         {
-            await RunAsync(["jira", "search", "--jql", ProbeJql, "--output", "json"], workingDirectory, cancellationToken);
+            await RunAsync(
+                ["jira", "workitem", "query", "--jql", ProbeJql, "--output", "json", "--output-summary", "stats"],
+                workingDirectory, cancellationToken);
             return TwgAuthProbeResult.Authenticated;
         }
         catch (TwgExecutionException exception) when (exception.Kind == TwgFailureKind.MissingBinary)
@@ -229,6 +268,27 @@ public sealed class TwgJiraExecutor(ProcessRunner? runner = null)
             arguments.Add("--field");
             arguments.Add($"{name}={value}");
         }
+    }
+
+    /// <summary>
+    /// Pull a first-class field (<c>summary</c>, <c>description</c>) out of a composed payload's
+    /// fields, case-insensitively — a composing agent's own casing choice ("Description" as well
+    /// as "description") should not survive into a second, marker-only <c>--field</c> alongside
+    /// twg's own <c>--summary</c>/<c>--description</c> flags for the same thing (independent
+    /// pre-PR review, cycle 1). Removes whichever casing it found so <see cref="AppendFields"/>
+    /// never sees it again.
+    /// </summary>
+    private static string? ExtractField(Dictionary<string, string> fields, string name)
+    {
+        string? key = fields.Keys.FirstOrDefault(candidate => string.Equals(candidate, name, StringComparison.OrdinalIgnoreCase));
+        if (key is null)
+        {
+            return null;
+        }
+
+        string value = fields[key];
+        fields.Remove(key);
+        return value;
     }
 
     /// <summary>
@@ -269,6 +329,31 @@ public sealed class TwgJiraExecutor(ProcessRunner? runner = null)
                 TwgFailureKind.MissingBinary,
                 $"Could not run twg, the Atlassian CLI hall9k writes Jira through: {exception.Message}. "
                 + "Install it and run twg login, then try again.");
+        }
+        // twg itself exited — with an observed exit code — and something it started kept holding
+        // its output pipe open past the drain grace, so the answer was never read. Checked ahead
+        // of the plain TimeoutException below, which this is one of and would otherwise catch it
+        // first: that handler exists for "did this even run", and an exit code proves it did.
+        // Exit 0 is the dangerous half — the write itself was very likely carried out even though
+        // its answer could not be — so the message says that plainly rather than the generic "did
+        // not answer", the same distinction GitHubWorkItemProvider.RunGhAsync already draws
+        // (independent pre-PR review, cycle 1).
+        catch (ProcessOutputStuckException exception) when (exception.ExitCode == 0)
+        {
+            throw new TwgExecutionException(
+                TwgFailureKind.Other,
+                $"{exception.Message} twg reported success before its output got stuck, so this write was "
+                + "very likely carried out even though its own answer could not be read back. Do not "
+                + "assume nothing happened: for a create, run the same write again — the marker search "
+                + "this executor runs first will find the card if it exists rather than filing a second "
+                + "one; for an update or a comment, check the board before retrying.");
+        }
+        catch (ProcessOutputStuckException exception)
+        {
+            throw new TwgExecutionException(
+                TwgFailureKind.Other,
+                $"{exception.Message} twg reported failure, so nothing here was carried out; run the same "
+                + "command by hand to see what it is waiting on.");
         }
         catch (TimeoutException exception)
         {
@@ -315,13 +400,24 @@ public sealed class TwgJiraExecutor(ProcessRunner? runner = null)
     }
 
     /// <summary>
-    /// The key twg's own JSON answered with, tolerant of both shapes it might arrive in: a bare
-    /// object (create, update) or an array (search) — the first element's key either way.
+    /// twg's own YAML summary envelope names the file its real JSON payload was written to
+    /// (<c>output_files: stdout: "&lt;path&gt;"</c>) — <c>--output json</c> alone never prints
+    /// pure JSON to stdout, whatever <c>--output-summary</c> level is chosen (independent pre-PR
+    /// review, cycle 1, verified against an installed, authenticated twg). Bare JSON on stdout is
+    /// still tolerated as a fallback in case a later twg version drops the envelope.
     /// </summary>
-    private static string? ExtractFirstKey(string json) => ReadFirstElement(json) is { } element ? ReadKey(element) : null;
+    private static readonly Regex StdoutFilePathPattern = new(
+        """^\s*stdout:\s*"(?<path>[^"]+)"\s*$""", RegexOptions.Multiline | RegexOptions.Compiled);
 
-    private static JsonElement? ReadFirstElement(string json)
+    /// <summary>
+    /// The key twg's own answer carries, tolerant of the shapes actually observed: a query's
+    /// <c>data.issues[]</c>, a get's <c>data[]</c>, or a create/update's own object directly under
+    /// <c>data</c> — the first entity found with a "key" property, searched in that order of
+    /// directness rather than assumed to be any one of them.
+    /// </summary>
+    private static string? ExtractFirstKey(string envelopeOutput)
     {
+        string json = ReadPayloadJson(envelopeOutput);
         if (json.IsBlank())
         {
             return null;
@@ -339,22 +435,59 @@ public sealed class TwgJiraExecutor(ProcessRunner? runner = null)
 
         using (document)
         {
-            return document.RootElement.ValueKind switch
-            {
-                JsonValueKind.Object => document.RootElement.Clone(),
-                JsonValueKind.Array when document.RootElement.GetArrayLength() > 0 =>
-                    document.RootElement[0].Clone(),
-                _ => null,
-            };
+            JsonElement data = document.RootElement.ValueKind == JsonValueKind.Object
+                && document.RootElement.TryGetProperty("data", out JsonElement dataElement)
+                ? dataElement
+                : document.RootElement;
+            return FindEntity(data) is { } entity && entity.TryGetProperty("key", out JsonElement key)
+                ? key.GetString()
+                : null;
         }
     }
 
-    private static string? ReadKey(JsonElement element) =>
-        element.ValueKind == JsonValueKind.Object
-        && element.TryGetProperty("key", out JsonElement value)
-        && value.ValueKind == JsonValueKind.String
-            ? value.GetString()
-            : null;
+    private static string ReadPayloadJson(string envelopeOutput)
+    {
+        Match match = StdoutFilePathPattern.Match(envelopeOutput);
+        if (match.Success && File.Exists(match.Groups["path"].Value))
+        {
+            return File.ReadAllText(match.Groups["path"].Value);
+        }
+
+        return envelopeOutput;
+    }
+
+    /// <summary>
+    /// Depth-first for the first object carrying a "key" string: itself, its first element if it
+    /// is an array, or the first array-valued property it has (twg's own <c>data.issues</c> shape)
+    /// — deliberately not a recursive scan of every nested field, which would just as readily
+    /// return a parent issue's own "key" nested two levels down inside a subtask's answer.
+    /// </summary>
+    private static JsonElement? FindEntity(JsonElement value)
+    {
+        if (value.ValueKind == JsonValueKind.Object
+            && value.TryGetProperty("key", out JsonElement key) && key.ValueKind == JsonValueKind.String)
+        {
+            return value;
+        }
+
+        if (value.ValueKind == JsonValueKind.Array)
+        {
+            return value.GetArrayLength() > 0 ? FindEntity(value[0]) : null;
+        }
+
+        if (value.ValueKind == JsonValueKind.Object)
+        {
+            foreach (JsonProperty property in value.EnumerateObject())
+            {
+                if (property.Value.ValueKind == JsonValueKind.Array && FindEntity(property.Value) is { } found)
+                {
+                    return found;
+                }
+            }
+        }
+
+        return null;
+    }
 
     private static string Head(string output)
     {
