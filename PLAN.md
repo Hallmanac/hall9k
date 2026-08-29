@@ -670,7 +670,13 @@ already settled in `backlog/12-daemon-install.md` (install registers no service,
 *Rejected: prompting for a connection string during install* — it asks a question most users cannot
 answer yet, at the least informed moment. *Rejected: guessing a local default silently* — it converts
 a clear setup step into a confusing failure later, at a moment the user cannot connect back to the
-install.
+install. (Amended by #99: install now writes `Hall9kDatabase.DefaultConnectionString` into
+`config.json` non-interactively, but only when nothing in the precedence chain resolves yet and
+nothing is already listening on the default port — the rejection above is about a value install
+cannot already prove, and this one is not that: the compose file install just wrote fully determines
+the string, so the write is a record of what install already provisioned rather than a guess. A
+machine where install cannot tell — something already listening on 5432 — is left exactly where this
+decision originally leaves it, unconfigured, with doctor's own diagnosis intact.)
 
 Instead, **the first command that needs a database runs a check**, and that check answers four
 questions in order:
