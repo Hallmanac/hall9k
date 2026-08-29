@@ -51,6 +51,25 @@ public sealed class TaskWorkCommand : Hall9kAsyncCommand<TaskWorkCommand.Setting
 
     protected override async Task<int> ExecuteAsync(Settings settings, CancellationToken cancellationToken)
     {
+        // Checked before anything is claimed, not inside the launch's own catch (adversarial
+        // review, cycle 8): the prompt travels as a single positional argument carrying the
+        // whole multi-line working-rules document, and cmd.exe — which every .cmd/.bat/.ps1
+        // shim (the shape an npm-installed Claude Code takes on Windows) ultimately runs
+        // through — treats an embedded newline as a command separator, not literal argument
+        // content. There is no quoting fix for that (WindowsCommandLine's own extra-quote
+        // wrapping only survives embedded quotes, not embedded newlines), so this is refused
+        // up front rather than left to strand a claim nobody can ever enter.
+        if (DetectWindowsScriptShim(ClaudeBinary()) is { } shimPath)
+        {
+            throw new DomainConflictException(
+                $"Claude Code resolves to a script ({shimPath}) on this machine, which h9k task work cannot "
+                + "launch: an interactive claim's opening prompt travels as a multi-line command-line argument, "
+                + "and cmd.exe — which every .cmd/.bat/.ps1 shim runs through — cannot carry embedded newlines "
+                + "in one. Headless dispatch is unaffected (its prompt travels through a redirected file "
+                + "instead): h9k task assign to dispatch this task headlessly, or install Claude Code's native "
+                + "Windows build so `claude` resolves to an .exe.");
+        }
+
         using var store = CliStore.Open();
         await using IDocumentSession session = store.LightweightSession();
 
@@ -533,6 +552,48 @@ public sealed class TaskWorkCommand : Hall9kAsyncCommand<TaskWorkCommand.Setting
 
     private static string ClaudeBinary() =>
         Environment.GetEnvironmentVariable("HALL9K_CLAUDE_PATH") ?? "claude";
+
+    private static readonly string[] WindowsScriptExtensions = [".cmd", ".bat", ".ps1"];
+
+    /// <summary>
+    /// Whether <paramref name="claudeBinary"/> resolves, on this machine, to a script this
+    /// command cannot launch directly (see the caller's own comment). No-op off Windows, and
+    /// no-op wherever the name resolves to a real executable: CreateProcess already appends
+    /// only <c>.exe</c> when searching PATH for a bare name (DaemonEnvironment.ResolvesAsGiven's
+    /// own doc comment names this same PATHEXT gap for the existence check <c>h9k doctor</c>
+    /// runs; this is the launch-time counterpart), so a bare "claude" silently finds nothing on
+    /// an npm install that only ships <c>claude.cmd</c> — the search below mirrors PATHEXT to
+    /// catch that before Process.Start ever throws.
+    /// </summary>
+    private static string? DetectWindowsScriptShim(string claudeBinary)
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            return null;
+        }
+
+        if (Path.IsPathRooted(claudeBinary))
+        {
+            return WindowsScriptExtensions.Contains(Path.GetExtension(claudeBinary), StringComparer.OrdinalIgnoreCase)
+                && File.Exists(claudeBinary)
+                ? claudeBinary
+                : null;
+        }
+
+        string[] searchDirectories = (Environment.GetEnvironmentVariable("PATH") ?? string.Empty)
+            .Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+
+        // An .exe alongside the shim wins — CreateProcess would find it too, so there is
+        // nothing to refuse.
+        if (searchDirectories.Any(directory => File.Exists(Path.Combine(directory, claudeBinary + ".exe"))))
+        {
+            return null;
+        }
+
+        return searchDirectories
+            .SelectMany(directory => WindowsScriptExtensions.Select(extension => Path.Combine(directory, claudeBinary + extension)))
+            .FirstOrDefault(File.Exists);
+    }
 
     /// <summary>
     /// Mirrors Hall9k.Daemon.ProcessManagement.ProcessManagerBase.ReadStartedAt exactly — not
