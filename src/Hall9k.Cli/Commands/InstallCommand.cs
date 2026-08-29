@@ -6,6 +6,7 @@ using System.Security;
 using Hall9k.Cli.DaemonControl;
 using Hall9k.Cli.Infrastructure;
 using Hall9k.Cli.ProjectHomes;
+using Hall9k.Domain.Infrastructure.Persistence;
 using Hall9k.Domain.Infrastructure.Storage;
 using Microsoft.Win32;
 using Spectre.Console;
@@ -159,6 +160,8 @@ public sealed class InstallCommand : Hall9kAsyncCommand<InstallCommand.Settings>
             $"[dim]Wrote Hall9k's own Postgres definition to {PostgresRuntime.ComposeFile.EscapeMarkup()} "
             + "(not started — h9k doctor or h9k daemon start will offer to when it's needed).[/]");
 
+        await WriteDefaultConnectionStringIfUnconfiguredAsync(cancellationToken);
+
         if (skillsSource is not null)
         {
             PublishSkills(skillsSource);
@@ -208,6 +211,35 @@ public sealed class InstallCommand : Hall9kAsyncCommand<InstallCommand.Settings>
         return runningBefore is null
             ? ExitCodes.Ok
             : await OfferRestartAsync(restart, noRestart, runningBefore, cancellationToken);
+    }
+
+    /// <summary>
+    /// The compose file just written above fully determines what a first-time
+    /// <c>h9k doctor</c> or <c>h9k daemon start</c> would find at
+    /// <see cref="Hall9kDatabase.DefaultConnectionString"/>, so a machine with nothing
+    /// configured yet gets that answer recorded up front rather than left to fail
+    /// <c>h9k doctor</c>'s first question for no reason a fresh install couldn't already
+    /// see (Windows install friction log item 1: config.json was left empty and doctor's
+    /// first run failed with "No connection string is configured" on a machine whose
+    /// compose file already said exactly what that string should be). Never runs when
+    /// something already resolves — the environment variable, the platform config file, or
+    /// a per-project override file all outrank a value install would only be guessing
+    /// matches what the operator actually wants; a malformed config file is left alone too,
+    /// since repairing it is <c>h9k doctor</c>'s own diagnosis to make, not install's to
+    /// paper over.
+    /// </summary>
+    private static async Task WriteDefaultConnectionStringIfUnconfiguredAsync(CancellationToken cancellationToken)
+    {
+        ConnectionStringResolution resolution = Hall9kDatabase.Resolve();
+        if (resolution.Origin != ConnectionStringOrigin.None)
+        {
+            return;
+        }
+
+        await Hall9kDatabase.WriteConfiguredConnectionStringAsync(Hall9kDatabase.DefaultConnectionString, cancellationToken);
+        AnsiConsole.MarkupLine(
+            $"[dim]Wrote the matching connection string to {Hall9kDatabase.ConfigFile.EscapeMarkup()} — "
+            + "nothing was configured yet, and this is what the compose file above stands up.[/]");
     }
 
     /// <summary>The binary names --from-release must carry for this platform: h9k/h9kd on
