@@ -208,6 +208,32 @@ public sealed class SweepDraftTaskTests
     }
 
     /// <summary>
+    /// A backtick pair the reviewer typed around the closing keyword must not be read as an
+    /// already-defused span: <see cref="RelayedText"/>'s scanner has no notion of escaping, so
+    /// escaping the reviewer's backticks before the scan runs still leaves backtick characters
+    /// for it to pair against, and it then leaves the keyword unwrapped believing it already sits
+    /// inside a span — while the escaped pair renders as literal punctuation, not an actual code
+    /// span, so the keyword reaches the sweep bare and live (cycle-6 adversarial review).
+    /// </summary>
+    [Fact]
+    public void A_location_with_backticks_around_a_closing_keyword_is_still_defused()
+    {
+        SweepFindingRoute route = new(
+            new ReviewFinding(
+                ReviewSeverity.Low, ReviewFindingScope.OutOfScope, "Foo.cs:12 — the `retry closes #500` path",
+                "FINDING: severity=low; scope=out-of-scope; at=Foo.cs:12 — the `retry closes #500` path\n"
+                + "Defect: a stale comment misleads the next reader."),
+            DomainId.New(), 1, "/runs/x/review-1-findings.md");
+
+        string body = SweepDraftTask.ComposeNew(DomainId.New(), DomainId.New(), [route], Now, DomainId.New()).AgentContext!;
+        string heading = body.Split('\n').Single(line => line.StartsWith("### ", StringComparison.Ordinal));
+
+        heading.Should().NotContain(
+            "closes #500", "the keyword must end up genuinely wrapped in its own functioning code span, " +
+            "not merely sitting between two backticks that were escaped into literal punctuation");
+    }
+
+    /// <summary>
     /// A location containing a backtick, rendered bare as a "### " heading, leaves an unpaired
     /// backtick that CommonMark can pair with a later run further down the document, turning
     /// everything in between into an unintended code span (cycle-4 adversarial review). The

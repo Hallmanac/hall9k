@@ -148,23 +148,50 @@ public static partial class SweepDraftTask
     }
 
     /// <summary>
+    /// Stands in for a literal backtick while <see cref="RelayedText.WithoutClosingKeywords"/>
+    /// scans the text below, so every one of the reviewer's own backticks is invisible to that
+    /// scan rather than merely escaped in front of it. <see cref="RelayedText"/>'s span scanner
+    /// has no notion of backslash-escaping — it pairs backtick characters wherever it finds
+    /// them — so replacing a backtick with <c>\`</c> before the scan runs still leaves a backtick
+    /// character in the text for it to pair against; a closing keyword the reviewer happened to
+    /// wrap in backticks then reads as "already inside a span" and is left unwrapped, while the
+    /// escaped pair around it renders as literal punctuation rather than an actual code span,
+    /// so the keyword reaches the sweep bare and live (cycle-6 adversarial review). Hiding the
+    /// backticks behind this placeholder first means the scan always treats the text as
+    /// backtick-free, so it always inserts its own fresh, functioning span around a closing
+    /// keyword regardless of what the reviewer's own backticks looked like.
+    /// <para>
+    /// NUL cannot survive <see cref="RelayedText.OneLine"/>, which drops every control character
+    /// via <see cref="RelayedText.Printable"/> before this placeholder is ever inserted, so it can
+    /// never collide with anything the reviewer actually wrote.
+    /// </para>
+    /// </summary>
+    private const string BacktickPlaceholder = "\u0000BACKTICK\u0000";
+
+    /// <summary>
     /// A finding's <c>Location</c> defused before it becomes part of the sweep's structure — a
     /// bare "### " heading, outside every fence the rest of an item lives inside (cycle-4
     /// adversarial review). Folded onto one line, every backtick the reviewer's own text carried
-    /// backslash-escaped first — CommonMark reads <c>\`</c> as a literal character rather than a
-    /// span delimiter, so a stray one cannot pair with a later backtick run and swallow
-    /// everything between them into an unintended code span — and only then closing-keyword-
-    /// defused the way <see cref="ReviewDraftBugTask"/> already treats the identical field.
-    /// Escaping first, rather than after, matters here specifically: <c>WithoutClosingKeywords</c>
-    /// wraps a closing-keyword reference in its own fresh, unescaped backtick pair, and escaping
-    /// afterward would turn that very pair into literal characters too, defeating the code span it
-    /// just inserted (cycle-5 conformance and adversarial review). A heading carries more risk
-    /// than the sibling's inline prose does: its corruption can reach past its own paragraph into
-    /// the rest of the document.
+    /// is hidden behind <see cref="BacktickPlaceholder"/>, closing-keyword-defused the way
+    /// <see cref="ReviewDraftBugTask"/> already treats the identical field, and only then are the
+    /// placeholders turned into backslash-escaped backticks — CommonMark reads <c>\`</c> as a
+    /// literal character rather than a span delimiter, so a stray one cannot pair with a later
+    /// backtick run and swallow everything between them into an unintended code span. Converting
+    /// the placeholders to their escaped form only after defusing, rather than escaping the
+    /// reviewer's backticks directly beforehand, is what keeps the freshly inserted span working:
+    /// the placeholder never contains a backtick character for the defusing scan to see, so
+    /// nothing it does can accidentally leave the keyword unwrapped, and the fresh span it does
+    /// insert is made of real backticks the final replace never touches. A heading carries more
+    /// risk than the sibling's inline prose does: its corruption can reach past its own paragraph
+    /// into the rest of the document.
     /// </summary>
-    private static string SanitizeLocation(string location) =>
-        RelayedText.WithoutClosingKeywords(
-            RelayedText.OneLine(location).Trim().Replace("`", "\\`", StringComparison.Ordinal));
+    private static string SanitizeLocation(string location)
+    {
+        string oneLine = RelayedText.OneLine(location).Trim();
+        string placeheld = oneLine.Replace("`", BacktickPlaceholder, StringComparison.Ordinal);
+        string defused = RelayedText.WithoutClosingKeywords(placeheld);
+        return defused.Replace(BacktickPlaceholder, "\\`", StringComparison.Ordinal);
+    }
 
     private static string Render(IReadOnlyList<Item> items)
     {
