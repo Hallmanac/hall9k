@@ -158,7 +158,7 @@ h9k epic close <id> --reason "<why>"              # the only way an epic ends
 An operator can work a Queued task interactively instead of dispatching it headless — the claim
 is held by the human, not a process, so there is no lease and no heartbeat reclaim; closing the
 terminal is a normal way to leave, and running `h9k task work` again re-enters the same worktree
-(Decisions Log #99):
+(Decisions Log #103):
 
 ```bash
 h9k task work <id>          # claim it, cut the same branch/worktree/prompt headless dispatch would, open an interactive session
