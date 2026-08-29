@@ -371,4 +371,46 @@ public sealed class TaskLifecycleSurfaceTests
         row.Attention.Cause.Should().Be("twg is not authenticated");
         row.Attention.Lever.Should().Be("twg login");
     }
+
+    /// <summary>
+    /// A budget park clears itself on a clock and is explicitly not an ask, so it must not
+    /// outrank a stuck write — the opposite ordering that independent pre-PR review cycle 2 found:
+    /// the pending-write arm had been moved past BudgetParked, so a task parked on a spent budget
+    /// window read as an ignorable wait for as long as that window held, even while the same
+    /// stuck write kept getting retried underneath it every five minutes.
+    /// </summary>
+    [Fact]
+    public void A_stuck_jira_write_outranks_a_budget_park()
+    {
+        Guid runId = DomainId.New();
+        RunDetails parked = StatusFixtures.Run(runId, RunState.BudgetParked, sessionProcessId: null);
+        TaskListItem task = StatusFixtures.Task(TaskState.Claimed, runId);
+        task.PendingJiraWriteIsAuthFailure = true;
+        task.PendingJiraWriteFailureReason = "twg is not authenticated";
+
+        TaskStatusRow row = StatusFixtures.Compose(task, parked);
+
+        row.Attention.Level.Should().Be(AttentionLevel.NeedsYou);
+        row.Attention.Cause.Should().Be("twg is not authenticated");
+        row.Attention.Lever.Should().Be("twg login");
+    }
+
+    /// <summary>
+    /// The companion direction: a dead blocker or a stalled run is the row's actual reason for
+    /// wanting a human, so a stuck write must not hide either behind "run twg login" — the same
+    /// review's other complaint about the same reordering, since the pending-write arm had also
+    /// been moved ahead of both.
+    /// </summary>
+    [Fact]
+    public void A_stuck_jira_write_does_not_hide_a_dead_blocker_behind_twg_login()
+    {
+        TaskListItem task = StatusFixtures.Task(TaskState.Blocked);
+        task.DependencyFailureReason = "the blocker was abandoned";
+        task.PendingJiraWriteIsAuthFailure = true;
+        task.PendingJiraWriteFailureReason = "twg is not authenticated";
+
+        TaskStatusRow row = StatusFixtures.Compose(task);
+
+        row.Attention.Cause.Should().Be("the blocker was abandoned");
+    }
 }
