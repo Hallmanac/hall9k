@@ -68,7 +68,11 @@ public sealed class TaskJiraWriteTests
     [Fact]
     public void An_unrecognized_text_format_is_refused_before_anything_is_recorded()
     {
-        JiraWritePayload payload = new(WorkItemType: "Dev Task", Fields: null, Comment: null, Format: "wiki");
+        JiraWritePayload payload = new(
+            WorkItemType: "Dev Task",
+            Fields: new Dictionary<string, string> { ["summary"] = "A card" },
+            Comment: null,
+            Format: "wiki");
 
         Action validate = () => payload.Validate(JiraWriteOperation.Create);
 

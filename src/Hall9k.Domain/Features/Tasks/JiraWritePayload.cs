@@ -1,5 +1,5 @@
 using System.Text.Json;
-using System.Text.Json.Serialization;
+using System.Text.Json.Nodes;
 using Hall9k.Domain.Shared.Exceptions;
 
 namespace Hall9k.Domain.Features.Tasks;
@@ -46,13 +46,7 @@ public sealed record JiraWritePayload(
     /// 2). A caller writing genuinely plain text — closeout's own merge comment — names "plain"
     /// explicitly rather than relying on this default.
     /// </summary>
-    [JsonIgnore]
     public string EffectiveFormat => Format.IsNotBlank() ? Format.Trim().ToLowerInvariant() : "markdown";
-
-    private static readonly JsonSerializerOptions SerializerOptions = new()
-    {
-        PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
-    };
 
     /// <summary>
     /// Refuse a payload the executor will not carry out, whatever operation it is paired with.
@@ -76,6 +70,13 @@ public sealed record JiraWritePayload(
                     "A create write needs a work item type (for example \"Dev Task\") — hall9k models "
                     + "nothing about an organisation's Jira configuration, so this has to come from "
                     + "whoever composed the payload.");
+            }
+
+            if (!HasField(Fields, "summary"))
+            {
+                throw new DomainValidationException(
+                    "A create write needs a \"summary\" field — twg's own jira workitem create refuses "
+                    + "without one, so this is refused here instead, before an intent is even recorded.");
             }
         }
 
@@ -104,7 +105,91 @@ public sealed record JiraWritePayload(
         }
     }
 
-    public string ToJson() => JsonSerializer.Serialize(this, SerializerOptions);
+    /// <summary>
+    /// A composed field, matched case-insensitively the same way <see cref="Hall9k.Connectors.WorkItems.TwgJiraExecutor"/>
+    /// itself pulls a first-class field out of the composed dictionary, with actual text in it.
+    /// </summary>
+    private static bool HasField(IReadOnlyDictionary<string, string>? fields, string name)
+    {
+        if (fields is null)
+        {
+            return false;
+        }
+
+        foreach ((string key, string value) in fields)
+        {
+            if (string.Equals(key, name, StringComparison.OrdinalIgnoreCase) && value.IsNotBlank())
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// Built by hand rather than through reflection so a field's value can be embedded as the
+    /// genuine nested JSON node <see cref="FromJson"/> parsed it from (a quoted string stays a
+    /// quoted string, a bare number stays a bare number) instead of being re-escaped as the
+    /// contents of an outer JSON string — the shape that would otherwise double-quote every
+    /// composed field on the very first round trip through this method and back through
+    /// <see cref="FromJson"/> (the daemon's own retry after an expired twg login, for one).
+    /// </summary>
+    public string ToJson()
+    {
+        JsonObject root = [];
+        if (WorkItemType is not null)
+        {
+            root["workItemType"] = WorkItemType;
+        }
+
+        if (Fields is not null)
+        {
+            JsonObject fields = [];
+            foreach ((string name, string value) in Fields)
+            {
+                fields[name] = ParseFieldNode(value);
+            }
+
+            root["fields"] = fields;
+        }
+
+        if (Comment is not null)
+        {
+            root["comment"] = Comment;
+        }
+
+        if (ProjectKey is not null)
+        {
+            root["projectKey"] = ProjectKey;
+        }
+
+        if (Format is not null)
+        {
+            root["format"] = Format;
+        }
+
+        return root.ToJsonString();
+    }
+
+    /// <summary>
+    /// A field's stored text is itself valid JSON whenever it came from <see cref="FromJson"/>,
+    /// which keeps the exact value a composer wrote rather than collapsing it to plain text — so
+    /// it round-trips here as the same typed node. A caller that built a payload directly with
+    /// plain, unquoted text (this file's own tests among them) is tolerated the way it always was,
+    /// carried through as a bare string.
+    /// </summary>
+    private static JsonNode? ParseFieldNode(string value)
+    {
+        try
+        {
+            return JsonNode.Parse(value);
+        }
+        catch (JsonException)
+        {
+            return JsonValue.Create(value);
+        }
+    }
 
     /// <summary>
     /// The payload a file named to a write surface actually carries — tolerant of a document that
@@ -144,16 +229,19 @@ public sealed record JiraWritePayload(
             if (document.RootElement.TryGetProperty("fields", out JsonElement fieldsElement)
                 && fieldsElement.ValueKind == JsonValueKind.Object)
             {
+                // Kept as the value's own raw JSON text — quotes and all for a string — rather
+                // than unwrapped to plain text: twg's own --field parses its argument as JSON when
+                // valid ("use quoted JSON strings to force string IDs" per its own help), so a
+                // custom field composed as the JSON string "10501" has to reach AppendFields still
+                // carrying its quotes, or twg parses it as the number 10501 instead of the select-
+                // list option id it actually is (independent pre-PR review, cycle 6). A first-class
+                // field (summary, description) is unwrapped back to plain text at the one place
+                // that reads it for its own dedicated, non-JSON-coercing flag
+                // (TwgJiraExecutor.ExtractField), not here.
                 fields = [];
                 foreach (JsonProperty property in fieldsElement.EnumerateObject())
                 {
-                    fields[property.Name] = property.Value.ValueKind switch
-                    {
-                        JsonValueKind.String => property.Value.GetString() ?? string.Empty,
-                        JsonValueKind.Number => property.Value.GetRawText(),
-                        JsonValueKind.True or JsonValueKind.False => property.Value.GetRawText(),
-                        _ => property.Value.GetRawText(),
-                    };
+                    fields[property.Name] = property.Value.GetRawText();
                 }
             }
 
