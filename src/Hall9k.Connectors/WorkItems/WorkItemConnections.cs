@@ -161,36 +161,6 @@ public static class WorkItemConnections
     }
 
     /// <summary>
-    /// Best-effort tenant lookup for a caller that would rather fall back to <c>twg</c>'s own
-    /// ambient tenant than stop working outright on <see cref="FindJiraConnectionAsync"/>'s own
-    /// ambiguity refusal (a period where an install carries more than one registered Jira
-    /// connection — two overlapping <c>h9k connection add jira</c> runs, per that method's own
-    /// doc comment). No caller currently reaches for that trade: <c>JiraWriteRetryEngine</c>'s two
-    /// sweeps (its pending-write retry loop and its queued-merge-notice drain) both used to call
-    /// this, then both moved to the strict lookup instead, skipping a task they cannot resolve
-    /// rather than guessing — either loop can carry closeout's own merge comment, and a null site
-    /// reaches <see cref="TwgJiraExecutor"/> exactly the same way a human-facing command's would,
-    /// filing or verifying against whatever tenant twg's own ambient <c>auth.conf</c> resolves to
-    /// (independent pre-PR review, adversarial lens, cycles 3 and 5). A human-facing command
-    /// (<c>write-jira</c>, <c>doctor</c>) and closeout's own one-shot merge comment
-    /// (<c>CloseoutEngine.TellJiraAsync</c>) call the strict lookup for the same reason. This
-    /// method stays available for a future caller that genuinely cannot afford to skip work over
-    /// an unresolved connection — the trade-off above is real, just not one this codebase needs
-    /// today.
-    /// </summary>
-    public static async Task<Uri?> TryFindJiraSiteAsync(IQuerySession session, CancellationToken cancellationToken)
-    {
-        try
-        {
-            return (await FindJiraConnectionAsync(session, cancellationToken))?.SiteUrl;
-        }
-        catch (DomainException)
-        {
-            return null;
-        }
-    }
-
-    /// <summary>
     /// A connection as a provider. The site is parsed rather than trusted: it was written to the
     /// event stream as a URL, and a connection registered before this field existed carries none
     /// at all — which is a Jira connection that cannot be used, and says so here rather than
