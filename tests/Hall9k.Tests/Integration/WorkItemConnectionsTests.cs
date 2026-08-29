@@ -106,42 +106,6 @@ public sealed class WorkItemConnectionsTests(PostgresFixture postgres) : IClassF
             .And.Contain("h9k connection add jira --site");
     }
 
-    /// <summary>
-    /// The background sweep's own lookup (<c>JiraWriteRetryEngine</c>, closeout's merge comment)
-    /// degrades to twg's own ambient default instead of throwing — origin incident: the first
-    /// version of this plumbing called the strict lookup from inside the retry sweep, so an
-    /// install that briefly carried two overlapping registrations stopped retrying every pending
-    /// Jira write silently, forever, until a human happened to read the daemon log.
-    /// </summary>
-    [Fact]
-    public async Task The_background_sweeps_site_lookup_falls_back_to_null_when_connections_are_ambiguous()
-    {
-        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        using DocumentStore store = NewStore();
-        await ClearConnectionsAsync(store, cts.Token);
-        await RegisterAsync(store, "alice@corp.com", Site, cts.Token);
-        await RegisterAsync(store, "bob@corp.com", Site, cts.Token);
-
-        await using IQuerySession session = store.QuerySession();
-        Uri? site = await WorkItemConnections.TryFindJiraSiteAsync(session, cts.Token);
-
-        site.Should().BeNull("a background sweep has no one watching it to act on the ambiguity refusal");
-    }
-
-    [Fact]
-    public async Task The_background_sweeps_site_lookup_returns_the_one_registered_site()
-    {
-        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        using DocumentStore store = NewStore();
-        await ClearConnectionsAsync(store, cts.Token);
-        await RegisterAsync(store, "alice@corp.com", Site, cts.Token);
-
-        await using IQuerySession session = store.QuerySession();
-        Uri? site = await WorkItemConnections.TryFindJiraSiteAsync(session, cts.Token);
-
-        site.Should().Be(Site);
-    }
-
     private static Task<ImportedWorkItem> ImportAsync(
         WorkItemImporter importer, WorkItemProvider provider, CancellationToken cancellationToken) =>
         importer.ImportAsync(

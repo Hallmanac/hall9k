@@ -38,13 +38,10 @@ internal static class TwgDoctor
         ConnectionDetails? connection;
         try
         {
-            // The strict lookup, not TryFindJiraSiteAsync: doctor is exactly the human-facing
-            // surface WorkItemConnections's own doc comment carves out for it, so an ambiguity
-            // gets its own diagnostic line here rather than being swallowed into "no site" the
-            // way a background sweep's best-effort lookup does. Caught rather than left to
-            // propagate: this is one check among several DoctorCommand runs, and a thrown
-            // DomainConflictException would abort the whole doctor run instead of just reporting
-            // this one thing as unconfirmable (independent pre-PR review, cycle 3).
+            // Caught rather than left to propagate: this is one check among several DoctorCommand
+            // runs, and a thrown DomainConflictException (two Jira connections registered, and
+            // nothing says which) would abort the whole doctor run instead of just reporting this
+            // one thing as unconfirmable (independent pre-PR review, cycle 3).
             connection = await WorkItemConnections.FindJiraConnectionAsync(session, cancellationToken);
         }
         catch (DomainConflictException exception)
