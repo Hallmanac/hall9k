@@ -6,9 +6,10 @@ namespace Hall9k.Domain.Infrastructure.Storage;
 /// <para>
 /// The ruling behind it (IDEA-skill-layer, Tension 8): a skill the machinery requires in order
 /// to work is part of the machinery, so it ships with the install and is as self-contained as
-/// <c>h9k</c> itself. Today the source is this repository's own <c>.claude/skills</c>; once the
-/// release-delivery work (backlog 42) lands it is a release artefact, and only the publishing
-/// half changes — this path is the seam, and it does not.
+/// <c>h9k</c> itself. The source is this repository's own <c>.claude/skills</c> for <c>h9k
+/// install --repo</c>, or a release payload's bundled <c>skills/</c> for <c>h9k install
+/// --from-release</c> and <c>h9k update</c> (backlog 42) — either way only the publishing half
+/// changes; this path is the seam, and it does not.
 /// </para>
 /// <para>
 /// A project's <c>skills/</c> is seeded from here by symlink, so republishing the install
