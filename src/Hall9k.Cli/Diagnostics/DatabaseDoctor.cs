@@ -195,8 +195,9 @@ public static class DatabaseDoctor
                 // Windows install friction log item 3, which surfaced this exact
                 // fall-through as "prints advice and exits nonzero silently").
                 AnsiConsole.MarkupLine(
-                    "[dim]Skipping — stdin is not a terminal, so there is nobody to confirm this. "
-                    + "Re-run with h9k doctor --yes to create it automatically.[/]");
+                    "[dim]Skipping — stdin is not a terminal, so there is nobody to confirm this. It will be "
+                    + "created automatically the next time a command touches the database, or re-run with "
+                    + "h9k doctor --yes to create it right now.[/]");
             }
             else
             {
