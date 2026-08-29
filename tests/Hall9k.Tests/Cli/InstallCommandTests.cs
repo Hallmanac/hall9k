@@ -10,6 +10,10 @@ namespace Hall9k.Tests.Cli;
 /// matters because the answer decides whether a file on the operator's PATH is
 /// replaced: a symlink is install's own to retarget, a real file is never clobbered.
 /// </summary>
+// Capture (below) swaps the process-wide AnsiConsole.Console, the same static
+// DatabaseDoctorNotConfiguredTests and others in this collection swap; sharing the
+// collection serializes this class against them too (cycle-8 review).
+[Collection("Hall9kHome")]
 public sealed class InstallCommandTests : IDisposable
 {
     private readonly string directory = Path.Combine(
