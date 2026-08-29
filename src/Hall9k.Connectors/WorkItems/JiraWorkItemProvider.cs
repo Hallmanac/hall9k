@@ -58,7 +58,7 @@ public sealed class JiraWorkItemProvider(
     /// One card, read as itself rather than as a candidate for adoption. The adoption gate — only
     /// an item positively reported open (PLAN.md #60) — lives in <see cref="WorkItemImporter"/>
     /// and applies to importing, which is a decision about starting work. Linking is a different
-    /// act: <c>h9k task link-jira</c> records the card an agent just created, and a board whose
+    /// act: <c>h9k task link-jira</c> records a card that already exists in Jira, and a board whose
     /// first workflow state is called something this platform maps to closed is a strange board,
     /// not a reason to refuse the link. So the verification path calls this directly and records
     /// whatever the card said.
