@@ -2352,13 +2352,13 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
         await NewEngine(store, node, inspector, worktrees, github: twg).PollOnceAsync(cts.Token);
 
         // The write goes through the same surface an operator's own h9k task write-jira uses
-        // (Brian's design, 2026-08-28): twg carries out the comment, then a search reads the card
+        // (Brian's design, 2026-08-28): twg carries out the comment, then a query reads the card
         // back to verify it landed before hall9k records the outcome.
         (string FileName, IReadOnlyList<string> Arguments, string WorkingDirectory) commentCall =
-            twg.Calls.Should().ContainSingle(call => call.Arguments.Contains("--comment")).Subject;
+            twg.Calls.Should().ContainSingle(call => call.Arguments.Contains("--body")).Subject;
         commentCall.FileName.Should().Be("twg");
-        commentCall.Arguments.Should().ContainInOrder("jira", "update", "PROJ-123");
-        string comment = commentCall.Arguments[commentCall.Arguments.ToList().IndexOf("--comment") + 1];
+        commentCall.Arguments.Should().ContainInOrder("jira", "workitem", "comment", "create", "--issue-id", "PROJ-123");
+        string comment = commentCall.Arguments[commentCall.Arguments.ToList().IndexOf("--body") + 1];
         comment.Should().Contain(PullRequestUrl).And.Contain(taskId.ToString());
         // JSON-encodes the apostrophe in "item's", so the assertion splits either side of it
         // rather than matching the contraction as one literal string.
@@ -2367,7 +2367,7 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
                 "a card that silently gains a comment and never moves reads like an integration that half worked");
 
         twg.Calls.Should().Contain(
-            call => call.Arguments.Contains("search"), "the write is read back and verified before it is recorded");
+            call => call.Arguments.Contains("query"), "the write is read back and verified before it is recorded");
     }
 
     /// <summary>
@@ -2636,14 +2636,14 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
             NullLogger<CloseoutEngine>.Instance);
 
     /// <summary>
-    /// A twg fake whose search calls answer with the card this test cares about, and whose every
+    /// A twg fake whose query calls answer with the card this test cares about, and whose every
     /// other call (a create, an update, a comment) answers success with nothing to parse — the
     /// same JSON-shape distinction <see cref="TwgJiraExecutor"/> itself makes between a write and
     /// its own read-back.
     /// </summary>
     private static RecordingProcessRunner TwgRunner(string key) => RecordingProcessRunner.RespondingTo(
         arguments => new ProcessResult(
-            0, arguments.Contains("search") ? $$"""{"key":"{{key}}"}""" : "{}", string.Empty));
+            0, arguments.Contains("query") ? $$"""{"key":"{{key}}"}""" : "{}", string.Empty));
 
     /// <summary>
     /// Leaves the watch set as the test found it. One node and one database back this whole

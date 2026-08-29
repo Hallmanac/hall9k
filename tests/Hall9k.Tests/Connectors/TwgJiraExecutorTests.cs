@@ -26,7 +26,7 @@ public sealed class TwgJiraExecutorTests
     {
         Guid taskId = Guid.Parse("00000000-0000-0000-0000-000000000001");
         RecordingProcessRunner twg = RecordingProcessRunner.RespondingTo(arguments => new ProcessResult(
-            0, arguments.Contains("search") ? """{"key":"PROJ-123"}""" : """{"key":"PROJ-999"}""", string.Empty));
+            0, arguments.Contains("query") ? """{"key":"PROJ-123"}""" : """{"key":"PROJ-999"}""", string.Empty));
         TwgJiraExecutor executor = new(twg.Runner);
         JiraWritePayload payload = new(
             "Dev Task", new Dictionary<string, string> { ["description"] = "Fixes the thing" }, null);
@@ -37,12 +37,34 @@ public sealed class TwgJiraExecutorTests
         (string FileName, IReadOnlyList<string> Arguments, string WorkingDirectory) create =
             twg.Calls.Should().Contain(call => call.Arguments.Contains("create")).Subject;
         create.FileName.Should().Be("twg");
-        create.Arguments.Should().ContainInOrder("jira", "create", "--project", "PROJ", "--type", "Dev Task");
-        string description = create.Arguments.Should().ContainSingle(argument =>
-            argument.StartsWith("description=", StringComparison.Ordinal)).Subject;
+        create.Arguments.Should().ContainInOrder("jira", "workitem", "create", "--space", "PROJ", "--type", "Dev Task");
+        string description = create.Arguments.SkipWhile(argument => argument != "--description").Skip(1).First();
         description.Should().Contain("Fixes the thing").And.Contain(TwgJiraExecutor.Marker(taskId));
 
-        twg.Calls.Should().Contain(call => call.Arguments.Contains("search"), "a create is always read back and verified");
+        twg.Calls.Should().Contain(call => call.Arguments.Contains("query"), "a create is always read back and verified");
+    }
+
+    /// <summary>
+    /// A composed payload's own casing of a first-class field should not survive as a second,
+    /// marker-only <c>--field</c> alongside twg's own <c>--description</c> (independent pre-PR
+    /// review, cycle 1, low-severity ride-along).
+    /// </summary>
+    [Fact]
+    public async Task A_differently_cased_description_field_is_not_sent_twice()
+    {
+        RecordingProcessRunner twg = RecordingProcessRunner.RespondingTo(arguments => new ProcessResult(
+            0, arguments.Contains("query") ? """{"key":"PROJ-123"}""" : """{"key":"PROJ-999"}""", string.Empty));
+        TwgJiraExecutor executor = new(twg.Runner);
+        JiraWritePayload payload = new(
+            "Dev Task", new Dictionary<string, string> { ["Description"] = "Fixes the thing" }, null);
+
+        await executor.CreateAsync(Project, payload, Guid.NewGuid(), "/repo", CancellationToken.None);
+
+        (string FileName, IReadOnlyList<string> Arguments, string WorkingDirectory) create =
+            twg.Calls.Should().Contain(call => call.Arguments.Contains("create")).Subject;
+        create.Arguments.Should().Contain("--description");
+        create.Arguments.Should().NotContain(argument => argument.StartsWith("Description=", StringComparison.Ordinal));
+        create.Arguments.Should().NotContain(argument => argument.StartsWith("description=", StringComparison.Ordinal));
     }
 
     [Fact]
@@ -54,8 +76,45 @@ public sealed class TwgJiraExecutorTests
         await executor.FindByMarkerAsync(Guid.NewGuid(), "/repo", CancellationToken.None);
 
         (string FileName, IReadOnlyList<string> Arguments, string WorkingDirectory) call = twg.Calls.Should().ContainSingle().Subject;
-        call.Arguments.Should().ContainInOrder("jira", "search", "--jql");
+        call.Arguments.Should().ContainInOrder("jira", "workitem", "query", "--jql");
         call.Arguments.Should().Contain(argument => argument.Contains("hall9k-task:"));
+    }
+
+    /// <summary>
+    /// twg's own <c>--output json</c> never prints raw JSON to stdout: every call carries a YAML
+    /// summary envelope naming a temp file the real payload was written to, and a query nests its
+    /// results under <c>data.issues</c> rather than at the root (independent pre-PR review, cycle
+    /// 1, verified against an installed, authenticated twg). This is the shape a bare-JSON fixture
+    /// cannot exercise, so it is asserted against the real envelope text and a real temp file.
+    /// </summary>
+    [Fact]
+    public async Task A_search_reads_the_key_out_of_twgs_real_envelope_and_file_shape()
+    {
+        string file = Path.GetTempFileName();
+        try
+        {
+            await File.WriteAllTextAsync(file, """{"apiVersion":"v2","command":"jira.workitem.query","data":{"issues":[{"key":"PROJ-777","summary":"Found it"}]}}""");
+            string envelope =
+                $"""
+                output_files:
+                  stdout: "{file}"
+                  compact: "{file}.compact"
+                command: "jira.workitem.query"
+                agent_output:
+                  summary: "stats"
+                ---END---
+                """;
+            RecordingProcessRunner twg = RecordingProcessRunner.Succeeding(envelope);
+            TwgJiraExecutor executor = new(twg.Runner);
+
+            string? found = await executor.FindByMarkerAsync(Guid.NewGuid(), "/repo", CancellationToken.None);
+
+            found.Should().Be("PROJ-777");
+        }
+        finally
+        {
+            File.Delete(file);
+        }
     }
 
     /// <summary>
@@ -94,28 +153,30 @@ public sealed class TwgJiraExecutorTests
     public async Task An_update_writes_the_fields_and_then_verifies_by_reading_back()
     {
         RecordingProcessRunner twg = RecordingProcessRunner.RespondingTo(arguments => new ProcessResult(
-            0, arguments.Contains("search") ? """{"key":"PROJ-123"}""" : "{}", string.Empty));
+            0, arguments.Contains("query") ? """{"key":"PROJ-123"}""" : "{}", string.Empty));
         TwgJiraExecutor executor = new(twg.Runner);
         JiraWritePayload payload = new(null, new Dictionary<string, string> { ["customfield_1"] = "value" }, null);
 
         TwgWriteResult result = await executor.UpdateAsync("PROJ-123", payload, "/repo", CancellationToken.None);
 
         result.IssueKey.Should().Be("PROJ-123");
-        twg.Calls.Should().Contain(call => call.Arguments.Contains("update") && call.Arguments.Contains("customfield_1=value"));
-        twg.Calls.Should().Contain(call => call.Arguments.Contains("search"));
+        twg.Calls.Should().Contain(call =>
+            call.Arguments.Contains("update") && call.Arguments.Contains("--id") && call.Arguments.Contains("customfield_1=value"));
+        twg.Calls.Should().Contain(call => call.Arguments.Contains("query"));
     }
 
     [Fact]
     public async Task A_comment_never_transitions_or_closes_the_item()
     {
         RecordingProcessRunner twg = RecordingProcessRunner.RespondingTo(arguments => new ProcessResult(
-            0, arguments.Contains("search") ? """{"key":"PROJ-123"}""" : "{}", string.Empty));
+            0, arguments.Contains("query") ? """{"key":"PROJ-123"}""" : "{}", string.Empty));
         TwgJiraExecutor executor = new(twg.Runner);
 
         await executor.CommentAsync("PROJ-123", "The pull request merged.", "/repo", CancellationToken.None);
 
         (string FileName, IReadOnlyList<string> Arguments, string WorkingDirectory) call =
-            twg.Calls.Should().Contain(c => c.Arguments.Contains("--comment")).Subject;
+            twg.Calls.Should().Contain(c => c.Arguments.Contains("--body")).Subject;
+        call.Arguments.Should().ContainInOrder("jira", "workitem", "comment", "create", "--issue-id", "PROJ-123");
         call.Arguments.Should().NotContain("transition");
         call.Arguments.Should().NotContain(argument => argument.Contains("status", StringComparison.OrdinalIgnoreCase));
     }
@@ -195,6 +256,37 @@ public sealed class TwgJiraExecutorTests
         exception.Kind.Should().Be(TwgFailureKind.Other);
         exception.IsAuthFailure.Should().BeFalse();
         exception.Message.Should().Contain("command line was too long");
+    }
+
+    /// <summary>
+    /// An exit-0 stuck output means twg itself reported success before something it started held
+    /// the pipe open — the write was very likely carried out, so the message must not read like
+    /// the plain "did not answer" case a genuine hang produces (independent pre-PR review, cycle
+    /// 1, both lenses, mirroring GitHubWorkItemProvider.RunGhAsync's own onOutputStuckAfterSuccess
+    /// distinction).
+    /// </summary>
+    [Fact]
+    public async Task An_exit_zero_stuck_output_is_reported_as_a_likely_success_not_a_hang()
+    {
+        RecordingProcessRunner twg = RecordingProcessRunner.ExitedButOutputStuck(0);
+        TwgJiraExecutor executor = new(twg.Runner);
+
+        Func<Task> comment = () => executor.CommentAsync("PROJ-123", "note", "/repo", CancellationToken.None);
+
+        TwgExecutionException exception = (await comment.Should().ThrowAsync<TwgExecutionException>()).Which;
+        exception.Message.Should().Contain("very likely carried out");
+    }
+
+    [Fact]
+    public async Task A_nonzero_exit_stuck_output_is_reported_as_a_real_failure()
+    {
+        RecordingProcessRunner twg = RecordingProcessRunner.ExitedButOutputStuck(1);
+        TwgJiraExecutor executor = new(twg.Runner);
+
+        Func<Task> comment = () => executor.CommentAsync("PROJ-123", "note", "/repo", CancellationToken.None);
+
+        TwgExecutionException exception = (await comment.Should().ThrowAsync<TwgExecutionException>()).Which;
+        exception.Message.Should().NotContain("very likely carried out");
     }
 
     [Fact]
