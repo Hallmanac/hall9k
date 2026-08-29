@@ -20,6 +20,7 @@ namespace Hall9k.Cli.Commands;
 internal sealed record TaskStatusRow(
     Guid TaskId,
     Guid ProjectId,
+    Guid? EpicId,
     LifecycleState State,
     RunState RunState,
     TaskPhase Phase,

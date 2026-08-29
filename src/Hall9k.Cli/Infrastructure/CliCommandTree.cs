@@ -393,6 +393,47 @@ public static class CliCommandTree
                 .WithExample("idea", "discard", "28b19893", "--reason", "\"Superseded by the attachments design\"");
         });
 
+        config.AddBranch("epic", epic =>
+        {
+            epic.SetDescription(
+                "Name a cohesive family of tasks (Brian's ruling, 2026-08-28): an epic is a first-class "
+                + "entity with its own id, title, and open state, event-sourced like everything else. "
+                + "Membership is optional and no ceremony — a task joins at add or revise and can leave "
+                + "the same way, and the flat task model is undisturbed for everything ungrouped. An epic "
+                + "closes only by explicit human act, never automatically — not even when its last task "
+                + "closes out.");
+            epic.AddCommand<EpicAddCommand>("add")
+                .WithDescription("Name a new epic: a project and a title, nothing else.")
+                .WithExample("epic", "add", "--project", "hall9k", "--title", "\"Interactive mode\"");
+            epic.AddCommand<EpicListCommand>("list")
+                .WithDescription(
+                    "Every epic with a member-task rollup by attention bucket, same columns h9k project "
+                    + "list shows. Defaults to open epics; --state all adds closed ones.")
+                .WithExample("epic", "list")
+                .WithExample("epic", "list", "--project", "hall9k")
+                .WithExample("epic", "list", "--state", "all");
+            epic.AddCommand<EpicShowCommand>("show")
+                .WithDescription(
+                    "One epic: its title, state, project, Jira link if it has one, and every member "
+                    + "task with its current state, composed the same way h9k project show composes a "
+                    + "project's tasks.")
+                .WithExample("epic", "show", "28b19893");
+            epic.AddCommand<EpicLinkJiraCommand>("link-jira")
+                .WithDescription(
+                    "Record the Jira epic this one corresponds to — a key or a URL, stored exactly as "
+                    + "typed. Identity only: no data is read from or written to Jira through this "
+                    + "command (Brian's Jira ruling, 2026-08-28 — no mirroring, ever). h9k epic show "
+                    + "renders it as a link-out when it is a URL.")
+                .WithExample("epic", "link-jira", "28b19893", "PROJ-45")
+                .WithExample("epic", "link-jira", "28b19893", "https://your-org.atlassian.net/browse/PROJ-45");
+            epic.AddCommand<EpicCloseCommand>("close")
+                .WithDescription(
+                    "Close an epic: the only way one ever closes, always an explicit human act with a "
+                    + "reason. Nothing closes an epic automatically, including its last member task "
+                    + "closing out.")
+                .WithExample("epic", "close", "28b19893", "--reason", "\"Interactive mode shipped\"");
+        });
+
         config.AddBranch("task", task =>
         {
             task.SetDescription(
