@@ -123,12 +123,13 @@ public sealed class TaskPushToJiraCommand : Hall9kAsyncCommand<TaskPushToJiraCom
     {
         // Fence, and fence here rather than at the top: the append below carries this version, so
         // anything landing on the task while this command was doing its own reads fails the commit
-        // instead of being absorbed. The write that matters is h9k task link-jira, which an agent
-        // may be running at any moment, and which clears the pending marker as it lands. Read
-        // unfenced, the guards in RequestWorkItemPublication see a task with no reference on both
-        // sides of that race, the request appends after the link, and the daemon then dispatches a
-        // session to write a card for work that already carries one. Bootstrap alone can shell out
-        // to git and gh above, so the window is a real one rather than an instant.
+        // instead of being absorbed. The write that matters is h9k task write-jira, which an agent
+        // may be running at any moment, and whose create success appends WorkItemLinked (through
+        // JiraWriteCoordinator) as it lands. Read unfenced, the guards in RequestWorkItemPublication
+        // see a task with no reference on both sides of that race, the request appends after the
+        // link, and the daemon then dispatches a session to write a card for work that already
+        // carries one. Bootstrap alone can shell out to git and gh above, so the window is a real
+        // one rather than an instant.
         StreamState fence = await session.Events.FetchStreamStateAsync(taskId, cancellationToken)
             ?? throw new DomainNotFoundException($"No task {taskId}.");
         TaskAggregate task = await session.Events.AggregateStreamAsync<TaskAggregate>(
