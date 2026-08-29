@@ -1,5 +1,6 @@
 using System.Text;
 using Hall9k.Connectors.WorkItems;
+using Hall9k.Domain.Features.Project;
 using Hall9k.Domain.Features.Project.Projections;
 using Hall9k.Domain.Features.Tasks.Projections;
 using Hall9k.Domain.Features.Tasks.Queries;
@@ -120,7 +121,7 @@ public static class WorkPromptBuilder
         else
         {
             prompt.AppendLine("  the platform verifies and opens the PR after you finish.");
-            AppendCheckpointCommitRules(prompt, project.BaseBranch);
+            AppendCheckpointCommitRules(prompt, project);
             AppendSessionEndsAtFinalMessageRule(prompt);
         }
 
@@ -308,21 +309,51 @@ public static class WorkPromptBuilder
     /// reason — a fix or a test run in that gap would make the recomposed commits describe a tree
     /// that was never actually the one verified.
     /// </para>
+    /// <para>
+    /// The reset target is the branch's fork point (<c>git merge-base origin/{baseBranch} HEAD</c>),
+    /// never <c>origin/{baseBranch}</c> itself: that remote-tracking ref lives in the shared bare
+    /// repo and moves whenever anything else touches it during this session (another worktree's
+    /// fetch, a closeout branch cleanup), so resetting straight to its tip would recompose commits
+    /// that revert whatever merged into the base after this branch was cut (conformance and
+    /// adversarial review, cycle 1). The merge-base is stable regardless.
+    /// </para>
     /// </summary>
-    public static void AppendCheckpointCommitRules(StringBuilder prompt, string baseBranch)
+    public static void AppendCheckpointCommitRules(StringBuilder prompt, ProjectDetails project)
     {
+        string baseBranch = project.BaseBranch;
         prompt.AppendLine("- **Commit as you go, one logical unit at a time.** Each commit here is");
         prompt.AppendLine("  crash protection, not authored history: a checkpoint so that an abnormal");
         prompt.AppendLine("  ending (context exhaustion, an early exit) strands at most the increment");
         prompt.AppendLine("  since the last checkpoint instead of the whole session. Message them");
         prompt.AppendLine("  plainly; none of them are what ships.");
         prompt.AppendLine("- **Once all the work is done and the full verification suite is green,");
-        prompt.AppendLine("  recompose the checkpoints into real history in one continuous step:**");
-        prompt.AppendLine($"  1. `git reset --mixed origin/{baseBranch}` (the branch's own base). A mixed");
-        prompt.AppendLine("     reset changes which commits exist and leaves the working tree exactly as");
-        prompt.AppendLine("     it is, so the tree itself does not move.");
-        prompt.AppendLine("  2. Immediately invoke the commit-plan skill to compose that tree into");
-        prompt.AppendLine("     cohesive, buildable commits: the real, reviewable history for this PR.");
+        prompt.AppendLine("  recompose the checkpoints into real history in one continuous step.**");
+        if (project.VerifyCommands.Count == 0)
+        {
+            prompt.AppendLine("  This project configures no verification gates, so the suite is");
+            prompt.AppendLine("  vacuously green — recompose once the work itself is done.");
+        }
+        else
+        {
+            prompt.AppendLine("  The gates that must pass first:");
+            foreach (VerifyCommand gate in project.VerifyCommands)
+            {
+                prompt.AppendLine($"  - `{gate.Command}`");
+            }
+        }
+
+        prompt.AppendLine($"  1. Reset to the branch's own fork point, not the tip of `origin/{baseBranch}`");
+        prompt.AppendLine("     itself: that ref lives in the shared repository and can move during this");
+        prompt.AppendLine("     session (another worktree's fetch, a closeout branch cleanup), and resetting");
+        prompt.AppendLine("     straight to its tip would recompose commits that revert whatever merged into");
+        prompt.AppendLine("     the base after this branch was cut. The fork point does not move:");
+        prompt.AppendLine($"     `git reset --mixed $(git merge-base origin/{baseBranch} HEAD)`. Fall back to");
+        prompt.AppendLine($"     `git merge-base {baseBranch} HEAD` only when this worktree carries no");
+        prompt.AppendLine($"     `origin/{baseBranch}` at all. A mixed reset changes which commits exist and");
+        prompt.AppendLine("     leaves the working tree exactly as it is, so the tree itself does not move.");
+        prompt.AppendLine("  2. Immediately invoke the commit-plan skill, if this repo ships one, to compose");
+        prompt.AppendLine("     that tree into cohesive, buildable commits — the real, reviewable history for");
+        prompt.AppendLine("     this PR — or compose them yourself the same way if it does not.");
         prompt.AppendLine("  Nothing happens between steps 1 and 2: no test run, no fix, no exploration.");
         prompt.AppendLine("  That gap is exactly what the reset is for: because the tree never moves,");
         prompt.AppendLine("  the commits composed in step 2 describe the identical tree that passed the");
