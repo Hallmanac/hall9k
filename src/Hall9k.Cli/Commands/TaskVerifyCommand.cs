@@ -1,5 +1,6 @@
 using System.ComponentModel;
 using System.Diagnostics;
+using System.Text;
 using Hall9k.Cli.Infrastructure;
 using Hall9k.Domain.Features.Project;
 using Hall9k.Domain.Features.Project.Projections;
@@ -166,9 +167,37 @@ public sealed class TaskVerifyCommand : Hall9kAsyncCommand<TaskVerifyCommand.Set
             process.StartInfo.ArgumentList.Add(gate.Command);
         }
 
+        // Streamed to the console line by line as it arrives, and buffered in parallel for the
+        // failure summary's own tail — buffering to completion and printing nothing until the
+        // gate finishes left an operator watching a silent terminal for however long `dotnet
+        // test` takes, with no way to tell "nothing is happening yet" from "it hung", and no
+        // output at all on a passing run (conformance review, cycle 1: this type's own doc
+        // comment promises "an operator watching the output can see and re-run a flake
+        // themselves", which buffering to completion cannot deliver). stdout and stderr each
+        // fire on their own thread-pool thread, so both the console write and the shared
+        // builder are guarded by one lock.
+        StringBuilder output = new();
+        object outputLock = new();
+        void OnOutputReceived(object? sender, DataReceivedEventArgs e)
+        {
+            if (e.Data is null)
+            {
+                return;
+            }
+
+            lock (outputLock)
+            {
+                Console.WriteLine(e.Data);
+                output.AppendLine(e.Data);
+            }
+        }
+
+        process.OutputDataReceived += OnOutputReceived;
+        process.ErrorDataReceived += OnOutputReceived;
+
         process.Start();
-        Task<string> standardOutput = process.StandardOutput.ReadToEndAsync(cancellationToken);
-        Task<string> standardError = process.StandardError.ReadToEndAsync(cancellationToken);
+        process.BeginOutputReadLine();
+        process.BeginErrorReadLine();
 
         // Mirrors VerificationRunner.RunGateAsync's own kill-on-cancel and timeout: an operator's
         // own Ctrl-C, or a gate that simply hangs, must not leave it writing into the claim's
@@ -204,11 +233,15 @@ public sealed class TaskVerifyCommand : Hall9kAsyncCommand<TaskVerifyCommand.Set
             return (false, $"Gate '{gate.Name}' exceeded its 15-minute timeout.");
         }
 
-        string output = await standardOutput + await standardError;
+        string tail;
+        lock (outputLock)
+        {
+            tail = Tail(output.ToString());
+        }
 
         return process.ExitCode == 0
             ? (true, "ok")
-            : (false, $"Gate '{gate.Name}' exited {process.ExitCode}. Output: {Tail(output)}");
+            : (false, $"Gate '{gate.Name}' exited {process.ExitCode}. Output: {tail}");
     }
 
     private static string Tail(string content) =>
