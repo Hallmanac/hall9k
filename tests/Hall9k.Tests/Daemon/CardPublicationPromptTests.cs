@@ -132,6 +132,22 @@ public sealed class CardPublicationPromptTests : IDisposable
             .And.Contain("Do NOT modify files, commit, push");
     }
 
+    /// <summary>
+    /// The payload file instruction and the "do not modify files here" working rule used to name
+    /// no location at all for the first and forbid the only directory the prompt ever named for
+    /// the second, leaving a session to guess between writing into the shared repository or
+    /// stopping outright (independent pre-PR review, cycle 1, adversarial lens). The fix names an
+    /// explicit location outside the working directory.
+    /// </summary>
+    [Fact]
+    public void The_payload_file_instruction_does_not_contradict_the_no_write_working_rule()
+    {
+        string prompt = Build();
+
+        prompt.Should().Contain("outside this repository")
+            .And.Contain("Write your composed payload to a JSON file");
+    }
+
     [Fact]
     public void The_projects_own_skills_are_pointed_at_because_they_are_where_the_card_rules_live()
     {
