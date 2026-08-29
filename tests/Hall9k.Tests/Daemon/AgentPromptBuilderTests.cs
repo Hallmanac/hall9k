@@ -180,6 +180,9 @@ public sealed class AgentPromptBuilderTests : IDisposable
             "With every last increment committed as a checkpoint",
             "step 0 requires a clean tree before recording the tip, so step 3's diff can't fail against work that never reached it");
         prompt.Should().Contain(
+            "nothing uncommitted or untracked before this step",
+            "an untracked file recomposed into history would also fail step 3's diff, not just an uncommitted one");
+        prompt.Should().Contain(
             "git diff <old-tip> HEAD",
             "the recompose is verified for tree identity too, not just the narrative rebase path");
     }
