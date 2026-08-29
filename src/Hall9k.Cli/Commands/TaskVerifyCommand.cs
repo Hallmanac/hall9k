@@ -200,7 +200,20 @@ public sealed class TaskVerifyCommand : Hall9kAsyncCommand<TaskVerifyCommand.Set
         process.OutputDataReceived += OnOutputReceived;
         process.ErrorDataReceived += OnOutputReceived;
 
-        process.Start();
+        try
+        {
+            process.Start();
+        }
+        catch (Win32Exception exception)
+        {
+            // The worktree can vanish between h9k task work claiming it and this gate running
+            // (deleted by hand, or pruned) — TaskWorkCommand.ReenterAsync guards this exact state
+            // explicitly, and this is the one command in the interactive surface that would
+            // otherwise crash on it with a raw stack trace instead of the domain-shaped failure
+            // every other gate outcome here already returns (adversarial review, cycle 8).
+            return (false, $"Gate '{gate.Name}' could not start: {exception.Message}");
+        }
+
         process.BeginOutputReadLine();
         process.BeginErrorReadLine();
 
