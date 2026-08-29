@@ -113,11 +113,13 @@ public sealed class CloseoutEngine(
             // ReviewPending is watched too: a run holds there while an errored review's
             // re-request waits for the reviewer to answer. NodeId == Guid.Empty is included
             // alongside this node's own id for the same reason RunSupervisor.
-            // ResumeStrandedPipelinesAsync widens its own query: an interactively delivered
-            // run (TaskAggregate.IsInteractiveClaim's discriminator) never carries a node's
-            // real id, so a node-only filter leaves it watched by nobody — no merge is ever
-            // observed, no dependent ever unblocks, and the worktree is never removed
-            // (independent pre-PR review, cycle 2).
+            // ResumeStrandedPipelinesAsync widens its own query: h9k task deliver now records
+            // the delivering node's own id on AgentSessionCompleted (Decisions Log #101), so an
+            // interactively delivered run reaching these states carries a real node id, not the
+            // TaskAggregate.IsInteractiveClaim sentinel — the widening here only still matters
+            // for a run delivered by a build that predates that fix, whose stream never carries
+            // the flip and so replays with NodeId still empty forever (independent pre-PR
+            // review, cycle 2).
             watched = await query.Query<RunDetails>()
                 .Where(r => r.NodeId == nodeId || r.NodeId == Guid.Empty)
                 .Where(r => r.MatchesSql(
@@ -134,8 +136,8 @@ public sealed class CloseoutEngine(
             // stop existing just because nothing is watching it any more. PullRequestClosedWithoutMerge
             // is excluded — that run already recorded the one thing an inspection here could
             // tell it, and asking GitHub again would spend a read to relearn a fact already on
-            // the stream. NodeId == Guid.Empty is included here too, for the same interactive-run
-            // reason as the watched query above.
+            // the stream. NodeId == Guid.Empty is included here too, for the same
+            // pre-fix-legacy-data reason as the watched query above.
             orphaned = await query.Query<RunDetails>()
                 .Where(r => r.NodeId == nodeId || r.NodeId == Guid.Empty)
                 .Where(r => r.MatchesSql(

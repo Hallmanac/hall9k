@@ -200,7 +200,18 @@ public static class WorkPromptBuilder
         prompt.AppendLine("  rather than acting on it.");
     }
 
-    /// <summary>The handoff the run leaves for whatever depends on it (Decisions Log #36).</summary>
+    /// <summary>
+    /// The handoff the run leaves for whatever depends on it (Decisions Log #36). It is asked
+    /// for here, of the agent that did the work, because that agent is the one that knows what
+    /// it deliberately left undone — a separate summarizer session would cost more and know
+    /// less. The daemon reads this block off the session's own result at session end and holds
+    /// it until the pull request merges; a run whose work never lands hands nothing down.
+    /// <para>
+    /// Brevity is instructed rather than merely enforced: the event that carries this text is
+    /// a milestone on the run stream (log #6), and a handoff nobody finishes reading routes no
+    /// context at all.
+    /// </para>
+    /// </summary>
     public static void AppendHandoffRules(StringBuilder prompt)
     {
         prompt.AppendLine();
