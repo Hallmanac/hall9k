@@ -120,6 +120,7 @@ public static class WorkPromptBuilder
         else
         {
             prompt.AppendLine("  the platform verifies and opens the PR after you finish.");
+            AppendCheckpointCommitRules(prompt, project.BaseBranch);
             AppendSessionEndsAtFinalMessageRule(prompt);
         }
 
@@ -280,6 +281,58 @@ public static class WorkPromptBuilder
         prompt.AppendLine("Write it for someone with no access to this session. If there is genuinely nothing");
         prompt.AppendLine("worth handing down, say so in one line rather than padding it — an honest \"nothing");
         prompt.AppendLine("surprising here\" is useful, and invented significance is not.");
+    }
+
+    /// <summary>
+    /// Checkpoint commits as crash protection, and the end-of-work recompose that turns them into
+    /// the branch's real history (task: build sessions stop stranding finished work uncommitted).
+    /// Only the headless path of <see cref="Build"/> uses this — a fresh session's own initial
+    /// work — because a follow-up resumes an existing PR branch and lands fixes through the
+    /// fixup/autosquash flow <c>AgentPromptBuilder.AppendCommitStyleRules</c> already teaches;
+    /// that authored-history path is unchanged by this rule.
+    /// <para>
+    /// Origin: three no-commit strandings in one night (2026-08-29, tasks 430decdb, b6dfcbe5,
+    /// d1c6902c out of roughly ten fresh build sessions), each a large session that finished its
+    /// work and then ended with everything uncommitted. Every one was caught by
+    /// <c>VerificationRunner</c>'s pre-gate check and recovered by retry with the worktree
+    /// retained, so detection already works; committing only at the end is what left the whole
+    /// session exposed to an abnormal ending (context exhaustion, an early exit after
+    /// backgrounding a long test run) — exactly the moment that end-of-session step never runs.
+    /// Checkpoint commits move the loss surface from "the whole session" to "the last increment".
+    /// </para>
+    /// <para>
+    /// The recompose step is why a mixed reset is the mechanism rather than an interactive rebase
+    /// or a squash: it changes which commits exist without moving the working tree, so the tree
+    /// the recomposed commits describe is provably the exact tree that just passed the full
+    /// suite. Nothing may happen between the reset and the commit-plan invocation for the same
+    /// reason — a fix or a test run in that gap would make the recomposed commits describe a tree
+    /// that was never actually the one verified.
+    /// </para>
+    /// </summary>
+    public static void AppendCheckpointCommitRules(StringBuilder prompt, string baseBranch)
+    {
+        prompt.AppendLine("- **Commit as you go, one logical unit at a time.** Each commit here is");
+        prompt.AppendLine("  crash protection, not authored history: a checkpoint so that an abnormal");
+        prompt.AppendLine("  ending (context exhaustion, an early exit) strands at most the increment");
+        prompt.AppendLine("  since the last checkpoint instead of the whole session. Message them");
+        prompt.AppendLine("  plainly; none of them are what ships.");
+        prompt.AppendLine("- **Once all the work is done and the full verification suite is green,");
+        prompt.AppendLine("  recompose the checkpoints into real history in one continuous step:**");
+        prompt.AppendLine($"  1. `git reset --mixed origin/{baseBranch}` (the branch's own base). A mixed");
+        prompt.AppendLine("     reset changes which commits exist and leaves the working tree exactly as");
+        prompt.AppendLine("     it is, so the tree itself does not move.");
+        prompt.AppendLine("  2. Immediately invoke the commit-plan skill to compose that tree into");
+        prompt.AppendLine("     cohesive, buildable commits: the real, reviewable history for this PR.");
+        prompt.AppendLine("  Nothing happens between steps 1 and 2: no test run, no fix, no exploration.");
+        prompt.AppendLine("  That gap is exactly what the reset is for: because the tree never moves,");
+        prompt.AppendLine("  the commits composed in step 2 describe the identical tree that passed the");
+        prompt.AppendLine("  suite before step 1, and anything done in between would break that");
+        prompt.AppendLine("  guarantee. If something genuinely must change after the reset, commit");
+        prompt.AppendLine("  everything as it stands first, then make the change and recompose again.");
+        prompt.AppendLine("- **The session is not done while `git status` shows anything uncommitted or");
+        prompt.AppendLine("  untracked.** Check it last, after the recompose above, and commit whatever");
+        prompt.AppendLine("  it still shows before your final message. A clean tree is the contract, not");
+        prompt.AppendLine("  a nice-to-have.");
     }
 
     /// <summary>
