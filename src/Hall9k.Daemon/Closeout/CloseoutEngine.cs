@@ -2,6 +2,7 @@ using Hall9k.Connectors.Processes;
 using Hall9k.Connectors.WorkItems;
 using Hall9k.Daemon.Execution;
 using Hall9k.Daemon.Worktrees;
+using Hall9k.Domain.Features.Connection;
 using Hall9k.Domain.Features.Owner;
 using Hall9k.Domain.Features.Project.Projections;
 using Hall9k.Domain.Features.Run;
@@ -1154,14 +1155,51 @@ public sealed class CloseoutEngine(
     /// already registered once, generically, precisely so a write like this one is testable
     /// against a recorded process instead of the real, machine-authenticated twg.
     /// </para>
+    /// <para>
+    /// The site is resolved with <see cref="WorkItemConnections.FindJiraConnectionAsync"/>, the
+    /// strict lookup, rather than <see cref="WorkItemConnections.TryFindJiraSiteAsync"/>: that
+    /// best-effort lookup exists for <c>JiraWriteRetryEngine</c>'s own persistent poll, where a
+    /// null it returns for an unregistered or siteless connection must not stop the sweep from
+    /// draining every other task's queue — but reused here it let a null pass straight through to
+    /// <see cref="TwgJiraExecutor"/>, which omits <c>--site</c> entirely for a null and so targets
+    /// whatever tenant twg's own ambient <c>auth.conf</c> resolves to (independent pre-PR review,
+    /// adversarial lens, cycle 3): a comment filed and verified against an unrelated
+    /// organisation's card, the exact hazard <c>TaskWriteJiraCommand</c> already refuses outright.
+    /// No connection, or one recorded before the site field existed, is treated the same way
+    /// <c>main</c> always did — skipped with a logged reason, since there is nothing here to keep
+    /// retrying. Two connections registered at once still resolves to null and is left to the
+    /// generic catch below exactly as before this diff, an accepted, unrelated gap
+    /// (<see cref="WorkItemConnections.FindJiraConnectionAsync"/>'s own doc comment).
+    /// </para>
     /// </summary>
     private async Task TellJiraAsync(
         Guid taskId, ProjectDetails project, TaskAggregate task, ExternalReference reference, CancellationToken cancellationToken)
     {
+        await using IDocumentSession session = store.LightweightSession();
+        Uri site;
         try
         {
-            await using IDocumentSession session = store.LightweightSession();
-            Uri? site = await WorkItemConnections.TryFindJiraSiteAsync(session, cancellationToken);
+            ConnectionDetails? connection = await WorkItemConnections.FindJiraConnectionAsync(session, cancellationToken);
+            if (connection?.SiteUrl is not { } resolvedSite)
+            {
+                logger.LogWarning(
+                    "Task {TaskId} is linked to {Reference} but this node has no usable Jira connection, "
+                    + "so the merge was not commented on the card", taskId, reference);
+                return;
+            }
+
+            site = resolvedSite;
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            logger.LogWarning(exception,
+                "Could not resolve this node's Jira connection for {Reference}. Nothing is retried "
+                + "automatically; add the note by hand if it matters", reference);
+            return;
+        }
+
+        try
+        {
             JiraWriteAttemptResult result = await JiraWriteCoordinator.SubmitAsync(
                 session,
                 taskId,

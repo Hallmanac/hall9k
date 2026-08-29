@@ -2340,6 +2340,7 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
             await SetUpAsync(cts.Token);
         using IDisposable storeLifetime = store;
 
+        await SeedJiraConnectionAsync(store, node.OwnerId, cts.Token);
         (Guid taskId, _, _) = await SeedAwaitingReviewAsync(
             store, node, worktrees, repoPath, cts.Token,
             externalReference: new ExternalReference(WorkItemProvider.Jira, "PROJ-123"));
@@ -2419,6 +2420,7 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
             await SetUpAsync(cts.Token);
         using IDisposable storeLifetime = store;
 
+        await SeedJiraConnectionAsync(store, node.OwnerId, cts.Token);
         (Guid taskId, Guid runId, _) = await SeedAwaitingReviewAsync(
             store, node, worktrees, repoPath, cts.Token,
             externalReference: new ExternalReference(WorkItemProvider.Jira, "PROJ-123"));
@@ -2456,6 +2458,7 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
             await SetUpAsync(cts.Token);
         using IDisposable storeLifetime = store;
 
+        await SeedJiraConnectionAsync(store, node.OwnerId, cts.Token);
         (Guid taskId, _, _) = await SeedAwaitingReviewAsync(
             store, node, worktrees, repoPath, cts.Token,
             externalReference: new ExternalReference(WorkItemProvider.Jira, "PROJ-123"));
@@ -2614,6 +2617,34 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
 
         await session.SaveChangesAsync(cancellationToken);
         return (taskId, lastClaimRunId, worktree);
+    }
+
+    /// <summary>
+    /// A registered Jira connection with a site, the same shape <c>JiraWriteRetryEngineTests</c>
+    /// seeds: <c>TellJiraAsync</c> now refuses to comment a merged pull request on a card at all
+    /// without one (independent pre-PR review, adversarial lens, cycle 3), the same guard every
+    /// other Jira write surface already holds to, so every test exercising that comment needs one
+    /// registered first.
+    /// <para>
+    /// Once per database, not once per test: every test in this class shares the fixture's
+    /// Postgres, and a second registered Jira connection is a state the connector refuses on
+    /// purpose (nothing says which account a project uses) — which would make these tests assert
+    /// the refusal rather than the comment.
+    /// </para>
+    /// </summary>
+    private static async Task SeedJiraConnectionAsync(DocumentStore store, Guid ownerId, CancellationToken cancellationToken)
+    {
+        await using IDocumentSession session = store.LightweightSession();
+        if (await WorkItemConnections.FindJiraConnectionAsync(session, cancellationToken) is not null)
+        {
+            return;
+        }
+
+        Guid connectionId = DomainId.New();
+        session.Events.StartStream<ConnectionAggregate>(connectionId, ConnectionDecider.Register(
+            connectionId, ownerId, WorkItemProvider.Jira, "brian@hallmanac.com",
+            CredentialReference.EnvironmentVariable("JIRA_TOKEN"), Now, new Uri("https://hall9k.atlassian.net")));
+        await session.SaveChangesAsync(cancellationToken);
     }
 
     private CloseoutEngine NewEngine(
