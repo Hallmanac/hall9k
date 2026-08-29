@@ -507,7 +507,14 @@ public sealed class RunAggregate
         State = RunState.Running;
     }
 
-    public void Apply(AgentSessionCompleted @event) => State = RunState.Verifying;
+    public void Apply(AgentSessionCompleted @event)
+    {
+        State = RunState.Verifying;
+        if (@event.DeliveredByNodeId is { } deliveredByNodeId)
+        {
+            NodeId = deliveredByNodeId;
+        }
+    }
 
     public void Apply(TokensRecorded @event)
     {

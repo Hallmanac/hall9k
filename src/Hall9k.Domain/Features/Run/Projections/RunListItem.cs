@@ -68,7 +68,14 @@ public sealed class RunListItemProjection : SingleStreamProjection<RunListItem, 
     // review, cycle 1).
     public void Apply(IEvent<InteractiveSessionStarted> @event, RunListItem view) => view.State = RunState.Running;
 
-    public void Apply(IEvent<AgentSessionCompleted> @event, RunListItem view) => view.State = RunState.Verifying;
+    public void Apply(IEvent<AgentSessionCompleted> @event, RunListItem view)
+    {
+        view.State = RunState.Verifying;
+        if (@event.Data.DeliveredByNodeId is { } deliveredByNodeId)
+        {
+            view.NodeId = deliveredByNodeId;
+        }
+    }
 
     public void Apply(IEvent<ReviewDispatched> @event, RunListItem view) => view.State = RunState.UnderReview;
 
