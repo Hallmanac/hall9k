@@ -669,11 +669,11 @@ public sealed class InstallCommand : Hall9kAsyncCommand<InstallCommand.Settings>
             // otherwise never be swept again: every later run takes this per-file branch, which
             // has nothing else that would ever look at a whole retired directory.
             SweepRetiredDirectories(bin, bin + ".old");
-            SweepRetiredFiles(bin);
+            HashSet<string> reportedStuck = SweepRetiredFiles(bin);
             if (Directory.Exists(bin))
             {
                 RemoveStaleFiles(staging, bin);
-                SwapFilesIntoPlace(staging, bin);
+                SwapFilesIntoPlace(staging, bin, reportedStuck);
                 TryDelete(staging);
             }
             else
@@ -726,9 +726,15 @@ public sealed class InstallCommand : Hall9kAsyncCommand<InstallCommand.Settings>
     /// its main executable, so staying locked through this reclaim is the ordinary outcome for
     /// most retirees on a successful run rather than an exceptional one, and reporting it here
     /// would print "still in use" noise on every update. The next run's leading
-    /// <see cref="SweepRetiredFiles"/> reports what is still stuck by then.</summary>
+    /// <see cref="SweepRetiredFiles"/> reports what is still stuck by then. <paramref
+    /// name="reportedStuck"/> is that same leading sweep's own set of files it just told the
+    /// operator were still locked, so a retirement that lands on one of those names because
+    /// its plain <c>.old</c> slot is still occupied does not print a second, redundant "still
+    /// in use" line about the exact file the operator was already told about a moment
+    /// ago.</summary>
     [SupportedOSPlatform("windows")]
-    private static void SwapFilesIntoPlace(string sourceDirectory, string destinationDirectory)
+    private static void SwapFilesIntoPlace(
+        string sourceDirectory, string destinationDirectory, HashSet<string> reportedStuck)
     {
         List<(string Source, string Destination)> files = [];
         CollectFilePairs(sourceDirectory, destinationDirectory, files);
@@ -743,7 +749,7 @@ public sealed class InstallCommand : Hall9kAsyncCommand<InstallCommand.Settings>
 
             try
             {
-                retired.Add((destination, RetireFile(destination)));
+                retired.Add((destination, RetireFile(destination, reportedStuck)));
             }
             catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
             {
@@ -955,9 +961,13 @@ public sealed class InstallCommand : Hall9kAsyncCommand<InstallCommand.Settings>
     /// an earlier update's own <c>.old</c> file is itself still locked — the same double-lock
     /// fallback <see cref="RetireDirectory"/> uses for a whole directory — and returns
     /// whichever name it actually used, so the caller can restore it if placement that follows
-    /// fails.</summary>
+    /// fails. <paramref name="reportedStuck"/> names every file this run's leading <see
+    /// cref="SweepRetiredFiles"/> already told the operator was still locked; taking the
+    /// fallback because <c>retired</c> is one of those says nothing the operator was not just
+    /// told, so that case stays quiet instead of printing a second line about the same
+    /// file.</summary>
     [SupportedOSPlatform("windows")]
-    private static string RetireFile(string path)
+    private static string RetireFile(string path, HashSet<string> reportedStuck)
     {
         string retired = path + ".old";
         if (!File.Exists(retired))
@@ -968,8 +978,12 @@ public sealed class InstallCommand : Hall9kAsyncCommand<InstallCommand.Settings>
 
         string fallback = $"{retired}.{Path.GetRandomFileName()}";
         File.Move(path, fallback);
-        AnsiConsole.MarkupLineInterpolated(
-            $"[dim]{retired} is still in use, so {Path.GetFileName(path)} was retired to {Path.GetFileName(fallback)} instead — it will be cleaned up on a future install or update once nothing holds it.[/]");
+        if (!reportedStuck.Contains(retired))
+        {
+            AnsiConsole.MarkupLineInterpolated(
+                $"[dim]{retired} is still in use, so {Path.GetFileName(path)} was retired to {Path.GetFileName(fallback)} instead — it will be cleaned up on a future install or update once nothing holds it.[/]");
+        }
+
         return fallback;
     }
 
@@ -977,18 +991,38 @@ public sealed class InstallCommand : Hall9kAsyncCommand<InstallCommand.Settings>
     /// uniquely suffixed <c>*.old.&lt;random&gt;</c> fallback from an earlier double lock),
     /// recursively under <paramref name="bin"/> — the file-granularity sibling of
     /// <see cref="SweepRetiredDirectories"/>, best-effort so a file still locked this run is
-    /// simply left for a later one.</summary>
+    /// simply left for a later one. Walks its own recursion rather than
+    /// <c>SearchOption.AllDirectories</c> so it can skip a directory symlink or junction inside
+    /// <paramref name="bin"/> (an operator's own, or an earlier tool's) the same way <see
+    /// cref="RemoveStaleFiles"/> and <see cref="TryDeleteDirectoryRecursively"/> already do —
+    /// otherwise a junction pointing outside <paramref name="bin"/> gets followed and files
+    /// under its target matching <c>*.old</c> or <c>*.old.*</c> are deleted, well outside the
+    /// install directory, before <see cref="RemoveStaleFiles"/> ever gets a chance to unlink
+    /// the junction itself (origin: cycle-2 pre-PR adversarial review). Returns the full path
+    /// of every file it found still locked, so <see cref="RetireFile"/> can skip repeating the
+    /// same "still in use" news a moment later.</summary>
     [SupportedOSPlatform("windows")]
-    private static void SweepRetiredFiles(string bin)
+    private static HashSet<string> SweepRetiredFiles(string bin)
     {
-        if (!Directory.Exists(bin))
+        HashSet<string> stillStuck = new(StringComparer.OrdinalIgnoreCase);
+        SweepRetiredFiles(bin, stillStuck);
+        return stillStuck;
+    }
+
+    [SupportedOSPlatform("windows")]
+    private static void SweepRetiredFiles(string directory, HashSet<string> stillStuck)
+    {
+        if (!Directory.Exists(directory))
         {
             return;
         }
 
-        foreach (string file in Directory.EnumerateFiles(bin, "*.old", SearchOption.AllDirectories))
+        foreach (string file in Directory.EnumerateFiles(directory, "*.old"))
         {
-            TryDeleteFile(file);
+            if (!TryDeleteFile(file))
+            {
+                stillStuck.Add(file);
+            }
         }
 
         // FileSystemName's Win32-expression translation rewrites a trailing ".*" into
@@ -996,35 +1030,48 @@ public sealed class InstallCommand : Hall9kAsyncCommand<InstallCommand.Settings>
         // too, the same quirk SweepRetiredDirectories documents and skips for "bin.old.*"
         // one level up. Those are already handled by the loop above, so skip them here
         // rather than let a still-locked one print its "still in use" warning twice.
-        foreach (string file in Directory.EnumerateFiles(bin, "*.old.*", SearchOption.AllDirectories))
+        foreach (string file in Directory.EnumerateFiles(directory, "*.old.*"))
         {
             if (file.EndsWith(".old", StringComparison.OrdinalIgnoreCase))
             {
                 continue;
             }
 
-            TryDeleteFile(file);
+            if (!TryDeleteFile(file))
+            {
+                stillStuck.Add(file);
+            }
+        }
+
+        foreach (string subdirectory in Directory.EnumerateDirectories(directory))
+        {
+            if (new DirectoryInfo(subdirectory).LinkTarget is null)
+            {
+                SweepRetiredFiles(subdirectory, stillStuck);
+            }
         }
     }
 
     /// <summary>Best-effort delete for a single file, the file-granularity sibling of
-    /// <see cref="TryDelete"/>. <paramref name="report"/> is false only for
+    /// <see cref="TryDelete"/>. Returns whether <paramref name="file"/> is gone (deleted, or
+    /// already absent) once this call returns. <paramref name="report"/> is false only for
     /// <see cref="SwapFilesIntoPlace"/>'s own immediate reclaim of its retirees, where a
     /// still-locked file is the ordinary case (a self-contained publish's own loaded
     /// assemblies, not just its main executable) rather than something worth telling the
     /// operator about on an otherwise successful run — the next run's leading
     /// <see cref="SweepRetiredFiles"/> reports it if it is still there then.</summary>
     [SupportedOSPlatform("windows")]
-    private static void TryDeleteFile(string file, bool report = true)
+    private static bool TryDeleteFile(string file, bool report = true)
     {
         if (!File.Exists(file))
         {
-            return;
+            return true;
         }
 
         try
         {
             File.Delete(file);
+            return true;
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
         {
@@ -1033,6 +1080,8 @@ public sealed class InstallCommand : Hall9kAsyncCommand<InstallCommand.Settings>
                 AnsiConsole.MarkupLineInterpolated(
                     $"[dim]Could not remove {file} yet (still in use) — it will be cleaned up on the next install or update.[/]");
             }
+
+            return false;
         }
     }
 
