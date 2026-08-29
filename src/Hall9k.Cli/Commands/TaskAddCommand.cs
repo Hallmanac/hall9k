@@ -63,8 +63,8 @@ public sealed class TaskAddCommand : Hall9kAsyncCommand<TaskAddCommand.Settings>
 
         [CommandOption("--file <PATH>")]
         [Description(
-            "Task file: frontmatter (project/type/objective/criteria/model/blocked-by) + markdown body "
-            + "as agent context")]
+            "Task file: frontmatter (project/type/objective/criteria/model/blocked-by/epic) + markdown "
+            + "body as agent context")]
         public string? File { get; init; }
 
         [CommandOption("--from-issue <NUMBER-OR-URL>")]
@@ -135,6 +135,7 @@ public sealed class TaskAddCommand : Hall9kAsyncCommand<TaskAddCommand.Settings>
         string? type = settings.Type;
         string? agentContext = settings.AgentContext;
         string? model = settings.Model;
+        string? epic = settings.Epic;
         IReadOnlyList<string> criteria = settings.Criteria;
         IReadOnlyList<string> blockedBy = settings.BlockedBy;
 
@@ -161,6 +162,7 @@ public sealed class TaskAddCommand : Hall9kAsyncCommand<TaskAddCommand.Settings>
             type ??= file.Type;
             agentContext ??= file.AgentContext;
             model ??= file.Model;
+            epic ??= file.Epic;
             criteria = criteria.Count > 0 ? criteria : file.Criteria;
             blockedBy = blockedBy.Count > 0 ? blockedBy : file.BlockedBy;
         }
@@ -209,8 +211,8 @@ public sealed class TaskAddCommand : Hall9kAsyncCommand<TaskAddCommand.Settings>
         }
 
         AgentModel taskModel = TaskDecider.VetModel(AgentModel.FromInput(model));
-        Guid? epicId = settings.Epic.IsNotBlank()
-            ? await EpicIdResolver.ResolveForMembershipAsync(session, settings.Epic, projectDetails.Id, cancellationToken)
+        Guid? epicId = epic.IsNotBlank()
+            ? await EpicIdResolver.ResolveForMembershipAsync(session, epic, projectDetails.Id, cancellationToken)
             : null;
 
         ImportedWorkItem? imported = adoption is null
