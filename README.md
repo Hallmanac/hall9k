@@ -39,13 +39,15 @@ rather than from intent.
 
 ## What it looks like to use
 
-You are not meant to memorize a CLI. The intended way to drive Hall9k is through an agent: open
-a Claude Code session in your project's home directory and talk to it in plain language ("write
-this down as a task", "what needs me?", "publish it and let it run"). The home's generated
-`AGENTS.md` teaches the session what Hall9k is and how to drive it, so the agent issues the
-`h9k` commands on your behalf and relays back the one thing that needs you. Every command in
-this section works typed by hand too, and reading them is the fastest way to understand what
-your agent is doing for you.
+You are not meant to memorize a CLI. Talk to an agent instead.
+
+Open a Claude Code session in your Hall9k directory (`~/.hall9k` on macOS and Linux,
+`C:\Users\<you>\.hall9k` on Windows) and point it at this README, or open it inside a project's
+home, where a generated `AGENTS.md` already teaches it the ropes. Then say what you want in
+plain language: "write this down as a task", "what needs me?", "publish it and let it run".
+The agent issues the `h9k` commands for you and relays back the one thing that needs you.
+
+The commands below are what your agent runs on your behalf. They all work typed by hand too.
 
 Work moves through the system in one flow. Each step below is a section of this document; the
 deeper dives live in [docs/](docs/).
