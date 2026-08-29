@@ -6,6 +6,7 @@ using Hall9k.Domain.Features.Run.Events;
 using Hall9k.Domain.Features.Run.Projections;
 using Hall9k.Domain.Features.Tasks;
 using Hall9k.Domain.Features.Tasks.Projections;
+using Hall9k.Domain.Infrastructure.Bootstrap;
 using Hall9k.Domain.Infrastructure.Storage;
 using Hall9k.Domain.Shared.Exceptions;
 using Marten;
@@ -121,7 +122,14 @@ public sealed class TaskDeliverCommand : Hall9kAsyncCommand<TaskDeliverCommand.S
         string handoff = settings.Handoff ?? PromptForHandoff();
         await WriteHandoffAsync(run.RunDirectory, handoff, cancellationToken);
 
-        session.Events.Append(runId, new AgentSessionCompleted(runId, DateTimeOffset.UtcNow));
+        // The delivering node's own id, not the sentinel the claim was dispatched under: from
+        // here the run travels the identical daemon-driven pipeline a headless run's own
+        // AgentSessionCompleted hands into (gates, review, fix sessions), and NodeLoad's own
+        // ceiling measurement counts strictly by NodeId — an interactive claim's Guid.Empty
+        // sentinel left in place past this point would make the whole pipeline invisible to
+        // every node's session ceiling forever (conformance review, cycle 1).
+        BootstrapContext context = await NodeBootstrap.EnsureAsync(session, cancellationToken);
+        session.Events.Append(runId, new AgentSessionCompleted(runId, DateTimeOffset.UtcNow, context.NodeId));
         await session.SaveChangesAsync(cancellationToken);
 
         await Doorbell.RingAsync($"task-delivered:{taskId}", cancellationToken);

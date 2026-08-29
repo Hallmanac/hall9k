@@ -278,6 +278,10 @@ public sealed class RunDetailsProjection : SingleStreamProjection<RunDetails, Gu
     {
         EndSessions(view);
         view.State = RunState.Verifying;
+        if (@event.Data.DeliveredByNodeId is { } deliveredByNodeId)
+        {
+            view.NodeId = deliveredByNodeId;
+        }
     }
 
     public void Apply(IEvent<TokensRecorded> @event, RunDetails view)
