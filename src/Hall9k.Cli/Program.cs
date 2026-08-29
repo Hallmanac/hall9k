@@ -9,20 +9,39 @@ app.Configure(CliCommandTree.Configure);
 
 // Without this, Ctrl-C takes SIGINT's default action and the process terminates immediately —
 // no command's own cancellation handling (e.g. TaskWorkCommand's started/ended pairing, PLAN.md
-// #99) ever runs, because RunAsync(args) alone is handed CancellationToken.None and nothing else
+// #101) ever runs, because RunAsync(args) alone is handed CancellationToken.None and nothing else
 // requests a stop (independent pre-PR review, cycle 2). Cancelling here instead of letting the
 // default handler fire is what lets a command's own try/catch(OperationCanceledException) close
 // out cleanly before the process actually exits.
 using CancellationTokenSource cancellation = new();
 int cancelKeyPresses = 0;
+DateTimeOffset lastCancelKeyPressAt = DateTimeOffset.MinValue;
+// A repeat press only escalates within this window of the previous one — the "the first press
+// didn't work, so kill it" case the escalation exists for. Ctrl-C is also the ordinary Claude
+// Code keystroke for "stop generating" (h9k task work's own attached session, PLAN.md #101), and
+// a lifetime counter that never resets treated a second, unrelated press an hour later as the
+// same escalation: it killed h9k while the still-attached child survived the very keystroke that
+// killed its parent, silently leaving InteractiveSessionStarted unpaired (independent pre-PR
+// review, cycle 1). A few seconds is enough to catch a deliberate double-press without punishing
+// two ordinary interrupts spaced across a long session.
+TimeSpan escalationWindow = TimeSpan.FromSeconds(3);
 Console.CancelKeyPress += (_, e) =>
 {
-    // Only the first Ctrl-C is suppressed. A command blocked in a synchronous prompt that takes
-    // no token (Spectre's AnsiConsole.Prompt, which reads through Console.ReadKey) never observes
-    // the cancellation below, so without an escalation path it would hang forever with every
-    // further Ctrl-C swallowed the same way (independent pre-PR review, cycle 1). The second
-    // press leaves e.Cancel at its default (false) and lets SIGINT's ordinary action terminate
-    // the process, exactly as it did before this handler existed.
+    DateTimeOffset now = DateTimeOffset.UtcNow;
+    if (now - lastCancelKeyPressAt > escalationWindow)
+    {
+        cancelKeyPresses = 0;
+    }
+
+    lastCancelKeyPressAt = now;
+
+    // Only the first press in the window is suppressed. A command blocked in a synchronous
+    // prompt that takes no token (Spectre's AnsiConsole.Prompt, which reads through
+    // Console.ReadKey) never observes the cancellation below, so without an escalation path it
+    // would hang forever with every further Ctrl-C swallowed the same way (independent pre-PR
+    // review, cycle 1). A second press within the window leaves e.Cancel at its default (false)
+    // and lets SIGINT's ordinary action terminate the process, exactly as it did before this
+    // handler existed.
     if (Interlocked.Increment(ref cancelKeyPresses) == 1)
     {
         e.Cancel = true;
