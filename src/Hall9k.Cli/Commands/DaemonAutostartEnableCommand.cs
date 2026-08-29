@@ -89,40 +89,62 @@ public sealed class DaemonAutostartEnableCommand : Hall9kAsyncCommand<DaemonAuto
             && !recordedVariables.Contains(Hall9kDatabase.EnvironmentVariableName);
         if (capturedButNotRecorded)
         {
-            ConfigFileConnectionStringState configFileState = Hall9kDatabase.ConnectionStringStateInConfigFile();
-            bool configFileConnectionStringWorks = configFileState == ConfigFileConnectionStringState.Supplied
-                && (await DatabaseReachability.ProbeAsync(
-                        Hall9kDatabase.ConnectionStringInConfigFile()!, cancellationToken)).Status
+            // Read state and value together (Hall9kDatabase.ConnectionStringStateAndValueInConfigFile):
+            // reading them as two separate calls raced a concurrent h9k config set or editor
+            // save, where the second read could disagree with the first and hand a null
+            // connection string to DatabaseReachability.ProbeAsync (cycle-6 review).
+            (ConfigFileConnectionStringState configFileState, string? configFileConnectionString) =
+                Hall9kDatabase.ConnectionStringStateAndValueInConfigFile();
+            bool configFileConnectionStringWorks = configFileConnectionString is not null
+                && (await DatabaseReachability.ProbeAsync(configFileConnectionString, cancellationToken)).Status
                     == ReachabilityStatus.Reachable;
             if (!configFileConnectionStringWorks)
             {
                 string escapedConfigFile = Markup.Escape(Hall9kDatabase.ConfigFile);
 
-                // h9k doctor is not the fix here: its start-offer only ever writes a
-                // connection string on the not-configured path, and this warning fires
-                // precisely when one already resolves (from the environment variable), so
-                // doctor would report healthy and touch config.json not at all — the real
-                // fix is the same hand-edit doctor's own not-configured message points at.
-                string configFileProblem = configFileState switch
+                if (configFileState == ConfigFileConnectionStringState.Supplied)
                 {
-                    ConfigFileConnectionStringState.Missing =>
-                        $"{escapedConfigFile} does not exist to supply one another way",
-                    ConfigFileConnectionStringState.PresentWithoutConnectionString =>
-                        $"{escapedConfigFile} exists but does not carry a connectionString",
-                    ConfigFileConnectionStringState.Malformed =>
-                        $"{escapedConfigFile} exists but is not valid JSON",
-                    ConfigFileConnectionStringState.Supplied =>
-                        $"{escapedConfigFile} names one, but it does not currently answer — h9k install writes a "
-                        + "guessed default there when nothing else is configured, without starting or confirming it",
-                    _ => throw new NotSupportedException($"Unexpected {nameof(ConfigFileConnectionStringState)}: {configFileState}"),
-                };
+                    // Distinct from the not-configured cases below (Decisions Log #74's
+                    // reachable-vs-configured distinction): a value IS configured here, it is
+                    // just not answering right now, so the remedy is starting whatever it
+                    // names — h9k doctor --yes, when it is Hall9k's own compose Postgres — not
+                    // hand-editing a file that already has the value (cycle-6 review: the
+                    // previous single fixed tail called this "no connection string configured"
+                    // and told the operator to add one that was already present).
+                    AnsiConsole.MarkupLine(
+                        $"[yellow]{Hall9kDatabase.EnvironmentVariableName} is set in this shell, but {autostart.MechanismDescription} "
+                        + $"does not carry it, and {escapedConfigFile} names a connection string that does not "
+                        + "currently answer[/] — an autostarted daemon would exit immediately at every logon unless "
+                        + "it comes up before then. Run h9k doctor --yes to start it now (if it is Hall9k's own "
+                        + $"Postgres), or otherwise fix whatever is keeping {escapedConfigFile}'s connection string "
+                        + "from answering.");
+                }
+                else
+                {
+                    // h9k doctor is not the fix for these three: its start-offer only ever
+                    // writes a connection string on its own not-configured path, and this
+                    // warning fires precisely when one already resolves (from the environment
+                    // variable), so doctor would report healthy and touch config.json not at
+                    // all — the real fix is the same hand-edit doctor's own not-configured
+                    // message points at.
+                    string configFileProblem = configFileState switch
+                    {
+                        ConfigFileConnectionStringState.Missing =>
+                            $"{escapedConfigFile} does not exist to supply one another way",
+                        ConfigFileConnectionStringState.PresentWithoutConnectionString =>
+                            $"{escapedConfigFile} exists but does not carry a connectionString",
+                        ConfigFileConnectionStringState.Malformed =>
+                            $"{escapedConfigFile} exists but is not valid JSON",
+                        _ => throw new NotSupportedException($"Unexpected {nameof(ConfigFileConnectionStringState)}: {configFileState}"),
+                    };
 
-                AnsiConsole.MarkupLine(
-                    $"[yellow]{Hall9kDatabase.EnvironmentVariableName} is set in this shell, but {autostart.MechanismDescription} "
-                    + $"does not carry it, and {configFileProblem}[/] — an autostarted daemon would exit immediately "
-                    + $"at every logon with no connection string configured. Add it to {escapedConfigFile} by hand "
-                    + "(write {\"connectionString\": \"…\"} there, fixing its JSON first if that is what is broken) "
-                    + "to give it a durable one.");
+                    AnsiConsole.MarkupLine(
+                        $"[yellow]{Hall9kDatabase.EnvironmentVariableName} is set in this shell, but {autostart.MechanismDescription} "
+                        + $"does not carry it, and {configFileProblem}[/] — an autostarted daemon would exit immediately "
+                        + $"at every logon with no connection string configured. Add it to {escapedConfigFile} by hand "
+                        + "(write {\"connectionString\": \"…\"} there, fixing its JSON first if that is what is broken) "
+                        + "to give it a durable one.");
+                }
             }
         }
 

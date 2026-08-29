@@ -207,4 +207,25 @@ public sealed class Hall9kDatabaseTests : IDisposable
 
         Hall9kDatabase.ConnectionStringStateInConfigFile().Should().Be(ConfigFileConnectionStringState.Supplied);
     }
+
+    [Fact]
+    public void The_raw_value_in_the_config_file_ignores_a_higher_precedence_environment_variable()
+    {
+        File.WriteAllText(Path.Combine(home, "config.json"), """{"connectionString": "config-value"}""");
+        Environment.SetEnvironmentVariable(Hall9kDatabase.EnvironmentVariableName, "env-value");
+
+        Hall9kDatabase.ConnectionStringInConfigFile().Should().Be("config-value",
+            "an autostarted daemon has no environment variable of its own, so this is the value it would actually resolve to");
+    }
+
+    [Fact]
+    public void State_and_value_read_together_agree_with_the_two_read_separately()
+    {
+        File.WriteAllText(Path.Combine(home, "config.json"), """{"connectionString": "config-value"}""");
+
+        (ConfigFileConnectionStringState state, string? value) = Hall9kDatabase.ConnectionStringStateAndValueInConfigFile();
+
+        state.Should().Be(ConfigFileConnectionStringState.Supplied);
+        value.Should().Be("config-value");
+    }
 }

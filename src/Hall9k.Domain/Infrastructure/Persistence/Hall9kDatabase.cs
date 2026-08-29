@@ -17,7 +17,8 @@ namespace Hall9k.Domain.Infrastructure.Persistence;
 /// of the homes below); the <see cref="EnvironmentVariableName"/> environment variable
 /// (this shell, this invocation — the same mechanism <c>DaemonEnvironment</c> captures
 /// for a launchd-started daemon); the platform config file (<see cref="ConfigFile"/>, a
-/// durable per-machine setting written by <c>h9k doctor</c>'s start-offer or by hand);
+/// durable per-machine setting written by <c>h9k doctor</c>'s start-offer, by <c>h9k
+/// install</c> itself when nothing resolves yet (Decisions Log #99), or by hand);
 /// and last, a per-project override file (<see cref="ProjectOverrideFileName"/>, found by
 /// walking up from the working directory). The override is checked last, deliberately:
 /// it is the one entry in this chain that can arrive already sitting in a repository
@@ -29,9 +30,13 @@ public static class Hall9kDatabase
 {
     /// <summary>
     /// What <c>h9k install</c>'s shipped Postgres definition (<see cref="PostgresRuntime"/>)
-    /// stands up, and what the doctor's start-offer writes to <see cref="ConfigFile"/> when
-    /// it provisions a fresh install. Never used as a silent fallback — only ever reached by
-    /// an explicit, recorded configuration act.
+    /// stands up. Written to <see cref="ConfigFile"/> by <c>h9k doctor</c>'s start-offer once
+    /// an operator accepts it, and — since Decisions Log #99 — by <c>h9k install</c> itself,
+    /// non-interactively, but only when nothing in the precedence chain resolves yet and
+    /// nothing is already listening on the default port: the compose file install just wrote
+    /// fully determines this string, so that write is a record of what install already
+    /// provisioned rather than a guess. <see cref="Resolve"/> never reaches this constant on
+    /// its own — every write of it is one of those two explicit, recorded acts.
     /// </summary>
     public const string DefaultConnectionString =
         "Host=localhost;Port=5432;Database=hall9k;Username=postgres;Password=hall9k";
@@ -108,28 +113,40 @@ public static class Hall9kDatabase
     /// review), so a caller writing a warning needs to tell them apart rather than reporting all
     /// three as "does not exist".
     /// </summary>
-    public static ConfigFileConnectionStringState ConnectionStringStateInConfigFile()
+    public static ConfigFileConnectionStringState ConnectionStringStateInConfigFile() =>
+        ConnectionStringStateAndValueInConfigFile().State;
+
+    /// <summary>
+    /// <see cref="ConnectionStringStateInConfigFile"/> and <see cref="ConnectionStringInConfigFile"/>
+    /// combined into a single file read, for a caller that needs both together: reading them
+    /// separately risks the file changing in between (a concurrent <c>h9k config set</c>, an
+    /// editor save) so that the state one call observed no longer matches the value the other
+    /// one returns (cycle-6 review).
+    /// </summary>
+    public static (ConfigFileConnectionStringState State, string? Value) ConnectionStringStateAndValueInConfigFile()
     {
         if (!File.Exists(ConfigFile))
         {
-            return ConfigFileConnectionStringState.Missing;
+            return (ConfigFileConnectionStringState.Missing, null);
         }
 
         string? value = ReadConfigFile(out bool malformed);
         if (malformed)
         {
-            return ConfigFileConnectionStringState.Malformed;
+            return (ConfigFileConnectionStringState.Malformed, null);
         }
 
         return value is { Length: > 0 }
-            ? ConfigFileConnectionStringState.Supplied
-            : ConfigFileConnectionStringState.PresentWithoutConnectionString;
+            ? (ConfigFileConnectionStringState.Supplied, value)
+            : (ConfigFileConnectionStringState.PresentWithoutConnectionString, null);
     }
 
     /// <summary>
     /// Write the connection string to the platform config file — the doctor's own action when
-    /// an operator accepts the start-offer on a previously unconfigured install. Merges rather
-    /// than overwrites, so a future key added to this file survives a connection-string write.
+    /// an operator accepts the start-offer on a previously unconfigured install, and (Decisions
+    /// Log #99) <c>h9k install</c>'s own action when nothing resolves yet and nothing is already
+    /// listening on the default port. Merges rather than overwrites, so a future key added to
+    /// this file survives a connection-string write.
     /// </summary>
     public static async Task WriteConfiguredConnectionStringAsync(string connectionString, CancellationToken cancellationToken)
     {
