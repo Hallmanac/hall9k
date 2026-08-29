@@ -111,13 +111,15 @@ public static class WorkPromptBuilder
         prompt.AppendLine($"- You are in an isolated git worktree on branch `{branch}`. Work only here.");
         prompt.AppendLine("- Implement the objective so every acceptance criterion is satisfied.");
         prompt.AppendLine("- Commit your work with clear messages. Do NOT push, do NOT open a pull request —");
-        prompt.AppendLine("  the platform verifies and opens the PR after you finish.");
         if (isInteractive)
         {
+            prompt.AppendLine("  delivery is `h9k task deliver`, run by the operator explicitly; nothing pushes or");
+            prompt.AppendLine("  opens a pull request until then.");
             AppendCommitDisciplineRuleForInteractiveSession(prompt);
         }
         else
         {
+            prompt.AppendLine("  the platform verifies and opens the PR after you finish.");
             AppendSessionEndsAtFinalMessageRule(prompt);
         }
 
