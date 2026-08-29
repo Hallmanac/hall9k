@@ -776,15 +776,19 @@ public sealed class InstallCommand : Hall9kAsyncCommand<InstallCommand.Settings>
     /// Renaming the locked file ITSELF, though, is exactly as permitted on Windows as it is
     /// assumed to be above — the OS loader shares delete access on the module it maps — so on
     /// Windows the swap runs file by file instead of directory by directory:
-    /// <see cref="SwapFilesIntoPlace"/> merges every file staging carries into
+    /// <see cref="RemoveStaleFiles"/> first deletes whatever <paramref name="bin"/> has that
+    /// staging does not — a file an earlier release shipped and this one dropped — reading
+    /// staging's manifest while it still carries the full staged payload, before anything
+    /// touches it (running this after the merge instead read an already-drained staging
+    /// directory and classified every file this run had just installed as stale — origin
+    /// incident: cycle 2 review, caught by the repo's own update tests on Windows CI before it
+    /// shipped). Then <see cref="SwapFilesIntoPlace"/> merges every file staging carries into
     /// <paramref name="bin"/> in place, retiring a same-named file it cannot overwrite (a
     /// locked <c>h9k.exe</c> or <c>h9kd.exe</c> — no special case needed for either one, since
     /// a locked file retires the same way regardless of which process holds it) to a
     /// <c>.old</c> sibling right where it sits, exactly like <see cref="RetireDirectory"/>
-    /// does one level up on Unix. <see cref="RemoveStaleFiles"/> then deletes whatever
-    /// <paramref name="bin"/> still has that staging does not — a file an earlier release
-    /// shipped and this one dropped — so the merge does not leave <paramref name="bin"/>
-    /// as the union of every version ever installed.
+    /// does one level up on Unix. Together the two leave <paramref name="bin"/> as exactly
+    /// staging's contents rather than the union of every version ever installed.
     /// </para>
     /// </summary>
     private static void SwapIntoPlace(string staging, string bin)
@@ -794,8 +798,8 @@ public sealed class InstallCommand : Hall9kAsyncCommand<InstallCommand.Settings>
             SweepRetiredFiles(bin);
             if (Directory.Exists(bin))
             {
-                SwapFilesIntoPlace(staging, bin);
                 RemoveStaleFiles(staging, bin);
+                SwapFilesIntoPlace(staging, bin);
                 TryDelete(staging);
             }
             else
@@ -850,12 +854,15 @@ public sealed class InstallCommand : Hall9kAsyncCommand<InstallCommand.Settings>
     /// earlier release shipped and the new one dropped survives every reinstall or update —
     /// unlike the Unix directory swap, which replaces <paramref name="destinationDirectory"/>
     /// outright, this merge would otherwise leave it the union of every version ever installed.
-    /// Walks the merged tree afterward and deletes whatever <paramref name="destinationDirectory"/>
-    /// has that <paramref name="sourceDirectory"/> (staging) does not, skipping this run's own
-    /// <c>*.old</c> retirees via <see cref="IsRetiredFileName"/> — those are not stale, they are
-    /// this run's locked files waiting on <see cref="SweepRetiredFiles"/> — and best-effort, same
-    /// as the rest of this file, so a file still locked this run is simply left for a later
-    /// one.</summary>
+    /// Runs BEFORE <see cref="SwapFilesIntoPlace"/> touches either directory, while
+    /// <paramref name="sourceDirectory"/> (staging) still carries its full payload: deletes
+    /// whatever <paramref name="destinationDirectory"/> has that staging does not, skipping
+    /// this run's own <c>*.old</c> retirees via <see cref="IsRetiredFileName"/> — those are not
+    /// stale, they are this run's locked files waiting on <see cref="SweepRetiredFiles"/> — and
+    /// best-effort, same as the rest of this file, so a file still locked this run is simply
+    /// left for a later one. Reading staging after the merge instead would find it already
+    /// drained by <see cref="SwapFilesIntoPlace"/>'s own <c>File.Move</c> calls and delete
+    /// every file this run just installed as if it were stale.</summary>
     [SupportedOSPlatform("windows")]
     private static void RemoveStaleFiles(string sourceDirectory, string destinationDirectory)
     {
