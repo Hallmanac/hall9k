@@ -515,8 +515,8 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
             ? $" [dim]under {details.PendingPublicationProjectKey.Value.EscapeMarkup()}[/]"
             : string.Empty;
         return details.PublicationSessionDispatched
-            ? $"[yellow]{provider.EscapeMarkup()}[/]{board} [dim]— a session is writing the card; it "
-              + "finishes by running h9k task link-jira[/]"
+            ? $"[yellow]{provider.EscapeMarkup()}[/]{board} [dim]— a session is composing the card; it "
+              + "submits it through h9k task write-jira[/]"
             : $"[yellow]{provider.EscapeMarkup()}[/]{board} [dim]— requested, waiting for the daemon "
               + "to dispatch the session (h9k daemon status)[/]";
     }

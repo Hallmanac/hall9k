@@ -227,20 +227,25 @@ carries its reference, so the gate never fires for it.
 
 ### Jira
 
-`h9k task push-to-jira` · `h9k task link-jira` · `h9k connection add jira` ·
+`h9k task push-to-jira` · `h9k task write-jira` · `h9k task link-jira` · `h9k connection add jira` ·
 `h9k project set --jira PROJ`
 
-`push-to-jira` dispatches an agent session that writes the card in the project's own repository,
-because the platform never authors one. The session runs in `<home>/repo/dev`, since the recorded
-repository path of a project with a home names the bare clone and a bare clone has no files to
-read; a project registered before homes existed still points at an ordinary checkout, and that is
-where its session runs. `link-jira` reads the key back through the registered
-connection before recording anything, which is what makes it safe for an agent to call. A project
-set to `--backlog jira` makes this request automatically at publish — once the dedup gate above
-lets the publish through — so `push-to-jira` becomes the manual retry lever for a project that had
-no Jira connection registered yet when it was first published, and also the way to get a card
-started by hand before publishing, which the gate recognizes as a publication already pending
-rather than demanding an attestation for it.
+`push-to-jira` dispatches an agent session that composes the card payload in the project's own
+repository, because the platform never authors a card's *content* — issue types, required fields,
+and routing rules are the organisation's configuration. The session runs in `<home>/repo/dev`,
+since the recorded repository path of a project with a home names the bare clone and a bare clone
+has no files to read; a project registered before homes existed still points at an ordinary
+checkout, and that is where its session runs. That session makes no Jira call itself: it submits
+the composed payload through `write-jira`, which is the sole executor of every Jira write
+(Decisions Log #99). `write-jira` validates the payload (a transition or a close is refused
+regardless of who composed it), records the intent before anything is sent, executes it through
+the Atlassian CLI (`twg`), and verifies by reading the item back before recording the outcome — the
+same observation-gate pattern `link-jira` uses for a pre-existing card. A project set to `--backlog
+jira` makes the publication request automatically at publish — once the dedup gate above lets the
+publish through — so `push-to-jira` becomes the manual retry lever for a project that had no Jira
+connection registered yet when it was first published, and also the way to get a card started by
+hand before publishing, which the gate recognizes as a publication already pending rather than
+demanding an attestation for it.
 
 ### Install and the daemon
 

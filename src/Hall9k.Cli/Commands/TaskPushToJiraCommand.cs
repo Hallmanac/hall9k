@@ -45,16 +45,14 @@ public sealed class TaskPushToJiraCommand : Hall9kAsyncCommand<TaskPushToJiraCom
 
         Guid taskId = await TaskIdResolver.ResolveAsync(session, settings.Task, cancellationToken);
 
-        // A connection is required even though this command makes no Jira call, because the run
-        // it starts ends at h9k task link-jira, and that command cannot verify anything without
-        // one. Refusing here costs a second; refusing there costs an agent session that created a
-        // real card nobody can record.
+        // A connection is required even though this command makes no Jira call, because the
+        // dispatched session's prompt needs the site to compose the payload against. The write
+        // itself is verified later by h9k task write-jira, not by this command.
         _ = await WorkItemConnections.FindJiraConnectionAsync(session, cancellationToken)
             ?? throw new DomainNotFoundException(
-                "No Jira connection is registered, so nothing could verify the card this run would "
-                + "create — and an unverified card is exactly what this design refuses to record "
-                + "(backlog 18). Register one first: h9k connection add jira --site "
-                + "https://your-org.atlassian.net --email you@example.com");
+                "No Jira connection is registered, so the dispatched session would have no site to "
+                + "compose the card payload for (backlog 18). Register one first: h9k connection add "
+                + "jira --site https://your-org.atlassian.net --email you@example.com");
 
         BootstrapContext context = await NodeBootstrap.EnsureAsync(session, cancellationToken);
 
@@ -72,8 +70,8 @@ public sealed class TaskPushToJiraCommand : Hall9kAsyncCommand<TaskPushToJiraCom
               + $"the card belongs from the project's own skills. Bind one with: h9k project set "
               + $"{project.Name.EscapeMarkup()} --jira PROJ[/]");
         AnsiConsole.MarkupLine(
-            "[dim]  The daemon dispatches the session; it finishes by running h9k task link-jira, which "
-            + $"reads the card back before recording it. Watch it with:[/] h9k task show {shortId}");
+            "[dim]  The daemon dispatches the session; it composes the card and submits it through "
+            + $"h9k task write-jira, which is the sole executor of the write. Watch it with:[/] h9k task show {shortId}");
         return ExitCodes.Ok;
     }
 
