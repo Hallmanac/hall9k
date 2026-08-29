@@ -62,7 +62,15 @@ public sealed class TaskDeliverCommand : Hall9kAsyncCommand<TaskDeliverCommand.S
 
         (IReadOnlyList<string>? modified, IReadOnlyList<string> untracked) =
             await InteractiveWorktreeGit.ListUncommittedFilesAsync(run.WorktreePath, cancellationToken);
-        if (modified is { Count: > 0 })
+        if (modified is null)
+        {
+            // Never guessed at as clean (InteractiveWorktreeGit's own contract): git could not
+            // be asked, so the operator is told the check was skipped rather than delivery
+            // silently proceeding over a tree nobody actually looked at.
+            AnsiConsole.MarkupLineInterpolated(
+                $"[yellow]Could not read the worktree's git status at {run.WorktreePath}; skipping the uncommitted-files check.[/]");
+        }
+        else if (modified.Count > 0)
         {
             AnsiConsole.MarkupLineInterpolated(
                 $"[red]Task {taskId}'s worktree has uncommitted file(s); commit or discard them first:[/]");

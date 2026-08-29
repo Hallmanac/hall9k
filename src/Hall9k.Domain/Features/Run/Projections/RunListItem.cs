@@ -62,6 +62,12 @@ public sealed class RunListItemProjection : SingleStreamProjection<RunListItem, 
 
     public void Apply(IEvent<RunResumed> @event, RunListItem view) => view.State = RunState.Running;
 
+    // Mirrors RunDetailsProjection: without this, an interactive claim's run list row stays
+    // at Dispatched (RunDispatched's own state) for the whole time an operator holds it, while
+    // RunDetails — and the phase line built from it — already reads Running (conformance
+    // review, cycle 1).
+    public void Apply(IEvent<InteractiveSessionStarted> @event, RunListItem view) => view.State = RunState.Running;
+
     public void Apply(IEvent<AgentSessionCompleted> @event, RunListItem view) => view.State = RunState.Verifying;
 
     public void Apply(IEvent<ReviewDispatched> @event, RunListItem view) => view.State = RunState.UnderReview;

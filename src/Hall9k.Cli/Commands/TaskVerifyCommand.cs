@@ -52,6 +52,20 @@ public sealed class TaskVerifyCommand : Hall9kAsyncCommand<TaskVerifyCommand.Set
 
         RunDetails run = await session.LoadAsync<RunDetails>(runId, cancellationToken)
             ?? throw new DomainConflictException($"Task {taskId} is claimed interactively but run {runId} has no record.");
+
+        // Mirrors TaskWorkCommand.ReenterAsync's own guard: once h9k task deliver or handback
+        // hands the run to the standard pipeline, the task can still read Claimed+interactive
+        // for the whole review loop, but the worktree now belongs to the daemon's own gates and
+        // review sessions — running dotnet build/test here would collide with them (adversarial
+        // review, cycle 1).
+        if (run.State != RunState.Dispatched && run.State != RunState.Running)
+        {
+            throw new DomainConflictException(
+                $"Task {taskId}'s run {runId} is already {run.State.Value} — it was handed off with "
+                + $"h9k task deliver (or handback) and is now in the standard pipeline. h9k task show {taskId} "
+                + "to see where it stands.");
+        }
+
         ProjectDetails project = await session.LoadAsync<ProjectDetails>(task.ProjectId, cancellationToken)
             ?? throw new DomainNotFoundException($"Task {taskId}'s project no longer exists.");
 
@@ -63,10 +77,19 @@ public sealed class TaskVerifyCommand : Hall9kAsyncCommand<TaskVerifyCommand.Set
                 $"[yellow]Untracked file(s) in the worktree (not counted against the check): {string.Join(", ", untracked)}[/]");
         }
 
-        if (modified is { Count: > 0 })
+        if (modified is null)
+        {
+            // Never guessed at as clean (InteractiveWorktreeGit's own contract): git could not
+            // be asked, so the check is honestly skipped rather than silently passed.
+            AnsiConsole.MarkupLineInterpolated(
+                $"[yellow]Could not read the worktree's git status at {run.WorktreePath}; skipping the uncommitted-files check.[/]");
+        }
+        else if (modified.Count > 0)
         {
             string reason = $"The worktree has modified-but-uncommitted file(s): {string.Join(", ", modified)}.";
-            await RecordFailureAsync(session, runId, [.. modified], reason, cancellationToken);
+            // No gate ran, so FailedGates stays empty — file paths are not gate names, and
+            // AttentionComposer.FailureCause renders FailedGates as if they were.
+            await RecordFailureAsync(session, runId, [], reason, cancellationToken);
             AnsiConsole.MarkupLineInterpolated($"[red]Verification failed before any gate: {reason}[/]");
             return ExitCodes.Conflict;
         }
@@ -148,7 +171,7 @@ public sealed class TaskVerifyCommand : Hall9kAsyncCommand<TaskVerifyCommand.Set
     private static async Task RecordFailureAsync(
         IDocumentSession session, Guid runId, IReadOnlyList<string> failedGates, string reason, CancellationToken cancellationToken)
     {
-        session.Events.Append(runId, new VerificationFailed(runId, failedGates, DateTimeOffset.UtcNow));
+        session.Events.Append(runId, new VerificationFailed(runId, failedGates, DateTimeOffset.UtcNow, Note: reason));
         await session.SaveChangesAsync(cancellationToken);
     }
 }
