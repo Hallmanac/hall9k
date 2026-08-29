@@ -275,10 +275,10 @@ public sealed class EpicMembershipTests(PostgresFixture postgres) : IClassFixtur
             Func<Task> resolveDashesOnly = () => EpicIdResolver.ResolveForMembershipAsync(
                 session, "-", projectId, cts.Token);
 
-            await resolveEmpty.Should().ThrowAsync<DomainNotFoundException>()
-                .WithMessage("*No epic matches*");
-            await resolveDashesOnly.Should().ThrowAsync<DomainNotFoundException>()
-                .WithMessage("*No epic matches*");
+            await resolveEmpty.Should().ThrowAsync<DomainValidationException>()
+                .WithMessage("*no characters to match*");
+            await resolveDashesOnly.Should().ThrowAsync<DomainValidationException>()
+                .WithMessage("*no characters to match*");
         }
     }
 }
