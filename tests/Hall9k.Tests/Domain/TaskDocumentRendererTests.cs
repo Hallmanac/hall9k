@@ -104,6 +104,43 @@ public sealed class TaskDocumentRendererTests
     }
 
     [Fact]
+    public void A_task_in_an_epic_renders_the_epic_and_round_trips_it_through_the_file_parser()
+    {
+        TaskDetails task = SomeTask();
+        Guid epicId = DomainId.New();
+        task.EpicId = epicId;
+
+        string rendered = TaskDocumentRenderer.Render(task, "hall9k");
+        TaskFileContent parsed = TaskFileParser.Parse(rendered);
+
+        rendered.Should().Contain($"epic: {DomainId.Short(epicId)}");
+        parsed.Epic.Should().Be(DomainId.Short(epicId));
+    }
+
+    [Fact]
+    public void An_epics_jira_reference_renders_as_a_link_out_but_the_parser_ignores_it()
+    {
+        TaskDetails task = SomeTask();
+        task.EpicId = DomainId.New();
+
+        string rendered = TaskDocumentRenderer.Render(
+            task, "hall9k", epicJiraReference: "https://example.atlassian.net/browse/PROJ-45");
+        TaskFileContent parsed = TaskFileParser.Parse(rendered);
+
+        rendered.Should().Contain("epic-jira: https://example.atlassian.net/browse/PROJ-45");
+        parsed.Epic.Should().Be(DomainId.Short(task.EpicId!.Value));
+    }
+
+    [Fact]
+    public void No_epic_jira_line_renders_when_the_task_carries_no_epic()
+    {
+        string rendered = TaskDocumentRenderer.Render(
+            SomeTask(), "hall9k", epicJiraReference: "https://example.atlassian.net/browse/PROJ-45");
+
+        rendered.Should().NotContain("epic-jira");
+    }
+
+    [Fact]
     public void Directory_name_is_short_id_plus_a_slug_of_the_objective()
     {
         TaskDetails task = SomeTask();

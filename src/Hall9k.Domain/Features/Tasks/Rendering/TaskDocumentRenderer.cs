@@ -15,14 +15,15 @@ namespace Hall9k.Domain.Features.Tasks.Rendering;
 /// hand) — so what a human types back through <c>h9k task revise &lt;id&gt; --file</c> is what
 /// they read here. The body carries only the agent context, on purpose: anything else placed in
 /// it would round-trip into <c>AgentContext</c> on the next revise, silently corrupting the field
-/// with rendered status noise. Some of what is worth showing (state, id, external reference) is
-/// frontmatter that the file parser already ignores as an unrecognized key, so it is safe to add
-/// without touching what a revision reads back. <c>model</c> and <c>type</c> are not in that
-/// category: the parser recognizes both keys and <c>TaskReviseCommand</c> applies them back
-/// (<c>model ??= file.Model</c>, <c>type ??= file.Type</c>) on a plain <c>--file</c> revise with
-/// no explicit override; that is harmless here only because this render always writes the task's
-/// own current value, so reading it back changes nothing unless a human edits it by hand, which
-/// is exactly the contract this file exists to support.
+/// with rendered status noise. Some of what is worth showing (state, id, external reference,
+/// epic-jira) is frontmatter that the file parser already ignores as an unrecognized key, so it
+/// is safe to add without touching what a revision reads back. <c>model</c>, <c>type</c> and
+/// <c>epic</c> are not in that category: the parser recognizes all three keys and
+/// <c>TaskReviseCommand</c> applies them back (<c>model ??= file.Model</c>,
+/// <c>type ??= file.Type</c>, <c>epic ??= file.Epic</c>) on a plain <c>--file</c> revise with no
+/// explicit override; that is harmless here only because this render always writes the task's own
+/// current value, so reading it back changes nothing unless a human edits it by hand, which is
+/// exactly the contract this file exists to support.
 /// </summary>
 public static class TaskDocumentRenderer
 {
@@ -36,7 +37,7 @@ public static class TaskDocumentRenderer
     /// </summary>
     public static string DirectoryName(TaskDetails task) => ProjectHomePaths.EntryDirectoryName(task.Id, task.Objective);
 
-    public static string Render(TaskDetails task, string projectName)
+    public static string Render(TaskDetails task, string projectName, string? epicJiraReference = null)
     {
         string shortId = DomainId.Short(task.Id);
         StringBuilder document = new();
@@ -78,6 +79,10 @@ public static class TaskDocumentRenderer
         if (task.EpicId is { } epicId)
         {
             document.AppendLine($"epic: {DomainId.Short(epicId)}");
+            if (epicJiraReference.IsNotBlank())
+            {
+                document.AppendLine($"epic-jira: {OneLine(epicJiraReference)}");
+            }
         }
 
         document.AppendLine("---");
