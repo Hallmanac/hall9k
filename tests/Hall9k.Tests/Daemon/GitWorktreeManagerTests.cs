@@ -252,6 +252,50 @@ public sealed class GitWorktreeManagerTests : IDisposable
             "as if origin had rewritten the branch out from under it");
     }
 
+    /// <summary>
+    /// The reflog check in <c>SyncToOriginBestEffortAsync</c> used to read the worktree's own
+    /// private <c>logs/HEAD</c>, which starts empty in a brand-new worktree even when the branch
+    /// it checks out is the very one that recomposed and diverged. That shape is reachable when
+    /// the worktree directory disappears outside the platform's own remove-then-delete-branch
+    /// paths (an operator, a temp cleaner) and a later resume prunes the stale registration and
+    /// adds a fresh worktree on the surviving local branch (independent pre-PR review, cycle 2,
+    /// adversarial). Reading the branch ref's own reflog instead survives this, because that
+    /// reflog lives in the shared repository rather than under any one worktree's private gitdir.
+    /// </summary>
+    [Fact]
+    public async Task Checkout_existing_keeps_a_local_recompose_after_its_worktree_was_removed_and_readded()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(1));
+        Guid taskId = DomainId.New();
+
+        Worktree first = await _manager.CreateAsync(
+            new WorktreeRequest(_repositoryPath, "main", taskId, DomainId.New(), "Recompose then vanish"), cts.Token);
+        File.WriteAllText(Path.Combine(first.Path, "WORK.md"), "checkpoint\n");
+        Git(first.Path, "add -A");
+        Git(first.Path, "-c user.name=Test -c user.email=t@t commit -qm checkpoint");
+        Git(first.Path, $"push -q origin {first.Branch}");
+
+        // The recompose: reset to the fork point and compose fresh history over it, diverging
+        // from the tip already pushed to origin, exactly as the checkpoint protocol does.
+        Git(first.Path, "reset --mixed HEAD~1");
+        File.WriteAllText(Path.Combine(first.Path, "WORK.md"), "recomposed\n");
+        Git(first.Path, "add -A");
+        Git(first.Path, "-c user.name=Test -c user.email=t@t commit -qm recomposed");
+
+        // The worktree directory vanishes outside the platform (an operator, a temp cleaner) —
+        // NOT through GitWorktreeManager.RemoveAsync, which would also delete the branch.
+        Directory.Delete(first.Path, recursive: true);
+
+        Worktree followUp = await _manager.CheckoutExistingAsync(
+            new FollowUpWorktreeRequest(_repositoryPath, first.Branch, taskId, DomainId.New()), cts.Token);
+
+        Path.GetFileName(followUp.Path).Should().NotBe(Path.GetFileName(first.Path),
+            "the original worktree directory is gone, so this is a fresh worktree on the same branch");
+        File.ReadAllText(Path.Combine(followUp.Path, "WORK.md")).Should().Be("recomposed\n",
+            "the branch's own reflog remembers the recompose even though this worktree never made it, " +
+            "so the fresh worktree must not be hard-reset to the stale origin tip");
+    }
+
     [Fact]
     public async Task Checkout_existing_never_touches_a_worktree_holding_uncommitted_work()
     {
