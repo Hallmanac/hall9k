@@ -268,6 +268,33 @@ public sealed class TaskBrowseTests
     }
 
     /// <summary>
+    /// An epic-filtered view whose every member is archived must not read as "the whole board
+    /// is archived" — --project is the only filter the empty message used to check, so
+    /// --epic alone left it claiming a board-wide fact and handing back a command
+    /// (--include-archived, no --epic) that returns every task rather than the epic's.
+    /// </summary>
+    [Fact]
+    public void An_epic_filtered_view_that_is_all_archived_names_the_epic_not_the_whole_board()
+    {
+        TaskListCommand.Settings settings = new() { Epic = "28b19893" };
+
+        string message = TaskListCommand.EmptyResultMessage(hiddenArchived: 2, settings, project: null);
+
+        message.Should().Contain("--epic 28b19893",
+            "the suggested command must keep filtering to this epic, not the whole install");
+        message.Should().NotBe("[dim]Every task is archived. See them with:[/] h9k task list --include-archived",
+            "most tasks on the install are not archived — only this epic's are");
+    }
+
+    [Fact]
+    public void A_truly_unfiltered_view_that_is_all_archived_says_so_plainly()
+    {
+        string message = TaskListCommand.EmptyResultMessage(hiddenArchived: 5, new TaskListCommand.Settings(), project: null);
+
+        message.Should().Be("[dim]Every task is archived. See them with:[/] h9k task list --include-archived");
+    }
+
+    /// <summary>
     /// Each requested word has to come from a different vocabulary — lifecycle, attention group,
     /// run state — or the union only ever exercises one <c>Matches</c> arm and the "three
     /// vocabularies may mix" claim goes unverified. <c>published</c> is a lifecycle word,

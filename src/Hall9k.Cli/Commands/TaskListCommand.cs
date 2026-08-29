@@ -109,14 +109,7 @@ public sealed class TaskListCommand : Hall9kAsyncCommand<TaskListCommand.Setting
         List<TaskStatusRow> matched = [.. visible.OrderByDescending(row => row.AddedAt)];
         if (matched.Count == 0)
         {
-            string message = hiddenArchived > 0
-                ? project is null
-                    ? "[dim]Every task is archived. See them with:[/] h9k task list --include-archived"
-                    : $"[dim]Every task matching {Filters(settings, project)} is archived. See them with:[/] "
-                      + $"h9k task list --include-archived{Repeat(settings, project)}"
-                : $"[dim]No tasks match {Filters(settings, project)}. Drop a filter, or browse everything:[/] "
-                  + "h9k task list --all --include-archived";
-            AnsiConsole.MarkupLine(message);
+            AnsiConsole.MarkupLine(EmptyResultMessage(hiddenArchived, settings, project));
             return ExitCodes.Ok;
         }
 
@@ -192,6 +185,24 @@ public sealed class TaskListCommand : Hall9kAsyncCommand<TaskListCommand.Setting
             [.. rows.Select(row => row.SummaryMarkup)],
             consoleWidth,
             headers: true);
+    }
+
+    /// <summary>
+    /// What a zero-match result says. "Unfiltered" has to agree with every filter this command
+    /// takes — project, epic, and state — or a filtered-to-nothing result (all of an epic's
+    /// members archived, say) reads as a claim about the whole board and hands back a command
+    /// that drops the filter that produced the empty result in the first place.
+    /// </summary>
+    internal static string EmptyResultMessage(int hiddenArchived, Settings settings, ProjectDetails? project)
+    {
+        bool unfiltered = project is null && settings.Epic.IsBlank() && StateDisplay(settings).IsBlank();
+        return hiddenArchived > 0
+            ? unfiltered
+                ? "[dim]Every task is archived. See them with:[/] h9k task list --include-archived"
+                : $"[dim]Every task matching {Filters(settings, project)} is archived. See them with:[/] "
+                  + $"h9k task list --include-archived{Repeat(settings, project)}"
+            : $"[dim]No tasks match {Filters(settings, project)}. Drop a filter, or browse everything:[/] "
+              + "h9k task list --all --include-archived";
     }
 
     /// <summary>
