@@ -111,6 +111,40 @@ public sealed class TaskPhaseSurfaceTests
     }
 
     [Fact]
+    public void An_interactive_sessions_own_machine_name_is_observable_even_though_its_run_carries_no_node()
+    {
+        // An interactive claim's RunDispatched records NodeId as the Guid.Empty sentinel, which
+        // is never a key in NodeMachines (no NodeDetails document is ever written for it) — so
+        // the run-level onThisMachine lookup reads false for every interactive session, however
+        // real the process is. ActiveSession.MachineName is what InteractiveSessionLiveness
+        // already reads instead (adversarial review, cycle 2); the phase line must agree with it
+        // rather than calling the very session that guard can see "not observed here"
+        // (adversarial review, cycle 3).
+        Guid runId = DomainId.New();
+        RunDetails interactive = StatusFixtures.Run(runId, RunState.Running, sessionProcessId: null);
+        interactive.ActiveSessions =
+        [
+            new ActiveSession(AgentRole.Interactive, ReviewLens.Unknown, Environment.ProcessId,
+                StatusFixtures.Now, StatusFixtures.ThisMachine),
+        ];
+
+        TaskStatusContext context = StatusFixtures.Context(interactive) with
+        {
+            // Empty rather than the fixture's usual [runId -> ThisMachine]: a real NodeMachines
+            // table never carries an entry for the Guid.Empty sentinel, so the run-level lookup
+            // must read false here for the test to mean anything.
+            NodeMachines = new Dictionary<Guid, string>(),
+            Sessions = ProcessSessionObserver.Instance,
+        };
+
+        TaskStatusRow row = TaskStatusComposer.Compose(
+            StatusFixtures.Task(TaskState.Claimed, runId), context, StatusFixtures.Now);
+
+        row.Phase.Liveness.Should().NotBe(SessionLiveness.Unobserved,
+            "the session's own machine name says this machine can check it");
+    }
+
+    [Fact]
     public void A_resumed_session_records_only_a_pid_so_liveness_stays_unobserved()
     {
         // RunResumed carries no process start time (log #5's exit-and-resume), and a bare pid is
