@@ -608,6 +608,48 @@ public static class CliCommandTree
                     + "Failed's other exits: h9k task retry (run again), h9k task abandon (walk away).")
                 .WithExample("task", "resolve", "28b19893", "--reason", "\"Work merged as PR #7; only the daemon's push step failed\"")
                 .WithExample("task", "resolve", "28b19893", "--reason", "\"Objective met by hand in the worktree\"", "--pr", "https://github.com/x/y/pull/7");
+            task.AddCommand<TaskWorkCommand>("work")
+                .WithDescription(
+                    "Work a Queued task interactively: claims it, cuts the same branch and worktree headless "
+                    + "dispatch would, assembles the same prompt, and launches a regular interactive Claude Code "
+                    + "session attached to this terminal. The claim is held by you, not a process — no liveness "
+                    + "lease, no heartbeat reclaim, and the dispatcher never claims a task you hold this way. "
+                    + "Occupies zero concurrency slots: it starts even when the daemon's session ceiling is fully "
+                    + "consumed. Closing the terminal is a normal way to leave — the task stays claimed, and "
+                    + "running this again re-enters the same worktree and branch with a fresh session. Exits are "
+                    + "h9k task deliver (push and hand into the standard pipeline), h9k task release (give it "
+                    + "back to the queue), or h9k task handback (let a headless agent finish from here).")
+                .WithExample("task", "work", "28b19893");
+            task.AddCommand<TaskVerifyCommand>("verify")
+                .WithDescription(
+                    "Run the project's build and test gates on demand against an interactive claim's worktree, "
+                    + "and record the outcome as the same gate events a headless run's own verification records. "
+                    + "Refuses on uncommitted files first, the same check h9k task deliver runs. Only for a task "
+                    + "you hold interactively (h9k task work).")
+                .WithExample("task", "verify", "28b19893");
+            task.AddCommand<TaskDeliverCommand>("deliver")
+                .WithDescription(
+                    "Deliver an interactive claim: refuses on uncommitted files, naming them, then pushes the "
+                    + "branch and hands the run into the standard delivery pipeline — gates, the independent "
+                    + "review loop, the pull request, the closeout watcher — indistinguishable downstream from a "
+                    + "headless run from this point on. Only for a task you hold interactively (h9k task work).")
+                .WithExample("task", "deliver", "28b19893");
+            task.AddCommand<TaskReleaseCommand>("release")
+                .WithDescription(
+                    "Give an interactive claim back to the dispatch queue, exactly as any other queued task — "
+                    + "the daemon claims it as capacity allows. Refused on a task a node holds (that is running "
+                    + "headless work; let it finish, or h9k task abandon it). The worktree and branch are left "
+                    + "on disk untouched; nothing resumes them automatically (h9k task handback is the lever "
+                    + "for that).")
+                .WithExample("task", "release", "28b19893");
+            task.AddCommand<TaskHandbackCommand>("handback")
+                .WithDescription(
+                    "Hand an interactive claim to a headless agent partway through: refuses on uncommitted "
+                    + "files (you are present to commit), releases your claim, and queues the task through "
+                    + "normal dispatch. Mechanically the existing follow-up resume-existing-branch flow — the "
+                    + "next headless run resumes your branch instead of starting clean.")
+                .WithExample("task", "handback", "28b19893")
+                .WithExample("task", "handback", "28b19893", "--reason", "\"Need to step away; the migration script is drafted but untested\"");
         });
     }
 
