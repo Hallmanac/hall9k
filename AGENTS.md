@@ -361,14 +361,20 @@ there.
 ### Questions and answers: the relay
 
 `h9k status` is where the platform asks for a human. Its **needs-you** section is the whole point
-of the pane, and today a row lands there for one of four reasons:
+of the pane, and today a row lands there for one of five reasons:
 
 | Row says | What happened | The lever |
 |---|---|---|
 | `NeedsHuman`, review parked | The pre-PR review loop spent its automatic fixes or hit a disputed finding (#24, #63) | `h9k review resolve` |
 | `NeedsHuman`, closeout parked | The same obstruction survived its automatic-lap cap without clearing, or the pull request's lifetime automatic-closeout budget is spent (#22, #80) | `h9k pr resolve` |
 | `NeedsHuman`, dependency failed | A blocker died, so the dependent stays Blocked rather than silently unblocking (#34, #61) | recover the blocker |
+| `NeedsHuman`, Jira write pending | A Jira write (an operator's own `write-jira`, or a daemon-dispatched one such as closeout's own merge comment) is stuck on an expired or missing twg login (#102) | `twg login` |
 | `Failed` | The run itself failed | `h9k task retry` / `resolve` / `abandon` |
+
+The Jira row is the odd one out: every other lever here is an `h9k` command, but this one clears
+in the operator's own terminal, because `twg login` is a browser-based login the platform cannot
+do unattended. Once it succeeds, the daemon's retry sweep resubmits the identical pending write on
+its own; nothing needs recomposing.
 
 The window's job at each of these is the same: read the reason (`h9k task show`, then `h9k logs`
 if the reason is not already sufficient), put the decision to the human in a sentence, and record
