@@ -166,8 +166,9 @@ public sealed class TwgJiraExecutor(ProcessRunner? runner = null, Uri? site = nu
         AppendFields(arguments, fields);
 
         ProcessResult result = await RunAsync(arguments, workingDirectory, cancellationToken);
-        string key = ExtractFirstKey(result.StandardOutput)
-            ?? throw new TwgExecutionException(
+        string key = ExtractFirstKey(result.StandardOutput) is { } extracted && extracted.IsNotBlank()
+            ? extracted
+            : throw new TwgExecutionException(
                 TwgFailureKind.Other,
                 "twg jira workitem create exited successfully but printed no card key, so nothing here can "
                 + $"be verified: {Head(result.StandardOutput)}");
