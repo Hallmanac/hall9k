@@ -22,6 +22,15 @@ public sealed class TaskListItem
     public Guid? CurrentRunId { get; set; }
     public string? ExternalReference { get; set; }
     public string? PullRequestUrl { get; set; }
+    /// <summary>
+    /// What a pending Jira write's most recent failed attempt reported — set only while it is an
+    /// expired or missing twg login, since that is the one failure the attention pane surfaces
+    /// (Brian's design, 2026-08-28): a terminal, non-auth failure clears the pending write rather
+    /// than leaving it here for a row that has nothing left to retry.
+    /// </summary>
+    public string? PendingJiraWriteFailureReason { get; set; }
+    /// <summary>True while the outstanding Jira write is stuck on an expired or missing twg login.</summary>
+    public bool PendingJiraWriteIsAuthFailure { get; set; }
     /// <summary>Whose work this is; null until an explicit assignment says (Decisions Log #34).</summary>
     public Guid? AssignedOwnerId { get; set; }
     /// <summary>
@@ -281,6 +290,33 @@ public sealed class TaskListItemProjection : SingleStreamProjection<TaskListItem
     {
         view.FollowUpKind = FollowUpKind.Unknown;
         view.State = TaskState.Abandoned;
+    }
+
+    // Only the auth-failure flag and its reason matter to this row (AttentionComposer.Compose):
+    // everything else about a pending write is h9k task show's business, not the board's.
+    public void Apply(IEvent<JiraWriteRequested> @event, TaskListItem view)
+    {
+        view.PendingJiraWriteFailureReason = null;
+        view.PendingJiraWriteIsAuthFailure = false;
+    }
+
+    public void Apply(IEvent<JiraWriteSucceeded> @event, TaskListItem view)
+    {
+        view.PendingJiraWriteFailureReason = null;
+        view.PendingJiraWriteIsAuthFailure = false;
+    }
+
+    public void Apply(IEvent<JiraWriteFailed> @event, TaskListItem view)
+    {
+        if (!@event.Data.IsAuthFailure)
+        {
+            view.PendingJiraWriteFailureReason = null;
+            view.PendingJiraWriteIsAuthFailure = false;
+            return;
+        }
+
+        view.PendingJiraWriteFailureReason = @event.Data.Reason;
+        view.PendingJiraWriteIsAuthFailure = true;
     }
 
     // The row carries the reference wherever it came from. This projection is what the

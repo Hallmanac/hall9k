@@ -66,6 +66,20 @@ public sealed class TaskDetails
     public DateTimeOffset? UntrackedAttestedAt { get; set; }
     /// <summary>Who made it (see <see cref="Events.TaskPublished.PublishedByOwnerId"/>).</summary>
     public Guid? UntrackedAttestedByOwnerId { get; set; }
+    /// <summary>The write hall9k has outstanding against Jira for this task, or null when none is (Brian's design, 2026-08-28).</summary>
+    public Guid? PendingJiraWriteId { get; set; }
+    /// <summary>Which of create, update, or comment the outstanding write is.</summary>
+    public JiraWriteOperation PendingJiraWriteOperation { get; set; } = JiraWriteOperation.Unknown;
+    /// <summary>The item the outstanding write targets; null for a create, which has none yet.</summary>
+    public string? PendingJiraWriteIssueKey { get; set; }
+    /// <summary>The composed payload exactly as requested — what the retry sweep re-attempts with.</summary>
+    public string? PendingJiraWritePayloadJson { get; set; }
+    public DateTimeOffset? PendingJiraWriteRequestedAt { get; set; }
+    public Guid? PendingJiraWriteRequestedByOwnerId { get; set; }
+    /// <summary>What the most recent failed attempt reported, kept only while the write is still pending.</summary>
+    public string? PendingJiraWriteFailureReason { get; set; }
+    /// <summary>True when the most recent failed attempt was an expired or missing twg login — the retry sweep's own filter.</summary>
+    public bool PendingJiraWriteIsAuthFailure { get; set; }
     /// <summary>Whose work this is; null until an explicit assignment says (Decisions Log #34).</summary>
     public Guid? AssignedOwnerId { get; set; }
     /// <summary>
@@ -511,6 +525,62 @@ public sealed class TaskDetailsProjection : SingleStreamProjection<TaskDetails, 
         view.UntrackedAttestedAt = null;
         view.UntrackedAttestedByOwnerId = null;
         ForgetSession(view);
+    }
+
+    // Requested, then zero or more auth failures, then finally a success or a terminal failure —
+    // the same shape the aggregate applies (TaskAggregate.Apply(JiraWriteFailed)'s own comment
+    // has the reasoning): an auth failure leaves the pending marker standing so the identical
+    // payload can be retried once twg login runs, instead of the write being lost.
+    public void Apply(IEvent<JiraWriteRequested> @event, TaskDetails view)
+    {
+        view.PendingJiraWriteId = @event.Data.WriteId;
+        view.PendingJiraWriteOperation = @event.Data.Operation;
+        view.PendingJiraWriteIssueKey = @event.Data.IssueKey;
+        view.PendingJiraWritePayloadJson = @event.Data.PayloadJson;
+        view.PendingJiraWriteRequestedAt = @event.Data.RequestedAt;
+        view.PendingJiraWriteRequestedByOwnerId = @event.Data.RequestedByOwnerId;
+        view.PendingJiraWriteFailureReason = null;
+        view.PendingJiraWriteIsAuthFailure = false;
+    }
+
+    public void Apply(IEvent<JiraWriteSucceeded> @event, TaskDetails view)
+    {
+        if (view.PendingJiraWriteId != @event.Data.WriteId)
+        {
+            return;
+        }
+
+        ClearPendingJiraWrite(view);
+    }
+
+    public void Apply(IEvent<JiraWriteFailed> @event, TaskDetails view)
+    {
+        if (view.PendingJiraWriteId != @event.Data.WriteId)
+        {
+            return;
+        }
+
+        if (@event.Data.IsAuthFailure)
+        {
+            view.PendingJiraWriteFailureReason = @event.Data.Reason;
+            view.PendingJiraWriteIsAuthFailure = true;
+        }
+        else
+        {
+            ClearPendingJiraWrite(view);
+        }
+    }
+
+    private static void ClearPendingJiraWrite(TaskDetails view)
+    {
+        view.PendingJiraWriteId = null;
+        view.PendingJiraWriteOperation = JiraWriteOperation.Unknown;
+        view.PendingJiraWriteIssueKey = null;
+        view.PendingJiraWritePayloadJson = null;
+        view.PendingJiraWriteRequestedAt = null;
+        view.PendingJiraWriteRequestedByOwnerId = null;
+        view.PendingJiraWriteFailureReason = null;
+        view.PendingJiraWriteIsAuthFailure = false;
     }
 
     /// <summary>
