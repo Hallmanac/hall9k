@@ -1431,7 +1431,7 @@ public sealed class ReviewEngine(
     /// anything, while a Low does not and instead folds into the project's one standing sweep
     /// draft (<see cref="SweepDraftTask"/>) — so a serious pre-existing defect can never be
     /// buried in a polish pile, and eight one-line Low findings cost one build-gate-review
-    /// pipeline instead of eight (backlog: out-of-scope review findings consolidate).
+    /// pipeline instead of eight (Decisions Log #99).
     /// </para>
     /// </summary>
     private async Task<IReadOnlyList<RoutedFinding>> RouteFindingsAsync(
