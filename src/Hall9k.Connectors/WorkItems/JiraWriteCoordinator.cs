@@ -126,19 +126,47 @@ public static class JiraWriteCoordinator
         if (task.PendingJiraWriteOperation == JiraWriteOperation.Create
             && task.ExternalReference is { } existing && existing.Provider == WorkItemProvider.Jira)
         {
-            return await RecordSuccessAsync(
-                session, taskId, writeId, task.PendingJiraWriteOperation,
-                new TwgWriteResult(
-                    existing.Reference,
-                    $"Task {taskId} was linked to {existing} while this create sat pending; nothing new "
-                    + "was created."),
-                cancellationToken);
+            return await RecordAlreadyLinkedAsync(session, taskId, writeId, existing, executor, workingDirectory, cancellationToken);
         }
 
         JiraWritePayload payload = JiraWritePayload.FromJson(task.PendingJiraWritePayloadJson ?? "{}");
         return await AttemptAsync(
             session, taskId, writeId, task.PendingJiraWriteOperation, task.PendingJiraWriteIssueKey, payload,
             defaultBoard, executor, workingDirectory, cancellationToken);
+    }
+
+    /// <summary>
+    /// Confirms, with the same read-back discipline every other outcome on this stream gets, that
+    /// the card another route linked while this create sat pending still exists, rather than
+    /// recording the linked reference verbatim: <see cref="JiraWriteSucceeded.IssueKey"/>'s own
+    /// doc comment says plainly it "is what Jira answered when read back, never what a create or
+    /// an update call merely claimed", and the reference an operator's own <c>h9k task link-jira</c>
+    /// verified at the moment it ran is not this write's own read-back (independent pre-PR review,
+    /// adversarial lens, cycle 3). A verification failure here — the card was since deleted, or
+    /// twg is not authenticated — is recorded the ordinary way any other attempt's failure is,
+    /// rather than papered over with the unverified claim.
+    /// </summary>
+    private static async Task<JiraWriteAttemptResult> RecordAlreadyLinkedAsync(
+        IDocumentSession session, Guid taskId, Guid writeId, ExternalReference existing, TwgJiraExecutor executor,
+        string workingDirectory, CancellationToken cancellationToken)
+    {
+        TwgWriteResult verified;
+        try
+        {
+            verified = await executor.VerifyExistsAsync(existing.Reference, workingDirectory, cancellationToken);
+        }
+        catch (TwgExecutionException exception)
+        {
+            return await RecordFailureAsync(session, taskId, writeId, exception.Message, exception.IsAuthFailure, cancellationToken);
+        }
+
+        return await RecordSuccessAsync(
+            session, taskId, writeId, JiraWriteOperation.Create,
+            new TwgWriteResult(
+                verified.IssueKey,
+                $"Task {taskId} was linked to {existing} while this create sat pending; nothing new "
+                + "was created. Read back now to confirm it still exists."),
+            cancellationToken);
     }
 
     private static async Task<JiraWriteAttemptResult> AttemptAsync(
@@ -153,17 +181,16 @@ public static class JiraWriteCoordinator
         string workingDirectory,
         CancellationToken cancellationToken)
     {
+        TwgWriteResult result;
         try
         {
-            TwgWriteResult result = operation == JiraWriteOperation.Create
+            result = operation == JiraWriteOperation.Create
                 ? await CreateWithDedupAsync(executor, defaultBoard, payload, taskId, workingDirectory, cancellationToken)
                 : operation == JiraWriteOperation.Comment
                     ? await executor.CommentAsync(
                         RequireKey(issueKey, taskId), payload.Comment ?? string.Empty, payload.EffectiveFormat,
                         workingDirectory, cancellationToken)
                     : await executor.UpdateAsync(RequireKey(issueKey, taskId), payload, workingDirectory, cancellationToken);
-
-            return await RecordSuccessAsync(session, taskId, writeId, operation, result, cancellationToken);
         }
         catch (TwgExecutionException exception)
         {
@@ -204,6 +231,17 @@ public static class JiraWriteCoordinator
         {
             return await RecordFailureAsync(session, taskId, writeId, exception.Message, isAuthFailure: false, cancellationToken);
         }
+
+        // twg already carried out and verified this write by the time control reaches here, so
+        // RecordSuccessAsync deliberately runs outside every catch above: folding it into them
+        // once turned a completed, verified write into a recorded JiraWriteFailed — for a card
+        // that genuinely exists on the board — the moment recording the outcome itself hit a
+        // transient failure (independent pre-PR review, cycle 3, conformance lens). Left to
+        // propagate instead, the task simply stays pending: a create's own marker search finds
+        // the existing card on the next attempt rather than duplicating it, and
+        // JiraWriteRetryEngine's stale-pending ceiling sweep is the eventual backstop for a write
+        // that never gets a fresh attempt at all.
+        return await RecordSuccessAsync(session, taskId, writeId, operation, result, cancellationToken);
     }
 
     /// <summary>
