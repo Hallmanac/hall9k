@@ -162,26 +162,44 @@ supply them with `--criteria` or at the prompt. Import is a one-time snapshot, s
 import is recorded as an observation of that moment and never re-checked. Every source goes through
 `IWorkItemProvider` in `Hall9k.Connectors`, so a new one is a resolver rather than a new command.
 
-Jira is connected as a **read** credential plus an agent-mediated pen (Decisions Log #65), because
-reading Jira is configuration-agnostic and writing it is not:
+Jira is connected as a **read** credential plus a compose/execute write path (Decisions Log #65,
+#99), because reading Jira is configuration-agnostic and writing it is not, but writing it also
+has to be deterministic and auditable rather than left entirely to an agent's own judgment:
 
 ```bash
 h9k connection add jira --site https://your-org.atlassian.net --email you@example.com
 h9k connection list                               # provider, account, site, credential reference
 h9k project set <project> --jira PROJ             # bind the board; 'none' clears it
-h9k task push-to-jira <task>                      # dispatch an agent run that writes the card
-h9k task link-jira <task> PROJ-123                # record the card, verified against Jira first
+h9k task push-to-jira <task>                      # dispatch an agent run that composes the card
+h9k task write-jira <task> --op create --file <payload.json>  # hall9k executes a composed write
+h9k task link-jira <task> PROJ-123                # record a pre-existing card, verified against Jira first
 ```
 
-The platform never authors a card: issue types, required fields and routing rules are the
-organisation's configuration, so `push-to-jira` dispatches a session into the project's own
-repository, where its card-authoring skills live, and that session finishes by calling
-`link-jira`. **Agent-facing commands are observation gates**: `link-jira` reads the key back
-through the registered connection and records what Jira answered, so an agent's claim is an
-argument that gets checked rather than a fact that gets accepted. Registered credentials are
-recorded as references (`env:`, `keychain:`, `file:`) and never as secrets. When a task carrying a
-Jira reference merges, closeout comments the pull request on the card; it never transitions the
-card, because which status a merge means is a team's workflow rather than a fact about software.
+The platform never authors a card's *content*: issue types, required fields and routing rules are
+the organisation's configuration, so `push-to-jira` dispatches a session into the project's own
+repository, where its card-authoring skills live, to work out what the card should look like — but
+that session makes no Jira call itself. It composes a payload and submits it through
+`write-jira`, which is the sole executor of every Jira write (Decisions Log #99): hall9k validates
+the payload (a transition or a close is refused regardless of who composed it — that is a team's
+workflow, done in Jira directly, never a write hall9k performs), records the intent with the full
+payload before anything is sent, executes it through the Atlassian CLI (`twg`) with JSON output,
+verifies by reading the item back, and records the outcome including the returned key. A retried
+or replayed create cannot mint a duplicate: `write-jira` searches for a marker an earlier attempt's
+card would carry before creating anything new. **Agent-facing commands are observation gates**:
+`write-jira` and `link-jira` both read the key back through Jira before recording anything, so an
+agent's or an operator's claim is an argument that gets checked rather than a fact that gets
+accepted. Registered credentials are recorded as references (`env:`, `keychain:`, `file:`) and
+never as secrets — `twg`'s own login is separate again, a machine-wide browser login
+(`twg login`) rather than a registered connection, and it expires often enough that
+re-authentication is routine: an expired or missing login is a handled state, not a crash. A write
+that hits it is recorded pending on the task, surfaces as a needs-you row telling the operator to
+run `twg login`, and the daemon retries the identical write automatically once that succeeds —
+covering both an operator's own `write-jira` and a daemon-dispatched write such as closeout's own
+merge comment. When a task carrying a Jira reference merges, closeout comments the pull request on
+the card through this same write surface; it never transitions the card, because which status a
+merge means is a team's workflow rather than a fact about software. `h9k doctor` probes for an
+authenticated `twg` whenever a project's backlog policy is `jira`, distinguishing a missing binary
+from an expired login and teaching `twg login` as the fix for the latter.
 
 **Every published task is tracked automatically**, per a project setting (backlog: track every
 published task), and GitHub gets a write path of its own — unlike Jira, an issue's shape (title,

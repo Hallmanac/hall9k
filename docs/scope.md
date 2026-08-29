@@ -78,16 +78,25 @@ one-time snapshots that never re-check, and neither invents acceptance criteria.
 declares a backlog policy (`h9k project set --backlog none|github-issues|jira`), and every task
 published under one is tracked automatically: `github-issues` has the platform author the issue
 itself, deterministically, since an issue's shape is uniform; `jira` dispatches the same
-agent-mediated push a human can also run by hand with `h9k task push-to-jira`, which writes the
-card in the project's own repository. Either way, `h9k task link-issue` / `h9k task link-jira`
-reads the item back through gh or the registered connection before recording anything — an
-agent's claim, or the platform's own creation call, is never taken as the recorded fact. An
-adopted task never gets a second item created for it. `h9k task publish` refuses a draft with no
-linked item and no publication already pending under a tracking policy until a human or
-orchestrator either links what a search of the tracker found, attests none exists with
-`--no-existing-item`, or attests that the task should skip tracking altogether with
-`--untracked` — the platform never searches the tracker itself. When a task carrying an external reference merges, closeout comments the pull
-request on it (GitHub issue or Jira card alike) and never closes or transitions it.
+agent-mediated push a human can also run by hand with `h9k task push-to-jira`, which composes what
+the card should look like in the project's own repository and submits the composed payload through
+`h9k task write-jira` — hall9k's own sole executor of every Jira write (create, update, comment),
+which validates it, refuses a transition or a close regardless of who composed it, executes it
+through the `twg` CLI, and reads the item back to verify before recording anything. `h9k task
+link-issue` / `h9k task link-jira` cover the adoption half — recording a pre-existing item, read
+back through gh or the registered connection first — so an agent's claim, or the platform's own
+creation call, is never taken as the recorded fact either way. An adopted task never gets a second
+item created for it, and a retried or replayed Jira create cannot mint a duplicate: `write-jira`
+searches for a marker an earlier attempt's own card would carry before creating anything new.
+`h9k task publish` refuses a draft with no linked item and no publication already pending under a
+tracking policy until a human or orchestrator either links what a search of the tracker found,
+attests none exists with `--no-existing-item`, or attests that the task should skip tracking
+altogether with `--untracked` — the platform never searches the tracker itself. When a task
+carrying an external reference merges, closeout comments the pull request on it (GitHub issue or
+Jira card alike, the Jira comment going through the same `write-jira` surface) and never closes or
+transitions it. An expired or missing `twg` login is a handled state: the write is recorded
+pending, `h9k status` surfaces a needs-you row naming `twg login` as the fix, and the daemon
+retries the identical write automatically once it succeeds.
 
 ### Pull-request review
 
@@ -341,10 +350,13 @@ That second rule is load-bearing rather than stylistic: since every comment is a
 human's login, a thread's first comment being a reviewer's is the only thing that distinguishes
 feedback from an earlier agent's reply.
 
-**The platform never authors a Jira card, and never transitions one.** Issue types, required
-fields, and routing rules are the organisation's configuration, and which status a merge means is
-a team's workflow rather than a fact about software. The platform makes exactly one write of its
-own: a comment on the card when the task's pull request merges.
+**The platform never composes a Jira card's content, and never transitions or closes one.** Issue
+types, required fields, and routing rules are the organisation's configuration, so composing a
+card's content is always an agent's or an operator's judgment — but hall9k is the sole *executor*
+of every Jira write (create, update, comment): composition and execution are split, and the
+executor refuses a transition or a close regardless of what was composed, because which status a
+merge means is a team's workflow rather than a fact about software. The one write the platform
+initiates entirely on its own is a comment on the card when the task's pull request merges.
 
 **Never guess at an unobserved fact.** Audit fields, history, and identifiers record what was
 actually observed, and the unobserved is represented as explicitly unknown. A quiet pull request
