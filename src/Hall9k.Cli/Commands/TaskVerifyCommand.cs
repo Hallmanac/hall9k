@@ -83,6 +83,15 @@ public sealed class TaskVerifyCommand : Hall9kAsyncCommand<TaskVerifyCommand.Set
         ProjectDetails project = await session.LoadAsync<ProjectDetails>(task.ProjectId, cancellationToken)
             ?? throw new DomainNotFoundException($"Task {taskId}'s project no longer exists.");
 
+        // Unlike h9k task deliver's own refusal, uncommitted files here are only reported, never
+        // a hard failure: an operator mid-edit is the ordinary state of an interactive claim, not
+        // an anomaly, and dotnet build/test read the working tree regardless of git status — the
+        // headless pre-gate check this used to mirror exists because a dispatched session's
+        // process dies at its final message and stranded files never ship, which does not apply
+        // to an operator who is present and still working. h9k task deliver's own uncommitted-file
+        // refusal already covers the case that matters: nothing ships with files left behind
+        // (conformance review, cycle 4 — the prior hard failure made the self-invocation exemption
+        // above unreachable for its own stated purpose).
         (IReadOnlyList<string>? modified, IReadOnlyList<string> untracked) =
             await InteractiveWorktreeGit.ListUncommittedFilesAsync(run.WorktreePath, cancellationToken);
         if (untracked.Count > 0)
@@ -100,12 +109,8 @@ public sealed class TaskVerifyCommand : Hall9kAsyncCommand<TaskVerifyCommand.Set
         }
         else if (modified.Count > 0)
         {
-            string reason = $"The worktree has modified-but-uncommitted file(s): {string.Join(", ", modified)}.";
-            // No gate ran, so FailedGates stays empty — file paths are not gate names, and
-            // AttentionComposer.FailureCause renders FailedGates as if they were.
-            await RecordFailureAsync(session, runId, [], reason, cancellationToken);
-            AnsiConsole.MarkupLineInterpolated($"[red]Verification failed before any gate: {reason}[/]");
-            return ExitCodes.Conflict;
+            AnsiConsole.MarkupLineInterpolated(
+                $"[yellow]Modified-but-uncommitted file(s) in the worktree (gates run against them anyway): {string.Join(", ", modified)}[/]");
         }
 
         if (project.VerifyCommands.Count == 0)
