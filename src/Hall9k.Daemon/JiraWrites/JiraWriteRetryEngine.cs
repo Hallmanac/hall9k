@@ -1,6 +1,7 @@
 using Hall9k.Connectors.Processes;
 using Hall9k.Connectors.WorkItems;
 using Hall9k.Daemon.Closeout;
+using Hall9k.Domain.Features.Connection;
 using Hall9k.Domain.Features.Project.Projections;
 using Hall9k.Domain.Features.Tasks;
 using Hall9k.Domain.Features.Tasks.Events;
@@ -8,6 +9,7 @@ using Hall9k.Domain.Features.Tasks.Handlers;
 using Hall9k.Domain.Features.Tasks.Projections;
 using Hall9k.Domain.Shared.ValueObjects;
 using Marten;
+using Marten.Events;
 using Marten.Linq.MatchesSql;
 using Microsoft.Extensions.Options;
 
@@ -265,6 +267,18 @@ public sealed class JiraWriteRetryEngine(
     /// fresh auth-pending write both land on the ordinary Jira write event trail, which is where a
     /// human or the next sweep finds them, and re-queuing the same notice on top would only mean
     /// two records of the same intent.
+    /// <para>
+    /// The site is resolved with the strict <see cref="WorkItemConnections.FindJiraConnectionAsync"/>
+    /// rather than this sweep's own ordinary permissive <see cref="WorkItemConnections.TryFindJiraSiteAsync"/>:
+    /// this is the queued half of closeout's own merge comment, posting the identical
+    /// <see cref="CloseoutEngine.MergeComment"/>, so it gets the same guard
+    /// <see cref="CloseoutEngine.TellJiraAsync"/>'s own doc comment describes — a null site here
+    /// reaches <see cref="TwgJiraExecutor"/> exactly the same way and targets whatever tenant
+    /// twg's own ambient <c>auth.conf</c> resolves to (independent pre-PR review, adversarial lens,
+    /// cycle 4). Unlike closeout's own one-shot attempt, an unresolved connection here is left
+    /// queued rather than dropped — this method runs on a poll, so a later sweep gets another
+    /// chance once the connection is fixed.
+    /// </para>
     /// </summary>
     private async Task<bool> DrainMergeNoticeAsync(
         IDocumentSession session, Guid taskId, ProjectDetails project, CancellationToken cancellationToken)
@@ -287,18 +301,88 @@ public sealed class JiraWriteRetryEngine(
             return false;
         }
 
-        Uri? site = await WorkItemConnections.TryFindJiraSiteAsync(session, cancellationToken);
-        JiraWriteAttemptResult result = await JiraWriteCoordinator.SubmitAsync(
-            session,
-            taskId,
-            JiraWriteOperation.Comment,
-            reference.Reference,
-            new JiraWritePayload(WorkItemType: null, Fields: null, Comment: CloseoutEngine.MergeComment(project, task), Format: "plain"),
-            project.JiraProjectKey,
-            node.OwnerId,
-            new TwgJiraExecutor(twgRunner, site),
-            project.RepositoryPath,
-            cancellationToken);
+        Uri site;
+        try
+        {
+            ConnectionDetails? connection = await WorkItemConnections.FindJiraConnectionAsync(session, cancellationToken);
+            if (connection?.SiteUrl is not { } resolvedSite)
+            {
+                logger.LogWarning(
+                    "Task {TaskId} has a Jira merge notice queued but this node has no usable Jira "
+                    + "connection; leaving it queued for a node that has one", taskId);
+                return false;
+            }
+
+            site = resolvedSite;
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            logger.LogWarning(exception,
+                "Task {TaskId}: could not resolve this node's Jira connection for the queued merge "
+                + "notice; leaving it queued", taskId);
+            return false;
+        }
+
+        // Captured before the attempt so the catch below can tell "nothing was ever recorded" (the
+        // version is unchanged — safe to leave queued for the next sweep) apart from "something
+        // committed before this failed" (the version moved — twg may already have posted the
+        // comment, so this must not be auto-retried).
+        StreamState? beforeFence = await session.Events.FetchStreamStateAsync(taskId, cancellationToken);
+
+        JiraWriteAttemptResult result;
+        try
+        {
+            result = await JiraWriteCoordinator.SubmitAsync(
+                session,
+                taskId,
+                JiraWriteOperation.Comment,
+                reference.Reference,
+                new JiraWritePayload(WorkItemType: null, Fields: null, Comment: CloseoutEngine.MergeComment(project, task), Format: "plain"),
+                project.JiraProjectKey,
+                node.OwnerId,
+                new TwgJiraExecutor(twgRunner, site),
+                project.RepositoryPath,
+                cancellationToken);
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            // JiraWriteCoordinator.AttemptAsync's own doc comment is why a bookkeeping failure
+            // after twg's own call runs propagates here rather than being recorded as an ordinary
+            // JiraWriteFailed: the comment may genuinely be sitting on the card already. But unlike
+            // an operator's own write-jira, this notice retries itself automatically on the very
+            // next sweep once JiraWriteRetryEngine's own stale-pending ceiling clears the pending
+            // marker — and a Comment write has no dedup gate the way a Create's own marker search
+            // does, so leaving the notice queued here would let a later sweep post the identical
+            // comment a second time with nobody watching, exactly the "retry loop around an
+            // unwatched write" TellTheCardAsync's own doc comment refuses to become (independent
+            // pre-PR review, cycle 4). The stream's own version says whether anything reached that
+            // far: unchanged means SubmitAsync never got past validating and recording the intent,
+            // so nothing was attempted and the notice stays queued; advanced means the intent (and
+            // possibly twg's own call) already ran, so the notice is marked attempted here instead
+            // of risking a duplicate.
+            StreamState? afterFence = await session.Events.FetchStreamStateAsync(taskId, cancellationToken);
+            if (afterFence is not null && (beforeFence is null || afterFence.Version > beforeFence.Version))
+            {
+                TaskAggregate? afterFailure = await session.Events.AggregateStreamAsync<TaskAggregate>(taskId, token: cancellationToken);
+                if (afterFailure is { HasQueuedJiraMergeNotice: true })
+                {
+                    session.Events.Append(taskId, TaskDecider.RecordJiraMergeNoticeAttempted(afterFailure, DateTimeOffset.UtcNow));
+                    await session.SaveChangesAsync(cancellationToken);
+                }
+
+                logger.LogError(exception,
+                    "Task {TaskId}: the queued merge notice for {Reference} could not have its own "
+                    + "outcome recorded after twg's own call ran, so it is not retried automatically; "
+                    + "check the board and this task's Jira write history before resubmitting by hand",
+                    taskId, reference);
+                return true;
+            }
+
+            logger.LogError(exception,
+                "Task {TaskId}: the queued merge notice for {Reference} failed before reaching twg; "
+                + "it stays queued for the next sweep", taskId, reference);
+            return false;
+        }
 
         // Re-aggregate: SubmitAsync appended and saved its own events on this session, so the
         // in-memory task above is stale by the time the queue marker itself needs clearing.

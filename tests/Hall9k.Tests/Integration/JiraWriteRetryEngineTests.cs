@@ -151,6 +151,132 @@ public sealed class JiraWriteRetryEngineTests(PostgresFixture postgres) : IClass
     }
 
     /// <summary>
+    /// twg's own comment call can succeed while this write's own outcome still fails to record —
+    /// JiraWriteCoordinator.AttemptAsync's own doc comment is why that failure is left to propagate
+    /// rather than being swallowed into an ordinary JiraWriteFailed (a card that genuinely carries
+    /// the comment must not be recorded as though the write never happened). But a queued merge
+    /// notice retries itself automatically on the very next sweep once the pending marker clears,
+    /// and a Comment write has no dedup gate the way a Create's own marker search does — so the
+    /// drain has to mark the notice attempted itself rather than leaving it to be picked up again,
+    /// or the identical comment goes out a second time with nobody watching (independent pre-PR
+    /// review, cycle 4). The race is stood in for here by a second write ending the same pending
+    /// write from underneath the first one's own outcome — the same "something committed before
+    /// this failed" shape a genuine transient Postgres failure inside RecordSuccessAsync leaves
+    /// behind, without needing to fault-inject Postgres itself.
+    /// </summary>
+    [Fact]
+    public async Task A_merge_notice_drain_that_cannot_record_its_own_outcome_is_not_retried_automatically()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        using DocumentStore store = OpenStore();
+
+        Guid taskId = await SeedTaskAsync(store, new ExternalReference(WorkItemProvider.Jira, "PROJ-654"), cts.Token);
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            TaskAggregate task = (await session.Events.AggregateStreamAsync<TaskAggregate>(taskId, token: cts.Token))!;
+            session.Events.Append(taskId, TaskDecider.QueueJiraMergeNotice(task, Now));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        RecordingProcessRunner twg = RecordingProcessRunner.RespondingTo(arguments =>
+        {
+            if (arguments.Contains("get"))
+            {
+                // Twg's own comment call already succeeded by the time the mandatory read-back
+                // runs; racing a second write outcome in here, before control returns to
+                // AttemptAsync's own RecordSuccessAsync, reproduces "something committed after
+                // twg's call but before this write's own success could be recorded" without
+                // needing to fault-inject Postgres.
+                using IDocumentSession racing = store.LightweightSession();
+                TaskAggregate current = racing.Events.AggregateStreamAsync<TaskAggregate>(taskId, token: cts.Token)
+                    .GetAwaiter().GetResult()!;
+                racing.Events.Append(taskId, TaskDecider.RecordJiraWriteFailure(
+                    current, current.PendingJiraWriteId!.Value, "Raced by another write.", isAuthFailure: false, Now));
+                racing.SaveChangesAsync(cts.Token).GetAwaiter().GetResult();
+                return new ProcessResult(0, """{"key":"PROJ-654"}""", string.Empty);
+            }
+
+            return new ProcessResult(0, "{}", string.Empty);
+        });
+
+        NodeContext node = await NewNodeAsync(store, cts.Token);
+        JiraWriteRetryEngine engine = new(store, node, twg.Runner, DefaultOptions(), NullLogger<JiraWriteRetryEngine>.Instance);
+
+        JiraWriteRetrySweepResult sweep = await engine.PollOnceAsync(cts.Token);
+
+        sweep.MergeNoticesDrained.Should().Be(1, "the notice is marked attempted even though its own outcome could not be recorded");
+        TaskAggregate? after = await LoadAsync(store, taskId, cts.Token);
+        after!.HasQueuedJiraMergeNotice.Should().BeFalse(
+            "attempted exactly once — auto-retrying an unwatched comment risks posting it twice");
+
+        RecordingProcessRunner mustNotRunAgain = RecordingProcessRunner.RespondingTo(
+            _ => throw new InvalidOperationException("the notice must not be retried automatically once marked attempted"));
+        JiraWriteRetryEngine secondEngine = new(
+            store, node, mustNotRunAgain.Runner, DefaultOptions(), NullLogger<JiraWriteRetryEngine>.Instance);
+
+        JiraWriteRetrySweepResult second = await secondEngine.PollOnceAsync(cts.Token);
+
+        second.MergeNoticesDrained.Should().Be(0, "there is nothing left queued for a later sweep to pick up");
+    }
+
+    /// <summary>
+    /// The physical dedup gate that protects a stuck <em>create</em> retry has no equivalent for
+    /// the site-resolution guard covered above — this covers a different, previously untested
+    /// branch instead: <c>JiraWriteCoordinator.RecordAlreadyLinkedAsync</c>, reached only from
+    /// <c>RetryPendingAsync</c> when a create sits stuck on an expired login and the task acquires
+    /// its external item some other way in the meantime (an operator's own <c>h9k task link-jira</c>,
+    /// run because the login problem had not been noticed yet). The retry must not record that
+    /// linked reference verbatim — it owes its own recorded outcome the identical read-back every
+    /// other write's success gets, in case the card was since deleted or twg is not authenticated
+    /// (independent pre-PR review, adversarial lens, cycle 3; verified fixed, cycle 4). Nothing
+    /// exercised this path before (independent pre-PR review, cycle 4).
+    /// </summary>
+    [Fact]
+    public async Task A_stuck_create_found_linked_by_another_route_is_confirmed_by_a_fresh_read_back()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        using DocumentStore store = OpenStore();
+
+        Guid taskId = await SeedTaskAsync(store, externalReference: null, cts.Token);
+
+        RecordingProcessRunner stuckTwg = RecordingProcessRunner.TwgAuthExpired();
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            JiraWriteAttemptResult submitted = await JiraWriteCoordinator.SubmitAsync(
+                session, taskId, JiraWriteOperation.Create, issueKey: null,
+                new JiraWritePayload("Dev Task", new Dictionary<string, string> { ["summary"] = "Close me out" }, null),
+                JiraProjectKey.Parse("PROJ"), DomainId.New(), new TwgJiraExecutor(stuckTwg.Runner), "/repo", cts.Token);
+            submitted.Outcome.Should().Be(JiraWriteOutcome.PendingAuthentication);
+        }
+
+        // An operator's own h9k task link-jira, run because the auth problem had not been noticed
+        // yet — the create is still pending, but the task now carries the reference some other way.
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            TaskAggregate task = (await session.Events.AggregateStreamAsync<TaskAggregate>(taskId, token: cts.Token))!;
+            session.Events.Append(taskId, TaskDecider.LinkWorkItem(
+                task, new ExternalReference(WorkItemProvider.Jira, "PROJ-555"), "Found it", "To Do", Now, Now, DomainId.New()));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        RecordingProcessRunner reauthenticatedTwg = RecordingProcessRunner.RespondingTo(
+            _ => new ProcessResult(0, """{"key":"PROJ-555"}""", string.Empty));
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            JiraWriteAttemptResult? retried = await JiraWriteCoordinator.RetryPendingAsync(
+                session, taskId, JiraProjectKey.Parse("PROJ"), new TwgJiraExecutor(reauthenticatedTwg.Runner), "/repo", cts.Token);
+
+            retried.Should().NotBeNull();
+            retried!.Outcome.Should().Be(JiraWriteOutcome.Succeeded);
+            retried.IssueKey.Should().Be("PROJ-555", "the recorded outcome is what twg answered when read back, not the unverified link");
+        }
+
+        reauthenticatedTwg.Calls.Should().ContainSingle().Which.Arguments.Should().ContainInOrder("jira", "workitem", "get", "PROJ-555");
+        TaskAggregate? resolved = await LoadAsync(store, taskId, cts.Token);
+        resolved!.PendingJiraWriteId.Should().BeNull("the stuck create is resolved rather than left pending forever");
+    }
+
+    /// <summary>
     /// A write requested and never given an outcome — the shape a cancellation the coordinator's
     /// own recording grace could not outrun, or a harder process death, leaves behind (independent
     /// pre-PR review, cycle 1, both lenses). Appended directly through the decider rather than by
@@ -212,21 +338,20 @@ public sealed class JiraWriteRetryEngineTests(PostgresFixture postgres) : IClass
     }
 
     private static async Task<Guid> SeedTaskAsync(
-        IDocumentStore store, ExternalReference externalReference, CancellationToken cancellationToken)
+        IDocumentStore store, ExternalReference? externalReference, CancellationToken cancellationToken)
     {
         Guid ownerId = DomainId.New();
-        Guid connectionId = DomainId.New();
         Guid projectId = DomainId.New();
         Guid taskId = DomainId.New();
 
-        await using IDocumentSession session = store.LightweightSession();
-        session.Events.StartStream<OwnerAggregate>(ownerId, OwnerDecider.Register(
+        await using IDocumentSession ownerSession = store.LightweightSession();
+        ownerSession.Events.StartStream<OwnerAggregate>(ownerId, OwnerDecider.Register(
             ownerId, "Brian Hall", "brian@hallmanac.com", Now));
+        await ownerSession.SaveChangesAsync(cancellationToken);
 
-        session.Events.StartStream<ConnectionAggregate>(connectionId, ConnectionDecider.Register(
-            connectionId, ownerId, WorkItemProvider.Jira, "brian@hallmanac.com",
-            CredentialReference.EnvironmentVariable("JIRA_TOKEN"), Now, new Uri("https://hall9k.atlassian.net")));
+        Guid connectionId = await EnsureJiraConnectionAsync(store, ownerId, cancellationToken);
 
+        await using IDocumentSession session = store.LightweightSession();
         session.Events.StartStream<ProjectAggregate>(projectId, ProjectDecider.Register(
             projectId, ownerId, connectionId, "hall9k", "/repos/hall9k.git",
             new Uri("https://github.com/Hallmanac/hall9k"), null, Now));
@@ -237,5 +362,29 @@ public sealed class JiraWriteRetryEngineTests(PostgresFixture postgres) : IClass
 
         await session.SaveChangesAsync(cancellationToken);
         return taskId;
+    }
+
+    /// <summary>
+    /// Once per database, not once per test: every test in this class shares the fixture's
+    /// Postgres, the same reasoning <c>CloseoutEngineTests.SeedJiraConnectionAsync</c>'s own doc
+    /// comment gives, and a second registered Jira connection is a state
+    /// <see cref="WorkItemConnections.FindJiraConnectionAsync"/> refuses on purpose (nothing says
+    /// which account a project uses) — which would make every test after the first assert a
+    /// refusal instead of exercising what it actually means to test.
+    /// </summary>
+    private static async Task<Guid> EnsureJiraConnectionAsync(IDocumentStore store, Guid ownerId, CancellationToken cancellationToken)
+    {
+        await using IDocumentSession session = store.LightweightSession();
+        if (await WorkItemConnections.FindJiraConnectionAsync(session, cancellationToken) is { } existing)
+        {
+            return existing.Id;
+        }
+
+        Guid connectionId = DomainId.New();
+        session.Events.StartStream<ConnectionAggregate>(connectionId, ConnectionDecider.Register(
+            connectionId, ownerId, WorkItemProvider.Jira, "brian@hallmanac.com",
+            CredentialReference.EnvironmentVariable("JIRA_TOKEN"), Now, new Uri("https://hall9k.atlassian.net")));
+        await session.SaveChangesAsync(cancellationToken);
+        return connectionId;
     }
 }
