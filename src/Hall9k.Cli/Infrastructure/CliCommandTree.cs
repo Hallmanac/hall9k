@@ -639,9 +639,10 @@ public static class CliCommandTree
                 .WithDescription(
                     "Give an interactive claim back to the dispatch queue, exactly as any other queued task — "
                     + "the daemon claims it as capacity allows. Refused on a task a node holds (that is running "
-                    + "headless work; let it finish, or h9k task abandon it). The worktree and branch are left "
-                    + "on disk untouched; nothing resumes them automatically (h9k task handback is the lever "
-                    + "for that).")
+                    + "headless work; let it finish, or h9k task abandon it) and on a claim that is not untouched: "
+                    + "modified-but-uncommitted files, naming them, or commits beyond the base branch (h9k task "
+                    + "handback or h9k task deliver instead). The worktree and branch are left on disk untouched; "
+                    + "nothing resumes them automatically (h9k task handback is the lever for that).")
                 .WithExample("task", "release", "28b19893");
             task.AddCommand<TaskHandbackCommand>("handback")
                 .WithDescription(
