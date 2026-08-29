@@ -47,10 +47,13 @@ public sealed record CardPublicationSweepResult(
 /// <summary>
 /// Turns a publication request into an agent session, and records what came of it (backlog 18).
 /// <para>
-/// The platform does not write the card. It cannot honestly: an issue type, a required field, and
-/// a routing rule are one organisation's Jira configuration, and the teams that have them have
-/// them written down already — so the session runs in the project's own repository, where those
-/// rules live as skills, with the owner's MCP access. What this class owns is everything around
+/// The platform does not decide the card's content itself, and that is the central design
+/// decision rather than a staging limitation. An issue type, a required field, and a routing rule
+/// are one organisation's Jira configuration, and the teams that have them have them written down
+/// already — so the session runs in the project's own repository, where those rules live as
+/// skills, to work out what the card should look like, but it makes no Jira call itself
+/// (Decisions Log #99): it composes a payload and submits it through <c>h9k task write-jira</c>,
+/// which is the sole executor of every Jira write. What this class owns is everything around
 /// that: which requests are this node's to do, that exactly one session runs per request, that a
 /// session which hangs is not waited on forever, that a session the daemon stopped in the middle
 /// of is picked back up rather than left hanging over the task, and that the outcome recorded

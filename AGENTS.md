@@ -184,8 +184,10 @@ the payload (a transition or a close is refused regardless of who composed it â€
 workflow, done in Jira directly, never a write hall9k performs), records the intent with the full
 payload before anything is sent, executes it through the Atlassian CLI (`twg`) with JSON output,
 verifies by reading the item back, and records the outcome including the returned key. A retried
-or replayed create cannot mint a duplicate: `write-jira` searches for a marker an earlier attempt's
-card would carry before creating anything new. **Agent-facing commands are observation gates**:
+or replayed create narrows the window for a duplicate rather than closing it outright:
+`write-jira` searches for a marker an earlier attempt's card would carry before creating anything
+new, but Jira's search index updates asynchronously, so a retry inside that index-lag window can
+still find nothing even though the card genuinely exists. **Agent-facing commands are observation gates**:
 `write-jira` and `link-jira` both read the key back through Jira before recording anything, so an
 agent's or an operator's claim is an argument that gets checked rather than a fact that gets
 accepted. Registered credentials are recorded as references (`env:`, `keychain:`, `file:`) and
