@@ -125,32 +125,34 @@ completes, dependents unblock, and the worktree is removed.
 
 ## Install
 
-**A machine with no repo checkout and no .NET SDK:** run the bootstrap script — it fetches the
-latest release for your platform (macOS arm64, Windows x64, Linux x64), verifies its checksum,
-asks consent, and finishes with `h9k doctor`. See [docs/INSTALL.md](docs/INSTALL.md) for the full
-walkthrough, including the agent-driven, non-interactive form.
+Point your AI agent — Claude Code or any coding agent with shell access — at this README and
+tell it to install Hall9k for you. The steps below are exactly what a human runs by hand,
+written to be followed in order by either one: no placeholder is left for an agent to fill in
+with whatever it has at hand, because every one says explicitly whose value it wants.
 
-```bash
-curl -fsSL https://raw.githubusercontent.com/Hallmanac/hall9k/main/scripts/install.sh | bash   # macOS / Linux
-```
+**Installing Hall9k never registers a project.** `h9k project add` is a separate, later step
+covered in its own section below, and it is run only against a repository the user names —
+never against this repository, Hall9k's own source, and never a placeholder an agent has picked
+for itself. If no repository has been named, stop after *Verify the install* below and ask
+rather than guessing one.
 
-```powershell
-iwr https://raw.githubusercontent.com/Hallmanac/hall9k/main/scripts/install.ps1 | iex           # Windows
-```
+Two install paths exist; pick the one that matches the machine, and run its steps in order.
 
-Once installed, `h9k update` is the one-command path to stay current — no repo checkout needed
-there either.
+### Prerequisites for installing a release
 
-**Working on Hall9k itself:** clone the repo and build locally (below). The daemon's lifecycle
-(`h9k daemon start` / `stop` / `status`) runs on macOS, Windows, and Linux; start-at-login
-(`autostart enable`) runs on macOS and Windows — a launchd LaunchAgent on the former, a Task
-Scheduler logon task (never a service) on the latter — and is unbuilt only on Linux, which
-otherwise runs the daemon fine started by hand.
+| What | Why |
+|---|---|
+| `gh`, authenticated (`gh auth login`) | Fetches the release archive Hall9k's releases live in |
+| Docker | Postgres runs in a container; `h9k doctor` offers to start it |
+| `git` | Worktrees, branches, and every commit an agent makes, once a project is registered |
+| Claude Code CLI (`claude`), logged in | The executor: every agent session is a detached `claude -p` |
+
+Nothing else is required: no repo checkout, no .NET SDK. `gh` is what the bootstrap script
+itself needs; the other three aren't touched until *Verify the install* and afterward, so
+`h9k doctor` names whichever is missing at the point it actually matters, rather than failing
+the install up front.
 
 ### Prerequisites for building from source
-
-These apply only to the clone-and-build path above — the bootstrap script needs none of them
-(see [docs/INSTALL.md](docs/INSTALL.md)).
 
 | What | Why |
 |---|---|
@@ -174,15 +176,44 @@ them rather than through an MCP server. That is also the direction of travel, si
 sessions are moving to a slim profile where MCP servers are declared per task rather than
 inherited wholesale ([`backlog/29-slim-agent-profile.md`](backlog/29-slim-agent-profile.md)).
 
-Beyond the three above, the ones that have earned their place are Atlassian's Teamwork Graph CLI
+Beyond the four above, the ones that have earned their place are Atlassian's Teamwork Graph CLI
 (`twg`) for Jira and Confluence work, and whatever your own projects' workflows lean on. The rule
 of thumb: if you would reach for a tool at the terminal to answer a question, an agent will too,
 and a well-stocked PATH is what makes a lean agent a capable one.
 
-### Steps
+### Install a release
+
+A bootstrap script fetches the latest release for your platform (macOS arm64, Windows x64,
+Linux x64), verifies its checksum, asks consent, and finishes by running `h9k doctor`. Run the
+plain form at an interactive terminal; run the non-interactive form — the one an agent should
+use, since there is no terminal at a pipe's other end to answer a consent prompt — anywhere else.
 
 ```bash
-git clone git@github.com:Hallmanac/hall9k.git
+# macOS / Linux — interactive
+curl -fsSL https://raw.githubusercontent.com/Hallmanac/hall9k/main/scripts/install.sh | bash
+
+# macOS / Linux — non-interactive (agent-driven)
+curl -fsSL https://raw.githubusercontent.com/Hallmanac/hall9k/main/scripts/install.sh | bash -s -- --yes
+```
+
+```powershell
+# Windows — interactive
+iwr https://raw.githubusercontent.com/Hallmanac/hall9k/main/scripts/install.ps1 | iex
+
+# Windows — non-interactive (agent-driven): `iwr | iex` can't take a parameter, so download the
+# script into a scriptblock first and invoke that with -Yes
+& ([scriptblock]::Create((iwr https://raw.githubusercontent.com/Hallmanac/hall9k/main/scripts/install.ps1).Content)) -Yes
+```
+
+See [docs/INSTALL.md](docs/INSTALL.md) for the full walkthrough. Once installed, `h9k update` is
+the one-command path to stay current — no repo checkout needed there either.
+
+### Build from source
+
+Working on Hall9k itself: clone the repo and publish local binaries.
+
+```bash
+git clone https://github.com/Hallmanac/hall9k.git
 cd hall9k
 
 docker compose up -d          # Postgres on localhost:5432
@@ -193,25 +224,55 @@ dotnet build                  # the whole solution
 
 `h9k install` publishes release binaries of `h9k` and `h9kd` into `~/.hall9k/bin`, links `h9k`
 onto your PATH, and publishes the canonical skill set into `~/.hall9k/skills`. It registers no
-background service and no login item, deliberately: the daemon has a CLI-owned lifecycle. Re-run
-it after a merge to refresh the binaries, and it will offer to restart a running daemon onto them.
-On a machine that already has `h9k` installed (from source or from a release), `h9k update` does
-the same idempotent refresh from the latest GitHub release instead, no repo checkout needed.
+background service, no login item, and no project, deliberately: the daemon has a CLI-owned
+lifecycle, and registering a project is always the separate, later step in its own section
+below. Re-run `h9k install` after a merge to refresh the binaries, and it will offer to restart
+a running daemon onto them. On a machine that already has `h9k` installed (from source or from a
+release), `h9k update` does the same idempotent refresh from the latest GitHub release instead,
+no repo checkout needed.
+
+The daemon's lifecycle (`h9k daemon start` / `stop` / `status`) runs on macOS, Windows, and
+Linux; start-at-login (`autostart enable`) runs on macOS and Windows — a launchd LaunchAgent on
+the former, a Task Scheduler logon task (never a service) on the latter — and is unbuilt only on
+Linux, which otherwise runs the daemon fine started by hand.
+
+### Verify the install
+
+Neither path above starts anything by itself: `h9k install` (and the bootstrap scripts that wrap
+it) write Hall9k's own Postgres definition but leave it stopped, and nothing checks the daemon
+until you do. Run these, in order, whether by hand or as an agent — this is the stopping point
+for "installed", and nothing past it, registering a project included, is required to reach it:
 
 ```bash
-h9k daemon start              # detached; survives shell exit; logs to ~/.hall9k/h9kd.log
-h9k daemon status             # running or not, pid, uptime, autostart posture, recent log
-
-h9k project add --name myproject --repo-url git@github.com:you/myproject.git
+h9k doctor --yes      # remediate non-interactively: start Hall9k's own Postgres, create the schema
+h9k daemon start       # launch h9kd, detached; survives shell exit; logs to ~/.hall9k/h9kd.log
+h9k doctor             # verify: connection string configured, reachable, schema present
+h9k daemon status      # verify: h9kd running, with a pid and uptime
 ```
 
-First use registers your owner record (from `git config user.name` / `user.email`), this machine
-as a node, and a GitHub connection pointing at your `gh` login. Nothing to configure; it is
-idempotent.
+A verified install is `h9k doctor` reporting nothing outstanding and `h9k daemon status`
+printing `h9kd: running` with a pid.
 
-`project add` also creates the project's **home directory**, `~/.hall9k/projects/myproject`,
-which is the same shape on every machine: a generated `AGENTS.md`, `repo/` (a bare clone with a
-`dev/` worktree on the primary branch, and the task worktrees dispatch cuts beside it), `ideas/`,
+### Register a project — only with the user's own repository
+
+Registering a project is a separate act, taken later, once there is a repository to hand
+Hall9k. **Never run this against Hall9k's own repository** — Hall9k does not manage itself as a
+registered project. Run it only when the user has named their own repository; an agent that was
+asked only to install Hall9k stops at *Verify the install* above.
+
+```bash
+h9k project add --name <the-user's-project-name> --repo-url <https-url-of-the-user's-own-repository>
+```
+
+Both placeholders take the user's own values — never this repository's name or URL.
+
+First use also registers your owner record (from `git config user.name` / `user.email`), this
+machine as a node, and a GitHub connection pointing at your `gh` login. Nothing to configure; it
+is idempotent.
+
+`project add` also creates the project's **home directory**, `~/.hall9k/projects/<name>`, which
+is the same shape on every machine: a generated `AGENTS.md`, `repo/` (a bare clone with a `dev/`
+worktree on the primary branch, and the task worktrees dispatch cuts beside it), `ideas/`,
 `tasks/`, `skills/` seeded from the install's set, and a generated `.claude/` adapter. Point an
 editor at it and you browse the code, the worktrees and the work together; start a Claude session
 in it and its `AGENTS.md` tells it the rest. For a project this database already knows about,
