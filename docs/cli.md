@@ -104,7 +104,9 @@ another project's epic is refused. `close` is the only way an epic ends, always 
 act with a reason; there is no `reopen` yet, and nothing closes an epic automatically, including
 its last member task closing out. `link-jira` is identity-only: a key or URL stored verbatim,
 never read from or written to Jira — unlike a task's own `link-jira`, which reads the key back
-through the registered connection before recording it.
+through the registered connection before recording it. `h9k task list --epic <id>` filters to one
+epic's member tasks; `h9k epic show <id>` answers the same give-me-all-tasks-in-this-epic question
+with each member's state already composed.
 
 ### Recovery
 

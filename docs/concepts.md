@@ -76,7 +76,7 @@ after it was written down.
 
 ```
 h9k task add          ->  Draft       being developed; editable; invisible to the dispatcher
-h9k task revise       ->  Draft       objective / criteria / context / type / model / BlockedBy
+h9k task revise       ->  Draft       objective / criteria / context / type / model / BlockedBy / epic
 h9k task publish      ->  Published   the readiness gate; immutable; assignable, NOT claimable
 h9k task assign       ->  Queued      every dependency at true closeout
                       or  Blocked     at least one is not
