@@ -59,12 +59,44 @@ public sealed class TaskReleaseCommand : Hall9kAsyncCommand<TaskReleaseCommand.S
         {
             RunDetails run = await session.LoadAsync<RunDetails>(currentRunId, cancellationToken)
                 ?? throw new DomainConflictException($"Task {taskId} is claimed interactively but run {currentRunId} has no record.");
+
+            // Mirrors TaskHandbackCommand's own guard: an operator's own session, still attached
+            // in another terminal, may be editing this exact worktree right now — requeuing it
+            // out from under that session double-books the task the moment the daemon claims it
+            // headlessly (adversarial review, cycle 1).
+            InteractiveSessionLiveness.EnsureNotAttachedElsewhere(run, taskId, "release");
+
             if (run.State != RunState.Dispatched && run.State != RunState.Running)
             {
                 throw new DomainConflictException(
                     $"Task {taskId}'s run {currentRunId} is already {run.State.Value} — it was handed off with "
                     + $"h9k task deliver (or handback) and is now in the standard pipeline. h9k task show {taskId} "
                     + "to see where it stands.");
+            }
+
+            // Release is only for a claim nothing has been done in yet (this command's own doc
+            // comment): mirrors TaskHandbackCommand/TaskDeliverCommand's own uncommitted-files
+            // refusal, naming the files, rather than requeuing over edits nothing will ever point
+            // at again — the commits-beyond-base check below catches committed work, but a claim
+            // holding modified-but-uncommitted files was passing it silently, orphaning the
+            // operator's edits in a worktree the next headless claim's own second, run-suffixed
+            // worktree leaves nothing pointing at (adversarial review, cycle 1).
+            (IReadOnlyList<string>? modified, _) = await InteractiveWorktreeGit.ListUncommittedFilesAsync(run.WorktreePath, cancellationToken);
+            if (modified is null)
+            {
+                // Never guessed at as clean (InteractiveWorktreeGit's own contract): git could
+                // not be asked, so the operator is told the check was skipped rather than release
+                // silently proceeding over a tree nobody actually looked at.
+                AnsiConsole.MarkupLineInterpolated(
+                    $"[yellow]Could not read the worktree's git status at {run.WorktreePath}; skipping the uncommitted-files check.[/]");
+            }
+            else if (modified.Count > 0)
+            {
+                throw new DomainConflictException(
+                    $"Task {taskId}'s worktree has uncommitted file(s): {string.Join(", ", modified)} — "
+                    + "release is only for a claim nothing has been done in yet. "
+                    + $"h9k task handback {taskId} to hand the work to a headless agent, or "
+                    + $"h9k task deliver {taskId} to submit it yourself.");
             }
 
             // Release is for an untouched claim only (AGENTS.md's own command surface says so):
