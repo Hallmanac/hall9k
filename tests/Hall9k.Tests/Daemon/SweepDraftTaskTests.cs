@@ -136,6 +136,27 @@ public sealed class SweepDraftTaskTests
     }
 
     /// <summary>
+    /// The one case a blank location can still recognize as a repeat: the SAME run's own review
+    /// track reporting the identical unplaced finding text again in a later cycle. Before this
+    /// fix every cycle re-appended its own item, so a track alive for five cycles left five
+    /// duplicates of the one defect on the shared sweep (cycle-5 adversarial review).
+    /// </summary>
+    [Fact]
+    public void The_same_run_re_reporting_the_identical_blank_location_finding_updates_one_item()
+    {
+        Guid runId = DomainId.New();
+        string firstBody = SweepDraftTask.ComposeNew(
+            DomainId.New(), DomainId.New(), [Route(runId: runId, cycle: 1, location: string.Empty)], Now, DomainId.New())
+            .AgentContext!;
+
+        string updated = SweepDraftTask.Append(
+            firstBody, [Route(runId: runId, cycle: 2, location: string.Empty)]);
+
+        CountOccurrences(updated, "### (no location stated)").Should().Be(1, "one repeated observation, one item");
+        CountOccurrences(updated, $"Run {runId}").Should().Be(2, "both cycles' evidence is still recorded");
+    }
+
+    /// <summary>
     /// <c>SamePlace</c> is not transitive: two distinct findings from the same run and cycle can
     /// each match an existing item by suffix (<c>src/a/Foo.cs:12</c> and <c>src/b/Foo.cs:12</c>
     /// both match <c>Foo.cs:12</c>) without matching each other. The repeat guard used to key
