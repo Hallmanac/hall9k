@@ -101,6 +101,7 @@ public sealed class TaskReviseCommand : Hall9kAsyncCommand<TaskReviseCommand.Set
         string? type = settings.Type;
         string? agentContext = settings.AgentContext;
         string? model = settings.Model;
+        string? epic = settings.Epic;
         IReadOnlyList<string> criteria = settings.Criteria;
         IReadOnlyList<string> blockedBy = settings.BlockedBy;
 
@@ -119,6 +120,10 @@ public sealed class TaskReviseCommand : Hall9kAsyncCommand<TaskReviseCommand.Set
             model ??= file.Model;
             criteria = criteria.Count > 0 ? criteria : file.Criteria;
             blockedBy = blockedBy.Count > 0 ? blockedBy : file.BlockedBy;
+            if (!settings.ClearEpic)
+            {
+                epic ??= file.Epic;
+            }
         }
 
         using var store = CliStore.Open();
@@ -136,9 +141,9 @@ public sealed class TaskReviseCommand : Hall9kAsyncCommand<TaskReviseCommand.Set
 
         Optional<Guid?> epicId = settings.ClearEpic
             ? Optional<Guid?>.Of(null)
-            : settings.Epic.IsNotBlank()
+            : epic.IsNotBlank()
                 ? Optional<Guid?>.Of(await EpicIdResolver.ResolveForMembershipAsync(
-                    session, settings.Epic, task.ProjectId, cancellationToken))
+                    session, epic, task.ProjectId, cancellationToken))
                 : Optional<Guid?>.None;
 
         BootstrapContext context = await NodeBootstrap.EnsureAsync(session, cancellationToken);

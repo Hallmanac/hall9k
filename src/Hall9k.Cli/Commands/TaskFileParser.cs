@@ -9,13 +9,14 @@ public sealed record TaskFileContent(
     IReadOnlyList<string> Criteria,
     string? AgentContext,
     string? Model,
-    IReadOnlyList<string> BlockedBy);
+    IReadOnlyList<string> BlockedBy,
+    string? Epic);
 
 /// <summary>
 /// Parses the h9k task file format: a minimal frontmatter block (project, type, objective,
-/// criteria as "- " items, optional model, optional blocked-by as "- " items) followed by a
-/// markdown body that becomes the agent context. Deliberately not YAML, since a handful of
-/// known keys don't warrant a dependency.
+/// criteria as "- " items, optional model, optional blocked-by as "- " items, optional epic)
+/// followed by a markdown body that becomes the agent context. Deliberately not YAML, since a
+/// handful of known keys don't warrant a dependency.
 /// </summary>
 public static class TaskFileParser
 {
@@ -33,6 +34,7 @@ public static class TaskFileParser
         string? type = null;
         string? objective = null;
         string? model = null;
+        string? epic = null;
         List<string> criteria = [];
         List<string> blockedBy = [];
         List<string>? list = null;
@@ -76,6 +78,9 @@ public static class TaskFileParser
                 case "model":
                     model = value;
                     break;
+                case "epic":
+                    epic = value;
+                    break;
                 case "criteria":
                     list = criteria;
                     break;
@@ -89,6 +94,7 @@ public static class TaskFileParser
         }
 
         string body = string.Join('\n', lines.Skip(bodyStart)).Trim();
-        return new TaskFileContent(project, type, objective, criteria, body.IsBlank() ? null : body, model, blockedBy);
+        return new TaskFileContent(
+            project, type, objective, criteria, body.IsBlank() ? null : body, model, blockedBy, epic);
     }
 }

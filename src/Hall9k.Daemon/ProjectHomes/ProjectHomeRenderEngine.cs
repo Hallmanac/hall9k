@@ -1,3 +1,4 @@
+using Hall9k.Domain.Features.Epic;
 using Hall9k.Domain.Features.Idea;
 using Hall9k.Domain.Features.Idea.Rendering;
 using Hall9k.Domain.Features.Project.Projections;
@@ -77,6 +78,10 @@ public sealed class ProjectHomeRenderEngine(IDocumentStore store, ILogger<Projec
                     .Where(task => task.ProjectId == project.Id)
                     .ToListAsync(cancellationToken);
                 IReadOnlyList<IdeaDetails> ideas = [.. allIdeas.Where(idea => idea.ProjectId == project.Id)];
+                Dictionary<Guid, string?> epicJiraReferences = (await query.Query<EpicDetails>()
+                        .Where(epic => epic.ProjectId == project.Id)
+                        .ToListAsync(cancellationToken))
+                    .ToDictionary(epic => epic.Id, epic => epic.JiraReference);
 
                 // Whether a Done task has reached true closeout needs a run it hangs on, not
                 // just its own state (TaskDependencyQuery.IsClosedOut carries the same bar for
@@ -192,7 +197,7 @@ public sealed class ProjectHomeRenderEngine(IDocumentStore store, ILogger<Projec
                     string directoryName = TaskDocumentRenderer.DirectoryName(task);
                     (archived ? archivedTaskDirectoryNames : liveTaskDirectoryNames).Add(directoryName);
 
-                    switch (RenderTask(tasksRoot, archivedTasksRoot, task, archived, project.Name))
+                    switch (RenderTask(tasksRoot, archivedTasksRoot, task, archived, project.Name, epicJiraReferences))
                     {
                         case RenderOutcome.Written:
                             tasksRendered++;
@@ -433,12 +438,16 @@ public sealed class ProjectHomeRenderEngine(IDocumentStore store, ILogger<Projec
         && (!currentRunStates.TryGetValue(currentRunId, out RunState? currentRunState) || currentRunState.IsLive);
 
     private RenderOutcome RenderTask(
-        string tasksRoot, string archivedTasksRoot, TaskDetails task, bool archived, string projectName)
+        string tasksRoot, string archivedTasksRoot, TaskDetails task, bool archived, string projectName,
+        IReadOnlyDictionary<Guid, string?> epicJiraReferences)
     {
         try
         {
             string directoryName = TaskDocumentRenderer.DirectoryName(task);
-            string rendered = TaskDocumentRenderer.Render(task, projectName);
+            string? epicJiraReference = task.EpicId is { } epicId
+                ? epicJiraReferences.GetValueOrDefault(epicId)
+                : null;
+            string rendered = TaskDocumentRenderer.Render(task, projectName, epicJiraReference);
             string targetRoot = archived ? archivedTasksRoot : tasksRoot;
             string alternateRoot = archived ? tasksRoot : archivedTasksRoot;
             bool changed = HomeEntryWriter.Write(
