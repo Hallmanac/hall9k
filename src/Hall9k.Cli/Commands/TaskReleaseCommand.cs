@@ -81,7 +81,8 @@ public sealed class TaskReleaseCommand : Hall9kAsyncCommand<TaskReleaseCommand.S
             // holding modified-but-uncommitted files was passing it silently, orphaning the
             // operator's edits in a worktree the next headless claim's own second, run-suffixed
             // worktree leaves nothing pointing at (adversarial review, cycle 1).
-            (IReadOnlyList<string>? modified, _) = await InteractiveWorktreeGit.ListUncommittedFilesAsync(run.WorktreePath, cancellationToken);
+            (IReadOnlyList<string>? modified, IReadOnlyList<string> untracked) =
+                await InteractiveWorktreeGit.ListUncommittedFilesAsync(run.WorktreePath, cancellationToken);
             if (modified is null)
             {
                 // Never guessed at as clean (InteractiveWorktreeGit's own contract): git could
@@ -97,6 +98,19 @@ public sealed class TaskReleaseCommand : Hall9kAsyncCommand<TaskReleaseCommand.S
                     + "release is only for a claim nothing has been done in yet, and h9k task handback and "
                     + "h9k task deliver both refuse the same uncommitted files for the same reason. Commit or "
                     + "discard them first, then release, handback, or deliver as the work warrants.");
+            }
+
+            // Untracked files (new, never git add-ed) pass the modified-files check above but are
+            // still real work the operator did: a blanket refusal would be wrong (a gate
+            // byproduct under an un-gitignored path would make the claim permanently
+            // unreleasable), but silently dropping the list is the one option that loses it — the
+            // operator is warned by name instead, the same way h9k task deliver and h9k task
+            // verify already report untracked files, rather than requeuing in silence (adversarial
+            // review, cycle 4).
+            if (untracked.Count > 0)
+            {
+                AnsiConsole.MarkupLineInterpolated(
+                    $"[yellow]Task {taskId}'s worktree has untracked file(s) that will be left behind: {string.Join(", ", untracked)} — release is only for a claim nothing has been done in yet; commit or discard them first if they matter.[/]");
             }
 
             // Release is for an untouched claim only (AGENTS.md's own command surface says so):
