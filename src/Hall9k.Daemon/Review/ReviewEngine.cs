@@ -111,12 +111,13 @@ public sealed class ReviewEngine(
     /// that can serialize two review loops racing to fold into the same project's sweep within
     /// this process — the exact collision <see cref="RouteFindingsAsync"/> guards against
     /// (adversarial and conformance review, cycle 1). <see cref="RouteToSweepAsync"/>'s own
-    /// expectedVersion fence adds a second, cross-process layer only for the revise-an-open-sweep
-    /// path; the branch that starts a brand-new sweep stream carries no such fence (a fresh
-    /// <c>StartStream</c> under a new <c>DomainId</c> has no prior version to assert against), so
-    /// today this in-process lock is the only thing stopping two daemon nodes racing against the
-    /// same database from each observing "no open sweep yet" and starting two (adversarial and
-    /// conformance review, cycle 4). Multi-node is design-only today
+    /// expectedVersion fence adds a second, cross-process layer, but only for the
+    /// revise-an-open-sweep path; the branch that starts a brand-new sweep stream carries no such
+    /// fence (a fresh <c>StartStream</c> under a new <c>DomainId</c> has no prior version to
+    /// assert against). This <c>SemaphoreSlim</c> cannot close that gap — an in-process lock
+    /// serializes nothing across processes — so today the create path has no guard at all against
+    /// two daemon nodes racing the same database each observing "no open sweep yet" and starting
+    /// two (adversarial and conformance review, cycle 4 and 5). Multi-node is design-only today
     /// (<c>HALL9K-P2P-DESIGN.md</c>), so nothing misbehaves on a real install, but this comment
     /// stops short of claiming a safety property the create path does not have.
     /// </summary>
@@ -1510,9 +1511,13 @@ public sealed class ReviewEngine(
                 // TaskDetails.Apply(TaskRevised) keeps only the later event's AgentContext whole —
                 // the earlier append's items would be gone with no trace on the stream
                 // (adversarial and conformance review, cycle 1). expectedVersion turns that into a
-                // detected conflict rather than a silent loss: the append below throws, the catch
-                // clause already wrapping this method records the fold as failed exactly as any
-                // other routing failure, and the next cycle to report the same defect tries again.
+                // detected conflict rather than a silent loss — but Append below only queues the
+                // assertion; it does not throw here. The conflict actually surfaces at
+                // RouteFindingsAsync's own SaveChangesAsync, whose catch clause rewrites every
+                // entry in that batch's `routed` list as a routing failure, not just this fold's —
+                // including any Medium finding this same cycle already composed a real draft bug
+                // task for earlier in the loop (cycle-5 adversarial review). The next cycle to
+                // report the same defect tries again either way.
                 StreamState? state = await session.Events.FetchStreamStateAsync(sweepTaskId, cancellationToken)
                     ?? throw new InvalidOperationException($"Sweep draft {sweepTaskId} named by the query has no stream.");
                 TaskAggregate sweep = await session.Events.AggregateStreamAsync<TaskAggregate>(
@@ -1615,8 +1620,8 @@ public sealed class ReviewEngine(
             // cycle instead of recognizing it as already routed.
             (int Cycle, ReviewSeverity Severity)? alreadyRoutedIn = routedLocations
                 .Where(routed => ReviewFindingLocations.SamePlace(routed.Location, finding.Location))
+                .OrderByDescending(routed => routed.Severity.MeetsFixBar)
                 .Select(routed => ((int Cycle, ReviewSeverity Severity)?)(routed.Cycle, routed.Severity))
-                .OrderByDescending(routed => routed!.Value.Severity.MeetsFixBar)
                 .FirstOrDefault();
             if (alreadyRoutedIn is { } earlier
                 && (earlier.Severity.MeetsFixBar || !finding.Severity.MeetsFixBar))
