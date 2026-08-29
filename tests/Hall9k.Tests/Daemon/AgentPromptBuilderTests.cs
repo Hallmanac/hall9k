@@ -63,8 +63,11 @@ public sealed class AgentPromptBuilderTests : IDisposable
             "there is no repo-skills section to discover when the worktree ships none");
         prompt.Should().NotContain("The project home ships skills too");
         prompt.Should().Contain(
-            "commit-plan skill",
-            "the checkpoint-commit recompose step names it unconditionally, whether or not this repo ships it");
+            "commit-plan skill, if this repo ships one",
+            "the checkpoint-commit recompose step hedges the skill invocation for a repo that ships none");
+        prompt.Should().Contain(
+            "compose them yourself the same way if it does not",
+            "a repo with no commit-plan skill still gets a stated fallback");
         prompt.Should().Contain("## Working rules");
         prompt.Should().Contain("- End with a short summary: what you did, decisions made, assumptions, open questions.");
     }
@@ -137,7 +140,10 @@ public sealed class AgentPromptBuilderTests : IDisposable
     [Fact]
     public void Build_prompt_teaches_checkpoint_commits_and_the_end_of_work_recompose()
     {
-        string prompt = AgentPromptBuilder.Build(SomeTask(), SomeProject(), "task/1-slug", _worktreePath);
+        ProjectDetails project = SomeProject();
+        project.VerifyCommands = [new VerifyCommand("test", "dotnet test")];
+
+        string prompt = AgentPromptBuilder.Build(SomeTask(), project, "task/1-slug", _worktreePath);
 
         prompt.Should().Contain("Commit as you go, one logical unit at a time");
         prompt.Should().Contain(
@@ -145,9 +151,20 @@ public sealed class AgentPromptBuilderTests : IDisposable
             "checkpoints are framed as distinct from the branch's authored history");
         prompt.Should().Contain("full verification suite is green",
             "the recompose only starts once all the work is done and gates pass");
-        prompt.Should().Contain("git reset --mixed origin/main", "the reset targets the branch's own base");
+        prompt.Should().Contain(
+            "- `dotnet test`",
+            "the recompose gate names the project's own verify commands rather than an unnamed suite");
+        prompt.Should().Contain(
+            "git reset --mixed $(git merge-base origin/main HEAD)",
+            "the reset targets the branch's own fork point, not the moving tip of origin/main");
+        prompt.Should().Contain(
+            "Fall back to",
+            "a worktree with no origin/main falls back to the local base branch ref");
         prompt.Should().Contain("leaves the working tree exactly as", "a mixed reset never touches the tree");
-        prompt.Should().Contain("commit-plan skill to compose that tree");
+        prompt.Should().Contain("commit-plan skill, if this repo ships one, to compose");
+        prompt.Should().Contain(
+            "compose them yourself the same way if it does not",
+            "a repo with no commit-plan skill still gets a stated fallback");
         prompt.Should().Contain(
             "Nothing happens between steps 1 and 2: no test run, no fix, no exploration",
             "the guard against anything landing between the reset and the recompose");
@@ -156,6 +173,16 @@ public sealed class AgentPromptBuilderTests : IDisposable
             "the prompt states why the reset precedes the recompose immediately, with nothing between");
         prompt.Should().Contain("session is not done while `git status` shows anything uncommitted or");
         prompt.Should().Contain("untracked.", "the clean-tree contract covers untracked work too");
+    }
+
+    [Fact]
+    public void Build_prompt_names_the_recompose_gate_as_vacuous_when_the_project_configures_none()
+    {
+        string prompt = AgentPromptBuilder.Build(SomeTask(), SomeProject(), "task/1-slug", _worktreePath);
+
+        prompt.Should().Contain(
+            "configures no verification gates, so the suite is",
+            "a project with no verify commands still gets a stated precondition for the recompose");
     }
 
     /// <summary>
