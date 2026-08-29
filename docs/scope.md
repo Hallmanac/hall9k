@@ -51,7 +51,7 @@ full. `h9k task verify` runs the project's gates on demand against the claim's w
 deliver` pushes the branch and hands the run into the standard delivery pipeline — from there it
 is indistinguishable from a headless run; `h9k task handback` releases the claim to a headless
 agent partway through, resuming the same branch; `h9k task release` gives an untouched claim back
-to the dispatch queue. See [PLAN.md Decisions Log #99](../PLAN.md).
+to the dispatch queue. See [PLAN.md Decisions Log #103](../PLAN.md).
 
 ### The board
 

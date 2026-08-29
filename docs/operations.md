@@ -523,7 +523,7 @@ next move on, renders dim as its own level. It is there so you can consciously i
 
 ## Working a task interactively
 
-`h9k task work | verify | deliver | handback | release` (Decisions Log #99)
+`h9k task work | verify | deliver | handback | release` (Decisions Log #103)
 
 An operator can work a Queued task in their own terminal instead of dispatching it headless. The
 claim is held by the human, not a process — there is no lease and no heartbeat reclaim — so
