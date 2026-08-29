@@ -95,9 +95,10 @@ public sealed class DaemonAutostartEnableCommand : Hall9kAsyncCommand<DaemonAuto
             // connection string to DatabaseReachability.ProbeAsync (cycle-6 review).
             (ConfigFileConnectionStringState configFileState, string? configFileConnectionString) =
                 Hall9kDatabase.ConnectionStringStateAndValueInConfigFile();
-            bool configFileConnectionStringWorks = configFileConnectionString is not null
-                && (await DatabaseReachability.ProbeAsync(configFileConnectionString, cancellationToken)).Status
-                    == ReachabilityStatus.Reachable;
+            ReachabilityReport? configFileReachability = configFileConnectionString is not null
+                ? await DatabaseReachability.ProbeAsync(configFileConnectionString, cancellationToken)
+                : null;
+            bool configFileConnectionStringWorks = configFileReachability?.Status == ReachabilityStatus.Reachable;
             if (!configFileConnectionStringWorks)
             {
                 string escapedConfigFile = Markup.Escape(Hall9kDatabase.ConfigFile);
@@ -106,22 +107,38 @@ public sealed class DaemonAutostartEnableCommand : Hall9kAsyncCommand<DaemonAuto
                 {
                     // Distinct from the not-configured cases below (Decisions Log #74's
                     // reachable-vs-configured distinction): a value IS configured here, it is
-                    // just not answering right now. But h9k doctor is not the fix, even though
-                    // one is configured: HALL9K_CONNECTION_STRING is set in this very shell
+                    // just not working right now. Whether h9k doctor helps is conditional, not
+                    // settled either way: HALL9K_CONNECTION_STRING is set in this very shell
                     // (that is this branch's own precondition), and Resolve gives it precedence
-                    // over the config file, so doctor would probe and report on the
-                    // environment variable's target, not this one, and leave config.json
-                    // untouched — the exact trap the else branch below already documents for
-                    // the other three states, reintroduced here (cycle-8 review). The remedy is
-                    // therefore the same hand-edit: bring up whatever the config file names, or
-                    // point it at a Postgres that already answers.
+                    // over the config file, so doctor probes the environment variable's target,
+                    // not this one. When that target is the same unreachable local Postgres,
+                    // doctor --yes brings it up and config.json's value starts working too;
+                    // naming a different target leaves config.json untouched, exactly the trap
+                    // the else branch below documents for the other
+                    // three states (cycle-9 review: the prior wording asserted the unconditional
+                    // negative doctor never actually probed for). The remedy that always applies
+                    // either way is the same hand-edit: bring up whatever the config file names,
+                    // or point it at a Postgres that already answers. The probe's own status can
+                    // be a refused connection, rejected credentials, a missing database, or an
+                    // unparsable string entirely (ReachabilityStatus.OtherError covers that last
+                    // one too) — "does not currently answer" was only true for the first of those,
+                    // so the wording below is status-neutral and carries the probe's own detail
+                    // instead of asserting a specific failure mode (Copilot review, PR #89).
+                    string configFileFailureReason = configFileReachability!.Status switch
+                    {
+                        ReachabilityStatus.AuthenticationFailed or ReachabilityStatus.DatabaseMissing
+                            or ReachabilityStatus.OtherError => $"is not currently usable ({configFileReachability.Detail.EscapeMarkup()})",
+                        _ => "does not currently answer",
+                    };
                     AnsiConsole.MarkupLine(
                         $"[yellow]{Hall9kDatabase.EnvironmentVariableName} is set in this shell, but {autostart.MechanismDescription} "
-                        + $"does not carry it, and {escapedConfigFile} names a connection string that does not "
-                        + "currently answer[/] — an autostarted daemon would exit immediately at every logon unless "
-                        + $"it comes up before then. h9k doctor --yes will not fix this: {Hall9kDatabase.EnvironmentVariableName} "
-                        + $"is set right here, so doctor resolves and probes that instead of {escapedConfigFile}'s value, "
-                        + $"and would report healthy without ever touching {escapedConfigFile}. Bring up whatever "
+                        + $"does not carry it, and {escapedConfigFile} names a connection string that "
+                        + $"{configFileFailureReason}[/] — an autostarted daemon would exit immediately at every logon unless "
+                        + $"it comes up before then. Whether h9k doctor --yes helps depends on what "
+                        + $"{Hall9kDatabase.EnvironmentVariableName} names: doctor resolves and probes that value, not "
+                        + $"{escapedConfigFile}'s, so it fixes this only when the variable happens to name the same "
+                        + $"unreachable Postgres {escapedConfigFile} does — naming something else leaves "
+                        + $"{escapedConfigFile} untouched either way. Bring up whatever "
                         + $"{escapedConfigFile} names by hand, or edit it to point at a Postgres that is already reachable.");
                 }
                 else
