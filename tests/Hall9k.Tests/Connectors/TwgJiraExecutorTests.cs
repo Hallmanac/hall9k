@@ -21,15 +21,29 @@ public sealed class TwgJiraExecutorTests
 {
     private static readonly JiraProjectKey Project = JiraProjectKey.Parse("PROJ");
 
+    /// <summary>
+    /// twg's real <c>jira workitem create</c> answer, verified against the installed binary's own
+    /// create implementation (independent pre-PR review, cycle 6): the new card's key sits at
+    /// <c>data.issue.key</c>, an object-valued property — not a root-level "key", the unrealistic
+    /// shape this fixture used to model, which hid <c>FindEntity</c> never descending into an
+    /// object to find it.
+    /// </summary>
+    private const string RealisticCreateAnswer =
+        """{"apiVersion":"v2","command":"jira.workitem.create","data":{"success":true,"issue":{"id":"10001","key":"PROJ-999","self":"https://your-org.atlassian.net/rest/api/3/issue/10001"}}}""";
+
+    /// <summary>twg's real <c>jira workitem get</c> answer for a single key: the card sits directly under <c>data</c>.</summary>
+    private static string RealisticGetAnswer(string key) =>
+        $"{{\"apiVersion\":\"v2\",\"command\":\"jira.workitem.get\",\"data\":{{\"key\":\"{key}\",\"summary\":\"Found it\"}}}}";
+
     [Fact]
     public async Task A_create_embeds_the_tasks_marker_and_verifies_the_returned_key()
     {
         Guid taskId = Guid.Parse("00000000-0000-0000-0000-000000000001");
         RecordingProcessRunner twg = RecordingProcessRunner.RespondingTo(arguments => new ProcessResult(
-            0, arguments.Contains("query") ? """{"key":"PROJ-123"}""" : """{"key":"PROJ-999"}""", string.Empty));
+            0, arguments.Contains("get") ? RealisticGetAnswer("PROJ-123") : RealisticCreateAnswer, string.Empty));
         TwgJiraExecutor executor = new(twg.Runner);
         JiraWritePayload payload = new(
-            "Dev Task", new Dictionary<string, string> { ["description"] = "Fixes the thing" }, null);
+            "Dev Task", new Dictionary<string, string> { ["summary"] = "Fixes it", ["description"] = "Fixes the thing" }, null);
 
         TwgWriteResult result = await executor.CreateAsync(Project, payload, taskId, "/repo", CancellationToken.None);
 
@@ -41,7 +55,7 @@ public sealed class TwgJiraExecutorTests
         string description = create.Arguments.SkipWhile(argument => argument != "--description").Skip(1).First();
         description.Should().Contain("Fixes the thing").And.Contain(TwgJiraExecutor.Marker(taskId));
 
-        twg.Calls.Should().Contain(call => call.Arguments.Contains("query"), "a create is always read back and verified");
+        twg.Calls.Should().Contain(call => call.Arguments.Contains("get"), "a create is always read back and verified");
     }
 
     /// <summary>
@@ -54,7 +68,7 @@ public sealed class TwgJiraExecutorTests
     public async Task Every_call_names_the_registered_connections_site_explicitly()
     {
         RecordingProcessRunner twg = RecordingProcessRunner.RespondingTo(arguments => new ProcessResult(
-            0, arguments.Contains("query") ? """{"key":"PROJ-123"}""" : """{"key":"PROJ-999"}""", string.Empty));
+            0, arguments.Contains("get") ? RealisticGetAnswer("PROJ-123") : RealisticCreateAnswer, string.Empty));
         TwgJiraExecutor executor = new(twg.Runner, new Uri("https://your-org.atlassian.net"));
         JiraWritePayload payload = new("Dev Task", null, null);
 
@@ -84,7 +98,7 @@ public sealed class TwgJiraExecutorTests
     public async Task A_create_defaults_to_markdown_when_the_payload_names_no_format()
     {
         RecordingProcessRunner twg = RecordingProcessRunner.RespondingTo(arguments => new ProcessResult(
-            0, arguments.Contains("query") ? """{"key":"PROJ-123"}""" : """{"key":"PROJ-999"}""", string.Empty));
+            0, arguments.Contains("get") ? RealisticGetAnswer("PROJ-123") : RealisticCreateAnswer, string.Empty));
         TwgJiraExecutor executor = new(twg.Runner);
         JiraWritePayload payload = new("Dev Task", new Dictionary<string, string> { ["description"] = "## Heading" }, null);
 
@@ -100,7 +114,7 @@ public sealed class TwgJiraExecutorTests
     public async Task A_named_format_is_passed_through_instead_of_the_default()
     {
         RecordingProcessRunner twg = RecordingProcessRunner.RespondingTo(arguments => new ProcessResult(
-            0, arguments.Contains("query") ? """{"key":"PROJ-123"}""" : """{"key":"PROJ-999"}""", string.Empty));
+            0, arguments.Contains("get") ? RealisticGetAnswer("PROJ-123") : RealisticCreateAnswer, string.Empty));
         TwgJiraExecutor executor = new(twg.Runner);
         JiraWritePayload payload = new(
             "Dev Task", new Dictionary<string, string> { ["description"] = "plain text" }, null, Format: "plain");
@@ -121,7 +135,7 @@ public sealed class TwgJiraExecutorTests
     public async Task A_differently_cased_description_field_is_not_sent_twice()
     {
         RecordingProcessRunner twg = RecordingProcessRunner.RespondingTo(arguments => new ProcessResult(
-            0, arguments.Contains("query") ? """{"key":"PROJ-123"}""" : """{"key":"PROJ-999"}""", string.Empty));
+            0, arguments.Contains("get") ? RealisticGetAnswer("PROJ-123") : RealisticCreateAnswer, string.Empty));
         TwgJiraExecutor executor = new(twg.Runner);
         JiraWritePayload payload = new(
             "Dev Task", new Dictionary<string, string> { ["Description"] = "Fixes the thing" }, null);
@@ -221,7 +235,7 @@ public sealed class TwgJiraExecutorTests
     public async Task An_update_writes_the_fields_and_then_verifies_by_reading_back()
     {
         RecordingProcessRunner twg = RecordingProcessRunner.RespondingTo(arguments => new ProcessResult(
-            0, arguments.Contains("query") ? """{"key":"PROJ-123"}""" : "{}", string.Empty));
+            0, arguments.Contains("get") ? RealisticGetAnswer("PROJ-123") : "{}", string.Empty));
         TwgJiraExecutor executor = new(twg.Runner);
         JiraWritePayload payload = new(
             null, new Dictionary<string, string> { ["customfield_1"] = "value", ["description"] = "## Heading" }, null);
@@ -233,14 +247,14 @@ public sealed class TwgJiraExecutorTests
             twg.Calls.Should().Contain(call =>
                 call.Arguments.Contains("update") && call.Arguments.Contains("--id") && call.Arguments.Contains("customfield_1=value")).Subject;
         update.Arguments.Should().ContainInOrder("--description-format", "markdown");
-        twg.Calls.Should().Contain(call => call.Arguments.Contains("query"));
+        twg.Calls.Should().Contain(call => call.Arguments.Contains("get"));
     }
 
     [Fact]
     public async Task A_comment_never_transitions_or_closes_the_item()
     {
         RecordingProcessRunner twg = RecordingProcessRunner.RespondingTo(arguments => new ProcessResult(
-            0, arguments.Contains("query") ? """{"key":"PROJ-123"}""" : "{}", string.Empty));
+            0, arguments.Contains("get") ? RealisticGetAnswer("PROJ-123") : "{}", string.Empty));
         TwgJiraExecutor executor = new(twg.Runner);
 
         await executor.CommentAsync("PROJ-123", "The pull request merged.", "plain", "/repo", CancellationToken.None);
@@ -462,8 +476,49 @@ public sealed class TwgJiraExecutorTests
         JiraWritePayload roundTripped = JiraWritePayload.FromJson(payload.ToJson());
 
         roundTripped.WorkItemType.Should().Be("Dev Task");
-        roundTripped.Fields.Should().ContainKey("customfield_10010").WhoseValue.Should().Be("Value");
+        roundTripped.Fields.Should().ContainKey("customfield_10010").WhoseValue.Should().Be("\"Value\"");
         roundTripped.Comment.Should().Be("A comment");
         roundTripped.ProjectKey.Should().Be("DEV");
+    }
+
+    /// <summary>
+    /// A select-list option id composed as the JSON string "10501" — the ordinary shape for a
+    /// custom field, per the same acceptance criterion (Decisions Log #99) that hands field
+    /// composition to an agent in the first place — has to reach twg still carrying its quotes:
+    /// twg's own <c>--field</c> parses its argument as JSON when valid, so an unquoted "10501"
+    /// is read back as the number 10501 rather than the string it actually is (independent pre-PR
+    /// review, cycle 6).
+    /// </summary>
+    [Fact]
+    public async Task A_string_field_that_looks_numeric_reaches_twg_still_quoted()
+    {
+        RecordingProcessRunner twg = RecordingProcessRunner.RespondingTo(arguments => new ProcessResult(
+            0, arguments.Contains("get") ? RealisticGetAnswer("PROJ-123") : RealisticCreateAnswer, string.Empty));
+        TwgJiraExecutor executor = new(twg.Runner);
+        JiraWritePayload payload = JiraWritePayload.FromJson(
+            """{"workItemType":"Dev Task","fields":{"summary":"A card","customfield_10050":"10501"}}""");
+
+        await executor.CreateAsync(Project, payload, Guid.NewGuid(), "/repo", CancellationToken.None);
+
+        (string FileName, IReadOnlyList<string> Arguments, string WorkingDirectory) create =
+            twg.Calls.Should().Contain(call => call.Arguments.Contains("create")).Subject;
+        create.Arguments.Should().Contain("customfield_10050=\"10501\"");
+    }
+
+    /// <summary>
+    /// The same fidelity survives a round trip through <see cref="JiraWritePayload.ToJson"/> and
+    /// back — the shape a retry after an expired twg login actually reads (independent pre-PR
+    /// review, cycle 6): naive field-value re-serialization would double-escape a quoted string on
+    /// exactly this path.
+    /// </summary>
+    [Fact]
+    public void A_quoted_field_value_survives_a_json_round_trip_without_re_escaping()
+    {
+        JiraWritePayload payload = JiraWritePayload.FromJson(
+            """{"workItemType":"Dev Task","fields":{"customfield_10050":"10501"}}""");
+
+        JiraWritePayload roundTripped = JiraWritePayload.FromJson(payload.ToJson());
+
+        roundTripped.Fields.Should().ContainKey("customfield_10050").WhoseValue.Should().Be("\"10501\"");
     }
 }

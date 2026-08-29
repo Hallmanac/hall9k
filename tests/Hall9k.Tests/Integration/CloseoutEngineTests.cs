@@ -2352,8 +2352,8 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
         await NewEngine(store, node, inspector, worktrees, github: twg).PollOnceAsync(cts.Token);
 
         // The write goes through the same surface an operator's own h9k task write-jira uses
-        // (Brian's design, 2026-08-28): twg carries out the comment, then a query reads the card
-        // back to verify it landed before hall9k records the outcome.
+        // (Brian's design, 2026-08-28): twg carries out the comment, then a direct-by-key get
+        // reads the card back to verify it landed before hall9k records the outcome.
         (string FileName, IReadOnlyList<string> Arguments, string WorkingDirectory) commentCall =
             twg.Calls.Should().ContainSingle(call => call.Arguments.Contains("--body")).Subject;
         commentCall.FileName.Should().Be("twg");
@@ -2367,7 +2367,7 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
                 "a card that silently gains a comment and never moves reads like an integration that half worked");
 
         twg.Calls.Should().Contain(
-            call => call.Arguments.Contains("query"), "the write is read back and verified before it is recorded");
+            call => call.Arguments.Contains("get"), "the write is read back and verified before it is recorded");
     }
 
     /// <summary>
@@ -2636,14 +2636,14 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
             NullLogger<CloseoutEngine>.Instance);
 
     /// <summary>
-    /// A twg fake whose query calls answer with the card this test cares about, and whose every
-    /// other call (a create, an update, a comment) answers success with nothing to parse — the
-    /// same JSON-shape distinction <see cref="TwgJiraExecutor"/> itself makes between a write and
-    /// its own read-back.
+    /// A twg fake whose get calls (the write's own mandatory read-back verification) answer with
+    /// the card this test cares about, and whose every other call (a create, an update, a comment)
+    /// answers success with nothing to parse — the same JSON-shape distinction
+    /// <see cref="TwgJiraExecutor"/> itself makes between a write and its own read-back.
     /// </summary>
     private static RecordingProcessRunner TwgRunner(string key) => RecordingProcessRunner.RespondingTo(
         arguments => new ProcessResult(
-            0, arguments.Contains("query") ? $$"""{"key":"{{key}}"}""" : "{}", string.Empty));
+            0, arguments.Contains("get") ? $$"""{"key":"{{key}}"}""" : "{}", string.Empty));
 
     /// <summary>
     /// Leaves the watch set as the test found it. One node and one database back this whole
