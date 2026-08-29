@@ -52,4 +52,18 @@ public sealed class TaskReviseCommandTests
 
         TaskReviseCommand.NamesCurrentEpic("-", currentEpicId).Should().BeFalse();
     }
+
+    [Fact]
+    public void A_short_fragment_that_only_partially_overlaps_the_current_epic_is_not_a_match()
+    {
+        // adversarial review, cycle 1: a prefix/suffix substring match was too permissive — a
+        // fragment aimed at a *different* epic could be swallowed as a no-op whenever it happened
+        // to also overlap the current epic's id. Only the exact rendered short form (or the full
+        // id) may short-circuit; anything shorter must fall through to the resolver instead.
+        Guid currentEpicId = DomainId.New();
+        string shortId = DomainId.Short(currentEpicId);
+        string partialFragment = shortId[..3];
+
+        TaskReviseCommand.NamesCurrentEpic(partialFragment, currentEpicId).Should().BeFalse();
+    }
 }
