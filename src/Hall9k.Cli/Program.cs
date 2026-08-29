@@ -32,6 +32,22 @@ DateTimeOffset lastCancelKeyPressAt = DateTimeOffset.MinValue;
 TimeSpan escalationWindow = TimeSpan.FromSeconds(30);
 Console.CancelKeyPress += (_, e) =>
 {
+    if (InteractiveChildGuard.Attached)
+    {
+        // h9k task work's own attached Claude Code child shares this terminal's foreground
+        // process group, so the OS already delivers this same SIGINT to it directly and
+        // independently of this handler — including the double-tap that is Claude Code's own
+        // exit gesture. Repeated Ctrl-C here is legitimate input to that child, not an
+        // instruction to kill h9k, so every press is suppressed rather than counted toward
+        // escalation: letting the second one fall through to SIGINT's default action would
+        // terminate h9k before it records the session as ended, leaving InteractiveSessionStarted
+        // unpaired (adversarial review, cycle 4) — precisely what the escalation window exists
+        // elsewhere to avoid, not what it should cause here.
+        e.Cancel = true;
+        cancellation.Cancel();
+        return;
+    }
+
     DateTimeOffset now = DateTimeOffset.UtcNow;
     if (now - lastCancelKeyPressAt > escalationWindow)
     {

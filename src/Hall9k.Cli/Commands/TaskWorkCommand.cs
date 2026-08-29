@@ -482,8 +482,15 @@ public sealed class TaskWorkCommand : Hall9kAsyncCommand<TaskWorkCommand.Setting
         // as written. Claude Code starts interactively (no -p) with this as the opening message.
         process.StartInfo.ArgumentList.Add(prompt);
 
+        // Entered before Start() and held for the child's whole lifetime: Program.cs's global
+        // Ctrl-C handler reads this to suppress its own escalate-to-terminate window while this
+        // child is attached, since repeated Ctrl-C here is legitimate input to it — including
+        // the double-tap that is Claude Code's own exit gesture — not an instruction to kill h9k
+        // (adversarial review, cycle 4: a second press used to fall through to SIGINT's default
+        // action and terminate h9k before AppendSessionEndedAsync ever ran).
+        using IDisposable interactiveChildScope = InteractiveChildGuard.Enter();
         process.Start();
-        DateTimeOffset startedAt = DateTimeOffset.UtcNow;
+        DateTimeOffset startedAt = ReadStartedAt(process);
         try
         {
             await onStarted(process.Id, startedAt);
@@ -508,9 +515,9 @@ public sealed class TaskWorkCommand : Hall9kAsyncCommand<TaskWorkCommand.Setting
         // (Program.cs's CancelKeyPress handler), but killing the tree in response used to tear
         // down a session the child chose to keep running (conformance + adversarial review,
         // cycle 1). Falling back to an unconditional wait leaves that choice with the child,
-        // exactly as an unwrapped `claude` invocation would; a second Ctrl-C past this point
-        // terminates h9k itself (Program.cs no longer suppresses it), and the terminal delivers
-        // that one to the child directly too.
+        // exactly as an unwrapped `claude` invocation would; every further Ctrl-C past this point
+        // is suppressed by the guard above too, so it reaches only the child, never h9k's own
+        // SIGINT default action.
         try
         {
             await process.WaitForExitAsync(cancellationToken);
@@ -525,4 +532,28 @@ public sealed class TaskWorkCommand : Hall9kAsyncCommand<TaskWorkCommand.Setting
 
     private static string ClaudeBinary() =>
         Environment.GetEnvironmentVariable("HALL9K_CLAUDE_PATH") ?? "claude";
+
+    /// <summary>
+    /// Mirrors Hall9k.Daemon.ProcessManagement.ProcessManagerBase.ReadStartedAt exactly — not
+    /// referenced, because the CLI cannot reference the daemon project (Reference graph:
+    /// Cli -> Domain + Connectors). Reads the just-started process's own start time rather than
+    /// stamping <see cref="DateTimeOffset.UtcNow"/>: stamping "now" risks a false match in
+    /// InteractiveSessionLiveness.IsAlive if the child dies within milliseconds of Start() and
+    /// the OS recycles its pid for an unrelated process inside the 2-second tolerance both
+    /// checks use (adversarial review, cycle 4). DateTimeOffset.MinValue is recorded instead of
+    /// a plausible-looking guess when the process's own start time cannot be read — AGENTS.md's
+    /// "never guess at unobserved facts" — which guarantees no later liveness check ever matches
+    /// a real process's start time against it.
+    /// </summary>
+    private static DateTimeOffset ReadStartedAt(Process process)
+    {
+        try
+        {
+            return new DateTimeOffset(process.StartTime.ToUniversalTime(), TimeSpan.Zero);
+        }
+        catch (Exception exception) when (exception is InvalidOperationException or Win32Exception)
+        {
+            return DateTimeOffset.MinValue;
+        }
+    }
 }
