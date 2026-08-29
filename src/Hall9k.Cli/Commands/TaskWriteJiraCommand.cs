@@ -1,6 +1,7 @@
 using System.ComponentModel;
 using Hall9k.Cli.Infrastructure;
 using Hall9k.Connectors.WorkItems;
+using Hall9k.Domain.Features.Connection;
 using Hall9k.Domain.Features.Project.Projections;
 using Hall9k.Domain.Features.Tasks;
 using Hall9k.Domain.Features.Tasks.Projections;
@@ -91,7 +92,16 @@ public sealed class TaskWriteJiraCommand : Hall9kAsyncCommand<TaskWriteJiraComma
             ?? throw new DomainNotFoundException($"Task {taskId} names a project that is not registered.");
 
         BootstrapContext context = await NodeBootstrap.EnsureAsync(session, cancellationToken);
-        Uri? site = (await WorkItemConnections.FindJiraConnectionAsync(session, cancellationToken))?.SiteUrl;
+
+        // Every other Jira write surface (link-jira, from-jira, push-to-jira,
+        // CardPublicationEngine) refuses outright with no connection registered rather than
+        // falling through to twg's own ambient tenant, and this is the sole executor of every
+        // Jira write, so it holds to the same rule: a card filed, verified, and recorded against
+        // the wrong tenant is worse than a refusal naming the fix (independent pre-PR review,
+        // adversarial lens, cycle 9).
+        ConnectionDetails? connection = await WorkItemConnections.FindJiraConnectionAsync(session, cancellationToken);
+        Uri site = connection?.SiteUrl
+            ?? throw new DomainNotFoundException(WorkItemConnections.NoJiraConnection);
 
         JiraWriteAttemptResult result = await JiraWriteCoordinator.SubmitAsync(
             session, taskId, operation, settings.Issue, payload, project.JiraProjectKey, context.OwnerId,
