@@ -56,12 +56,15 @@ public enum TwgAuthProbeResult
 /// <para>
 /// twg's exact CLI grammar comes from live <c>twg help</c> and <c>twg help describe</c> on the
 /// machine it runs on: work items live under <c>twg jira workitem</c>
-/// (<c>create</c>/<c>update</c>/<c>query</c>/<c>comment create</c>), never the bare
+/// (<c>create</c>/<c>update</c>/<c>query</c>/<c>get</c>/<c>comment create</c>), never the bare
 /// <c>twg jira create/update/search</c> an earlier version of this class assumed and which does
 /// not exist on any installed twg (independent pre-PR review, cycle 1) — AGENTS.md's "never guess
 /// at unobserved facts" is written for exactly this. <c>create</c> takes <c>--space</c> for the
 /// project and first-class <c>--summary</c>/<c>--description</c>; <c>update</c> takes
-/// <c>--id</c> rather than a positional key. <c>--output json</c> never prints raw JSON to
+/// <c>--id</c> rather than a positional key; <c>get</c> takes a positional issue key and is a
+/// direct-by-key product-API read, unlike <c>query</c>'s JQL search against an index that updates
+/// asynchronously — which is why every write's own read-back verification runs <c>get</c>, not
+/// <c>query</c> (independent pre-PR review, cycle 6). <c>--output json</c> never prints raw JSON to
 /// stdout by itself — every call still carries a YAML summary envelope naming a temp file that
 /// holds the real payload, which is what <see cref="ExtractFirstKey"/> reads. Every call also
 /// names <c>--site</c> explicitly and, wherever it carries a description or a comment body,
@@ -224,19 +227,27 @@ public sealed class TwgJiraExecutor(ProcessRunner? runner = null, Uri? site = nu
     }
 
     /// <summary>
-    /// twg's own claim, read back through a fresh search rather than trusted — the verified
-    /// read-back every acceptance criterion for this feature names explicitly. Meaningful proof
-    /// for a create, whose whole claim is that the card now exists; for an update or a comment
-    /// the identical search can only re-confirm a fact already true before the write ran, so
+    /// twg's own claim, read back through a fresh, direct-by-key read rather than trusted — the
+    /// verified read-back every acceptance criterion for this feature names explicitly. Meaningful
+    /// proof for a create, whose whole claim is that the card now exists; for an update or a
+    /// comment the identical read can only re-confirm a fact already true before the write ran, so
     /// <paramref name="confirmsExistenceOnly"/> keeps the recorded summary honest about which of
     /// the two it actually is.
+    /// <para>
+    /// <c>jira workitem get</c>, not <c>jira workitem query</c>: a query is a JQL search against
+    /// Jira's own search index, which updates asynchronously, so a search run milliseconds after a
+    /// create can find nothing even though the card genuinely exists — misreading a real success as
+    /// a failure and recording a terminal <c>JiraWriteFailed</c> for a card that is actually sitting
+    /// on the board (independent pre-PR review, cycle 6). <c>get</c> is documented as a direct
+    /// product-API read by issue key, with no index in between.
+    /// </para>
     /// </summary>
     private async Task<TwgWriteResult> VerifyAsync(
         string issueKey, string workingDirectory, CancellationToken cancellationToken, string verb,
         bool confirmsExistenceOnly)
     {
         ProcessResult result = await RunAsync(
-            ["jira", "workitem", "query", "--jql", $"key = {issueKey}", "--output", "json", "--output-summary", "stats"],
+            ["jira", "workitem", "get", issueKey, "--output", "json", "--output-summary", "stats"],
             workingDirectory, cancellationToken);
         string? found = ExtractFirstKey(result.StandardOutput);
         if (found is null)
@@ -310,7 +321,31 @@ public sealed class TwgJiraExecutor(ProcessRunner? runner = null, Uri? site = nu
 
         string value = fields[key];
         fields.Remove(key);
-        return value;
+        return DecodeFieldText(value);
+    }
+
+    /// <summary>
+    /// Unwraps a field's own raw JSON text (<see cref="JiraWritePayload.FromJson"/> keeps a
+    /// composed field's exact JSON — quotes and all — so a custom field forced as a string
+    /// survives, unmangled, to twg's own JSON-coercing <c>--field</c>) back to plain content for
+    /// <c>--summary</c>/<c>--description</c>, which are ordinary text flags twg never re-parses as
+    /// JSON. A value that is not itself valid JSON — a payload built directly rather than through
+    /// <see cref="JiraWritePayload.FromJson"/>, this file's own tests among them — passes through
+    /// unchanged, the plain text it always was.
+    /// </summary>
+    private static string DecodeFieldText(string value)
+    {
+        try
+        {
+            using JsonDocument document = JsonDocument.Parse(value);
+            return document.RootElement.ValueKind == JsonValueKind.String
+                ? document.RootElement.GetString() ?? value
+                : value;
+        }
+        catch (JsonException)
+        {
+            return value;
+        }
     }
 
     /// <summary>
@@ -499,9 +534,10 @@ public sealed class TwgJiraExecutor(ProcessRunner? runner = null, Uri? site = nu
 
     /// <summary>
     /// The key twg's own answer carries, tolerant of the shapes actually observed: a query's
-    /// <c>data.issues[]</c>, a get's <c>data[]</c>, or a create/update's own object directly under
-    /// <c>data</c> — the first entity found with a "key" property, searched in that order of
-    /// directness rather than assumed to be any one of them.
+    /// <c>data.issues[]</c>, a single-key get's <c>data</c> object directly, a batch get's
+    /// <c>data.items[].data</c>, or a create's own <c>data.issue</c> — the first entity found with
+    /// a "key" property, searched in that order of directness rather than assumed to be any one of
+    /// them.
     /// </summary>
     private static string? ExtractFirstKey(string envelopeOutput)
     {
@@ -546,9 +582,12 @@ public sealed class TwgJiraExecutor(ProcessRunner? runner = null, Uri? site = nu
 
     /// <summary>
     /// Depth-first for the first object carrying a "key" string: itself, its first element if it
-    /// is an array, or the first array-valued property it has (twg's own <c>data.issues</c> shape)
-    /// — deliberately not a recursive scan of every nested field, which would just as readily
-    /// return a parent issue's own "key" nested two levels down inside a subtask's answer.
+    /// is an array, its first array-valued property (twg's own <c>data.issues</c> shape), or — a
+    /// create's own <c>data.issue.key</c>, verified against the installed binary's create
+    /// implementation (independent pre-PR review, cycle 6) — its first object-valued property,
+    /// tried only once no array-valued property has already produced a match. Deliberately not a
+    /// fully recursive scan of every nested field, which would just as readily return a parent
+    /// issue's own "key" nested two levels down inside a subtask's answer.
     /// </summary>
     private static JsonElement? FindEntity(JsonElement value)
     {
@@ -568,6 +607,14 @@ public sealed class TwgJiraExecutor(ProcessRunner? runner = null, Uri? site = nu
             foreach (JsonProperty property in value.EnumerateObject())
             {
                 if (property.Value.ValueKind == JsonValueKind.Array && FindEntity(property.Value) is { } found)
+                {
+                    return found;
+                }
+            }
+
+            foreach (JsonProperty property in value.EnumerateObject())
+            {
+                if (property.Value.ValueKind == JsonValueKind.Object && FindEntity(property.Value) is { } found)
                 {
                     return found;
                 }
