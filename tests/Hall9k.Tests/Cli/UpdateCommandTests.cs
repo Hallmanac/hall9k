@@ -75,6 +75,134 @@ public sealed class UpdateCommandTests : IDisposable
     }
 
     [Fact]
+    public async Task Updating_over_an_existing_install_replaces_its_binaries()
+    {
+        if (ReleasePlatform.CurrentRid() is null)
+        {
+            return;
+        }
+
+        FakeGh first = FakeGh.ForCurrentPlatform(workspace, version: "1.2.3", skillName: "pr-summary");
+        (await Run(first.Runner)).Should().Be(0);
+
+        string binary = Path.Combine(DaemonRuntime.BinDirectory, InstallCommand.BinaryFileName("h9k"));
+        File.ReadAllText(binary).Should().Be("cli\n");
+
+        // The interesting case for SwapIntoPlace: bin already exists, so this exercises the
+        // branch that retires whatever was there before — a directory-level rename on Unix,
+        // a file-by-file merge on Windows (InstallCommand.SwapFilesIntoPlace) — rather than
+        // the fresh-install branch the first run above just took.
+        string secondWorkspace = Path.Combine(Path.GetTempPath(), $"h9k-update-workspace-{Path.GetRandomFileName()}");
+        Directory.CreateDirectory(secondWorkspace);
+        try
+        {
+            FakeGh second = FakeGh.ForCurrentPlatform(
+                secondWorkspace, version: "1.2.4", skillName: "pr-summary", cliContent: "cli v2\n", daemonContent: "daemon v2\n");
+
+            (await Run(second.Runner)).Should().Be(0);
+
+            File.ReadAllText(binary).Should().Be("cli v2\n");
+            File.ReadAllText(Path.Combine(DaemonRuntime.BinDirectory, InstallCommand.BinaryFileName("h9kd")))
+                .Should().Be("daemon v2\n");
+        }
+        finally
+        {
+            InstallCommand.TryDelete(secondWorkspace);
+        }
+    }
+
+    [Fact]
+    public async Task Updating_over_a_locked_binary_on_windows_retires_it_instead_of_failing()
+    {
+        if (!OperatingSystem.IsWindows() || ReleasePlatform.CurrentRid() is null)
+        {
+            // The retire-aside path this test exercises (InstallCommand.RetireFile) only runs
+            // on Windows; SwapIntoPlace takes the directory-rename branch everywhere else.
+            return;
+        }
+
+        FakeGh first = FakeGh.ForCurrentPlatform(workspace, version: "1.2.3", skillName: "pr-summary");
+        (await Run(first.Runner)).Should().Be(0);
+
+        string binary = Path.Combine(DaemonRuntime.BinDirectory, InstallCommand.BinaryFileName("h9k"));
+        string retired = binary + ".old";
+
+        string secondWorkspace = Path.Combine(Path.GetTempPath(), $"h9k-update-workspace-{Path.GetRandomFileName()}");
+        Directory.CreateDirectory(secondWorkspace);
+        try
+        {
+            FakeGh second = FakeGh.ForCurrentPlatform(
+                secondWorkspace, version: "1.2.4", skillName: "pr-summary", cliContent: "cli v2\n", daemonContent: "daemon v2\n");
+
+            // Models a running h9k.exe the same way UninstallCommandTests does: the OS loader
+            // maps a running module's image with FILE_SHARE_DELETE granted, which is what lets
+            // its name be renamed aside while it is still mapped, even though overwriting its
+            // bytes in place is refused — a plain FileShare.Read handle would be stricter than
+            // reality and block the rename this test means to exercise too.
+            using (new FileStream(binary, FileMode.Open, FileAccess.Read, FileShare.Read | FileShare.Delete))
+            {
+                (await Run(second.Runner)).Should().Be(0);
+            }
+
+            File.Exists(retired).Should().BeTrue(
+                "the locked binary should have been retired aside to a .old sibling, not deleted outright or "
+                    + "left blocking the update");
+            File.ReadAllText(retired).Should().Be("cli\n", "the retired file is the version that was actually running");
+            File.ReadAllText(binary).Should().Be("cli v2\n", "the new version takes the locked file's name once it is retired aside");
+        }
+        finally
+        {
+            InstallCommand.TryDelete(secondWorkspace);
+        }
+    }
+
+    [Fact]
+    public async Task Updating_with_the_daemon_running_retires_the_locked_daemon_binary_instead_of_failing()
+    {
+        if (!OperatingSystem.IsWindows() || ReleasePlatform.CurrentRid() is null)
+        {
+            // The retire-aside path this test exercises (InstallCommand.RetireFile) only runs
+            // on Windows; SwapIntoPlace takes the directory-rename branch everywhere else.
+            return;
+        }
+
+        FakeGh first = FakeGh.ForCurrentPlatform(workspace, version: "1.2.3", skillName: "pr-summary");
+        (await Run(first.Runner)).Should().Be(0);
+
+        string daemonBinary = Path.Combine(DaemonRuntime.BinDirectory, InstallCommand.BinaryFileName("h9kd"));
+        string retired = daemonBinary + ".old";
+
+        string secondWorkspace = Path.Combine(Path.GetTempPath(), $"h9k-update-workspace-{Path.GetRandomFileName()}");
+        Directory.CreateDirectory(secondWorkspace);
+        try
+        {
+            FakeGh second = FakeGh.ForCurrentPlatform(
+                secondWorkspace, version: "1.2.4", skillName: "pr-summary", cliContent: "cli v2\n", daemonContent: "daemon v2\n");
+
+            // Same share-delete modeling as the h9k.exe test above, held on h9kd(.exe) instead:
+            // the per-file retire logic in InstallCommand is generic (SwapFilesIntoPlace retires
+            // whatever it cannot overwrite, by name, never by which binary it is), so a running
+            // daemon needs no special pre-swap stop step — this is the acceptance criterion that
+            // claim rests on, exercised directly rather than only through h9k's own binary.
+            using (new FileStream(daemonBinary, FileMode.Open, FileAccess.Read, FileShare.Read | FileShare.Delete))
+            {
+                (await Run(second.Runner)).Should().Be(0);
+            }
+
+            File.Exists(retired).Should().BeTrue(
+                "the locked daemon binary should have been retired aside to a .old sibling, not deleted outright "
+                    + "or left blocking the update");
+            File.ReadAllText(retired).Should().Be("daemon\n", "the retired file is the version that was actually running");
+            File.ReadAllText(daemonBinary).Should().Be(
+                "daemon v2\n", "the new version takes the locked daemon binary's name once it is retired aside");
+        }
+        finally
+        {
+            InstallCommand.TryDelete(secondWorkspace);
+        }
+    }
+
+    [Fact]
     public async Task A_tampered_download_is_refused_before_anything_is_installed()
     {
         if (ReleasePlatform.CurrentRid() is null)
@@ -168,13 +296,14 @@ public sealed class UpdateCommandTests : IDisposable
             this.archiveFileName = archiveFileName;
         }
 
-        public static FakeGh ForCurrentPlatform(string workspace, string version, string skillName)
+        public static FakeGh ForCurrentPlatform(
+            string workspace, string version, string skillName, string cliContent = "cli\n", string daemonContent = "daemon\n")
         {
             string rid = ReleasePlatform.CurrentRid()!;
             string payload = Path.Combine(workspace, "payload");
             Directory.CreateDirectory(Path.Combine(payload, "skills", skillName));
-            File.WriteAllText(Path.Combine(payload, InstallCommand.BinaryFileName("h9k")), "cli\n");
-            File.WriteAllText(Path.Combine(payload, InstallCommand.BinaryFileName("h9kd")), "daemon\n");
+            File.WriteAllText(Path.Combine(payload, InstallCommand.BinaryFileName("h9k")), cliContent);
+            File.WriteAllText(Path.Combine(payload, InstallCommand.BinaryFileName("h9kd")), daemonContent);
             File.WriteAllText(Path.Combine(payload, "VERSION"), version);
             File.WriteAllText(Path.Combine(payload, "skills", skillName, "SKILL.md"), $"# {skillName}\n");
 
