@@ -4,6 +4,7 @@ using System.Runtime.InteropServices;
 using System.Runtime.Versioning;
 using System.Security;
 using Hall9k.Cli.DaemonControl;
+using Hall9k.Cli.Diagnostics;
 using Hall9k.Cli.Infrastructure;
 using Hall9k.Cli.ProjectHomes;
 using Hall9k.Domain.Infrastructure.Persistence;
@@ -141,6 +142,7 @@ public sealed class InstallCommand : Hall9kAsyncCommand<InstallCommand.Settings>
         bool linkOntoPath = true,
         bool writeDefaultConnectionStringIfUnconfigured = false,
         string? connectionStringStartDirectory = null,
+        Func<CancellationToken, Task<bool>>? portListeningProbe = null,
         CancellationToken cancellationToken = default)
     {
         // The actual last point before staging becomes ~/.hall9k/bin, run for every caller —
@@ -177,7 +179,8 @@ public sealed class InstallCommand : Hall9kAsyncCommand<InstallCommand.Settings>
 
         if (writeDefaultConnectionStringIfUnconfigured)
         {
-            await WriteDefaultConnectionStringIfUnconfiguredAsync(connectionStringStartDirectory, cancellationToken);
+            await WriteDefaultConnectionStringIfUnconfiguredAsync(
+                connectionStringStartDirectory, portListeningProbe, cancellationToken);
         }
 
         if (skillsSource is not null)
@@ -252,20 +255,67 @@ public sealed class InstallCommand : Hall9kAsyncCommand<InstallCommand.Settings>
     /// invoked from); <c>null</c> falls back to the current directory, same as any other
     /// command's connection-string resolution. <c>--from-release</c> has no project checkout
     /// to anchor to at all — that gap, and why this write only ever runs from <c>h9k
-    /// install</c> and never from <see cref="UpdateCommand"/>, is on <see cref="FinishAsync"/>'s
-    /// <c>writeDefaultConnectionStringIfUnconfigured</c> parameter (cycle-1 review: an
-    /// operator relying purely on a <c>.hall9k-connection</c> override, on a machine installed
-    /// before this write existed, could otherwise have it permanently shadowed by a plain
-    /// `h9k update` run from outside their project — the platform config file this writes
-    /// outranks the override unconditionally, everywhere, forever, once written).
+    /// install</c> and never from <see cref="UpdateCommand"/>, is explained inline where
+    /// <see cref="UpdateCommand.RunAsync"/> calls <see cref="FinishAsync"/> (cycle-1 review:
+    /// an operator relying purely on a <c>.hall9k-connection</c> override, on a machine
+    /// installed before this write existed, could otherwise have it permanently shadowed by a
+    /// plain `h9k update` run from outside their project — the platform config file this
+    /// writes outranks the override unconditionally, everywhere, forever, once written).
     /// </para>
+    /// <para>
+    /// The override tier is the one part of the precedence chain that is directory-dependent,
+    /// so <paramref name="startDirectory"/> alone is not enough to call nothing configured:
+    /// <c>--repo</c> names the repository being published <em>from</em>, which is not
+    /// necessarily the directory the operator is actually sitting in, and checking only one
+    /// of the two missed the other's own override (cycle-1 review, both directions — the
+    /// walk from <c>repoRoot</c> alone misses an override the operator's actual working
+    /// directory carries, exactly the shape <c>UpdateCommand</c>'s comment above already
+    /// warns about for the wider case). The current working directory is always checked in
+    /// addition to whatever <paramref name="startDirectory"/> names. This narrows the gap; it
+    /// does not close it — an override that sits under neither directory is still invisible
+    /// to this check, the same inherent limit <c>UpdateCommand</c> disables the write over
+    /// entirely rather than guess past.
+    /// </para>
+    /// <paramref name="portListeningProbe"/> stands in for the real port-5432 check below —
+    /// injectable so a test can assert the unconfigured-machine path without depending on
+    /// whether the host actually running the test suite happens to have Postgres on 5432
+    /// (a dev machine running this repository's own <c>docker compose</c> Postgres, say);
+    /// <c>null</c> uses the real <see cref="ContainerRuntimeProbe.PortListeningAsync"/> check.
     /// </summary>
     private static async Task WriteDefaultConnectionStringIfUnconfiguredAsync(
-        string? startDirectory, CancellationToken cancellationToken)
+        string? startDirectory, Func<CancellationToken, Task<bool>>? portListeningProbe, CancellationToken cancellationToken)
     {
         ConnectionStringResolution resolution = Hall9kDatabase.Resolve(startDirectory: startDirectory);
         if (resolution.Origin != ConnectionStringOrigin.None)
         {
+            return;
+        }
+
+        string currentDirectory = Directory.GetCurrentDirectory();
+        if (startDirectory is not null
+            && !string.Equals(Path.GetFullPath(startDirectory), Path.GetFullPath(currentDirectory), StringComparison.OrdinalIgnoreCase)
+            && Hall9kDatabase.Resolve(startDirectory: currentDirectory).Origin != ConnectionStringOrigin.None)
+        {
+            return;
+        }
+
+        // A machine with something already listening on the default port is not "nothing
+        // configured" in the sense this write means to fix — it may be a native Postgres the
+        // operator already runs there (an explicitly supported deployment: docs/operations.md
+        // takes no position on where Postgres runs, and h9k doctor names this exact case).
+        // Writing install's own compose credentials over that would replace doctor's honest
+        // "something is already listening" diagnosis with a manufactured authentication
+        // failure against a credential install itself invented (cycle-1 review; AGENTS.md:
+        // never guess at unobserved facts). Leave it to h9k doctor's own diagnosis instead.
+        Func<CancellationToken, Task<bool>> probe = portListeningProbe
+            ?? (token => ContainerRuntimeProbe.PortListeningAsync("localhost", 5432, token));
+        if (await probe(cancellationToken))
+        {
+            AnsiConsole.MarkupLine(
+                "[dim]Something is already listening on localhost:5432 — left unconfigured rather than "
+                + $"guessing it is safe to write {Hall9kDatabase.DefaultConnectionString.EscapeMarkup()} there. "
+                + $"Run h9k doctor to diagnose what is listening, or set {Hall9kDatabase.EnvironmentVariableName} "
+                + "yourself if it is already your Postgres.[/]");
             return;
         }
 
