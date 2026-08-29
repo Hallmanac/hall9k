@@ -211,7 +211,7 @@ public sealed class ReviewEngine(
                     // since whatever fix's own — possibly scoped — reverify last ran it, whether
                     // the loop is concluding on its own or a human overruled it. A human's
                     // merge-ready is exempt only from another agent's fresh-context read
-                    // (MaySettle's own doc says why that half is a human's call to skip); it is
+                    // (MaySettleReason's own doc says why that half is a human's call to skip); it is
                     // not a claim that the suite ran, so it never substitutes for this gate
                     // (independent pre-PR review, cycle 1 — a human resolving a park that followed
                     // a scoped Verify gate previously reached SettleAsync here having never run the
@@ -297,11 +297,11 @@ public sealed class ReviewEngine(
                         // dispatching a whole extra FinalFullPass here re-reads a byte-identical tip a
                         // second time and spends it against MaxFinalFullPassRounds for nothing). The
                         // gate above is what neither case ever covered, and it has now actually run,
-                        // so the run may settle. This is term-for-term MaySettle (the Reverify branch's
-                        // own settle check below calls it by name) rather than a second copy of its
-                        // logic, so the two branches cannot drift apart the next time either grows a
+                        // so the run may settle. This is term-for-term MaySettleReason (the Reverify
+                        // branch's own settle check below calls it by name) rather than a second copy of
+                        // its logic, so the two branches cannot drift apart the next time either grows a
                         // condition (independent pre-PR review, cycle 5, conformance lens). Because
-                        // MaySettle's own human clause takes this short-circuit unconditionally, a
+                        // MaySettleReason's own human clause takes this short-circuit unconditionally, a
                         // human's merge-ready resolve now settles straight from here without ever
                         // reaching FinalFullPassCapReached below — see RunAggregate.Apply(ReviewParkResolved)'s
                         // own note on what that means for its FinalFullPassRounds reset.
@@ -323,7 +323,7 @@ public sealed class ReviewEngine(
                         // false) always takes that short-circuit and was never about to spend a round,
                         // so checking the cap ahead of it parked a run that had converged clean
                         // (cycle-4 finding). The same ordering also means a human's own merge-ready
-                        // resolve — MaySettle's other unconditional clause — never reaches this check
+                        // resolve — MaySettleReason's other unconditional clause — never reaches this check
                         // at all (cycle-5 finding): the cap bounds only the automatic
                         // scoped-then-full-then-fix iteration, never a human-ended run.
                         if (FinalFullPassCapReached(run))
@@ -2484,17 +2484,30 @@ public sealed class ReviewEngine(
     /// gives the settle log (<c>LogSettleReason</c>) a name to print: an operator reading it can tell
     /// "the bar closed this out" from "a reviewer read the tip and found nothing at all" instead of
     /// inferring it from the residual tally. Origin (2026-08-29): runs 514ffa6c and 430decdb parked
-    /// at <see cref="FinalFullPassCapReached"/> although each one's last final pass had already
-    /// concluded merge-ready with nothing but low-severity findings — the bar's own definition of
-    /// done — because nothing before this named the case, so a reviewer restating a below-bar
-    /// finding on its way to that same clean verdict read as "still oscillating" rather than as the
-    /// settle it already was everywhere else in this method's own logic.
+    /// at <see cref="FinalFullPassCapReached"/>, and the operator dismissed both in seconds with no
+    /// changes because the tip each left behind read as fully below the fix bar. This clause does
+    /// not itself change which runs reach that park, though (independent pre-PR review, cycles 1
+    /// and 2, conformance lens), and the reason is the ordering rather than anything about those
+    /// two runs: <see cref="FinalFullPassCapReached"/> is only ever consulted once this method has
+    /// already returned null, so on every route that reaches the cap <c>Bar</c> was false by
+    /// construction, and every state <c>Bar</c> does match was already matched by <c>NothingOwed</c>
+    /// on <c>main</c>. What changes here is legibility, not reachability: the settle log can now say
+    /// the severity bar closed a below-bar-only final pass out by name instead of an operator
+    /// inferring it from the residual tally. Why runs 514ffa6c and 430decdb reached the cap at all
+    /// is a separate, still-open question this task does not address, and this note rules no route
+    /// out: a run can arrive at that check with <c>FixDispatchedThisCycle</c> false and
+    /// <c>LastReviewVerdict</c> already <see cref="ReviewVerdict.MergeReady"/>, straight off a lone
+    /// <see cref="ReviewMode.Verify"/> cycle that concluded its last active track, because the
+    /// <c>CurrentCycleMode</c> conjunct <c>Bar</c> and <c>NothingOwed</c> share excludes a
+    /// <c>Verify</c> tip on its own.
     /// </para>
     /// </summary>
     private static SettleReason? MaySettleReason(RunAggregate run) => true switch
     {
         _ when run.HumanEndedTheLoop => SettleReason.Human,
-        _ when run.CurrentCycleMode == ReviewMode.FinalFullPass && run.LastReviewVerdict == ReviewVerdict.MergeReady =>
+        _ when run.CurrentCycleMode == ReviewMode.FinalFullPass
+            && run.LastReviewVerdict == ReviewVerdict.MergeReady
+            && run.CompletedReviewPasses.Any(pass => pass.Findings.Count > 0) =>
             SettleReason.Bar,
         _ when run.CurrentCycleMode != ReviewMode.Verify && !run.FixDispatchedThisCycle => SettleReason.NothingOwed,
         _ => null,
