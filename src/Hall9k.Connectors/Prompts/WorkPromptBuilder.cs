@@ -355,8 +355,10 @@ public static class WorkPromptBuilder
             }
         }
 
-        prompt.AppendLine("  0. Record the pre-reset tip: `git rev-parse HEAD`. Step 3 below checks against");
-        prompt.AppendLine("     it, so this is not optional bookkeeping.");
+        prompt.AppendLine("  0. With every last increment committed as a checkpoint — `git status` must show");
+        prompt.AppendLine("     nothing uncommitted before this step, or step 3 below will fail against a tip");
+        prompt.AppendLine("     that never held it — record the pre-reset tip: `git rev-parse HEAD`. Step 3");
+        prompt.AppendLine("     checks against it, so this is not optional bookkeeping.");
         prompt.AppendLine($"  1. Reset to the branch's own fork point, not the tip of `origin/{baseBranch}`");
         prompt.AppendLine("     itself: that ref lives in the shared repository and can move during this");
         prompt.AppendLine("     session (another worktree's fetch, a closeout branch cleanup), and resetting");
