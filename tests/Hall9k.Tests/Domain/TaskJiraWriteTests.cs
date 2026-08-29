@@ -93,6 +93,21 @@ public sealed class TaskJiraWriteTests
         roundTripped.EffectiveFormat.Should().Be("plain");
     }
 
+    /// <summary>
+    /// The intent recorded on <see cref="Events.JiraWriteRequested"/> is the payload exactly as
+    /// submitted — never a derived reading of it. <see cref="JiraWritePayload.EffectiveFormat"/>
+    /// is computed from <c>Format</c>, not part of what was composed, so it must not leak into the
+    /// serialized audit record even though it is a public property (independent pre-PR review,
+    /// cycle 3).
+    /// </summary>
+    [Fact]
+    public void The_serialized_payload_never_carries_the_computed_effective_format()
+    {
+        JiraWritePayload payload = new(WorkItemType: "Dev Task", Fields: null, Comment: null);
+
+        payload.ToJson().Should().NotContain("effectiveFormat", "EffectiveFormat is derived, not submitted, and must not appear in the recorded intent");
+    }
+
     [Fact]
     public void A_create_is_requested_with_no_target_key_because_it_has_none_yet()
     {

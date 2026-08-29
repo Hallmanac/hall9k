@@ -46,6 +46,7 @@ public sealed record JiraWritePayload(
     /// 2). A caller writing genuinely plain text — closeout's own merge comment — names "plain"
     /// explicitly rather than relying on this default.
     /// </summary>
+    [JsonIgnore]
     public string EffectiveFormat => Format.IsNotBlank() ? Format.Trim().ToLowerInvariant() : "markdown";
 
     private static readonly JsonSerializerOptions SerializerOptions = new()
