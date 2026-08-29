@@ -39,13 +39,19 @@ public sealed class TokenBudgetRetryEngine(
     RunSupervisor supervisor,
     ILogger<TokenBudgetRetryEngine> logger)
 {
-    /// <summary>Every budget-parked run this node owns, retried once. Returns how many actually resumed.</summary>
+    /// <summary>
+    /// Every budget-parked run this node owns, retried once, plus any interactively delivered
+    /// run (NodeId == Guid.Empty, TaskAggregate.IsInteractiveClaim's discriminator) parked mid
+    /// review loop — the same widening RunSupervisor.ResumeStrandedPipelinesAsync applies,
+    /// since a node-only filter would otherwise park such a run permanently: no node's own id
+    /// ever matches it (independent pre-PR review, cycle 2). Returns how many actually resumed.
+    /// </summary>
     public async Task<int> RetryParkedRunsAsync(CancellationToken cancellationToken)
     {
         await using IQuerySession query = store.QuerySession();
         Guid nodeId = node.NodeId;
         IReadOnlyList<RunDetails> parked = await query.Query<RunDetails>()
-            .Where(r => r.NodeId == nodeId)
+            .Where(r => r.NodeId == nodeId || r.NodeId == Guid.Empty)
             .Where(r => r.MatchesSql("d.data ->> 'state' = ?", RunState.BudgetParked.Value))
             .ToListAsync(cancellationToken);
 

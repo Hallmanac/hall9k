@@ -111,9 +111,15 @@ public sealed class CloseoutEngine(
         {
             Guid nodeId = node.NodeId;
             // ReviewPending is watched too: a run holds there while an errored review's
-            // re-request waits for the reviewer to answer.
+            // re-request waits for the reviewer to answer. NodeId == Guid.Empty is included
+            // alongside this node's own id for the same reason RunSupervisor.
+            // ResumeStrandedPipelinesAsync widens its own query: an interactively delivered
+            // run (TaskAggregate.IsInteractiveClaim's discriminator) never carries a node's
+            // real id, so a node-only filter leaves it watched by nobody — no merge is ever
+            // observed, no dependent ever unblocks, and the worktree is never removed
+            // (independent pre-PR review, cycle 2).
             watched = await query.Query<RunDetails>()
-                .Where(r => r.NodeId == nodeId)
+                .Where(r => r.NodeId == nodeId || r.NodeId == Guid.Empty)
                 .Where(r => r.MatchesSql(
                     "d.data ->> 'state' in (?, ?, ?)",
                     RunState.AwaitingReview.Value, RunState.ReviewPending.Value, RunState.CloseoutParked.Value))
@@ -128,9 +134,10 @@ public sealed class CloseoutEngine(
             // stop existing just because nothing is watching it any more. PullRequestClosedWithoutMerge
             // is excluded — that run already recorded the one thing an inspection here could
             // tell it, and asking GitHub again would spend a read to relearn a fact already on
-            // the stream.
+            // the stream. NodeId == Guid.Empty is included here too, for the same interactive-run
+            // reason as the watched query above.
             orphaned = await query.Query<RunDetails>()
-                .Where(r => r.NodeId == nodeId)
+                .Where(r => r.NodeId == nodeId || r.NodeId == Guid.Empty)
                 .Where(r => r.MatchesSql(
                     "d.data ->> 'state' in (?, ?)", RunState.Failed.Value, RunState.Killed.Value))
                 .Where(r => r.PullRequestNumber != null)

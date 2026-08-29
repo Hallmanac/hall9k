@@ -239,6 +239,20 @@ public sealed class TaskWorkCommand : Hall9kAsyncCommand<TaskWorkCommand.Setting
         ProjectDetails project = await session.LoadAsync<ProjectDetails>(taskDetails.ProjectId, cancellationToken)
             ?? throw new DomainNotFoundException($"Task {task.Id}'s project no longer exists.");
 
+        // A reopened task carries its existing PR's branch and expects the follow-up prompt
+        // RunLauncher.LaunchAsync builds for it (BuildFixChecks/BuildRebase/BuildFollowUp) —
+        // that builder lives in Hall9k.Daemon, which the CLI cannot reference (Reference graph:
+        // Cli -> Domain + Connectors), so an interactive claim here would cut a fresh branch off
+        // the base and hand the operator a from-scratch prompt, stranding the reopen's review
+        // feedback unanswered (conformance review, cycle 2). Refusing is the complete fix.
+        if (taskDetails.FollowUpBranch.IsNotBlank())
+        {
+            throw new DomainConflictException(
+                $"Task {task.Id} was reopened onto its existing pull request ({taskDetails.PullRequestUrl}) — "
+                + "an interactive claim cannot build the follow-up prompt that branch needs. "
+                + $"h9k pr resolve {task.Id} to dispatch a headless follow-up instead.");
+        }
+
         Guid runId = DomainId.New();
 
         // Cut before committing the claim (mirrors RunLauncher: the worktree exists first, the
