@@ -180,7 +180,11 @@ public static partial class SweepDraftTask
         body.AppendLine(
             "stated line updates that item's evidence list instead of adding a second one; the same");
         body.AppendLine(
-            "defect re-reported at a different line, or with no line at all, becomes a new item. Groom");
+            "defect re-reported at a different line becomes a new item, and so does one reported with no");
+        body.AppendLine(
+            "line at all — unless the very same run's own review track reported that exact unplaced");
+        body.AppendLine(
+            "finding before, which still updates the one item. Groom");
         body.AppendLine(
             "this draft and publish it once it is fat enough — five to eight items is the working");
         body.AppendLine("guideline — and the moment it publishes, the next routed finding starts a fresh sweep.");
