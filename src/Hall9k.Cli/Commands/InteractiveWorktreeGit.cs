@@ -44,17 +44,19 @@ internal static class InteractiveWorktreeGit
     }
 
     /// <summary>
-    /// The branch's first push: plain, never force — a fresh branch cut by h9k task work has no
-    /// remote history to overwrite. Any later rewrite (the review loop's own fixup/rebase
-    /// doctrine, once this branch hands into the standard pipeline) is pushed by the daemon's own
-    /// PullRequestOpener, unconditionally with --force-with-lease so it always protects a tip
-    /// this push already published.
+    /// Always --force-with-lease, mirroring PullRequestOpener's own push exactly and for the same
+    /// reason: a fresh branch cut by h9k task work has no remote history, so the lease is
+    /// satisfied trivially and this behaves like a plain first push — but CheckoutFreshOrRetryAsync
+    /// resumes a task's RetryBranch (h9k task retry after a failed deliver) or a handed-back
+    /// branch, either of which may already carry the history this same push published last time,
+    /// now rewritten per the narrative-commit-style fixup/rebase doctrine. A plain push there is
+    /// rejected non-fast-forward with no lever left to publish the rebased tree.
     /// </summary>
     public static async Task<(bool Succeeded, string Error)> PushAsync(
         string worktreePath, string branch, CancellationToken cancellationToken)
     {
         (int exitCode, _, string standardError) = await RunGitAsync(
-            worktreePath, ["push", "-u", "origin", branch], cancellationToken);
+            worktreePath, ["push", "--force-with-lease", "-u", "origin", branch], cancellationToken);
         return (exitCode == 0, standardError.Trim());
     }
 
