@@ -18,4 +18,10 @@ public sealed record TaskRevised(
     Optional<TaskType> Type,
     Optional<AgentModel> Model,
     DateTimeOffset RevisedAt,
-    Guid RevisedByOwnerId);
+    Guid RevisedByOwnerId,
+    /// <summary>
+    /// Absent leaves the epic alone; present with a value joins that epic, present with null
+    /// leaves it (Brian's ruling, 2026-08-28: a task joins or leaves at add or revise, no
+    /// ceremony beyond the ordinary Draft-only revision gate).
+    /// </summary>
+    Optional<Guid?> EpicId = default);
