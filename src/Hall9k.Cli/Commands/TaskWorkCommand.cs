@@ -85,7 +85,8 @@ public sealed class TaskWorkCommand : Hall9kAsyncCommand<TaskWorkCommand.Setting
         // unsynthesized document into its own "Starting context" screen (Decisions Log #36) —
         // so an operator's session gets the real context rather than none at all.
         string? blockerContext = await LoadBlockerContextAsync(session, taskDetails, cancellationToken);
-        string prompt = WorkPromptBuilder.Build(taskDetails, project, branch, worktreePath, resumesPreviousWork, blockerContext);
+        string prompt = WorkPromptBuilder.Build(
+            taskDetails, project, branch, worktreePath, resumesPreviousWork, blockerContext, taskDetails.RetryReason);
 
         // The same settings file every headless spawn writes (ClaudeExecutor), so the one
         // platform-imposed override — no co-authored-by trailers (PLAN.md §6.6) — applies to

@@ -1238,6 +1238,31 @@ public sealed class AgentPromptBuilderTests : IDisposable
     }
 
     [Fact]
+    public void Retry_prompt_never_asserts_that_a_previous_attempt_failed()
+    {
+        // resumesPreviousWork is also true for h9k task handback (nothing failed) and for an
+        // operator re-entering their own still-open h9k task work claim (nothing failed either)
+        // — asserting a failure unconditionally would be exactly the unobserved-fact guess
+        // AGENTS.md forbids (adversarial review, cycle 1).
+        string prompt = AgentPromptBuilder.Build(
+            SomeTask(), SomeProject(), "task/1-slug", _worktreePath, resumesPreviousWork: true);
+
+        prompt.Should().NotContain("failed attempt");
+    }
+
+    [Fact]
+    public void Retry_prompt_carries_the_task_s_own_recorded_reason_for_resuming()
+    {
+        TaskDetails task = SomeTask();
+        task.RetryReason = "the migration script is drafted but untested";
+
+        string prompt = AgentPromptBuilder.Build(
+            task, SomeProject(), "task/1-slug", _worktreePath, resumesPreviousWork: true);
+
+        prompt.Should().Contain("the migration script is drafted but untested");
+    }
+
+    [Fact]
     public void Fresh_run_prompt_carries_no_previous_attempt_warning()
     {
         string prompt = AgentPromptBuilder.Build(SomeTask(), SomeProject(), "task/1-slug", _worktreePath);
