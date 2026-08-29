@@ -1,6 +1,7 @@
 using FluentAssertions;
 using Hall9k.Connectors.Processes;
 using Hall9k.Connectors.WorkItems;
+using Hall9k.Daemon;
 using Hall9k.Daemon.JiraWrites;
 using Hall9k.Domain.Features.Connection;
 using Hall9k.Domain.Features.Owner;
@@ -62,7 +63,8 @@ public sealed class JiraWriteRetryEngineTests(PostgresFixture postgres) : IClass
         // A second node's twg, freshly logged in — the identical comment goes through this time.
         RecordingProcessRunner reauthenticatedTwg = RecordingProcessRunner.RespondingTo(
             _ => new ProcessResult(0, """{"key":"PROJ-123"}""", string.Empty));
-        JiraWriteRetryEngine engine = new(store, reauthenticatedTwg.Runner, NullLogger<JiraWriteRetryEngine>.Instance);
+        NodeContext node = await NewNodeAsync(store, cts.Token);
+        JiraWriteRetryEngine engine = new(store, node, reauthenticatedTwg.Runner, NullLogger<JiraWriteRetryEngine>.Instance);
 
         JiraWriteRetrySweepResult sweep = await engine.PollOnceAsync(cts.Token);
 
@@ -92,11 +94,59 @@ public sealed class JiraWriteRetryEngineTests(PostgresFixture postgres) : IClass
 
         RecordingProcessRunner mustNotRun = RecordingProcessRunner.RespondingTo(
             _ => throw new InvalidOperationException("a non-auth failure must not be retried by the sweep"));
-        JiraWriteRetryEngine engine = new(store, mustNotRun.Runner, NullLogger<JiraWriteRetryEngine>.Instance);
+        NodeContext node = await NewNodeAsync(store, cts.Token);
+        JiraWriteRetryEngine engine = new(store, node, mustNotRun.Runner, NullLogger<JiraWriteRetryEngine>.Instance);
 
         JiraWriteRetrySweepResult sweep = await engine.PollOnceAsync(cts.Token);
 
         sweep.Should().Be(new JiraWriteRetrySweepResult(Retried: 0, Succeeded: 0));
+    }
+
+    [Fact]
+    public async Task A_queued_merge_notice_waits_behind_an_outstanding_write_then_drains_once_it_clears()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        using DocumentStore store = OpenStore();
+
+        Guid taskId = await SeedTaskAsync(store, new ExternalReference(WorkItemProvider.Jira, "PROJ-789"), cts.Token);
+
+        // Closeout tried to submit the merge comment while another write was still outstanding on
+        // this task and queued it instead of losing it (CloseoutEngine.QueueJiraMergeNoticeAsync).
+        RecordingProcessRunner refusingTwg = RecordingProcessRunner.Failing("twg is not authenticated: run 'twg login'");
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            JiraWriteAttemptResult submitted = await JiraWriteCoordinator.SubmitAsync(
+                session, taskId, JiraWriteOperation.Comment, issueKey: null,
+                new JiraWritePayload(null, null, "An earlier comment."), JiraProjectKey.None,
+                DomainId.New(), new TwgJiraExecutor(refusingTwg.Runner), "/repo", cts.Token);
+            submitted.Outcome.Should().Be(JiraWriteOutcome.PendingAuthentication);
+
+            TaskAggregate outstanding = (await session.Events.AggregateStreamAsync<TaskAggregate>(taskId, token: cts.Token))!;
+            session.Events.Append(taskId, TaskDecider.QueueJiraMergeNotice(outstanding, Now));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        RecordingProcessRunner reauthenticatedTwg = RecordingProcessRunner.RespondingTo(
+            _ => new ProcessResult(0, """{"key":"PROJ-789"}""", string.Empty));
+        NodeContext node = await NewNodeAsync(store, cts.Token);
+        JiraWriteRetryEngine engine = new(store, node, reauthenticatedTwg.Runner, NullLogger<JiraWriteRetryEngine>.Instance);
+
+        // First sweep: the outstanding write clears, but the queued notice was read as still
+        // blocked (PendingJiraWriteId was set at query time) and is not drained in the same pass.
+        JiraWriteRetrySweepResult first = await engine.PollOnceAsync(cts.Token);
+        first.Should().Be(new JiraWriteRetrySweepResult(Retried: 1, Succeeded: 1, MergeNoticesDrained: 0));
+
+        TaskAggregate? afterFirst = await LoadAsync(store, taskId, cts.Token);
+        afterFirst!.PendingJiraWriteId.Should().BeNull("the outstanding write finished");
+        afterFirst.HasQueuedJiraMergeNotice.Should().BeTrue("nothing has attempted the notice yet");
+
+        // Second sweep: nothing blocks the notice any more, so it drains.
+        JiraWriteRetrySweepResult second = await engine.PollOnceAsync(cts.Token);
+        second.Should().Be(new JiraWriteRetrySweepResult(Retried: 0, Succeeded: 0, MergeNoticesDrained: 1));
+
+        TaskAggregate? afterSecond = await LoadAsync(store, taskId, cts.Token);
+        afterSecond!.HasQueuedJiraMergeNotice.Should().BeFalse("the retry sweep drained it exactly once");
+        afterSecond.PendingJiraWriteId.Should().BeNull("the merge comment itself went through");
     }
 
     private DocumentStore OpenStore() => DocumentStore.For(opts =>
@@ -104,6 +154,13 @@ public sealed class JiraWriteRetryEngineTests(PostgresFixture postgres) : IClass
         opts.Connection(postgres.ConnectionString);
         opts.ConfigureHall9k(AutoCreate.All);
     });
+
+    private static async Task<NodeContext> NewNodeAsync(DocumentStore store, CancellationToken cancellationToken)
+    {
+        NodeContext node = new();
+        await node.InitializeAsync(store, cancellationToken);
+        return node;
+    }
 
     private static async Task<TaskAggregate?> LoadAsync(IDocumentStore store, Guid taskId, CancellationToken cancellationToken)
     {

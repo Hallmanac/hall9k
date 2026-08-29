@@ -8,10 +8,12 @@ using Hall9k.Domain.Features.Run;
 using Hall9k.Domain.Features.Run.Events;
 using Hall9k.Domain.Features.Run.Projections;
 using Hall9k.Domain.Features.Tasks;
+using Hall9k.Domain.Features.Tasks.Events;
 using Hall9k.Domain.Features.Tasks.Handlers;
 using Hall9k.Domain.Features.Tasks.Projections;
 using Hall9k.Domain.Infrastructure.Persistence;
 using Hall9k.Domain.Infrastructure.Storage;
+using Hall9k.Domain.Shared.Exceptions;
 using Hall9k.Domain.Shared.ValueObjects;
 using JasperFx.Events;
 using Marten;
@@ -1138,6 +1140,15 @@ public sealed class CloseoutEngine(
     /// exactly like any other write — and an expired or missing twg login is handled the same way
     /// too, leaving the comment pending for the daemon's own retry sweep rather than lost.
     /// <para>
+    /// A write already outstanding on the task (an operator's own <c>write-jira</c>, or a create
+    /// still resolving) is the one case worth telling apart from an ordinary failure: two writes
+    /// in flight could race twg against itself, so <see cref="JiraWriteCoordinator.SubmitAsync"/>
+    /// refuses it with <see cref="DomainConflictException"/> rather than attempting it. That is not
+    /// a reason to give up on the merge comment — it is queued instead (<see
+    /// cref="TaskDecider.QueueJiraMergeNotice"/>), and <see cref="JiraWrites.JiraWriteRetryEngine"/>
+    /// drains the queue once the blocking write clears.
+    /// </para>
+    /// <para>
     /// <see cref="githubRunner"/> is reused for twg rather than a second injected seam: the
     /// delegate is process-agnostic (it takes the tool's file name as an argument), and it is
     /// already registered once, generically, precisely so a write like this one is testable
@@ -1179,12 +1190,50 @@ public sealed class CloseoutEngine(
                     break;
             }
         }
+        catch (DomainConflictException) when (!cancellationToken.IsCancellationRequested)
+        {
+            await QueueJiraMergeNoticeAsync(taskId, reference, cancellationToken);
+        }
         catch (Exception exception) when (exception is not OperationCanceledException)
         {
             logger.LogWarning(exception,
                 "Could not comment the merge of {Url} on {Reference}. Nothing is retried automatically; "
                 + "add the note by hand if it matters",
                 task.PullRequestUrl, reference);
+        }
+    }
+
+    /// <summary>
+    /// Records the merge notice as queued rather than let a write already in flight on this task
+    /// (<see cref="DomainConflictException"/> from <see cref="TellJiraAsync"/>'s own attempt) drop
+    /// it silently. Best-effort like the write attempt itself: if even the queue append fails —
+    /// the task changed concurrently, say — the same "log it and move on" fallback applies, since
+    /// the merge is already recorded and dependents already unblocked regardless.
+    /// </summary>
+    private async Task QueueJiraMergeNoticeAsync(Guid taskId, ExternalReference reference, CancellationToken cancellationToken)
+    {
+        try
+        {
+            await using IDocumentSession session = store.LightweightSession();
+            StreamState fence = await session.Events.FetchStreamStateAsync(taskId, cancellationToken)
+                ?? throw new DomainNotFoundException($"No task {taskId}.");
+            TaskAggregate task = await session.Events.AggregateStreamAsync<TaskAggregate>(
+                    taskId, version: fence.Version, token: cancellationToken)
+                ?? throw new DomainNotFoundException($"No task {taskId}.");
+
+            JiraMergeNoticeQueued queued = TaskDecider.QueueJiraMergeNotice(task, DateTimeOffset.UtcNow);
+            session.Events.Append(taskId, expectedVersion: fence.Version + 1, queued);
+            await session.SaveChangesAsync(cancellationToken);
+
+            logger.LogInformation(
+                "Task {TaskId}: the merge comment for {Reference} is queued behind another outstanding "
+                + "Jira write; the retry sweep will tell it once that clears", taskId, reference);
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            logger.LogWarning(exception,
+                "Could not queue the merge comment for {Reference}. Nothing is retried automatically; "
+                + "add the note by hand if it matters", reference);
         }
     }
 
@@ -1226,7 +1275,7 @@ public sealed class CloseoutEngine(
     /// to it — a card that silently gains a comment and never moves reads like an integration
     /// that half worked, and saying so costs one sentence.
     /// </summary>
-    private static string MergeComment(ProjectDetails project, TaskAggregate task) =>
+    internal static string MergeComment(ProjectDetails project, TaskAggregate task) =>
         $"""
          The pull request for this work has merged: {task.PullRequestUrl}
 
