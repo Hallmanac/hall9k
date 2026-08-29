@@ -85,11 +85,15 @@ public sealed class TwgJiraExecutor(ProcessRunner? runner = null, Uri? site = nu
     /// A card carrying this exact text in its description is a card hall9k made for this task —
     /// the physical dedup gate (mirroring the GitHub read-back gate): searched for before every
     /// create, so a crash (or any failure) between twg creating a card and hall9k recording it
-    /// cannot produce a second card on a later attempt. Scoped to the task rather than to one
-    /// write attempt's own guid: a fresh <c>SubmitAsync</c> mints a new write id every time, so a
-    /// marker keyed to that guid could never be found by the very next attempt it exists to guard
-    /// (independent pre-PR review, cycle 1) — the task is the identity that must not get a second
-    /// card, so the task is what the marker names.
+    /// narrows the window for a second card on a later attempt rather than closing it outright —
+    /// <see cref="FindByMarkerAsync"/> runs a JQL search, and <see cref="VerifyAsync"/>'s own doc
+    /// comment explains why that index updates asynchronously, so a retry inside the index-lag
+    /// window can still find nothing even though the card genuinely exists (independent pre-PR
+    /// review, conformance lens, cycle 9). Scoped to the task rather than to one write attempt's
+    /// own guid: a fresh <c>SubmitAsync</c> mints a new write id every time, so a marker keyed to
+    /// that guid could never be found by the very next attempt it exists to guard (independent
+    /// pre-PR review, cycle 1) — the task is the identity that must not get a second card, so the
+    /// task is what the marker names.
     /// </summary>
     public static string Marker(Guid taskId) => $"hall9k-task:{taskId:D}";
 
@@ -570,12 +574,32 @@ public sealed class TwgJiraExecutor(ProcessRunner? runner = null, Uri? site = nu
         }
     }
 
+    /// <summary>
+    /// The temp file twg's envelope names may vanish or become unreadable between the
+    /// <see cref="File.Exists"/> check and the read — it lives in the system temp tree, which is
+    /// subject to reaping — and an I/O failure here must not escape as a raw <see cref="IOException"/>:
+    /// every caller of <see cref="ReadPayloadJson"/> sits inside this class's own failure
+    /// classification (<see cref="Explain"/>, <see cref="ExtractFirstKey"/>), so an unguarded
+    /// throw would bypass <see cref="TwgFailureKind"/> entirely — an auth refusal whose temp file
+    /// happened to vanish would otherwise surface as an unclassified exception instead of staying
+    /// pending for the retry sweep (independent pre-PR review, adversarial lens, cycle 9). Falling
+    /// back to the envelope text itself is the same fallback an outright missing file already gets.
+    /// </summary>
     private static string ReadPayloadJson(string envelopeOutput)
     {
         Match match = StdoutFilePathPattern.Match(envelopeOutput);
         if (match.Success && File.Exists(match.Groups["path"].Value))
         {
-            return File.ReadAllText(match.Groups["path"].Value);
+            try
+            {
+                return File.ReadAllText(match.Groups["path"].Value);
+            }
+            catch (IOException)
+            {
+            }
+            catch (UnauthorizedAccessException)
+            {
+            }
         }
 
         return envelopeOutput;
