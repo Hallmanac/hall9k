@@ -328,8 +328,9 @@ synchronous request and response with the daemon by design, so a command that tr
 returns once the work is *recorded*, not once it is *done*.
 
 Agent-facing commands are observation gates. `h9k task write-jira`, the sole executor of every
-Jira write, verifies by reading the item back through the connection before recording the outcome,
-so what gets recorded is what Jira answered rather than what the agent's or twg's own claim was.
+Jira write, verifies by reading the item back with its own follow-up `twg` call before recording
+the outcome, so what gets recorded is what twg answered rather than what the agent's own claim
+was — it never loads the registered Jira connection at all, unlike the two commands below.
 `h9k task link-jira` reads the key back through the connection before recording it, so what gets
 recorded is what Jira answered rather than what the agent claimed. `h9k task link-issue` is the
 same gate for GitHub — read back through `gh` before recording — and the platform's own
