@@ -1144,10 +1144,10 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
 
     /// <summary>
     /// The severity gate the standing sweep adds (Decisions Log #99): a Medium out-of-scope
-    /// finding still mints its own dedicated draft exactly
-    /// as before, while a Low one folds into the project's one standing sweep draft instead of
-    /// costing a build-gate-review pipeline of its own — so a serious pre-existing defect can
-    /// never be buried in a polish pile, and the board shows one extra draft this cycle, not two.
+    /// finding still mints its own dedicated draft exactly as before, while a Low one folds into
+    /// the project's one standing sweep draft instead of costing a build-gate-review pipeline of
+    /// its own — so a serious pre-existing defect can never be buried in a polish pile, and the
+    /// board shows one extra draft this cycle, not two.
     /// </summary>
     [Fact]
     public async Task An_out_of_scope_low_folds_into_the_projects_standing_sweep_while_a_medium_still_gets_its_own_draft()
