@@ -18,16 +18,11 @@ namespace Hall9k.Connectors.WorkItems;
 /// the feature was designed around: <b>reading Jira is configuration-agnostic and writing it is
 /// not</b>. A GET returns the same document whatever a project's issue types are called, so the
 /// platform reads cards itself — the import snapshot, and the verification behind
-/// <c>h9k task link-jira</c>. Creating a card is the opposite: the issue type, the required
-/// fields, and the routing rules are one organisation's configuration, and a platform that
-/// modelled them would be modelling somebody's Jira admin screen. So card authoring is not here
-/// at all. It goes through an agent session with the project's own repo skills and MCP access,
-/// and comes back through a command that verifies (backlog 18).
-/// </para>
-/// <para>
-/// The one write this class does make is the closeout comment, and it is here precisely because
-/// it is the exception that proves the rule: a comment has no type, no workflow, and no required
-/// fields, so posting one needs to know nothing about how the project is configured.
+/// <c>h9k task link-jira</c>. Every write — create, update, comment — goes through the
+/// compose/execute split instead (Brian's design, 2026-08-28, Decisions Log #99): an agent or an
+/// operator composes the payload, and <c>h9k task write-jira</c> is the sole executor, running it
+/// through <see cref="TwgJiraExecutor"/> rather than this provider's own REST client. This class
+/// makes no write of its own; it reads.
 /// </para>
 /// <para>
 /// API version 2 rather than 3, on purpose. The two are both current; v3 carries rich text as
@@ -82,35 +77,6 @@ public sealed class JiraWorkItemProvider(
             cancellationToken);
 
         return Map(response.Body, key, clock.GetUtcNow());
-    }
-
-    /// <summary>
-    /// Post a comment on a card. The one write the platform makes to Jira with its own
-    /// credentials, and it is used for exactly one thing: telling a card that the work it
-    /// describes has merged (backlog 18). Deliberately a comment and not a transition — which
-    /// status a merge should move a card to is one team's workflow rather than a fact about
-    /// software, and guessing at it would move somebody's board on Hall9k's opinion.
-    /// <para>
-    /// It is not retried here, and that is a decision rather than an omission. A retry loop
-    /// around a write nobody watched is how a card ends up with the same comment four times, and
-    /// the caller (the closeout monitor) already sweeps on a cadence and can decide for itself
-    /// whether a failure is worth another look.
-    /// </para>
-    /// </summary>
-    public async Task CommentAsync(JiraIssueKey key, string comment, CancellationToken cancellationToken)
-    {
-        string authorization = await account.AuthorizationAsync(
-            $"comment on {key.Value} at {account.Site}", cancellationToken);
-        string body = JsonSerializer.Serialize(new { body = comment });
-        await SendAsync(
-            new JiraRequest(
-                HttpMethod.Post,
-                account.Endpoint($"/rest/api/2/issue/{key.Value}/comment"),
-                authorization,
-                body),
-            key.Value,
-            "comment on",
-            cancellationToken);
     }
 
     /// <summary>
