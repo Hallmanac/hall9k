@@ -265,11 +265,37 @@ public sealed class TwgJiraExecutorTests
             .Which.Message.Should().Contain("reading it back to verify found nothing");
     }
 
+    /// <summary>
+    /// twg's real shape for an expired or missing login (verified live against an installed twg,
+    /// independent pre-PR review, cycle 3): the JSON error envelope — <c>error.code</c>
+    /// <c>AUTH_REQUIRED</c>, <c>error.message</c> "authentication required" — lands on stdout at
+    /// exit 77, with stderr left empty. None of the old stderr-substring checks this class used
+    /// to run could ever have matched that message on that stream.
+    /// </summary>
+    [Fact]
+    public async Task An_expired_or_missing_login_is_classified_from_twgs_real_stdout_envelope()
+    {
+        RecordingProcessRunner twg = RecordingProcessRunner.TwgAuthExpired();
+        TwgJiraExecutor executor = new(twg.Runner);
+
+        Func<Task> comment = () => executor.CommentAsync("PROJ-123", "note", "markdown", "/repo", CancellationToken.None);
+
+        TwgExecutionException exception = (await comment.Should().ThrowAsync<TwgExecutionException>()).Which;
+        exception.IsAuthFailure.Should().BeTrue();
+        exception.Message.Should().Contain("twg login");
+        exception.Message.Should().Contain("authentication required");
+    }
+
+    /// <summary>
+    /// The stderr substring classification stays as a fallback for a refusal that never reaches
+    /// twg's own JSON envelope (a spawn-level or transport-level failure outside twg's control),
+    /// even though a genuine twg auth refusal is never actually shaped this way.
+    /// </summary>
     [Theory]
     [InlineData("Error: not authenticated. Run 'twg login' to continue.")]
     [InlineData("HTTP 401 Unauthorized")]
     [InlineData("the stored token has expired")]
-    public async Task An_expired_or_missing_login_is_classified_apart_from_every_other_refusal(string stderr)
+    public async Task A_stderr_only_refusal_still_falls_back_to_substring_classification(string stderr)
     {
         RecordingProcessRunner twg = RecordingProcessRunner.Failing(stderr);
         TwgJiraExecutor executor = new(twg.Runner);
@@ -279,6 +305,51 @@ public sealed class TwgJiraExecutorTests
         TwgExecutionException exception = (await comment.Should().ThrowAsync<TwgExecutionException>()).Which;
         exception.IsAuthFailure.Should().BeTrue();
         exception.Message.Should().Contain("twg login");
+    }
+
+    /// <summary>
+    /// The envelope's message is twg's and Jira's text rather than Hall9k's — a refusal routinely
+    /// quotes a composed field value or a card's own adopted text straight back — and it reaches
+    /// both a terminal (<c>write-jira</c> writes the exception message to stderr) and the event
+    /// stream (<c>JiraWriteFailed.Reason</c>) with no escaping in between. It goes through the
+    /// same <c>RelayedText.OneLine</c> sanitisation the stderr branch has always applied
+    /// (independent pre-PR review, cycle 4).
+    /// </summary>
+    [Fact]
+    public async Task Relayed_text_from_the_error_envelope_is_sanitised_the_way_stderr_always_was()
+    {
+        RecordingProcessRunner twg = RecordingProcessRunner.FailingWithEnvelope(
+            1,
+            "FIELD_INVALID",
+            @"summary \u001b[31mrejected\u001b[0m\rby Jira\nand its second line");
+        TwgJiraExecutor executor = new(twg.Runner);
+
+        Func<Task> comment = () => executor.CommentAsync("PROJ-123", "note", "markdown", "/repo", CancellationToken.None);
+
+        TwgExecutionException exception = (await comment.Should().ThrowAsync<TwgExecutionException>()).Which;
+        exception.Message.Should().NotContain("\u001b");
+        exception.Message.Should().NotContain("\r");
+        exception.Message.Should().NotContain("\n");
+        exception.Message.Should().Contain("summary [31mrejected[0mby Jira and its second line");
+    }
+
+    /// <summary>
+    /// A refusal with nothing readable on either stream must not render as the empty-tailed "twg
+    /// refused the write: " — the fixed message falls back to naming that nothing was said rather
+    /// than trailing off (independent pre-PR review, cycle 3).
+    /// </summary>
+    [Fact]
+    public async Task A_refusal_with_no_readable_detail_does_not_trail_off_empty()
+    {
+        RecordingProcessRunner twg = RecordingProcessRunner.RespondingTo(_ => new ProcessResult(1, string.Empty, string.Empty));
+        TwgJiraExecutor executor = new(twg.Runner);
+
+        Func<Task> comment = () => executor.CommentAsync("PROJ-123", "note", "markdown", "/repo", CancellationToken.None);
+
+        TwgExecutionException exception = (await comment.Should().ThrowAsync<TwgExecutionException>()).Which;
+        exception.Kind.Should().Be(TwgFailureKind.Other);
+        exception.Message.Should().NotBe("twg refused the write: ");
+        exception.Message.Should().Contain("nothing at all");
     }
 
     [Fact]
@@ -374,7 +445,7 @@ public sealed class TwgJiraExecutorTests
         missing.Should().Be(TwgAuthProbeResult.MissingBinary);
 
         TwgAuthProbeResult expired = await new TwgJiraExecutor(
-            RecordingProcessRunner.Failing("run 'twg login'").Runner)
+            RecordingProcessRunner.TwgAuthExpired().Runner)
             .ProbeAuthenticationAsync("/repo", CancellationToken.None);
         expired.Should().Be(TwgAuthProbeResult.AuthExpired);
     }

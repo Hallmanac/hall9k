@@ -32,6 +32,21 @@ public sealed class RecordingProcessRunner(Func<IReadOnlyList<string>, ProcessRe
         new(() => new ProcessResult(1, string.Empty, standardError));
 
     /// <summary>
+    /// twg's own way of reporting a runtime failure, including an expired or missing login: the
+    /// JSON error envelope goes to stdout, exit code 77 for an auth refusal, and stderr is left
+    /// empty (verified live against an installed twg, independent pre-PR review, cycle 3) — a
+    /// shape <see cref="Failing"/> cannot model, since that puts the refusal on stderr the way
+    /// most other tools this fake stands in for (gh, Docker) actually do.
+    /// </summary>
+    public static RecordingProcessRunner FailingWithEnvelope(int exitCode, string errorCode, string message) =>
+        new(() => new ProcessResult(
+            exitCode, $"{{\"error\":{{\"code\":\"{errorCode}\",\"message\":\"{message}\"}}}}", string.Empty));
+
+    /// <summary>twg's own shape for an expired or missing login: exit 77, AUTH_REQUIRED, empty stderr.</summary>
+    public static RecordingProcessRunner TwgAuthExpired() =>
+        FailingWithEnvelope(77, "AUTH_REQUIRED", "authentication required");
+
+    /// <summary>
     /// The tool never ran at all: the operating system refused the spawn, so there is no exit
     /// code and no stderr to read — only the exception <c>Process.Start</c> threw.
     /// </summary>

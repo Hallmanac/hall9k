@@ -47,7 +47,7 @@ public sealed class JiraWriteRetryEngineTests(PostgresFixture postgres) : IClass
 
         Guid taskId = await SeedTaskAsync(store, new ExternalReference(WorkItemProvider.Jira, "PROJ-123"), cts.Token);
 
-        RecordingProcessRunner refusingTwg = RecordingProcessRunner.Failing("twg is not authenticated: run 'twg login'");
+        RecordingProcessRunner refusingTwg = RecordingProcessRunner.TwgAuthExpired();
         await using (IDocumentSession session = store.LightweightSession())
         {
             JiraWriteAttemptResult submitted = await JiraWriteCoordinator.SubmitAsync(
@@ -113,7 +113,7 @@ public sealed class JiraWriteRetryEngineTests(PostgresFixture postgres) : IClass
 
         // Closeout tried to submit the merge comment while another write was still outstanding on
         // this task and queued it instead of losing it (CloseoutEngine.QueueJiraMergeNoticeAsync).
-        RecordingProcessRunner refusingTwg = RecordingProcessRunner.Failing("twg is not authenticated: run 'twg login'");
+        RecordingProcessRunner refusingTwg = RecordingProcessRunner.TwgAuthExpired();
         await using (IDocumentSession session = store.LightweightSession())
         {
             JiraWriteAttemptResult submitted = await JiraWriteCoordinator.SubmitAsync(
