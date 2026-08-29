@@ -31,6 +31,31 @@ public sealed class TaskAggregate
     /// retry here.
     /// </summary>
     public bool PublicationSessionDispatched { get; private set; }
+
+    /// <summary>The write hall9k has outstanding against Jira for this task, or null when none is (Brian's design, 2026-08-28).</summary>
+    public Guid? PendingJiraWriteId { get; private set; }
+
+    /// <summary>Which of create, update, or comment the outstanding write is.</summary>
+    public JiraWriteOperation PendingJiraWriteOperation { get; private set; } = JiraWriteOperation.Unknown;
+
+    /// <summary>The item the outstanding write targets; null for a create, which has none yet.</summary>
+    public string? PendingJiraWriteIssueKey { get; private set; }
+
+    /// <summary>The composed payload exactly as requested — what the retry sweep re-attempts with, unread and unmirrored.</summary>
+    public string? PendingJiraWritePayloadJson { get; private set; }
+
+    public Guid PendingJiraWriteRequestedByOwnerId { get; private set; }
+
+    /// <summary>What the most recent failed attempt reported, kept only while the write is still pending.</summary>
+    public string? PendingJiraWriteFailureReason { get; private set; }
+
+    /// <summary>
+    /// True when the most recent failed attempt was an expired or missing twg login — the one
+    /// failure that keeps the write pending rather than ending it, and what the attention pane
+    /// and the daemon's retry sweep both key on.
+    /// </summary>
+    public bool PendingJiraWriteIsAuthFailure { get; private set; }
+
     /// <summary>The task's model override, the most specific link in the resolution chain (Decisions Log #33).</summary>
     public AgentModel Model { get; private set; } = AgentModel.Unknown;
     public int LeaseGeneration { get; private set; }
@@ -499,6 +524,60 @@ public sealed class TaskAggregate
         PendingPublicationProvider = null;
         PendingPublicationProjectKey = JiraProjectKey.None;
         PublicationSessionDispatched = false;
+    }
+
+    // Requested, then zero or more auth failures, then finally a success or a terminal (non-auth)
+    // failure: the shape that lets an expired twg login retry the identical payload rather than
+    // losing it (Brian's design, 2026-08-28).
+    public void Apply(JiraWriteRequested @event)
+    {
+        PendingJiraWriteId = @event.WriteId;
+        PendingJiraWriteOperation = @event.Operation;
+        PendingJiraWriteIssueKey = @event.IssueKey;
+        PendingJiraWritePayloadJson = @event.PayloadJson;
+        PendingJiraWriteRequestedByOwnerId = @event.RequestedByOwnerId;
+        PendingJiraWriteFailureReason = null;
+        PendingJiraWriteIsAuthFailure = false;
+    }
+
+    public void Apply(JiraWriteSucceeded @event)
+    {
+        if (PendingJiraWriteId != @event.WriteId)
+        {
+            return;
+        }
+
+        ClearPendingJiraWrite();
+    }
+
+    public void Apply(JiraWriteFailed @event)
+    {
+        if (PendingJiraWriteId != @event.WriteId)
+        {
+            return;
+        }
+
+        if (@event.IsAuthFailure)
+        {
+            // Kept pending on purpose: the payload that just failed is exactly what the retry
+            // sweep re-attempts once twg login runs, so nothing about the request is forgotten.
+            PendingJiraWriteFailureReason = @event.Reason;
+            PendingJiraWriteIsAuthFailure = true;
+        }
+        else
+        {
+            ClearPendingJiraWrite();
+        }
+    }
+
+    private void ClearPendingJiraWrite()
+    {
+        PendingJiraWriteId = null;
+        PendingJiraWriteOperation = JiraWriteOperation.Unknown;
+        PendingJiraWriteIssueKey = null;
+        PendingJiraWritePayloadJson = null;
+        PendingJiraWriteFailureReason = null;
+        PendingJiraWriteIsAuthFailure = false;
     }
 
     // Abandoning consumes the pending-work markers like Complete and Resolve do — a dead

@@ -850,6 +850,116 @@ public static class TaskDecider
         task.ExternalReference is { } existing && existing == reference;
 
     /// <summary>
+    /// The intent behind one Jira write (Brian's design, 2026-08-28): whether this task is in a
+    /// position to have hall9k execute it, never whether the payload itself is a good idea — that
+    /// judgment belongs to whoever composed it, and <see cref="JiraWritePayload.Validate"/> is
+    /// where the executor's own guardrails (no transition, no close) are enforced regardless.
+    /// <para>
+    /// One write outstanding per task at a time, the same one-card-per-task discipline
+    /// <see cref="RequestWorkItemPublication"/> already keeps for the agent-mediated create: a
+    /// second request while the first is still pending could race twg against itself, and the
+    /// retry path this design calls for exists precisely so a stuck write is resumed rather than
+    /// duplicated by a second one.
+    /// </para>
+    /// </summary>
+    public static JiraWriteRequested RequestJiraWrite(
+        TaskAggregate task,
+        JiraWriteOperation operation,
+        string? issueKey,
+        string payloadJson,
+        Guid writeId,
+        DateTimeOffset requestedAt,
+        Guid requestedByOwnerId)
+    {
+        if (operation == JiraWriteOperation.Unknown)
+        {
+            throw new DomainValidationException(
+                "A Jira write needs a known operation: create, update, or comment.");
+        }
+
+        if (task.PendingJiraWriteId is { } outstanding)
+        {
+            throw new DomainConflictException(
+                $"Task {task.Id} already has a Jira write outstanding ({outstanding}). Two writes in "
+                + "flight could race twg against itself; wait for it to resolve, or check "
+                + $"h9k task show {task.Id}.");
+        }
+
+        if (operation == JiraWriteOperation.Create)
+        {
+            // The decider's cheap half of the dedup gate (backlog: mirroring the GitHub read-back
+            // gate): a task already carrying an item refuses here before twg is ever asked. The
+            // executor's own physical dedup — searching for a task marker before it calls
+            // twg jira create — is what catches the harder case, a crash between twg creating the
+            // card and this event ever landing.
+            if (task.ExternalReference is { } existing)
+            {
+                throw new DomainConflictException(
+                    $"Task {task.Id} is already linked to {existing}. One task carries one external "
+                    + "item; creating another would file a second card for the same work.");
+            }
+
+            return new JiraWriteRequested(task.Id, writeId, operation, null, payloadJson, requestedByOwnerId, requestedAt);
+        }
+
+        // Resolved once, here, rather than left for the executor to re-derive later: the event is
+        // the complete record of what was requested, and a task that gets relinked to a different
+        // item between this request and its retry must not silently change which item a pending
+        // write targets.
+        string? targetKey = issueKey.IsNotBlank()
+            ? issueKey
+            : task.ExternalReference?.Provider == WorkItemProvider.Jira
+                ? task.ExternalReference.Reference
+                : null;
+        if (targetKey.IsBlank())
+        {
+            throw new DomainValidationException(
+                $"Task {task.Id} carries no linked Jira item to {operation.Value.ToLowerInvariant()}. "
+                + $"Link one first (h9k task link-jira {task.Id} <key>), or create one with --op create.");
+        }
+
+        return new JiraWriteRequested(task.Id, writeId, operation, targetKey, payloadJson, requestedByOwnerId, requestedAt);
+    }
+
+    /// <summary>The Jira write this task has outstanding, or null when none is (the retry sweep's own read).</summary>
+    public static bool HasPendingJiraWrite(TaskAggregate task, Guid writeId) => task.PendingJiraWriteId == writeId;
+
+    public static JiraWriteSucceeded RecordJiraWriteSuccess(
+        TaskAggregate task, Guid writeId, string issueKey, string summary, DateTimeOffset succeededAt)
+    {
+        if (task.PendingJiraWriteId != writeId)
+        {
+            throw new DomainConflictException(
+                $"Task {task.Id} has no outstanding Jira write {writeId} to record an outcome for.");
+        }
+
+        return new JiraWriteSucceeded(task.Id, writeId, issueKey, summary, succeededAt);
+    }
+
+    /// <summary>
+    /// A write attempt that did not land. <paramref name="isAuthFailure"/> is what keeps it
+    /// pending rather than ending it (see <see cref="JiraWriteFailed"/>'s own doc comment) — an
+    /// expired or missing twg login is an expected, handled state, and the identical payload
+    /// succeeds on a later attempt once <c>twg login</c> runs, so nothing here forgets it.
+    /// </summary>
+    public static JiraWriteFailed RecordJiraWriteFailure(
+        TaskAggregate task, Guid writeId, string reason, bool isAuthFailure, DateTimeOffset failedAt)
+    {
+        if (task.PendingJiraWriteId != writeId)
+        {
+            throw new DomainConflictException(
+                $"Task {task.Id} has no outstanding Jira write {writeId} to record an outcome for.");
+        }
+
+        if (reason.IsBlank())
+        {
+            throw new DomainValidationException("A failed Jira write is recorded with what was observed about it.");
+        }
+
+        return new JiraWriteFailed(task.Id, writeId, reason, isAuthFailure, failedAt);
+    }
+
+    /// <summary>
     /// Record the external item this task is linked to, from what the platform observed rather
     /// than from what anybody claimed (backlog 18). The caller reads the item through the
     /// registered connection first and passes what came back; this decides only whether the task
