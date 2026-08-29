@@ -92,6 +92,19 @@ act on. Nothing is ever posted to the pull request without an explicit human go:
 owner's own login. The task completes without any merge ever being observed — there is no pull
 request of this task's own to merge.
 
+### Epics: naming a family of tasks
+
+`h9k epic add | list | show | link-jira | close`
+
+An epic is a first-class named grouping of tasks (Decisions Log #99): its own id, title, and
+Open/Closed state. Membership is optional and no-ceremony — a task joins or leaves at
+`h9k task add --epic` / `h9k task revise --epic`/`--clear-epic` rather than through an epic
+command — and must belong to the same project as the epic and target an Open one; a closed or
+another project's epic is refused. `close` is the only way an epic ends, always an explicit human
+act with a reason; there is no `reopen` yet, and nothing closes an epic automatically, including
+its last member task closing out. `link-jira` is identity-only, the same as a task's own
+`link-jira`: a key or URL stored verbatim, never read from or written to Jira.
+
 ### Recovery
 
 `h9k task retry | resolve | abandon` · `h9k pr resolve` · `h9k review resolve`

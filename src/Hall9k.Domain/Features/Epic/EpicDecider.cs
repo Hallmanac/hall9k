@@ -6,7 +6,7 @@ namespace Hall9k.Domain.Features.Epic;
 /// Every decision an epic makes, in one place — the same pattern <c>TaskDecider</c> and
 /// <c>IdeaDecider</c> already follow. The rules are deliberately few: an epic is a name and a
 /// project, and the only hard edge is closing, which is human-only and always carries a
-/// reason (Brian's ruling, 2026-08-28: nothing closes an epic automatically, including its
+/// reason (Decisions Log #99: nothing closes an epic automatically, including its
 /// last member task closing out).
 /// </summary>
 public static class EpicDecider
@@ -38,7 +38,7 @@ public static class EpicDecider
 
     /// <summary>
     /// Record a Jira epic key or URL, identity only: nothing here reads Jira, and nothing here
-    /// ever will (Brian's Jira ruling, 2026-08-28). The reference is stored exactly as typed —
+    /// ever will (Decisions Log #99). The reference is stored exactly as typed —
     /// this is a pointer for a human to click, not a fact the platform verified.
     /// </summary>
     public static EpicLinkedToJira LinkJira(
@@ -69,8 +69,8 @@ public static class EpicDecider
 
     /// <summary>
     /// The only way an epic ends: an explicit human act with a reason. Never automatic — not
-    /// when its last member task closes out, not when every task leaves it (Brian's ruling,
-    /// 2026-08-28, the standing never-auto-close doctrine).
+    /// when its last member task closes out, not when every task leaves it (Decisions Log #99,
+    /// the standing never-auto-close doctrine).
     /// </summary>
     public static EpicClosed Close(
         EpicAggregate epic, string reason, DateTimeOffset closedAt, Guid closedByOwnerId)

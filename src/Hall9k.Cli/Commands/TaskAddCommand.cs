@@ -122,7 +122,9 @@ public sealed class TaskAddCommand : Hall9kAsyncCommand<TaskAddCommand.Settings>
         [CommandOption("--epic <EPIC>")]
         [Description(
             "The epic this task joins: its id or an unambiguous fragment (h9k epic list shows them "
-            + "all). Optional — a task belongs to at most one epic, and most tasks belong to none")]
+            + "all). Must be Open and belong to the same --project; a closed or another project's "
+            + "epic is refused. Optional — a task belongs to at most one epic, and most tasks belong "
+            + "to none")]
         public string? Epic { get; init; }
     }
 
@@ -208,7 +210,7 @@ public sealed class TaskAddCommand : Hall9kAsyncCommand<TaskAddCommand.Settings>
 
         AgentModel taskModel = TaskDecider.VetModel(AgentModel.FromInput(model));
         Guid? epicId = settings.Epic.IsNotBlank()
-            ? await EpicIdResolver.ResolveAsync(session, settings.Epic, cancellationToken)
+            ? await EpicIdResolver.ResolveForMembershipAsync(session, settings.Epic, projectDetails.Id, cancellationToken)
             : null;
 
         ImportedWorkItem? imported = adoption is null

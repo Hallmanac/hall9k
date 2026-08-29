@@ -9,7 +9,7 @@ using Spectre.Console.Cli;
 namespace Hall9k.Cli.Commands;
 
 /// <summary>
-/// Record the Jira epic this epic points at, identity only (Brian's Jira ruling, 2026-08-28):
+/// Record the Jira epic this epic points at, identity only (Decisions Log #99):
 /// no data is read from or written to Jira through this command, and none ever will be. It is
 /// a link for a human to click, never a sync.
 /// </summary>
