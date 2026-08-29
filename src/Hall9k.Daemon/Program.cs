@@ -4,6 +4,7 @@ using Hall9k.Connectors.WorkItems;
 using Hall9k.Daemon.Closeout;
 using Hall9k.Daemon.Dispatch;
 using Hall9k.Daemon.Execution;
+using Hall9k.Daemon.JiraWrites;
 using Hall9k.Daemon.ProcessManagement;
 using Hall9k.Daemon.ProjectHomes;
 using Hall9k.Daemon.Publication;
@@ -112,15 +113,15 @@ builder.Services.AddSingleton<RunSupervisor>();
 builder.Services.AddSingleton<RunLauncher>();
 builder.Services.AddSingleton<TokenBudgetRetryEngine>();
 builder.Services.AddSingleton<IPullRequestInspector, GitHubPullRequestInspector>();
-// The Jira connector's one seam to the network, registered rather than reached for statically so
-// the closeout comment is testable against recorded responses (the ProcessRunner pattern).
-builder.Services.AddSingleton<JiraRequester>(_ => JiraHttp.Requester);
-// The same seam for the gh-backed closeout comment: registered rather than let
-// GitHubWorkItemProvider default to ExternalProcess.Runner, so CloseoutEngine's GitHub write is
-// testable against a recorded gh instead of the real, machine-authenticated one.
+// The one process-spawning seam every connector's write goes through, registered rather than let
+// GitHubWorkItemProvider or TwgJiraExecutor default to ExternalProcess.Runner, so CloseoutEngine's
+// GitHub and Jira writes are both testable against a recorded process instead of a real,
+// machine-authenticated gh or twg (the delegate is process-agnostic — it takes the tool's file
+// name as an argument — so one registration serves both).
 builder.Services.AddSingleton<ProcessRunner>(_ => ExternalProcess.Runner);
 builder.Services.AddSingleton<CloseoutEngine>();
 builder.Services.AddSingleton<CardPublicationEngine>();
+builder.Services.AddSingleton<JiraWriteRetryEngine>();
 builder.Services.AddSingleton<ProjectHomeRenderEngine>();
 
 builder.Services.AddMartenEventStore(connectionString, AutoCreate.CreateOnly)
@@ -138,6 +139,7 @@ builder.Services.AddHostedService<LeaseHeartbeatService>();
 builder.Services.AddHostedService<PullRequestMonitor>();
 builder.Services.AddHostedService<TokenBudgetRetryMonitor>();
 builder.Services.AddHostedService<CardPublicationLoop>();
+builder.Services.AddHostedService<JiraWriteRetryLoop>();
 builder.Services.AddHostedService<ProjectHomeRenderLoop>();
 builder.Services.AddHostedService<LogRotationService>();
 

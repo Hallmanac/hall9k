@@ -236,6 +236,17 @@ public sealed class DaemonOptions
     public TimeSpan ForeignPublicationCeiling { get; set; } = TimeSpan.FromHours(1);
 
     /// <summary>
+    /// How often the daemon retries a Jira write stuck on an expired or missing twg login
+    /// (Brian's design, 2026-08-28). There is no doorbell for "twg login just ran" — nothing on
+    /// this machine observes that moment — so a patient poll is the whole mechanism, the same
+    /// shape <see cref="TokenBudgetRetryInterval"/> already uses for a subscription window that
+    /// resets on its own clock. Short next to that one: a re-authentication is a deliberate act a
+    /// human just took, not a window they are waiting out, so the write should not sit for an
+    /// hour once they have done it.
+    /// </summary>
+    public TimeSpan JiraWriteRetryInterval { get; set; } = TimeSpan.FromMinutes(5);
+
+    /// <summary>
     /// Platform-default commit style for follow-up runs (Narrative or Append), applied
     /// when a project sets none of its own (Decisions Log #26). Narrative folds fixes
     /// into their owning commits per the AGENTS.md authored-history rule. This is the
