@@ -107,18 +107,21 @@ public static partial class SweepDraftTask
             string location = SanitizeLocation(route.Finding.Location);
             Evidence evidence = new(route.RunId, route.Cycle, route.FindingsFile, location);
 
-            // A blank location cannot use SamePlace (it deliberately matches nothing, so two
-            // genuinely different unplaced defects are never folded into one). But the SAME run's
-            // own review track re-reporting the identical unplaced finding text cycle after cycle
-            // is not a different defect coincidentally sharing wording — it is one observation
-            // repeated, and without a match here it re-appends as a brand-new item every cycle,
-            // never reaching the run/cycle/location repeat guard below at all (cycle-5 adversarial
-            // review). Keying the fallback on the reporting run, not just the text, keeps two
-            // different runs' coincidentally identical boilerplate apart, which is the case the
-            // conservative SamePlace reading exists to protect in the first place.
-            int matchIndex = merged.FindIndex(item => location.IsNotBlank()
+            // A location with no stated line — whether blank or naming only a file — cannot use
+            // SamePlace (it deliberately matches nothing for either shape, so two genuinely
+            // different unplaced defects are never folded into one; ReviewFindingLocations.HasAnchor
+            // is the one test that recognizes both shapes as "unplaced" rather than just the blank
+            // one, cycle-6 adversarial review). But the SAME run's own review track re-reporting the
+            // identical unplaced finding text cycle after cycle is not a different defect
+            // coincidentally sharing wording — it is one observation repeated, and without a match
+            // here it re-appends as a brand-new item every cycle, never reaching the
+            // run/cycle/location repeat guard below at all (cycle-5 adversarial review). Keying the
+            // fallback on the reporting run, not just the text, keeps two different runs'
+            // coincidentally identical boilerplate apart, which is the case the conservative
+            // SamePlace reading exists to protect in the first place.
+            int matchIndex = merged.FindIndex(item => ReviewFindingLocations.HasAnchor(location)
                 ? ReviewFindingLocations.SamePlace(item.Location, location)
-                : item.Location.IsBlank()
+                : !ReviewFindingLocations.HasAnchor(item.Location)
                     && item.FindingText == route.Finding.Text
                     && item.Evidence.Any(entry => entry.RunId == route.RunId));
             if (matchIndex < 0)

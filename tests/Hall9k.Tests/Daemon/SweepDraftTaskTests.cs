@@ -157,6 +157,44 @@ public sealed class SweepDraftTaskTests
     }
 
     /// <summary>
+    /// A location naming only a file, with no stated line, is exactly as unplaced as a blank one
+    /// (<see cref="ReviewFindingLocations.HasAnchor"/> is the test that recognizes both shapes) —
+    /// so it never matches <c>SamePlace</c>, and two of them from different runs are two items.
+    /// </summary>
+    [Fact]
+    public void Two_file_only_location_findings_from_different_runs_are_two_items_not_one()
+    {
+        string firstBody = SweepDraftTask.ComposeNew(
+            DomainId.New(), DomainId.New(), [Route(location: "src/Legacy.cs")], Now, DomainId.New()).AgentContext!;
+
+        string updated = SweepDraftTask.Append(firstBody, [Route(location: "src/Legacy.cs")]);
+
+        CountOccurrences(updated, "### src/Legacy.cs").Should().Be(2, "two defects until something says otherwise");
+    }
+
+    /// <summary>
+    /// The same run's own review track re-reporting the identical file-only location finding is
+    /// the same repeat case a blank location already recognizes. Before this fix the fallback
+    /// keyed only on <c>IsBlank</c>, so a lineless-but-named location like <c>src/Legacy.cs</c>
+    /// matched neither <c>SamePlace</c> nor the fallback and re-appended as a new item every
+    /// cycle (cycle-6 adversarial review).
+    /// </summary>
+    [Fact]
+    public void The_same_run_re_reporting_the_identical_file_only_location_finding_updates_one_item()
+    {
+        Guid runId = DomainId.New();
+        string firstBody = SweepDraftTask.ComposeNew(
+            DomainId.New(), DomainId.New(), [Route(runId: runId, cycle: 1, location: "src/Legacy.cs")], Now, DomainId.New())
+            .AgentContext!;
+
+        string updated = SweepDraftTask.Append(
+            firstBody, [Route(runId: runId, cycle: 2, location: "src/Legacy.cs")]);
+
+        CountOccurrences(updated, "### src/Legacy.cs").Should().Be(1, "one repeated observation, one item");
+        CountOccurrences(updated, $"Run {runId}").Should().Be(2, "both cycles' evidence is still recorded");
+    }
+
+    /// <summary>
     /// <c>SamePlace</c> is not transitive: two distinct findings from the same run and cycle can
     /// each match an existing item by suffix (<c>src/a/Foo.cs:12</c> and <c>src/b/Foo.cs:12</c>
     /// both match <c>Foo.cs:12</c>) without matching each other. The repeat guard used to key
