@@ -1,4 +1,5 @@
 using Hall9k.Cli.DaemonControl;
+using Hall9k.Cli.Diagnostics;
 using Hall9k.Cli.Infrastructure;
 using Hall9k.Domain.Infrastructure.Persistence;
 using Hall9k.Domain.Infrastructure.Storage;
@@ -75,15 +76,25 @@ public sealed class DaemonAutostartEnableCommand : Hall9kAsyncCommand<DaemonAuto
 
         // A mechanism that withholds the connection string (Windows: see
         // WindowsDaemonAutostart) leaves an autostarted h9kd with no way to resolve one
-        // unless the platform config file already supplies it — the case h9k doctor's
-        // start-offer covers, but not the one where an operator configured a reachable
-        // Postgres purely by exporting HALL9K_CONNECTION_STRING.
+        // unless the platform config file already supplies a working one — the case h9k
+        // doctor's start-offer covers, but not the one where an operator configured a
+        // reachable Postgres purely by exporting HALL9K_CONNECTION_STRING. A supplied value
+        // is no longer proof enough on its own: h9k install now writes its own guessed
+        // default into config.json whenever nothing else resolves, without ever starting or
+        // confirming a database against it (InstallCommand.WriteDefaultConnectionStringIfUnconfiguredAsync),
+        // unlike doctor's start-offer write, which only lands after actually confirming the
+        // database came up. So the config file's value is probed for reachability the same
+        // way h9k doctor probes one, rather than trusted on presence alone (cycle-4 review).
         bool capturedButNotRecorded = environment.Any(variable => variable.Key == Hall9kDatabase.EnvironmentVariableName)
             && !recordedVariables.Contains(Hall9kDatabase.EnvironmentVariableName);
         if (capturedButNotRecorded)
         {
             ConfigFileConnectionStringState configFileState = Hall9kDatabase.ConnectionStringStateInConfigFile();
-            if (configFileState != ConfigFileConnectionStringState.Supplied)
+            bool configFileConnectionStringWorks = configFileState == ConfigFileConnectionStringState.Supplied
+                && (await DatabaseReachability.ProbeAsync(
+                        Hall9kDatabase.ConnectionStringInConfigFile()!, cancellationToken)).Status
+                    == ReachabilityStatus.Reachable;
+            if (!configFileConnectionStringWorks)
             {
                 string escapedConfigFile = Markup.Escape(Hall9kDatabase.ConfigFile);
 
@@ -100,6 +111,9 @@ public sealed class DaemonAutostartEnableCommand : Hall9kAsyncCommand<DaemonAuto
                         $"{escapedConfigFile} exists but does not carry a connectionString",
                     ConfigFileConnectionStringState.Malformed =>
                         $"{escapedConfigFile} exists but is not valid JSON",
+                    ConfigFileConnectionStringState.Supplied =>
+                        $"{escapedConfigFile} names one, but it does not currently answer — h9k install writes a "
+                        + "guessed default there when nothing else is configured, without starting or confirming it",
                     _ => throw new NotSupportedException($"Unexpected {nameof(ConfigFileConnectionStringState)}: {configFileState}"),
                 };
 

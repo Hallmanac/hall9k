@@ -446,11 +446,14 @@ public sealed class WindowsDaemonAutostart : IDaemonAutostart
     /// captured set here even when <see cref="EnableAsync"/> is handed it: unlike PATH or
     /// <c>HALL9K_CLAUDE_PATH</c>, the connection string already has a durable home once an
     /// install reaches this point — <see cref="Hall9kDatabase.Resolve"/> falls back to
-    /// <see cref="Hall9kDatabase.ConfigFile"/> (written by <c>h9k doctor</c>'s start-offer,
-    /// which the documented install walk runs before autostart is ever enabled) whenever the
-    /// environment does not carry it. Embedding it anyway would only add a second, weaker copy
-    /// of the same secret in plaintext on disk — this file has no equivalent of the config
-    /// file's own permissions or its inclusion in every other secret-handling path.
+    /// <see cref="Hall9kDatabase.ConfigFile"/> (written by <c>h9k install</c> or by
+    /// <c>h9k doctor</c>'s start-offer, either of which the documented install walk runs
+    /// before autostart is ever enabled) whenever the environment does not carry it.
+    /// <see cref="Hall9k.Cli.Commands.DaemonAutostartEnableCommand"/> is what checks that
+    /// fallback actually works before deciding whether to warn about the gap. Embedding it anyway
+    /// would only add a second, weaker copy of the same secret in plaintext on disk — this
+    /// file has no equivalent of the config file's own permissions or its inclusion in every
+    /// other secret-handling path.
     /// </para>
     /// </summary>
     private static string InnerCommand(
