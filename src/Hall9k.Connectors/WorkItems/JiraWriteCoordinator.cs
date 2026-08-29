@@ -107,6 +107,25 @@ public static class JiraWriteCoordinator
             return null;
         }
 
+        // A create can go stale while it sits pending: the task may have acquired its external
+        // item some other way in the meantime — an operator running h9k task link-jira by hand,
+        // having seen no card yet because the login that stuck this create had not been noticed.
+        // TaskDecider.RequestJiraWrite's one-card-per-task guard only ever runs once, at submit,
+        // so a retry has to re-check ExternalReference itself or it would file a second card for
+        // the same work; the marker search alone cannot catch this, because a card linked by
+        // another route carries no hall9k-task: marker (independent pre-PR review, cycle 5).
+        if (task.PendingJiraWriteOperation == JiraWriteOperation.Create
+            && task.ExternalReference is { } existing && existing.Provider == WorkItemProvider.Jira)
+        {
+            return await RecordSuccessAsync(
+                session, taskId, writeId, task.PendingJiraWriteOperation,
+                new TwgWriteResult(
+                    existing.Reference,
+                    $"Task {taskId} was linked to {existing} while this create sat pending; nothing new "
+                    + "was created."),
+                cancellationToken);
+        }
+
         JiraWritePayload payload = JiraWritePayload.FromJson(task.PendingJiraWritePayloadJson ?? "{}");
         return await AttemptAsync(
             session, taskId, writeId, task.PendingJiraWriteOperation, task.PendingJiraWriteIssueKey, payload,
