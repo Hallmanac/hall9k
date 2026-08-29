@@ -40,22 +40,20 @@ public sealed class TokenBudgetRetryEngine(
     ILogger<TokenBudgetRetryEngine> logger)
 {
     /// <summary>
-    /// Every budget-parked run this node owns, retried once — the same widening
-    /// RunSupervisor.ResumeStrandedPipelinesAsync applies, so NodeId == Guid.Empty is included
-    /// alongside this node's own id. h9k task deliver now records the delivering node's own id
-    /// on AgentSessionCompleted (Decisions Log #101), so an interactively delivered run parked
-    /// mid review loop already carries a real node id by the time it can reach BudgetParked; the
-    /// widening here only still matters for a run delivered by a build that predates that fix,
-    /// whose stream never carries the flip and so replays with NodeId still empty forever — a
-    /// node-only filter would otherwise park such a legacy run permanently (independent pre-PR
-    /// review, cycle 2). Returns how many actually resumed.
+    /// Every budget-parked run this node owns, retried once — a plain node-only filter, unlike
+    /// RunSupervisor.ResumeStrandedPipelinesAsync's provenance comment once claimed: h9k task
+    /// deliver records the delivering node's own id on AgentSessionCompleted (Decisions Log
+    /// #101), so an interactively delivered run parked mid review loop already carries a real
+    /// node id by the time it can reach BudgetParked, and DeliveredByNodeId is new alongside
+    /// this feature, so no pre-fix stream with an empty NodeId here can exist to widen for
+    /// (conformance review, cycle 4). Returns how many actually resumed.
     /// </summary>
     public async Task<int> RetryParkedRunsAsync(CancellationToken cancellationToken)
     {
         await using IQuerySession query = store.QuerySession();
         Guid nodeId = node.NodeId;
         IReadOnlyList<RunDetails> parked = await query.Query<RunDetails>()
-            .Where(r => r.NodeId == nodeId || r.NodeId == Guid.Empty)
+            .Where(r => r.NodeId == nodeId)
             .Where(r => r.MatchesSql("d.data ->> 'state' = ?", RunState.BudgetParked.Value))
             .ToListAsync(cancellationToken);
 

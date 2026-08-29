@@ -111,17 +111,15 @@ public sealed class CloseoutEngine(
         {
             Guid nodeId = node.NodeId;
             // ReviewPending is watched too: a run holds there while an errored review's
-            // re-request waits for the reviewer to answer. NodeId == Guid.Empty is included
-            // alongside this node's own id for the same reason RunSupervisor.
-            // ResumeStrandedPipelinesAsync widens its own query: h9k task deliver now records
-            // the delivering node's own id on AgentSessionCompleted (Decisions Log #101), so an
-            // interactively delivered run reaching these states carries a real node id, not the
-            // TaskAggregate.IsInteractiveClaim sentinel — the widening here only still matters
-            // for a run delivered by a build that predates that fix, whose stream never carries
-            // the flip and so replays with NodeId still empty forever (independent pre-PR
-            // review, cycle 2).
+            // re-request waits for the reviewer to answer. h9k task deliver records the
+            // delivering node's own id on AgentSessionCompleted (Decisions Log #101), so an
+            // interactively delivered run reaching these states already carries a real node id,
+            // not the TaskAggregate.IsInteractiveClaim sentinel — no NodeId == Guid.Empty
+            // widening here: DeliveredByNodeId is new alongside this feature, so no pre-fix
+            // stream exists to widen for, and a widening would only let another node's daemon
+            // match and drive this run concurrently (conformance review, cycle 4).
             watched = await query.Query<RunDetails>()
-                .Where(r => r.NodeId == nodeId || r.NodeId == Guid.Empty)
+                .Where(r => r.NodeId == nodeId)
                 .Where(r => r.MatchesSql(
                     "d.data ->> 'state' in (?, ?, ?)",
                     RunState.AwaitingReview.Value, RunState.ReviewPending.Value, RunState.CloseoutParked.Value))
@@ -136,10 +134,9 @@ public sealed class CloseoutEngine(
             // stop existing just because nothing is watching it any more. PullRequestClosedWithoutMerge
             // is excluded — that run already recorded the one thing an inspection here could
             // tell it, and asking GitHub again would spend a read to relearn a fact already on
-            // the stream. NodeId == Guid.Empty is included here too, for the same
-            // pre-fix-legacy-data reason as the watched query above.
+            // the stream.
             orphaned = await query.Query<RunDetails>()
-                .Where(r => r.NodeId == nodeId || r.NodeId == Guid.Empty)
+                .Where(r => r.NodeId == nodeId)
                 .Where(r => r.MatchesSql(
                     "d.data ->> 'state' in (?, ?)", RunState.Failed.Value, RunState.Killed.Value))
                 .Where(r => r.PullRequestNumber != null)

@@ -170,51 +170,6 @@ public sealed class RunSupervisorTests(PostgresFixture postgres) : IClassFixture
             "the delivering node's id replaces the interactive sentinel from AgentSessionCompleted onward");
     }
 
-    /// <summary>
-    /// A run delivered by a build that predates the AgentSessionCompleted.DeliveredByNodeId
-    /// flip (Decisions Log #101) never had its NodeId reassigned, so its stream still replays
-    /// with the interactive sentinel forever. The NodeId == Guid.Empty widening in the query
-    /// stays only for this legacy shape — any live daemon must still be able to pick such a run
-    /// up, since no node's own id will ever match it.
-    /// </summary>
-    [Fact]
-    public async Task Resume_stranded_pipelines_still_adopts_a_pre_fix_delivered_run_with_no_node_id()
-    {
-        using CancellationTokenSource cts = new(TimeSpan.FromSeconds(30));
-        using DocumentStore store = NewStore();
-
-        NodeContext node = new();
-        await node.InitializeAsync(store, cts.Token);
-
-        Guid taskId = DomainId.New();
-        Guid runId = DomainId.New();
-        await using (IDocumentSession session = store.LightweightSession())
-        {
-            TaskAggregate task = new();
-            (task, object[] lifecycle) = TaskSeed.Start(
-                TaskDecider.Add(taskId, DomainId.New(), "Legacy interactive delivery test task", ["it completes"],
-                    TaskType.Chore, null, null, null, Now, node.OwnerId),
-                node.OwnerId, Now);
-            TaskClaimed claimed = TaskDecider.ClaimInteractively(task, node.OwnerId, runId, Now);
-            session.Events.StartStream<TaskAggregate>(taskId, [.. lifecycle, claimed]);
-            // Deliberately no TaskLease: an interactive claim holds no liveness lease.
-
-            session.Events.StartStream<RunAggregate>(runId, new RunDispatched(
-                runId, taskId, Guid.Empty, node.OwnerId, claimed.LeaseGeneration, DomainId.New(),
-                "/tmp/wt-interactive-test-legacy", "task/interactive-test-legacy", ExecutorMode.Subscription, Now));
-            // The pre-fix shape: no DeliveredByNodeId, so NodeId replays as the sentinel forever.
-            session.Events.Append(runId, new AgentSessionCompleted(runId, Now));
-            await session.SaveChangesAsync(cts.Token);
-        }
-
-        RunSupervisor supervisor = NewSupervisor(store, node);
-
-        await supervisor.ResumeStrandedPipelinesAsync(cts.Token);
-
-        supervisor.ActiveCount.Should().BeGreaterThanOrEqualTo(1,
-            "the run's NodeId is still the interactive sentinel, and the Guid.Empty widening still picks it up");
-    }
-
     [Fact]
     public async Task Agent_dying_without_a_result_fails_run_and_task_and_releases_the_lease()
     {

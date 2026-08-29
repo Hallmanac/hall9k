@@ -191,14 +191,16 @@ public sealed class RunSupervisor(
     /// what tells the two apart below, the same discriminator <see cref="ResumePipeline"/> already
     /// uses to decide whether to verify-then-review or just review. An interactive run's NodeId
     /// is the sentinel <see cref="Guid.Empty"/> (<c>TaskAggregate.IsInteractiveClaim</c>'s own
-    /// discriminator) only up to the point it is delivered: <c>h9k task deliver</c> now records
-    /// the delivering node's own id on <c>AgentSessionCompleted</c>, so <c>NodeLoad</c> counts it
+    /// discriminator) only up to the point it is delivered: <c>h9k task deliver</c> records the
+    /// delivering node's own id on <c>AgentSessionCompleted</c>, so <c>NodeLoad</c> counts it
     /// against that node's concurrency ceiling from Verifying onward (Decisions Log #101's own
-    /// fix — a delivered run must count, or the ceiling undercounts). The <c>NodeId == Guid.Empty</c>
-    /// widening below still matters for a run delivered by a build that predates that fix, whose
-    /// stream never carries the flip and so replays with NodeId still empty forever; going forward
-    /// it is otherwise dead, since every run reaching Verifying or UnderReview has already been
-    /// delivered and therefore already carries a real node id. Runs already being driven are in
+    /// fix — a delivered run must count, or the ceiling undercounts). No widening for
+    /// <c>NodeId == Guid.Empty</c> here: <c>DeliveredByNodeId</c> is new alongside this feature,
+    /// so no stream predating it exists, and every run reaching Verifying or UnderReview has
+    /// already been delivered and therefore already carries a real node id — a widening would
+    /// only ever let another node's daemon match and drive this run concurrently, exactly the
+    /// cross-node isolation <see cref="AdoptOrphansAsync"/>'s own <c>NodeId == nodeId</c> filter
+    /// is careful to preserve (conformance review, cycle 4). Runs already being driven are in
     /// the monitor set and are never double-entered.
     /// </summary>
     public async Task ResumeStrandedPipelinesAsync(CancellationToken cancellationToken)
@@ -206,7 +208,7 @@ public sealed class RunSupervisor(
         await using IQuerySession query = store.QuerySession();
         Guid nodeId = node.NodeId;
         IReadOnlyList<RunDetails> stranded = await query.Query<RunDetails>()
-            .Where(r => r.NodeId == nodeId || r.NodeId == Guid.Empty)
+            .Where(r => r.NodeId == nodeId)
             .Where(r => r.MatchesSql(
                 "d.data ->> 'state' in (?, ?)", RunState.UnderReview.Value, RunState.Verifying.Value))
             .ToListAsync(cancellationToken);
