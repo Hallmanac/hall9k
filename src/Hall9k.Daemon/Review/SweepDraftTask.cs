@@ -198,19 +198,18 @@ public static partial class SweepDraftTask
     }
 
     /// <summary>
-    /// The inverse of the single-line <see cref="RelayedText.FenceFor"/> wrapper an older
-    /// <see cref="Render"/> used to put around a finding on one "- Finding: " line, kept so an
-    /// item written in that shape before <see cref="Render"/> moved to a fenced block still parses
-    /// back to the same bare text rather than a fence-and-all string. That render always separated
-    /// the fence from the text with a literal space on both sides — the CommonMark padding an
-    /// inline code span needs to close correctly when the text itself starts or ends with a
+    /// The inverse of <see cref="RelayedText.FenceFor"/> applied inline, for a "- Finding: " line
+    /// a human grooming the sweep typed by hand rather than one <see cref="Render"/> wrote — the
+    /// multi-line block form is the only shape <see cref="Render"/> itself ever produces. The
+    /// fence is separated from the text by a literal space on both sides — the CommonMark padding
+    /// an inline code span needs to close correctly when the text itself starts or ends with a
     /// backtick (cycle-2 adversarial review) — which doubles as this method's unambiguous marker:
     /// the fence's own backtick run can never merge with a backtick the text happens to start or
     /// end with, so counting the leading run and requiring the matching
-    /// "<c>fence space … space fence</c>" shape on both ends recovers exactly the text that older
-    /// render was given, backticks and all. A line that does not have that shape is not a fence
-    /// this method wrote — left exactly as read, the same "never a parse failure" posture the rest
-    /// of this parser follows.
+    /// "<c>fence space … space fence</c>" shape on both ends recovers exactly the text a hand-typed
+    /// line meant, backticks and all. A line that does not have that shape is not a fence this
+    /// method wrote — left exactly as read, the same "never a parse failure" posture the rest of
+    /// this parser follows.
     /// </summary>
     private static string StripFence(string text)
     {
@@ -248,9 +247,18 @@ public static partial class SweepDraftTask
     /// repeats that same fence. Everything between the two fence lines is taken as-is, so a
     /// finding quoting its own "### " heading or "- Severity:" line mid-body cannot be mistaken
     /// for the next item's fields while a fence block is open. A "- Finding: " line followed by
-    /// inline text is still read the older single-line shape a sweep composed before this format
-    /// existed used (<see cref="StripFence"/>), so an already-open sweep with items in that shape
-    /// keeps parsing correctly across the format change.
+    /// inline text instead of a fence is read as the same text a human typed by hand
+    /// (<see cref="StripFence"/>), since <see cref="Render"/> itself never writes that shape.
+    /// </para>
+    /// <para>
+    /// The same "everything between the fences is literal" rule means a fence block that never
+    /// finds its matching close — because a hand edit deleted or altered the closing fence line
+    /// rather than the whole document simply ending mid-fence — keeps consuming lines, item
+    /// headings included, until either a later line happens to repeat the exact fence or the
+    /// document runs out. This is the same trade-off that lets a finding legitimately quote its
+    /// own "### " heading without being mistaken for the next item's, just paid on the rarer path
+    /// where the fence itself is what got corrupted; <see cref="Render"/> never produces that
+    /// shape, so it is a hand-editing risk, not one any automatic append can trigger.
     /// </para>
     /// </summary>
     private static IReadOnlyList<Item> Parse(string? agentContext)
