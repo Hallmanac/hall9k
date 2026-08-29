@@ -288,6 +288,41 @@ public sealed class TwgJiraExecutorTests
         found.Should().BeNull("the candidate's own description carries a different task's marker, not this one's");
     }
 
+    /// <summary>
+    /// A dedup hit's own confirmation read can find no readable payload at all — twg's own temp
+    /// file for that <c>get</c> reaped or unreadable between the call and this check — and that
+    /// must refuse rather than silently read as "no marker", which would create a second card on
+    /// an unconfirmed check (independent pre-PR review, adversarial lens, cycle 3; verified fixed,
+    /// cycle 4). Modeled the same way <c>A_search_reads_the_key_out_of_twgs_real_envelope_and_file_shape</c>
+    /// exercises the real envelope shape, except the temp file the envelope names is never written
+    /// at all, standing in for one twg wrote and the system then reaped.
+    /// </summary>
+    [Fact]
+    public async Task A_dedup_hit_whose_own_description_cannot_be_confirmed_read_refuses_rather_than_guesses()
+    {
+        Guid taskId = Guid.NewGuid();
+        string missingFile = Path.Combine(Path.GetTempPath(), $"hall9k-reaped-{Guid.NewGuid():N}.json");
+        string envelope =
+            $"""
+            output_files:
+              stdout: "{missingFile}"
+              compact: "{missingFile}.compact"
+            command: "jira.workitem.get"
+            agent_output:
+              summary: "stats"
+            ---END---
+            """;
+        RecordingProcessRunner twg = RecordingProcessRunner.RespondingTo(arguments => arguments.Contains("get")
+            ? new ProcessResult(0, envelope, string.Empty)
+            : new ProcessResult(0, """[{"key":"PROJ-999"}]""", string.Empty));
+        TwgJiraExecutor executor = new(twg.Runner);
+
+        Func<Task> findByMarker = () => executor.FindByMarkerAsync(taskId, "/repo", CancellationToken.None);
+
+        TwgExecutionException exception = (await findByMarker.Should().ThrowAsync<TwgExecutionException>()).Which;
+        exception.Message.Should().Contain("PROJ-999").And.Contain(TwgJiraExecutor.Marker(taskId));
+    }
+
     [Fact]
     public async Task An_update_writes_the_fields_and_then_verifies_by_reading_back()
     {
