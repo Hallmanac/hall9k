@@ -1,4 +1,5 @@
 using FluentAssertions;
+using Hall9k.Cli.Commands;
 using Hall9k.Domain.Features.Epic;
 using Hall9k.Domain.Features.Tasks;
 using Hall9k.Domain.Features.Tasks.Events;
@@ -6,6 +7,7 @@ using Hall9k.Domain.Features.Tasks.Handlers;
 using Hall9k.Domain.Features.Tasks.Projections;
 using Hall9k.Domain.Infrastructure.Ids;
 using Hall9k.Domain.Infrastructure.Persistence;
+using Hall9k.Domain.Shared.Exceptions;
 using Hall9k.Domain.Shared.ValueObjects;
 using JasperFx;
 using Marten;
@@ -172,6 +174,76 @@ public sealed class EpicMembershipTests(PostgresFixture postgres) : IClassFixtur
             EpicDetails? epic = await session.LoadAsync<EpicDetails>(epicId, cts.Token);
             epic!.State.Should().Be(
                 EpicState.Open, "nothing closes an epic automatically, not even its last member task closing out");
+        }
+    }
+
+    [Fact]
+    public async Task Joining_refuses_an_epic_from_a_different_project()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        using DocumentStore store = DocumentStore.For(opts =>
+        {
+            opts.Connection(postgres.ConnectionString);
+            opts.ConfigureHall9k(AutoCreate.All);
+        });
+
+        Guid ownerId = DomainId.New();
+        Guid epicProjectId = DomainId.New();
+        Guid otherProjectId = DomainId.New();
+        Guid epicId = DomainId.New();
+
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            session.Events.StartStream<EpicAggregate>(
+                epicId, EpicDecider.Add(epicId, epicProjectId, "Interactive mode", Now, ownerId));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        await using (IQuerySession session = store.QuerySession())
+        {
+            Func<Task> resolve = () => EpicIdResolver.ResolveForMembershipAsync(
+                session, epicId.ToString(), otherProjectId, cts.Token);
+
+            await resolve.Should().ThrowAsync<DomainConflictException>()
+                .WithMessage("*belongs to a different project*");
+        }
+    }
+
+    [Fact]
+    public async Task Joining_refuses_a_closed_epic()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        using DocumentStore store = DocumentStore.For(opts =>
+        {
+            opts.Connection(postgres.ConnectionString);
+            opts.ConfigureHall9k(AutoCreate.All);
+        });
+
+        Guid ownerId = DomainId.New();
+        Guid projectId = DomainId.New();
+        Guid epicId = DomainId.New();
+
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            session.Events.StartStream<EpicAggregate>(
+                epicId, EpicDecider.Add(epicId, projectId, "Interactive mode", Now, ownerId));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            EpicAggregate epic = (await session.Events.AggregateStreamAsync<EpicAggregate>(epicId, token: cts.Token))!;
+            session.Events.Append(epicId, EpicDecider.Close(epic, "no longer needed", Now.AddHours(1), ownerId));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        await using (IQuerySession session = store.QuerySession())
+        {
+            Func<Task> resolve = () => EpicIdResolver.ResolveForMembershipAsync(
+                session, epicId.ToString(), projectId, cts.Token);
+
+            await resolve.Should().ThrowAsync<DomainConflictException>()
+                .WithMessage("*Open is the only state a task can join*");
         }
     }
 }
