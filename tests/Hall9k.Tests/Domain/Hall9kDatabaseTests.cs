@@ -175,13 +175,13 @@ public sealed class Hall9kDatabaseTests : IDisposable
     /// Missing, present-without-the-key, and malformed each want their own remedy text (cycle-6
     /// review): a caller reporting all three as "does not exist" would say so even when the file
     /// was sitting right there with a typo in it or with only its operating-settings section.
-    /// <see cref="ConnectionStringStateInConfigFile"/> keeps them apart so a warning can name the
-    /// actual remedy.
+    /// <see cref="Hall9kDatabase.ConnectionStringStateAndValueInConfigFile"/> keeps them apart so
+    /// a warning can name the actual remedy.
     /// </summary>
     [Fact]
     public void No_config_file_at_all_reports_missing()
     {
-        Hall9kDatabase.ConnectionStringStateInConfigFile().Should().Be(ConfigFileConnectionStringState.Missing);
+        Hall9kDatabase.ConnectionStringStateAndValueInConfigFile().State.Should().Be(ConfigFileConnectionStringState.Missing);
     }
 
     [Fact]
@@ -189,7 +189,7 @@ public sealed class Hall9kDatabaseTests : IDisposable
     {
         File.WriteAllText(Path.Combine(home, "config.json"), """{"hall9k": {"maxConcurrentAgentSessions": 4}}""");
 
-        Hall9kDatabase.ConnectionStringStateInConfigFile().Should().Be(ConfigFileConnectionStringState.PresentWithoutConnectionString);
+        Hall9kDatabase.ConnectionStringStateAndValueInConfigFile().State.Should().Be(ConfigFileConnectionStringState.PresentWithoutConnectionString);
     }
 
     [Fact]
@@ -197,7 +197,7 @@ public sealed class Hall9kDatabaseTests : IDisposable
     {
         File.WriteAllText(Path.Combine(home, "config.json"), "{ not valid json");
 
-        Hall9kDatabase.ConnectionStringStateInConfigFile().Should().Be(ConfigFileConnectionStringState.Malformed);
+        Hall9kDatabase.ConnectionStringStateAndValueInConfigFile().State.Should().Be(ConfigFileConnectionStringState.Malformed);
     }
 
     [Fact]
@@ -205,27 +205,16 @@ public sealed class Hall9kDatabaseTests : IDisposable
     {
         File.WriteAllText(Path.Combine(home, "config.json"), """{"connectionString": "config-value"}""");
 
-        Hall9kDatabase.ConnectionStringStateInConfigFile().Should().Be(ConfigFileConnectionStringState.Supplied);
+        Hall9kDatabase.ConnectionStringStateAndValueInConfigFile().State.Should().Be(ConfigFileConnectionStringState.Supplied);
     }
 
     [Fact]
-    public void The_raw_value_in_the_config_file_ignores_a_higher_precedence_environment_variable()
+    public void The_value_in_the_config_file_ignores_a_higher_precedence_environment_variable()
     {
         File.WriteAllText(Path.Combine(home, "config.json"), """{"connectionString": "config-value"}""");
         Environment.SetEnvironmentVariable(Hall9kDatabase.EnvironmentVariableName, "env-value");
 
-        Hall9kDatabase.ConnectionStringInConfigFile().Should().Be("config-value",
+        Hall9kDatabase.ConnectionStringStateAndValueInConfigFile().Value.Should().Be("config-value",
             "an autostarted daemon has no environment variable of its own, so this is the value it would actually resolve to");
-    }
-
-    [Fact]
-    public void State_and_value_read_together_agree_with_the_two_read_separately()
-    {
-        File.WriteAllText(Path.Combine(home, "config.json"), """{"connectionString": "config-value"}""");
-
-        (ConfigFileConnectionStringState state, string? value) = Hall9kDatabase.ConnectionStringStateAndValueInConfigFile();
-
-        state.Should().Be(ConfigFileConnectionStringState.Supplied);
-        value.Should().Be("config-value");
     }
 }

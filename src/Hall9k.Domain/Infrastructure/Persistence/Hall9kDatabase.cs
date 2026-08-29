@@ -99,29 +99,14 @@ public static class Hall9kDatabase
     }
 
     /// <summary>
-    /// The raw connection string sitting in the platform config file, ignoring the
+    /// The connection string sitting in the platform config file — ignoring the
     /// higher-precedence environment variable that <see cref="Resolve"/> would return instead
-    /// when it is set — the value an autostarted daemon (no shell, so no environment variable
-    /// of its own) would actually resolve to. <c>null</c> when the file is missing, malformed,
-    /// or present without the key; callers that need to tell those apart use
-    /// <see cref="ConnectionStringStateInConfigFile"/> first.
-    /// </summary>
-    public static string? ConnectionStringInConfigFile() => ReadConfigFile(out _);
-
-    /// <summary>
-    /// Missing, malformed, and present-without-the-key each want their own remedy text (cycle-6
-    /// review), so a caller writing a warning needs to tell them apart rather than reporting all
-    /// three as "does not exist".
-    /// </summary>
-    public static ConfigFileConnectionStringState ConnectionStringStateInConfigFile() =>
-        ConnectionStringStateAndValueInConfigFile().State;
-
-    /// <summary>
-    /// <see cref="ConnectionStringStateInConfigFile"/> and <see cref="ConnectionStringInConfigFile"/>
-    /// combined into a single file read, for a caller that needs both together: reading them
-    /// separately risks the file changing in between (a concurrent <c>h9k config set</c>, an
-    /// editor save) so that the state one call observed no longer matches the value the other
-    /// one returns (cycle-6 review).
+    /// when it is set, which is the value an autostarted daemon (no shell, so no environment
+    /// variable of its own) would actually resolve to — together with which of missing,
+    /// malformed, present-without-the-key, or supplied it is (each wants its own remedy text,
+    /// cycle-6 review). Reads state and value in a single pass rather than as two separate
+    /// calls, which would risk the file changing in between (a concurrent <c>h9k config set</c>,
+    /// an editor save) and leaving the two answers disagreeing with each other (cycle-6 review).
     /// </summary>
     public static (ConfigFileConnectionStringState State, string? Value) ConnectionStringStateAndValueInConfigFile()
     {
