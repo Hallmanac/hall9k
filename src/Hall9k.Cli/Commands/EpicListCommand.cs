@@ -55,8 +55,8 @@ public sealed class EpicListCommand : Hall9kAsyncCommand<EpicListCommand.Setting
         IReadOnlyList<TaskStatusRow> rows = await TaskStatusComposer.ComposeAllAsync(
             session, DateTimeOffset.UtcNow, cancellationToken);
         Dictionary<Guid, TaskRollup> rollups = rows
-            .Where(row => row.EpicId is not null)
-            .GroupBy(row => row.EpicId is { } epicId ? epicId : default)
+            .SelectMany(row => row.EpicId is { } epicId ? new[] { (EpicId: epicId, Row: row) } : [])
+            .GroupBy(member => member.EpicId, member => member.Row)
             .ToDictionary(group => group.Key, TaskRollup.From);
         Dictionary<Guid, string> projects = (await session.Query<ProjectDetails>()
             .ToListAsync(cancellationToken)).ToDictionary(p => p.Id, p => p.Name);
