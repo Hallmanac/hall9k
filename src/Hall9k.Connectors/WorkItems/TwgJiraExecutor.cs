@@ -159,6 +159,13 @@ public sealed class TwgJiraExecutor(ProcessRunner? runner = null, Uri? site = nu
     /// Atlassian Document Format (a JSON tree, not plain text), but the marker's own characters
     /// need no JSON escaping, so it survives unchanged as a "text" node's value and a substring
     /// check against the whole payload finds it without needing to walk that tree.
+    /// <para>
+    /// A payload that could not be confirmed read — twg's own temp file reaped or unreadable
+    /// between the call and this check — throws rather than reads as "no marker": trusting the raw
+    /// envelope text in its place would silently fail toward duplication, since the envelope never
+    /// contains the description the marker lives in, the opposite of what this dedup gate exists
+    /// to prevent (independent pre-PR review, adversarial lens, cycle 3).
+    /// </para>
     /// </summary>
     private async Task<bool> CandidateCarriesMarkerAsync(
         string candidateKey, Guid taskId, string workingDirectory, CancellationToken cancellationToken)
@@ -166,7 +173,19 @@ public sealed class TwgJiraExecutor(ProcessRunner? runner = null, Uri? site = nu
         ProcessResult result = await RunAsync(
             ["jira", "workitem", "get", candidateKey, "--fields", "description", "--output", "json", "--output-summary", "stats"],
             workingDirectory, cancellationToken);
-        return ReadPayloadJson(result.StandardOutput).Contains(Marker(taskId), StringComparison.Ordinal);
+        string payload = ReadPayloadJson(result.StandardOutput, out bool confirmedReadable);
+        if (!confirmedReadable)
+        {
+            throw new TwgExecutionException(
+                TwgFailureKind.Other,
+                $"twg found a card ({candidateKey}) that may already carry this task's marker, but its "
+                + "description could not be read back to confirm it — the temp file twg wrote it to was "
+                + "reaped or unreadable before this check could run. Refusing to create a second card on "
+                + $"an unconfirmed dedup check; check the board by hand for {Marker(taskId)} and, if it "
+                + "is not there, run the write again.");
+        }
+
+        return payload.Contains(Marker(taskId), StringComparison.Ordinal);
     }
 
     /// <summary>
@@ -249,6 +268,19 @@ public sealed class TwgJiraExecutor(ProcessRunner? runner = null, Uri? site = nu
         await RunAsync(arguments, workingDirectory, cancellationToken);
         return await VerifyAsync(issueKey, workingDirectory, cancellationToken, "updated", confirmsExistenceOnly: true);
     }
+
+    /// <summary>
+    /// A direct-by-key read-back with no write attempted first — for a caller that already
+    /// believes a card exists (a stuck create's own retry, finding the task linked to one some
+    /// other route already recorded, such as an operator's own <c>h9k task link-jira</c>) and owes
+    /// its own recorded outcome the identical "prove it, do not infer it" confirmation every
+    /// write's success gets here, rather than recording that belief unread (independent pre-PR
+    /// review, adversarial lens, cycle 3: <c>JiraWriteSucceeded.IssueKey</c>'s own doc comment
+    /// says plainly it is what Jira answered when read back, never what another action once
+    /// claimed).
+    /// </summary>
+    public Task<TwgWriteResult> VerifyExistsAsync(string issueKey, string workingDirectory, CancellationToken cancellationToken) =>
+        VerifyAsync(issueKey, workingDirectory, cancellationToken, "linked", confirmsExistenceOnly: true);
 
     /// <summary>
     /// A comment on an existing card — never a transition, never a close, exactly the closeout
@@ -619,13 +651,33 @@ public sealed class TwgJiraExecutor(ProcessRunner? runner = null, Uri? site = nu
     /// pending for the retry sweep (independent pre-PR review, adversarial lens, cycle 9). Falling
     /// back to the envelope text itself is the same fallback an outright missing file already gets.
     /// </summary>
-    private static string ReadPayloadJson(string envelopeOutput)
+    private static string ReadPayloadJson(string envelopeOutput) => ReadPayloadJson(envelopeOutput, out _);
+
+    /// <summary>
+    /// The <paramref name="confirmedReadable"/> overload every caller above still ignores except
+    /// <see cref="CandidateCarriesMarkerAsync"/>: everywhere else, a fallback to the raw envelope
+    /// already fails toward a refusal on its own (it will not parse as the expected JSON shape, so
+    /// the caller's own "found nothing" handling takes over), but the dedup marker check reads the
+    /// envelope as plain text rather than parsing it, so a silent fallback there would read as
+    /// "marker absent" instead — the false negative this flag exists to catch.
+    /// </summary>
+    private static string ReadPayloadJson(string envelopeOutput, out bool confirmedReadable)
     {
         Match match = StdoutFilePathPattern.Match(envelopeOutput);
-        if (match.Success && File.Exists(match.Groups["path"].Value))
+        if (!match.Success)
+        {
+            // No temp file named at all — the bare-JSON-on-stdout fallback this class already
+            // tolerates for a future twg version, not a read failure, so envelopeOutput is the
+            // whole answer and is trusted as such.
+            confirmedReadable = true;
+            return envelopeOutput;
+        }
+
+        if (File.Exists(match.Groups["path"].Value))
         {
             try
             {
+                confirmedReadable = true;
                 return File.ReadAllText(match.Groups["path"].Value);
             }
             catch (IOException)
@@ -636,6 +688,7 @@ public sealed class TwgJiraExecutor(ProcessRunner? runner = null, Uri? site = nu
             }
         }
 
+        confirmedReadable = false;
         return envelopeOutput;
     }
 
