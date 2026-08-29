@@ -1560,10 +1560,28 @@ public sealed class AgentPromptBuilderTests : IDisposable
         prompt.Should().Contain(ProjectHomePaths.AgentsFile(home));
         prompt.Should().Contain(ProjectHomePaths.SkillsDirectory(home));
         prompt.Should().Contain(ProjectHomePaths.TasksDirectory(home));
+        prompt.Should().Contain(ProjectHomePaths.IdeasDirectory(home));
         prompt.Should().Contain(ProjectHomePaths.RepoDirectory(home));
         prompt.IndexOf("## Where this project lives", StringComparison.Ordinal).Should().BeLessThan(
             prompt.IndexOf("## Working rules", StringComparison.Ordinal),
             "the paths are context, and the working rules stay the last thing the agent reads");
+    }
+
+    /// <summary>
+    /// A rendered idea's directory holds `idea.md`, never `task.md`, and only sometimes carries a
+    /// `workspace/` sibling (independent pre-PR review, cycle 1, both lenses): the prompt used to
+    /// tell a dispatched agent both directories hold "`task.md` and a `workspace/`", which sends a
+    /// session reading a project's ideas hunting for a file that does not exist there.
+    /// </summary>
+    [Fact]
+    public void The_prompt_describes_tasks_and_ideas_by_their_own_actual_file_names()
+    {
+        ProjectDetails project = ProjectWithAHome();
+
+        string prompt = AgentPromptBuilder.Build(SomeTask(), project, "task/1-slug", _worktreePath);
+
+        prompt.Should().Contain("`task.md`");
+        prompt.Should().Contain("`idea.md`");
     }
 
     [Fact]
