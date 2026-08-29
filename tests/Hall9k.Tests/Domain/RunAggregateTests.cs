@@ -43,6 +43,62 @@ public sealed class RunAggregateTests
         run.State.IsTerminal.Should().BeTrue();
     }
 
+    [Fact]
+    public void Interactive_session_started_moves_to_running_and_records_the_claude_session_id()
+    {
+        RunAggregate run = new();
+        Guid id = DomainId.New();
+        run.Apply(new RunDispatched(
+            id, DomainId.New(), Guid.Empty, DomainId.New(), LeaseGeneration: 1,
+            SessionId: id, WorktreePath: "/wt/x", Branch: "task/x",
+            ExecutorMode.Subscription, Now));
+        run.State.Should().Be(RunState.Dispatched);
+
+        Guid claudeSessionId = DomainId.New();
+        run.Apply(new InteractiveSessionStarted(id, claudeSessionId, Now));
+
+        run.State.Should().Be(RunState.Running);
+        run.InteractiveClaudeSessionId.Should().Be(claudeSessionId);
+        run.InteractiveSessionCount.Should().Be(1);
+    }
+
+    /// <summary>
+    /// Closing the terminal is normal, not an ending (AGENTS.md): the session ending records
+    /// whatever usage is observable — nothing, for an attached interactive session — and leaves
+    /// the run exactly where the session left it rather than moving it on its own.
+    /// </summary>
+    [Fact]
+    public void Interactive_session_ended_records_only_what_is_observable_and_never_advances_the_run_on_its_own()
+    {
+        RunAggregate run = new();
+        Guid id = DomainId.New();
+        run.Apply(new RunDispatched(
+            id, DomainId.New(), Guid.Empty, DomainId.New(), LeaseGeneration: 1,
+            SessionId: id, WorktreePath: "/wt/x", Branch: "task/x",
+            ExecutorMode.Subscription, Now));
+        Guid claudeSessionId = DomainId.New();
+        run.Apply(new InteractiveSessionStarted(id, claudeSessionId, Now));
+
+        run.Apply(new InteractiveSessionEnded(
+            id, claudeSessionId, Now, Turns: null, InputTokens: null, OutputTokens: null, CostUsd: null));
+
+        run.State.Should().Be(RunState.Running, "closing the terminal leaves the run exactly where it was");
+        run.InputTokens.Should().Be(0, "nothing was observable, so nothing is guessed");
+        run.CostUsd.Should().BeNull();
+
+        // Re-entry: h9k task work launches a fresh session on the same run.
+        Guid secondSessionId = DomainId.New();
+        run.Apply(new InteractiveSessionStarted(id, secondSessionId, Now));
+        run.Apply(new InteractiveSessionEnded(
+            id, secondSessionId, Now, Turns: null, InputTokens: 1200, OutputTokens: 400, CostUsd: 0.5m));
+
+        run.InteractiveSessionCount.Should().Be(2, "a re-entry is a second attach/detach cycle on the same run");
+        run.InteractiveClaudeSessionId.Should().Be(secondSessionId);
+        run.InputTokens.Should().Be(1200, "a future build that can observe usage rolls it up exactly like TokensRecorded does");
+        run.OutputTokens.Should().Be(400);
+        run.CostUsd.Should().Be(0.5m);
+    }
+
     /// <summary>
     /// <see cref="RunAggregate.LastGateRanFullScope"/>, <see cref="RunAggregate.LastGateHeadSha"/>,
     /// and <see cref="RunAggregate.LastGateVerifyCommandsFingerprint"/> (task: a fix cycle's

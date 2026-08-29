@@ -67,6 +67,21 @@ public sealed class TaskAggregate
     public AgentModel Model { get; private set; } = AgentModel.Unknown;
     public int LeaseGeneration { get; private set; }
     public Guid? ClaimedByNodeId { get; private set; }
+
+    /// <summary>
+    /// Whether the current claim is an operator working the task interactively (h9k task work)
+    /// rather than a node's headless dispatch. An interactive claim carries no <c>TaskLease</c>
+    /// document — no liveness lease, no heartbeat reclaim (AGENTS.md) — and is represented on the
+    /// SAME <see cref="TaskState.Claimed"/> state and <see cref="TaskClaimed"/> event a node's
+    /// claim uses, discriminated only by <see cref="ClaimedByNodeId"/> carrying the sentinel
+    /// <see cref="Guid.Empty"/> ("a human, not a machine") rather than a real registered node's
+    /// id — chosen deliberately so the whole existing claim/complete/fail/requeue state machine,
+    /// and the generation fence built on <see cref="LeaseGeneration"/>, apply unchanged, and so
+    /// <see cref="Guid.Empty"/> never collides with a node id a real node registers with
+    /// (<c>NodeBootstrap</c> always mints one via <c>DomainId.New()</c>, never the empty guid).
+    /// </summary>
+    public bool IsInteractiveClaim => ClaimedByNodeId == Guid.Empty;
+
     public Guid? CurrentRunId { get; private set; }
     public Guid? PendingQuestionId { get; private set; }
     public string? PullRequestUrl { get; private set; }
@@ -467,6 +482,19 @@ public sealed class TaskAggregate
         _automaticLapHistory.Clear();
         _knownHumanReviewThreadIds.Clear();
         _knownPendingReviewRequestLogins.Clear();
+    }
+
+    // The mirror of TaskRetried, from Claimed (interactive) rather than Failed: the branch an
+    // operator cut interactively is what the next claim — headless dispatch, through the
+    // ordinary Queued path — resumes via RetryBranch, exactly like a human-requested retry's
+    // surviving branch (Decisions Log #25).
+    public void Apply(TaskHandedBack @event)
+    {
+        RetryBranch = @event.Branch;
+        ClaimedByNodeId = null;
+        CurrentRunId = null;
+        PendingQuestionId = null;
+        State = TaskState.Queued;
     }
 
     public void Apply(TaskFailed @event) => State = TaskState.Failed;

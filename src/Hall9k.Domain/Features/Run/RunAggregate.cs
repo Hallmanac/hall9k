@@ -455,6 +455,12 @@ public sealed class RunAggregate
     private readonly List<string> _failingChecks = [];
     public IReadOnlyList<string> FailingChecks => _failingChecks;
 
+    /// <summary>The operator's Claude Code session id, from the most recent <see cref="InteractiveSessionStarted"/>.</summary>
+    public Guid? InteractiveClaudeSessionId { get; private set; }
+
+    /// <summary>How many interactive attach/detach cycles this run has recorded (h9k task work, held and re-entered).</summary>
+    public int InteractiveSessionCount { get; private set; }
+
     public void Apply(RunDispatched @event)
     {
         Id = @event.Id;
@@ -1113,4 +1119,32 @@ public sealed class RunAggregate
     public void Apply(RunKilled @event) => State = RunState.Killed;
 
     public void Apply(RunSuperseded @event) => State = RunState.Superseded;
+
+    public void Apply(InteractiveSessionStarted @event)
+    {
+        InteractiveClaudeSessionId = @event.ClaudeSessionId;
+        InteractiveSessionCount++;
+        State = RunState.Running;
+    }
+
+    // No state change: the run stays wherever the interactive session left it (Claimed on the
+    // task, Running here) until an explicit h9k task deliver/release/handback moves it on —
+    // closing the terminal is normal, not an ending (AGENTS.md).
+    public void Apply(InteractiveSessionEnded @event)
+    {
+        if (@event.InputTokens is { } input)
+        {
+            InputTokens += input;
+        }
+
+        if (@event.OutputTokens is { } output)
+        {
+            OutputTokens += output;
+        }
+
+        if (@event.CostUsd is { } cost)
+        {
+            CostUsd = (CostUsd ?? 0m) + cost;
+        }
+    }
 }

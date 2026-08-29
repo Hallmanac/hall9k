@@ -578,6 +578,84 @@ public static class TaskDecider
         return new TaskRequeued(task.Id, reason, requeuedAt);
     }
 
+    /// <summary>
+    /// h9k task work's claim: the operator's mirror of <see cref="Claim"/>, same guard (Queued,
+    /// and this owner's own work), same <see cref="TaskClaimed"/> event and lease-generation
+    /// fencing — but NodeId is the sentinel <see cref="Guid.Empty"/> rather than a real node's
+    /// id, which is what <see cref="TaskAggregate.IsInteractiveClaim"/> reads back. No
+    /// <c>TaskLease</c> document is written for this claim (the CLI caller's job, not this
+    /// decider's): an interactive claim is held by the human, not a process, so there is
+    /// nothing here for a heartbeat to renew or an expiry sweep to reclaim.
+    /// </summary>
+    public static TaskClaimed ClaimInteractively(TaskAggregate task, Guid ownerId, Guid runId, DateTimeOffset claimedAt)
+    {
+        if (task.State != TaskState.Queued)
+        {
+            throw new DomainConflictException(
+                $"Task {task.Id} is {task.State.Value}, not Queued — it cannot be claimed.");
+        }
+
+        if (task.AssignedOwnerId != ownerId)
+        {
+            throw new DomainConflictException(
+                $"Task {task.Id} is assigned to {(task.AssignedOwnerId is { } assignee ? assignee.ToString() : "nobody")}, " +
+                $"not to this owner ({ownerId}) — an operator claims only their own owner's work.");
+        }
+
+        return new TaskClaimed(task.Id, Guid.Empty, ownerId, task.LeaseGeneration + 1, runId, claimedAt);
+    }
+
+    /// <summary>
+    /// h9k task release: the operator gives an interactive claim back to the dispatch queue,
+    /// exactly as <see cref="Requeue"/> already does for any other claimed task — refused when
+    /// the current claim is a node's (running headless work), which releases through its own
+    /// levers (h9k task abandon, or letting the run finish) rather than through this one.
+    /// </summary>
+    public static TaskRequeued ReleaseInteractiveClaim(TaskAggregate task, DateTimeOffset releasedAt)
+    {
+        if (task.State != TaskState.Claimed || !task.IsInteractiveClaim)
+        {
+            throw new DomainConflictException(
+                $"Task {task.Id} is {task.State.Value} — only a task with an active interactive claim " +
+                "releases this way." + (task.State == TaskState.Claimed
+                    ? " This task is claimed by a node running headless work, not an interactive session — " +
+                      "let the run finish, or h9k task abandon it."
+                    : string.Empty));
+        }
+
+        return Requeue(task, RequeueReason.HumanRequested, releasedAt);
+    }
+
+    /// <summary>
+    /// h9k task handback: an operator working a task interactively hands it to a headless agent
+    /// partway through. Refused unless the current claim is theirs to hand back for the same
+    /// reason <see cref="ReleaseInteractiveClaim"/> is scoped to an interactive claim — this is
+    /// not how a node's own run is redirected. <paramref name="branch"/> is the branch the
+    /// operator cut (or resumed) under this claim; the next headless claim resumes it through
+    /// the same RetryBranch path a human-requested retry already uses.
+    /// </summary>
+    public static TaskHandedBack HandBack(
+        TaskAggregate task, Guid runId, string branch, string? reason, DateTimeOffset handedBackAt, Guid handedBackByOwnerId)
+    {
+        if (task.State != TaskState.Claimed || !task.IsInteractiveClaim)
+        {
+            throw new DomainConflictException(
+                $"Task {task.Id} is {task.State.Value} — only a task with an active interactive claim " +
+                "hands back this way." + (task.State == TaskState.Claimed
+                    ? " This task is claimed by a node running headless work already."
+                    : string.Empty));
+        }
+
+        if (branch.IsBlank())
+        {
+            throw new DomainValidationException(
+                "A handback needs the branch the interactive session worked on, so the headless agent that " +
+                "continues resumes it instead of starting clean.");
+        }
+
+        return new TaskHandedBack(task.Id, runId, branch, reason, handedBackAt, handedBackByOwnerId);
+    }
+
     public static QuestionAsked Ask(TaskAggregate task, Guid questionId, Guid runId, string question, DateTimeOffset askedAt)
     {
         if (task.State != TaskState.Claimed)
