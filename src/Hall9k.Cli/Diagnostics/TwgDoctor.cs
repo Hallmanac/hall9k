@@ -1,7 +1,9 @@
 using Hall9k.Cli.Infrastructure;
 using Hall9k.Connectors.WorkItems;
+using Hall9k.Domain.Features.Connection;
 using Hall9k.Domain.Features.Project;
 using Hall9k.Domain.Features.Project.Projections;
+using Hall9k.Domain.Shared.Exceptions;
 using Marten;
 using Spectre.Console;
 
@@ -33,7 +35,25 @@ internal static class TwgDoctor
         string names = string.Join(", ", jiraProjects.Select(project => project.Name));
         AnsiConsole.MarkupLine("[bold]twg (Jira writes)[/]");
 
-        Uri? site = (await WorkItemConnections.FindJiraConnectionAsync(session, cancellationToken))?.SiteUrl;
+        ConnectionDetails? connection;
+        try
+        {
+            // The strict lookup, not TryFindJiraSiteAsync: doctor is exactly the human-facing
+            // surface WorkItemConnections's own doc comment carves out for it, so an ambiguity
+            // gets its own diagnostic line here rather than being swallowed into "no site" the
+            // way a background sweep's best-effort lookup does. Caught rather than left to
+            // propagate: this is one check among several DoctorCommand runs, and a thrown
+            // DomainConflictException would abort the whole doctor run instead of just reporting
+            // this one thing as unconfirmable (independent pre-PR review, cycle 3).
+            connection = await WorkItemConnections.FindJiraConnectionAsync(session, cancellationToken);
+        }
+        catch (DomainConflictException exception)
+        {
+            AnsiConsole.MarkupLine($"[yellow]  Could not confirm twg is authenticated[/] — {exception.Message.EscapeMarkup()}");
+            return;
+        }
+
+        Uri? site = connection?.SiteUrl;
         TwgAuthProbeResult probe = await new TwgJiraExecutor(site: site)
             .ProbeAuthenticationAsync(Environment.CurrentDirectory, cancellationToken);
 
