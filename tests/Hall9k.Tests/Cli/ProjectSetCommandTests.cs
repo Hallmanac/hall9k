@@ -102,4 +102,38 @@ public sealed class ProjectSetCommandTests
         act.Should().Throw<DomainValidationException>()
             .WithMessage("*name=url*");
     }
+
+    /// <summary>
+    /// Origin: five duplicate routed findings (drafts 985ee66c, 0f9d780c, ee33068a, 2baaae12,
+    /// 213a47d8), consolidated into the cleanup sweep this test file's own change closes.
+    /// <c>ParseVerify</c> only ever checked <c>separator &lt;= 0</c>, the same hole
+    /// <c>ParseLink</c> was hardened against above: a whitespace-only name before the `=`
+    /// trims to empty without ever being checked, so <c>h9k project set p --verify " =dotnet
+    /// test"</c> recorded a nameless <see cref="VerifyCommand"/> that
+    /// <c>VerificationRunner.RunGateAsync</c> then wrote to a collision-prone <c>verify-.log</c>.
+    /// </summary>
+    [Fact]
+    public void A_verify_gate_with_a_blank_name_is_a_refusal_naming_the_expected_shape()
+    {
+        Action act = () => ProjectSetCommand.ParseVerify(" =dotnet test");
+
+        act.Should().Throw<DomainValidationException>()
+            .WithMessage("*name=command*");
+    }
+
+    /// <summary>
+    /// The sibling hole the same five drafts describe: a blank command half (`"build="`) was
+    /// recorded as an empty <see cref="VerifyCommand.Command"/>, which
+    /// <c>VerificationRunner.RunGateAsync</c> then ran as <c>sh -c "() > ... 2>&amp;1"</c> — a
+    /// shell syntax error on every dispatched run — instead of being refused at the point it
+    /// was typed.
+    /// </summary>
+    [Fact]
+    public void A_verify_gate_with_a_blank_command_is_a_refusal_naming_the_expected_shape()
+    {
+        Action act = () => ProjectSetCommand.ParseVerify("build=");
+
+        act.Should().Throw<DomainValidationException>()
+            .WithMessage("*name=command*");
+    }
 }

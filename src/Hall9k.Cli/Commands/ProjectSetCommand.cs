@@ -248,12 +248,22 @@ public sealed class ProjectSetCommand : Hall9kAsyncCommand<ProjectSetCommand.Set
     private static bool ClearingWord(string value) =>
         value.Trim().Equals("none", StringComparison.OrdinalIgnoreCase);
 
-    private static VerifyCommand ParseVerify(string value)
+    internal static VerifyCommand ParseVerify(string value)
     {
         int separator = value.IndexOf('=');
-        return separator <= 0
-            ? throw new DomainValidationException($"--verify expects name=command, got '{value}'.")
-            : new VerifyCommand(value[..separator].Trim(), value[(separator + 1)..].Trim());
+        if (separator <= 0)
+        {
+            throw new DomainValidationException($"--verify expects name=command, got '{value}'.");
+        }
+
+        string name = value[..separator].Trim();
+        string command = value[(separator + 1)..].Trim();
+        if (name.Length == 0 || command.Length == 0)
+        {
+            throw new DomainValidationException($"--verify expects name=command, got '{value}'.");
+        }
+
+        return new VerifyCommand(name, command);
     }
 
     private static CommitStyle ParseCommitStyle(string value) => value.Trim().ToLowerInvariant() switch
