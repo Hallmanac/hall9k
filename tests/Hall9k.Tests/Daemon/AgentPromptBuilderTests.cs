@@ -173,6 +173,12 @@ public sealed class AgentPromptBuilderTests : IDisposable
             "the prompt states why the reset precedes the recompose immediately, with nothing between");
         prompt.Should().Contain("session is not done while `git status` shows anything uncommitted or");
         prompt.Should().Contain("untracked.", "the clean-tree contract covers untracked work too");
+        prompt.Should().Contain(
+            "Record the pre-reset tip: `git rev-parse HEAD`",
+            "the recompose records a tip to verify against, the same mechanic the narrative rebase uses");
+        prompt.Should().Contain(
+            "git diff <old-tip> HEAD",
+            "the recompose is verified for tree identity too, not just the narrative rebase path");
     }
 
     [Fact]
