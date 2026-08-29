@@ -87,7 +87,7 @@ public static class ReviewDraftBugTask
     /// pair for the serializer to replace with U+FFFD. One truncation rule, in one place.
     /// </para>
     /// </summary>
-    internal static string Excerpt(ReviewFinding finding)
+    private static string Excerpt(ReviewFinding finding)
     {
         string? line = finding.Text
             .Split('\n')
