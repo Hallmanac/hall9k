@@ -181,7 +181,7 @@ internal static class TaskStatusComposer
 
         bool onThisMachine = run is not null
             && context.NodeMachines.GetValueOrDefault(run.NodeId) == context.MachineName;
-        SessionLiveness session = Observe(run, onThisMachine, context.Sessions);
+        SessionLiveness session = Observe(run, onThisMachine, context.Sessions, context.MachineName);
         DispatchPressure? heldByCeiling = HeldByCeiling(task, context.Pressure);
 
         TaskPhase phase = TaskPhaseComposer.Compose(task, run, state, session, heldByCeiling);
@@ -258,7 +258,7 @@ internal static class TaskStatusComposer
     /// unobserved outranks gone, because a pid this machine cannot answer for is not evidence
     /// of a death.
     /// </summary>
-    private static SessionLiveness Observe(RunDetails? run, bool onThisMachine, ISessionObserver observer)
+    private static SessionLiveness Observe(RunDetails? run, bool onThisMachine, ISessionObserver observer, string machineName)
     {
         if (run is null || run.ActiveSessions.Count == 0)
         {
@@ -266,7 +266,8 @@ internal static class TaskStatusComposer
         }
 
         SessionLiveness[] observed = [.. run.ActiveSessions.Select(
-            session => observer.Observe(session.ProcessId, session.StartedAt, onThisMachine))];
+            session => observer.Observe(
+                session.ProcessId, session.StartedAt, SessionOnThisMachine(session, onThisMachine, machineName)))];
         if (observed.Contains(SessionLiveness.Alive))
         {
             return SessionLiveness.Alive;
@@ -279,6 +280,22 @@ internal static class TaskStatusComposer
             ? SessionLiveness.Unobserved
             : SessionLiveness.Gone;
     }
+
+    /// <summary>
+    /// A session's own machine identity when it carries one, ahead of the run-level lookup: an
+    /// interactive claim's <c>RunDispatched</c> records <c>NodeId</c> as the sentinel
+    /// <see cref="Guid.Empty"/> (never in <c>NodeMachines</c>), so <paramref name="onThisMachine"/>
+    /// reads false for it even while running right here — the same disagreement
+    /// <c>InteractiveSessionLiveness.EnsureNotAttachedElsewhere</c> already resolves by reading
+    /// <see cref="ActiveSession.MachineName"/> directly (adversarial review, cycle 3, following
+    /// cycle 2's finding). A daemon-dispatched session carries no <c>MachineName</c> of its own —
+    /// blank, never assumed to be this machine — so it falls back to the run-level answer exactly
+    /// as before.
+    /// </summary>
+    private static bool SessionOnThisMachine(ActiveSession session, bool onThisMachine, string machineName) =>
+        session.MachineName.IsNotBlank()
+            ? session.MachineName == machineName
+            : onThisMachine;
 
     /// <summary>
     /// Where the work is, in the seven words a human reads (Decisions Log #66). Nothing here is
