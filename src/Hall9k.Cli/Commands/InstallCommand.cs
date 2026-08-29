@@ -58,6 +58,7 @@ public sealed class InstallCommand : Hall9kAsyncCommand<InstallCommand.Settings>
 
         string version;
         string? skillsSource;
+        string? connectionStringStartDirectory = null;
         if (settings.FromRelease is not null)
         {
             string? problem = ValidateReleasePayload(settings.FromRelease);
@@ -106,10 +107,22 @@ public sealed class InstallCommand : Hall9kAsyncCommand<InstallCommand.Settings>
             // --from-release branch's own "unknown" fallback above.
             version = ReadPublishedVersion(staging);
             skillsSource = Path.Combine(repoRoot, ".claude", "skills");
+            // The project-override tier walks up from a start directory (Hall9kDatabase.Resolve),
+            // and for --repo that directory is repoRoot, not wherever this process happens to be
+            // invoked from — passing the two apart let an out-of-tree `h9k install --repo <path>`
+            // miss its own project's .hall9k-connection file entirely (cycle-1 review).
+            connectionStringStartDirectory = repoRoot;
         }
 
         return await FinishAsync(
-            staging, skillsSource, version, settings.Restart, settings.NoRestart, cancellationToken: cancellationToken);
+            staging,
+            skillsSource,
+            version,
+            settings.Restart,
+            settings.NoRestart,
+            writeDefaultConnectionStringIfUnconfigured: true,
+            connectionStringStartDirectory: connectionStringStartDirectory,
+            cancellationToken: cancellationToken);
     }
 
     /// <summary>
@@ -126,6 +139,8 @@ public sealed class InstallCommand : Hall9kAsyncCommand<InstallCommand.Settings>
         bool restart,
         bool noRestart,
         bool linkOntoPath = true,
+        bool writeDefaultConnectionStringIfUnconfigured = false,
+        string? connectionStringStartDirectory = null,
         CancellationToken cancellationToken = default)
     {
         // The actual last point before staging becomes ~/.hall9k/bin, run for every caller —
@@ -160,7 +175,10 @@ public sealed class InstallCommand : Hall9kAsyncCommand<InstallCommand.Settings>
             $"[dim]Wrote Hall9k's own Postgres definition to {PostgresRuntime.ComposeFile.EscapeMarkup()} "
             + "(not started — h9k doctor or h9k daemon start will offer to when it's needed).[/]");
 
-        await WriteDefaultConnectionStringIfUnconfiguredAsync(cancellationToken);
+        if (writeDefaultConnectionStringIfUnconfigured)
+        {
+            await WriteDefaultConnectionStringIfUnconfiguredAsync(connectionStringStartDirectory, cancellationToken);
+        }
 
         if (skillsSource is not null)
         {
@@ -227,10 +245,25 @@ public sealed class InstallCommand : Hall9kAsyncCommand<InstallCommand.Settings>
     /// matches what the operator actually wants; a malformed config file is left alone too,
     /// since repairing it is <c>h9k doctor</c>'s own diagnosis to make, not install's to
     /// paper over.
+    /// <para>
+    /// <paramref name="startDirectory"/> is where the per-project override tier's walk-up
+    /// begins (<c>--repo</c> passes its resolved repo root, the actual project this install
+    /// concerns, rather than leaving it to whatever directory the process happens to be
+    /// invoked from); <c>null</c> falls back to the current directory, same as any other
+    /// command's connection-string resolution. <c>--from-release</c> has no project checkout
+    /// to anchor to at all — that gap, and why this write only ever runs from <c>h9k
+    /// install</c> and never from <see cref="UpdateCommand"/>, is on <see cref="FinishAsync"/>'s
+    /// <c>writeDefaultConnectionStringIfUnconfigured</c> parameter (cycle-1 review: an
+    /// operator relying purely on a <c>.hall9k-connection</c> override, on a machine installed
+    /// before this write existed, could otherwise have it permanently shadowed by a plain
+    /// `h9k update` run from outside their project — the platform config file this writes
+    /// outranks the override unconditionally, everywhere, forever, once written).
+    /// </para>
     /// </summary>
-    private static async Task WriteDefaultConnectionStringIfUnconfiguredAsync(CancellationToken cancellationToken)
+    private static async Task WriteDefaultConnectionStringIfUnconfiguredAsync(
+        string? startDirectory, CancellationToken cancellationToken)
     {
-        ConnectionStringResolution resolution = Hall9kDatabase.Resolve();
+        ConnectionStringResolution resolution = Hall9kDatabase.Resolve(startDirectory: startDirectory);
         if (resolution.Origin != ConnectionStringOrigin.None)
         {
             return;

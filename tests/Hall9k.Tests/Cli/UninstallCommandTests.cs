@@ -59,9 +59,9 @@ public sealed class UninstallCommandTests : IDisposable
         stillPresent.Should().BeEmpty();
         Directory.Exists(home).Should().BeFalse(
             "bin/, postgres/, h9kd.log, h9kd.log.1, h9kd.pid, h9kd.lock, and h9kd.stop are all install-owned, "
-            + "and nothing else was ever there — config.json is never install's to write in the first place, "
-            + "and the canonical skill set is a separate removal path (SkillSeeder.RemovePublished) and is "
-            + "not part of this one.");
+            + "and nothing else was ever there — this machine's install never had to write config.json (this "
+            + "test names none of the tiers that would have caused it to), and the canonical skill set is a "
+            + "separate removal path (SkillSeeder.RemovePublished) and is not part of this one.");
     }
 
     [Fact]
@@ -144,8 +144,9 @@ public sealed class UninstallCommandTests : IDisposable
             "a credential is not something install wrote");
         Directory.Exists(Path.Combine(home, "bin")).Should().BeFalse("bin/ is install-owned and still goes");
         File.Exists(Path.Combine(home, "config.json")).Should().BeTrue(
-            "config.json is never install's to write — an operator or h9k doctor's start-offer writes it, "
-            + "and it can be the only record of a hand-configured connection string");
+            "config.json is deliberately excluded from InstallOwnedEntries regardless of who wrote it — an "
+            + "operator, h9k doctor's start-offer, or install's own write when nothing was configured yet — "
+            + "since it can be the only record of a connection string a reinstall needs to reconnect to");
     }
 
     [Fact]

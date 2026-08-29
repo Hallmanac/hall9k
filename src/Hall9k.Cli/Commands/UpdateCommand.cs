@@ -163,6 +163,14 @@ public sealed class UpdateCommand(ProcessRunner? gh = null) : Hall9kAsyncCommand
 
             InstallCommand.StageFromRelease(extractDirectory, staging, cancellationToken);
 
+            // writeDefaultConnectionStringIfUnconfigured stays off here (FinishAsync's
+            // default): an already-installed machine that has never needed config.json's
+            // connectionString key has been relying on something update cannot see from
+            // wherever it happens to run — an environment variable in a different shell, or a
+            // per-project .hall9k-connection override elsewhere on disk — and guessing a
+            // default here would permanently outrank that override the moment it is written
+            // (cycle-1 review). h9k install is the only place a genuinely fresh, nothing-
+            // configured-yet machine gets that guess recorded.
             return await InstallCommand.FinishAsync(
                 staging,
                 skillsSource,
@@ -170,7 +178,7 @@ public sealed class UpdateCommand(ProcessRunner? gh = null) : Hall9kAsyncCommand
                 restart,
                 noRestart,
                 linkOntoPath,
-                cancellationToken);
+                cancellationToken: cancellationToken);
         }
         finally
         {

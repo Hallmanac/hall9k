@@ -99,10 +99,9 @@ deliberately never carried into the registration even when the enabling shell ha
 `PATH` or `HALL9K_CLAUDE_PATH`, the connection string already has a durable home once an install
 reaches this point (the platform config file, which `h9k install` or `h9k doctor`'s start-offer
 writes to when nothing was configured yet), and embedding it in the launch script would only add
-a second,
-weaker plaintext copy on disk. `enable` warns at the time you'd still be able to fix it when the
-shell has the variable set but the platform config file does not otherwise supply one. `h9k
-doctor` will not fix this for you in that moment — your shell already resolves a connection
+a second, weaker plaintext copy on disk. `enable` warns at the time you'd still be able to fix it
+when the shell has the variable set but the platform config file does not otherwise supply one.
+`h9k doctor` will not fix this for you in that moment — your shell already resolves a connection
 string from the variable, so doctor reports healthy and never touches `config.json` — add
 `{"connectionString": "…"}` to `~/.hall9k/config.json` by hand instead. On Windows the captured
 variables travel as `set` prefixes scoped to the one `cmd.exe` invocation that then runs `h9kd`,
@@ -437,9 +436,11 @@ reason: they are read from disk fresh on every invocation, which makes them fres
 if the file is created, edited, or removed afterwards, `h9k daemon status` shows the file's
 current state while the daemon keeps running on whatever it read when it started.
 
-`h9k install` and `h9k update` never touch an existing config file; a missing one is created (with
-defaults, and only the settings you asked to change) the first time `h9k config set` needs it,
-and it says so.
+`h9k update` never touches the config file. `h9k install` touches it in exactly one case — merging
+in `connectionString` when nothing resolves yet anywhere in the [precedence chain](#postgres)
+above (Decisions Log #99) — and otherwise leaves it alone the same as update does; a missing file
+is created (with defaults, and only the settings you asked to change) the first time
+`h9k config set` needs it, and it says so.
 
 ### Per project and per owner
 

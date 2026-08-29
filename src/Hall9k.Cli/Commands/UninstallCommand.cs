@@ -19,16 +19,18 @@ namespace Hall9k.Cli.Commands;
 /// and removes everything under ~/.hall9k that <c>h9k install</c> itself ever wrote — bin/,
 /// the skill set, the Postgres compose file, the daemon's log/pid/lock files — so a removed
 /// home is a removed home for exactly the machine the walk's own reasoning describes: one
-/// that has run nothing but install and uninstall. What it deliberately never touches is
-/// anything install did not write: a registered project's home
+/// that has run nothing but install and uninstall, and whose install had something already
+/// configured before it ran. What it deliberately never touches is anything install did not
+/// write for this machine's own sake: a registered project's home
 /// (<c>~/.hall9k/projects/&lt;name&gt;</c>, real git clones and worktrees, possibly carrying
-/// uncommitted work), <c>~/.hall9k/credentials</c>, <c>config.json</c> (written by an operator
-/// or by <see cref="DatabaseDoctor"/>'s start-offer, never by install itself — deleting it
-/// would silently strip a configured connection string out from under a reinstall, pointing
-/// it at a fresh empty database instead of reconnecting to the one the operator set up), or
-/// the global idea/run fallback directories — none of those are "the install", and wiping
-/// them on a machine that has done real work would be exactly the "taking the work with it"
-/// this command exists not to do.
+/// uncommitted work), <c>~/.hall9k/credentials</c>, <c>config.json</c> (written by an operator,
+/// by <see cref="DatabaseDoctor"/>'s start-offer, or — on a machine where nothing resolved yet —
+/// by install itself (Decisions Log #99); deleting it would silently strip a configured
+/// connection string out from under a reinstall, pointing it at a fresh empty database instead
+/// of reconnecting to the one the operator set up, or the one install's own earlier write
+/// recorded), or the global idea/run fallback directories — none of those are "the install" to
+/// take back, and wiping them on a machine that has done real work would be exactly the "taking
+/// the work with it" this command exists not to do.
 /// Postgres gets the identical split: the <see cref="PostgresRuntime.ContainerName"/> container
 /// is stopped, never removed, and its <see cref="PostgresRuntime.VolumeName"/> volume is never
 /// touched, so a later <c>h9k install</c> finds it again exactly as it was. <c>--purge-data</c>
@@ -700,10 +702,11 @@ public sealed class UninstallCommand : Hall9kAsyncCommand<UninstallCommand.Setti
     /// project's registered home (<c>projects/&lt;name&gt;</c>), <c>credentials/</c>, and the
     /// global idea/run fallback directories all live as siblings of these same entries, and none
     /// of them are install's to remove. <c>config.json</c> is deliberately not listed either,
-    /// for the identical reason: install never writes it, an operator or
-    /// <see cref="DatabaseDoctor"/>'s start-offer does, and it can be the only record of a
-    /// hand-configured connection string — deleting it would leave a reinstall silently
-    /// pointed at nothing rather than reconnecting to the database the operator set up. The
+    /// for a related but narrower reason: an operator, <see cref="DatabaseDoctor"/>'s
+    /// start-offer, or install's own write when nothing resolved yet (Decisions Log #99) may
+    /// have put a connection string there, and deleting it on uninstall would leave a reinstall
+    /// silently pointed at nothing rather than reconnecting to the database that string names —
+    /// whether the operator set it up by hand or install recorded it for them the first time. The
     /// canonical skill set is deliberately not listed here either — <see cref="SkillSeeder.RemovePublished"/>
     /// handles it separately, because unlike every entry below it is not safe to delete
     /// outright: an operator can and does write skills of their own straight into that same
