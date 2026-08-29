@@ -75,8 +75,9 @@ public sealed class TaskReviseCommand : Hall9kAsyncCommand<TaskReviseCommand.Set
             "Join this epic: its id or an unambiguous fragment. Must be Open and belong to this "
             + "task's own project; a closed or another project's epic is refused. A task belongs to "
             + "at most one epic. Since h9k task revise is Draft-only (Decisions Log #34), a "
-            + "published or later task joins by unassigning and drafting it first: h9k task unassign "
-            + "<id> && h9k task draft <id>, then this option, then publish and assign again")]
+            + "Published task returns with h9k task draft <id> alone; an assigned task (Queued or "
+            + "Blocked) needs h9k task unassign <id> && h9k task draft <id> first — then this "
+            + "option, then publish (and assign) again")]
         public string? Epic { get; init; }
 
         [CommandOption("--clear-epic")]
