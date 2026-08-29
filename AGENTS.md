@@ -605,14 +605,31 @@ first-class interface, always, for every command:
   (`git diff <old-tip> HEAD` is empty) so green test runs carry over. Origin incident
   (2026-08-17): PR #6's independent-review round first landed as a separate "harden closeout"
   commit and had to be rebuilt into the owning commits by hand.
-- **Follow-up runs never push; the daemon pushes follow-up branches with
-  `git push --force-with-lease`.** Rewriting history per the rule above is safe: verify
-  tree identity, finish, and let the platform push. Origin incident (2026-08-17): the
-  first two automatic follow-up runs rebased correctly, the daemon's then-plain push
-  rejected both rebased branches ("failed to push some refs"), and both runs failed with
-  completed, gated work stranded in the worktrees; this file briefly told agents to run
-  the force push themselves as the workaround, until the daemon became force-aware
-  (decision #26).
+- **An agent never pushes; the daemon pushes every branch — fresh or follow-up — with
+  `git push --force-with-lease`, never plain `--force`.** Rewriting history per the rule
+  above is safe: verify tree identity, finish, and let the platform push. Origin incident
+  (2026-08-17): the first two automatic follow-up runs rebased correctly, the daemon's
+  then-plain push rejected both rebased branches ("failed to push some refs"), and both
+  runs failed with completed, gated work stranded in the worktrees; this file briefly
+  told agents to run the force push themselves as the workaround, until the daemon became
+  force-aware (decision #26). A fresh build session's own end-of-work checkpoint recompose
+  (below) means even a first-time push can now diverge from an earlier attempt at the
+  same branch, so every push takes the lease, not only a follow-up's (decision #104).
+- **Commit as you go during a fresh build session, then recompose once, right before you
+  finish.** Checkpoint commits along the way are crash protection, not authored history —
+  they exist so an abnormal ending (context exhaustion, an early exit) strands at most the
+  increment since the last checkpoint. Once the full verification suite is green, reset to
+  the branch's own fork point (`git reset --mixed $(git merge-base origin/<base> HEAD)`,
+  never the moving tip of `origin/<base>` itself) and immediately recompose that tree into
+  real history — the commit-plan skill, if this repo ships one, or the same mechanics done
+  by hand — with nothing in between (no test run, no fix) so the recomposed commits
+  provably describe the exact tree that passed the suite. Verify tree identity afterward
+  (`git diff <old-tip> HEAD` must print nothing, the same check the narrative rebase path
+  requires), and the session is not done while `git status` shows anything uncommitted or
+  untracked — check it last and commit whatever remains. Origin incident (2026-08-29):
+  three no-commit strandings in one night, each a large session that finished its work and
+  left everything uncommitted with nothing to recover from an abnormal ending (decision
+  #104).
 
 ## Repo skills
 
