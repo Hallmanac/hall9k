@@ -296,12 +296,18 @@ public sealed class GitWorktreeManager(ILogger<GitWorktreeManager> logger) : IWo
     /// resets to the branch's fork point and recomposes fresh commits over it, so a later
     /// resume whose recompose never got pushed sees a local tip that shares no ancestry
     /// with origin, exactly what an external rewrite looks like. <see cref="WasEverLocalHeadAsync"/>
-    /// tells the two apart: if origin's tip ever WAS this worktree's own HEAD (recorded in
-    /// its private HEAD reflog), the divergence originated here and the local tip is kept,
-    /// the same as the strictly-ahead case; only a tip this worktree never held is treated
-    /// as a genuine rewrite on origin (narrative follow-ups force-push rebased history,
-    /// Decisions Log #26), where the remote tip is the pull request's truth and the
-    /// worktree resets to it. The old tip stays reachable via the reflog either way.
+    /// tells the two apart: if origin's tip ever WAS this local branch's own tip (recorded
+    /// in the branch ref's own reflog, which every worktree that ever moved it shares — not
+    /// just this one), the divergence originated locally and the local tip is kept, the same
+    /// as the strictly-ahead case; only a tip this branch never held anywhere is treated as a
+    /// genuine rewrite on origin (narrative follow-ups force-push rebased history, Decisions
+    /// Log #26), where the remote tip is the pull request's truth and the worktree resets to
+    /// it. Checking the branch's own reflog rather than this worktree's private HEAD reflog
+    /// matters because a worktree can be removed and re-added on a surviving local branch (an
+    /// operator or a temp cleaner deleting the directory outside the platform's own
+    /// remove-then-delete-branch paths): the new worktree's HEAD reflog starts empty even
+    /// though the branch itself still remembers every tip it ever held (independent pre-PR
+    /// review, cycle 2). The old tip stays reachable via the reflog either way.
     /// </summary>
     private async Task SyncToOriginBestEffortAsync(
         string repositoryPath, string worktreePath, string branch, CancellationToken cancellationToken)
@@ -344,7 +350,7 @@ public sealed class GitWorktreeManager(ILogger<GitWorktreeManager> logger) : IWo
         }
 
         (_, string originTip, _) = await TryRunGitAsync(worktreePath, $"rev-parse origin/{branch}", cancellationToken);
-        if (await WasEverLocalHeadAsync(worktreePath, originTip.Trim(), cancellationToken))
+        if (await WasEverLocalHeadAsync(worktreePath, branch, originTip.Trim(), cancellationToken))
         {
             logger.LogInformation(
                 "Branch {Branch} diverged from a tip this worktree pushed itself — a local checkpoint " +
@@ -371,18 +377,20 @@ public sealed class GitWorktreeManager(ILogger<GitWorktreeManager> logger) : IWo
     }
 
     /// <summary>
-    /// Whether <paramref name="commit"/> was ever this worktree's own HEAD, per its private
-    /// <c>logs/HEAD</c> reflog (each worktree keeps its own — <c>git worktree</c> support gives
-    /// every linked worktree a separate HEAD and HEAD reflog under its own gitdir, even though
-    /// branch refs themselves are shared). A commit that shows up here is one this worktree
-    /// checked out, committed to, or reset through itself; a commit that never appears here came
-    /// from somewhere else entirely.
+    /// Whether <paramref name="commit"/> was ever <paramref name="branch"/>'s own tip, per the
+    /// branch ref's <c>logs/refs/heads/&lt;branch&gt;</c> reflog. Unlike <c>logs/HEAD</c> (which
+    /// <c>git worktree</c> support gives every linked worktree separately, under its own gitdir),
+    /// a branch ref and its reflog live in the shared repository and are visible from any
+    /// worktree that has the branch checked out, so this survives the worktree that made the
+    /// commit being removed and re-added elsewhere on the same branch. A commit that shows up
+    /// here is one this branch was reset through or committed to, in any worktree; a commit that
+    /// never appears here came from somewhere else entirely.
     /// </summary>
     private static async Task<bool> WasEverLocalHeadAsync(
-        string worktreePath, string commit, CancellationToken cancellationToken)
+        string worktreePath, string branch, string commit, CancellationToken cancellationToken)
     {
         (int exitCode, string output, _) = await TryRunGitAsync(
-            worktreePath, "reflog show HEAD --format=%H", cancellationToken);
+            worktreePath, $"reflog show {branch} --format=%H", cancellationToken);
         if (exitCode != 0)
         {
             return false;
