@@ -317,6 +317,19 @@ public static class WorkPromptBuilder
     /// that revert whatever merged into the base after this branch was cut (conformance and
     /// adversarial review, cycle 1). The merge-base is stable regardless.
     /// </para>
+    /// <para>
+    /// The recompose rewrites this branch's own history over a tip a prior run of the same task may
+    /// already have pushed (the retry-after-a-failed-`gh pr create` shape <c>PullRequestOpener</c>
+    /// pushes with <c>--force-with-lease</c> for), so a retried session's recompose can leave the
+    /// worktree diverged from `origin/&lt;branch&gt;` — same content, no shared ancestry — even
+    /// though nothing external touched the branch. <c>GitWorktreeManager.SyncToOriginBestEffortAsync</c>
+    /// used to treat every diverged-with-a-clean-tree resume as a rewrite-on-origin and hard-reset to
+    /// the remote tip, which destroyed exactly this recompose (independent pre-PR review, cycle 1,
+    /// both lenses): it now checks whether origin's tip was ever this worktree's own HEAD before
+    /// resetting, and keeps the local tip when it was. The tree-identity check in step 3 below is the
+    /// same reasoning applied one level down: the recompose itself must not silently drop a file the
+    /// commit-plan step forgot to stage.
+    /// </para>
     /// </summary>
     public static void AppendCheckpointCommitRules(StringBuilder prompt, ProjectDetails project)
     {
@@ -342,6 +355,8 @@ public static class WorkPromptBuilder
             }
         }
 
+        prompt.AppendLine("  0. Record the pre-reset tip: `git rev-parse HEAD`. Step 3 below checks against");
+        prompt.AppendLine("     it, so this is not optional bookkeeping.");
         prompt.AppendLine($"  1. Reset to the branch's own fork point, not the tip of `origin/{baseBranch}`");
         prompt.AppendLine("     itself: that ref lives in the shared repository and can move during this");
         prompt.AppendLine("     session (another worktree's fetch, a closeout branch cleanup), and resetting");
@@ -354,6 +369,14 @@ public static class WorkPromptBuilder
         prompt.AppendLine("  2. Immediately invoke the commit-plan skill, if this repo ships one, to compose");
         prompt.AppendLine("     that tree into cohesive, buildable commits — the real, reviewable history for");
         prompt.AppendLine("     this PR — or compose them yourself the same way if it does not.");
+        prompt.AppendLine("  3. REQUIRED before you finish: verify tree identity — `git diff <old-tip> HEAD`");
+        prompt.AppendLine("     (the tip recorded in step 0) must print nothing, exactly the same check the");
+        prompt.AppendLine("     narrative commit style requires after a rebase. A mixed reset changes only");
+        prompt.AppendLine("     which commits exist, never the tree, so an empty diff should be automatic —");
+        prompt.AppendLine("     but a file the commit-plan step forgot to stage lands as untracked rather");
+        prompt.AppendLine("     than modified, which this diff catches and a plain `git status` glance can");
+        prompt.AppendLine("     miss. A non-empty diff means something was left out of the recomposed");
+        prompt.AppendLine("     commits; add it and recompose again before finishing.");
         prompt.AppendLine("  Nothing happens between steps 1 and 2: no test run, no fix, no exploration.");
         prompt.AppendLine("  That gap is exactly what the reset is for: because the tree never moves,");
         prompt.AppendLine("  the commits composed in step 2 describe the identical tree that passed the");
