@@ -1,4 +1,5 @@
 using Hall9k.Domain.Features.Connection;
+using Hall9k.Domain.Features.Epic;
 using Hall9k.Domain.Features.Idea;
 using Hall9k.Domain.Features.Node;
 using Hall9k.Domain.Features.Owner;
@@ -44,6 +45,7 @@ public static class MartenConfiguration
         opts.Projections.Add<ConnectionDetailsProjection>(ProjectionLifecycle.Inline);
         opts.Projections.Add<ProjectDetailsProjection>(ProjectionLifecycle.Inline);
         opts.Projections.Add<IdeaDetailsProjection>(ProjectionLifecycle.Inline);
+        opts.Projections.Add<EpicDetailsProjection>(ProjectionLifecycle.Inline);
         opts.Projections.Add<TaskDetailsProjection>(ProjectionLifecycle.Inline);
         opts.Projections.Add<TaskListItemProjection>(ProjectionLifecycle.Inline);
         opts.Projections.Add<RunDetailsProjection>(ProjectionLifecycle.Inline);
