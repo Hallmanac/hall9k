@@ -2238,7 +2238,10 @@ public static class AgentPromptBuilder
         prompt.AppendLine("Write your composed payload to a JSON file — a work item type, the built-in and custom");
         prompt.AppendLine("fields the card needs (use the customfield_* id a field's own metadata reports, not its");
         prompt.AppendLine("display name), and projectKey if this repository's own rules say a board other than the");
-        prompt.AppendLine("one named above. Then submit it with exactly this:");
+        prompt.AppendLine("one named above. Write it outside this repository — a temp file (for example, one made");
+        prompt.AppendLine("with mktemp) — never inside the working directory below: the working rules say not to");
+        prompt.AppendLine("modify anything there, and another agent may be reading it at the same time. Then");
+        prompt.AppendLine("submit it with exactly this:");
         prompt.AppendLine();
         prompt.AppendLine("```");
         prompt.AppendLine($"{writeCommand} --op create --file <PATH-TO-YOUR-PAYLOAD.json>");
