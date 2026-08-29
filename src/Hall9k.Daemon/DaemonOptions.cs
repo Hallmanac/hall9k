@@ -194,10 +194,11 @@ public sealed class DaemonOptions
     /// <summary>
     /// How long a card-publication session (backlog 18) gets before the daemon stops waiting and
     /// terminates it. Generous, because the session may be reading a repository's rules and
-    /// conventions before composing the payload it submits through the write surface, and bounded for the same reason the synthesis pass is bounded: a
-    /// hung session that nothing ever gives up on holds the publication queue behind it forever,
-    /// and an abandoned agent burning tokens for nobody is worse than a request that says it
-    /// timed out and can be run again.
+    /// conventions before composing the payload it submits through the write surface, and
+    /// bounded for the same reason the synthesis pass is bounded: a hung session that nothing
+    /// ever gives up on holds the publication queue behind it forever, and an abandoned agent
+    /// burning tokens for nobody is worse than a request that says it timed out and can be run
+    /// again.
     /// </summary>
     public TimeSpan CardPublicationTimeout { get; set; } = TimeSpan.FromMinutes(15);
 
