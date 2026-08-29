@@ -82,35 +82,10 @@ internal static class AttentionComposer
                 $"h9k pr resolve {id} --reason \"…\"");
         }
 
-        // Parked on the clock, not on a person (backlog 40): the subscription usage
-        // window ran out, the retry sweep clears it hourly without anyone typing anything, and
-        // so it is waiting-but-handled rather than an ask. Answered before the lifecycle arms
-        // below so a follow-up that pushed reads the same wait its pre-push sibling does — one
-        // condition, said once, whatever lifecycle state the row happens to be in.
-        if (run?.State == Domain.Features.Run.RunState.BudgetParked)
-        {
-            return new TaskAttention(AttentionLevel.WaitingHandled, BudgetHoldCause(run, budgetParkedRuns));
-        }
-
         if (state == LifecycleState.Failed)
         {
             return new TaskAttention(AttentionLevel.NeedsYou, FailureCause(task, run),
                 $"h9k task retry {id} --reason \"…\" (or resolve, or abandon)");
-        }
-
-        // A Jira write is stuck on an expired or missing twg login (Brian's design, 2026-08-28) —
-        // a handled, expected state rather than a crash, and one the operator clears in their own
-        // terminal rather than through an h9k command. Checked after every park and failure arm
-        // above rather than ahead of them (independent pre-PR review, cycle 1): the write carries
-        // no lifecycle state of its own, so it must not be shadowed when nothing else is amiss —
-        // but a stuck write is never the reason a run is parked or a task failed, and putting it
-        // first hid whichever of those actually stopped the work behind "run twg login" instead.
-        if (task.PendingJiraWriteIsAuthFailure)
-        {
-            return new TaskAttention(
-                AttentionLevel.NeedsYou,
-                Reason(task.PendingJiraWriteFailureReason, "a Jira write is pending and could not authenticate"),
-                "twg login");
         }
 
         // A blocker observed dead will never close out on its own, so the task cannot unblock
@@ -125,6 +100,39 @@ internal static class AttentionComposer
         if (stalled)
         {
             return new TaskAttention(AttentionLevel.NeedsYou, StallCause(phase), $"h9k logs {id}");
+        }
+
+        // A Jira write is stuck on an expired or missing twg login (Brian's design, 2026-08-28) —
+        // a handled, expected state rather than a crash, and one the operator clears in their own
+        // terminal rather than through an h9k command. Checked after every park, failure,
+        // dead-blocker and stall arm above rather than ahead of them (independent pre-PR review,
+        // cycle 1): the write carries no lifecycle state of its own, so it must not be shadowed
+        // when nothing else is amiss — but a stuck write is never the reason a run is parked, a
+        // task failed, a blocker died or a run stalled, and putting it first hid whichever of
+        // those actually stopped the work behind "run twg login" instead. Checked ahead of
+        // BudgetParked below, though (independent pre-PR review, cycle 2): a budget park clears
+        // itself on a clock and is explicitly not an ask, so if it ran first it would suppress a
+        // genuine needs-you row for as long as the budget window held, while the retry sweep kept
+        // re-issuing the same doomed write underneath it.
+        if (task.PendingJiraWriteIsAuthFailure)
+        {
+            return new TaskAttention(
+                AttentionLevel.NeedsYou,
+                Reason(task.PendingJiraWriteFailureReason, "a Jira write is pending and could not authenticate"),
+                "twg login");
+        }
+
+        // Parked on the clock, not on a person (backlog 40): the subscription usage
+        // window ran out, the retry sweep clears it hourly without anyone typing anything, and
+        // so it is waiting-but-handled rather than an ask. Checked after every needs-you arm
+        // above, including the pending-Jira-write one (independent pre-PR review, cycle 2), so an
+        // ignorable clock-bound wait never shadows a genuine ask — but still ahead of the
+        // Delivered and live-Blocked arms below, so a follow-up that pushed reads the same wait
+        // its pre-push sibling does, one condition, said once, whatever lifecycle state the row
+        // happens to be in.
+        if (run?.State == Domain.Features.Run.RunState.BudgetParked)
+        {
+            return new TaskAttention(AttentionLevel.WaitingHandled, BudgetHoldCause(run, budgetParkedRuns));
         }
 
         if (state == LifecycleState.Delivered)
