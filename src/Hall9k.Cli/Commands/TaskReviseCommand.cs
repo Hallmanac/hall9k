@@ -148,11 +148,11 @@ public sealed class TaskReviseCommand : Hall9kAsyncCommand<TaskReviseCommand.Set
                     session, epic, task.ProjectId, cancellationToken))
                 : Optional<Guid?>.None;
 
-        if (namesCurrentEpic && objective.IsBlank() && criteria.Count == 0 && agentContext.IsBlank()
-            && !dependencies.HasValue && type.IsBlank() && model.IsBlank())
+        if (namesCurrentEpic && task.EpicId is { } currentEpic && objective.IsBlank() && criteria.Count == 0
+            && agentContext.IsBlank() && !dependencies.HasValue && type.IsBlank() && model.IsBlank())
         {
             AnsiConsole.MarkupLine(
-                $"[green]Already in epic[/] {TaskListCommand.ShortId(task.EpicId!.Value)}. [dim]Nothing to do.[/]");
+                $"[green]Already in epic[/] {TaskListCommand.ShortId(currentEpic)}. [dim]Nothing to do.[/]");
             return ExitCodes.Ok;
         }
 

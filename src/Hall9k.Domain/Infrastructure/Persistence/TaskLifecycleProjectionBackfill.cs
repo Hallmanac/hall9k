@@ -46,6 +46,13 @@ public static class TaskLifecycleProjectionBackfill
     /// projection never writes at all is indistinguishable from one an old document is merely
     /// missing.
     /// </para>
+    /// <para>
+    /// <see cref="TaskListItem.EpicId"/> and <see cref="TaskDetails.EpicId"/> (Decisions Log #99)
+    /// deliberately have no marker here, unlike every field above: they are nullable and mean
+    /// "no epic", which is exactly the truthful reading of an absent key on a document written
+    /// before epics existed. There is no dead-blocker-shaped failure mode to repair — a missing
+    /// key and an explicit null read identically on every path that consumes this field.
+    /// </para>
     /// </summary>
     private const string StaleDocument =
         "(not jsonb_exists(d.data, 'assignedOwnerId')"               // pre-lifecycle-split (log #34)

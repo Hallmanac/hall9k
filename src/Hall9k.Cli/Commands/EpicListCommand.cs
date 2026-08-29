@@ -49,7 +49,7 @@ public sealed class EpicListCommand : Hall9kAsyncCommand<EpicListCommand.Setting
         {
             AnsiConsole.MarkupLine(
                 $"[dim]No epics match {Filters(project, state)}. Drop a filter, or see everything:[/] "
-                + $"h9k epic list --state all{Repeat(project)}");
+                + "h9k epic list --state all");
             return ExitCodes.Ok;
         }
 
