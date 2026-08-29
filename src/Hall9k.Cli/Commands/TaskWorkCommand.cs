@@ -71,7 +71,7 @@ public sealed class TaskWorkCommand : Hall9kAsyncCommand<TaskWorkCommand.Setting
 
         (Guid runId, string worktreePath, string branch, string runDirectory, bool resumesPreviousWork) = task.State == TaskState.Claimed && task.IsInteractiveClaim
             ? await ReenterAsync(session, task, cancellationToken)
-            : await ClaimAndCutAsync(session, task, fence, context, claudeSessionId, cancellationToken);
+            : await ClaimAndCutAsync(store, session, task, fence, context, claudeSessionId, cancellationToken);
 
         TaskDetails taskDetails = await session.LoadAsync<TaskDetails>(taskId, cancellationToken)
             ?? throw new DomainNotFoundException($"No task {taskId}.");
@@ -95,43 +95,40 @@ public sealed class TaskWorkCommand : Hall9kAsyncCommand<TaskWorkCommand.Setting
         string settingsFile = RunPaths.SettingsFile(resolvedRunDirectory);
         await File.WriteAllTextAsync(settingsFile, ClaudeSettingsFile.Content, cancellationToken);
 
-        await using (IDocumentSession startSession = store.LightweightSession())
-        {
-            startSession.Events.Append(runId, new InteractiveSessionStarted(runId, claudeSessionId, DateTimeOffset.UtcNow));
-            await startSession.SaveChangesAsync(cancellationToken);
-        }
-
         AnsiConsole.MarkupLineInterpolated($"[dim]Worktree: {worktreePath}[/]");
         AnsiConsole.MarkupLineInterpolated($"[dim]Branch: {branch}[/]");
         AnsiConsole.MarkupLine("[dim]Launching an interactive Claude Code session — exit it normally (Ctrl+D or /exit) to return here.[/]");
 
+        // InteractiveSessionStarted appends only once the process is actually alive (from inside
+        // LaunchInteractiveClaudeAsync's onStarted callback, with its real pid) rather than
+        // pre-emptively here: recording it before the process exists left ProcessId unobservable,
+        // so no other command could ever tell this worktree had a live attached session
+        // (adversarial review, cycle 1) — and a launch that never starts (the claude binary
+        // missing, the worktree vanishing) now never appends a started event with nothing to
+        // pair it, instead of needing an ended event to close a pairing that never really began.
         int exitCode;
         try
         {
-            exitCode = await LaunchInteractiveClaudeAsync(worktreePath, prompt, claudeSessionId, settingsFile, project.SkipPermissions, cancellationToken);
+            exitCode = await LaunchInteractiveClaudeAsync(
+                worktreePath, prompt, claudeSessionId, settingsFile, project.SkipPermissions,
+                (processId, startedAt) => AppendSessionStartedAsync(store, runId, claudeSessionId, processId, startedAt, cancellationToken),
+                cancellationToken);
         }
         catch (Exception exception) when (exception is Win32Exception or InvalidOperationException)
         {
-            // The claude binary is missing, or the worktree directory vanished between the
-            // claim and the launch: the started/ended pair still has to close (the run stream
-            // otherwise reads a session that never ended), and DomainConflictException is what
-            // Program.cs maps to a readable message instead of a raw stack trace.
-            await AppendSessionEndedAsync(store, runId, claudeSessionId, cancellationToken);
+            // The claude binary is missing, or the worktree directory vanished before the
+            // process could even start: nothing was recorded, so the claim is preserved with
+            // no run history to close out.
             throw new DomainConflictException(
                 $"Could not launch the interactive Claude Code session for task {taskId}: {exception.Message} "
                 + $"The claim is preserved — h9k task work {taskId} to try again, or h9k task release {taskId} to give it back.");
         }
-        catch (OperationCanceledException)
-        {
-            // Ctrl-C: the started/ended pair still has to close (PLAN.md #99, "paired every
-            // launch") even though the command's own token is the one that just fired — a
-            // cancelled token fails any further call made with it, so this cleanup runs
-            // unconditionally rather than cooperatively (conformance review, cycle 1).
-            await AppendSessionEndedAsync(store, runId, claudeSessionId, CancellationToken.None);
-            throw;
-        }
 
-        await AppendSessionEndedAsync(store, runId, claudeSessionId, cancellationToken);
+        // Always CancellationToken.None: a Ctrl-C that reached this point already cancelled the
+        // shared token (Program.cs), but the interactive session's own exit is real regardless —
+        // it must never be lost because the token it would otherwise use is already cancelled
+        // (conformance review, cycle 1).
+        await AppendSessionEndedAsync(store, runId, claudeSessionId, CancellationToken.None);
 
         AnsiConsole.MarkupLineInterpolated(exitCode == 0
             ? (FormattableString)$"[dim]Session ended (exit {exitCode}). Task {taskId} is still claimed —[/]"
@@ -209,7 +206,7 @@ public sealed class TaskWorkCommand : Hall9kAsyncCommand<TaskWorkCommand.Setting
     }
 
     private static async Task<(Guid RunId, string WorktreePath, string Branch, string RunDirectory, bool ResumesPreviousWork)> ClaimAndCutAsync(
-        IDocumentSession session, TaskAggregate task, StreamState fence, BootstrapContext context,
+        DocumentStore store, IDocumentSession session, TaskAggregate task, StreamState fence, BootstrapContext context,
         Guid claudeSessionId, CancellationToken cancellationToken)
     {
         if (task.State != TaskState.Queued)
@@ -255,36 +252,17 @@ public sealed class TaskWorkCommand : Hall9kAsyncCommand<TaskWorkCommand.Setting
 
         Guid runId = DomainId.New();
 
-        // Cut before committing the claim (mirrors RunLauncher: the worktree exists first, the
-        // record follows). If this throws, the task stays Queued — nothing was appended yet.
-        GitWorktreeManager worktrees = new(NullLogger<GitWorktreeManager>.Instance);
-        (Worktree worktree, bool resumesPreviousWork) = await CheckoutFreshOrRetryAsync(
-            worktrees, taskDetails, project, task.Id, runId, cancellationToken);
-
-        string? existingTaskDirectory = project.HomeDirectory.HasValue
-            ? HomeEntryLookup.FindExisting(ProjectHomePaths.TasksDirectory(project.HomeDirectory.Value), task.Id)
-                ?? HomeEntryLookup.FindExisting(ProjectHomePaths.ArchivedTasksDirectory(project.HomeDirectory.Value), task.Id)
-            : null;
-        string runDirectory = existingTaskDirectory is not null
-            ? RunPaths.ResolveDirectoryUnderTaskDirectory(existingTaskDirectory, runId)
-            : RunPaths.ResolveDirectory(project.HomeDirectory, TaskDocumentRenderer.DirectoryName(taskDetails), runId);
-
+        // Commit the claim before touching the filesystem — mirrors the daemon's own dispatch
+        // order (DispatchEngine.TryClaimAsync commits TaskClaimed first; RunLauncher only then
+        // cuts the worktree), not the reverse this used to do. A lost claim race is then caught
+        // by the SaveChangesAsync below before any worktree or branch exists on disk, instead of
+        // after — which used to leave one orphaned, referenced by nothing (adversarial review,
+        // cycle 1).
         TaskClaimed claimed = TaskDecider.ClaimInteractively(task, context.OwnerId, runId, DateTimeOffset.UtcNow);
-        session.Events.Append(task.Id, expectedVersion: fence.Version + 1, claimed);
+        long claimedVersion = fence.Version + 1;
+        session.Events.Append(task.Id, expectedVersion: claimedVersion, claimed);
         // Deliberately no TaskLease: the claim is held by the human, not a process — no
         // liveness lease, no heartbeat reclaim (AGENTS.md).
-
-        // Fable is the human-interactive model tier (AgentModel's own doc comment, Decisions
-        // Log #33) — a fixed platform choice for an operator-attended session, not the
-        // project/task role-resolution chain a headless build session runs through. SessionId
-        // is claudeSessionId — the actual Claude session about to be spawned — the same
-        // "SessionId names the first spawned session" convention RunLauncher's own RunDispatched
-        // follows, rather than the run's own id, which no agent session ever runs under.
-        session.Events.StartStream<RunAggregate>(runId, new RunDispatched(
-            runId, task.Id, Guid.Empty, context.OwnerId, claimed.LeaseGeneration, claudeSessionId,
-            worktree.Path, worktree.Branch, ExecutorMode.Subscription, DateTimeOffset.UtcNow,
-            IsFollowUp: false, Model: AgentModel.Fable, RunDirectory: runDirectory));
-
         try
         {
             await session.SaveChangesAsync(cancellationToken);
@@ -295,9 +273,77 @@ public sealed class TaskWorkCommand : Hall9kAsyncCommand<TaskWorkCommand.Setting
                 $"Task {task.Id} changed while claiming it — check h9k status and try again.");
         }
 
+        // Cut only after the claim is safely committed. A failure from here on has already
+        // committed the claim, so leaving the task stuck Claimed with no run record would need
+        // raw event-stream surgery to recover — h9k task release itself loads the very RunDetails
+        // a failed worktree cut never wrote. Failing it honestly instead gives the operator the
+        // ordinary Failed waypoint (retry, resolve, or abandon), exactly as
+        // RunLauncher.RecordLaunchFailureAsync does for a headless launch failure (adversarial
+        // review, cycle 1).
+        Worktree worktree;
+        bool resumesPreviousWork;
+        string runDirectory;
+        try
+        {
+            GitWorktreeManager worktrees = new(NullLogger<GitWorktreeManager>.Instance);
+            (worktree, resumesPreviousWork) = await CheckoutFreshOrRetryAsync(
+                worktrees, taskDetails, project, task.Id, runId, cancellationToken);
+
+            string? existingTaskDirectory = project.HomeDirectory.HasValue
+                ? HomeEntryLookup.FindExisting(ProjectHomePaths.TasksDirectory(project.HomeDirectory.Value), task.Id)
+                    ?? HomeEntryLookup.FindExisting(ProjectHomePaths.ArchivedTasksDirectory(project.HomeDirectory.Value), task.Id)
+                : null;
+            runDirectory = existingTaskDirectory is not null
+                ? RunPaths.ResolveDirectoryUnderTaskDirectory(existingTaskDirectory, runId)
+                : RunPaths.ResolveDirectory(project.HomeDirectory, TaskDocumentRenderer.DirectoryName(taskDetails), runId);
+
+            // Fable is the human-interactive model tier (AgentModel's own doc comment, Decisions
+            // Log #33) — a fixed platform choice for an operator-attended session, not the
+            // project/task role-resolution chain a headless build session runs through. SessionId
+            // is claudeSessionId — the actual Claude session about to be spawned — the same
+            // "SessionId names the first spawned session" convention RunLauncher's own RunDispatched
+            // follows, rather than the run's own id, which no agent session ever runs under.
+            session.Events.StartStream<RunAggregate>(runId, new RunDispatched(
+                runId, task.Id, Guid.Empty, context.OwnerId, claimed.LeaseGeneration, claudeSessionId,
+                worktree.Path, worktree.Branch, ExecutorMode.Subscription, DateTimeOffset.UtcNow,
+                IsFollowUp: false, Model: AgentModel.Fable, RunDirectory: runDirectory));
+            await session.SaveChangesAsync(cancellationToken);
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            await FailInteractiveClaimAsync(store, task.Id, claimedVersion, runId, exception.Message, cancellationToken);
+            throw new DomainConflictException(
+                $"Task {task.Id} was claimed but could not be prepared for interactive work ({exception.Message}). "
+                + $"It has been recorded Failed — h9k task retry {task.Id} to try again.");
+        }
+
         await Doorbell.RingAsync($"task-claimed-interactively:{task.Id}", cancellationToken);
         AnsiConsole.MarkupLineInterpolated($"[dim]Claimed task {task.Id} interactively.[/]");
         return (runId, worktree.Path, worktree.Branch, runDirectory, resumesPreviousWork);
+    }
+
+    private static async Task FailInteractiveClaimAsync(
+        DocumentStore store, Guid taskId, long claimedVersion, Guid runId, string reason, CancellationToken cancellationToken)
+    {
+        await using IDocumentSession session = store.LightweightSession();
+        StreamState? fence = await session.Events.FetchStreamStateAsync(taskId, cancellationToken);
+        if (fence is null || fence.Version != claimedVersion)
+        {
+            // Something else already moved the task past the claim just made (a release, a
+            // handback landing concurrently) — nothing here to fail.
+            return;
+        }
+
+        TaskAggregate? current = await session.Events.AggregateStreamAsync<TaskAggregate>(
+            taskId, version: fence.Version, token: cancellationToken);
+        if (current is null || !TaskDecider.CanFail(current))
+        {
+            return;
+        }
+
+        session.Events.Append(taskId, expectedVersion: fence.Version + 1,
+            TaskDecider.Fail(current, runId, $"Interactive claim setup failed: {reason}", DateTimeOffset.UtcNow));
+        await session.SaveChangesAsync(cancellationToken);
     }
 
     /// <summary>
@@ -334,6 +380,14 @@ public sealed class TaskWorkCommand : Hall9kAsyncCommand<TaskWorkCommand.Setting
         return (fresh, false);
     }
 
+    private static async Task AppendSessionStartedAsync(
+        DocumentStore store, Guid runId, Guid claudeSessionId, int processId, DateTimeOffset startedAt, CancellationToken cancellationToken)
+    {
+        await using IDocumentSession startSession = store.LightweightSession();
+        startSession.Events.Append(runId, new InteractiveSessionStarted(runId, claudeSessionId, startedAt, processId));
+        await startSession.SaveChangesAsync(cancellationToken);
+    }
+
     private static async Task AppendSessionEndedAsync(
         DocumentStore store, Guid runId, Guid claudeSessionId, CancellationToken cancellationToken)
     {
@@ -347,7 +401,8 @@ public sealed class TaskWorkCommand : Hall9kAsyncCommand<TaskWorkCommand.Setting
     }
 
     private static async Task<int> LaunchInteractiveClaudeAsync(
-        string worktreePath, string prompt, Guid sessionId, string settingsFile, bool skipPermissions, CancellationToken cancellationToken)
+        string worktreePath, string prompt, Guid sessionId, string settingsFile, bool skipPermissions,
+        Func<int, DateTimeOffset, Task> onStarted, CancellationToken cancellationToken)
     {
         using Process process = new();
         process.StartInfo = new ProcessStartInfo
@@ -373,29 +428,25 @@ public sealed class TaskWorkCommand : Hall9kAsyncCommand<TaskWorkCommand.Setting
         process.StartInfo.ArgumentList.Add(prompt);
 
         process.Start();
+        DateTimeOffset startedAt = DateTimeOffset.UtcNow;
+        await onStarted(process.Id, startedAt);
+
+        // The child shares h9k's foreground process group, so the terminal delivers Ctrl-C to it
+        // directly and independently of the token below — the ordinary Claude Code keystroke for
+        // "stop generating", not "quit". h9k's own token cancels on that same keystroke
+        // (Program.cs's CancelKeyPress handler), but killing the tree in response used to tear
+        // down a session the child chose to keep running (conformance + adversarial review,
+        // cycle 1). Falling back to an unconditional wait leaves that choice with the child,
+        // exactly as an unwrapped `claude` invocation would; a second Ctrl-C past this point
+        // terminates h9k itself (Program.cs no longer suppresses it), and the terminal delivers
+        // that one to the child directly too.
         try
         {
             await process.WaitForExitAsync(cancellationToken);
         }
         catch (OperationCanceledException)
         {
-            // The terminal's own Ctrl-C ordinarily reaches the child too (same foreground
-            // process group), but kill it best-effort in case it is still alive — the CLI is
-            // about to walk away from it either way, and an interactive claude process left
-            // running detached from the terminal that spawned it is worse than a failed kill.
-            if (!process.HasExited)
-            {
-                try
-                {
-                    process.Kill(entireProcessTree: true);
-                }
-                catch (InvalidOperationException)
-                {
-                    // Already exited between the check and the kill — nothing left to do.
-                }
-            }
-
-            throw;
+            await process.WaitForExitAsync(CancellationToken.None);
         }
 
         return process.ExitCode;

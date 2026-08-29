@@ -1,5 +1,6 @@
 using System.ComponentModel;
 using Hall9k.Cli.Infrastructure;
+using Hall9k.Domain.Features.Project.Projections;
 using Hall9k.Domain.Features.Run;
 using Hall9k.Domain.Features.Run.Events;
 using Hall9k.Domain.Features.Run.Projections;
@@ -15,10 +16,15 @@ using Spectre.Console.Cli;
 namespace Hall9k.Cli.Commands;
 
 /// <summary>
-/// Give an interactive claim (h9k task work) back to the dispatch queue. Refused on a task a
-/// node holds — that is running headless work with its own levers (let it finish, or
-/// h9k task abandon). The worktree and branch are left on disk exactly as they stood; nothing
-/// resumes them automatically (h9k task handback is the lever for that).
+/// Give an untouched interactive claim (h9k task work) back to the dispatch queue. Refused on a
+/// task a node holds — that is running headless work with its own levers (let it finish, or
+/// h9k task abandon) — and refused on a claim that already holds commits beyond the base branch:
+/// Requeue clears the claim without recording a resume branch (TaskAggregate.Apply(TaskRequeued)),
+/// so committed work would be silently orphaned in a worktree nothing points at, and the next
+/// headless claim would redo the objective from scratch in a second, differently-named worktree
+/// (adversarial review, cycle 1). h9k task handback is the lever for committed work; release is
+/// only for a claim nothing has been done in yet. The worktree and branch are left on disk exactly
+/// as they stood; nothing resumes them automatically.
 /// </summary>
 public sealed class TaskReleaseCommand : Hall9kAsyncCommand<TaskReleaseCommand.Settings>
 {
@@ -59,6 +65,24 @@ public sealed class TaskReleaseCommand : Hall9kAsyncCommand<TaskReleaseCommand.S
                     $"Task {taskId}'s run {currentRunId} is already {run.State.Value} — it was handed off with "
                     + $"h9k task deliver (or handback) and is now in the standard pipeline. h9k task show {taskId} "
                     + "to see where it stands.");
+            }
+
+            // Release is for an untouched claim only (AGENTS.md's own command surface says so):
+            // Requeue records no RetryBranch, so a headless reclaim of a branch that already
+            // exists just cuts a second, run-suffixed one off the base
+            // (GitWorktreeManager.ResolveBranchNameAsync) rather than resuming it, orphaning
+            // every commit the operator made with nothing left pointing at them
+            // (adversarial review, cycle 1).
+            ProjectDetails project = await session.LoadAsync<ProjectDetails>(task.ProjectId, cancellationToken)
+                ?? throw new DomainNotFoundException($"Task {taskId}'s project no longer exists.");
+            int commits = await InteractiveWorktreeGit.CountBranchCommitsAsync(run.WorktreePath, project.BaseBranch, cancellationToken);
+            if (commits > 0)
+            {
+                throw new DomainConflictException(
+                    $"Task {taskId}'s branch {run.Branch} holds {commits} commit(s) beyond {project.BaseBranch} — "
+                    + "release is only for a claim nothing has been done in yet. "
+                    + $"h9k task handback {taskId} to hand the committed work to a headless agent, or "
+                    + $"h9k task deliver {taskId} to submit it yourself.");
             }
         }
 

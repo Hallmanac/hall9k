@@ -14,10 +14,20 @@ app.Configure(CliCommandTree.Configure);
 // default handler fire is what lets a command's own try/catch(OperationCanceledException) close
 // out cleanly before the process actually exits.
 using CancellationTokenSource cancellation = new();
+int cancelKeyPresses = 0;
 Console.CancelKeyPress += (_, e) =>
 {
-    e.Cancel = true;
-    cancellation.Cancel();
+    // Only the first Ctrl-C is suppressed. A command blocked in a synchronous prompt that takes
+    // no token (Spectre's AnsiConsole.Prompt, which reads through Console.ReadKey) never observes
+    // the cancellation below, so without an escalation path it would hang forever with every
+    // further Ctrl-C swallowed the same way (independent pre-PR review, cycle 1). The second
+    // press leaves e.Cancel at its default (false) and lets SIGINT's ordinary action terminate
+    // the process, exactly as it did before this handler existed.
+    if (Interlocked.Increment(ref cancelKeyPresses) == 1)
+    {
+        e.Cancel = true;
+        cancellation.Cancel();
+    }
 };
 
 try

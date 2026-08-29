@@ -53,6 +53,12 @@ public sealed class TaskVerifyCommand : Hall9kAsyncCommand<TaskVerifyCommand.Set
         RunDetails run = await session.LoadAsync<RunDetails>(runId, cancellationToken)
             ?? throw new DomainConflictException($"Task {taskId} is claimed interactively but run {runId} has no record.");
 
+        // An operator's own session, still attached in another terminal, is editing and possibly
+        // rebuilding this same worktree right now — running gates here would collide with it in
+        // shared obj/bin output exactly as the daemon's own gates and review sessions would
+        // (adversarial review, cycle 1).
+        InteractiveSessionLiveness.EnsureNotAttachedElsewhere(run, taskId, "verify");
+
         // Mirrors TaskWorkCommand.ReenterAsync's own guard: once h9k task deliver or handback
         // hands the run to the standard pipeline, the task can still read Claimed+interactive
         // for the whole review loop, but the worktree now belongs to the daemon's own gates and
@@ -150,7 +156,41 @@ public sealed class TaskVerifyCommand : Hall9kAsyncCommand<TaskVerifyCommand.Set
         process.Start();
         Task<string> standardOutput = process.StandardOutput.ReadToEndAsync(cancellationToken);
         Task<string> standardError = process.StandardError.ReadToEndAsync(cancellationToken);
-        await process.WaitForExitAsync(cancellationToken);
+
+        // Mirrors VerificationRunner.RunGateAsync's own kill-on-cancel and timeout: an operator's
+        // own Ctrl-C, or a gate that simply hangs, must not leave it writing into the claim's
+        // worktree after this command has already walked away from it, and must not block the
+        // command indefinitely either (adversarial review, cycle 1). 15 minutes mirrors
+        // DaemonOptions.VerifyGateTimeout's own default — the CLI cannot reference that type
+        // (Reference graph: Cli -> Domain + Connectors), so there is no per-project override here.
+        using CancellationTokenSource timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        timeout.CancelAfter(TimeSpan.FromMinutes(15));
+        try
+        {
+            await process.WaitForExitAsync(timeout.Token);
+        }
+        catch (OperationCanceledException)
+        {
+            if (!process.HasExited)
+            {
+                try
+                {
+                    process.Kill(entireProcessTree: true);
+                }
+                catch (InvalidOperationException)
+                {
+                    // Already exited between the check and the kill — nothing left to do.
+                }
+            }
+
+            if (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+
+            return (false, $"Gate '{gate.Name}' exceeded its 15-minute timeout.");
+        }
+
         string output = await standardOutput + await standardError;
 
         return process.ExitCode == 0

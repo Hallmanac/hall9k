@@ -58,6 +58,11 @@ public sealed class TaskHandbackCommand : Hall9kAsyncCommand<TaskHandbackCommand
         RunDetails run = await session.LoadAsync<RunDetails>(runId, cancellationToken)
             ?? throw new DomainConflictException($"Task {taskId} is claimed interactively but run {runId} has no record.");
 
+        // An operator's own session, still attached in another terminal, owns this worktree right
+        // now — handing it to a headless agent out from under it would double-book the same files
+        // (adversarial review, cycle 1).
+        InteractiveSessionLiveness.EnsureNotAttachedElsewhere(run, taskId, "hand back");
+
         // Mirrors TaskWorkCommand.ReenterAsync's own guard: once h9k task deliver hands the run
         // to the standard pipeline, the task can still read Claimed+interactive for the whole
         // review loop, so the state check above alone would let this requeue and re-dispatch a

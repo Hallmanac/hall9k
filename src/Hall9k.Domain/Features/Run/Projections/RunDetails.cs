@@ -598,6 +598,7 @@ public sealed class RunDetailsProjection : SingleStreamProjection<RunDetails, Gu
     {
         view.InteractiveClaudeSessionId = @event.Data.ClaudeSessionId;
         view.InteractiveSessionCount++;
+        StartSession(view, AgentRole.Interactive, ReviewLens.Unknown, @event.Data.ProcessId, @event.Data.StartedAt);
         view.State = RunState.Running;
     }
 
@@ -617,6 +618,8 @@ public sealed class RunDetailsProjection : SingleStreamProjection<RunDetails, Gu
         {
             view.CostUsd = (view.CostUsd ?? 0m) + cost;
         }
+
+        EndSessions(view);
     }
 
     /// <summary>
