@@ -270,29 +270,11 @@ public sealed class JiraWorkItemProviderTests : IDisposable
     {
         RecordingRequester jira = new((int)HttpStatusCode.TooManyRequests, string.Empty);
 
-        Func<Task> comment = () => Provider(jira).CommentAsync(
-            JiraIssueKey.Parse("PROJ-123", new Uri("https://hall9k.atlassian.net")),
-            "merged",
-            Token);
+        Func<Task> read = () => Provider(jira).ReadAsync(
+            JiraIssueKey.Parse("PROJ-123", new Uri("https://hall9k.atlassian.net")), Token);
 
-        (await comment.Should().ThrowAsync<DomainValidationException>())
+        (await read.Should().ThrowAsync<DomainValidationException>())
             .WithMessage("*does not retry*");
-    }
-
-    [Fact]
-    public async Task A_comment_posts_the_text_as_the_cards_own_body()
-    {
-        RecordingRequester jira = new(201, "{}");
-
-        await Provider(jira).CommentAsync(
-            JiraIssueKey.Parse("PROJ-123", new Uri("https://hall9k.atlassian.net")),
-            "The pull request merged.",
-            Token);
-
-        JiraRequest request = jira.Requests.Should().ContainSingle().Subject;
-        request.Method.Should().Be(HttpMethod.Post);
-        request.Url.ToString().Should().Be("https://hall9k.atlassian.net/rest/api/2/issue/PROJ-123/comment");
-        request.JsonBody.Should().Be("""{"body":"The pull request merged."}""");
     }
 
     [Fact]

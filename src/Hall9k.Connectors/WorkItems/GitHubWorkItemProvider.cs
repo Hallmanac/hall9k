@@ -195,8 +195,9 @@ public sealed class GitHubWorkItemProvider(ProcessRunner? runner = null, TimePro
     }
 
     /// <summary>
-    /// Post a comment on an issue — the one write closeout makes with no card semantics behind
-    /// it, the same reasoning <see cref="JiraWorkItemProvider.CommentAsync"/> documents for Jira.
+    /// Post a comment on an issue — closeout's own write, with no card semantics behind it,
+    /// unlike Jira's own merge comment, which goes through <see cref="TwgJiraExecutor"/> and
+    /// <see cref="JiraWriteCoordinator"/> instead of a provider method like this one.
     /// Never a close or a transition: which label or state a merge should move an issue to is the
     /// project's workflow, not a fact this platform gets to have an opinion on.
     /// </summary>
