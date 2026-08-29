@@ -5,7 +5,7 @@ using Hall9k.Daemon;
 using Hall9k.Daemon.Execution;
 using Hall9k.Daemon.ProcessManagement;
 using Hall9k.Daemon.Publication;
-using Hall9k.Daemon.Worktrees;
+using Hall9k.Connectors.Worktrees;
 using Hall9k.Domain.Features.Connection;
 using Hall9k.Domain.Features.Node;
 using Hall9k.Domain.Features.Project;

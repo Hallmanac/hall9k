@@ -8,12 +8,13 @@ using Hall9k.Daemon.Dispatch;
 using Hall9k.Daemon.Execution;
 using Hall9k.Daemon.ProcessManagement;
 using Hall9k.Daemon.Review;
-using Hall9k.Daemon.Worktrees;
+using Hall9k.Connectors.Worktrees;
 using Hall9k.Domain.Features.Run;
 using Hall9k.Domain.Features.Run.Events;
 using Hall9k.Domain.Features.Run.Projections;
 using Hall9k.Domain.Features.Tasks;
 using Hall9k.Domain.Features.Tasks.Documents;
+using Hall9k.Domain.Features.Tasks.Events;
 using Hall9k.Domain.Features.Tasks.Handlers;
 using Hall9k.Domain.Features.Tasks.Projections;
 using Hall9k.Domain.Infrastructure.Ids;
@@ -109,6 +110,58 @@ public sealed class RunSupervisorTests(PostgresFixture postgres) : IClassFixture
         RunDetails details = await WaitForStateAsync(store, runId, "Verifying", cts.Token);
         details.InputTokens.Should().Be(1200);
         details.CacheReadInputTokens.Should().Be(840_000);
+    }
+
+    /// <summary>
+    /// h9k task deliver pushes the branch and appends AgentSessionCompleted on an interactive
+    /// run's stream, moving it to Verifying with no monitor and NodeId the sentinel Guid.Empty
+    /// (TaskAggregate.IsInteractiveClaim's own discriminator, deliberately never a real node's
+    /// id so it never counts against any node's concurrency ceiling). This proves the pickup
+    /// half of that hand-off: ResumeStrandedPipelinesAsync notices the stranded run and starts
+    /// driving it through the same pipeline a headless run's own completion would, even though
+    /// no node ever claimed it — a live daemon's own NodeId is deliberately not part of the
+    /// match for exactly that run.
+    /// </summary>
+    [Fact]
+    public async Task Resume_stranded_pipelines_adopts_an_interactively_delivered_run_regardless_of_node()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromSeconds(30));
+        using DocumentStore store = NewStore();
+
+        NodeContext node = new();
+        await node.InitializeAsync(store, cts.Token);
+
+        Guid taskId = DomainId.New();
+        Guid runId = DomainId.New();
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            TaskAggregate task = new();
+            (task, object[] lifecycle) = TaskSeed.Start(
+                TaskDecider.Add(taskId, DomainId.New(), "Interactive delivery test task", ["it completes"],
+                    TaskType.Chore, null, null, null, Now, node.OwnerId),
+                node.OwnerId, Now);
+            TaskClaimed claimed = TaskDecider.ClaimInteractively(task, node.OwnerId, runId, Now);
+            session.Events.StartStream<TaskAggregate>(taskId, [.. lifecycle, claimed]);
+            // Deliberately no TaskLease: an interactive claim holds no liveness lease.
+
+            session.Events.StartStream<RunAggregate>(runId, new RunDispatched(
+                runId, taskId, Guid.Empty, node.OwnerId, claimed.LeaseGeneration, DomainId.New(),
+                "/tmp/wt-interactive-test", "task/interactive-test", ExecutorMode.Subscription, Now));
+            session.Events.Append(runId, new AgentSessionCompleted(runId, Now));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        RunSupervisor supervisor = NewSupervisor(store, node);
+
+        await supervisor.ResumeStrandedPipelinesAsync(cts.Token);
+
+        // GreaterThanOrEqualTo, not equal to (same reasoning as
+        // Daemon_restart_mid_run_adopts_the_orphan_and_completes_it above): this node identity
+        // is shared across the class's tests, so the sweep may also pick up another test's own
+        // stranded Verifying/UnderReview run in the same pass. What this test pins down is that
+        // OUR run — NodeId the interactive sentinel, never this node's own id — was among them.
+        supervisor.ActiveCount.Should().BeGreaterThanOrEqualTo(1,
+            "the run's NodeId is the interactive sentinel rather than this node's own id, and it is still adopted");
     }
 
     [Fact]

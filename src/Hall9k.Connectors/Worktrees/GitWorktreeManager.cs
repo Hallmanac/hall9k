@@ -1,8 +1,9 @@
 using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Text;
+using Microsoft.Extensions.Logging;
 
-namespace Hall9k.Daemon.Worktrees;
+namespace Hall9k.Connectors.Worktrees;
 
 public sealed class GitWorktreeManager(ILogger<GitWorktreeManager> logger) : IWorktreeManager
 {

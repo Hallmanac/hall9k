@@ -1,6 +1,6 @@
 using System.Diagnostics;
 using FluentAssertions;
-using Hall9k.Daemon.Worktrees;
+using Hall9k.Connectors.Worktrees;
 using Hall9k.Domain.Infrastructure.Ids;
 using Microsoft.Extensions.Logging.Abstractions;
 using Xunit;

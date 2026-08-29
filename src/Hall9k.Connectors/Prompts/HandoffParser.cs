@@ -1,7 +1,7 @@
 using System.Text;
 using Hall9k.Domain.Infrastructure.Storage;
 
-namespace Hall9k.Daemon.Execution;
+namespace Hall9k.Connectors.Prompts;
 
 /// <summary>
 /// Reads the run's handoff off the agent's own session-end result (Decisions Log #36).

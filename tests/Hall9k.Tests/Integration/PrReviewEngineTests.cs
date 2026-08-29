@@ -3,7 +3,7 @@ using FluentAssertions;
 using Hall9k.Daemon;
 using Hall9k.Daemon.Execution;
 using Hall9k.Daemon.Review;
-using Hall9k.Daemon.Worktrees;
+using Hall9k.Connectors.Worktrees;
 using Hall9k.Domain.Features.Project;
 using Hall9k.Domain.Features.Project.Handlers;
 using Hall9k.Domain.Features.Run;
