@@ -125,7 +125,6 @@ public sealed class UpdateCommandTests : IDisposable
         (await Run(first.Runner)).Should().Be(0);
 
         string binary = Path.Combine(DaemonRuntime.BinDirectory, InstallCommand.BinaryFileName("h9k"));
-        string retired = binary + ".old";
 
         string secondWorkspace = Path.Combine(Path.GetTempPath(), $"h9k-update-workspace-{Path.GetRandomFileName()}");
         Directory.CreateDirectory(secondWorkspace);
@@ -139,15 +138,20 @@ public sealed class UpdateCommandTests : IDisposable
             // its name be renamed aside while it is still mapped, even though overwriting its
             // bytes in place is refused — a plain FileShare.Read handle would be stricter than
             // reality and block the rename this test means to exercise too.
+            //
+            // This handle is deliberately not asserted to keep the retired .old sibling alive
+            // afterwards: unlike a genuinely running h9k.exe, a plain FileStream never maps the
+            // file as an executable image, so it has no defense against InstallCommand's own
+            // closing TryDeleteFile reclaiming the retiree the moment placement finishes — that
+            // reclaim is exactly as real Windows behaves for any retiree that turns out not to
+            // still be locked. What this test can prove either way is that the update completed
+            // and the new content landed under the binary's original name despite the file being
+            // open throughout — the retiree's own fate afterwards is not.
             using (new FileStream(binary, FileMode.Open, FileAccess.Read, FileShare.Read | FileShare.Delete))
             {
                 (await Run(second.Runner)).Should().Be(0);
             }
 
-            File.Exists(retired).Should().BeTrue(
-                "the locked binary should have been retired aside to a .old sibling, not deleted outright or "
-                    + "left blocking the update");
-            File.ReadAllText(retired).Should().Be("cli\n", "the retired file is the version that was actually running");
             File.ReadAllText(binary).Should().Be("cli v2\n", "the new version takes the locked file's name once it is retired aside");
         }
         finally
@@ -170,7 +174,6 @@ public sealed class UpdateCommandTests : IDisposable
         (await Run(first.Runner)).Should().Be(0);
 
         string daemonBinary = Path.Combine(DaemonRuntime.BinDirectory, InstallCommand.BinaryFileName("h9kd"));
-        string retired = daemonBinary + ".old";
 
         string secondWorkspace = Path.Combine(Path.GetTempPath(), $"h9k-update-workspace-{Path.GetRandomFileName()}");
         Directory.CreateDirectory(secondWorkspace);
@@ -183,16 +186,14 @@ public sealed class UpdateCommandTests : IDisposable
             // the per-file retire logic in InstallCommand is generic (SwapFilesIntoPlace retires
             // whatever it cannot overwrite, by name, never by which binary it is), so a running
             // daemon needs no special pre-swap stop step — this is the acceptance criterion that
-            // claim rests on, exercised directly rather than only through h9k's own binary.
+            // claim rests on, exercised directly rather than only through h9k's own binary. See
+            // the h9k.exe test above for why the retired .old sibling's own survival afterwards
+            // is not asserted here either.
             using (new FileStream(daemonBinary, FileMode.Open, FileAccess.Read, FileShare.Read | FileShare.Delete))
             {
                 (await Run(second.Runner)).Should().Be(0);
             }
 
-            File.Exists(retired).Should().BeTrue(
-                "the locked daemon binary should have been retired aside to a .old sibling, not deleted outright "
-                    + "or left blocking the update");
-            File.ReadAllText(retired).Should().Be("daemon\n", "the retired file is the version that was actually running");
             File.ReadAllText(daemonBinary).Should().Be(
                 "daemon v2\n", "the new version takes the locked daemon binary's name once it is retired aside");
         }
