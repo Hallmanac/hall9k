@@ -397,6 +397,114 @@ public sealed class TaskDeciderTests
     }
 
     [Fact]
+    public void ClaimInteractively_uses_the_empty_guid_sentinel_and_the_same_generation_fence_as_a_node_claim()
+    {
+        TaskAggregate task = QueuedTask();
+        Guid runId = DomainId.New();
+
+        TaskClaimed claimed = TaskDecider.ClaimInteractively(task, Owner, runId, Now);
+
+        claimed.NodeId.Should().Be(Guid.Empty, "h9k task work holds no node — a human, not a machine");
+        claimed.LeaseGeneration.Should().Be(1);
+        claimed.RunId.Should().Be(runId);
+
+        task.Apply(claimed);
+        task.State.Should().Be(TaskState.Claimed);
+        task.IsInteractiveClaim.Should().BeTrue();
+        task.ClaimedByNodeId.Should().Be(Guid.Empty);
+    }
+
+    [Fact]
+    public void ClaimInteractively_of_a_task_assigned_to_a_different_owner_conflicts()
+    {
+        TaskAggregate task = QueuedTask();
+
+        Action act = () => TaskDecider.ClaimInteractively(task, DomainId.New(), DomainId.New(), Now);
+
+        act.Should().Throw<DomainConflictException>().WithMessage("*own owner*");
+    }
+
+    [Fact]
+    public void ClaimInteractively_of_a_non_queued_task_conflicts()
+    {
+        TaskAggregate task = ClaimedTask();
+
+        Action act = () => TaskDecider.ClaimInteractively(task, Owner, DomainId.New(), Now);
+
+        act.Should().Throw<DomainConflictException>();
+    }
+
+    [Fact]
+    public void ReleaseInteractiveClaim_returns_to_queued_and_a_reclaim_bumps_generation_again()
+    {
+        TaskAggregate task = InteractivelyClaimedTask();
+
+        task.Apply(TaskDecider.ReleaseInteractiveClaim(task, Now));
+
+        task.State.Should().Be(TaskState.Queued);
+        task.IsInteractiveClaim.Should().BeFalse();
+
+        TaskClaimed reclaimed = TaskDecider.Claim(task, DomainId.New(), Owner, DomainId.New(), Now);
+        reclaimed.LeaseGeneration.Should().Be(2, "every claim increments the fencing token, interactive or not");
+    }
+
+    [Fact]
+    public void ReleaseInteractiveClaim_of_a_node_claimed_task_refuses()
+    {
+        TaskAggregate task = ClaimedTask();
+
+        Action act = () => TaskDecider.ReleaseInteractiveClaim(task, Now);
+
+        act.Should().Throw<DomainConflictException>().WithMessage("*claimed by a node*");
+    }
+
+    [Fact]
+    public void ReleaseInteractiveClaim_of_a_queued_task_refuses()
+    {
+        TaskAggregate task = QueuedTask();
+
+        Action act = () => TaskDecider.ReleaseInteractiveClaim(task, Now);
+
+        act.Should().Throw<DomainConflictException>();
+    }
+
+    [Fact]
+    public void HandBack_carries_the_branch_forward_as_a_retry_branch_the_next_headless_claim_resumes()
+    {
+        TaskAggregate task = InteractivelyClaimedTask();
+        Guid runId = task.CurrentRunId!.Value;
+
+        TaskHandedBack handedBack = TaskDecider.HandBack(
+            task, runId, "task/28b19893-add-rate-limiting", "Stepping away mid-migration.", Now, Owner);
+        task.Apply(handedBack);
+
+        task.State.Should().Be(TaskState.Queued);
+        task.IsInteractiveClaim.Should().BeFalse();
+        task.RetryBranch.Should().Be("task/28b19893-add-rate-limiting");
+        task.CurrentRunId.Should().BeNull();
+    }
+
+    [Fact]
+    public void HandBack_without_a_branch_fails_validation()
+    {
+        TaskAggregate task = InteractivelyClaimedTask();
+
+        Action act = () => TaskDecider.HandBack(task, task.CurrentRunId!.Value, " ", null, Now, Owner);
+
+        act.Should().Throw<DomainValidationException>();
+    }
+
+    [Fact]
+    public void HandBack_of_a_node_claimed_task_refuses()
+    {
+        TaskAggregate task = ClaimedTask();
+
+        Action act = () => TaskDecider.HandBack(task, task.CurrentRunId!.Value, "task/x", null, Now, Owner);
+
+        act.Should().Throw<DomainConflictException>();
+    }
+
+    [Fact]
     public void Ask_then_answer_walks_needs_human_and_back()
     {
         TaskAggregate task = ClaimedTask();
@@ -947,6 +1055,13 @@ public sealed class TaskDeciderTests
     {
         TaskAggregate task = QueuedTask();
         task.Apply(TaskDecider.Claim(task, DomainId.New(), Owner, DomainId.New(), Now));
+        return task;
+    }
+
+    private static TaskAggregate InteractivelyClaimedTask()
+    {
+        TaskAggregate task = QueuedTask();
+        task.Apply(TaskDecider.ClaimInteractively(task, Owner, DomainId.New(), Now));
         return task;
     }
 }

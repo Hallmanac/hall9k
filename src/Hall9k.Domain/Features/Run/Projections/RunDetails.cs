@@ -206,6 +206,10 @@ public sealed class RunDetails
     public DateTimeOffset DispatchedAt { get; set; }
     public bool IsFollowUp { get; set; }
     public DateTimeOffset? FinishedAt { get; set; }
+    /// <summary>The operator's Claude Code session id, from the most recent <see cref="InteractiveSessionStarted"/>; null for a headless run.</summary>
+    public Guid? InteractiveClaudeSessionId { get; set; }
+    /// <summary>How many interactive attach/detach cycles this run has recorded (h9k task work, held and re-entered).</summary>
+    public int InteractiveSessionCount { get; set; }
 }
 
 public sealed class RunDetailsProjection : SingleStreamProjection<RunDetails, Guid>
@@ -588,6 +592,31 @@ public sealed class RunDetailsProjection : SingleStreamProjection<RunDetails, Gu
         EndSessions(view);
         view.State = RunState.Superseded;
         view.FinishedAt = @event.Data.SupersededAt;
+    }
+
+    public void Apply(IEvent<InteractiveSessionStarted> @event, RunDetails view)
+    {
+        view.InteractiveClaudeSessionId = @event.Data.ClaudeSessionId;
+        view.InteractiveSessionCount++;
+        view.State = RunState.Running;
+    }
+
+    public void Apply(IEvent<InteractiveSessionEnded> @event, RunDetails view)
+    {
+        if (@event.Data.InputTokens is { } input)
+        {
+            view.InputTokens += input;
+        }
+
+        if (@event.Data.OutputTokens is { } output)
+        {
+            view.OutputTokens += output;
+        }
+
+        if (@event.Data.CostUsd is { } cost)
+        {
+            view.CostUsd = (view.CostUsd ?? 0m) + cost;
+        }
     }
 
     /// <summary>

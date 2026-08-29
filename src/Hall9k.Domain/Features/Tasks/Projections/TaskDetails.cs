@@ -118,6 +118,8 @@ public sealed class TaskDetails
     public AgentModel Model { get; set; } = AgentModel.Unknown;
     public int LeaseGeneration { get; set; }
     public Guid? ClaimedByNodeId { get; set; }
+    /// <summary>See <see cref="TaskAggregate.IsInteractiveClaim"/>: same discriminator, read off this projection.</summary>
+    public bool IsInteractiveClaim => ClaimedByNodeId == Guid.Empty;
     public Guid? CurrentRunId { get; set; }
     public List<Guid> RunIds { get; set; } = [];
     public List<TaskQuestion> Conversation { get; set; } = [];
@@ -419,6 +421,18 @@ public sealed class TaskDetailsProjection : SingleStreamProjection<TaskDetails, 
 
     // FailureReason survives on purpose: the retry appends, it never erases why the task failed.
     public void Apply(IEvent<TaskRetried> @event, TaskDetails view)
+    {
+        view.RetryBranch = @event.Data.Branch;
+        view.RetryReason = @event.Data.Reason;
+        view.ClaimedByNodeId = null;
+        view.CurrentRunId = null;
+        view.State = TaskState.Queued;
+        view.FinishedAt = null;
+    }
+
+    // The interactive mirror of TaskRetried — same RetryBranch resume path, from a live
+    // interactive claim rather than a failure.
+    public void Apply(IEvent<TaskHandedBack> @event, TaskDetails view)
     {
         view.RetryBranch = @event.Data.Branch;
         view.RetryReason = @event.Data.Reason;
