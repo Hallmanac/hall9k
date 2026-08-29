@@ -76,7 +76,24 @@ public sealed class InstallCommandConnectionStringTests : IDisposable
             "something already resolves (the environment variable), so install has nothing to write");
     }
 
-    private Task<int> Finish() =>
+    /// <summary>
+    /// Something already listening on the default port — a native Postgres the operator runs
+    /// there, say — is not install's to guess past: writing its own compose credentials over
+    /// it would replace h9k doctor's honest "something is already listening" diagnosis with a
+    /// manufactured authentication failure against a credential install itself invented
+    /// (cycle-1 review).
+    /// </summary>
+    [Fact]
+    public async Task A_listening_port_is_left_unconfigured_rather_than_guessed_at()
+    {
+        int exitCode = await Finish(portListeningProbe: static _ => Task.FromResult(true));
+
+        exitCode.Should().Be(0);
+        File.Exists(Hall9kDatabase.ConfigFile).Should().BeFalse(
+            "something is already listening on the default port, so install must not write a credential for it");
+    }
+
+    private Task<int> Finish(Func<CancellationToken, Task<bool>>? portListeningProbe = null) =>
         InstallCommand.FinishAsync(
             staging,
             skillsSource: null,
@@ -90,5 +107,10 @@ public sealed class InstallCommandConnectionStringTests : IDisposable
             // whose real checkout carries a .hall9k-connection file at its root does not make
             // this test's outcome depend on their local environment (cycle-1 review).
             connectionStringStartDirectory: home,
+            // A real port-5432 check would make this test's outcome depend on whether the
+            // machine running it happens to have Postgres listening there (this repository's
+            // own dev-loop compose Postgres, say) — stubbed false unless a test overrides it,
+            // so "nothing configured" stays hermetic regardless (cycle-1 review).
+            portListeningProbe: portListeningProbe ?? (static _ => Task.FromResult(false)),
             cancellationToken: CancellationToken.None);
 }
