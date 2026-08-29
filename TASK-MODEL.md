@@ -789,8 +789,8 @@ public sealed record ReviewTrackReactivated( // the mandatory FinalFullPass foun
 public sealed record ReviewFindingRouted( // an out-of-scope non-high routes away from this diff
     Guid Id,                             //   (log #63): a Medium still mints a draft bug task of
     ReviewLens Lens,                     //   its own, a Low instead folds into the project's one
-    int Cycle,                           //   standing sweep draft (backlog: out-of-scope review
-    ReviewSeverity Severity,             //   findings consolidate). DraftTaskId null + FailureReason
+    int Cycle,                           //   standing sweep draft (SweepDraftTask, Decisions Log
+    ReviewSeverity Severity,             //   #99). DraftTaskId null + FailureReason
     string Location,                     //   set on a failed courtesy that never fails the review loop.
     Guid? DraftTaskId,
     string? FailureReason,
