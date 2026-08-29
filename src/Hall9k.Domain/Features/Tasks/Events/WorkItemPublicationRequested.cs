@@ -5,9 +5,11 @@ namespace Hall9k.Domain.Features.Tasks.Events;
 /// <summary>
 /// A human asked for this task to be published as a card in an external system
 /// (h9k task push-to-jira, backlog 18). It records the request and nothing about the card,
-/// because the platform does not author cards: the daemon turns this into an agent session,
-/// and what an issue type is, which fields are required, and where the card is routed are the
-/// project's own rules, delivered by its repo skills and the agent's MCP access.
+/// because the platform does not decide the card's content: the daemon turns this into an
+/// agent session, and what an issue type is, which fields are required, and where the card is
+/// routed are the project's own rules, delivered by its repo skills. The session makes no Jira
+/// call itself; it composes a payload and submits it through <c>h9k task write-jira</c>, which
+/// is the sole executor of every Jira write (Decisions Log #99).
 /// <para>
 /// ProjectKey is the board binding as it stood when the request was made (Project settings),
 /// carried on the event rather than read later so the session's instructions and the record of
