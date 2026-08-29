@@ -234,11 +234,15 @@ public sealed class InstallCommand : Hall9kAsyncCommand<InstallCommand.Settings>
             // gets a sentence instead of a stack trace (origin incident: exactly that
             // stack trace, Brian's first real Windows update). SwapFilesIntoPlace retires
             // every conflicting file before placing any of them, so a lock that surfaces
-            // during retirement rolls the whole merge back and bin is left exactly as it
-            // started; a lock or I/O failure that instead surfaces while placing (every
-            // name already vacated by then) can still leave bin with a mix of old and new
-            // files, but never with a file missing under both names — the message says so
-            // rather than claiming a stronger guarantee than that.
+            // during retirement rolls the whole VERSION SWAP back and every file that
+            // retirement touched is restored under its original name; a lock or I/O failure
+            // that instead surfaces while placing (every name already vacated by then) can
+            // still leave bin with a mix of old and new files, but never with a file missing
+            // under both names. Neither guarantee covers RemoveStaleFiles, which runs before
+            // either phase and has already deleted whatever bin held that the new release
+            // does not ship — a rollback here undoes the swap, not that earlier removal — so
+            // the messages below describe only what SwapFilesIntoPlace itself did or did not
+            // do, not bin's condition as a whole.
             await Console.Error.WriteLineAsync(exception.Message);
             return ExitCodes.Error;
         }
@@ -802,6 +806,13 @@ public sealed class InstallCommand : Hall9kAsyncCommand<InstallCommand.Settings>
     {
         if (OperatingSystem.IsWindows())
         {
+            // Also reclaims a whole bin.old (or bin.old.<random>) directory a machine still
+            // carries from before this per-file merge existed — the old code swapped bin as a
+            // single directory-level rename, the same as the Unix branch below still does, and
+            // a bin.old only that first directory-level swap could have left behind would
+            // otherwise never be swept again: every later run takes this per-file branch, which
+            // has nothing else that would ever look at a whole retired directory.
+            SweepRetiredDirectories(bin, bin + ".old");
             SweepRetiredFiles(bin);
             if (Directory.Exists(bin))
             {
@@ -853,10 +864,13 @@ public sealed class InstallCommand : Hall9kAsyncCommand<InstallCommand.Settings>
     /// version and everything it had not yet reached is restored to the version it retired
     /// aside — so no file this call touches is ever left present under neither name, even
     /// though a failure here (unlike one in phase one) can still leave bin with a genuine mix
-    /// of old and new files. Once every file is placed, a retiree that turned out not to be
-    /// locked — almost every file, in practice; only the module a running process still
-    /// executes from stays locked through its own rename — is reclaimed immediately rather
-    /// than left for the next run's leading <see cref="SweepRetiredFiles"/>.</summary>
+    /// of old and new files. Once every file is placed, every retiree gets one immediate
+    /// reclaim attempt, quietly: on a self-contained publish the running process (this very
+    /// h9k, and h9kd if it is up) has every one of its own loaded assemblies mapped, not just
+    /// its main executable, so staying locked through this reclaim is the ordinary outcome for
+    /// most retirees on a successful run rather than an exceptional one, and reporting it here
+    /// would print "still in use" noise on every update. The next run's leading
+    /// <see cref="SweepRetiredFiles"/> reports what is still stuck by then.</summary>
     [SupportedOSPlatform("windows")]
     private static void SwapFilesIntoPlace(string sourceDirectory, string destinationDirectory)
     {
@@ -881,7 +895,9 @@ public sealed class InstallCommand : Hall9kAsyncCommand<InstallCommand.Settings>
                 throw new InvalidOperationException(
                     $"Could not finish updating {destination} — it is locked and could not even be retired "
                         + "aside. Close whatever holds it (a running h9k or h9kd, an antivirus scan) and run "
-                        + "h9k update again; nothing has been swapped into place yet.",
+                        + "h9k update again; no file has been replaced by this run's version swap (a file the "
+                        + "old version needed but the new one does not ship may already be gone, removed "
+                        + "before the swap itself started).",
                     exception);
             }
         }
@@ -905,7 +921,7 @@ public sealed class InstallCommand : Hall9kAsyncCommand<InstallCommand.Settings>
 
         foreach ((_, string retiredPath) in retired)
         {
-            TryDeleteFile(retiredPath);
+            TryDeleteFile(retiredPath, report: false);
         }
     }
 
@@ -985,6 +1001,20 @@ public sealed class InstallCommand : Hall9kAsyncCommand<InstallCommand.Settings>
 
         foreach (string destinationSubdirectory in Directory.EnumerateDirectories(destinationDirectory))
         {
+            // A directory symlink or junction inside bin (an operator's own, or an earlier
+            // tool's) still passes Directory.Exists; matching it against a same-named staging
+            // subdirectory, or recursing into it as stale, would walk through to whatever it
+            // points at and delete that instead. No release ships a symlink of its own, so a
+            // link found here is always removed as leftover debris via
+            // TryDeleteDirectoryRecursively, which unlinks it without following — the same
+            // hazard UninstallCommand.RemoveInstallOwnedEntries already guards against on its
+            // own walk.
+            if (new DirectoryInfo(destinationSubdirectory).LinkTarget is not null)
+            {
+                TryDeleteDirectoryRecursively(destinationSubdirectory);
+                continue;
+            }
+
             string sourceSubdirectory = Path.Combine(sourceDirectory, Path.GetFileName(destinationSubdirectory));
             if (Directory.Exists(sourceSubdirectory))
             {
@@ -1009,18 +1039,23 @@ public sealed class InstallCommand : Hall9kAsyncCommand<InstallCommand.Settings>
     /// finds in <paramref name="destinationDirectory"/> with no counterpart in staging at all —
     /// deletes what it can and leaves the rest (a locked file inside it) for a later sweep,
     /// rather than let one locked file abort removing everything else the old subdirectory
-    /// held.</summary>
+    /// held. <see cref="RemoveStaleFiles"/> already keeps a top-level directory symlink or
+    /// junction out of this call entirely, but a symlink or junction nested deeper (reached via
+    /// the recursive call below) needs the identical guard, so it is checked again here.</summary>
     [SupportedOSPlatform("windows")]
     private static void TryDeleteDirectoryRecursively(string destinationDirectory)
     {
-        foreach (string file in Directory.EnumerateFiles(destinationDirectory))
+        if (new DirectoryInfo(destinationDirectory).LinkTarget is null)
         {
-            TryDeleteFile(file);
-        }
+            foreach (string file in Directory.EnumerateFiles(destinationDirectory))
+            {
+                TryDeleteFile(file);
+            }
 
-        foreach (string nested in Directory.EnumerateDirectories(destinationDirectory))
-        {
-            TryDeleteDirectoryRecursively(nested);
+            foreach (string nested in Directory.EnumerateDirectories(destinationDirectory))
+            {
+                TryDeleteDirectoryRecursively(nested);
+            }
         }
 
         try
@@ -1117,9 +1152,14 @@ public sealed class InstallCommand : Hall9kAsyncCommand<InstallCommand.Settings>
     }
 
     /// <summary>Best-effort delete for a single file, the file-granularity sibling of
-    /// <see cref="TryDelete"/>.</summary>
+    /// <see cref="TryDelete"/>. <paramref name="report"/> is false only for
+    /// <see cref="SwapFilesIntoPlace"/>'s own immediate reclaim of its retirees, where a
+    /// still-locked file is the ordinary case (a self-contained publish's own loaded
+    /// assemblies, not just its main executable) rather than something worth telling the
+    /// operator about on an otherwise successful run — the next run's leading
+    /// <see cref="SweepRetiredFiles"/> reports it if it is still there then.</summary>
     [SupportedOSPlatform("windows")]
-    private static void TryDeleteFile(string file)
+    private static void TryDeleteFile(string file, bool report = true)
     {
         if (!File.Exists(file))
         {
@@ -1132,8 +1172,11 @@ public sealed class InstallCommand : Hall9kAsyncCommand<InstallCommand.Settings>
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
         {
-            AnsiConsole.MarkupLineInterpolated(
-                $"[dim]Could not remove {file} yet (still in use) — it will be cleaned up on the next install or update.[/]");
+            if (report)
+            {
+                AnsiConsole.MarkupLineInterpolated(
+                    $"[dim]Could not remove {file} yet (still in use) — it will be cleaned up on the next install or update.[/]");
+            }
         }
     }
 
