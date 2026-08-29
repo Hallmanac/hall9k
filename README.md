@@ -39,6 +39,14 @@ rather than from intent.
 
 ## What it looks like to use
 
+You are not meant to memorize a CLI. The intended way to drive Hall9k is through an agent: open
+a Claude Code session in your project's home directory and talk to it in plain language ("write
+this down as a task", "what needs me?", "publish it and let it run"). The home's generated
+`AGENTS.md` teaches the session what Hall9k is and how to drive it, so the agent issues the
+`h9k` commands on your behalf and relays back the one thing that needs you. Every command in
+this section works typed by hand too, and reading them is the fastest way to understand what
+your agent is doing for you.
+
 Work moves through the system in one flow. Each step below is a section of this document; the
 deeper dives live in [docs/](docs/).
 
