@@ -210,6 +210,48 @@ public sealed class GitWorktreeManagerTests : IDisposable
         File.ReadAllText(Path.Combine(followUp.Path, "WORK.md")).Should().Contain("folded in");
     }
 
+    /// <summary>
+    /// Task: build sessions stop stranding finished work uncommitted. The end-of-work checkpoint
+    /// recompose resets a resumed build session to the branch's fork point and composes fresh
+    /// history over it, which can leave the worktree diverged from a tip it already pushed itself
+    /// (the retry-after-a-failed-`gh pr create` shape). Before this fix, the sync's diverged-plus-
+    /// clean-tree check could not tell that apart from an external rewrite and hard-reset the
+    /// recompose away (independent pre-PR review, cycle 1, both lenses); it must keep the local
+    /// tip instead, exactly as it keeps a strictly-ahead tip.
+    /// </summary>
+    [Fact]
+    public async Task Checkout_existing_keeps_a_local_recompose_that_diverged_from_its_own_earlier_push()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(1));
+        Guid taskId = DomainId.New();
+
+        // Run 1: a checkpoint commit, pushed — the exact tip PullRequestOpener pushes before a
+        // later `gh pr create` failure leaves the task to retry.
+        Worktree first = await _manager.CreateAsync(
+            new WorktreeRequest(_repositoryPath, "main", taskId, DomainId.New(), "Recompose then retry"), cts.Token);
+        File.WriteAllText(Path.Combine(first.Path, "WORK.md"), "checkpoint\n");
+        Git(first.Path, "add -A");
+        Git(first.Path, "-c user.name=Test -c user.email=t@t commit -qm checkpoint");
+        Git(first.Path, $"push -q origin {first.Branch}");
+
+        // Run 2 resumes the SAME worktree (still checked out — never removed) and follows the
+        // recompose protocol: reset to the fork point, then compose fresh history over it. The
+        // new tip shares no ancestry with the tip already on origin, and run 2's own push never
+        // lands in this scenario (it fails before that point).
+        Git(first.Path, "reset --mixed HEAD~1");
+        File.WriteAllText(Path.Combine(first.Path, "WORK.md"), "recomposed\n");
+        Git(first.Path, "add -A");
+        Git(first.Path, "-c user.name=Test -c user.email=t@t commit -qm recomposed");
+
+        Worktree followUp = await _manager.CheckoutExistingAsync(
+            new FollowUpWorktreeRequest(_repositoryPath, first.Branch, taskId, DomainId.New()), cts.Token);
+
+        Path.GetFileName(followUp.Path).Should().Be(Path.GetFileName(first.Path), "the retained worktree is reused");
+        File.ReadAllText(Path.Combine(followUp.Path, "WORK.md")).Should().Be("recomposed\n",
+            "the divergence originated in this worktree's own recompose, so it must not be discarded " +
+            "as if origin had rewritten the branch out from under it");
+    }
+
     [Fact]
     public async Task Checkout_existing_never_touches_a_worktree_holding_uncommitted_work()
     {

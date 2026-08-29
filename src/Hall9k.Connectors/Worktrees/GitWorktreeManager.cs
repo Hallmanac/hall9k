@@ -289,11 +289,19 @@ public sealed class GitWorktreeManager(ILogger<GitWorktreeManager> logger) : IWo
     /// suggestions); a clean fast-forward picks them up, and a local tip strictly ahead
     /// of origin is kept as-is (unpushed work — a follow-up whose push never landed —
     /// that a reset would destroy), and a worktree holding uncommitted work is never
-    /// touched at all (a retried run may be rescuing a stranded attempt). Diverged
-    /// clean tips mean the branch was REWRITTEN on
-    /// origin (narrative follow-ups force-push rebased history, Decisions Log #26): the
-    /// remote tip is the pull request's truth, so the worktree resets to it instead of
-    /// resuming a stale pre-rebase ref. The old tip stays reachable via the reflog.
+    /// touched at all (a retried run may be rescuing a stranded attempt). Diverged clean
+    /// tips are ambiguous, though, since the build-session checkpoint-and-recompose
+    /// protocol (task: build sessions stop stranding finished work uncommitted) can make
+    /// THIS worktree's own history diverge from a tip it pushed itself: a resumed run
+    /// resets to the branch's fork point and recomposes fresh commits over it, so a later
+    /// resume whose recompose never got pushed sees a local tip that shares no ancestry
+    /// with origin, exactly what an external rewrite looks like. <see cref="WasEverLocalHeadAsync"/>
+    /// tells the two apart: if origin's tip ever WAS this worktree's own HEAD (recorded in
+    /// its private HEAD reflog), the divergence originated here and the local tip is kept,
+    /// the same as the strictly-ahead case; only a tip this worktree never held is treated
+    /// as a genuine rewrite on origin (narrative follow-ups force-push rebased history,
+    /// Decisions Log #26), where the remote tip is the pull request's truth and the
+    /// worktree resets to it. The old tip stays reachable via the reflog either way.
     /// </summary>
     private async Task SyncToOriginBestEffortAsync(
         string repositoryPath, string worktreePath, string branch, CancellationToken cancellationToken)
@@ -335,6 +343,16 @@ public sealed class GitWorktreeManager(ILogger<GitWorktreeManager> logger) : IWo
             return;
         }
 
+        (_, string originTip, _) = await TryRunGitAsync(worktreePath, $"rev-parse origin/{branch}", cancellationToken);
+        if (await WasEverLocalHeadAsync(worktreePath, originTip.Trim(), cancellationToken))
+        {
+            logger.LogInformation(
+                "Branch {Branch} diverged from a tip this worktree pushed itself — a local checkpoint " +
+                "recompose that never reached origin, not a rewrite — keeping the local tip",
+                branch);
+            return;
+        }
+
         (_, string staleTip, _) = await TryRunGitAsync(worktreePath, "rev-parse HEAD", cancellationToken);
         (int resetExit, _, string resetError) = await TryRunGitAsync(
             worktreePath, $"reset --hard origin/{branch}", cancellationToken);
@@ -350,6 +368,29 @@ public sealed class GitWorktreeManager(ILogger<GitWorktreeManager> logger) : IWo
                 "Branch {Branch} diverged from origin and could not reset ({Error}); continuing from the local tip",
                 branch, resetError.Trim());
         }
+    }
+
+    /// <summary>
+    /// Whether <paramref name="commit"/> was ever this worktree's own HEAD, per its private
+    /// <c>logs/HEAD</c> reflog (each worktree keeps its own — <c>git worktree</c> support gives
+    /// every linked worktree a separate HEAD and HEAD reflog under its own gitdir, even though
+    /// branch refs themselves are shared). A commit that shows up here is one this worktree
+    /// checked out, committed to, or reset through itself; a commit that never appears here came
+    /// from somewhere else entirely.
+    /// </summary>
+    private static async Task<bool> WasEverLocalHeadAsync(
+        string worktreePath, string commit, CancellationToken cancellationToken)
+    {
+        (int exitCode, string output, _) = await TryRunGitAsync(
+            worktreePath, "reflog show HEAD --format=%H", cancellationToken);
+        if (exitCode != 0)
+        {
+            return false;
+        }
+
+        return output
+            .Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Contains(commit, StringComparer.Ordinal);
     }
 
     private SemaphoreSlim LockFor(string repositoryPath) =>
