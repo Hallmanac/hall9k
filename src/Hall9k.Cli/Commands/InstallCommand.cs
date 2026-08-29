@@ -293,7 +293,7 @@ public sealed class InstallCommand : Hall9kAsyncCommand<InstallCommand.Settings>
 
         string currentDirectory = Directory.GetCurrentDirectory();
         if (startDirectory is not null
-            && !string.Equals(Path.GetFullPath(startDirectory), Path.GetFullPath(currentDirectory), StringComparison.OrdinalIgnoreCase)
+            && !ProjectHomePaths.SameDirectory(Path.GetFullPath(startDirectory), Path.GetFullPath(currentDirectory))
             && Hall9kDatabase.Resolve(startDirectory: currentDirectory).Origin != ConnectionStringOrigin.None)
         {
             return;
@@ -319,7 +319,25 @@ public sealed class InstallCommand : Hall9kAsyncCommand<InstallCommand.Settings>
             return;
         }
 
-        await Hall9kDatabase.WriteConfiguredConnectionStringAsync(Hall9kDatabase.DefaultConnectionString, cancellationToken);
+        try
+        {
+            await Hall9kDatabase.WriteConfiguredConnectionStringAsync(Hall9kDatabase.DefaultConnectionString, cancellationToken);
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            // A convenience write, not install's job. Every neighbouring step in FinishAsync
+            // that touches the filesystem — RemoveDevelopmentSettingsFiles, TryDelete,
+            // EnsureOnWindowsPath, PublishSkills — already reports and continues rather than
+            // taking the whole install down over it. An I/O failure here (a full disk,
+            // tightened permissions, an antivirus/indexer holding config.json mid-write on
+            // Windows) would otherwise abort FinishAsync before SwapIntoPlace runs, leaving
+            // freshly published binaries stranded in bin.staging (cycle-4 review).
+            AnsiConsole.MarkupLine(
+                $"[dim]Could not write the connection string to {Hall9kDatabase.ConfigFile.EscapeMarkup()} "
+                + $"({exception.Message.EscapeMarkup()}) — h9k doctor will offer to configure it instead.[/]");
+            return;
+        }
+
         AnsiConsole.MarkupLine(
             $"[dim]Wrote the matching connection string to {Hall9kDatabase.ConfigFile.EscapeMarkup()} — "
             + "nothing was configured yet, and this is what the compose file above stands up.[/]");
