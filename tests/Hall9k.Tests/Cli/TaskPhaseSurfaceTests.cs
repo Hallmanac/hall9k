@@ -130,9 +130,9 @@ public sealed class TaskPhaseSurfaceTests
 
         TaskStatusContext context = StatusFixtures.Context(interactive) with
         {
-            // Empty rather than the fixture's usual [runId -> ThisMachine]: a real NodeMachines
-            // table never carries an entry for the Guid.Empty sentinel, so the run-level lookup
-            // must read false here for the test to mean anything.
+            // Empty rather than the fixture's usual [run.NodeId -> ThisMachine]: a real
+            // NodeMachines table never carries an entry for the Guid.Empty sentinel, so the
+            // run-level lookup must read false here for the test to mean anything.
             NodeMachines = new Dictionary<Guid, string>(),
             Sessions = ProcessSessionObserver.Instance,
         };
@@ -222,6 +222,31 @@ public sealed class TaskPhaseSurfaceTests
         StatusFixtures.Compose(
                 StatusFixtures.Task(TaskState.Claimed, runId), cycle, liveness: SessionLiveness.Gone)
             .Phase.Liveness.Should().Be(SessionLiveness.Gone);
+    }
+
+    [Fact]
+    public void A_gone_interactive_session_is_not_reported_as_a_stalled_process()
+    {
+        // An interactive claim has no lease or heartbeat (Decisions Log #99): closing the
+        // terminal is a normal way to leave, and h9k task work re-enters the same claim. The
+        // dead pid it leaves behind must not misfile the row as a stalled machine failure —
+        // the lever that finding would print (h9k logs) is unusable, since an interactive
+        // session runs attached to the tty and never writes a stream file (adversarial
+        // review, cycle 4).
+        Guid runId = DomainId.New();
+        RunDetails interactive = StatusFixtures.Run(runId, RunState.Running, sessionProcessId: null);
+        interactive.ActiveSessions =
+        [
+            new ActiveSession(
+                AgentRole.Interactive, ReviewLens.Unknown, 4711, StatusFixtures.Now, StatusFixtures.ThisMachine),
+        ];
+
+        TaskStatusRow row = StatusFixtures.Compose(
+            StatusFixtures.Task(TaskState.Claimed, runId), interactive, liveness: SessionLiveness.Gone);
+
+        row.Stalled.Should().BeFalse();
+        row.Attention.NeedsYou.Should().BeFalse();
+        row.Group.Should().Be(AttentionBucket.Working);
     }
 
     [Fact]

@@ -420,7 +420,16 @@ internal static class TaskStatusComposer
 
         if (session == SessionLiveness.Gone)
         {
-            return (true, "process gone");
+            // An interactive claim has no lease or heartbeat (Decisions Log #99): closing the
+            // terminal is a normal way to leave, and h9k task work re-enters the same claim.
+            // Reporting the gone process as a stall renames that wait for the operator as a
+            // machine failure, the same misfiling Live's own doc comment argues against for a
+            // parked run — and the lever it would print (h9k logs) is unusable here, since an
+            // interactive session runs attached to the tty and never writes a stream file
+            // (adversarial review, cycle 4).
+            return run.ActiveSessions.Any(activeSession => activeSession.Role == AgentRole.Interactive)
+                ? (false, string.Empty)
+                : (true, "process gone");
         }
 
         if (!context.Activity.TryGetValue(run.Id, out RunActivity? activity))
