@@ -316,4 +316,59 @@ public sealed class TaskLifecycleSurfaceTests
         rollup.Total.Should().Be(rows.Length, "the buckets stay single-assignment");
         rollup.Summary().Should().Contain("2 draft").And.Contain("1 ready to assign").And.Contain("1 blocked");
     }
+
+    /// <summary>
+    /// A Jira write stuck on an expired login carries no lifecycle state of its own, so it must
+    /// not shadow a park or a failure that is the row's actual reason for wanting a human
+    /// (independent pre-PR review, cycle 1): the arm used to be checked first, so a task that was
+    /// separately Failed, or whose run was separately parked, read as "run twg login" and never
+    /// named the lever that would actually move it.
+    /// </summary>
+    [Fact]
+    public void A_stuck_jira_write_does_not_hide_a_failed_row_behind_twg_login()
+    {
+        TaskListItem task = StatusFixtures.Task(TaskState.Failed);
+        task.FailureReason = "the run crashed";
+        task.PendingJiraWriteIsAuthFailure = true;
+        task.PendingJiraWriteFailureReason = "twg is not authenticated";
+
+        TaskStatusRow row = StatusFixtures.Compose(task);
+
+        row.Attention.Cause.Should().Be("the run crashed");
+        row.Attention.Lever.Should().Contain("h9k task retry");
+    }
+
+    /// <summary>The companion case: a review park outranks the stuck write exactly as a failure does.</summary>
+    [Fact]
+    public void A_stuck_jira_write_does_not_hide_a_review_park_behind_twg_login()
+    {
+        Guid runId = DomainId.New();
+        RunDetails parked = StatusFixtures.Run(runId, RunState.ReviewParked);
+        parked.ParkedReason = "a finding could not be settled";
+        TaskListItem task = StatusFixtures.Task(TaskState.Claimed, runId);
+        task.PendingJiraWriteIsAuthFailure = true;
+        task.PendingJiraWriteFailureReason = "twg is not authenticated";
+
+        TaskStatusRow row = StatusFixtures.Compose(task, parked);
+
+        row.Attention.Cause.Should().Be("a finding could not be settled");
+        row.Attention.Lever.Should().Contain("h9k review resolve");
+    }
+
+    /// <summary>
+    /// With nothing else amiss, the stuck write is still the reason the row wants a human — the
+    /// fallback the reordering has to preserve.
+    /// </summary>
+    [Fact]
+    public void A_stuck_jira_write_still_surfaces_when_nothing_else_is_amiss()
+    {
+        TaskListItem task = StatusFixtures.Task(TaskState.Done);
+        task.PendingJiraWriteIsAuthFailure = true;
+        task.PendingJiraWriteFailureReason = "twg is not authenticated";
+
+        TaskStatusRow row = StatusFixtures.Compose(task);
+
+        row.Attention.Cause.Should().Be("twg is not authenticated");
+        row.Attention.Lever.Should().Be("twg login");
+    }
 }
