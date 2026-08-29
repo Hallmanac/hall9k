@@ -142,15 +142,16 @@ Two install paths exist; pick the one that matches the machine, and run its step
 
 | What | Why |
 |---|---|
-| `gh`, authenticated (`gh auth login`) | Fetches the release archive Hall9k's releases live in |
+| `gh`, authenticated (`gh auth login`) | Hall9k's releases live in this repository; reading them needs a logged-in `gh` |
 | Docker | Postgres runs in a container; `h9k doctor` offers to start it |
 | `git` | Worktrees, branches, and every commit an agent makes, once a project is registered |
 | Claude Code CLI (`claude`), logged in | The executor: every agent session is a detached `claude -p` |
 
 Nothing else is required: no repo checkout, no .NET SDK. `gh` is what the bootstrap script
-itself needs; the other three aren't touched until *Verify the install* and afterward, so
-`h9k doctor` names whichever is missing at the point it actually matters, rather than failing
-the install up front.
+itself needs; Docker is the only one of the other three `h9k doctor` ever checks, and it does so
+in *Verify the install* below, not up front. `git` and the Claude Code CLI aren't checked by
+anything in this install path — they matter once a project is registered and a dispatched
+session actually runs, so their absence surfaces there instead.
 
 ### Prerequisites for building from source
 
@@ -176,10 +177,11 @@ them rather than through an MCP server. That is also the direction of travel, si
 sessions are moving to a slim profile where MCP servers are declared per task rather than
 inherited wholesale ([`backlog/29-slim-agent-profile.md`](backlog/29-slim-agent-profile.md)).
 
-Beyond the four above, the ones that have earned their place are Atlassian's Teamwork Graph CLI
-(`twg`) for Jira and Confluence work, and whatever your own projects' workflows lean on. The rule
-of thumb: if you would reach for a tool at the terminal to answer a question, an agent will too,
-and a well-stocked PATH is what makes a lean agent a capable one.
+Beyond `gh`, Docker, `git`, and the Claude Code CLI already covered above, the ones that have
+earned their place are Atlassian's Teamwork Graph CLI (`twg`) for Jira and Confluence work, and
+whatever your own projects' workflows lean on. The rule of thumb: if you would reach for a tool
+at the terminal to answer a question, an agent will too, and a well-stocked PATH is what makes a
+lean agent a capable one.
 
 ### Install a release
 
@@ -216,7 +218,6 @@ Working on Hall9k itself: clone the repo and publish local binaries.
 git clone https://github.com/Hallmanac/hall9k.git
 cd hall9k
 
-docker compose up -d          # Postgres on localhost:5432
 dotnet build                  # the whole solution
 
 ./src/Hall9k.Cli/bin/Debug/net10.0/h9k install
@@ -243,8 +244,13 @@ it) write Hall9k's own Postgres definition but leave it stopped, and nothing che
 until you do. Run these, in order, whether by hand or as an agent — this is the stopping point
 for "installed", and nothing past it, registering a project included, is required to reach it:
 
+On Windows, run these in a new terminal rather than the one that just ran the installer: adding
+`h9k` to the user PATH doesn't reach a process already running, so the shell that just installed
+it still can't resolve a bare `h9k` (an agent driving this in one persistent session can instead
+call it by its full path, `%USERPROFILE%\.hall9k\bin\h9k.exe`, for the commands below).
+
 ```bash
-h9k doctor --yes      # remediate non-interactively: start Hall9k's own Postgres, create the schema
+h9k doctor --yes       # remediate non-interactively: start Hall9k's own Postgres, create the schema
 h9k daemon start       # launch h9kd, detached; survives shell exit; logs to ~/.hall9k/h9kd.log
 h9k doctor             # verify: connection string configured, reachable, schema present
 h9k daemon status      # verify: h9kd running, with a pid and uptime
