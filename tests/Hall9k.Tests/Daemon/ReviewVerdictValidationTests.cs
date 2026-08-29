@@ -370,6 +370,203 @@ public sealed class ReviewVerdictValidationTests
     }
 
     /// <summary>
+    /// The same cross-bullet borrowing as the previous test, but the unrelated next bullet
+    /// carries a backtick of its own (independent pre-PR review, cycle 1, both lenses on the
+    /// bullet-first split added for the previous two tests): splitting on the bullet marker as a
+    /// consumed delimiter — rather than a captured one — erased every trace of the boundary
+    /// between bullets from the flattened sentence array, so <c>StatesDefectWithinLookahead</c>'s
+    /// own list-marker guard could never fire again and the walk read straight through into the
+    /// next bullet's unrelated backtick and negated "missing", crediting a hollow verdict.
+    /// </summary>
+    [Fact]
+    public void A_location_in_one_bullet_does_not_borrow_a_backtick_and_negated_defect_word_from_the_next_bullet()
+    {
+        ReviewVerdictValidation.NamesAFinding(
+                "- `ReviewEngine.cs:614` is where the objective strip runs.\n"
+                + "- I re-read `StripObjectiveEcho` twice; nothing is missing.\n\nVERDICT: needs-fixes")
+            .Should().BeFalse();
+    }
+
+    /// <summary>
+    /// A tight bullet list where each item names its own location and its own defect is
+    /// credited, not demoted (task a77503ff, origin: task f39bff24's PR #49 review cycle 3,
+    /// both lenses independently): <see cref="ReviewVerdictValidation.NamesAFinding"/> used to
+    /// read the whole merged list as one <see cref="ReviewVerdictValidation"/>-internal
+    /// "sentence" (<c>SentenceBoundary</c> cannot break at a bare bullet) and void it entirely
+    /// because it contained a list marker — the same guard that correctly rejects the previous
+    /// test's cross-bullet borrowing case wrongly voided a bullet whose location and defect sit
+    /// in the very same item.
+    /// </summary>
+    [Fact]
+    public void A_bullet_list_where_each_item_names_its_own_location_and_defect_is_credited()
+    {
+        ReviewVerdictValidation.NamesAFinding(
+                "- `Auth.cs:42` never resets the rate limiter after a failed login, so a locked "
+                + "account stays locked forever.\n- `Session.cs:10` leaks the connection handle "
+                + "when the request is cancelled.\n\nVERDICT: needs-fixes")
+            .Should().BeTrue();
+    }
+
+    /// <summary>
+    /// A tight bullet list where each item denies a defect at its own location, rather than
+    /// naming one, is not credited (cycle-3 pre-PR review, both lenses independently): splitting
+    /// on the bullet marker first (the fix above) made the same-sentence check's own guard
+    /// against <see cref="ReviewVerdictValidation.NamesFindingInProse"/>'s embedded-list-marker
+    /// pattern unreachable, since no bullet's own isolated text can ever contain a marker once
+    /// the split has already happened on it — leaving a bullet whose location and denial idiom
+    /// sit in the same sentence ("nothing is wrong here") credited as a finding purely because
+    /// "wrong" shares a sentence with the location, the exact false positive
+    /// <see cref="ReviewVerdictValidation"/>'s <c>HeadingDenialPattern</c> already exists to
+    /// screen out for the heading and backward-pointer branches.
+    /// </summary>
+    [Fact]
+    public void A_bullet_list_where_each_item_denies_a_defect_at_its_own_location_is_not_credited()
+    {
+        ReviewVerdictValidation.NamesAFinding(
+                "What I checked and cleared:\n"
+                + "- `Hall9kDatabase.cs:180` — the catch order is correct; nothing is wrong here.\n"
+                + "- `DatabaseDoctor.cs:54` — the message is accurate.\n\nVERDICT: needs-fixes")
+            .Should().BeFalse();
+    }
+
+    /// <summary>
+    /// A genuine defect described with "does/logs nothing about X" still names a finding (cycle-5
+    /// pre-PR review, both lenses): the same-sentence check's own screen against
+    /// <see cref="ReviewVerdictValidation"/>'s <c>HeadingDenialPattern</c> used to fire whenever
+    /// "nothing"/"none" merely co-occurred with defect vocabulary anywhere in the sentence,
+    /// wrongly reading "nothing" as a denial subject even when it is a verb's object describing a
+    /// real omission — the same false positive as "there is nothing wrong with the naming, but
+    /// `Auth.cs:42` never disposes the stream", where the denial's own copula belongs to an
+    /// unrelated earlier clause about something else entirely.
+    /// </summary>
+    [Theory]
+    [InlineData(
+        "`Auth.cs:42` does nothing about the problem when a request is rejected, so the limiter "
+        + "is never reset.\n\nVERDICT: needs-fixes")]
+    [InlineData(
+        "There is nothing wrong with the naming, but `Auth.cs:42` never disposes the stream."
+        + "\n\nVERDICT: needs-fixes")]
+    [InlineData(
+        "`Session.cs:10` logs nothing about the defect, so the handle is leaked on every "
+        + "cancelled request.\n\nVERDICT: needs-fixes")]
+    public void A_sentence_using_nothing_as_a_verbs_object_still_names_a_finding(string output) =>
+        ReviewVerdictValidation.NamesAFinding(output).Should().BeTrue();
+
+    /// <summary>
+    /// A denial where the vocabulary word directly post-modifies "nothing"/"none" with no verb
+    /// between them at all is still recognized as a denial, not a finding (cycle-6 verify
+    /// finding, `ReviewVerdictValidation.cs:395`): the cycle-5 fix's subject-copula requirement
+    /// closed the object-of-verb false positives above but, in doing so, stopped recognizing this
+    /// most canonical denial shape of all — reopening the screen on the same-sentence bullet
+    /// branch (the first case, a variant of
+    /// <see cref="A_bullet_list_where_each_item_denies_a_defect_at_its_own_location_is_not_credited"/>
+    /// with its verb dropped), the heading-lead-in branch (the second case), and the
+    /// backward-pointer branch (the third case) alike, since all three share
+    /// <c>HeadingDenialPattern</c>. The fourth case is drawn verbatim from a recorded adversarial
+    /// pass on this install (<c>~/.hall9k/runs/01a03253-bab7-72cd-ba92-ebdc1cdfa746/review-3-adversarial-findings.md</c>),
+    /// which closed with exactly this phrasing.
+    /// </summary>
+    [Theory]
+    [InlineData(
+        "What I checked and cleared:\n"
+        + "- `Hall9kDatabase.cs:180` — the catch order is correct; I found nothing wrong here.\n"
+        + "- `DatabaseDoctor.cs:54` — the message is accurate.\n\nVERDICT: needs-fixes")]
+    [InlineData(
+        "## Findings for `ReviewEngine.cs`\n\nI found nothing wrong.\n\nVERDICT: needs-fixes")]
+    [InlineData(
+        "I checked every branch and found nothing wrong. See `ReviewEngine.cs:612`."
+        + "\n\nVERDICT: needs-fixes")]
+    [InlineData(
+        "## Adversarial review of `ReviewEngine.cs`\n\nI reviewed every branch carefully.\n\n"
+        + "I found nothing I could verify as broken.\n\nVERDICT: needs-fixes")]
+    public void A_denial_with_no_verb_between_nothing_and_the_vocabulary_word_is_not_credited(
+        string output) =>
+        ReviewVerdictValidation.NamesAFinding(output).Should().BeFalse();
+
+    /// <summary>
+    /// An existential-"there" denial that never continues into a contrastive clause is still
+    /// recognized as a denial, not a finding (cycle-8 conformance finding,
+    /// `ReviewVerdictValidation.cs:418`): the cycle-6 fix's exclusion keyed off whatever preceded
+    /// "nothing" ("there IS nothing wrong"), which wrongly excluded this shape too, even though it
+    /// never goes on to name a different, real defect the way
+    /// <see cref="A_sentence_using_nothing_as_a_verbs_object_still_names_a_finding"/>'s "but"-led
+    /// case does.
+    /// </summary>
+    [Theory]
+    [InlineData("## Findings for `ReviewEngine.cs`\n\nThere is nothing wrong here.\n\nVERDICT: needs-fixes")]
+    [InlineData(
+        "There is nothing wrong here. See `ReviewEngine.cs:612`."
+        + "\n\nVERDICT: needs-fixes")]
+    [InlineData(
+        "`Auth.cs:42` is the handler. There is nothing wrong with `Explain` here."
+        + "\n\nVERDICT: needs-fixes")]
+    [InlineData("## Findings for `ReviewEngine.cs`\n\nThere was nothing broken in this diff.\n\nVERDICT: needs-fixes")]
+    [InlineData("## Findings for `ReviewEngine.cs`\n\nThere is nothing amiss.\n\nVERDICT: needs-fixes")]
+    public void An_existential_there_denial_with_no_contrastive_clause_is_not_credited(string output) =>
+        ReviewVerdictValidation.NamesAFinding(output).Should().BeFalse();
+
+    /// <summary>
+    /// The "but"-led contrastive-clause false positive this same exclusion exists for still
+    /// resolves the same way after the cycle-8 fix reworks it to look forward instead of backward
+    /// (cycle-8 conformance finding, `ReviewVerdictValidation.cs:418`): a regression here would
+    /// mean the fix for the finding above silently reopened
+    /// <see cref="A_sentence_using_nothing_as_a_verbs_object_still_names_a_finding"/>'s own case.
+    /// </summary>
+    [Fact]
+    public void The_but_led_contrastive_denial_still_names_a_finding_after_the_cycle_8_fix() =>
+        ReviewVerdictValidation.NamesAFinding(
+                "There is nothing wrong with the naming, but `Auth.cs:42` never disposes the stream."
+                + "\n\nVERDICT: needs-fixes")
+            .Should().BeTrue();
+
+    /// <summary>
+    /// A denial that links "nothing"/"none" to its vocabulary word with a bridging verb phrase
+    /// other than a bare copula, or with no verb at all (a partitive "none of the …"), is still
+    /// recognized as a denial rather than a finding (cycle-8 adversarial finding,
+    /// `ReviewVerdictValidation.cs:416`): the subject-copula alternative's bridging-verb list only
+    /// ever covered "is"/"are"/"stands"/"remains"/"exists", so phrasing a real reviewer used —
+    /// "qualifies as", "amounts to", "worth calling" — fell through to
+    /// <see cref="DefectLanguagePattern"/> matching the bare noun and crediting a hollow verdict.
+    /// </summary>
+    [Theory]
+    [InlineData("## Findings for `ReviewEngine.cs`\n\nI found nothing that qualifies as a defect.\n\nVERDICT: needs-fixes")]
+    [InlineData("## Findings for `ReviewEngine.cs`\n\nNothing here amounts to a defect.\n\nVERDICT: needs-fixes")]
+    [InlineData(
+        "## Findings for `ReviewEngine.cs`\n\nI found none of the defects the objective describes."
+        + "\n\nVERDICT: needs-fixes")]
+    [InlineData(
+        "## Findings for `ReviewEngine.cs`\n\nI turned up nothing worth calling a bug."
+        + "\n\nVERDICT: needs-fixes")]
+    public void A_denial_linked_by_a_bridging_verb_phrase_or_partitive_is_not_credited(string output) =>
+        ReviewVerdictValidation.NamesAFinding(output).Should().BeFalse();
+
+    /// <summary>
+    /// A denial where "nothing"/"none" is the sentence's own subject of a verb the bridging-verb
+    /// list did not enumerate is still recognized as a denial, not a finding (cycle-9 verify
+    /// finding, `ReviewVerdictValidation.cs:440`): the list only ever covered the copula-like
+    /// verbs a reviewer happened to use when each earlier fix landed, so "introduced"/"raised"/
+    /// "survived" fell through to <see cref="DefectLanguagePattern"/> matching the bare noun and
+    /// crediting a hollow verdict. All four cases are drawn verbatim from recorded lens output on
+    /// this install; the first is also the exact scenario the finding reproduced end to end
+    /// through <see cref="NamesAFinding"/> against a heading that named nothing.
+    /// </summary>
+    [Theory]
+    [InlineData(
+        "## Findings for `ReviewEngine.cs`\n\nNothing else in this delta introduced a defect."
+        + "\n\nVERDICT: needs-fixes")]
+    [InlineData(
+        "## Findings for `ReviewEngine.cs`\n\nNothing there survived verification as a defect."
+        + "\n\nVERDICT: needs-fixes")]
+    [InlineData(
+        "## Findings for `ReviewEngine.cs`\n\nNothing survived my own verification as a defect."
+        + "\n\nVERDICT: needs-fixes")]
+    [InlineData(
+        "## Findings for `ReviewEngine.cs`\n\nNothing else in the delta raised a defect."
+        + "\n\nVERDICT: needs-fixes")]
+    public void A_denial_using_a_bridging_verb_outside_the_original_list_is_not_credited(string output) =>
+        ReviewVerdictValidation.NamesAFinding(output).Should().BeFalse();
+
+    /// <summary>
     /// "Here" opening a sentence that merely summarizes rather than pointing at a defect must not
     /// borrow defect language from an unrelated preceding sentence (cycle-7 conformance finding,
     /// `ReviewVerdictValidation.cs:126`): "Nothing I checked failed." states no defect about the
