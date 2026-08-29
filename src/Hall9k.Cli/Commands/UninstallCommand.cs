@@ -956,9 +956,13 @@ public sealed class UninstallCommand : Hall9kAsyncCommand<UninstallCommand.Setti
 
     /// <summary>
     /// Deletes <paramref name="home"/> itself, but only when it is completely empty — the
-    /// literal "a removed home is a removed home" case, reached only on a machine where
-    /// nothing but install ever wrote there. A home still holding a project, a credential, or
-    /// anything else is left exactly as it is; this never removes a non-empty directory.
+    /// literal "a removed home is a removed home" case, reached only when nothing else is left
+    /// once install's own entries are gone: no project, no credential, and no
+    /// <c>config.json</c> either. <c>config.json</c> is deliberately excluded from those owned
+    /// entries (it survives the removal above on purpose), so it is enough on its own to keep
+    /// a machine that only ever ran install and uninstall out of this case — install itself
+    /// writes one when nothing was configured yet. A home still holding any of that is left
+    /// exactly as it is; this never removes a non-empty directory.
     /// <paramref name="stillPresent"/> gains <paramref name="home"/> when this could not confirm
     /// it empty or could not delete it once confirmed — genuinely unfinished, unlike the
     /// ordinary "there is real content here" case above, which is not a failure and reports
@@ -1016,11 +1020,14 @@ public sealed class UninstallCommand : Hall9kAsyncCommand<UninstallCommand.Setti
     /// <summary>
     /// Reports what happened to the install-owned entries, then — only when every one of them
     /// is actually gone — removes <paramref name="home"/> itself if nothing else was ever
-    /// written there. That is the literal "a removed home is a removed home" case: a machine
-    /// that has run nothing but install and uninstall ends with no <c>~/.hall9k</c> at all,
-    /// exactly as the walk's own reasoning describes. A machine that has also registered a
-    /// project, added a credential, or captured an idea keeps that content untouched, and this
-    /// says so explicitly rather than leaving an operator to wonder whether it was missed.
+    /// written there. That is the literal "a removed home is a removed home" case, but it is
+    /// narrower than "a machine that has run nothing but install and uninstall": install itself
+    /// writes a <c>config.json</c> when nothing was configured yet, and that file survives the
+    /// removal above on purpose, so the ordinary fresh-machine walk now ends with
+    /// <c>~/.hall9k</c> still present, holding just that one file, rather than gone entirely. A
+    /// machine that has also registered a project, added a credential, or captured an idea
+    /// keeps that content untouched too, and this says so explicitly rather than leaving an
+    /// operator to wonder whether it was missed.
     /// <paramref name="skillsRemoved"/> is named explicitly rather than folded into "the skill
     /// set" as a blanket claim: <see cref="SkillSeeder.RemovePublished"/> deliberately leaves a
     /// skill alone when an operator has edited it since it was published, and a summary that
@@ -1118,12 +1125,12 @@ public sealed class UninstallCommand : Hall9kAsyncCommand<UninstallCommand.Setti
             ? $"[yellow]Could not fully remove[/] the install's own files from {home.EscapeMarkup()} — see what's "
                 + $"still there above. What did come off (of bin/, {skillsClause}, the Postgres compose file, "
                 + "and the daemon's log/pid/lock files) is whatever is not listed above. What remains besides "
-                + "that — a project home, config.json, credentials, anything else you or another tool put there "
-                + "— is not install's to remove, and was left alone."
+                + "that — a project home, config.json, credentials, anything else you, install itself, or "
+                + "another tool put there — is not install's to remove, and was left alone."
             : $"[green]Removed[/] the install's own files from {home.EscapeMarkup()}: bin/, {skillsClause}, "
                 + "the Postgres compose file, and the daemon's log/pid/lock files. What remains there — a "
-                + "project home, config.json, credentials, anything else you or another tool put there — is "
-                + "not install's to remove, and was left alone.");
+                + "project home, config.json, credentials, anything else you, install itself, or another "
+                + "tool put there — is not install's to remove, and was left alone.");
     }
 
     /// <summary>
