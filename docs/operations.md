@@ -97,8 +97,9 @@ variables that are genuinely set are recorded; an unset one stays unset rather t
 in with a plausible default — **except `HALL9K_CONNECTION_STRING` on Windows**, which is
 deliberately never carried into the registration even when the enabling shell has it set: unlike
 `PATH` or `HALL9K_CLAUDE_PATH`, the connection string already has a durable home once an install
-reaches this point (the platform config file, which `h9k doctor`'s start-offer writes to when
-nothing was configured yet), and embedding it in the launch script would only add a second,
+reaches this point (the platform config file, which `h9k install` or `h9k doctor`'s start-offer
+writes to when nothing was configured yet), and embedding it in the launch script would only add
+a second,
 weaker plaintext copy on disk. `enable` warns at the time you'd still be able to fix it when the
 shell has the variable set but the platform config file does not otherwise supply one. `h9k
 doctor` will not fix this for you in that moment — your shell already resolves a connection
@@ -121,9 +122,12 @@ credentials (Decisions Log #3).
 ## Postgres
 
 Hall9k requires a Postgres connection string and takes no position on where Postgres runs
-(Decisions Log #57). Nothing is configured at install time — no prompt, no provisioning, no
-silent guess — and `h9k doctor` is what teaches the fix, at the moment you can act on it
-(Decisions Log #58).
+(Decisions Log #57). Nothing is *started* at install time — no prompt, no provisioning — and
+`h9k doctor` is what teaches the fix and offers to run it, at the moment you can act on it
+(Decisions Log #58). The one thing install does write is the connection string itself, and only
+when nothing resolves yet anywhere in the precedence chain below: the compose file it just wrote
+fully determines what that string has to be, so recording it is not a guess, and it is never
+written over a value that already resolves (Decisions Log #99).
 
 ### The doctor check
 
@@ -146,10 +150,16 @@ all. Four questions, answered in order, stopping at the first one that fails (De
    container from a previous session ("your database exists, it is just not running").
 
 When the check finds Postgres not running but a container runtime available, it offers to start
-it — offer-never-force, the same shape as the auto-assign prompt at publish. A non-interactive
-invocation (a script, a dispatched agent) gets a named fix instead of a prompt nobody is there to
-answer. The boundary is Docker itself: if the container runtime is not running, the check names
-that and stops — starting Docker Desktop is a machine-level action and always yours.
+it — offer-never-force, the same shape as the auto-assign prompt at publish — and offers to
+create the schema the same way once it can reach a server that does not have one yet. A
+non-interactive invocation (a script, a dispatched agent) with nobody there to answer names the
+skipped prompt and the flag that would have answered it, `h9k doctor --yes`, rather than falling
+through to generic advice. Pass `--yes` for exactly that: it starts Hall9k's own Postgres via the
+generated compose file and creates the schema without asking, so a fresh release install reaches
+a passing doctor in one command after the installer (`h9k doctor --yes`, then a plain
+`h9k daemon start`). The boundary is Docker itself: if the container runtime is not running, the
+check names that and stops even with `--yes` — starting Docker Desktop is a machine-level action
+and always yours.
 
 The check runs a raw Npgsql connection attempt, never a Wolverine host or a Marten codegen pass,
 so it survives the thin-CLI rule even run before every database-touching command. It lives in the
@@ -161,7 +171,9 @@ Precedence, highest first (Decisions Log #73):
 
 1. `HALL9K_CONNECTION_STRING` — this shell, this invocation.
 2. The platform config file, `~/.hall9k/config.json` (`{"connectionString": "…"}`) — a durable
-   per-machine setting, written by hand or by the doctor's own start-offer.
+   per-machine setting, written by hand, by `h9k install` when nothing was configured yet
+   (recording the connection string that matches the compose file it just wrote), or by the
+   doctor's own start-offer.
 3. A per-project override file, `.hall9k-connection` (one line, the connection string alone) —
    found by walking up from the working directory the same way `h9k install` finds `Hall9k.slnx`.
    Checked **last**, deliberately: it is the one entry in this chain that can arrive already
