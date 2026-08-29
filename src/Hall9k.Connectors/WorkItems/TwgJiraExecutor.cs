@@ -66,27 +66,37 @@ public sealed class TwgJiraExecutor(ProcessRunner? runner = null)
     public const string Binary = "twg";
 
     /// <summary>
-    /// A card carrying this exact text in its description is a card this executor made for the
-    /// write named by the guid — the physical dedup gate (mirroring the GitHub read-back gate):
-    /// searched for before every create, so a crash between twg creating a card and hall9k
-    /// recording it cannot produce a second card on retry.
+    /// A card carrying this exact text in its description is a card hall9k made for this task —
+    /// the physical dedup gate (mirroring the GitHub read-back gate): searched for before every
+    /// create, so a crash (or any failure) between twg creating a card and hall9k recording it
+    /// cannot produce a second card on a later attempt. Scoped to the task rather than to one
+    /// write attempt's own guid: a fresh <c>SubmitAsync</c> mints a new write id every time, so a
+    /// marker keyed to that guid could never be found by the very next attempt it exists to guard
+    /// (independent pre-PR review, cycle 1) — the task is the identity that must not get a second
+    /// card, so the task is what the marker names.
     /// </summary>
-    public static string Marker(Guid writeId) => $"hall9k-write:{writeId:D}";
+    public static string Marker(Guid taskId) => $"hall9k-task:{taskId:D}";
 
-    /// <summary>A search nothing in a real tenant should ever match, used to prove login works without touching any real card.</summary>
-    private const string ProbeJql = "key = HALL9K-DOCTOR-PROBE-00000000000000000000000000000000";
+    /// <summary>
+    /// A JQL clause valid on any tenant and guaranteed to match nothing, used to prove login works
+    /// without touching any real card. A synthetic key (as opposed to a date far in the future)
+    /// is rejected by Jira's own key-format validation before the search ever runs, which turns a
+    /// healthy, authenticated install into "could not confirm" (independent pre-PR review, cycle
+    /// 1) — this compares a real field against a value nothing will ever satisfy instead.
+    /// </summary>
+    private const string ProbeJql = "created > \"2999-01-01\"";
 
     private readonly ProcessRunner runner = runner ?? ExternalProcess.Runner;
 
     /// <summary>
-    /// The physical half of the dedup gate: does a card already carry this write's marker. Called
-    /// before every create, first attempt and retry alike, so a create that twg completed but
-    /// hall9k crashed before recording is found rather than duplicated.
+    /// The physical half of the dedup gate: does a card already carry this task's marker. Called
+    /// before every create, first attempt and every later one alike, so a create that twg
+    /// completed but hall9k never recorded is found rather than duplicated.
     /// </summary>
-    public async Task<string?> FindByMarkerAsync(Guid writeId, string workingDirectory, CancellationToken cancellationToken)
+    public async Task<string?> FindByMarkerAsync(Guid taskId, string workingDirectory, CancellationToken cancellationToken)
     {
         ProcessResult result = await RunAsync(
-            ["jira", "search", "--jql", $"text ~ \"{Marker(writeId)}\"", "--output", "json"],
+            ["jira", "search", "--jql", $"text ~ \"{Marker(taskId)}\"", "--output", "json"],
             workingDirectory, cancellationToken);
         return ExtractFirstKey(result.StandardOutput);
     }
@@ -97,7 +107,7 @@ public sealed class TwgJiraExecutor(ProcessRunner? runner = null)
     /// <see cref="GitHubWorkItemProvider.CreateAsync"/> applies to <c>gh issue create</c>.
     /// </summary>
     public async Task<TwgWriteResult> CreateAsync(
-        JiraProjectKey project, JiraWritePayload payload, Guid writeId, string workingDirectory, CancellationToken cancellationToken)
+        JiraProjectKey project, JiraWritePayload payload, Guid taskId, string workingDirectory, CancellationToken cancellationToken)
     {
         if (!project.HasValue)
         {
@@ -110,7 +120,7 @@ public sealed class TwgJiraExecutor(ProcessRunner? runner = null)
         Dictionary<string, string> fields = payload.Fields is null
             ? []
             : new Dictionary<string, string>(payload.Fields);
-        fields["description"] = AppendMarker(fields.GetValueOrDefault("description"), Marker(writeId));
+        fields["description"] = AppendMarker(fields.GetValueOrDefault("description"), Marker(taskId));
 
         List<string> arguments =
             ["jira", "create", "--project", project.Value, "--type", payload.WorkItemType ?? string.Empty, "--output", "json"];
@@ -123,44 +133,67 @@ public sealed class TwgJiraExecutor(ProcessRunner? runner = null)
                 "twg jira create exited successfully but printed no card key, so nothing here can be "
                 + $"verified: {Head(result.StandardOutput)}");
 
-        return await VerifyAsync(key, workingDirectory, cancellationToken, "created");
+        return await VerifyAsync(key, workingDirectory, cancellationToken, "created", confirmsExistenceOnly: false);
     }
 
-    /// <summary>An existing card's fields, updated and then read back to verify the write landed.</summary>
+    /// <summary>
+    /// An existing card's fields, updated and then read back to confirm it is still there. The
+    /// read-back this executor can run — a search on the key — only ever proves the card exists,
+    /// which is already true before an update runs, so the recorded outcome says exactly that
+    /// rather than claiming the changed fields themselves were confirmed (independent pre-PR
+    /// review, cycle 1): twg's own exit code is what an update is actually trusted on.
+    /// </summary>
     public async Task<TwgWriteResult> UpdateAsync(
         string issueKey, JiraWritePayload payload, string workingDirectory, CancellationToken cancellationToken)
     {
         List<string> arguments = ["jira", "update", issueKey, "--output", "json"];
         AppendFields(arguments, payload.Fields ?? new Dictionary<string, string>());
         await RunAsync(arguments, workingDirectory, cancellationToken);
-        return await VerifyAsync(issueKey, workingDirectory, cancellationToken, "updated");
+        return await VerifyAsync(issueKey, workingDirectory, cancellationToken, "updated", confirmsExistenceOnly: true);
     }
 
-    /// <summary>A comment on an existing card — never a transition, never a close, exactly the closeout write this surface exists to carry.</summary>
+    /// <summary>
+    /// A comment on an existing card — never a transition, never a close, exactly the closeout
+    /// write this surface exists to carry. Read back the same way <see cref="UpdateAsync"/> is:
+    /// existence only, not the comment text itself.
+    /// </summary>
     public async Task<TwgWriteResult> CommentAsync(
         string issueKey, string comment, string workingDirectory, CancellationToken cancellationToken)
     {
         List<string> arguments = ["jira", "update", issueKey, "--comment", comment, "--output", "json"];
         await RunAsync(arguments, workingDirectory, cancellationToken);
-        return await VerifyAsync(issueKey, workingDirectory, cancellationToken, "commented on");
+        return await VerifyAsync(issueKey, workingDirectory, cancellationToken, "commented on", confirmsExistenceOnly: true);
     }
 
     /// <summary>
     /// twg's own claim, read back through a fresh search rather than trusted — the verified
-    /// read-back every acceptance criterion for this feature names explicitly.
+    /// read-back every acceptance criterion for this feature names explicitly. Meaningful proof
+    /// for a create, whose whole claim is that the card now exists; for an update or a comment
+    /// the identical search can only re-confirm a fact already true before the write ran, so
+    /// <paramref name="confirmsExistenceOnly"/> keeps the recorded summary honest about which of
+    /// the two it actually is.
     /// </summary>
     private async Task<TwgWriteResult> VerifyAsync(
-        string issueKey, string workingDirectory, CancellationToken cancellationToken, string verb)
+        string issueKey, string workingDirectory, CancellationToken cancellationToken, string verb,
+        bool confirmsExistenceOnly)
     {
         ProcessResult result = await RunAsync(
             ["jira", "search", "--jql", $"key = {issueKey}", "--output", "json"], workingDirectory, cancellationToken);
         string? found = ExtractFirstKey(result.StandardOutput);
-        return found is not null
-            ? new TwgWriteResult(found, $"twg reported {found} {verb} and it read back successfully.")
-            : throw new TwgExecutionException(
+        if (found is null)
+        {
+            throw new TwgExecutionException(
                 TwgFailureKind.Other,
                 $"twg reported {issueKey} {verb}, but reading it back to verify found nothing. The write "
                 + "was not recorded — check the board before writing again.");
+        }
+
+        return new TwgWriteResult(
+            found,
+            confirmsExistenceOnly
+                ? $"twg reported {found} {verb}. The read-back confirms the card still exists; it does not "
+                    + "re-read the changed field or comment content, so that part is trusted to twg's own exit code."
+                : $"twg reported {found} {verb} and it read back successfully.");
     }
 
     /// <summary>
@@ -240,7 +273,12 @@ public sealed class TwgJiraExecutor(ProcessRunner? runner = null)
     /// <summary>
     /// twg's stderr, classified rather than parsed for content: the only distinction this makes
     /// is expired-or-missing login (a handled, expected state, Brian's design) against everything
-    /// else, which the caller is responsible for reporting verbatim.
+    /// else, which the caller is responsible for reporting verbatim. Deliberately no bare "401"
+    /// substring check: a digit sequence appears in plenty of ordinary refusals that have nothing
+    /// to do with authentication — an issue key (PROJ-401), a custom field id
+    /// (customfield_10401) — and matching on it converted a permanent refusal into a write
+    /// retried forever (independent pre-PR review, cycle 1). "unauthorized" already covers the
+    /// genuine "HTTP 401 Unauthorized" phrasing without that false-positive surface.
     /// </summary>
     private static TwgExecutionException Explain(string standardError)
     {
@@ -248,7 +286,6 @@ public sealed class TwgJiraExecutor(ProcessRunner? runner = null)
         bool authExpired = reported.Contains("twg login", StringComparison.OrdinalIgnoreCase)
             || reported.Contains("not authenticated", StringComparison.OrdinalIgnoreCase)
             || reported.Contains("unauthorized", StringComparison.OrdinalIgnoreCase)
-            || reported.Contains("401", StringComparison.Ordinal)
             || reported.Contains("token", StringComparison.OrdinalIgnoreCase)
                 && reported.Contains("expired", StringComparison.OrdinalIgnoreCase);
 
