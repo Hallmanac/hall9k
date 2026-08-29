@@ -82,7 +82,7 @@ public static class DaemonLifecycle
         // with its working directory forced to RunPaths.Root, so if it re-resolved on its
         // own it could walk up for a project override file from the wrong place and land on
         // a different connection string than the one just proven reachable here.
-        if (await DatabaseDoctor.RunAsync(offerFixes: true, cancellationToken) is not { } connectionString)
+        if (await DatabaseDoctor.RunAsync(offerFixes: true, assumeYes: false, cancellationToken) is not { } connectionString)
         {
             return ExitCodes.Error;
         }

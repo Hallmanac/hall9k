@@ -46,11 +46,11 @@ catch (DatabaseNotConfiguredException)
     // fresh rather than this catch trying to explain it from the exception alone. The
     // command itself still failed regardless of what the doctor finds, so the exit code
     // is always Error here.
-    await DatabaseDoctor.RunAsync(offerFixes: false, CancellationToken.None);
+    await DatabaseDoctor.RunAsync(offerFixes: false, assumeYes: false, CancellationToken.None);
     return ExitCodes.Error;
 }
 catch (NpgsqlException)
 {
-    await DatabaseDoctor.RunAsync(offerFixes: false, CancellationToken.None);
+    await DatabaseDoctor.RunAsync(offerFixes: false, assumeYes: false, CancellationToken.None);
     return ExitCodes.Error;
 }

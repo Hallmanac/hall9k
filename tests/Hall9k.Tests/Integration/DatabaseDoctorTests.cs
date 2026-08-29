@@ -39,7 +39,8 @@ public sealed class DatabaseDoctorTests(PostgresFixture postgres) : IClassFixtur
         {
             RecordingProcessRunner runner = RecordingProcessRunner.Failing("docker not reached in this test");
 
-            string? healthyConnectionString = await DatabaseDoctor.RunAsync(offerFixes: false, runner.Runner, CancellationToken.None);
+            string? healthyConnectionString =
+                await DatabaseDoctor.RunAsync(offerFixes: false, assumeYes: false, runner.Runner, CancellationToken.None);
 
             healthyConnectionString.Should().Be(postgres.ConnectionString);
             runner.Calls.Should().BeEmpty("a reachable server never needs to probe Docker at all");
@@ -68,5 +69,47 @@ public sealed class DatabaseDoctorTests(PostgresFixture postgres) : IClassFixtur
         ReachabilityReport report = await DatabaseReachability.ProbeAsync(builder.ConnectionString, CancellationToken.None);
 
         report.Status.Should().Be(ReachabilityStatus.DatabaseMissing);
+    }
+}
+
+/// <summary>
+/// The schema half of <c>h9k doctor --yes</c> (Windows install friction log item 3): once a
+/// server is reachable but Hall9k's schema is not there yet, <c>assumeYes</c> has to create it
+/// without anybody around to answer "Shall I set that up now?" — the same case that used to
+/// fall through to "It will be created automatically the next time a command touches the
+/// database" and leave a scripted <c>h9k doctor --yes</c> reporting success with no schema
+/// actually applied. A dedicated fixture (rather than a fact added to <see cref="DatabaseDoctorTests"/>)
+/// because this test's whole point is to leave the container with a schema, and
+/// <see cref="DatabaseDoctorTests.A_reachable_server_with_no_schema_yet_says_so"/> depends on a
+/// server that has never had one applied — sharing a container between the two would make the
+/// outcome depend on xUnit's undocumented test-ordering within the class.
+/// </summary>
+[Collection("Hall9kHome")]
+[Trait("Category", "RequiresDocker")]
+public sealed class DatabaseDoctorAssumeYesSchemaTests(PostgresFixture postgres) : IClassFixture<PostgresFixture>
+{
+    [Fact]
+    public async Task Assume_yes_creates_the_schema_without_asking()
+    {
+        string? previous = Environment.GetEnvironmentVariable(Hall9kDatabase.EnvironmentVariableName);
+        Environment.SetEnvironmentVariable(Hall9kDatabase.EnvironmentVariableName, postgres.ConnectionString);
+        try
+        {
+            (await DatabaseReachability.SchemaPresentAsync(postgres.ConnectionString, CancellationToken.None))
+                .Should().BeFalse("this fixture's own container, not yet touched by any other test");
+
+            RecordingProcessRunner runner = RecordingProcessRunner.Failing("docker not reached — the server is already reachable");
+
+            string? resolved = await DatabaseDoctor.RunAsync(offerFixes: true, assumeYes: true, runner.Runner, CancellationToken.None);
+
+            resolved.Should().Be(postgres.ConnectionString);
+            runner.Calls.Should().BeEmpty("a reachable server with --yes never needs Docker at all, only the schema apply");
+            (await DatabaseReachability.SchemaPresentAsync(postgres.ConnectionString, CancellationToken.None))
+                .Should().BeTrue("--yes has to apply the schema itself, with nobody there to answer \"Shall I set that up now?\"");
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable(Hall9kDatabase.EnvironmentVariableName, previous);
+        }
     }
 }
