@@ -54,6 +54,12 @@ internal static class EpicIdResolver
         }
 
         string fragment = idOrFragment.Replace("-", "");
+        if (fragment.Length == 0)
+        {
+            throw new DomainNotFoundException(
+                $"No epic matches '{idOrFragment}'. See what exists: h9k epic list");
+        }
+
         IReadOnlyList<EpicDetails> all = await session.Query<EpicDetails>().ToListAsync(cancellationToken);
         EpicDetails[] matches = [.. all
             .Where(epic => epic.Id.ToString("N").StartsWith(fragment, StringComparison.OrdinalIgnoreCase)
