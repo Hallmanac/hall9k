@@ -138,7 +138,7 @@ public sealed class TaskDetails
     public Guid AddedByOwnerId { get; set; }
     /// <summary>The idea this draft was promoted from; null when the task was written directly (Decisions Log #35).</summary>
     public Guid? SourceIdeaId { get; set; }
-    /// <summary>The epic this task belongs to, or null when ungrouped (Decisions Log #99).</summary>
+    /// <summary>The epic this task belongs to, or null when ungrouped (Decisions Log #100).</summary>
     public Guid? EpicId { get; set; }
     public DateTimeOffset? FinishedAt { get; set; }
 }

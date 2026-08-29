@@ -2,7 +2,7 @@ namespace Hall9k.Domain.Features.Epic;
 
 /// <summary>
 /// A named grouping of tasks: its own id, title, and open state, event-sourced like
-/// everything else (Decisions Log #99). Membership itself is not tracked here — a
+/// everything else (Decisions Log #100). Membership itself is not tracked here — a
 /// task records which epic it belongs to, not the other way around — so this aggregate stays
 /// exactly as small as the concept it represents: a name, a project, and whether it is still
 /// open.

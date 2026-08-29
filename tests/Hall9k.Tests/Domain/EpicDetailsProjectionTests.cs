@@ -8,7 +8,7 @@ namespace Hall9k.Tests.Domain;
 
 /// <summary>
 /// The one read model h9k epic list and h9k epic show both read, built without a database
-/// (Decisions Log #99).
+/// (Decisions Log #100).
 /// </summary>
 public sealed class EpicDetailsProjectionTests
 {
