@@ -106,18 +106,23 @@ public sealed class DaemonAutostartEnableCommand : Hall9kAsyncCommand<DaemonAuto
                 {
                     // Distinct from the not-configured cases below (Decisions Log #74's
                     // reachable-vs-configured distinction): a value IS configured here, it is
-                    // just not answering right now, so the remedy is starting whatever it
-                    // names — h9k doctor --yes, when it is Hall9k's own compose Postgres — not
-                    // hand-editing a file that already has the value (cycle-6 review: the
-                    // previous single fixed tail called this "no connection string configured"
-                    // and told the operator to add one that was already present).
+                    // just not answering right now. But h9k doctor is not the fix, even though
+                    // one is configured: HALL9K_CONNECTION_STRING is set in this very shell
+                    // (that is this branch's own precondition), and Resolve gives it precedence
+                    // over the config file, so doctor would probe and report on the
+                    // environment variable's target, not this one, and leave config.json
+                    // untouched — the exact trap the else branch below already documents for
+                    // the other three states, reintroduced here (cycle-8 review). The remedy is
+                    // therefore the same hand-edit: bring up whatever the config file names, or
+                    // point it at a Postgres that already answers.
                     AnsiConsole.MarkupLine(
                         $"[yellow]{Hall9kDatabase.EnvironmentVariableName} is set in this shell, but {autostart.MechanismDescription} "
                         + $"does not carry it, and {escapedConfigFile} names a connection string that does not "
                         + "currently answer[/] — an autostarted daemon would exit immediately at every logon unless "
-                        + "it comes up before then. Run h9k doctor --yes to start it now (if it is Hall9k's own "
-                        + $"Postgres), or otherwise fix whatever is keeping {escapedConfigFile}'s connection string "
-                        + "from answering.");
+                        + $"it comes up before then. h9k doctor --yes will not fix this: {Hall9kDatabase.EnvironmentVariableName} "
+                        + $"is set right here, so doctor resolves and probes that instead of {escapedConfigFile}'s value, "
+                        + $"and would report healthy without ever touching {escapedConfigFile}. Bring up whatever "
+                        + $"{escapedConfigFile} names by hand, or edit it to point at a Postgres that is already reachable.");
                 }
                 else
                 {
