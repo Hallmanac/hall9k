@@ -58,7 +58,13 @@ public sealed class AgentPromptBuilderTests : IDisposable
     {
         string prompt = AgentPromptBuilder.Build(SomeTask(), SomeProject(), "task/1-slug", _worktreePath);
 
-        prompt.Should().NotContainEquivalentOf("skill");
+        prompt.Should().NotContain(
+            "invoke the matching one instead of improvising its workflow",
+            "there is no repo-skills section to discover when the worktree ships none");
+        prompt.Should().NotContain("The project home ships skills too");
+        prompt.Should().Contain(
+            "commit-plan skill",
+            "the checkpoint-commit recompose step names it unconditionally, whether or not this repo ships it");
         prompt.Should().Contain("## Working rules");
         prompt.Should().Contain("- End with a short summary: what you did, decisions made, assumptions, open questions.");
     }
@@ -105,7 +111,9 @@ public sealed class AgentPromptBuilderTests : IDisposable
 
         string prompt = AgentPromptBuilder.Build(SomeTask(), SomeProject(), "task/1-slug", _worktreePath);
 
-        prompt.Should().NotContainEquivalentOf("skill");
+        prompt.Should().NotContain(
+            "invoke the matching one instead of improvising its workflow",
+            "an empty skills directory still discovers no repo skills");
     }
 
     [Fact]
@@ -119,6 +127,66 @@ public sealed class AgentPromptBuilderTests : IDisposable
 
         prompt.Should().Contain("  - `bare-skill`");
         prompt.Should().NotContain("`bare-skill` —");
+    }
+
+    /// <summary>
+    /// Task: build sessions stop stranding finished work uncommitted. The build prompt teaches
+    /// checkpoint commits as crash protection, the mixed-reset-then-commit-plan recompose as one
+    /// continuous step with a stated reason for the ordering, and the clean-tree final contract.
+    /// </summary>
+    [Fact]
+    public void Build_prompt_teaches_checkpoint_commits_and_the_end_of_work_recompose()
+    {
+        string prompt = AgentPromptBuilder.Build(SomeTask(), SomeProject(), "task/1-slug", _worktreePath);
+
+        prompt.Should().Contain("Commit as you go, one logical unit at a time");
+        prompt.Should().Contain(
+            "crash protection, not authored history",
+            "checkpoints are framed as distinct from the branch's authored history");
+        prompt.Should().Contain("full verification suite is green",
+            "the recompose only starts once all the work is done and gates pass");
+        prompt.Should().Contain("git reset --mixed origin/main", "the reset targets the branch's own base");
+        prompt.Should().Contain("leaves the working tree exactly as", "a mixed reset never touches the tree");
+        prompt.Should().Contain("commit-plan skill to compose that tree");
+        prompt.Should().Contain(
+            "Nothing happens between steps 1 and 2: no test run, no fix, no exploration",
+            "the guard against anything landing between the reset and the recompose");
+        prompt.Should().Contain(
+            "describe the identical tree that passed the",
+            "the prompt states why the reset precedes the recompose immediately, with nothing between");
+        prompt.Should().Contain("session is not done while `git status` shows anything uncommitted or");
+        prompt.Should().Contain("untracked.", "the clean-tree contract covers untracked work too");
+    }
+
+    /// <summary>
+    /// Fix rounds resume an existing PR branch and keep the fixup/autosquash flow via
+    /// absorb-review-fixes (Decisions Log #26); the checkpoint-and-recompose protocol is scoped
+    /// to a fresh build session's own initial work and must not leak into these prompts.
+    /// </summary>
+    [Fact]
+    public void Fix_round_prompts_do_not_carry_the_checkpoint_recompose_protocol()
+    {
+        ProjectDetails project = SomeProject();
+        project.VerifyCommands = [new VerifyCommand("test", "dotnet test")];
+
+        string[] fixRoundPrompts =
+        [
+            AgentPromptBuilder.BuildFollowUp(
+                SomeTask(), project, "task/1-slug", "https://github.com/x/y/pull/7", CommitStyle.Narrative),
+            AgentPromptBuilder.BuildFixChecks(
+                SomeTask(), project, "task/1-slug", "https://github.com/x/y/pull/7", CommitStyle.Narrative),
+            AgentPromptBuilder.BuildRebase(
+                SomeTask(), project, "task/1-slug", "https://github.com/x/y/pull/7", CommitStyle.Narrative),
+        ];
+
+        foreach (string prompt in fixRoundPrompts)
+        {
+            prompt.Should().NotContain("Commit as you go, one logical unit at a time");
+            prompt.Should().NotContain("git reset --mixed");
+            prompt.Should().Contain("git commit --fixup=<owning-commit>", "the amend path is unchanged");
+            prompt.Should().Contain(
+                "GIT_SEQUENCE_EDITOR=: git rebase -i --autosquash origin/main", "autosquash is unchanged");
+        }
     }
 
     [Fact]
