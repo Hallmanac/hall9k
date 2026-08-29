@@ -102,6 +102,13 @@ public sealed class TaskAggregate
     public Guid? SourceIdeaId { get; private set; }
 
     /// <summary>
+    /// The epic this task belongs to, or null when ungrouped (Brian's ruling, 2026-08-28).
+    /// Independent of <see cref="SourceIdeaId"/>: membership and provenance are separate
+    /// records, and a task belongs to at most one epic at a time.
+    /// </summary>
+    public Guid? EpicId { get; private set; }
+
+    /// <summary>
     /// Whose work this is. Set by the explicit human act of assignment and read by the claim
     /// guard: a node claims only its own owner's tasks (Decisions Log #34). Null until
     /// assigned, and null again after unassign.
@@ -168,6 +175,7 @@ public sealed class TaskAggregate
         AddedAt = @event.AddedAt;
         AddedByOwnerId = @event.AddedByOwnerId;
         SourceIdeaId = @event.SourceIdeaId;
+        EpicId = @event.EpicId;
         _blockedBy.Clear();
         _blockedBy.AddRange(@event.BlockedBy ?? []);
 
@@ -221,6 +229,11 @@ public sealed class TaskAggregate
         if (@event.Model.HasValue)
         {
             Model = @event.Model.Value ?? AgentModel.Unknown;
+        }
+
+        if (@event.EpicId.HasValue)
+        {
+            EpicId = @event.EpicId.Value;
         }
     }
 

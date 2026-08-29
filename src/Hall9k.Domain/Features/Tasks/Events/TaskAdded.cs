@@ -19,6 +19,13 @@ namespace Hall9k.Domain.Features.Tasks.Events;
 /// the task was written directly, which is a fact rather than a gap — and is also how every
 /// stream written before ideas existed replays.
 /// </para>
+/// <para>
+/// EpicId is membership, entirely separate from SourceIdeaId's provenance (Brian's ruling,
+/// 2026-08-28): where a task came from and what it is grouped under are independent records,
+/// so a task promoted from an idea and one hand-added with no lineage can sit in the same
+/// epic. Null means ungrouped, which is every task's default and unchanged by this field's
+/// existence.
+/// </para>
 /// </summary>
 public sealed record TaskAdded(
     Guid Id,
@@ -34,4 +41,5 @@ public sealed record TaskAdded(
     AgentModel? Model = null,
     IReadOnlyList<Guid>? BlockedBy = null,
     bool StartsAsDraft = false,
-    Guid? SourceIdeaId = null);
+    Guid? SourceIdeaId = null,
+    Guid? EpicId = null);

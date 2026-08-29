@@ -107,6 +107,55 @@ public sealed class TaskLifecycleTests
         act.Should().Throw<DomainValidationException>().WithMessage("*something to revise*");
     }
 
+    /// <summary>
+    /// A task joins an epic at creation, or later through the same revision gate every other
+    /// field goes through — no separate ceremony (Brian's ruling, 2026-08-28).
+    /// </summary>
+    [Fact]
+    public void Add_can_join_a_task_to_an_epic_and_creation_without_one_is_unchanged()
+    {
+        Guid epicId = DomainId.New();
+        TaskAdded joined = TaskDecider.Add(
+            DomainId.New(), DomainId.New(), "In an epic",
+            acceptanceCriteria: [], TaskType.Feature,
+            agentContext: null, constraints: null, externalReference: null,
+            addedAt: Now, addedByOwnerId: Owner, epicId: epicId);
+        TaskAggregate withEpic = new();
+        withEpic.Apply(joined);
+        withEpic.EpicId.Should().Be(epicId);
+
+        TaskAdded ungrouped = TaskDecider.Add(
+            DomainId.New(), DomainId.New(), "Not in any epic",
+            acceptanceCriteria: [], TaskType.Feature,
+            agentContext: null, constraints: null, externalReference: null,
+            addedAt: Now, addedByOwnerId: Owner);
+        TaskAggregate withoutEpic = new();
+        withoutEpic.Apply(ungrouped);
+        withoutEpic.EpicId.Should().BeNull("membership is optional and never demanded at creation");
+    }
+
+    /// <summary>
+    /// A revision that only touches the epic is a real revision — it does not have to also
+    /// change something else to count as "something to revise" — and a task belongs to at most
+    /// one epic at a time, so joining a second one replaces the first rather than adding to it.
+    /// </summary>
+    [Fact]
+    public void A_task_joins_and_leaves_an_epic_through_revision()
+    {
+        TaskAggregate task = Draft();
+        Guid firstEpic = DomainId.New();
+        Guid secondEpic = DomainId.New();
+
+        task.Apply(ReviseEpic(task, Optional<Guid?>.Of(firstEpic)));
+        task.EpicId.Should().Be(firstEpic);
+
+        task.Apply(ReviseEpic(task, Optional<Guid?>.Of(secondEpic)));
+        task.EpicId.Should().Be(secondEpic, "a task belongs to at most one epic");
+
+        task.Apply(ReviseEpic(task, Optional<Guid?>.Of(null)));
+        task.EpicId.Should().BeNull("leaving is the same gate, with epicId cleared rather than set");
+    }
+
     [Fact]
     public void Revising_an_ordinary_task_to_pr_review_is_refused_since_it_carries_no_pull_request()
     {
@@ -525,6 +574,10 @@ public sealed class TaskLifecycleTests
     private static TaskRevised Revise(TaskAggregate task, string objective) => TaskDecider.Revise(
         task, Optional<string>.Of(objective), Optional<IReadOnlyList<string>>.None, Optional<string>.None,
         Optional<IReadOnlyList<Guid>>.None, Optional<TaskType>.None, Optional<AgentModel>.None, Now, Owner);
+
+    private static TaskRevised ReviseEpic(TaskAggregate task, Optional<Guid?> epicId) => TaskDecider.Revise(
+        task, Optional<string>.None, Optional<IReadOnlyList<string>>.None, Optional<string>.None,
+        Optional<IReadOnlyList<Guid>>.None, Optional<TaskType>.None, Optional<AgentModel>.None, Now, Owner, epicId);
 
     private static TaskAggregate Draft(IReadOnlyList<string>? criteria = null, IReadOnlyList<Guid>? blockedBy = null)
     {

@@ -75,6 +75,11 @@ public static class TaskDocumentRenderer
             document.AppendLine($"external-reference: {OneLine(task.ExternalReference)}");
         }
 
+        if (task.EpicId is { } epicId)
+        {
+            document.AppendLine($"epic: {DomainId.Short(epicId)}");
+        }
+
         document.AppendLine("---");
         document.AppendLine();
 

@@ -29,7 +29,8 @@ public static class TaskDecider
         Guid addedByOwnerId,
         AgentModel? model = null,
         IReadOnlyList<Guid>? blockedBy = null,
-        Guid? sourceIdeaId = null)
+        Guid? sourceIdeaId = null,
+        Guid? epicId = null)
     {
         if (projectId == Guid.Empty)
         {
@@ -51,7 +52,7 @@ public static class TaskDecider
         return new TaskAdded(
             id, projectId, objective, criteria, type, agentContext, constraints,
             externalReference, addedAt, addedByOwnerId, VetModel(model), dependencies,
-            StartsAsDraft: true, SourceIdeaId: sourceIdeaId);
+            StartsAsDraft: true, SourceIdeaId: sourceIdeaId, EpicId: epicId);
     }
 
     /// <summary>
@@ -258,7 +259,8 @@ public static class TaskDecider
         Optional<TaskType> type,
         Optional<AgentModel> model,
         DateTimeOffset revisedAt,
-        Guid revisedByOwnerId)
+        Guid revisedByOwnerId,
+        Optional<Guid?> epicId = default)
     {
         if (task.State != TaskState.Draft)
         {
@@ -324,16 +326,16 @@ public static class TaskDecider
         }
 
         if (!objective.HasValue && !criteria.HasValue && !agentContext.HasValue
-            && !dependencies.HasValue && !type.HasValue && !chosenModel.HasValue)
+            && !dependencies.HasValue && !type.HasValue && !chosenModel.HasValue && !epicId.HasValue)
         {
             throw new DomainValidationException(
                 "A revision needs something to revise. Pass --objective, --criteria, --context, " +
-                "--type, --model, --blocked-by, or --clear-dependencies.");
+                "--type, --model, --blocked-by, --clear-dependencies, --epic, or --clear-epic.");
         }
 
         return new TaskRevised(
             task.Id, objective, criteria, agentContext, dependencies, type, chosenModel,
-            revisedAt, revisedByOwnerId);
+            revisedAt, revisedByOwnerId, epicId);
     }
 
     /// <summary>

@@ -138,6 +138,8 @@ public sealed class TaskDetails
     public Guid AddedByOwnerId { get; set; }
     /// <summary>The idea this draft was promoted from; null when the task was written directly (Decisions Log #35).</summary>
     public Guid? SourceIdeaId { get; set; }
+    /// <summary>The epic this task belongs to, or null when ungrouped (Brian's ruling, 2026-08-28).</summary>
+    public Guid? EpicId { get; set; }
     public DateTimeOffset? FinishedAt { get; set; }
 }
 
@@ -165,6 +167,7 @@ public sealed class TaskDetailsProjection : SingleStreamProjection<TaskDetails, 
         AddedAt = @event.Data.AddedAt,
         AddedByOwnerId = @event.Data.AddedByOwnerId,
         SourceIdeaId = @event.Data.SourceIdeaId,
+        EpicId = @event.Data.EpicId,
     };
 
     public void Apply(IEvent<TaskPublished> @event, TaskDetails view)
@@ -211,6 +214,11 @@ public sealed class TaskDetailsProjection : SingleStreamProjection<TaskDetails, 
         if (@event.Data.Model.HasValue)
         {
             view.Model = @event.Data.Model.Value ?? AgentModel.Unknown;
+        }
+
+        if (@event.Data.EpicId.HasValue)
+        {
+            view.EpicId = @event.Data.EpicId.Value;
         }
 
         view.Revisions++;

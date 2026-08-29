@@ -12,6 +12,8 @@ public sealed class TaskListItem
 {
     public Guid Id { get; set; }
     public Guid ProjectId { get; set; }
+    /// <summary>The epic this task belongs to, or null when ungrouped (Brian's ruling, 2026-08-28).</summary>
+    public Guid? EpicId { get; set; }
     public string Objective { get; set; } = string.Empty;
     public TaskType Type { get; set; } = TaskType.Unknown;
     public TaskState State { get; set; } = TaskState.Unknown;
@@ -80,6 +82,7 @@ public sealed class TaskListItemProjection : SingleStreamProjection<TaskListItem
     {
         Id = @event.Data.Id,
         ProjectId = @event.Data.ProjectId,
+        EpicId = @event.Data.EpicId,
         Objective = @event.Data.Objective,
         Type = @event.Data.Type,
         // Pre-lifecycle streams replay as they behaved: queued and assigned to the owner who
@@ -111,6 +114,11 @@ public sealed class TaskListItemProjection : SingleStreamProjection<TaskListItem
         if (@event.Data.Type.HasValue)
         {
             view.Type = @event.Data.Type.Value ?? TaskType.Unknown;
+        }
+
+        if (@event.Data.EpicId.HasValue)
+        {
+            view.EpicId = @event.Data.EpicId.Value;
         }
     }
 
