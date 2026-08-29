@@ -48,7 +48,8 @@ public sealed class EpicListCommand : Hall9kAsyncCommand<EpicListCommand.Setting
         if (matched.Count == 0)
         {
             AnsiConsole.MarkupLine(
-                "[dim]No epics match those filters. Drop a filter, or see everything:[/] h9k epic list --state all");
+                $"[dim]No epics match {Filters(project, state)}. Drop a filter, or see everything:[/] "
+                + $"h9k epic list --state all{Repeat(project)}");
             return ExitCodes.Ok;
         }
 
@@ -136,7 +137,24 @@ public sealed class EpicListCommand : Hall9kAsyncCommand<EpicListCommand.Setting
     private static string Repeat(ProjectDetails? project) =>
         project is null ? string.Empty : $" --project {project.Name.EscapeMarkup()}";
 
-    private static string StateMarkup(EpicState state) => state.Value switch
+    /// <summary>The narrowing filters, for messages that suggest dropping one to widen the result.</summary>
+    private static string Filters(ProjectDetails? project, EpicState? state)
+    {
+        List<string> filters = [];
+        if (project is not null)
+        {
+            filters.Add($"--project {project.Name.EscapeMarkup()}");
+        }
+
+        if (state is not null)
+        {
+            filters.Add($"--state {state.Value.ToLowerInvariant()}");
+        }
+
+        return filters.Count == 0 ? "those filters" : string.Join(" ", filters);
+    }
+
+    internal static string StateMarkup(EpicState state) => state.Value switch
     {
         "Open" => "[green]Open[/]",
         "Closed" => "[dim]Closed[/]",
