@@ -248,8 +248,8 @@ for "installed", and nothing past it, registering a project included, is require
 On Windows, run these in a new terminal rather than the one that just ran the installer: adding
 `h9k` to the user PATH doesn't reach a process already running, so the shell that just installed
 it still can't resolve a bare `h9k` (an agent driving this in one persistent PowerShell session
-can instead call it by its full path, `"$env:USERPROFILE\.hall9k\bin\h9k.exe"`, for the commands
-below).
+can instead call it by its full path with the call operator, `& "$env:USERPROFILE\.hall9k\bin\h9k.exe"`,
+for the commands below).
 
 ```bash
 h9k doctor --yes       # remediate non-interactively: start Hall9k's own Postgres, create the schema
