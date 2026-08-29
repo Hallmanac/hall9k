@@ -33,7 +33,8 @@ internal static class TwgDoctor
         string names = string.Join(", ", jiraProjects.Select(project => project.Name));
         AnsiConsole.MarkupLine("[bold]twg (Jira writes)[/]");
 
-        TwgAuthProbeResult probe = await new TwgJiraExecutor()
+        Uri? site = (await WorkItemConnections.FindJiraConnectionAsync(session, cancellationToken))?.SiteUrl;
+        TwgAuthProbeResult probe = await new TwgJiraExecutor(site: site)
             .ProbeAuthenticationAsync(Environment.CurrentDirectory, cancellationToken);
 
         switch (probe)
@@ -64,7 +65,8 @@ internal static class TwgDoctor
                 AnsiConsole.MarkupLine(
                     "[yellow]  Could not confirm twg is authenticated[/] — a probe search answered with "
                     + "something other than success or a recognisable auth refusal. Run "
-                    + "'twg jira search --output json' by hand to see what it says.");
+                    + "'twg jira workitem query --jql \"<something>\" --output json --output-summary stats' "
+                    + "by hand to see what it says.");
                 break;
         }
     }

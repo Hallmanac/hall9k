@@ -45,6 +45,74 @@ public sealed class TwgJiraExecutorTests
     }
 
     /// <summary>
+    /// Every call is told the registered connection's tenant explicitly rather than left to
+    /// whatever twg's own ambient auth.conf/TWG_SITE resolves to on the machine running it — a
+    /// mismatch there used to have the write and its own read-back both silently hit the wrong
+    /// tenant (independent pre-PR review, cycle 2).
+    /// </summary>
+    [Fact]
+    public async Task Every_call_names_the_registered_connections_site_explicitly()
+    {
+        RecordingProcessRunner twg = RecordingProcessRunner.RespondingTo(arguments => new ProcessResult(
+            0, arguments.Contains("query") ? """{"key":"PROJ-123"}""" : """{"key":"PROJ-999"}""", string.Empty));
+        TwgJiraExecutor executor = new(twg.Runner, new Uri("https://your-org.atlassian.net"));
+        JiraWritePayload payload = new("Dev Task", null, null);
+
+        await executor.CreateAsync(Project, payload, Guid.NewGuid(), "/repo", CancellationToken.None);
+
+        twg.Calls.Should().OnlyContain(call => call.Arguments.Contains("--site") && call.Arguments.Contains("your-org.atlassian.net"));
+    }
+
+    /// <summary>A caller with no resolvable connection gets twg's own ambient default rather than a fabricated site.</summary>
+    [Fact]
+    public async Task No_site_is_passed_when_none_is_given()
+    {
+        RecordingProcessRunner twg = RecordingProcessRunner.RespondingTo(_ => new ProcessResult(0, "[]", string.Empty));
+        TwgJiraExecutor executor = new(twg.Runner);
+
+        await executor.FindByMarkerAsync(Guid.NewGuid(), "/repo", CancellationToken.None);
+
+        twg.Calls.Should().OnlyContain(call => !call.Arguments.Contains("--site"));
+    }
+
+    /// <summary>
+    /// A composed description or comment is told to twg explicitly as markdown by default, since
+    /// twg's own default (html) mangles the headings/bullets/Given-When-Then blocks a project's
+    /// card-authoring skills actually produce (independent pre-PR review, cycle 2).
+    /// </summary>
+    [Fact]
+    public async Task A_create_defaults_to_markdown_when_the_payload_names_no_format()
+    {
+        RecordingProcessRunner twg = RecordingProcessRunner.RespondingTo(arguments => new ProcessResult(
+            0, arguments.Contains("query") ? """{"key":"PROJ-123"}""" : """{"key":"PROJ-999"}""", string.Empty));
+        TwgJiraExecutor executor = new(twg.Runner);
+        JiraWritePayload payload = new("Dev Task", new Dictionary<string, string> { ["description"] = "## Heading" }, null);
+
+        await executor.CreateAsync(Project, payload, Guid.NewGuid(), "/repo", CancellationToken.None);
+
+        (string FileName, IReadOnlyList<string> Arguments, string WorkingDirectory) create =
+            twg.Calls.Should().Contain(call => call.Arguments.Contains("create")).Subject;
+        create.Arguments.Should().ContainInOrder("--description-format", "markdown");
+    }
+
+    /// <summary>A payload that names a format explicitly (closeout's own plain-text merge comment, for one) has it honored rather than overridden.</summary>
+    [Fact]
+    public async Task A_named_format_is_passed_through_instead_of_the_default()
+    {
+        RecordingProcessRunner twg = RecordingProcessRunner.RespondingTo(arguments => new ProcessResult(
+            0, arguments.Contains("query") ? """{"key":"PROJ-123"}""" : """{"key":"PROJ-999"}""", string.Empty));
+        TwgJiraExecutor executor = new(twg.Runner);
+        JiraWritePayload payload = new(
+            "Dev Task", new Dictionary<string, string> { ["description"] = "plain text" }, null, Format: "plain");
+
+        await executor.CreateAsync(Project, payload, Guid.NewGuid(), "/repo", CancellationToken.None);
+
+        (string FileName, IReadOnlyList<string> Arguments, string WorkingDirectory) create =
+            twg.Calls.Should().Contain(call => call.Arguments.Contains("create")).Subject;
+        create.Arguments.Should().ContainInOrder("--description-format", "plain");
+    }
+
+    /// <summary>
     /// A composed payload's own casing of a first-class field should not survive as a second,
     /// marker-only <c>--field</c> alongside twg's own <c>--description</c> (independent pre-PR
     /// review, cycle 1, low-severity ride-along).
@@ -155,13 +223,16 @@ public sealed class TwgJiraExecutorTests
         RecordingProcessRunner twg = RecordingProcessRunner.RespondingTo(arguments => new ProcessResult(
             0, arguments.Contains("query") ? """{"key":"PROJ-123"}""" : "{}", string.Empty));
         TwgJiraExecutor executor = new(twg.Runner);
-        JiraWritePayload payload = new(null, new Dictionary<string, string> { ["customfield_1"] = "value" }, null);
+        JiraWritePayload payload = new(
+            null, new Dictionary<string, string> { ["customfield_1"] = "value", ["description"] = "## Heading" }, null);
 
         TwgWriteResult result = await executor.UpdateAsync("PROJ-123", payload, "/repo", CancellationToken.None);
 
         result.IssueKey.Should().Be("PROJ-123");
-        twg.Calls.Should().Contain(call =>
-            call.Arguments.Contains("update") && call.Arguments.Contains("--id") && call.Arguments.Contains("customfield_1=value"));
+        (string FileName, IReadOnlyList<string> Arguments, string WorkingDirectory) update =
+            twg.Calls.Should().Contain(call =>
+                call.Arguments.Contains("update") && call.Arguments.Contains("--id") && call.Arguments.Contains("customfield_1=value")).Subject;
+        update.Arguments.Should().ContainInOrder("--description-format", "markdown");
         twg.Calls.Should().Contain(call => call.Arguments.Contains("query"));
     }
 
@@ -172,11 +243,12 @@ public sealed class TwgJiraExecutorTests
             0, arguments.Contains("query") ? """{"key":"PROJ-123"}""" : "{}", string.Empty));
         TwgJiraExecutor executor = new(twg.Runner);
 
-        await executor.CommentAsync("PROJ-123", "The pull request merged.", "/repo", CancellationToken.None);
+        await executor.CommentAsync("PROJ-123", "The pull request merged.", "plain", "/repo", CancellationToken.None);
 
         (string FileName, IReadOnlyList<string> Arguments, string WorkingDirectory) call =
             twg.Calls.Should().Contain(c => c.Arguments.Contains("--body")).Subject;
         call.Arguments.Should().ContainInOrder("jira", "workitem", "comment", "create", "--issue-id", "PROJ-123");
+        call.Arguments.Should().ContainInOrder("--body-format", "plain");
         call.Arguments.Should().NotContain("transition");
         call.Arguments.Should().NotContain(argument => argument.Contains("status", StringComparison.OrdinalIgnoreCase));
     }
@@ -187,7 +259,7 @@ public sealed class TwgJiraExecutorTests
         RecordingProcessRunner twg = RecordingProcessRunner.Succeeding("[]");
         TwgJiraExecutor executor = new(twg.Runner);
 
-        Func<Task> comment = () => executor.CommentAsync("PROJ-123", "note", "/repo", CancellationToken.None);
+        Func<Task> comment = () => executor.CommentAsync("PROJ-123", "note", "markdown", "/repo", CancellationToken.None);
 
         (await comment.Should().ThrowAsync<TwgExecutionException>())
             .Which.Message.Should().Contain("reading it back to verify found nothing");
@@ -202,7 +274,7 @@ public sealed class TwgJiraExecutorTests
         RecordingProcessRunner twg = RecordingProcessRunner.Failing(stderr);
         TwgJiraExecutor executor = new(twg.Runner);
 
-        Func<Task> comment = () => executor.CommentAsync("PROJ-123", "note", "/repo", CancellationToken.None);
+        Func<Task> comment = () => executor.CommentAsync("PROJ-123", "note", "markdown", "/repo", CancellationToken.None);
 
         TwgExecutionException exception = (await comment.Should().ThrowAsync<TwgExecutionException>()).Which;
         exception.IsAuthFailure.Should().BeTrue();
@@ -215,7 +287,7 @@ public sealed class TwgJiraExecutorTests
         RecordingProcessRunner twg = RecordingProcessRunner.Failing("field 'customfield_10010' is required");
         TwgJiraExecutor executor = new(twg.Runner);
 
-        Func<Task> comment = () => executor.CommentAsync("PROJ-123", "note", "/repo", CancellationToken.None);
+        Func<Task> comment = () => executor.CommentAsync("PROJ-123", "note", "markdown", "/repo", CancellationToken.None);
 
         TwgExecutionException exception = (await comment.Should().ThrowAsync<TwgExecutionException>()).Which;
         exception.IsAuthFailure.Should().BeFalse();
@@ -229,7 +301,7 @@ public sealed class TwgJiraExecutorTests
             new Win32Exception("No such file or directory"));
         TwgJiraExecutor executor = new(twg.Runner);
 
-        Func<Task> comment = () => executor.CommentAsync("PROJ-123", "note", "/repo", CancellationToken.None);
+        Func<Task> comment = () => executor.CommentAsync("PROJ-123", "note", "markdown", "/repo", CancellationToken.None);
 
         TwgExecutionException exception = (await comment.Should().ThrowAsync<TwgExecutionException>()).Which;
         exception.Kind.Should().Be(TwgFailureKind.MissingBinary);
@@ -250,7 +322,7 @@ public sealed class TwgJiraExecutorTests
             new Win32Exception(206, "The filename or extension is too long"));
         TwgJiraExecutor executor = new(twg.Runner);
 
-        Func<Task> comment = () => executor.CommentAsync("PROJ-123", "note", "/repo", CancellationToken.None);
+        Func<Task> comment = () => executor.CommentAsync("PROJ-123", "note", "markdown", "/repo", CancellationToken.None);
 
         TwgExecutionException exception = (await comment.Should().ThrowAsync<TwgExecutionException>()).Which;
         exception.Kind.Should().Be(TwgFailureKind.Other);
@@ -271,7 +343,7 @@ public sealed class TwgJiraExecutorTests
         RecordingProcessRunner twg = RecordingProcessRunner.ExitedButOutputStuck(0);
         TwgJiraExecutor executor = new(twg.Runner);
 
-        Func<Task> comment = () => executor.CommentAsync("PROJ-123", "note", "/repo", CancellationToken.None);
+        Func<Task> comment = () => executor.CommentAsync("PROJ-123", "note", "markdown", "/repo", CancellationToken.None);
 
         TwgExecutionException exception = (await comment.Should().ThrowAsync<TwgExecutionException>()).Which;
         exception.Message.Should().Contain("very likely carried out");
@@ -283,7 +355,7 @@ public sealed class TwgJiraExecutorTests
         RecordingProcessRunner twg = RecordingProcessRunner.ExitedButOutputStuck(1);
         TwgJiraExecutor executor = new(twg.Runner);
 
-        Func<Task> comment = () => executor.CommentAsync("PROJ-123", "note", "/repo", CancellationToken.None);
+        Func<Task> comment = () => executor.CommentAsync("PROJ-123", "note", "markdown", "/repo", CancellationToken.None);
 
         TwgExecutionException exception = (await comment.Should().ThrowAsync<TwgExecutionException>()).Which;
         exception.Message.Should().NotContain("very likely carried out");

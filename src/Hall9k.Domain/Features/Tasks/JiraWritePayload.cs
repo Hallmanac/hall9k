@@ -21,7 +21,8 @@ public sealed record JiraWritePayload(
     string? WorkItemType,
     IReadOnlyDictionary<string, string>? Fields,
     string? Comment,
-    string? ProjectKey = null)
+    string? ProjectKey = null,
+    string? Format = null)
 {
     /// <summary>
     /// Field names that move a card between workflow states rather than describing it. Refused
@@ -32,6 +33,20 @@ public sealed record JiraWritePayload(
     /// </summary>
     private static readonly string[] ForbiddenFieldKeys =
         ["status", "transition", "resolution", "resolutiondate"];
+
+    /// <summary>The only values twg's own <c>--description-format</c>/<c>--body-format</c> accept.</summary>
+    private static readonly string[] AllowedFormats = ["html", "markdown", "plain"];
+
+    /// <summary>
+    /// The format a composed description or comment is actually written in, told to twg
+    /// explicitly rather than left to its own default of html: a payload that names none is
+    /// assumed markdown, since a composing session's own card-authoring skills (this repo's
+    /// story-authoring, for one) produce headings, bullets, and Given/When/Then blocks that render
+    /// correctly as markdown and mangle as literal HTML source (independent pre-PR review, cycle
+    /// 2). A caller writing genuinely plain text — closeout's own merge comment — names "plain"
+    /// explicitly rather than relying on this default.
+    /// </summary>
+    public string EffectiveFormat => Format.IsNotBlank() ? Format.Trim().ToLowerInvariant() : "markdown";
 
     private static readonly JsonSerializerOptions SerializerOptions = new()
     {
@@ -61,6 +76,13 @@ public sealed record JiraWritePayload(
                     + "nothing about an organisation's Jira configuration, so this has to come from "
                     + "whoever composed the payload.");
             }
+        }
+
+        if (Format.IsNotBlank() && !AllowedFormats.Contains(Format.Trim().ToLowerInvariant()))
+        {
+            throw new DomainValidationException(
+                $"\"{Format}\" is not a text format twg accepts for a description or a comment — use "
+                + "\"markdown\", \"plain\", or \"html\" (or leave it out, which defaults to markdown).");
         }
 
         if (Fields is null)
@@ -116,6 +138,7 @@ public sealed record JiraWritePayload(
             string? workItemType = ReadString(document.RootElement, "workItemType");
             string? comment = ReadString(document.RootElement, "comment");
             string? projectKey = ReadString(document.RootElement, "projectKey");
+            string? format = ReadString(document.RootElement, "format");
             Dictionary<string, string>? fields = null;
             if (document.RootElement.TryGetProperty("fields", out JsonElement fieldsElement)
                 && fieldsElement.ValueKind == JsonValueKind.Object)
@@ -133,7 +156,7 @@ public sealed record JiraWritePayload(
                 }
             }
 
-            return new JiraWritePayload(workItemType, fields, comment, projectKey);
+            return new JiraWritePayload(workItemType, fields, comment, projectKey, format);
         }
     }
 

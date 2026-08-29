@@ -1161,15 +1161,16 @@ public sealed class CloseoutEngine(
         try
         {
             await using IDocumentSession session = store.LightweightSession();
+            Uri? site = await WorkItemConnections.TryFindJiraSiteAsync(session, cancellationToken);
             JiraWriteAttemptResult result = await JiraWriteCoordinator.SubmitAsync(
                 session,
                 taskId,
                 JiraWriteOperation.Comment,
                 reference.Reference,
-                new JiraWritePayload(WorkItemType: null, Fields: null, Comment: MergeComment(project, task)),
+                new JiraWritePayload(WorkItemType: null, Fields: null, Comment: MergeComment(project, task), Format: "plain"),
                 project.JiraProjectKey,
                 node.OwnerId,
-                new TwgJiraExecutor(githubRunner),
+                new TwgJiraExecutor(githubRunner, site),
                 project.RepositoryPath,
                 cancellationToken);
 

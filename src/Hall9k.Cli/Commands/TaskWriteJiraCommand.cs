@@ -53,8 +53,10 @@ public sealed class TaskWriteJiraCommand : Hall9kAsyncCommand<TaskWriteJiraComma
         [Description(
             "Path to the composed payload, a JSON object carrying (as needed) workItemType, fields "
             + "(an object of field name to value — use the customfield_* id twg reports, not a display "
-            + "name), comment, and projectKey (only for --op create, when the project's own routing "
-            + "rules say a different board than the one bound with h9k project set --jira)")]
+            + "name), comment, projectKey (only for --op create, when the project's own routing "
+            + "rules say a different board than the one bound with h9k project set --jira), and format "
+            + "(\"markdown\", \"plain\", or \"html\" for how the description or comment text is "
+            + "written; defaults to markdown, since that is what most card-authoring skills produce)")]
         public string File { get; init; } = string.Empty;
 
         [CommandOption("--issue <KEY>")]
@@ -89,10 +91,11 @@ public sealed class TaskWriteJiraCommand : Hall9kAsyncCommand<TaskWriteJiraComma
             ?? throw new DomainNotFoundException($"Task {taskId} names a project that is not registered.");
 
         BootstrapContext context = await NodeBootstrap.EnsureAsync(session, cancellationToken);
+        Uri? site = (await WorkItemConnections.FindJiraConnectionAsync(session, cancellationToken))?.SiteUrl;
 
         JiraWriteAttemptResult result = await JiraWriteCoordinator.SubmitAsync(
             session, taskId, operation, settings.Issue, payload, project.JiraProjectKey, context.OwnerId,
-            new TwgJiraExecutor(), project.RepositoryPath, cancellationToken);
+            new TwgJiraExecutor(site: site), project.RepositoryPath, cancellationToken);
 
         string shortId = TaskListCommand.ShortId(taskId);
         switch (result.Outcome)

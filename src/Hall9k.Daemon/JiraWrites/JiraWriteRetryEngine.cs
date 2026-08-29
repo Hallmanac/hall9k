@@ -110,8 +110,9 @@ public sealed class JiraWriteRetryEngine(
                     continue;
                 }
 
+                Uri? site = await WorkItemConnections.TryFindJiraSiteAsync(session, cancellationToken);
                 JiraWriteAttemptResult? result = await JiraWriteCoordinator.RetryPendingAsync(
-                    session, task.Id, project.JiraProjectKey, new TwgJiraExecutor(twgRunner),
+                    session, task.Id, project.JiraProjectKey, new TwgJiraExecutor(twgRunner, site),
                     project.RepositoryPath, cancellationToken);
                 if (result is null)
                 {
@@ -286,15 +287,16 @@ public sealed class JiraWriteRetryEngine(
             return false;
         }
 
+        Uri? site = await WorkItemConnections.TryFindJiraSiteAsync(session, cancellationToken);
         JiraWriteAttemptResult result = await JiraWriteCoordinator.SubmitAsync(
             session,
             taskId,
             JiraWriteOperation.Comment,
             reference.Reference,
-            new JiraWritePayload(WorkItemType: null, Fields: null, Comment: CloseoutEngine.MergeComment(project, task)),
+            new JiraWritePayload(WorkItemType: null, Fields: null, Comment: CloseoutEngine.MergeComment(project, task), Format: "plain"),
             project.JiraProjectKey,
             node.OwnerId,
-            new TwgJiraExecutor(twgRunner),
+            new TwgJiraExecutor(twgRunner, site),
             project.RepositoryPath,
             cancellationToken);
 

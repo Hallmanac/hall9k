@@ -161,6 +161,33 @@ public static class WorkItemConnections
     }
 
     /// <summary>
+    /// Best-effort tenant lookup for a background write, where nobody is watching synchronously
+    /// to act on <see cref="FindJiraConnectionAsync"/>'s own ambiguity refusal: the daemon's
+    /// <c>JiraWriteRetryEngine</c> sweep and closeout's own merge comment both call this rather
+    /// than the strict lookup, because a period where an install carries more than one registered
+    /// Jira connection (two overlapping <c>h9k connection add jira</c> runs, per that method's own
+    /// doc comment) must not turn into every future sweep throwing identically and silently for
+    /// every pending write, forever, until a human happens to read the daemon log — a background
+    /// loop that stops retrying without telling anyone is worse than the gap this exists to close
+    /// (a write landing on <c>twg</c>'s own ambient tenant rather than the registered one). Falling
+    /// back to null here reproduces exactly the behavior every caller had before that plumbing
+    /// existed, so the regression this guards against is a strict downgrade, never a new failure
+    /// mode. A human-facing command (<c>write-jira</c>, <c>doctor</c>) keeps calling the strict
+    /// lookup instead, since a person reading its refusal can actually act on it.
+    /// </summary>
+    public static async Task<Uri?> TryFindJiraSiteAsync(IQuerySession session, CancellationToken cancellationToken)
+    {
+        try
+        {
+            return (await FindJiraConnectionAsync(session, cancellationToken))?.SiteUrl;
+        }
+        catch (DomainException)
+        {
+            return null;
+        }
+    }
+
+    /// <summary>
     /// A connection as a provider. The site is parsed rather than trusted: it was written to the
     /// event stream as a URL, and a connection registered before this field existed carries none
     /// at all — which is a Jira connection that cannot be used, and says so here rather than
