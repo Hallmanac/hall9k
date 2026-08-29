@@ -100,10 +100,18 @@ deliberately never carried into the registration even when the enabling shell ha
 reaches this point (the platform config file, which `h9k install` or `h9k doctor`'s start-offer
 writes to when nothing was configured yet), and embedding it in the launch script would only add
 a second, weaker plaintext copy on disk. `enable` warns at the time you'd still be able to fix it
-when the shell has the variable set but the platform config file does not otherwise supply one.
-`h9k doctor` will not fix this for you in that moment — your shell already resolves a connection
-string from the variable, so doctor reports healthy and never touches `config.json` — add
-`{"connectionString": "…"}` to `~/.hall9k/config.json` by hand instead. On Windows the captured
+whenever the shell has the variable set but the platform config file's own value does not
+currently answer — whether because `config.json` names no connection string at all, or because it
+names one that just isn't reachable right now. The two cases differ in whether `h9k doctor` can
+help. When `config.json` has no connection string of its own, doctor will not fix this for you:
+your shell already resolves a connection string from the variable, so doctor reports healthy and
+never touches `config.json` — add `{"connectionString": "…"}` to `~/.hall9k/config.json` by hand
+instead. When `config.json` does name a connection string but it isn't answering right now,
+whether `h9k doctor --yes` helps depends on what the variable names: doctor probes the variable's
+target, not `config.json`'s, so it fixes this only when the two happen to name the same
+unreachable Postgres — naming something else leaves `config.json` untouched either way, and the
+remedy is the same hand-edit: bring up whatever `config.json` names, or point it at a Postgres
+that already answers. On Windows the captured
 variables travel as `set` prefixes scoped to the one `cmd.exe` invocation that then runs `h9kd`,
 never as a registry mutation — nothing outside that one task is touched.
 

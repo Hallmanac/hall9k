@@ -229,8 +229,9 @@ worth knowing:
   unreachable Postgres `config.json` does — naming something else leaves `config.json` untouched
   either way. Bring up whatever `config.json` names by hand, or edit it to point at a Postgres
   that is already reachable, if doctor does not apply here. (If `config.json` has no connection
-  string at all yet, doctor is a clean fit instead, or add `{"connectionString": "…"}` there by
-  hand.)
+  string at all yet, doctor will not help either — the variable already resolves ahead of
+  `config.json` in `Hall9kDatabase.Resolve()`, so doctor reports healthy without ever touching
+  `config.json`; add `{"connectionString": "…"}` there by hand instead.)
 - **`h9k daemon stop` asks gracefully rather than sending a signal**, because Windows has no
   SIGTERM for an arbitrary process the way Unix does: it writes a small stop-request file the
   running `h9kd` polls for and acts on itself. The effect is identical either way — in-flight
