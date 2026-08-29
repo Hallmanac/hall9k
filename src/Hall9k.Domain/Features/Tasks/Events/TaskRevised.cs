@@ -21,7 +21,7 @@ public sealed record TaskRevised(
     Guid RevisedByOwnerId,
     /// <summary>
     /// Absent leaves the epic alone; present with a value joins that epic, present with null
-    /// leaves it (Decisions Log #99: a task joins or leaves at add or revise, no
+    /// leaves it (Decisions Log #100: a task joins or leaves at add or revise, no
     /// ceremony beyond the ordinary Draft-only revision gate).
     /// </summary>
     Optional<Guid?> EpicId = default);

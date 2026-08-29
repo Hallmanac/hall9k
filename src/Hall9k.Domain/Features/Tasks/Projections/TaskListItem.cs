@@ -12,7 +12,7 @@ public sealed class TaskListItem
 {
     public Guid Id { get; set; }
     public Guid ProjectId { get; set; }
-    /// <summary>The epic this task belongs to, or null when ungrouped (Decisions Log #99).</summary>
+    /// <summary>The epic this task belongs to, or null when ungrouped (Decisions Log #100).</summary>
     public Guid? EpicId { get; set; }
     public string Objective { get; set; } = string.Empty;
     public TaskType Type { get; set; } = TaskType.Unknown;

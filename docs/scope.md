@@ -57,7 +57,7 @@ what its immediate blockers handed down at their closeout, exactly one hop.
 
 ### Epics
 
-`h9k epic add | list | show | link-jira | close` (PLAN.md Decisions Log #99). A first-class
+`h9k epic add | list | show | link-jira | close` (PLAN.md Decisions Log #100). A first-class
 named grouping of tasks — its own id, title, and Open/Closed state — with optional, no-ceremony
 membership: a task joins or leaves at `h9k task add --epic` / `h9k task revise --epic`/
 `--clear-epic`, must share the epic's project, and only an Open epic accepts new members. Closing

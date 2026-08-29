@@ -7,7 +7,7 @@ using Xunit;
 namespace Hall9k.Tests.Domain;
 
 /// <summary>
-/// An epic is a first-class named grouping of tasks (Decisions Log #99): its own id,
+/// An epic is a first-class named grouping of tasks (Decisions Log #100): its own id,
 /// title, and open state, event-sourced like everything else. The rules are deliberately few —
 /// a name and a project to add one, and closing is always an explicit human act with a reason,
 /// never automatic.

@@ -96,7 +96,7 @@ request of this task's own to merge.
 
 `h9k epic add | list | show | link-jira | close`
 
-An epic is a first-class named grouping of tasks (Decisions Log #99): its own id, title, and
+An epic is a first-class named grouping of tasks (Decisions Log #100): its own id, title, and
 Open/Closed state. Membership is optional and no-ceremony — a task joins or leaves at
 `h9k task add --epic` / `h9k task revise --epic`/`--clear-epic` rather than through an epic
 command — and must belong to the same project as the epic and target an Open one; a closed or

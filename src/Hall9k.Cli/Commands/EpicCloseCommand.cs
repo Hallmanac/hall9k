@@ -10,7 +10,7 @@ namespace Hall9k.Cli.Commands;
 
 /// <summary>
 /// Closing an epic honestly: an explicit human act with a reason, and the only way one ever
-/// closes (Decisions Log #99) — never automatically, not even when its last member
+/// closes (Decisions Log #100) — never automatically, not even when its last member
 /// task closes out.
 /// </summary>
 public sealed class EpicCloseCommand : Hall9kAsyncCommand<EpicCloseCommand.Settings>

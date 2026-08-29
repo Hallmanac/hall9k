@@ -22,7 +22,7 @@ public sealed class EpicAddCommand : Hall9kAsyncCommand<EpicAddCommand.Settings>
         public string? Project { get; init; }
 
         [CommandOption("--title <TITLE>")]
-        [Description("The epic's name — a cohesive family of tasks worth naming (Decisions Log #99). Required.")]
+        [Description("The epic's name — a cohesive family of tasks worth naming (Decisions Log #100). Required.")]
         public string? Title { get; init; }
     }
 

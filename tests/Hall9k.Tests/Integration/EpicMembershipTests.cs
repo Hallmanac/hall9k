@@ -18,7 +18,7 @@ namespace Hall9k.Tests.Integration;
 /// <summary>
 /// An epic is its own stream, and a task's membership rides along on the task's own stream —
 /// two independent records that both have to project correctly for h9k epic show and h9k task
-/// list --epic to answer honestly (Decisions Log #99).
+/// list --epic to answer honestly (Decisions Log #100).
 /// </summary>
 [Trait("Category", "RequiresDocker")]
 public sealed class EpicMembershipTests(PostgresFixture postgres) : IClassFixture<PostgresFixture>

@@ -63,7 +63,7 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
 
         if (details.EpicId is { } epicId)
         {
-            // Membership, independent of provenance above (Decisions Log #99): a task
+            // Membership, independent of provenance above (Decisions Log #100): a task
             // promoted from an idea and one hand-added with no lineage can sit in the same epic.
             EpicDetails? epic = await session.LoadAsync<EpicDetails>(epicId, cancellationToken);
             string shortEpicId = TaskListCommand.ShortId(epicId);

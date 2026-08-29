@@ -82,7 +82,7 @@ public sealed class EpicShowCommand : Hall9kAsyncCommand<EpicShowCommand.Setting
     /// <summary>
     /// The identity-only pointer as something a human can click when it is a URL, or plain text
     /// when it is a bare key with no site to build a link from (no read against Jira ever
-    /// happens to fill that gap — Decisions Log #99).
+    /// happens to fill that gap — Decisions Log #100).
     /// </summary>
     internal static string JiraMarkup(string reference) =>
         Uri.TryCreate(reference, UriKind.Absolute, out Uri? url) && (url.Scheme == Uri.UriSchemeHttp || url.Scheme == Uri.UriSchemeHttps)

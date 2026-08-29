@@ -47,7 +47,7 @@ public static class TaskLifecycleProjectionBackfill
     /// missing.
     /// </para>
     /// <para>
-    /// <see cref="TaskListItem.EpicId"/> and <see cref="TaskDetails.EpicId"/> (Decisions Log #99)
+    /// <see cref="TaskListItem.EpicId"/> and <see cref="TaskDetails.EpicId"/> (Decisions Log #100)
     /// deliberately have no marker here, unlike every field above: they are nullable and mean
     /// "no epic", which is exactly the truthful reading of an absent key on a document written
     /// before epics existed. There is no dead-blocker-shaped failure mode to repair — a missing

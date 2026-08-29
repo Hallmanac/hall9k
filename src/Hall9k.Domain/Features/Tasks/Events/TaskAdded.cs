@@ -20,7 +20,7 @@ namespace Hall9k.Domain.Features.Tasks.Events;
 /// stream written before ideas existed replays.
 /// </para>
 /// <para>
-/// EpicId is membership, entirely separate from SourceIdeaId's provenance (Decisions Log #99):
+/// EpicId is membership, entirely separate from SourceIdeaId's provenance (Decisions Log #100):
 /// where a task came from and what it is grouped under are independent records, so a task
 /// promoted from an idea and one hand-added with no lineage can sit in the same epic. Null
 /// means ungrouped, which is every task's default and unchanged by this field's existence.

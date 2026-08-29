@@ -109,7 +109,7 @@ public sealed class TaskLifecycleTests
 
     /// <summary>
     /// A task joins an epic at creation, or later through the same revision gate every other
-    /// field goes through — no separate ceremony (Decisions Log #99).
+    /// field goes through — no separate ceremony (Decisions Log #100).
     /// </summary>
     [Fact]
     public void Add_can_join_a_task_to_an_epic_and_creation_without_one_is_unchanged()

@@ -396,7 +396,7 @@ public static class CliCommandTree
         config.AddBranch("epic", epic =>
         {
             epic.SetDescription(
-                "Name a cohesive family of tasks (Decisions Log #99): an epic is a first-class "
+                "Name a cohesive family of tasks (Decisions Log #100): an epic is a first-class "
                 + "entity with its own id, title, and open state, event-sourced like everything else. "
                 + "Membership is optional and no ceremony — a task joins at add or revise and can leave "
                 + "the same way, and the flat task model is undisturbed for everything ungrouped. An epic "
@@ -422,7 +422,7 @@ public static class CliCommandTree
                 .WithDescription(
                     "Record the Jira epic this one corresponds to — a key or a URL, stored exactly as "
                     + "typed. Identity only: no data is read from or written to Jira through this "
-                    + "command (Decisions Log #99 — no mirroring, ever). h9k epic show "
+                    + "command (Decisions Log #100 — no mirroring, ever). h9k epic show "
                     + "renders it as a link-out when it is a URL.")
                 .WithExample("epic", "link-jira", "28b19893", "PROJ-45")
                 .WithExample("epic", "link-jira", "28b19893", "https://your-org.atlassian.net/browse/PROJ-45");
