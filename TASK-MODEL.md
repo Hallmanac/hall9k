@@ -1013,7 +1013,7 @@ and the daemon routes it away instead (`ReviewFindingRouted`), inert until a hum
 it — but where it lands then splits by grade (`ReviewSeverity.MeetsFixBar`): a **Medium**
 still mints its own **draft bug task**, exactly as every non-high did before this split
 existed, while a **Low** instead folds into the project's one standing **sweep** draft
-(`SweepDraftTask`, backlog: out-of-scope review findings consolidate) — so a serious
+(`SweepDraftTask`, Decisions Log #99) — so a serious
 pre-existing defect can never be buried in a polish pile, and eight one-line Low findings
 cost one build-gate-review pipeline instead of eight. A failed draft creation, of either
 kind, is recorded as a failed routing and never fails the review loop; it is counted apart
