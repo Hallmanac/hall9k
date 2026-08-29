@@ -416,7 +416,7 @@ card's *content*, because issue types, required fields, and routing rules are th
 configuration: `h9k task push-to-jira` dispatches a session into the project's own repository
 where its card-authoring skills live, and that session composes a payload but makes no Jira call
 itself. It submits the payload through `h9k task write-jira`, which is the sole executor of every
-Jira write (Decisions Log #99): hall9k validates the payload, records the intent before anything
+Jira write (Decisions Log #102): hall9k validates the payload, records the intent before anything
 is sent, executes it through the Atlassian CLI (`twg`), and verifies by reading the item back.
 Agent-facing commands are observation gates: `write-jira` and `h9k task link-jira` (for recording
 a pre-existing card) both read the key back through Jira before recording anything, so an agent's
