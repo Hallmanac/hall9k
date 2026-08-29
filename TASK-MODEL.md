@@ -25,7 +25,7 @@ of the vertical-slice pattern itself.)
 | **Node** | permanent | one machine's identity |
 | **Project** | permanent | repo binding + verify commands + agent policy |
 | **Connection** | permanent | provider credential indirection (§10) |
-| **Epic** | weeks–months | a named grouping of tasks: title, Jira link, Open/Closed state (log #99) |
+| **Epic** | weeks–months | a named grouping of tasks: title, Jira link, Open/Closed state (log #100) |
 
 Task ↔ Run linkage: `RunDispatched` carries `TaskId`; the Task stream never records run
 internals. Reads join the two projections by `TaskId` (see §5 — no multi-stream projection,
