@@ -142,7 +142,7 @@ public sealed class TaskReviseCommand : Hall9kAsyncCommand<TaskReviseCommand.Set
 
         Optional<Guid?> epicId = settings.ClearEpic
             ? Optional<Guid?>.Of(null)
-            : epic.IsNotBlank()
+            : epic.IsNotBlank() && !NamesCurrentEpic(epic, task.EpicId)
                 ? Optional<Guid?>.Of(await EpicIdResolver.ResolveForMembershipAsync(
                     session, epic, task.ProjectId, cancellationToken))
                 : Optional<Guid?>.None;
@@ -212,6 +212,32 @@ public sealed class TaskReviseCommand : Hall9kAsyncCommand<TaskReviseCommand.Set
                 ? $"epic {TaskListCommand.ShortId(epicId)}"
                 : "epic cleared";
         }
+    }
+
+    /// <summary>
+    /// True when <paramref name="epic"/> (a full id or fragment) already names
+    /// <paramref name="currentEpicId"/>. The renderer always writes a member task's current
+    /// epic into task.md, so a --file revision that changes nothing else round-trips that same
+    /// value back in; re-running <see cref="EpicIdResolver.ResolveForMembershipAsync"/> on it
+    /// would re-gate a no-op edit on the epic still being Open, refusing an unrelated edit to a
+    /// task whose epic has since closed.
+    /// </summary>
+    internal static bool NamesCurrentEpic(string epic, Guid? currentEpicId)
+    {
+        if (currentEpicId is not { } id)
+        {
+            return false;
+        }
+
+        if (Guid.TryParse(epic, out Guid parsed))
+        {
+            return parsed == id;
+        }
+
+        string fragment = epic.Replace("-", "");
+        string full = id.ToString("N");
+        return full.StartsWith(fragment, StringComparison.OrdinalIgnoreCase)
+            || full.EndsWith(fragment, StringComparison.OrdinalIgnoreCase);
     }
 
     private static async Task<Guid[]> ResolveAsync(
