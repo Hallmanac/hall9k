@@ -11,6 +11,7 @@ using Hall9k.Domain.Features.Tasks;
 using Hall9k.Domain.Features.Tasks.Events;
 using Hall9k.Domain.Features.Tasks.Handlers;
 using Hall9k.Domain.Features.Tasks.Projections;
+using Hall9k.Domain.Features.Tasks.Queries;
 using Hall9k.Domain.Features.Tasks.Rendering;
 using Hall9k.Domain.Infrastructure.Bootstrap;
 using Hall9k.Domain.Infrastructure.Ids;
@@ -68,7 +69,7 @@ public sealed class TaskWorkCommand : Hall9kAsyncCommand<TaskWorkCommand.Setting
         // its own fresh session under InteractiveSessionStarted regardless.
         Guid claudeSessionId = DomainId.New();
 
-        (Guid runId, string worktreePath, string branch, string runDirectory) = task.State == TaskState.Claimed && task.IsInteractiveClaim
+        (Guid runId, string worktreePath, string branch, string runDirectory, bool resumesPreviousWork) = task.State == TaskState.Claimed && task.IsInteractiveClaim
             ? await ReenterAsync(session, task, cancellationToken)
             : await ClaimAndCutAsync(session, task, fence, context, claudeSessionId, cancellationToken);
 
@@ -77,12 +78,14 @@ public sealed class TaskWorkCommand : Hall9kAsyncCommand<TaskWorkCommand.Setting
         ProjectDetails project = await session.LoadAsync<ProjectDetails>(taskDetails.ProjectId, cancellationToken)
             ?? throw new DomainNotFoundException($"Task {taskId}'s project no longer exists.");
 
-        // No blocker context: BlockerContextAssembler lives in Hall9k.Daemon (it can spawn a
-        // synthesis session) and the CLI cannot reference it. An operator sitting at the
-        // keyboard can read a blocker's handoff themselves with h9k task show; the same prompt
-        // and packet context otherwise reaches this session verbatim, through the shared
-        // WorkPromptBuilder headless dispatch calls too.
-        string prompt = WorkPromptBuilder.Build(taskDetails, project, branch, worktreePath, resumesPreviousWork: false, blockerContext: null);
+        // The raw document rather than BlockerContextAssembler's own call: that type lives in
+        // Hall9k.Daemon (it can spawn a synthesis session for a wide fan-in) and the CLI cannot
+        // reference it. BlockerContextDocument and BlockerHandoffQuery are the shared renderer
+        // and depth-one reader both surfaces already agree on — h9k task show pastes the same
+        // unsynthesized document into its own "Starting context" screen (Decisions Log #36) —
+        // so an operator's session gets the real context rather than none at all.
+        string? blockerContext = await LoadBlockerContextAsync(session, taskDetails, cancellationToken);
+        string prompt = WorkPromptBuilder.Build(taskDetails, project, branch, worktreePath, resumesPreviousWork, blockerContext);
 
         // The same settings file every headless spawn writes (ClaudeExecutor), so the one
         // platform-imposed override — no co-authored-by trailers (PLAN.md §6.6) — applies to
@@ -118,6 +121,15 @@ public sealed class TaskWorkCommand : Hall9kAsyncCommand<TaskWorkCommand.Setting
                 $"Could not launch the interactive Claude Code session for task {taskId}: {exception.Message} "
                 + $"The claim is preserved — h9k task work {taskId} to try again, or h9k task release {taskId} to give it back.");
         }
+        catch (OperationCanceledException)
+        {
+            // Ctrl-C: the started/ended pair still has to close (PLAN.md #99, "paired every
+            // launch") even though the command's own token is the one that just fired — a
+            // cancelled token fails any further call made with it, so this cleanup runs
+            // unconditionally rather than cooperatively (conformance review, cycle 1).
+            await AppendSessionEndedAsync(store, runId, claudeSessionId, CancellationToken.None);
+            throw;
+        }
 
         await AppendSessionEndedAsync(store, runId, claudeSessionId, cancellationToken);
 
@@ -132,7 +144,32 @@ public sealed class TaskWorkCommand : Hall9kAsyncCommand<TaskWorkCommand.Setting
         return ExitCodes.Ok;
     }
 
-    private static async Task<(Guid RunId, string WorktreePath, string Branch, string RunDirectory)> ReenterAsync(
+    private static async Task<string?> LoadBlockerContextAsync(
+        IDocumentSession session, TaskDetails taskDetails, CancellationToken cancellationToken)
+    {
+        if (taskDetails.BlockedBy.Count == 0)
+        {
+            return null;
+        }
+
+        IReadOnlyList<BlockerHandoff> handoffs = await BlockerHandoffQuery.LoadAsync(
+            session, taskDetails.BlockedBy, cancellationToken);
+        if (BlockerContextDocument.Render(handoffs) is not { } context)
+        {
+            return null;
+        }
+
+        // Named rather than silently applied: whether this fan-in is wide enough to warrant
+        // synthesis is the claiming node's own DaemonOptions setting, which the CLI cannot
+        // read (Reference graph: Cli -> Domain + Connectors) — so the operator is told the
+        // context is the raw, unsynthesized document rather than left to assume it matches
+        // whatever a headless claim would have produced.
+        AnsiConsole.MarkupLine(
+            "[dim]Blocker context included verbatim (unsynthesized) — a headless claim may condense a wide fan-in first.[/]");
+        return context;
+    }
+
+    private static async Task<(Guid RunId, string WorktreePath, string Branch, string RunDirectory, bool ResumesPreviousWork)> ReenterAsync(
         IDocumentSession session, TaskAggregate task, CancellationToken cancellationToken)
     {
         Guid runId = task.CurrentRunId
@@ -165,10 +202,13 @@ public sealed class TaskWorkCommand : Hall9kAsyncCommand<TaskWorkCommand.Setting
         }
 
         AnsiConsole.MarkupLineInterpolated($"[dim]Re-entering task {task.Id}'s interactive claim.[/]");
-        return (runId, run.WorktreePath, run.Branch, run.RunDirectory);
+        // Whatever the earlier session left — committed or not — is already sitting in this
+        // worktree, so the prompt tells the fresh session to look for it exactly as a headless
+        // retry's own resumed worktree does (conformance review, cycle 1).
+        return (runId, run.WorktreePath, run.Branch, run.RunDirectory, ResumesPreviousWork: true);
     }
 
-    private static async Task<(Guid RunId, string WorktreePath, string Branch, string RunDirectory)> ClaimAndCutAsync(
+    private static async Task<(Guid RunId, string WorktreePath, string Branch, string RunDirectory, bool ResumesPreviousWork)> ClaimAndCutAsync(
         IDocumentSession session, TaskAggregate task, StreamState fence, BootstrapContext context,
         Guid claudeSessionId, CancellationToken cancellationToken)
     {
@@ -204,9 +244,8 @@ public sealed class TaskWorkCommand : Hall9kAsyncCommand<TaskWorkCommand.Setting
         // Cut before committing the claim (mirrors RunLauncher: the worktree exists first, the
         // record follows). If this throws, the task stays Queued — nothing was appended yet.
         GitWorktreeManager worktrees = new(NullLogger<GitWorktreeManager>.Instance);
-        Worktree worktree = await worktrees.CreateAsync(
-            new WorktreeRequest(project.RepositoryPath, project.BaseBranch, task.Id, runId, taskDetails.Objective),
-            cancellationToken);
+        (Worktree worktree, bool resumesPreviousWork) = await CheckoutFreshOrRetryAsync(
+            worktrees, taskDetails, project, task.Id, runId, cancellationToken);
 
         string? existingTaskDirectory = project.HomeDirectory.HasValue
             ? HomeEntryLookup.FindExisting(ProjectHomePaths.TasksDirectory(project.HomeDirectory.Value), task.Id)
@@ -244,7 +283,41 @@ public sealed class TaskWorkCommand : Hall9kAsyncCommand<TaskWorkCommand.Setting
 
         await Doorbell.RingAsync($"task-claimed-interactively:{task.Id}", cancellationToken);
         AnsiConsole.MarkupLineInterpolated($"[dim]Claimed task {task.Id} interactively.[/]");
-        return (runId, worktree.Path, worktree.Branch, runDirectory);
+        return (runId, worktree.Path, worktree.Branch, runDirectory, resumesPreviousWork);
+    }
+
+    /// <summary>
+    /// Mirrors RunLauncher.CheckoutFreshOrRetryAsync exactly: a Queued task carrying a
+    /// surviving branch (a prior <c>h9k task handback</c> or <c>h9k task retry</c>) resumes it
+    /// instead of cutting a fresh branch off the base, which would otherwise silently strand
+    /// whatever was already committed there under a worktree nothing points at any more
+    /// (conformance review, cycle 1). When the branch is gone everywhere, this falls back to a
+    /// fresh worktree exactly as the daemon's own path does.
+    /// </summary>
+    private static async Task<(Worktree Worktree, bool ResumesPreviousWork)> CheckoutFreshOrRetryAsync(
+        IWorktreeManager worktrees, TaskDetails taskDetails, ProjectDetails project, Guid taskId, Guid runId,
+        CancellationToken cancellationToken)
+    {
+        if (taskDetails.RetryBranch.IsNotBlank())
+        {
+            try
+            {
+                Worktree resumed = await worktrees.CheckoutExistingAsync(
+                    new FollowUpWorktreeRequest(project.RepositoryPath, taskDetails.RetryBranch, taskId, runId),
+                    cancellationToken);
+                return (resumed, true);
+            }
+            catch (WorktreeException exception)
+            {
+                AnsiConsole.MarkupLineInterpolated(
+                    $"[yellow]Could not resume branch {taskDetails.RetryBranch} ({exception.Message}); starting clean from {project.BaseBranch}.[/]");
+            }
+        }
+
+        Worktree fresh = await worktrees.CreateAsync(
+            new WorktreeRequest(project.RepositoryPath, project.BaseBranch, taskId, runId, taskDetails.Objective),
+            cancellationToken);
+        return (fresh, false);
     }
 
     private static async Task AppendSessionEndedAsync(
@@ -286,7 +359,31 @@ public sealed class TaskWorkCommand : Hall9kAsyncCommand<TaskWorkCommand.Setting
         process.StartInfo.ArgumentList.Add(prompt);
 
         process.Start();
-        await process.WaitForExitAsync(cancellationToken);
+        try
+        {
+            await process.WaitForExitAsync(cancellationToken);
+        }
+        catch (OperationCanceledException)
+        {
+            // The terminal's own Ctrl-C ordinarily reaches the child too (same foreground
+            // process group), but kill it best-effort in case it is still alive — the CLI is
+            // about to walk away from it either way, and an interactive claude process left
+            // running detached from the terminal that spawned it is worse than a failed kill.
+            if (!process.HasExited)
+            {
+                try
+                {
+                    process.Kill(entireProcessTree: true);
+                }
+                catch (InvalidOperationException)
+                {
+                    // Already exited between the check and the kill — nothing left to do.
+                }
+            }
+
+            throw;
+        }
+
         return process.ExitCode;
     }
 

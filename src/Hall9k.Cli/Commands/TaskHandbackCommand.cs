@@ -1,5 +1,7 @@
 using System.ComponentModel;
 using Hall9k.Cli.Infrastructure;
+using Hall9k.Domain.Features.Run;
+using Hall9k.Domain.Features.Run.Events;
 using Hall9k.Domain.Features.Run.Projections;
 using Hall9k.Domain.Features.Tasks;
 using Hall9k.Domain.Features.Tasks.Handlers;
@@ -56,6 +58,19 @@ public sealed class TaskHandbackCommand : Hall9kAsyncCommand<TaskHandbackCommand
         RunDetails run = await session.LoadAsync<RunDetails>(runId, cancellationToken)
             ?? throw new DomainConflictException($"Task {taskId} is claimed interactively but run {runId} has no record.");
 
+        // Mirrors TaskWorkCommand.ReenterAsync's own guard: once h9k task deliver hands the run
+        // to the standard pipeline, the task can still read Claimed+interactive for the whole
+        // review loop, so the state check above alone would let this requeue and re-dispatch a
+        // headless agent into the very worktree the delivered run's gates and review sessions
+        // are still reading (adversarial review, cycle 1).
+        if (run.State != RunState.Dispatched && run.State != RunState.Running)
+        {
+            throw new DomainConflictException(
+                $"Task {taskId}'s run {runId} is already {run.State.Value} — it was handed off with "
+                + $"h9k task deliver and is now in the standard pipeline. h9k task show {taskId} "
+                + "to see where it stands.");
+        }
+
         (IReadOnlyList<string>? modified, _) = await InteractiveWorktreeGit.ListUncommittedFilesAsync(run.WorktreePath, cancellationToken);
         if (modified is null)
         {
@@ -80,6 +95,12 @@ public sealed class TaskHandbackCommand : Hall9kAsyncCommand<TaskHandbackCommand
         BootstrapContext context = await NodeBootstrap.EnsureAsync(session, cancellationToken);
         session.Events.Append(taskId, expectedVersion: fence.Version + 1, TaskDecider.HandBack(
             task, runId, run.Branch, settings.Reason, DateTimeOffset.UtcNow, context.OwnerId));
+        // The next headless claim resumes the branch under a fresh run id (RunLauncher mints
+        // one per launch); this run otherwise reads Running forever — it holds no TaskLease
+        // and its NodeId is the Guid.Empty sentinel, so neither AdoptOrphansAsync's NodeId
+        // filter nor SweepExpiredLeasesAsync's lease scan will ever retire it (conformance and
+        // adversarial review, cycle 1).
+        session.Events.Append(runId, new RunSuperseded(runId, task.LeaseGeneration + 1, DateTimeOffset.UtcNow));
         try
         {
             await session.SaveChangesAsync(cancellationToken);

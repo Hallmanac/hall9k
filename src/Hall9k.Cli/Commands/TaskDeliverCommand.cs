@@ -6,6 +6,7 @@ using Hall9k.Domain.Features.Run.Events;
 using Hall9k.Domain.Features.Run.Projections;
 using Hall9k.Domain.Features.Tasks;
 using Hall9k.Domain.Features.Tasks.Projections;
+using Hall9k.Domain.Infrastructure.Storage;
 using Hall9k.Domain.Shared.Exceptions;
 using Marten;
 using Spectre.Console;
@@ -32,6 +33,10 @@ public sealed class TaskDeliverCommand : Hall9kAsyncCommand<TaskDeliverCommand.S
         [CommandArgument(0, "<ID>")]
         [Description("Task id (full, or an unambiguous fragment)")]
         public string Id { get; init; } = string.Empty;
+
+        [CommandOption("--handoff <TEXT>")]
+        [Description("What this run hands down to a dependent task or a resuming session (Decisions Log #36). Omit to be prompted on an interactive terminal, or to leave it unauthored on a non-interactive one.")]
+        public string? Handoff { get; init; }
     }
 
     protected override async Task<int> ExecuteAsync(Settings settings, CancellationToken cancellationToken)
@@ -103,6 +108,14 @@ public sealed class TaskDeliverCommand : Hall9kAsyncCommand<TaskDeliverCommand.S
             return ExitCodes.Error;
         }
 
+        // Mirrors RunSupervisor.CaptureHandoffAsync, called in the same place relative to
+        // AgentSessionCompleted: without this, an interactively delivered task hands nothing
+        // down to a dependent — CloseoutEngine.ComposeHandoffAsync reads this same file off
+        // disk at true closeout, agnostic of whether the run behind it was headless or
+        // interactive, so writing it here is all that is missing (conformance review, cycle 1).
+        string handoff = settings.Handoff ?? PromptForHandoff();
+        await WriteHandoffAsync(run.RunDirectory, handoff, cancellationToken);
+
         session.Events.Append(runId, new AgentSessionCompleted(runId, DateTimeOffset.UtcNow));
         await session.SaveChangesAsync(cancellationToken);
 
@@ -110,5 +123,25 @@ public sealed class TaskDeliverCommand : Hall9kAsyncCommand<TaskDeliverCommand.S
         AnsiConsole.MarkupLineInterpolated(
             $"[dim]Branch {run.Branch} pushed. Task {taskId} handed into the standard delivery pipeline — h9k task show {taskId} to watch it.[/]");
         return ExitCodes.Ok;
+    }
+
+    private static string PromptForHandoff()
+    {
+        if (!AnsiConsole.Profile.Capabilities.Interactive)
+        {
+            return string.Empty;
+        }
+
+        return AnsiConsole.Prompt(
+            new TextPrompt<string>(
+                "[dim]Handoff for a dependent task or a resuming session (blank to leave unauthored):[/]")
+                .AllowEmpty());
+    }
+
+    private static async Task WriteHandoffAsync(string runDirectory, string handoff, CancellationToken cancellationToken)
+    {
+        string resolvedRunDirectory = RunPaths.ResolveCurrentDirectory(runDirectory);
+        Directory.CreateDirectory(resolvedRunDirectory);
+        await File.WriteAllTextAsync(RunPaths.HandoffFile(resolvedRunDirectory), handoff, cancellationToken);
     }
 }

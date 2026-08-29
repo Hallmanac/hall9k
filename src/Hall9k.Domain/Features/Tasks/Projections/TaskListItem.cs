@@ -279,6 +279,17 @@ public sealed class TaskListItemProjection : SingleStreamProjection<TaskListItem
         view.State = TaskState.Queued;
     }
 
+    // The interactive mirror of TaskRetried (TaskDetails.Apply(IEvent<TaskHandedBack>) does the
+    // same) — without this, the row this projection feeds the dispatcher's queue query and
+    // h9k status from stays Claimed forever, and the task the handback exists to hand off never
+    // reaches headless dispatch (independent pre-PR review, cycle 1).
+    public void Apply(IEvent<TaskHandedBack> @event, TaskListItem view)
+    {
+        view.ClaimedByNodeId = null;
+        view.CurrentRunId = null;
+        view.State = TaskState.Queued;
+    }
+
     public void Apply(IEvent<TaskResolved> @event, TaskListItem view)
     {
         view.PullRequestUrl = @event.Data.PullRequestUrl ?? view.PullRequestUrl;
