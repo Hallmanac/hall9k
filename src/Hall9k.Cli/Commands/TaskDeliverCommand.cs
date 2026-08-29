@@ -100,7 +100,16 @@ public sealed class TaskDeliverCommand : Hall9kAsyncCommand<TaskDeliverCommand.S
         }
 
         int commits = await InteractiveWorktreeGit.CountBranchCommitsAsync(run.WorktreePath, project.BaseBranch, cancellationToken);
-        if (commits == 0)
+        if (commits < 0)
+        {
+            // Never guessed at as "holds commits" (InteractiveWorktreeGit's own contract,
+            // mirrored by TaskReleaseCommand's identical check): the operator is told the check
+            // was skipped rather than delivery proceeding in silence over a branch nobody
+            // actually confirmed holds anything (adversarial review, cycle 4).
+            AnsiConsole.MarkupLineInterpolated(
+                $"[yellow]Could not read the worktree's git status at {run.WorktreePath}; skipping the commits-beyond-base check.[/]");
+        }
+        else if (commits == 0)
         {
             AnsiConsole.MarkupLineInterpolated(
                 $"[red]Branch '{run.Branch}' holds no commits beyond its base branch — nothing to deliver.[/]");
