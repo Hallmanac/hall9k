@@ -761,8 +761,12 @@ public sealed class UninstallCommand : Hall9kAsyncCommand<UninstallCommand.Setti
 
     /// <summary>The uniquely suffixed <c>bin.old.&lt;random&gt;</c> directories
     /// <see cref="InstallCommand"/> falls back to when a locked <c>bin.old</c> already occupies
-    /// the ordinary retirement name (a double-lock on Windows) — swept here for the same reason
-    /// install's own next run sweeps them, so one never survives an uninstall by accident.
+    /// the ordinary retirement name (a double lock hitting <see cref="InstallCommand.RetireDirectory"/>,
+    /// the directory-level retirement <c>SwapIntoPlace</c> now runs on Unix only — Windows
+    /// retires locked files individually instead, so a fresh double lock there never produces
+    /// one of these, though a machine updated before that fix can still be carrying one) —
+    /// swept here for the same reason install's own next run sweeps them, so one never
+    /// survives an uninstall by accident.
     /// <c>bin.old</c> itself is excluded from the results: on Windows, FileSystemName's
     /// Win32-expression translation rewrites the trailing <c>.*</c> into DOS_DOT, which also
     /// matches zero characters, so the glob below matches <c>bin.old</c> as well as its

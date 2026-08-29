@@ -197,7 +197,24 @@ public sealed class InstallCommand : Hall9kAsyncCommand<InstallCommand.Settings>
         // file, the skills directory, and the PATH are all just files and environment
         // state), so swapping last means everything that can crash on a version mismatch
         // already ran under the version that is still valid to run it.
-        SwapIntoPlace(staging, DaemonRuntime.BinDirectory);
+        try
+        {
+            SwapIntoPlace(staging, DaemonRuntime.BinDirectory);
+        }
+        catch (InvalidOperationException exception)
+        {
+            // The one failure SwapIntoPlace can throw on Windows: a lock stronger than a
+            // running module's own share-delete access (an antivirus scan holding a file
+            // exclusively), reported instead of an unhandled IOException so the operator
+            // gets a sentence instead of a stack trace (origin incident: exactly that
+            // stack trace, Brian's first real Windows update). SwapFilesIntoPlace merges
+            // files one at a time, so bin can be left partially updated when this throws —
+            // the message says so rather than claiming an all-or-nothing outcome nothing
+            // here actually provides.
+            await Console.Error.WriteLineAsync(exception.Message);
+            return ExitCodes.Error;
+        }
+
         AnsiConsole.MarkupLineInterpolated(
             $"[green]Installed[/] {version}: h9k and h9kd release binaries in {DaemonRuntime.BinDirectory}");
 
@@ -599,31 +616,58 @@ public sealed class InstallCommand : Hall9kAsyncCommand<InstallCommand.Settings>
     }
 
     /// <summary>
-    /// Publish lands in staging, then a directory swap replaces the live bin. Renames
-    /// keep open files (a running daemon, this very h9k) valid on Unix — inodes outlive
-    /// the paths — so a re-install under a running system is safe.
+    /// Publish lands in staging, then the staged files replace the live bin. On Unix a
+    /// directory swap does the whole job in one rename: renames keep open files (a running
+    /// daemon, this very h9k) valid — inodes outlive the paths — so a re-install under a
+    /// running system is safe.
     /// <para>
-    /// On Windows, renaming <paramref name="bin"/> succeeds even while <c>h9k.exe</c> is
-    /// running from it (a rename is a directory-entry change, not a delete), but
-    /// <c>h9k update</c> runs from the installed binary itself, so the retired copy still
-    /// holds the running process's image when this method tries to delete it — and Windows
-    /// refuses to delete an executable that is mapped into a running process. Deleting is
-    /// therefore best-effort: a copy Windows would not let go of is left as <c>bin.old</c>
-    /// and swept up by the next install or update, whose leading cleanup step is this same
-    /// best-effort delete on what is by then a retired copy nothing is running from.
-    /// </para>
-    /// <para>
-    /// That best-effort delete can itself fail twice in a row — an antivirus scanner or
-    /// indexer holding one of the freshly written executables is the same kind of lock that
-    /// stops the leading cleanup — so the retire step below falls back to a uniquely named
-    /// directory rather than let <see cref="Directory.Move(string, string)"/> throw into an
-    /// install that has already fully staged its new binaries. The fallback name is announced
-    /// on the way out and swept alongside <c>bin.old</c> on every later run, so a double lock
-    /// costs an extra cycle to reclaim rather than a permanently stranded copy.
+    /// Windows has no such indirection, and the fact this method's doc comment used to
+    /// assert here — that renaming <paramref name="bin"/> succeeds even while <c>h9k.exe</c>
+    /// runs from it, because a rename is a directory-entry change rather than a delete — is
+    /// true of the FILE but not of a DIRECTORY holding it: Windows locks the full path of a
+    /// loaded module, so renaming an ancestor directory of a running <c>h9k.exe</c> or
+    /// <c>h9kd.exe</c> throws <c>IOException</c> ("Access ... is denied") the moment either is
+    /// running from inside it (origin incident: Brian's first real Windows update, which had
+    /// already fetched, verified, and fully staged the new release before this call threw).
+    /// Renaming the locked file ITSELF, though, is exactly as permitted on Windows as it is
+    /// assumed to be above — the OS loader shares delete access on the module it maps — so on
+    /// Windows the swap runs file by file instead of directory by directory:
+    /// <see cref="SwapFilesIntoPlace"/> merges every file staging carries into
+    /// <paramref name="bin"/> in place, retiring a same-named file it cannot overwrite (a
+    /// locked <c>h9k.exe</c> or <c>h9kd.exe</c> — no special case needed for either one, since
+    /// a locked file retires the same way regardless of which process holds it) to a
+    /// <c>.old</c> sibling right where it sits, exactly like <see cref="RetireDirectory"/>
+    /// does one level up on Unix. <see cref="RemoveStaleFiles"/> then deletes whatever
+    /// <paramref name="bin"/> still has that staging does not — a file an earlier release
+    /// shipped and this one dropped — so the merge does not leave <paramref name="bin"/>
+    /// as the union of every version ever installed.
     /// </para>
     /// </summary>
     private static void SwapIntoPlace(string staging, string bin)
     {
+        if (OperatingSystem.IsWindows())
+        {
+            SweepRetiredFiles(bin);
+            if (Directory.Exists(bin))
+            {
+                SwapFilesIntoPlace(staging, bin);
+                RemoveStaleFiles(staging, bin);
+                TryDelete(staging);
+            }
+            else
+            {
+                Directory.Move(staging, bin);
+            }
+
+            // No trailing sweep here: anything RetireFile just retired above is still
+            // locked by construction (a file that could be released would have been
+            // deleted rather than retired a few lines up), so an immediate sweep can only
+            // print "still in use" noise on the success path of every Windows update —
+            // never actually reclaim anything. The leading sweep on the *next* run is the
+            // one that can.
+            return;
+        }
+
         string retired = bin + ".old";
         SweepRetiredDirectories(bin, retired);
 
@@ -634,6 +678,289 @@ public sealed class InstallCommand : Hall9kAsyncCommand<InstallCommand.Settings>
 
         Directory.Move(staging, bin);
         SweepRetiredDirectories(bin, retired);
+    }
+
+    /// <summary>The Windows half of <see cref="SwapIntoPlace"/>: walks <paramref name="sourceDirectory"/>
+    /// (staging, or one of its subdirectories) and merges each entry into
+    /// <paramref name="destinationDirectory"/> (bin, or the matching subdirectory), retiring
+    /// whatever it cannot overwrite via <see cref="SwapFileIntoPlace"/>.</summary>
+    [SupportedOSPlatform("windows")]
+    private static void SwapFilesIntoPlace(string sourceDirectory, string destinationDirectory)
+    {
+        Directory.CreateDirectory(destinationDirectory);
+
+        foreach (string sourceFile in Directory.EnumerateFiles(sourceDirectory))
+        {
+            SwapFileIntoPlace(sourceFile, Path.Combine(destinationDirectory, Path.GetFileName(sourceFile)));
+        }
+
+        foreach (string sourceSubdirectory in Directory.EnumerateDirectories(sourceDirectory))
+        {
+            SwapFilesIntoPlace(
+                sourceSubdirectory, Path.Combine(destinationDirectory, Path.GetFileName(sourceSubdirectory)));
+        }
+    }
+
+    /// <summary>The other half of the Windows merge in <see cref="SwapIntoPlace"/>:
+    /// <see cref="SwapFilesIntoPlace"/> only ever adds or overwrites, so without this a file an
+    /// earlier release shipped and the new one dropped survives every reinstall or update —
+    /// unlike the Unix directory swap, which replaces <paramref name="destinationDirectory"/>
+    /// outright, this merge would otherwise leave it the union of every version ever installed.
+    /// Walks the merged tree afterward and deletes whatever <paramref name="destinationDirectory"/>
+    /// has that <paramref name="sourceDirectory"/> (staging) does not, skipping this run's own
+    /// <c>*.old</c> retirees via <see cref="IsRetiredFileName"/> — those are not stale, they are
+    /// this run's locked files waiting on <see cref="SweepRetiredFiles"/> — and best-effort, same
+    /// as the rest of this file, so a file still locked this run is simply left for a later
+    /// one.</summary>
+    [SupportedOSPlatform("windows")]
+    private static void RemoveStaleFiles(string sourceDirectory, string destinationDirectory)
+    {
+        if (!Directory.Exists(destinationDirectory))
+        {
+            return;
+        }
+
+        foreach (string destinationFile in Directory.EnumerateFiles(destinationDirectory))
+        {
+            string fileName = Path.GetFileName(destinationFile);
+            if (IsRetiredFileName(fileName) || File.Exists(Path.Combine(sourceDirectory, fileName)))
+            {
+                continue;
+            }
+
+            TryDeleteFile(destinationFile);
+        }
+
+        foreach (string destinationSubdirectory in Directory.EnumerateDirectories(destinationDirectory))
+        {
+            string sourceSubdirectory = Path.Combine(sourceDirectory, Path.GetFileName(destinationSubdirectory));
+            if (Directory.Exists(sourceSubdirectory))
+            {
+                RemoveStaleFiles(sourceSubdirectory, destinationSubdirectory);
+            }
+            else
+            {
+                TryDeleteDirectoryRecursively(destinationSubdirectory);
+            }
+        }
+    }
+
+    /// <summary>Matches a name <see cref="RetireFile"/> could have produced this run (a plain
+    /// <c>.old</c> sibling, or its uniquely suffixed double-lock fallback) — the predicate
+    /// <see cref="RemoveStaleFiles"/> uses to leave this run's own retirees for
+    /// <see cref="SweepRetiredFiles"/> instead of deleting them as stale.</summary>
+    private static bool IsRetiredFileName(string fileName) =>
+        fileName.EndsWith(".old", StringComparison.OrdinalIgnoreCase)
+            || fileName.Contains(".old.", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>Best-effort recursive delete for a stale subdirectory <see cref="RemoveStaleFiles"/>
+    /// finds in <paramref name="destinationDirectory"/> with no counterpart in staging at all —
+    /// deletes what it can and leaves the rest (a locked file inside it) for a later sweep,
+    /// rather than let one locked file abort removing everything else the old subdirectory
+    /// held.</summary>
+    [SupportedOSPlatform("windows")]
+    private static void TryDeleteDirectoryRecursively(string destinationDirectory)
+    {
+        foreach (string file in Directory.EnumerateFiles(destinationDirectory))
+        {
+            TryDeleteFile(file);
+        }
+
+        foreach (string nested in Directory.EnumerateDirectories(destinationDirectory))
+        {
+            TryDeleteDirectoryRecursively(nested);
+        }
+
+        try
+        {
+            Directory.Delete(destinationDirectory);
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            // Not empty — something inside is still locked. Left for a later sweep.
+        }
+    }
+
+    /// <summary>Moves one staged file into place. The ordinary case (nothing has
+    /// <paramref name="destination"/> open) is a single atomic replace — <c>overwrite: true</c>
+    /// rather than a separate delete-then-move — so a delete that succeeds followed by a move
+    /// that then fails can never leave <paramref name="destination"/> gone outright (origin:
+    /// exactly that gap, caught by review before this shipped). A locked destination — a
+    /// running <c>h9k.exe</c> or <c>h9kd.exe</c> — is retired aside first via
+    /// <see cref="RetireFile"/> and the staged file takes its vacated name. Every step past
+    /// that first attempt is guarded the same way: if retiring the destination aside fails too
+    /// (a lock stronger than a running module's own share-delete access — an antivirus scan
+    /// holding the file exclusively), or the move that follows a successful retire fails (a
+    /// lock the retire survived but this did not — vanishingly unlikely, but not impossible),
+    /// this throws <see cref="InvalidOperationException"/> instead of letting a raw
+    /// <see cref="IOException"/> or <see cref="UnauthorizedAccessException"/> escape
+    /// <see cref="SwapIntoPlace"/> uncaught. The second case best-effort restores the retired
+    /// file under its original name first; if even that fails, the previous copy is left
+    /// sitting at its <c>.old</c> name instead, and the exception message says so.</summary>
+    [SupportedOSPlatform("windows")]
+    private static void SwapFileIntoPlace(string source, string destination)
+    {
+        if (!File.Exists(destination))
+        {
+            try
+            {
+                File.Move(source, destination);
+            }
+            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+            {
+                throw new InvalidOperationException(
+                    $"Could not finish installing {destination} — {exception.Message} Run h9k update again once "
+                        + "that is resolved.",
+                    exception);
+            }
+
+            return;
+        }
+
+        try
+        {
+            File.Move(source, destination, overwrite: true);
+            return;
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            // destination is locked — most likely this very h9k.exe, or a running h9kd.exe.
+            // Fall through to the retire-aside path below.
+        }
+
+        string retired;
+        try
+        {
+            retired = RetireFile(destination);
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            throw new InvalidOperationException(
+                $"Could not finish updating {destination} — it is locked and could not even be retired aside. "
+                    + "Close whatever holds it (a running h9k or h9kd, an antivirus scan) and run h9k update "
+                    + $"again; {Path.GetFileName(destination)} was left on the version it started with.",
+                exception);
+        }
+
+        try
+        {
+            File.Move(source, destination);
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            RestoreRetiredFile(retired, destination);
+
+            throw new InvalidOperationException(
+                $"Could not finish updating {destination} — it is locked and the previous copy could not be "
+                    + "put back in its place either. Close whatever holds it (a running h9k or h9kd, an antivirus "
+                    + $"scan) and run h9k update again. If {Path.GetFileName(destination)} is missing, the "
+                    + $"previous copy is sitting beside it as {Path.GetFileName(retired)} until then.",
+                exception);
+        }
+    }
+
+    /// <summary>Best-effort restore for <see cref="SwapFileIntoPlace"/>'s failure path: puts a
+    /// file <see cref="RetireFile"/> just retired back under its original name. Swallows its
+    /// own failure — the caller is already mid-throw and reports the original cause; a restore
+    /// that cannot complete leaves the file at <paramref name="retired"/> instead, which
+    /// <see cref="SweepRetiredFiles"/> reclaims once nothing holds it.</summary>
+    [SupportedOSPlatform("windows")]
+    private static void RestoreRetiredFile(string retired, string destination)
+    {
+        if (File.Exists(destination) || !File.Exists(retired))
+        {
+            return;
+        }
+
+        try
+        {
+            File.Move(retired, destination);
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            // Left at `retired` — reclaimed by a later SweepRetiredFiles once nothing holds it.
+        }
+    }
+
+    /// <summary>Renames a file Windows will not let <see cref="SwapFileIntoPlace"/> overwrite —
+    /// a running <c>h9k.exe</c> or <c>h9kd.exe</c> most likely — to a <c>.old</c> sibling right
+    /// beside it: the file-granularity version of <see cref="RetireDirectory"/>, permitted on
+    /// Windows for the identical reason a directory-level rename is not (see
+    /// <see cref="SwapIntoPlace"/>'s doc comment). Falls back to a uniquely suffixed name when
+    /// an earlier update's own <c>.old</c> file is itself still locked — the same double-lock
+    /// fallback <see cref="RetireDirectory"/> uses for a whole directory — and returns
+    /// whichever name it actually used, so the caller can restore it if the move that follows
+    /// fails.</summary>
+    [SupportedOSPlatform("windows")]
+    private static string RetireFile(string path)
+    {
+        string retired = path + ".old";
+        if (!File.Exists(retired))
+        {
+            File.Move(path, retired);
+            return retired;
+        }
+
+        string fallback = $"{retired}.{Path.GetRandomFileName()}";
+        File.Move(path, fallback);
+        AnsiConsole.MarkupLineInterpolated(
+            $"[dim]{retired} is still in use, so {Path.GetFileName(path)} was retired to {Path.GetFileName(fallback)} instead — it will be cleaned up on a future install or update once nothing holds it.[/]");
+        return fallback;
+    }
+
+    /// <summary>Deletes every <c>*.old</c> file <see cref="RetireFile"/> left behind (and any
+    /// uniquely suffixed <c>*.old.&lt;random&gt;</c> fallback from an earlier double lock),
+    /// recursively under <paramref name="bin"/> — the file-granularity sibling of
+    /// <see cref="SweepRetiredDirectories"/>, best-effort so a file still locked this run is
+    /// simply left for a later one.</summary>
+    [SupportedOSPlatform("windows")]
+    private static void SweepRetiredFiles(string bin)
+    {
+        if (!Directory.Exists(bin))
+        {
+            return;
+        }
+
+        foreach (string file in Directory.EnumerateFiles(bin, "*.old", SearchOption.AllDirectories))
+        {
+            TryDeleteFile(file);
+        }
+
+        // FileSystemName's Win32-expression translation rewrites a trailing ".*" into
+        // DOS_DOT, which also matches zero characters — so "*.old.*" matches a bare "*.old"
+        // too, the same quirk SweepRetiredDirectories documents and skips for "bin.old.*"
+        // one level up. Those are already handled by the loop above, so skip them here
+        // rather than let a still-locked one print its "still in use" warning twice.
+        foreach (string file in Directory.EnumerateFiles(bin, "*.old.*", SearchOption.AllDirectories))
+        {
+            if (file.EndsWith(".old", StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            TryDeleteFile(file);
+        }
+    }
+
+    /// <summary>Best-effort delete for a single file, the file-granularity sibling of
+    /// <see cref="TryDelete"/>.</summary>
+    [SupportedOSPlatform("windows")]
+    private static void TryDeleteFile(string file)
+    {
+        if (!File.Exists(file))
+        {
+            return;
+        }
+
+        try
+        {
+            File.Delete(file);
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            AnsiConsole.MarkupLineInterpolated(
+                $"[dim]Could not remove {file} yet (still in use) — it will be cleaned up on the next install or update.[/]");
+        }
     }
 
     /// <summary>Deletes <paramref name="retired"/> (<c>bin.old</c>) and any uniquely suffixed
