@@ -114,16 +114,15 @@ public sealed class RunSupervisorTests(PostgresFixture postgres) : IClassFixture
 
     /// <summary>
     /// h9k task deliver pushes the branch and appends AgentSessionCompleted on an interactive
-    /// run's stream, moving it to Verifying with no monitor and NodeId the sentinel Guid.Empty
-    /// (TaskAggregate.IsInteractiveClaim's own discriminator, deliberately never a real node's
-    /// id so it never counts against any node's concurrency ceiling). This proves the pickup
-    /// half of that hand-off: ResumeStrandedPipelinesAsync notices the stranded run and starts
-    /// driving it through the same pipeline a headless run's own completion would, even though
-    /// no node ever claimed it — a live daemon's own NodeId is deliberately not part of the
-    /// match for exactly that run.
+    /// run's stream with the delivering node's own id (Decisions Log #101), moving it to
+    /// Verifying with no monitor. This proves the pickup half of that hand-off:
+    /// ResumeStrandedPipelinesAsync notices the stranded run and starts driving it through the
+    /// same pipeline a headless run's own completion would — matched here by the delivering
+    /// node's own id, the ordinary <c>NodeId == nodeId</c> branch, exactly as
+    /// <c>NodeLoad</c> counts it against that node's own ceiling from this point on.
     /// </summary>
     [Fact]
-    public async Task Resume_stranded_pipelines_adopts_an_interactively_delivered_run_regardless_of_node()
+    public async Task Resume_stranded_pipelines_adopts_an_interactively_delivered_run_by_its_delivering_node()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromSeconds(30));
         using DocumentStore store = NewStore();
@@ -147,7 +146,8 @@ public sealed class RunSupervisorTests(PostgresFixture postgres) : IClassFixture
             session.Events.StartStream<RunAggregate>(runId, new RunDispatched(
                 runId, taskId, Guid.Empty, node.OwnerId, claimed.LeaseGeneration, DomainId.New(),
                 "/tmp/wt-interactive-test", "task/interactive-test", ExecutorMode.Subscription, Now));
-            session.Events.Append(runId, new AgentSessionCompleted(runId, Now));
+            // The production shape: h9k task deliver stamps its own node id, not the sentinel.
+            session.Events.Append(runId, new AgentSessionCompleted(runId, Now, DeliveredByNodeId: node.NodeId));
             await session.SaveChangesAsync(cts.Token);
         }
 
@@ -159,9 +159,60 @@ public sealed class RunSupervisorTests(PostgresFixture postgres) : IClassFixture
         // Daemon_restart_mid_run_adopts_the_orphan_and_completes_it above): this node identity
         // is shared across the class's tests, so the sweep may also pick up another test's own
         // stranded Verifying/UnderReview run in the same pass. What this test pins down is that
-        // OUR run — NodeId the interactive sentinel, never this node's own id — was among them.
+        // OUR run — now carrying this node's own real id, not the interactive sentinel — was
+        // among them, matched by ordinary node ownership.
         supervisor.ActiveCount.Should().BeGreaterThanOrEqualTo(1,
-            "the run's NodeId is the interactive sentinel rather than this node's own id, and it is still adopted");
+            "delivery stamped this node's own id on the run, so the ordinary NodeId == nodeId match picks it up");
+
+        await using IQuerySession query = store.QuerySession();
+        RunDetails details = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
+        details.NodeId.Should().Be(node.NodeId,
+            "the delivering node's id replaces the interactive sentinel from AgentSessionCompleted onward");
+    }
+
+    /// <summary>
+    /// A run delivered by a build that predates the AgentSessionCompleted.DeliveredByNodeId
+    /// flip (Decisions Log #101) never had its NodeId reassigned, so its stream still replays
+    /// with the interactive sentinel forever. The NodeId == Guid.Empty widening in the query
+    /// stays only for this legacy shape — any live daemon must still be able to pick such a run
+    /// up, since no node's own id will ever match it.
+    /// </summary>
+    [Fact]
+    public async Task Resume_stranded_pipelines_still_adopts_a_pre_fix_delivered_run_with_no_node_id()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromSeconds(30));
+        using DocumentStore store = NewStore();
+
+        NodeContext node = new();
+        await node.InitializeAsync(store, cts.Token);
+
+        Guid taskId = DomainId.New();
+        Guid runId = DomainId.New();
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            TaskAggregate task = new();
+            (task, object[] lifecycle) = TaskSeed.Start(
+                TaskDecider.Add(taskId, DomainId.New(), "Legacy interactive delivery test task", ["it completes"],
+                    TaskType.Chore, null, null, null, Now, node.OwnerId),
+                node.OwnerId, Now);
+            TaskClaimed claimed = TaskDecider.ClaimInteractively(task, node.OwnerId, runId, Now);
+            session.Events.StartStream<TaskAggregate>(taskId, [.. lifecycle, claimed]);
+            // Deliberately no TaskLease: an interactive claim holds no liveness lease.
+
+            session.Events.StartStream<RunAggregate>(runId, new RunDispatched(
+                runId, taskId, Guid.Empty, node.OwnerId, claimed.LeaseGeneration, DomainId.New(),
+                "/tmp/wt-interactive-test-legacy", "task/interactive-test-legacy", ExecutorMode.Subscription, Now));
+            // The pre-fix shape: no DeliveredByNodeId, so NodeId replays as the sentinel forever.
+            session.Events.Append(runId, new AgentSessionCompleted(runId, Now));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        RunSupervisor supervisor = NewSupervisor(store, node);
+
+        await supervisor.ResumeStrandedPipelinesAsync(cts.Token);
+
+        supervisor.ActiveCount.Should().BeGreaterThanOrEqualTo(1,
+            "the run's NodeId is still the interactive sentinel, and the Guid.Empty widening still picks it up");
     }
 
     [Fact]

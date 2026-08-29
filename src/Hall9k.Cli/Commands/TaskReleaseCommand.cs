@@ -94,9 +94,9 @@ public sealed class TaskReleaseCommand : Hall9kAsyncCommand<TaskReleaseCommand.S
             {
                 throw new DomainConflictException(
                     $"Task {taskId}'s worktree has uncommitted file(s): {string.Join(", ", modified)} — "
-                    + "release is only for a claim nothing has been done in yet. "
-                    + $"h9k task handback {taskId} to hand the work to a headless agent, or "
-                    + $"h9k task deliver {taskId} to submit it yourself.");
+                    + "release is only for a claim nothing has been done in yet, and h9k task handback and "
+                    + "h9k task deliver both refuse the same uncommitted files for the same reason. Commit or "
+                    + "discard them first, then release, handback, or deliver as the work warrants.");
             }
 
             // Release is for an untouched claim only (AGENTS.md's own command surface says so):

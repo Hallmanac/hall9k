@@ -118,6 +118,31 @@ public sealed class NodeLoadTests
     }
 
     [Fact]
+    public void An_interactive_claim_holds_no_slot_until_delivery_stamps_its_node()
+    {
+        // h9k task work claims a task with no lease at all (Decisions Log #101), and its run
+        // carries the Guid.Empty sentinel NodeId (TaskAggregate.IsInteractiveClaim's own
+        // discriminator) until h9k task deliver appends AgentSessionCompleted with the
+        // delivering node's own id. Before that moment the run must cost nothing against any
+        // node's ceiling — an operator merely holding a claim is not a resident session.
+        Guid taskId = DomainId.New();
+        RunListItem beforeDelivery = Run(taskId, RunState.Running);
+        beforeDelivery.NodeId = Guid.Empty;
+
+        NodeLoad.LiveSlots(ThisNode, [], [beforeDelivery]).Should().BeEmpty(
+            "an interactive claim has no lease, and its run carries no node's id until delivery");
+
+        // Delivery is the same run reaching Verifying with this node's own id stamped on it
+        // (RunDetails.Apply(AgentSessionCompleted), Decisions Log #101's own fix — the ceiling
+        // bug the prior cycle found).
+        RunListItem afterDelivery = Run(taskId, RunState.Verifying);
+
+        NodeLoad.LiveSlots(ThisNode, [], [afterDelivery]).Should().ContainSingle()
+            .Which.Should().Be(new LiveSlot(taskId, afterDelivery.Id),
+                "delivery stamps the delivering node's own id, so its ceiling now counts the run");
+    }
+
+    [Fact]
     public void Another_nodes_work_is_another_nodes_memory()
     {
         Guid theirs = DomainId.New();

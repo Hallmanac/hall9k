@@ -22,9 +22,14 @@ DateTimeOffset lastCancelKeyPressAt = DateTimeOffset.MinValue;
 // a lifetime counter that never resets treated a second, unrelated press an hour later as the
 // same escalation: it killed h9k while the still-attached child survived the very keystroke that
 // killed its parent, silently leaving InteractiveSessionStarted unpaired (independent pre-PR
-// review, cycle 1). A few seconds is enough to catch a deliberate double-press without punishing
-// two ordinary interrupts spaced across a long session.
-TimeSpan escalationWindow = TimeSpan.FromSeconds(3);
+// review, cycle 1). Long enough is what matters here, not short: a command blocked in a
+// synchronous prompt that observes no token (h9k task deliver's handoff prompt, Spectre's
+// AnsiConsole.Prompt) leaves an operator pressing Ctrl-C, waiting to see whether it took, then
+// pressing again — a retry cadence of several seconds is the ordinary shape of that, not a
+// deliberate rapid double-press, so a three-second window silently swallowed every press and
+// never escalated (independent pre-PR review, cycle 2). Half a minute is short next to the "an
+// hour later" gap the window exists to catch, and long next to any realistic wait-and-retry.
+TimeSpan escalationWindow = TimeSpan.FromSeconds(30);
 Console.CancelKeyPress += (_, e) =>
 {
     DateTimeOffset now = DateTimeOffset.UtcNow;

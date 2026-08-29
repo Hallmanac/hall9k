@@ -187,13 +187,19 @@ public sealed class RunSupervisor(
     /// Verifying, then rings the doorbell). Both land here rather than in
     /// <see cref="AdoptOrphansAsync"/> because that method runs once, at startup — this sweep
     /// runs every dispatch cycle, which is what lets a live daemon notice either case without a
-    /// restart. An interactive run's NodeId is the sentinel <see cref="Guid.Empty"/>
-    /// (<c>TaskAggregate.IsInteractiveClaim</c>'s own discriminator) rather than this node's own
-    /// id — deliberately, so it never counts against this node's concurrency ceiling
-    /// (<c>NodeLoad</c> measures strictly by <c>NodeId == nodeId</c>) — so it is matched here by
-    /// that sentinel instead of by node ownership: any live daemon watching the shared database
-    /// picks it up, which is the only sense "this node's own work" can have for a claim no node
-    /// ever made. Runs already being driven are in the monitor set and are never double-entered.
+    /// restart. <see cref="RunState.Verifying"/> versus <see cref="RunState.UnderReview"/> is
+    /// what tells the two apart below, the same discriminator <see cref="ResumePipeline"/> already
+    /// uses to decide whether to verify-then-review or just review. An interactive run's NodeId
+    /// is the sentinel <see cref="Guid.Empty"/> (<c>TaskAggregate.IsInteractiveClaim</c>'s own
+    /// discriminator) only up to the point it is delivered: <c>h9k task deliver</c> now records
+    /// the delivering node's own id on <c>AgentSessionCompleted</c>, so <c>NodeLoad</c> counts it
+    /// against that node's concurrency ceiling from Verifying onward (Decisions Log #101's own
+    /// fix — a delivered run must count, or the ceiling undercounts). The <c>NodeId == Guid.Empty</c>
+    /// widening below still matters for a run delivered by a build that predates that fix, whose
+    /// stream never carries the flip and so replays with NodeId still empty forever; going forward
+    /// it is otherwise dead, since every run reaching Verifying or UnderReview has already been
+    /// delivered and therefore already carries a real node id. Runs already being driven are in
+    /// the monitor set and are never double-entered.
     /// </summary>
     public async Task ResumeStrandedPipelinesAsync(CancellationToken cancellationToken)
     {
@@ -208,7 +214,7 @@ public sealed class RunSupervisor(
         foreach (RunDetails run in stranded.Where(r => !_monitors.ContainsKey(r.Id)))
         {
             logger.LogInformation(
-                run.NodeId == Guid.Empty
+                run.State == RunState.Verifying
                     ? "Run {RunId} is {State} with no monitor (interactive delivery) — resuming the pipeline"
                     : "Run {RunId} is {State} with no monitor (review park resolved) — resuming the pipeline",
                 run.Id, run.State.Value);

@@ -40,11 +40,15 @@ public sealed class TokenBudgetRetryEngine(
     ILogger<TokenBudgetRetryEngine> logger)
 {
     /// <summary>
-    /// Every budget-parked run this node owns, retried once, plus any interactively delivered
-    /// run (NodeId == Guid.Empty, TaskAggregate.IsInteractiveClaim's discriminator) parked mid
-    /// review loop — the same widening RunSupervisor.ResumeStrandedPipelinesAsync applies,
-    /// since a node-only filter would otherwise park such a run permanently: no node's own id
-    /// ever matches it (independent pre-PR review, cycle 2). Returns how many actually resumed.
+    /// Every budget-parked run this node owns, retried once — the same widening
+    /// RunSupervisor.ResumeStrandedPipelinesAsync applies, so NodeId == Guid.Empty is included
+    /// alongside this node's own id. h9k task deliver now records the delivering node's own id
+    /// on AgentSessionCompleted (Decisions Log #101), so an interactively delivered run parked
+    /// mid review loop already carries a real node id by the time it can reach BudgetParked; the
+    /// widening here only still matters for a run delivered by a build that predates that fix,
+    /// whose stream never carries the flip and so replays with NodeId still empty forever — a
+    /// node-only filter would otherwise park such a legacy run permanently (independent pre-PR
+    /// review, cycle 2). Returns how many actually resumed.
     /// </summary>
     public async Task<int> RetryParkedRunsAsync(CancellationToken cancellationToken)
     {
