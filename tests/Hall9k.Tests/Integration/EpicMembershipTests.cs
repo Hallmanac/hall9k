@@ -246,4 +246,39 @@ public sealed class EpicMembershipTests(PostgresFixture postgres) : IClassFixtur
                 .WithMessage("*Open is the only state a task can join*");
         }
     }
+
+    [Fact]
+    public async Task An_empty_fragment_never_vacuously_matches_the_only_epic()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        using DocumentStore store = DocumentStore.For(opts =>
+        {
+            opts.Connection(postgres.ConnectionString);
+            opts.ConfigureHall9k(AutoCreate.All);
+        });
+
+        Guid ownerId = DomainId.New();
+        Guid projectId = DomainId.New();
+        Guid epicId = DomainId.New();
+
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            session.Events.StartStream<EpicAggregate>(
+                epicId, EpicDecider.Add(epicId, projectId, "Interactive mode", Now, ownerId));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        await using (IQuerySession session = store.QuerySession())
+        {
+            Func<Task> resolveEmpty = () => EpicIdResolver.ResolveForMembershipAsync(
+                session, "", projectId, cts.Token);
+            Func<Task> resolveDashesOnly = () => EpicIdResolver.ResolveForMembershipAsync(
+                session, "-", projectId, cts.Token);
+
+            await resolveEmpty.Should().ThrowAsync<DomainNotFoundException>()
+                .WithMessage("*No epic matches*");
+            await resolveDashesOnly.Should().ThrowAsync<DomainNotFoundException>()
+                .WithMessage("*No epic matches*");
+        }
+    }
 }
