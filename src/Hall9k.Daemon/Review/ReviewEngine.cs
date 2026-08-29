@@ -1022,8 +1022,10 @@ public sealed class ReviewEngine(
     /// <summary>
     /// Records one track's findings and verdict, and — when it was the cycle's last pass —
     /// concludes the cycle: every track decides whether it runs again, out-of-scope non-Highs
-    /// are routed to draft bug tasks, the findings merge into one document, and the milestones
-    /// land in one transaction so the pass, the cycle, and the tracks can never disagree.
+    /// are routed — a Medium to a draft bug task of its own, a Low folded into the project's
+    /// standing sweep (Decisions Log #87, #99) — the findings merge into one document, and the
+    /// milestones land in one transaction so the pass, the cycle, and the tracks can never
+    /// disagree.
     /// </summary>
     private async Task RecordReviewPassAsync(
         ReviewContext context, RunAggregate run, ReviewPassSession pass, AgentResult result,
