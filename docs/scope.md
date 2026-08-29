@@ -127,9 +127,11 @@ Decisions Log #3 for why neither is a service).
 `h9k uninstall` reverses the install without reversing the work: it stops a running daemon,
 unregisters autostart, removes the PATH link, and deletes only what `h9k install` itself wrote
 under `~/.hall9k` (bin/, the skill set, the Postgres compose file, the daemon's log and pid
-files) — never a registered project's home, `config.json` (an operator or `h9k doctor` writes
-that, never install), credentials, or the global idea/run fallback directories, which are real
-work living as siblings of those files, not the install. The
+files) — never a registered project's home, `config.json` (an operator, `h9k install` itself
+when nothing was configured yet, or `h9k doctor`'s start-offer may have written it, and
+uninstall keeps it regardless, since it is the reconnect path a later install needs), credentials,
+or the global idea/run fallback directories, which are real work living as siblings of those
+files, not the install. The
 `hall9k-postgres` Docker container is only ever stopped — its data volume is never touched,
 because the data lives in Docker rather than in the home this command trims, and a later
 `h9k install` reconnects to it. `--purge-data` is the one path that destroys the container and its
