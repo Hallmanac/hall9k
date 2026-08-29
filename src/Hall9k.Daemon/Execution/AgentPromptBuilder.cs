@@ -2294,9 +2294,12 @@ public static class AgentPromptBuilder
         }
 
         prompt.AppendLine($"- `{ProjectHomePaths.SkillsDirectory(home)}` — this project's skill docs.");
-        prompt.AppendLine($"- `{ProjectHomePaths.TasksDirectory(home)}` and "
-            + $"`{ProjectHomePaths.IdeasDirectory(home)}` — where its tasks and ideas render once that's "
-            + "built (backlog 48); empty today.");
+        prompt.AppendLine($"- `{ProjectHomePaths.TasksDirectory(home)}` — one directory per task, holding "
+            + "`task.md` and its `workspace/`; a closed-out or abandoned task's directory moves under "
+            + "`_archive/` inside it. Empty until one exists here.");
+        prompt.AppendLine($"- `{ProjectHomePaths.IdeasDirectory(home)}` — one directory per idea, holding "
+            + "`idea.md`; a `workspace/` sibling is only present when the idea's discovery workspace "
+            + "lives under this home rather than the platform-global location. Empty until one exists here.");
 
         // Whether repo/ is actually populated is a filesystem fact, not a fact about RepositoryPath
         // alone (same test ProjectAgentsDocument.Render uses): `h9k project init --keep-repo-path`
