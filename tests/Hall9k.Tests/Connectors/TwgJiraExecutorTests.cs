@@ -387,6 +387,37 @@ public sealed class TwgJiraExecutorTests
         exception.Message.Should().Contain("PROJ-999").And.Contain(TwgJiraExecutor.Marker(taskId));
     }
 
+    /// <summary>
+    /// The sibling of the defect above, one call earlier: the marker search's own answer — not a
+    /// candidate's confirmation read — can be left unreadable by the same reaped-temp-file failure,
+    /// and that must refuse rather than fall back to the raw YAML envelope, which fails to parse as
+    /// JSON and reads as zero candidates — the affirmative permission to create a duplicate
+    /// (independent pre-PR review, conformance lens, cycle 8).
+    /// </summary>
+    [Fact]
+    public async Task A_marker_search_whose_own_answer_cannot_be_confirmed_read_refuses_rather_than_guesses()
+    {
+        Guid taskId = Guid.NewGuid();
+        string missingFile = Path.Combine(Path.GetTempPath(), $"hall9k-reaped-{Guid.NewGuid():N}.json");
+        string envelope =
+            $"""
+            output_files:
+              stdout: "{missingFile}"
+              compact: "{missingFile}.compact"
+            command: "jira.workitem.query"
+            agent_output:
+              summary: "stats"
+            ---END---
+            """;
+        RecordingProcessRunner twg = RecordingProcessRunner.Succeeding(envelope);
+        TwgJiraExecutor executor = new(twg.Runner);
+
+        Func<Task> findByMarker = () => executor.FindByMarkerAsync(taskId, "/repo", CancellationToken.None);
+
+        TwgExecutionException exception = (await findByMarker.Should().ThrowAsync<TwgExecutionException>()).Which;
+        exception.Message.Should().Contain(TwgJiraExecutor.Marker(taskId));
+    }
+
     [Fact]
     public async Task An_update_writes_the_fields_and_then_verifies_by_reading_back()
     {
