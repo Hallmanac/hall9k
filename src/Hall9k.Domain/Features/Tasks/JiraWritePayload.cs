@@ -81,6 +81,13 @@ public sealed record JiraWritePayload(
                     + "read; both belong inside it.");
             }
         }
+        else if (operation == JiraWriteOperation.Update && !HasAnyField(Fields))
+        {
+            throw new DomainValidationException(
+                "An update write needs at least one field inside \"fields\" (for example \"summary\" or "
+                + "\"description\") — a payload with none would change nothing, so it is refused here "
+                + "instead of being recorded as an intent and shelled out to twg for a no-op.");
+        }
 
         if (Format.IsNotBlank() && !AllowedFormats.Contains(Format.Trim().ToLowerInvariant()))
         {
@@ -127,6 +134,25 @@ public sealed record JiraWritePayload(
         foreach ((string key, string value) in fields)
         {
             if (string.Equals(key, name, StringComparison.OrdinalIgnoreCase) && DecodeFieldText(value).IsNotBlank())
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>Whether any field at all carries actual content, the same non-blank test <see cref="HasField"/> applies to one field by name.</summary>
+    private static bool HasAnyField(IReadOnlyDictionary<string, string>? fields)
+    {
+        if (fields is null)
+        {
+            return false;
+        }
+
+        foreach (string value in fields.Values)
+        {
+            if (DecodeFieldText(value).IsNotBlank())
             {
                 return true;
             }
