@@ -55,9 +55,23 @@ public sealed class LogsCommand : Hall9kAsyncCommand<LogsCommand.Settings>
         string streamFile = RunPaths.StreamFile(RunPaths.ResolveCurrentDirectory(run.RunDirectory));
         if (!File.Exists(streamFile))
         {
-            throw new DomainNotFoundException(
-                $"No stream file for run {run.Id} on this machine ({streamFile}). " +
-                "It may have run on another node.");
+            // An attached interactive session (h9k task work) never writes stream.jsonl on any
+            // machine — it runs in the operator's own terminal, not through ClaudeExecutor's
+            // redirected --output-format stream-json — so InteractiveSessionCount (recorded once
+            // and never cleared, unlike NodeId, which delivery can reassign) is what actually
+            // distinguishes that from a headless run whose transcript merely lives on a node this
+            // one cannot read (conformance review, cycle 4: the other-node hypothesis is false by
+            // construction for a run that was, or still is, an interactive claim). Loaded only
+            // here, on the single selected run, rather than eagerly on every run on the task —
+            // RunDetails is the heavyweight projection and this command otherwise never needs it.
+            int interactiveSessionCount = (await session.LoadAsync<RunDetails>(run.Id, cancellationToken))
+                ?.InteractiveSessionCount ?? 0;
+            throw new DomainNotFoundException(interactiveSessionCount > 0
+                ? $"No stream file for run {run.Id} ({streamFile}). It was worked interactively " +
+                  "(h9k task work) — an attached session runs in the operator's own terminal and is " +
+                  "never recorded to a transcript file. h9k task show shows its status instead."
+                : $"No stream file for run {run.Id} on this machine ({streamFile}). " +
+                  "It may have run on another node.");
         }
 
         AnsiConsole.MarkupLine(
