@@ -132,6 +132,24 @@ public sealed class TaskWorkCommand : Hall9kAsyncCommand<TaskWorkCommand.Setting
             ?? throw new DomainConflictException(
                 $"Task {taskId}'s run {runId} no longer has a record — h9k task release {taskId} to give the "
                 + "claim back to the dispatch queue.");
+        // Mirrors ReenterAsync's own guard: everything above (the worktree cut, the
+        // blocker-context load, the skill discovery WorkPromptBuilder.Build runs, and the
+        // settings-file write) takes long enough for a delivery, release, handback, or abandon
+        // running concurrently in another terminal to land in between — each of which moves this
+        // run past Dispatched/Running — and liveness alone does not catch that, since a run just
+        // handed to the standard pipeline reads as having no live attached session either
+        // (independent pre-PR review, cycle 7). Launching into that worktree anyway would double-book
+        // it against whatever the other command already started, and InteractiveSessionStarted's
+        // own projection would reset the run's State back to Running underneath the pipeline stage
+        // that now owns it.
+        if (currentRun.State != RunState.Dispatched && currentRun.State != RunState.Running)
+        {
+            throw new DomainConflictException(
+                $"Task {taskId}'s run {runId} is already {currentRun.State.Value} — it was handed off to the "
+                + "standard pipeline (delivered, handed back, or otherwise) while this session was preparing to "
+                + $"launch. h9k task show {taskId} to see where it stands.");
+        }
+
         InteractiveSessionLiveness.EnsureNotAttachedElsewhere(currentRun, taskId, "work", settings.Force, quiet: crossMachineNoticeShown);
 
         AnsiConsole.MarkupLineInterpolated($"[dim]Worktree: {worktreePath}[/]");
