@@ -434,10 +434,15 @@ public sealed class TwgJiraExecutor(ProcessRunner? runner = null, Uri? site = nu
         // an update's own idempotent re-apply).
         catch (TwgExecutionException exception) when (writeAlreadyRan && exception.Kind != TwgFailureKind.AuthExpired)
         {
+            // exception.Message is twg's own text and often already ends in a period, so this
+            // appends one only when it doesn't — an unconditional append doubled the punctuation
+            // for most messages (independent pre-PR review, cycle 3).
+            string detail = exception.Message.TrimEnd();
+            string separator = detail.Length > 0 && detail[^1] is '.' or '!' or '?' ? " " : ". ";
             throw new TwgExecutionException(
                 TwgFailureKind.Other,
                 $"twg reported {issueKey} {verb}, but reading it back afterward to verify hit its own "
-                + $"failure: {exception.Message}. That describes only the read-back call — the {verb} call "
+                + $"failure: {detail}{separator}That describes only the read-back call — the {verb} call "
                 + "itself already succeeded, so do not record this as a refusal of the write. "
                 + (confirmsExistenceOnly
                     ? "Check the board before writing again."
