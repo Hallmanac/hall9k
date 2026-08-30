@@ -484,6 +484,88 @@ public sealed class TwgJiraExecutorTests
         }
     }
 
+    /// <summary>
+    /// A fourth way the marker search's own answer can be unconfirmable, distinct from the
+    /// malformed-JSON case above: the temp file exists and the read itself succeeds, but what it
+    /// holds is blank — whitespace or zero bytes, the shape a reaper leaves after truncating a
+    /// write mid-flight rather than after removing the file outright. This used to short-circuit
+    /// before the JSON parse ever ran and so never cleared <c>confirmedReadable</c>, reporting a
+    /// blank read as a confirmed-empty answer and letting the dedup gate treat it as "no marker"
+    /// (independent pre-PR review, conformance and adversarial lenses, cycle 8).
+    /// </summary>
+    [Fact]
+    public async Task A_marker_search_whose_own_answer_reads_back_blank_refuses_rather_than_guesses()
+    {
+        Guid taskId = Guid.NewGuid();
+        string file = Path.GetTempFileName();
+        try
+        {
+            await File.WriteAllTextAsync(file, "   ");
+            string envelope =
+                $"""
+                output_files:
+                  stdout: "{file}"
+                  compact: "{file}.compact"
+                command: "jira.workitem.query"
+                agent_output:
+                  summary: "stats"
+                ---END---
+                """;
+            RecordingProcessRunner twg = RecordingProcessRunner.Succeeding(envelope);
+            TwgJiraExecutor executor = new(twg.Runner);
+
+            Func<Task> findByMarker = () => executor.FindByMarkerAsync(taskId, "/repo", CancellationToken.None);
+
+            TwgExecutionException exception = (await findByMarker.Should().ThrowAsync<TwgExecutionException>()).Which;
+            exception.Message.Should().Contain(TwgJiraExecutor.Marker(taskId));
+        }
+        finally
+        {
+            File.Delete(file);
+        }
+    }
+
+    /// <summary>
+    /// The sibling of the defect above, one call later: a dedup hit's own confirmation read (the
+    /// per-candidate <c>get</c>, not the search itself) can find its temp file blank in the same
+    /// reaped-mid-flight shape, and that must refuse rather than read the blank payload as "does
+    /// not carry the marker" (independent pre-PR review, conformance and adversarial lenses, cycle
+    /// 8).
+    /// </summary>
+    [Fact]
+    public async Task A_dedup_hit_whose_own_description_reads_back_blank_refuses_rather_than_guesses()
+    {
+        Guid taskId = Guid.NewGuid();
+        string file = Path.GetTempFileName();
+        try
+        {
+            await File.WriteAllTextAsync(file, string.Empty);
+            string envelope =
+                $"""
+                output_files:
+                  stdout: "{file}"
+                  compact: "{file}.compact"
+                command: "jira.workitem.get"
+                agent_output:
+                  summary: "stats"
+                ---END---
+                """;
+            RecordingProcessRunner twg = RecordingProcessRunner.RespondingTo(arguments => arguments.Contains("get")
+                ? new ProcessResult(0, envelope, string.Empty)
+                : new ProcessResult(0, """[{"key":"PROJ-999"}]""", string.Empty));
+            TwgJiraExecutor executor = new(twg.Runner);
+
+            Func<Task> findByMarker = () => executor.FindByMarkerAsync(taskId, "/repo", CancellationToken.None);
+
+            TwgExecutionException exception = (await findByMarker.Should().ThrowAsync<TwgExecutionException>()).Which;
+            exception.Message.Should().Contain("PROJ-999").And.Contain(TwgJiraExecutor.Marker(taskId));
+        }
+        finally
+        {
+            File.Delete(file);
+        }
+    }
+
     [Fact]
     public async Task An_update_writes_the_fields_and_then_verifies_by_reading_back()
     {
