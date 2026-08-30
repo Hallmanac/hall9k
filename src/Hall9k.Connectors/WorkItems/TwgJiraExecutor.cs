@@ -152,6 +152,17 @@ public sealed class TwgJiraExecutor(ProcessRunner? runner = null, Uri? site = nu
     /// (independent pre-PR review, adversarial lens, cycle 1: a first-hit-only check let a
     /// token-overlapping card that sorted ahead of the real one mask an existing card and file a
     /// duplicate).
+    /// <para>
+    /// A page that comes back exactly full (<see cref="MaxMarkerSearchCandidates"/> keys, the most
+    /// <c>--limit</c> would ever let through) is not trusted as an exhaustive negative even once
+    /// every one of those candidates is confirmed clear: the query was capped at that many results,
+    /// so the marker-carrying card itself could be sitting just past the cut, unseen and
+    /// unconfirmed. This refuses there instead of returning null, the same "an unconfirmable check
+    /// refuses rather than guesses" doctrine <see cref="CandidateCarriesMarkerAsync"/> already
+    /// applies to a single unreadable candidate (independent pre-PR review, adversarial lens, cycle
+    /// 4: a full page silently treated as exhaustive let a marker-carrying card ranked eleventh or
+    /// later go unconfirmed and file a duplicate).
+    /// </para>
     /// </summary>
     public async Task<string?> FindByMarkerAsync(Guid taskId, string workingDirectory, CancellationToken cancellationToken)
     {
@@ -159,12 +170,25 @@ public sealed class TwgJiraExecutor(ProcessRunner? runner = null, Uri? site = nu
             ["jira", "workitem", "query", "--jql", $"text ~ \"{Marker(taskId)}\"", "--limit",
              MaxMarkerSearchCandidates.ToString(), "--output", "json", "--output-summary", "stats"],
             workingDirectory, cancellationToken);
-        foreach (string candidate in ExtractAllKeys(result.StandardOutput).Take(MaxMarkerSearchCandidates))
+        IReadOnlyList<string> candidates = ExtractAllKeys(result.StandardOutput);
+        foreach (string candidate in candidates.Take(MaxMarkerSearchCandidates))
         {
             if (await CandidateCarriesMarkerAsync(candidate, taskId, workingDirectory, cancellationToken))
             {
                 return candidate;
             }
+        }
+
+        if (candidates.Count >= MaxMarkerSearchCandidates)
+        {
+            throw new TwgExecutionException(
+                TwgFailureKind.Other,
+                $"The marker search for {Marker(taskId)} came back with a full page of "
+                + $"{MaxMarkerSearchCandidates} candidates, none of which carried the marker — but the "
+                + "search itself was capped at that many results, so a marker-carrying card ranked "
+                + "beyond the page could exist and never got checked. Refusing to create on an "
+                + $"unconfirmed dedup check; check the board by hand for {Marker(taskId)} and, if it is "
+                + "not there, run the write again.");
         }
 
         return null;

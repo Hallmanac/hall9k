@@ -322,6 +322,37 @@ public sealed class TwgJiraExecutorTests
     }
 
     /// <summary>
+    /// The full-page defect this fixes (independent pre-PR review, adversarial lens, cycle 4): the
+    /// query is capped at <c>MaxMarkerSearchCandidates</c> (10) candidates, and a search that comes
+    /// back exactly full — every one of the 10 confirmed clear — must not read as "no marker
+    /// anywhere", because the real marker-carrying card could be ranked eleventh and never reached
+    /// the search at all. This must refuse rather than return null, the same "an unconfirmable
+    /// check refuses rather than guesses" doctrine already applied to a single unreadable
+    /// candidate.
+    /// </summary>
+    [Fact]
+    public async Task A_full_page_of_non_matching_candidates_refuses_rather_than_reads_as_no_marker()
+    {
+        Guid taskId = Guid.NewGuid();
+        Guid otherTaskId = Guid.NewGuid();
+        string[] keys = Enumerable.Range(1, 10).Select(index => $"PROJ-{index}").ToArray();
+        string queryAnswer = "[" + string.Join(",", keys.Select(key => $"{{\"key\":\"{key}\"}}")) + "]";
+        RecordingProcessRunner twg = RecordingProcessRunner.RespondingTo(arguments => arguments.Contains("get")
+            ? new ProcessResult(
+                0,
+                RealisticDescriptionGetAnswer(
+                    keys.First(key => arguments.Contains(key)), TwgJiraExecutor.Marker(otherTaskId)),
+                string.Empty)
+            : new ProcessResult(0, queryAnswer, string.Empty));
+        TwgJiraExecutor executor = new(twg.Runner);
+
+        Func<Task> findByMarker = () => executor.FindByMarkerAsync(taskId, "/repo", CancellationToken.None);
+
+        TwgExecutionException exception = (await findByMarker.Should().ThrowAsync<TwgExecutionException>()).Which;
+        exception.Message.Should().Contain(TwgJiraExecutor.Marker(taskId));
+    }
+
+    /// <summary>
     /// A dedup hit's own confirmation read can find no readable payload at all — twg's own temp
     /// file for that <c>get</c> reaped or unreadable between the call and this check — and that
     /// must refuse rather than silently read as "no marker", which would create a second card on
