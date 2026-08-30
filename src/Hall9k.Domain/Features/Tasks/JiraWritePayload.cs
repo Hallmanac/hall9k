@@ -55,12 +55,31 @@ public sealed record JiraWritePayload(
     /// </summary>
     public void Validate(JiraWriteOperation operation)
     {
+        if (Fields is not null)
+        {
+            foreach (string key in Fields.Keys)
+            {
+                if (ForbiddenFieldKeys.Contains(key.Trim().ToLowerInvariant()))
+                {
+                    throw new DomainValidationException(
+                        $"The '{key}' field moves a card between workflow states, and the executor refuses "
+                        + "a transition or a close through a field write regardless of who composed it: "
+                        + "which state a card belongs in is this team's own workflow, done in Jira "
+                        + "directly — never a write hall9k performs on anyone's behalf.");
+                }
+            }
+        }
+
         if (operation == JiraWriteOperation.Comment)
         {
             if (Comment.IsBlank())
             {
                 throw new DomainValidationException("A comment write needs comment text.");
             }
+
+            RefuseUnusedMember(operation, "workItemType", WorkItemType.IsNotBlank());
+            RefuseUnusedMember(operation, "fields", HasAnyField(Fields));
+            RefuseUnusedMember(operation, "projectKey", ProjectKey.IsNotBlank());
         }
         else if (operation == JiraWriteOperation.Create)
         {
@@ -80,13 +99,22 @@ public sealed record JiraWritePayload(
                     + "even recorded. A top-level \"summary\" or \"description\" outside \"fields\" is not "
                     + "read; both belong inside it.");
             }
+
+            RefuseUnusedMember(operation, "comment", Comment.IsNotBlank());
         }
-        else if (operation == JiraWriteOperation.Update && !HasAnyField(Fields))
+        else if (operation == JiraWriteOperation.Update)
         {
-            throw new DomainValidationException(
-                "An update write needs at least one field inside \"fields\" (for example \"summary\" or "
-                + "\"description\") — a payload with none would change nothing, so it is refused here "
-                + "instead of being recorded as an intent and shelled out to twg for a no-op.");
+            if (!HasAnyField(Fields))
+            {
+                throw new DomainValidationException(
+                    "An update write needs at least one field inside \"fields\" (for example \"summary\" "
+                    + "or \"description\") — a payload with none would change nothing, so it is refused "
+                    + "here instead of being recorded as an intent and shelled out to twg for a no-op.");
+            }
+
+            RefuseUnusedMember(operation, "workItemType", WorkItemType.IsNotBlank());
+            RefuseUnusedMember(operation, "comment", Comment.IsNotBlank());
+            RefuseUnusedMember(operation, "projectKey", ProjectKey.IsNotBlank());
         }
 
         if (Format.IsNotBlank() && !AllowedFormats.Contains(Format.Trim().ToLowerInvariant()))
@@ -95,23 +123,30 @@ public sealed record JiraWritePayload(
                 $"\"{Format}\" is not a text format twg accepts for a description or a comment — use "
                 + "\"markdown\", \"plain\", or \"html\" (or leave it out, which defaults to markdown).");
         }
+    }
 
-        if (Fields is null)
+    /// <summary>
+    /// Refuses a member the named operation's own executor call never reads —
+    /// <see cref="Hall9k.Connectors.WorkItems.TwgJiraExecutor.CreateAsync"/>,
+    /// <see cref="Hall9k.Connectors.WorkItems.TwgJiraExecutor.UpdateAsync"/> and
+    /// <see cref="Hall9k.Connectors.WorkItems.TwgJiraExecutor.CommentAsync"/> each pull only the
+    /// members their own write actually sends to twg, so a payload carrying anything else would
+    /// have that content silently discarded while the recorded intent and outcome still claimed it
+    /// was part of the write (independent pre-PR review, conformance lens, cycle 12): an unobserved
+    /// fact filled in as if it had been observed, the audit-trail rule this file's own class
+    /// comment already exists to avoid.
+    /// </summary>
+    private static void RefuseUnusedMember(JiraWriteOperation operation, string memberName, bool present)
+    {
+        if (!present)
         {
             return;
         }
 
-        foreach (string key in Fields.Keys)
-        {
-            if (ForbiddenFieldKeys.Contains(key.Trim().ToLowerInvariant()))
-            {
-                throw new DomainValidationException(
-                    $"The '{key}' field moves a card between workflow states, and the executor refuses "
-                    + "a transition or a close through a field write regardless of who composed it: "
-                    + "which state a card belongs in is this team's own workflow, done in Jira "
-                    + "directly — never a write hall9k performs on anyone's behalf.");
-            }
-        }
+        throw new DomainValidationException(
+            $"A \"{operation}\" write does not send \"{memberName}\" — the executor for this operation "
+            + "never reads it, so it would be silently dropped rather than carried out. Remove it from "
+            + "the payload, or submit it as a separate write of the operation that does send it.");
     }
 
     /// <summary>
