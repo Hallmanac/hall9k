@@ -473,6 +473,25 @@ public sealed class GitWorktreeManagerTests : IDisposable
     }
 
     /// <summary>
+    /// A project registered against an ordinary (non-bare) clone has its repository path point
+    /// straight at that clone's own working-tree root, so the cross-process lock file must not
+    /// land there: a routine `git status` would report it untracked forever, and a routine
+    /// `git add -A` would sweep it into the user's own history (conformance review, cycle 1).
+    /// </summary>
+    [Fact]
+    public async Task Locking_an_ordinary_clone_leaves_no_file_in_its_working_tree()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(1));
+
+        await _manager.CreateAsync(Request("Lock file placement"), cts.Token);
+
+        File.Exists(Path.Combine(_repositoryPath, ".h9k-worktree.lock")).Should().BeFalse(
+            "the lock belongs inside .git, not the working tree it guards");
+        File.Exists(Path.Combine(_repositoryPath, ".git", ".h9k-worktree.lock")).Should().BeTrue(
+            "the lock should still land somewhere git already owns for this clone");
+    }
+
+    /// <summary>
     /// A path that is not a checkout at all is reported as unobserved rather than answered for:
     /// the caller logs what came back, and "up to date" would be a claim nothing here can make.
     /// </summary>

@@ -387,7 +387,8 @@ public sealed class GitWorktreeManager(ILogger<GitWorktreeManager> logger) : IWo
     /// </summary>
     private static async Task<FileStream> AcquireCrossProcessLockAsync(string repositoryPath, CancellationToken cancellationToken)
     {
-        string lockFilePath = Path.Combine(repositoryPath, ".h9k-worktree.lock");
+        string lockDirectory = await ResolveLockDirectoryAsync(repositoryPath, cancellationToken);
+        string lockFilePath = Path.Combine(lockDirectory, ".h9k-worktree.lock");
         while (true)
         {
             try
@@ -411,6 +412,30 @@ public sealed class GitWorktreeManager(ILogger<GitWorktreeManager> logger) : IWo
                 await Task.Delay(50, cancellationToken);
             }
         }
+    }
+
+    /// <summary>
+    /// git's own directory — the bare clone itself, or an ordinary checkout's <c>.git</c> — so
+    /// the lock file lands somewhere git already owns rather than in a working tree a human
+    /// might `git add -A` and commit by accident: a project registered against an ordinary
+    /// (non-bare) clone has <c>repositoryPath</c> pointing straight at that clone's root, same
+    /// as <see cref="ResolveRepositoryAsync"/> resolves for it, and the hall9k project's own bare
+    /// clone hid this because a bare repository's git-common-dir already is its root (conformance
+    /// review, cycle 1). Falls back to <paramref name="repositoryPath"/> itself — the previous,
+    /// working-tree-visible location — when git cannot answer (the checkout doesn't exist yet, or
+    /// has already vanished), so the DirectoryNotFoundException case above still behaves exactly
+    /// as it did before this method existed.
+    /// </summary>
+    private static async Task<string> ResolveLockDirectoryAsync(string repositoryPath, CancellationToken cancellationToken)
+    {
+        (int exitCode, string commonDirectory, _) = await TryRunGitAsync(
+            repositoryPath, "rev-parse --git-common-dir", cancellationToken);
+        if (exitCode != 0 || commonDirectory.Trim() is not { Length: > 0 } answer)
+        {
+            return repositoryPath;
+        }
+
+        return Path.GetFullPath(answer, Path.GetFullPath(repositoryPath));
     }
 
     private sealed class RepositoryLock(SemaphoreSlim mutex, FileStream crossProcessLock) : IAsyncDisposable
