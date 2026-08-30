@@ -368,7 +368,7 @@ of the pane, and today a row lands there for one of five reasons:
 | `NeedsHuman`, review parked | The pre-PR review loop spent its automatic fixes or hit a disputed finding (#24, #63) | `h9k review resolve` |
 | `NeedsHuman`, closeout parked | The same obstruction survived its automatic-lap cap without clearing, or the pull request's lifetime automatic-closeout budget is spent (#22, #80) | `h9k pr resolve` |
 | `NeedsHuman`, dependency failed | A blocker died, so the dependent stays Blocked rather than silently unblocking (#34, #61) | recover the blocker |
-| `NeedsHuman`, Jira write pending | A Jira write (an operator's own `write-jira`, or a daemon-dispatched one such as closeout's own merge comment) is stuck on an expired or missing twg login (#102) | `twg login` |
+| needs-you, Jira write pending, Status unchanged | A Jira write (an operator's own `write-jira`, or a daemon-dispatched one such as closeout's own merge comment) is stuck on an expired or missing twg login (#102) — the write carries no lifecycle state of its own, so the row's Status stays whatever it already was (Working, Delivered, or Done) | `twg login` |
 | `Failed` | The run itself failed | `h9k task retry` / `resolve` / `abandon` |
 
 The Jira row is the odd one out: every other lever here is an `h9k` command, but this one clears

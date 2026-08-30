@@ -534,6 +534,53 @@ public sealed class TwgJiraExecutorTests
     }
 
     /// <summary>
+    /// A non-auth failure of the comment's own read-back (a transient 5xx, a rate limit, a read
+    /// permission problem) must not be recorded as though the comment itself was refused — it
+    /// already landed by the time this runs, exactly the class of mistake the auth-specific test
+    /// above already covers, extended here to the non-auth case both review lenses independently
+    /// found still generic (independent pre-PR review, cycle 1, both lenses).
+    /// </summary>
+    [Fact]
+    public async Task A_non_auth_failure_from_the_comments_own_verification_is_not_reported_as_a_refusal()
+    {
+        RecordingProcessRunner twg = RecordingProcessRunner.RespondingTo(arguments => arguments.Contains("get")
+            ? new ProcessResult(1, """{"error":{"code":"TWG_COMMAND_FAILED","message":"rate limited"}}""", string.Empty)
+            : new ProcessResult(0, "{}", string.Empty));
+        TwgJiraExecutor executor = new(twg.Runner);
+
+        Func<Task> comment = () => executor.CommentAsync("PROJ-123", "note", "markdown", "/repo", CancellationToken.None);
+
+        TwgExecutionException exception = (await comment.Should().ThrowAsync<TwgExecutionException>()).Which;
+        exception.IsAuthFailure.Should().BeFalse();
+        exception.Message.Should().Contain("PROJ-123")
+            .And.Contain("read-back call")
+            .And.Contain("already succeeded")
+            .And.Contain("do not record this as a refusal of the write");
+    }
+
+    /// <summary>
+    /// The identical mistake reported by both review lenses for <c>UpdateAsync</c> and
+    /// <c>CreateAsync</c>'s own read-back, not just <c>CommentAsync</c>'s — the same route, the
+    /// same wording (independent pre-PR review, cycle 1, conformance lens).
+    /// </summary>
+    [Fact]
+    public async Task A_non_auth_failure_from_an_updates_own_verification_is_not_reported_as_a_refusal()
+    {
+        RecordingProcessRunner twg = RecordingProcessRunner.RespondingTo(arguments => arguments.Contains("get")
+            ? new ProcessResult(1, """{"error":{"code":"TWG_COMMAND_FAILED","message":"rate limited"}}""", string.Empty)
+            : new ProcessResult(0, "{}", string.Empty));
+        TwgJiraExecutor executor = new(twg.Runner);
+        JiraWritePayload payload = new(null, new Dictionary<string, string> { ["description"] = "text" }, null);
+
+        Func<Task> update = () => executor.UpdateAsync("PROJ-123", payload, "/repo", CancellationToken.None);
+
+        TwgExecutionException exception = (await update.Should().ThrowAsync<TwgExecutionException>()).Which;
+        exception.IsAuthFailure.Should().BeFalse();
+        exception.Message.Should().Contain("already succeeded")
+            .And.Contain("do not record this as a refusal of the write");
+    }
+
+    /// <summary>
     /// The stderr substring classification stays as a fallback for a refusal that never reaches
     /// twg's own JSON envelope (a spawn-level or transport-level failure outside twg's control),
     /// even though a genuine twg auth refusal is never actually shaped this way.

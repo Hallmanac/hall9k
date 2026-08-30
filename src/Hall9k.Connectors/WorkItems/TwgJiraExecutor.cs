@@ -299,7 +299,7 @@ public sealed class TwgJiraExecutor(ProcessRunner? runner = null, Uri? site = nu
                 "twg jira workitem create exited successfully but printed no card key, so nothing here can "
                 + $"be verified: {Head(result.StandardOutput)}");
 
-        return await VerifyAsync(key, workingDirectory, cancellationToken, "created", confirmsExistenceOnly: false);
+        return await VerifyAsync(key, workingDirectory, cancellationToken, "created", confirmsExistenceOnly: false, writeAlreadyRan: true);
     }
 
     /// <summary>
@@ -335,7 +335,7 @@ public sealed class TwgJiraExecutor(ProcessRunner? runner = null, Uri? site = nu
 
         AppendFields(arguments, fields);
         await RunAsync(arguments, workingDirectory, cancellationToken);
-        return await VerifyAsync(issueKey, workingDirectory, cancellationToken, "updated", confirmsExistenceOnly: true);
+        return await VerifyAsync(issueKey, workingDirectory, cancellationToken, "updated", confirmsExistenceOnly: true, writeAlreadyRan: true);
     }
 
     /// <summary>
@@ -378,7 +378,7 @@ public sealed class TwgJiraExecutor(ProcessRunner? runner = null, Uri? site = nu
         await RunAsync(arguments, workingDirectory, cancellationToken);
         try
         {
-            return await VerifyAsync(issueKey, workingDirectory, cancellationToken, "commented on", confirmsExistenceOnly: true);
+            return await VerifyAsync(issueKey, workingDirectory, cancellationToken, "commented on", confirmsExistenceOnly: true, writeAlreadyRan: true);
         }
         catch (TwgExecutionException exception) when (exception.Kind == TwgFailureKind.AuthExpired)
         {
@@ -411,11 +411,40 @@ public sealed class TwgJiraExecutor(ProcessRunner? runner = null, Uri? site = nu
     /// </summary>
     private async Task<TwgWriteResult> VerifyAsync(
         string issueKey, string workingDirectory, CancellationToken cancellationToken, string verb,
-        bool confirmsExistenceOnly)
+        bool confirmsExistenceOnly, bool writeAlreadyRan = false)
     {
-        ProcessResult result = await RunAsync(
-            ["jira", "workitem", "get", issueKey, "--output", "json", "--output-summary", "stats"],
-            workingDirectory, cancellationToken);
+        ProcessResult result;
+        try
+        {
+            result = await RunAsync(
+                ["jira", "workitem", "get", issueKey, "--output", "json", "--output-summary", "stats"],
+                workingDirectory, cancellationToken);
+        }
+        // A failure of this read-back call is not a failure of the write it is verifying — twg's
+        // own create/update/comment call already ran and exited 0 by the time this runs, so a
+        // transient 5xx, a rate limit, or a read-permission problem hitting the *get* here does not
+        // mean the write was refused, only that this could not confirm it. Left to Explain's own
+        // generic "twg refused the write" message, that got recorded verbatim as a JiraWriteFailed
+        // reason, asserting a refusal in the opposite direction from what happened (independent
+        // pre-PR review, cycle 1, both lenses) — the same class of mistake cycle 1 of this run
+        // already fixed for a stuck-output exit 0. AuthExpired is excluded here: CommentAsync's own
+        // catch already reclassifies that case for the one operation (a comment) where retrying
+        // automatically would risk a duplicate; Create and Update stay accurately AuthExpired so
+        // they keep retrying automatically, which is safe for both (a create's own marker search,
+        // an update's own idempotent re-apply).
+        catch (TwgExecutionException exception) when (writeAlreadyRan && exception.Kind != TwgFailureKind.AuthExpired)
+        {
+            throw new TwgExecutionException(
+                TwgFailureKind.Other,
+                $"twg reported {issueKey} {verb}, but reading it back afterward to verify hit its own "
+                + $"failure: {exception.Message} That describes only the read-back call — the {verb} call "
+                + "itself already succeeded, so do not record this as a refusal of the write. "
+                + (confirmsExistenceOnly
+                    ? "Check the board before writing again."
+                    : "The marker search this executor runs first will find the card if it exists rather "
+                        + "than filing a second one, so resubmitting is safe."));
+        }
+
         string? found = ExtractFirstKey(result.StandardOutput);
         if (found is null)
         {

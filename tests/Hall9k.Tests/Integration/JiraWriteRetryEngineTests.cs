@@ -301,6 +301,58 @@ public sealed class JiraWriteRetryEngineTests(PostgresFixture postgres) : IClass
     }
 
     /// <summary>
+    /// The cancellation-grace hole independent pre-PR review, cycle 1 (conformance lens) found: a
+    /// cancellation firing between twg's own call returning and this method's own re-aggregation
+    /// read (the shape a graceful <c>h9k daemon stop</c> mid-drain leaves behind) used to throw on
+    /// the already-fired ambient token immediately, before the queue marker could ever be cleared —
+    /// and unlike a stuck write, nothing backstops a queued notice on a ceiling, so the identical
+    /// comment would repost for certain on the next sweep. Simulated here by having the fake twg's
+    /// own read-back call cancel the ambient token and throw, reproducing
+    /// <c>JiraWriteCoordinator.AttemptAsync</c>'s own cancellation catch recording this write's
+    /// failure under its own short grace period and returning normally — exactly the state
+    /// <c>DrainMergeNoticeAsync</c>'s own post-submit bookkeeping has to survive.
+    /// </summary>
+    [Fact]
+    public async Task A_merge_notice_drain_clears_its_queue_marker_despite_a_cancellation_that_fired_after_twg_ran()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        using DocumentStore store = OpenStore();
+
+        Guid taskId = await SeedTaskAsync(store, new ExternalReference(WorkItemProvider.Jira, "PROJ-741"), cts.Token);
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            TaskAggregate task = (await session.Events.AggregateStreamAsync<TaskAggregate>(taskId, token: cts.Token))!;
+            session.Events.Append(taskId, TaskDecider.QueueJiraMergeNotice(task, Now));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        RecordingProcessRunner twg = RecordingProcessRunner.RespondingTo(arguments =>
+        {
+            if (arguments.Contains("get"))
+            {
+                // twg's own comment call already posted by the time this mandatory read-back runs;
+                // the daemon stopping right here is what leaves AttemptAsync's own cancellation
+                // catch to record this write's outcome under its own grace period and return
+                // normally, with the ambient token already fired for everything downstream.
+                cts.Cancel();
+                throw new OperationCanceledException();
+            }
+
+            return new ProcessResult(0, "{}", string.Empty);
+        });
+
+        NodeContext node = await NewNodeAsync(store, cts.Token);
+        JiraWriteRetryEngine engine = new(store, node, twg.Runner, DefaultOptions(), NullLogger<JiraWriteRetryEngine>.Instance);
+
+        JiraWriteRetrySweepResult sweep = await engine.PollOnceAsync(cts.Token);
+
+        sweep.MergeNoticesDrained.Should().Be(1, "the queue marker must clear even though the ambient token fired mid-drain");
+        TaskAggregate? after = await LoadAsync(store, taskId, CancellationToken.None);
+        after!.HasQueuedJiraMergeNotice.Should().BeFalse(
+            "left set, the next sweep would repost the identical comment a second time — a comment has no dedup gate");
+    }
+
+    /// <summary>
     /// Pins the discriminator <see cref="JiraWriteSubmissionException"/> exists to make, rather than
     /// the coincidental case above where the racing failure clears the marker back to null. Here
     /// the racing session, in the same transaction that fails this write's own pending marker,
