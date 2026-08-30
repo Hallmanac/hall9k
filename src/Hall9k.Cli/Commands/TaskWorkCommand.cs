@@ -92,7 +92,7 @@ public sealed class TaskWorkCommand : Hall9kAsyncCommand<TaskWorkCommand.Setting
         // its own fresh session under InteractiveSessionStarted regardless.
         Guid claudeSessionId = DomainId.New();
 
-        (Guid runId, string worktreePath, string branch, string runDirectory, bool resumesPreviousWork) = task.State == TaskState.Claimed && task.IsInteractiveClaim
+        (Guid runId, string worktreePath, string branch, string runDirectory, bool resumesPreviousWork, bool crossMachineNoticeShown) = task.State == TaskState.Claimed && task.IsInteractiveClaim
             ? await ReenterAsync(session, task, settings.Force, cancellationToken)
             : await ClaimAndCutAsync(store, session, task, fence, context, claudeSessionId, cancellationToken);
 
@@ -132,7 +132,7 @@ public sealed class TaskWorkCommand : Hall9kAsyncCommand<TaskWorkCommand.Setting
             ?? throw new DomainConflictException(
                 $"Task {taskId}'s run {runId} no longer has a record — h9k task release {taskId} to give the "
                 + "claim back to the dispatch queue.");
-        InteractiveSessionLiveness.EnsureNotAttachedElsewhere(currentRun, taskId, "work", settings.Force);
+        InteractiveSessionLiveness.EnsureNotAttachedElsewhere(currentRun, taskId, "work", settings.Force, quiet: crossMachineNoticeShown);
 
         AnsiConsole.MarkupLineInterpolated($"[dim]Worktree: {worktreePath}[/]");
         AnsiConsole.MarkupLineInterpolated($"[dim]Branch: {branch}[/]");
@@ -183,13 +183,33 @@ public sealed class TaskWorkCommand : Hall9kAsyncCommand<TaskWorkCommand.Setting
         }
 
         AnsiConsole.MarkupLineInterpolated(exitCode == 0
-            ? (FormattableString)$"[dim]Session ended (exit {exitCode}). Task {taskId} is still claimed —[/]"
-            : $"[yellow]Session ended with exit code {exitCode}. Task {taskId} is still claimed —[/]");
-        AnsiConsole.MarkupLineInterpolated($"[dim]  h9k task deliver {taskId}    push and hand into the standard delivery pipeline[/]");
-        AnsiConsole.MarkupLineInterpolated($"[dim]  h9k task verify {taskId}     run the project's gates on demand[/]");
-        AnsiConsole.MarkupLineInterpolated($"[dim]  h9k task work {taskId}       resume this worktree with a fresh session[/]");
-        AnsiConsole.MarkupLineInterpolated($"[dim]  h9k task handback {taskId}   let a headless agent finish from here[/]");
-        AnsiConsole.MarkupLineInterpolated($"[dim]  h9k task release {taskId}    give it back to the dispatch queue[/]");
+            ? (FormattableString)$"[dim]Session ended (exit {exitCode}).[/]"
+            : $"[yellow]Session ended with exit code {exitCode}.[/]");
+
+        // Re-read rather than assumed still true: another terminal may have delivered,
+        // abandoned, handed back, or released this exact claim while the session the operator
+        // was just attached to was running, and the levers below only make sense while the
+        // claim is still sitting where this session left it (adversarial review, cycle 6).
+        TaskDetails? taskAfterSession = await session.LoadAsync<TaskDetails>(taskId, cancellationToken);
+        bool stillClaimedHere = taskAfterSession is not null
+            && taskAfterSession.State == TaskState.Claimed
+            && taskAfterSession.IsInteractiveClaim
+            && taskAfterSession.CurrentRunId == runId;
+        if (stillClaimedHere)
+        {
+            AnsiConsole.MarkupLineInterpolated($"[dim]Task {taskId} is still claimed —[/]");
+            AnsiConsole.MarkupLineInterpolated($"[dim]  h9k task deliver {taskId}    push and hand into the standard delivery pipeline[/]");
+            AnsiConsole.MarkupLineInterpolated($"[dim]  h9k task verify {taskId}     run the project's gates on demand[/]");
+            AnsiConsole.MarkupLineInterpolated($"[dim]  h9k task work {taskId}       resume this worktree with a fresh session[/]");
+            AnsiConsole.MarkupLineInterpolated($"[dim]  h9k task handback {taskId}   let a headless agent finish from here[/]");
+            AnsiConsole.MarkupLineInterpolated($"[dim]  h9k task release {taskId}    give it back to the dispatch queue[/]");
+        }
+        else
+        {
+            AnsiConsole.MarkupLineInterpolated(
+                $"[dim]Task {taskId} is now {(taskAfterSession?.State.Value ?? "gone")} — its claim changed from another terminal while this session ran. h9k task show {taskId} to see where it stands.[/]");
+        }
+
         return ExitCodes.Ok;
     }
 
@@ -218,7 +238,7 @@ public sealed class TaskWorkCommand : Hall9kAsyncCommand<TaskWorkCommand.Setting
         return context;
     }
 
-    private static async Task<(Guid RunId, string WorktreePath, string Branch, string RunDirectory, bool ResumesPreviousWork)> ReenterAsync(
+    private static async Task<(Guid RunId, string WorktreePath, string Branch, string RunDirectory, bool ResumesPreviousWork, bool CrossMachineNoticeShown)> ReenterAsync(
         IDocumentSession session, TaskAggregate task, bool force, CancellationToken cancellationToken)
     {
         Guid runId = task.CurrentRunId
@@ -258,16 +278,16 @@ public sealed class TaskWorkCommand : Hall9kAsyncCommand<TaskWorkCommand.Setting
         // single-slot ActiveSessions record overwrites the first session's liveness record with
         // the second's — so the first session becomes invisible to verify/deliver/handback too
         // (adversarial review, cycle 2).
-        InteractiveSessionLiveness.EnsureNotAttachedElsewhere(run, task.Id, "work", force);
+        bool crossMachineNoticeShown = InteractiveSessionLiveness.EnsureNotAttachedElsewhere(run, task.Id, "work", force);
 
         AnsiConsole.MarkupLineInterpolated($"[dim]Re-entering task {task.Id}'s interactive claim.[/]");
         // Whatever the earlier session left — committed or not — is already sitting in this
         // worktree, so the prompt tells the fresh session to look for it exactly as a headless
         // retry's own resumed worktree does (conformance review, cycle 1).
-        return (runId, run.WorktreePath, run.Branch, run.RunDirectory, ResumesPreviousWork: true);
+        return (runId, run.WorktreePath, run.Branch, run.RunDirectory, ResumesPreviousWork: true, crossMachineNoticeShown);
     }
 
-    private static async Task<(Guid RunId, string WorktreePath, string Branch, string RunDirectory, bool ResumesPreviousWork)> ClaimAndCutAsync(
+    private static async Task<(Guid RunId, string WorktreePath, string Branch, string RunDirectory, bool ResumesPreviousWork, bool CrossMachineNoticeShown)> ClaimAndCutAsync(
         DocumentStore store, IDocumentSession session, TaskAggregate task, StreamState fence, BootstrapContext context,
         Guid claudeSessionId, CancellationToken cancellationToken)
     {
@@ -410,7 +430,7 @@ public sealed class TaskWorkCommand : Hall9kAsyncCommand<TaskWorkCommand.Setting
 
         await Doorbell.RingAsync($"task-claimed-interactively:{task.Id}", cancellationToken);
         AnsiConsole.MarkupLineInterpolated($"[dim]Claimed task {task.Id} interactively.[/]");
-        return (runId, worktree.Path, worktree.Branch, runDirectory, resumesPreviousWork);
+        return (runId, worktree.Path, worktree.Branch, runDirectory, resumesPreviousWork, CrossMachineNoticeShown: false);
     }
 
     private static async Task FailInteractiveClaimAsync(
