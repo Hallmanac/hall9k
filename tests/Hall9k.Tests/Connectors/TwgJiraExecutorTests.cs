@@ -442,6 +442,48 @@ public sealed class TwgJiraExecutorTests
         exception.Message.Should().Contain(TwgJiraExecutor.Marker(taskId));
     }
 
+    /// <summary>
+    /// A third way the marker search's own answer can be unconfirmable, distinct from the two
+    /// above: the temp file exists and reads back fine, but what it holds is not valid JSON — a
+    /// partially flushed write, or a reaper that emptied it after the <c>File.Exists</c> check but
+    /// before the read completed. This used to report <c>confirmedReadable: true</c> alongside the
+    /// empty candidate list a JSON parse failure falls back to, so the dedup gate read a garbled
+    /// answer as an affirmative "no marker" and would create a duplicate — the identical
+    /// false negative <c>confirmedReadable</c> exists to close for an outright unreadable file
+    /// (independent pre-PR review, adversarial lens, cycle 5).
+    /// </summary>
+    [Fact]
+    public async Task A_marker_search_whose_own_answer_reads_back_as_malformed_json_refuses_rather_than_guesses()
+    {
+        Guid taskId = Guid.NewGuid();
+        string file = Path.GetTempFileName();
+        try
+        {
+            await File.WriteAllTextAsync(file, "{not valid json");
+            string envelope =
+                $"""
+                output_files:
+                  stdout: "{file}"
+                  compact: "{file}.compact"
+                command: "jira.workitem.query"
+                agent_output:
+                  summary: "stats"
+                ---END---
+                """;
+            RecordingProcessRunner twg = RecordingProcessRunner.Succeeding(envelope);
+            TwgJiraExecutor executor = new(twg.Runner);
+
+            Func<Task> findByMarker = () => executor.FindByMarkerAsync(taskId, "/repo", CancellationToken.None);
+
+            TwgExecutionException exception = (await findByMarker.Should().ThrowAsync<TwgExecutionException>()).Which;
+            exception.Message.Should().Contain(TwgJiraExecutor.Marker(taskId));
+        }
+        finally
+        {
+            File.Delete(file);
+        }
+    }
+
     [Fact]
     public async Task An_update_writes_the_fields_and_then_verifies_by_reading_back()
     {

@@ -807,7 +807,11 @@ public sealed class TwgJiraExecutor(ProcessRunner? runner = null, Uri? site = nu
     /// signal, the same one <see cref="CandidateCarriesMarkerAsync"/> already reads: an unreadable
     /// search answer must not fall back to an empty candidate list, which the dedup gate would
     /// otherwise read as "no card carries this marker" and create a duplicate (independent pre-PR
-    /// review, conformance lens, cycle 8).
+    /// review, conformance lens, cycle 8). A file that read back but did not parse as JSON — a
+    /// partially flushed write, a reaper that emptied it after the existence check but before the
+    /// read completed — is the identical false negative in different clothes, so it clears
+    /// <paramref name="confirmedReadable"/> too rather than reporting a readable-but-garbled answer
+    /// as a confirmed empty result (independent pre-PR review, adversarial lens, cycle 5).
     /// </summary>
     private static IReadOnlyList<string> ExtractAllKeys(string envelopeOutput, out bool confirmedReadable)
     {
@@ -824,6 +828,7 @@ public sealed class TwgJiraExecutor(ProcessRunner? runner = null, Uri? site = nu
         }
         catch (JsonException)
         {
+            confirmedReadable = false;
             return [];
         }
 
