@@ -468,6 +468,23 @@ public static class JiraWriteCoordinator
         TaskAggregate task = await session.Events.AggregateStreamAsync<TaskAggregate>(taskId, token: cancellationToken)
             ?? throw new DomainNotFoundException($"No task {taskId}.");
 
+        // An auth failure identical to the one already standing pending is not new information:
+        // JiraWriteRetryEngine re-attempts a login-stuck write on every JiraWriteRetryInterval
+        // sweep, forever, by design (an auth-classified write carries no retry ceiling — the
+        // same payload has to succeed once twg login runs, not time out), so appending a fresh
+        // JiraWriteFailed for the identical answer would grow the task's stream without bound
+        // for as long as nobody re-authenticates (independent pre-PR review, adversarial lens,
+        // cycle 5). Nothing here shortens the retry itself; only the redundant record is
+        // skipped, and a reason that actually changed (twg started saying something new) still
+        // gets appended, exactly as a genuinely new failure would.
+        if (isAuthFailure
+            && task.PendingJiraWriteId == writeId
+            && task.PendingJiraWriteIsAuthFailure
+            && task.PendingJiraWriteFailureReason == reason)
+        {
+            return new JiraWriteAttemptResult(JiraWriteOutcome.PendingAuthentication, null, reason);
+        }
+
         JiraWriteFailed failed = TaskDecider.RecordJiraWriteFailure(task, writeId, reason, isAuthFailure, DateTimeOffset.UtcNow);
         session.Events.Append(taskId, failed);
         await session.SaveChangesAsync(cancellationToken);

@@ -8,12 +8,14 @@ using Hall9k.Domain.Features.Owner;
 using Hall9k.Domain.Features.Project;
 using Hall9k.Domain.Features.Project.Handlers;
 using Hall9k.Domain.Features.Tasks;
+using Hall9k.Domain.Features.Tasks.Events;
 using Hall9k.Domain.Features.Tasks.Handlers;
 using Hall9k.Domain.Infrastructure.Ids;
 using Hall9k.Domain.Infrastructure.Persistence;
 using Hall9k.Domain.Shared.ValueObjects;
 using Hall9k.Tests.Fakes;
 using JasperFx;
+using JasperFx.Events;
 using Marten;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
@@ -72,6 +74,52 @@ public sealed class JiraWriteRetryEngineTests(PostgresFixture postgres) : IClass
         sweep.Should().Be(new JiraWriteRetrySweepResult(Retried: 1, Succeeded: 1));
         TaskAggregate? resolved = await LoadAsync(store, taskId, cts.Token);
         resolved!.PendingJiraWriteId.Should().BeNull("the retry finished the request it already made rather than losing it");
+    }
+
+    /// <summary>
+    /// An auth-classified write has no retry ceiling by design — the sweep re-attempts it on every
+    /// <see cref="DaemonOptions.JiraWriteRetryInterval"/> for as long as nobody runs
+    /// <c>twg login</c> — so a login left unattended must not grow the task's stream by one
+    /// <see cref="JiraWriteFailed"/> per sweep forever (independent pre-PR review, adversarial
+    /// lens, cycle 5). Twg answers with the identical "not authenticated" envelope on every call
+    /// here, so only the first attempt's failure should land on the stream; the second and third
+    /// sweeps still retry (the write itself is not abandoned) but record nothing new.
+    /// </summary>
+    [Fact]
+    public async Task Repeated_identical_auth_failures_do_not_grow_the_stream_without_bound()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        using DocumentStore store = OpenStore();
+
+        Guid taskId = await SeedTaskAsync(store, new ExternalReference(WorkItemProvider.Jira, "PROJ-321"), cts.Token);
+
+        RecordingProcessRunner refusingTwg = RecordingProcessRunner.TwgAuthExpired();
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            JiraWriteAttemptResult submitted = await JiraWriteCoordinator.SubmitAsync(
+                session, taskId, JiraWriteOperation.Comment, issueKey: null,
+                new JiraWritePayload(null, null, "The pull request merged."), JiraProjectKey.None,
+                DomainId.New(), new TwgJiraExecutor(refusingTwg.Runner), "/repo", cts.Token);
+
+            submitted.Outcome.Should().Be(JiraWriteOutcome.PendingAuthentication);
+        }
+
+        NodeContext node = await NewNodeAsync(store, cts.Token);
+        JiraWriteRetryEngine engine = new(store, node, refusingTwg.Runner, DefaultOptions(), NullLogger<JiraWriteRetryEngine>.Instance);
+
+        JiraWriteRetrySweepResult second = await engine.PollOnceAsync(cts.Token);
+        JiraWriteRetrySweepResult third = await engine.PollOnceAsync(cts.Token);
+
+        second.Should().Be(new JiraWriteRetrySweepResult(Retried: 1, Succeeded: 0));
+        third.Should().Be(new JiraWriteRetrySweepResult(Retried: 1, Succeeded: 0));
+
+        TaskAggregate? stuck = await LoadAsync(store, taskId, cts.Token);
+        stuck!.PendingJiraWriteIsAuthFailure.Should().BeTrue("the sweep must keep retrying, not give up on the write");
+
+        await using IQuerySession query = store.QuerySession();
+        IReadOnlyList<IEvent> stream = await query.Events.FetchStreamAsync(taskId, token: cts.Token);
+        stream.Select(recorded => recorded.Data).OfType<JiraWriteFailed>().Should().ContainSingle(
+            "twg gave the identical answer on every attempt, so only the first failure is new information");
     }
 
     [Fact]
