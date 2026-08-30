@@ -70,8 +70,8 @@ public sealed class PullRequestOpener(
             // copy already exist" (conformance review, cycle 1). PushBranchAsync below guards
             // that with an explicit ancestor-or-reflog check before ever pushing, and only then
             // pins the lease's expected value to the tip the guard just verified — closing the
-            // narrower race between that read and the push itself, where a concurrent run's own
-            // BestEffortFetchAsync could otherwise advance the shared bare repo's ref in
+            // narrower race between that read (a direct ls-remote against origin, not a local
+            // ref) and the push itself, where another node could still push to origin in
             // between. Never plain --force. A refused or failed push fails the run honestly
             // below, and h9k task retry is the requeue lever — the task lands Failed, where
             // retry (not pr resolve, which only applies to a Done task's open PR) applies. Origin
@@ -291,9 +291,9 @@ public sealed class PullRequestOpener(
         // lost (an earlier run's own push, later cleaned up by hand or by
         // DeleteBranchEverywhereAsync elsewhere) would still read as a stale tip here
         // (adversarial review, cycle 3).
-        (int tipExit, string tipOutput, _) = await TryRunInWorktreeAsync(
+        (int tipExit, string tipOutput, string tipError) = await TryRunInWorktreeAsync(
             worktreePath, "git", ["ls-remote", "--exit-code", "origin", $"refs/heads/{branch}"], cancellationToken);
-        if (tipExit != 0)
+        if (tipExit == 2)
         {
             // Exit code 2 is ls-remote's documented signal that no ref on origin matched.
             // The lease is pinned explicitly to "must not exist yet"
@@ -305,6 +305,19 @@ public sealed class PullRequestOpener(
             // this branch right now, and rejects if it does (verified empirically).
             await RunInWorktreeAsync(worktreePath, "git", ["push", $"--force-with-lease={branch}:", "origin", branch], cancellationToken);
             return;
+        }
+
+        if (tipExit != 0)
+        {
+            // Any other nonzero exit (an unreachable remote, a 5xx, a dropped connection —
+            // verified an unreachable remote exits 128, distinct from the 2 above) means
+            // origin could not be read at all, not that origin is empty. Guessing "nothing
+            // there" from a failed read is exactly the unobserved-fact guess AGENTS.md
+            // rules out; fail the run honestly instead (adversarial review, cycle 4).
+            throw new InvalidOperationException(
+                $"could not read origin's current tip for {branch} (git ls-remote exited {tipExit}): "
+                + $"{tipError}. This fails the run rather than guessing origin has nothing for this "
+                + "branch; h9k task retry is the way to requeue once origin is reachable again.");
         }
 
         string originTip = tipOutput.Split('\t', StringSplitOptions.RemoveEmptyEntries)[0].Trim();
