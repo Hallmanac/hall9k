@@ -91,9 +91,17 @@ internal static class TaskPhaseComposer
         // review, cycle 4). ClaimedByNodeId is the sentinel every other command on this surface
         // already reads for the same distinction and survives the session ending.
         // </para>
+        // <para>
+        // Gone or NotApplicable only — never Unobserved: a session recorded live on another
+        // machine this one cannot check is an unread fact, not an absent one, and folding it in
+        // here told a second machine's reader "closing the terminal is a normal way to leave"
+        // about a claim that is, as far as anyone here can honestly say, still attached
+        // (adversarial review, cycle 1). Unobserved falls through to the ordinary Running case
+        // below instead, whose SessionGap/LivenessMarkup already say "liveness not observed here."
+        // </para>
         if (task.ClaimedByNodeId == Guid.Empty
             && run.State.Value == "Running"
-            && session != SessionLiveness.Alive)
+            && session is SessionLiveness.Gone or SessionLiveness.NotApplicable)
         {
             // The lever leads: TaskRowLayout.cs renders this line with Overflow.Ellipsis, so a
             // narrow terminal truncates the tail first — putting the actionable half first keeps

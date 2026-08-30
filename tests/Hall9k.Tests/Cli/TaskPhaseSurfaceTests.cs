@@ -261,6 +261,27 @@ public sealed class TaskPhaseSurfaceTests
     }
 
     [Fact]
+    public void An_interactive_claim_unobserved_on_another_machine_is_not_read_as_reenterable()
+    {
+        // Unobserved (a session recorded live on another machine this one cannot check) must not
+        // fall into the same branch as Gone/NotApplicable: telling this machine's reader "closing
+        // the terminal is a normal way to leave" about a claim that, as far as anyone here can
+        // honestly say, is still attached would invite exactly the collision h9k task work
+        // --force exists to gate behind a human attestation (adversarial review, cycle 1).
+        Guid runId = DomainId.New();
+        RunDetails interactive = StatusFixtures.Run(runId, RunState.Running);
+
+        TaskStatusRow row = StatusFixtures.Compose(
+            StatusFixtures.Task(TaskState.Claimed, runId, claimedByNodeId: Guid.Empty),
+            interactive,
+            liveness: SessionLiveness.Unobserved);
+
+        row.Phase.Liveness.Should().Be(SessionLiveness.Unobserved);
+        row.Phase.Markup.Should().Contain("not observed here");
+        row.Phase.Markup.Should().NotContain("h9k task work re-enters this claim");
+    }
+
+    [Fact]
     public void An_interactive_claim_that_exited_normally_still_reads_as_reenterable()
     {
         // InteractiveSessionEnded (a normal /exit or Ctrl+D) clears ActiveSessions entirely, so
