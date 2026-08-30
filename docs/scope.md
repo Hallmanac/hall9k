@@ -41,8 +41,9 @@ there dispatches on the ordinary fix model exactly as it would have anyway (PLAN
 
 `h9k task work <id>` lets an operator work a Queued task themselves instead of dispatching it
 headless: it claims the task, cuts the same branch and worktree headless dispatch would, and
-opens a regular interactive Claude Code session attached to the operator's own terminal, with the
-same prompt and settings a headless spawn gets. The claim is held by the human rather than a
+opens a regular interactive Claude Code session attached to the operator's own terminal, its
+prompt assembled through the same code path a headless spawn's is, with the working rules swapped
+for an attached operator. The claim is held by the human rather than a
 process — no lease, no heartbeat reclaim — so closing the terminal is a normal way to leave, and
 running `h9k task work` again re-enters the same worktree and branch with a fresh session. It
 occupies zero concurrency slots (the run's `NodeId` is the sentinel `Guid.Empty`, which the

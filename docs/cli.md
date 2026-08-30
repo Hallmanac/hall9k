@@ -113,7 +113,8 @@ with each member's state already composed.
 `h9k task work | verify | deliver | handback | release`
 
 An operator can work a Queued task in their own terminal instead of dispatching it headless:
-`work` claims it, cuts the same branch/worktree/prompt headless dispatch would, and opens a
+`work` claims it, cuts the same branch and worktree headless dispatch would, assembles the prompt
+through the same code path (its working rules swapped for an attached operator), and opens a
 regular interactive Claude Code session — the claim is held by the human, not a process, so
 closing the terminal is a normal way to leave and re-running `work` re-enters the same worktree.
 From there, `verify` runs the project's gates on demand, `deliver` pushes the branch and hands the

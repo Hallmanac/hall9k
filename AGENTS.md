@@ -161,7 +161,7 @@ terminal is a normal way to leave, and running `h9k task work` again re-enters t
 (Decisions Log #103):
 
 ```bash
-h9k task work <id>          # claim it, cut the same branch/worktree/prompt headless dispatch would, open an interactive session
+h9k task work <id>          # claim it, cut the same branch/worktree headless dispatch would, assemble the prompt through the same code, open an interactive session
 h9k task verify <id>        # run the project's gates on demand against the claim's worktree
 h9k task deliver <id>       # push and hand the claim into the standard delivery pipeline
 h9k task handback <id>      # release the claim to a headless agent partway through, resuming the branch
