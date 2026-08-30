@@ -151,15 +151,18 @@ public static class CliCommandTree
                 add.SetDescription("Register an external account");
                 add.AddCommand<ConnectionAddJiraCommand>("jira")
                     .WithDescription(
-                        "Register the Jira Cloud account Hall9k reads cards through (site, email, API token). "
+                        "Register the Jira Cloud account Hall9k READS cards through (site, email, API token). "
                         + "The credentials are verified against the site before anything is recorded, and the "
                         + "token is stored by reference — an environment variable, a macOS keychain item, or a "
                         + "file under ~/.hall9k/credentials readable by you alone. Running it again replaces "
-                        + "the existing connection, which is how a rotated token is applied. The account needs "
-                        + "to browse the boards you import from and to comment on their issues: cards are "
-                        + "CREATED by agent runs (h9k task push-to-jira) and never by the platform, but the "
-                        + "platform makes exactly one write of its own (PLAN.md §9.3), a comment on the card "
-                        + "when the task's pull request merges. It never transitions a card.")
+                        + "the existing connection, which is how a rotated token is applied. This connection "
+                        + "only needs to browse the boards you import from: every Jira WRITE (create, update, "
+                        + "comment) goes through a separate path (Decisions Log #102) — an agent run composes "
+                        + "the payload, and `h9k task write-jira` is the sole executor, submitting it through "
+                        + "the Atlassian CLI (twg) rather than this credential. twg needs its own machine-wide "
+                        + "browser login, `twg login`, which is not part of this command and expires "
+                        + "periodically; run `h9k doctor` to check it, or watch for a needs-you row asking for "
+                        + "it. Hall9k never transitions a card — that stays a team's own workflow in Jira.")
                     .WithExample("connection", "add", "jira", "--site", "https://your-org.atlassian.net",
                         "--email", "you@example.com")
                     .WithExample("connection", "add", "jira", "--site", "https://your-org.atlassian.net",
