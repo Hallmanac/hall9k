@@ -120,10 +120,12 @@ public sealed class TaskVerifyCommand : Hall9kAsyncCommand<TaskVerifyCommand.Set
                 $"[yellow]Modified-but-uncommitted file(s) in the worktree (gates run against them anyway): {string.Join(", ", modified)}[/]");
         }
 
+        string gatesFingerprint = VerifyCommand.Fingerprint(project.VerifyCommands);
+
         if (project.VerifyCommands.Count == 0)
         {
             string? headSha = await InteractiveWorktreeGit.GetHeadShaAsync(run.WorktreePath, cancellationToken);
-            await RecordPassAsync(session, runId, "No verification gates configured for this project.", headSha, cancellationToken);
+            await RecordPassAsync(session, runId, "No verification gates configured for this project.", headSha, gatesFingerprint, cancellationToken);
             AnsiConsole.MarkupLine("[green]No verification gates configured for this project — nothing to run.[/]");
             return ExitCodes.Ok;
         }
@@ -145,7 +147,7 @@ public sealed class TaskVerifyCommand : Hall9kAsyncCommand<TaskVerifyCommand.Set
         }
 
         string? passHeadSha = await InteractiveWorktreeGit.GetHeadShaAsync(run.WorktreePath, cancellationToken);
-        await RecordPassAsync(session, runId, $"h9k task verify: {project.VerifyCommands.Count} gate(s) ran full scope.", passHeadSha, cancellationToken);
+        await RecordPassAsync(session, runId, $"h9k task verify: {project.VerifyCommands.Count} gate(s) ran full scope.", passHeadSha, gatesFingerprint, cancellationToken);
         AnsiConsole.MarkupLineInterpolated($"[green]Verification passed ({project.VerifyCommands.Count} gate(s)).[/]");
         return ExitCodes.Ok;
     }
@@ -273,9 +275,11 @@ public sealed class TaskVerifyCommand : Hall9kAsyncCommand<TaskVerifyCommand.Set
         content.Length <= 4000 ? content : content[^4000..];
 
     private static async Task RecordPassAsync(
-        IDocumentSession session, Guid runId, string? note, string? headSha, CancellationToken cancellationToken)
+        IDocumentSession session, Guid runId, string? note, string? headSha, string verifyCommandsFingerprint,
+        CancellationToken cancellationToken)
     {
-        session.Events.Append(runId, new VerificationPassed(runId, DateTimeOffset.UtcNow, note, RanFullScope: true, headSha));
+        session.Events.Append(
+            runId, new VerificationPassed(runId, DateTimeOffset.UtcNow, note, RanFullScope: true, headSha, verifyCommandsFingerprint));
         await session.SaveChangesAsync(cancellationToken);
     }
 
