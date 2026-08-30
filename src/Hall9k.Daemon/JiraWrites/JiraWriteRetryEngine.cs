@@ -466,10 +466,29 @@ public sealed class JiraWriteRetryEngine(
         // in-memory task above is stale by the time the queue marker itself needs clearing.
         TaskAggregate refreshed = await session.Events.AggregateStreamAsync<TaskAggregate>(taskId, token: cancellationToken)
             ?? task;
-        if (refreshed.HasQueuedJiraMergeNotice)
+        // SubmitAsync has already run and recorded its own outcome by this point — twg's own call
+        // is over, successfully or not — so a failure clearing the queue marker here must not
+        // escape to PollOnceAsync's own per-task catch, whose generic "left it queued" logging
+        // would misreport a comment that already posted (result.Outcome == Succeeded) as if
+        // nothing had happened. Guarded the same way the failure path above already guards its own
+        // compensating append, for the identical reason (independent pre-PR review, adversarial
+        // lens, cycle 8).
+        try
         {
-            session.Events.Append(taskId, TaskDecider.RecordJiraMergeNoticeAttempted(refreshed, DateTimeOffset.UtcNow));
-            await session.SaveChangesAsync(cancellationToken);
+            if (refreshed.HasQueuedJiraMergeNotice)
+            {
+                session.Events.Append(taskId, TaskDecider.RecordJiraMergeNoticeAttempted(refreshed, DateTimeOffset.UtcNow));
+                await session.SaveChangesAsync(cancellationToken);
+            }
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            logger.LogError(exception,
+                "Task {TaskId}: the queued merge notice for {Reference} was submitted to twg (outcome: "
+                + "{Outcome}) but the queue marker could not be cleared afterward — it stays queued and "
+                + "may post a duplicate comment on a later sweep; check the board and this task's Jira "
+                + "write history by hand", taskId, reference, result.Outcome);
+            return true;
         }
 
         switch (result.Outcome)
