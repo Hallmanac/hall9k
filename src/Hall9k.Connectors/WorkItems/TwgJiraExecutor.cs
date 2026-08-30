@@ -170,7 +170,17 @@ public sealed class TwgJiraExecutor(ProcessRunner? runner = null, Uri? site = nu
             ["jira", "workitem", "query", "--jql", $"text ~ \"{Marker(taskId)}\"", "--limit",
              MaxMarkerSearchCandidates.ToString(), "--output", "json", "--output-summary", "stats"],
             workingDirectory, cancellationToken);
-        IReadOnlyList<string> candidates = ExtractAllKeys(result.StandardOutput);
+        IReadOnlyList<string> candidates = ExtractAllKeys(result.StandardOutput, out bool confirmedReadable);
+        if (!confirmedReadable)
+        {
+            throw new TwgExecutionException(
+                TwgFailureKind.Other,
+                $"The marker search for {Marker(taskId)} could not be read back to confirm — the temp "
+                + "file twg wrote its answer to was reaped or unreadable before this check could run. "
+                + "Refusing to create on an unconfirmed dedup check; check the board by hand for "
+                + $"{Marker(taskId)} and, if it is not there, run the write again.");
+        }
+
         foreach (string candidate in candidates.Take(MaxMarkerSearchCandidates))
         {
             if (await CandidateCarriesMarkerAsync(candidate, taskId, workingDirectory, cancellationToken))
@@ -725,10 +735,15 @@ public sealed class TwgJiraExecutor(ProcessRunner? runner = null, Uri? site = nu
     /// (<see cref="FindArray"/> locates that same <c>data.issues[]</c> array without descending
     /// into it), used by <see cref="FindByMarkerAsync"/> so a marker search with several hits gets
     /// every one confirmed rather than only whichever twg happened to rank first.
+    /// <paramref name="confirmedReadable"/> is <see cref="FindByMarkerAsync"/>'s own dedup-gate
+    /// signal, the same one <see cref="CandidateCarriesMarkerAsync"/> already reads: an unreadable
+    /// search answer must not fall back to an empty candidate list, which the dedup gate would
+    /// otherwise read as "no card carries this marker" and create a duplicate (independent pre-PR
+    /// review, conformance lens, cycle 8).
     /// </summary>
-    private static IReadOnlyList<string> ExtractAllKeys(string envelopeOutput)
+    private static IReadOnlyList<string> ExtractAllKeys(string envelopeOutput, out bool confirmedReadable)
     {
-        string json = ReadPayloadJson(envelopeOutput);
+        string json = ReadPayloadJson(envelopeOutput, out confirmedReadable);
         if (json.IsBlank())
         {
             return [];
@@ -844,11 +859,13 @@ public sealed class TwgJiraExecutor(ProcessRunner? runner = null, Uri? site = nu
 
     /// <summary>
     /// The <paramref name="confirmedReadable"/> overload every caller above still ignores except
-    /// <see cref="CandidateCarriesMarkerAsync"/>: everywhere else, a fallback to the raw envelope
-    /// already fails toward a refusal on its own (it will not parse as the expected JSON shape, so
-    /// the caller's own "found nothing" handling takes over), but the dedup marker check reads the
-    /// envelope as plain text rather than parsing it, so a silent fallback there would read as
-    /// "marker absent" instead — the false negative this flag exists to catch.
+    /// <see cref="CandidateCarriesMarkerAsync"/> and <see cref="ExtractAllKeys"/>: everywhere else,
+    /// a fallback to the raw envelope already fails toward a refusal on its own (it will not parse
+    /// as the expected JSON shape, so the caller's own "found nothing" handling takes over), but
+    /// the marker search's dedup gate reads "found nothing" as the affirmative permission to
+    /// create — so a silent fallback there would read as "no card carries the marker" instead of
+    /// "the search's own answer could not be confirmed", the false negative this flag exists to
+    /// catch (independent pre-PR review, conformance lens, cycle 8).
     /// </summary>
     private static string ReadPayloadJson(string envelopeOutput, out bool confirmedReadable)
     {
