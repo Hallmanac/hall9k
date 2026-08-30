@@ -36,10 +36,14 @@ public sealed class GitWorktreeManager(ILogger<GitWorktreeManager> logger) : IWo
             // — refusing a legitimate push, or hard-resetting a real recompose away, on a false
             // "rewrite" read. Materialise the ref explicitly first, the same way
             // CheckoutExistingAsync's remoteExists arm does, so the creation point is always
-            // recorded regardless of repo config.
+            // recorded regardless of repo config. The trailing empty <oldvalue> makes this a
+            // create-only compare-and-swap — `worktree add -b` refused outright when the branch
+            // already existed, and a plain update-ref would silently force-move it instead,
+            // which is unsafe when ResolveBranchNameAsync's run-suffixed retry name collides
+            // with another retry's (independent pre-PR review, cycle 8).
             await RunGitAsync(
                 repositoryPath,
-                $"update-ref --create-reflog refs/heads/{branch} {startPoint} " +
+                $"update-ref --create-reflog refs/heads/{branch} {startPoint} \"\" " +
                 $"-m \"branch: Created from {startPoint} by CreateAsync\"",
                 cancellationToken);
             await RunGitAsync(
@@ -101,10 +105,11 @@ public sealed class GitWorktreeManager(ILogger<GitWorktreeManager> logger) : IWo
                 // and its twin in PullRequestOpener.PushBranchAsync — refusing a legitimate
                 // push, or hard-resetting a real recompose away, on a false "rewrite" read.
                 // Materialise the ref explicitly so the creation point is always recorded,
-                // regardless of repo config.
+                // regardless of repo config. The trailing empty <oldvalue> keeps this
+                // create-only, matching CreateAsync's own guard above.
                 await RunGitAsync(
                     repositoryPath,
-                    $"update-ref --create-reflog refs/heads/{branch} refs/remotes/origin/{branch} " +
+                    $"update-ref --create-reflog refs/heads/{branch} refs/remotes/origin/{branch} \"\" " +
                     $"-m \"branch: Created from origin/{branch} by CheckoutExistingAsync\"",
                     cancellationToken);
                 await RunGitAsync(repositoryPath, $"worktree add \"{worktreePath}\" {branch}", cancellationToken);
