@@ -75,6 +75,26 @@ public sealed class TaskJiraWriteTests
         validate.Should().Throw<DomainValidationException>().WithMessage("*needs a \"summary\" field*");
     }
 
+    [Fact]
+    public void An_update_with_no_fields_is_refused_because_it_would_change_nothing()
+    {
+        JiraWritePayload payload = new(WorkItemType: null, Fields: null, Comment: null);
+
+        Action validate = () => payload.Validate(JiraWriteOperation.Update);
+
+        validate.Should().Throw<DomainValidationException>().WithMessage("*would change nothing*");
+    }
+
+    [Fact]
+    public void An_update_whose_only_field_is_blank_is_refused_the_same_as_no_fields_at_all()
+    {
+        JiraWritePayload payload = JiraWritePayload.FromJson("""{"fields":{"summary":""}}""");
+
+        Action validate = () => payload.Validate(JiraWriteOperation.Update);
+
+        validate.Should().Throw<DomainValidationException>().WithMessage("*would change nothing*");
+    }
+
     /// <summary>
     /// A field composed through <see cref="JiraWritePayload.FromJson"/> is stored as its own raw
     /// JSON text, so an empty summary arrives here as the two-character string <c>""</c> rather
