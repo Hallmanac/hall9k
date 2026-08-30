@@ -209,7 +209,7 @@ public static class JiraWriteCoordinator
         }
         catch (TwgExecutionException exception)
         {
-            return await RecordFailureAsync(session, taskId, writeId, exception.Message, exception.IsAuthFailure, cancellationToken);
+            return await RecordFailureWithGraceAsync(session, taskId, writeId, exception.Message, exception.IsAuthFailure, cancellationToken);
         }
 
         return await RecordSuccessAsync(
@@ -246,7 +246,7 @@ public static class JiraWriteCoordinator
         }
         catch (TwgExecutionException exception)
         {
-            return await RecordFailureAsync(session, taskId, writeId, exception.Message, exception.IsAuthFailure, cancellationToken);
+            return await RecordFailureWithGraceAsync(session, taskId, writeId, exception.Message, exception.IsAuthFailure, cancellationToken);
         }
         // A Ctrl-C on an operator's own h9k task write-jira, or the daemon stopping mid-sweep,
         // used to leave this write's own outcome unrecorded: PendingJiraWriteId was already set by
@@ -281,7 +281,7 @@ public static class JiraWriteCoordinator
         // non-auth failure, since none of these are "run it again once twg login succeeds".
         catch (Exception exception) when (exception is not OperationCanceledException)
         {
-            return await RecordFailureAsync(session, taskId, writeId, exception.Message, isAuthFailure: false, cancellationToken);
+            return await RecordFailureWithGraceAsync(session, taskId, writeId, exception.Message, isAuthFailure: false, cancellationToken);
         }
 
         // twg already carried out and verified this write by the time control reaches here, so
@@ -432,6 +432,33 @@ public static class JiraWriteCoordinator
                 $"{result.Summary} The card was verified but could not be linked to this task: "
                 + $"{exception.Message} Check h9k task show {taskId} and link it by hand with "
                 + $"h9k task link-jira {taskId} {result.IssueKey} if it should still carry it.");
+        }
+    }
+
+    /// <summary>
+    /// A failure catch that has not itself already observed <paramref name="cancellationToken"/>
+    /// fire — a genuine <c>TwgExecutionException</c>, or any other bug caught in <see
+    /// cref="AttemptAsync"/>'s own generic clause, or a lost race verifying an already-linked card
+    /// in <see cref="RecordAlreadyLinkedAsync"/> — still hands this call the ordinary token, and
+    /// cancellation can land during its own aggregate-and-save just as it can during
+    /// <see cref="RecordSuccessAsync"/>'s. Left uncaught, that escaped this method exactly the way
+    /// cycle 2's finding closed for the twg-call's own cancellation catch and for
+    /// <see cref="RecordSuccessAsync"/>, but not for these three sites, which named the same defect
+    /// left open at every site sharing this shape (independent pre-PR review, cycle 3). The retry
+    /// uses a fresh <see cref="CancellationRecordingGrace"/> window for the identical reason those
+    /// two already do: the fired token cannot also be the one this save waits on.
+    /// </summary>
+    private static async Task<JiraWriteAttemptResult> RecordFailureWithGraceAsync(
+        IDocumentSession session, Guid taskId, Guid writeId, string reason, bool isAuthFailure, CancellationToken cancellationToken)
+    {
+        try
+        {
+            return await RecordFailureAsync(session, taskId, writeId, reason, isAuthFailure, cancellationToken);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            using CancellationTokenSource grace = new(CancellationRecordingGrace);
+            return await RecordFailureAsync(session, taskId, writeId, reason, isAuthFailure, grace.Token);
         }
     }
 
