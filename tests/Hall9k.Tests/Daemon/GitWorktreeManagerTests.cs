@@ -68,6 +68,25 @@ public sealed class GitWorktreeManagerTests : IDisposable
         worktrees.Should().OnlyContain(w => Directory.Exists(w.Path));
     }
 
+    /// <summary>
+    /// h9k task work runs a second, unsynchronized GitWorktreeManager in the CLI process
+    /// against the same repository the daemon's own singleton touches (adversarial review,
+    /// cycle 4) — the in-process semaphore alone cannot serialize two separate instances, so
+    /// this proves the cross-process file lock does.
+    /// </summary>
+    [Fact]
+    public async Task Five_parallel_creations_from_two_unsynchronized_manager_instances_all_succeed()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        GitWorktreeManager other = new(NullLogger<GitWorktreeManager>.Instance);
+
+        Worktree[] worktrees = await Task.WhenAll(Enumerable.Range(0, 5)
+            .Select(i => (i % 2 == 0 ? _manager : other).CreateAsync(Request($"Cross process task {i}"), cts.Token)));
+
+        worktrees.Select(w => w.Path).Distinct().Should().HaveCount(5);
+        worktrees.Should().OnlyContain(w => Directory.Exists(w.Path));
+    }
+
     [Fact]
     public async Task Retry_of_the_same_task_gets_a_run_suffixed_branch()
     {

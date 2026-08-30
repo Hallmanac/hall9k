@@ -8,15 +8,17 @@ namespace Hall9k.Connectors.Worktrees;
 public sealed class GitWorktreeManager(ILogger<GitWorktreeManager> logger) : IWorktreeManager
 {
     // Parallel worktree add/fetch against one repo hits git's internal locks; a per-repo
-    // mutex is cleaner than retry loops (Decisions Log #4).
+    // mutex is cleaner than retry loops (Decisions Log #4). In-process only — it used to
+    // be enough because the daemon's DI singleton was the only thing in the platform that
+    // ever touched a worktree. h9k task work (adversarial review, cycle 4) now runs a
+    // second GitWorktreeManager in the CLI process against the same repository, so the
+    // cross-process lock below is what actually serializes the two.
     private readonly ConcurrentDictionary<string, SemaphoreSlim> _repositoryLocks = new();
 
     public async Task<Worktree> CreateAsync(WorktreeRequest request, CancellationToken cancellationToken)
     {
         string repositoryPath = Path.GetFullPath(request.RepositoryPath);
-        SemaphoreSlim mutex = LockFor(repositoryPath);
-        await mutex.WaitAsync(cancellationToken);
-        try
+        await using RepositoryLock repositoryLock = await AcquireRepositoryLockAsync(repositoryPath, cancellationToken);
         {
             await BestEffortFetchAsync(repositoryPath, cancellationToken);
 
@@ -34,18 +36,12 @@ public sealed class GitWorktreeManager(ILogger<GitWorktreeManager> logger) : IWo
                 worktreePath, branch, startPoint);
             return new Worktree(worktreePath, branch, startPoint);
         }
-        finally
-        {
-            mutex.Release();
-        }
     }
 
     public async Task<Worktree> CheckoutExistingAsync(FollowUpWorktreeRequest request, CancellationToken cancellationToken)
     {
         string repositoryPath = Path.GetFullPath(request.RepositoryPath);
-        SemaphoreSlim mutex = LockFor(repositoryPath);
-        await mutex.WaitAsync(cancellationToken);
-        try
+        await using RepositoryLock repositoryLock = await AcquireRepositoryLockAsync(repositoryPath, cancellationToken);
         {
             await BestEffortFetchAsync(repositoryPath, cancellationToken);
 
@@ -94,19 +90,13 @@ public sealed class GitWorktreeManager(ILogger<GitWorktreeManager> logger) : IWo
                 "Worktree {Path} checked out on existing branch {Branch}", worktreePath, branch);
             return new Worktree(worktreePath, branch, localExists ? branch : $"origin/{branch}");
         }
-        finally
-        {
-            mutex.Release();
-        }
     }
 
     public async Task<Worktree> CreatePrReviewCheckoutAsync(
         PrReviewWorktreeRequest request, CancellationToken cancellationToken)
     {
         string repositoryPath = Path.GetFullPath(request.RepositoryPath);
-        SemaphoreSlim mutex = LockFor(repositoryPath);
-        await mutex.WaitAsync(cancellationToken);
-        try
+        await using RepositoryLock repositoryLock = await AcquireRepositoryLockAsync(repositoryPath, cancellationToken);
         {
             // A plain `git fetch origin <refspec>` on the command line replaces the
             // configured `+refs/heads/*:refs/remotes/origin/*` for that invocation, so the
@@ -129,25 +119,15 @@ public sealed class GitWorktreeManager(ILogger<GitWorktreeManager> logger) : IWo
                 worktreePath, request.PullRequestNumber);
             return new Worktree(worktreePath, $"pr/{request.PullRequestNumber}", trackingRef);
         }
-        finally
-        {
-            mutex.Release();
-        }
     }
 
     public async Task RemoveAsync(string repositoryPath, string worktreePath, CancellationToken cancellationToken)
     {
         repositoryPath = Path.GetFullPath(repositoryPath);
-        SemaphoreSlim mutex = LockFor(repositoryPath);
-        await mutex.WaitAsync(cancellationToken);
-        try
+        await using RepositoryLock repositoryLock = await AcquireRepositoryLockAsync(repositoryPath, cancellationToken);
         {
             await RunGitAsync(repositoryPath, $"worktree remove --force \"{worktreePath}\"", cancellationToken);
             logger.LogInformation("Worktree {Path} removed", worktreePath);
-        }
-        finally
-        {
-            mutex.Release();
         }
     }
 
@@ -155,9 +135,7 @@ public sealed class GitWorktreeManager(ILogger<GitWorktreeManager> logger) : IWo
         string repositoryPath, int pullRequestNumber, CancellationToken cancellationToken)
     {
         repositoryPath = Path.GetFullPath(repositoryPath);
-        SemaphoreSlim mutex = LockFor(repositoryPath);
-        await mutex.WaitAsync(cancellationToken);
-        try
+        await using RepositoryLock repositoryLock = await AcquireRepositoryLockAsync(repositoryPath, cancellationToken);
         {
             // update-ref -d, not fetch --prune: nothing on origin ever named this ref (it
             // was fetched from refs/pull/<n>/head, a synthetic ref GitHub serves, into a
@@ -168,10 +146,6 @@ public sealed class GitWorktreeManager(ILogger<GitWorktreeManager> logger) : IWo
             logger.LogInformation(
                 "Pr-review tracking ref for pull request #{Number} deleted", pullRequestNumber);
         }
-        finally
-        {
-            mutex.Release();
-        }
     }
 
     private static string PrReviewTrackingRef(int pullRequestNumber) => $"refs/remotes/origin/pr-review/{pullRequestNumber}";
@@ -179,15 +153,9 @@ public sealed class GitWorktreeManager(ILogger<GitWorktreeManager> logger) : IWo
     public async Task PruneAsync(string repositoryPath, CancellationToken cancellationToken)
     {
         repositoryPath = Path.GetFullPath(repositoryPath);
-        SemaphoreSlim mutex = LockFor(repositoryPath);
-        await mutex.WaitAsync(cancellationToken);
-        try
+        await using RepositoryLock repositoryLock = await AcquireRepositoryLockAsync(repositoryPath, cancellationToken);
         {
             await RunGitAsync(repositoryPath, "worktree prune", cancellationToken);
-        }
-        finally
-        {
-            mutex.Release();
         }
     }
 
@@ -208,9 +176,7 @@ public sealed class GitWorktreeManager(ILogger<GitWorktreeManager> logger) : IWo
                 "is not a git checkout this node can read, so whether it holds current code is unobserved");
         }
 
-        SemaphoreSlim mutex = LockFor(repositoryPath);
-        await mutex.WaitAsync(cancellationToken);
-        try
+        await using RepositoryLock repositoryLock = await AcquireRepositoryLockAsync(repositoryPath, cancellationToken);
         {
             await BestEffortFetchAsync(repositoryPath, cancellationToken);
 
@@ -243,18 +209,12 @@ public sealed class GitWorktreeManager(ILogger<GitWorktreeManager> logger) : IWo
                     $"is {behind} commit(s) behind origin/{branch} at {head.Trim()} and could not be "
                     + $"fast-forwarded ({mergeError.Trim()}); it was left exactly as it is");
         }
-        finally
-        {
-            mutex.Release();
-        }
     }
 
     public async Task DeleteBranchEverywhereAsync(string repositoryPath, string branch, CancellationToken cancellationToken)
     {
         repositoryPath = Path.GetFullPath(repositoryPath);
-        SemaphoreSlim mutex = LockFor(repositoryPath);
-        await mutex.WaitAsync(cancellationToken);
-        try
+        await using RepositoryLock repositoryLock = await AcquireRepositoryLockAsync(repositoryPath, cancellationToken);
         {
             // -D, not -d: PRs land via rebase merge, so the branch tip is never an ancestor
             // of the base branch. The caller's merged-PR observation is the justification.
@@ -291,10 +251,6 @@ public sealed class GitWorktreeManager(ILogger<GitWorktreeManager> logger) : IWo
                 branch, repositoryPath,
                 localExit == 0 ? "deleted" : "not deleted",
                 originExit == 0 ? "attempted" : "skipped");
-        }
-        finally
-        {
-            mutex.Release();
         }
     }
 
@@ -398,6 +354,63 @@ public sealed class GitWorktreeManager(ILogger<GitWorktreeManager> logger) : IWo
 
     private SemaphoreSlim LockFor(string repositoryPath) =>
         _repositoryLocks.GetOrAdd(repositoryPath, _ => new SemaphoreSlim(1, 1));
+
+    /// <summary>
+    /// Serializes worktree/fetch operations against one repository both within this process
+    /// (the semaphore) and across processes (a lock file dropped in the repository itself):
+    /// h9k task work now runs a second GitWorktreeManager in the CLI process against the same
+    /// repository the daemon's own DI singleton touches, so the in-process semaphore alone no
+    /// longer covers every writer (adversarial review, cycle 4).
+    /// </summary>
+    private async Task<RepositoryLock> AcquireRepositoryLockAsync(string repositoryPath, CancellationToken cancellationToken)
+    {
+        SemaphoreSlim mutex = LockFor(repositoryPath);
+        await mutex.WaitAsync(cancellationToken);
+        try
+        {
+            FileStream crossProcessLock = await AcquireCrossProcessLockAsync(repositoryPath, cancellationToken);
+            return new RepositoryLock(mutex, crossProcessLock);
+        }
+        catch
+        {
+            mutex.Release();
+            throw;
+        }
+    }
+
+    /// <summary>
+    /// FileShare.None maps to an exclusive advisory lock on Unix (the same mechanism
+    /// SingleInstanceGuard already uses for the daemon's own single-instance check) and to a
+    /// real exclusive lock on Windows: whichever process's FileStream opens it first holds it
+    /// until disposed, so a second process racing the same repository waits here instead of
+    /// losing a `git worktree add` / `git fetch` to a locked ref file.
+    /// </summary>
+    private static async Task<FileStream> AcquireCrossProcessLockAsync(string repositoryPath, CancellationToken cancellationToken)
+    {
+        string lockFilePath = Path.Combine(repositoryPath, ".h9k-worktree.lock");
+        while (true)
+        {
+            try
+            {
+                return new FileStream(lockFilePath, FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None);
+            }
+            catch (IOException)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                await Task.Delay(50, cancellationToken);
+            }
+        }
+    }
+
+    private sealed class RepositoryLock(SemaphoreSlim mutex, FileStream crossProcessLock) : IAsyncDisposable
+    {
+        public ValueTask DisposeAsync()
+        {
+            crossProcessLock.Dispose();
+            mutex.Release();
+            return ValueTask.CompletedTask;
+        }
+    }
 
     /// <summary>
     /// The repository a working tree resolves its refs through, in the same terms every other
