@@ -98,8 +98,8 @@ internal static class TwgDoctor
                 AnsiConsole.MarkupLine(
                     "[yellow]  Could not confirm twg is authenticated[/] — a probe search answered with "
                     + "something other than success or a recognisable auth refusal. Run "
-                    + $"'twg jira workitem query --jql \"{TwgJiraExecutor.ProbeJql}\" --output json "
-                    + "--output-summary stats' by hand to see what it says.");
+                    + $"twg jira workitem query --jql '{TwgJiraExecutor.ProbeJql}' --output json "
+                    + "--output-summary stats by hand to see what it says.");
                 break;
         }
     }
