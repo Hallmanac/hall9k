@@ -185,10 +185,11 @@ public sealed class TwgJiraExecutor(ProcessRunner? runner = null, Uri? site = nu
         {
             throw new TwgExecutionException(
                 TwgFailureKind.Other,
-                $"The marker search for {Marker(taskId)} could not be read back to confirm — the temp "
-                + "file twg wrote its answer to was reaped or unreadable before this check could run. "
-                + "Refusing to create on an unconfirmed dedup check; check the board by hand for "
-                + $"{Marker(taskId)} and, if it is not there, run the write again.");
+                $"The marker search for {Marker(taskId)} could not be confirmed readable — either the "
+                + "temp file twg wrote its answer to was reaped or unreadable before this check could "
+                + "run, or it read back as malformed JSON. Refusing to create on an unconfirmed dedup "
+                + $"check; check the board by hand for {Marker(taskId)} and, if it is not there, run the "
+                + "write again.");
         }
 
         foreach (string candidate in candidates.Take(MaxMarkerSearchCandidates))
