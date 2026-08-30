@@ -75,8 +75,10 @@ public sealed record JiraWritePayload(
             if (!HasField(Fields, "summary"))
             {
                 throw new DomainValidationException(
-                    "A create write needs a \"summary\" field — twg's own jira workitem create refuses "
-                    + "without one, so this is refused here instead, before an intent is even recorded.");
+                    "A create write needs a \"summary\" field inside \"fields\" — twg's own jira workitem "
+                    + "create refuses without one, so this is refused here instead, before an intent is "
+                    + "even recorded. A top-level \"summary\" or \"description\" outside \"fields\" is not "
+                    + "read; both belong inside it.");
             }
         }
 
