@@ -619,8 +619,8 @@ first-class interface, always, for every command:
   finish.** Checkpoint commits along the way are crash protection, not authored history —
   they exist so an abnormal ending (context exhaustion, an early exit) strands at most the
   increment since the last checkpoint. Once the full verification suite is green and every
-  checkpoint is committed, record the pre-reset tip (`git rev-parse HEAD`) — step 3 below
-  checks the recompose against it — then reset to the branch's own fork point, never the
+  checkpoint is committed, record the pre-reset tip (`git rev-parse HEAD`) — the tree-identity
+  check below verifies the recompose against it — then reset to the branch's own fork point, never the
   moving tip of `origin/<base>` itself (that ref lives in the shared repository and can move
   mid-session). Capture the fork point into a variable and stop if it does not resolve; never
   inline the substitution directly into the reset — an unresolved `origin/<base>` makes
