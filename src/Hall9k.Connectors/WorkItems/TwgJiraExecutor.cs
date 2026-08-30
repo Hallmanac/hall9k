@@ -437,12 +437,14 @@ public sealed class TwgJiraExecutor(ProcessRunner? runner = null, Uri? site = nu
             throw new TwgExecutionException(
                 TwgFailureKind.Other,
                 $"twg reported {issueKey} {verb}, but reading it back afterward to verify hit its own "
-                + $"failure: {exception.Message} That describes only the read-back call — the {verb} call "
+                + $"failure: {exception.Message}. That describes only the read-back call — the {verb} call "
                 + "itself already succeeded, so do not record this as a refusal of the write. "
                 + (confirmsExistenceOnly
                     ? "Check the board before writing again."
                     : "The marker search this executor runs first will find the card if it exists rather "
-                        + "than filing a second one, so resubmitting is safe."));
+                        + "than filing a second one, but Jira's own search index updates asynchronously, so "
+                        + "a resubmission inside that lag window can still find nothing and file a second "
+                        + "card — check the board before resubmitting if you can."));
         }
 
         string? found = ExtractFirstKey(result.StandardOutput);
