@@ -120,6 +120,20 @@ public sealed class TaskWorkCommand : Hall9kAsyncCommand<TaskWorkCommand.Setting
         string settingsFile = RunPaths.SettingsFile(resolvedRunDirectory);
         await File.WriteAllTextAsync(settingsFile, ClaudeSettingsFile.Content, cancellationToken);
 
+        // Re-checked immediately before launch, not only once inside ReenterAsync: everything
+        // above (the worktree cut, the blocker-context load, the skill discovery
+        // WorkPromptBuilder.Build runs, and the settings-file write) takes long enough for a
+        // second `h9k task work` on the same task to pass ReenterAsync's own check — reading the
+        // same RunDetails with ActiveSessions still empty — before this session is ever recorded,
+        // launching two Claude processes into the same worktree (adversarial review, cycle 1).
+        // Reloading RunDetails here (a lightweight session, so this hits the database rather than
+        // an identity-map cache) narrows that window down to the launch itself.
+        RunDetails currentRun = await session.LoadAsync<RunDetails>(runId, cancellationToken)
+            ?? throw new DomainConflictException(
+                $"Task {taskId}'s run {runId} no longer has a record — h9k task release {taskId} to give the "
+                + "claim back to the dispatch queue.");
+        InteractiveSessionLiveness.EnsureNotAttachedElsewhere(currentRun, taskId, "work", settings.Force);
+
         AnsiConsole.MarkupLineInterpolated($"[dim]Worktree: {worktreePath}[/]");
         AnsiConsole.MarkupLineInterpolated($"[dim]Branch: {branch}[/]");
         AnsiConsole.MarkupLine("[dim]Launching an interactive Claude Code session — exit it normally (Ctrl+D or /exit) to return here.[/]");
