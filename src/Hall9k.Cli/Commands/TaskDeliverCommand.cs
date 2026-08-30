@@ -165,6 +165,36 @@ public sealed class TaskDeliverCommand : Hall9kAsyncCommand<TaskDeliverCommand.S
         string handoff = settings.Handoff ?? PromptForHandoff();
         await WriteHandoffAsync(run.RunDirectory, handoff, cancellationToken);
 
+        // Re-checked immediately before the append that hands this run to the daemon's
+        // pipeline, not only once above: PromptForHandoff blocks on operator input with no
+        // timeout, and everything from the push through that prompt leaves a window in which
+        // another terminal can abandon, release, or hand back this very claim — each of which
+        // appends RunSuperseded. Appending AgentSessionCompleted unconditionally would then
+        // resurrect that superseded run (RunDetailsProjection sets State back to Verifying
+        // unconditionally), sending it into RunSupervisor.ResumeStrandedPipelinesAsync and on to
+        // PullRequestOpener for a task that no longer reads Claimed (adversarial review, cycle
+        // 6). Reloading here (a lightweight session, so this hits the database rather than an
+        // identity-map cache) narrows the window down to the append itself, mirroring
+        // TaskWorkCommand's own pre-launch re-check.
+        TaskDetails taskBeforeAppend = await session.LoadAsync<TaskDetails>(taskId, cancellationToken)
+            ?? throw new DomainConflictException($"Task {taskId} no longer exists — the claim was lost while delivering.");
+        if (taskBeforeAppend.State != TaskState.Claimed || !taskBeforeAppend.IsInteractiveClaim || taskBeforeAppend.CurrentRunId != runId)
+        {
+            throw new DomainConflictException(
+                $"Task {taskId} is {taskBeforeAppend.State.Value} — its interactive claim changed while delivering "
+                + "(released, abandoned, or handed back from another terminal). "
+                + $"Branch {run.Branch} was already pushed; h9k task show {taskId} to see where it stands.");
+        }
+
+        RunDetails runBeforeAppend = await session.LoadAsync<RunDetails>(runId, cancellationToken)
+            ?? throw new DomainConflictException($"Task {taskId}'s run {runId} no longer has a record while delivering.");
+        if (runBeforeAppend.State != RunState.Dispatched && runBeforeAppend.State != RunState.Running)
+        {
+            throw new DomainConflictException(
+                $"Run {runId} is already {runBeforeAppend.State.Value} — task {taskId}'s claim changed while "
+                + $"delivering. Branch {run.Branch} was already pushed; h9k task show {taskId} to see where it stands.");
+        }
+
         // The delivering node's own id, not the sentinel the claim was dispatched under: from
         // here the run travels the identical daemon-driven pipeline a headless run's own
         // AgentSessionCompleted hands into (gates, review, fix sessions), and NodeLoad's own
