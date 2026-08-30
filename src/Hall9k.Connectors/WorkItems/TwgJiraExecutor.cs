@@ -940,6 +940,14 @@ public sealed class TwgJiraExecutor(ProcessRunner? runner = null, Uri? site = nu
     /// create — so a silent fallback there would read as "no card carries the marker" instead of
     /// "the search's own answer could not be confirmed", the false negative this flag exists to
     /// catch (independent pre-PR review, conformance lens, cycle 8).
+    /// <para>
+    /// A temp file that exists and reads back blank — whitespace or zero bytes — clears
+    /// <paramref name="confirmedReadable"/> too rather than reporting it as a confirmed empty
+    /// answer: twg's own JSON envelope always carries at least an empty <c>data</c> shape, even
+    /// for a zero-result query, so a genuinely blank read is the reaped-mid-read case in different
+    /// clothes, not a legitimate empty result (independent pre-PR review, conformance and
+    /// adversarial lenses, cycle 8).
+    /// </para>
     /// </summary>
     private static string ReadPayloadJson(string envelopeOutput, out bool confirmedReadable)
     {
@@ -957,8 +965,9 @@ public sealed class TwgJiraExecutor(ProcessRunner? runner = null, Uri? site = nu
         {
             try
             {
-                confirmedReadable = true;
-                return File.ReadAllText(match.Groups["path"].Value);
+                string text = File.ReadAllText(match.Groups["path"].Value);
+                confirmedReadable = text.IsNotBlank();
+                return text;
             }
             catch (IOException)
             {
