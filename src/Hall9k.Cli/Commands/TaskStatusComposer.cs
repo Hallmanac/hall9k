@@ -455,7 +455,7 @@ internal static class TaskStatusComposer
         // empty that group on most boards. That is the whole of the exception — a park, an
         // unanswered question or a pull request nothing is watching any more has genuinely
         // stopped, and belongs in the group a reader scans for work that needs them.
-        if (attention.NeedsYou && !AwaitingMerge(state, run))
+        if (attention.NeedsYou && !AwaitingMerge(task, state, run))
         {
             return AttentionBucket.NeedsYou;
         }
@@ -479,10 +479,18 @@ internal static class TaskStatusComposer
 
     /// <summary>
     /// A Delivered row whose only outstanding ask is the merge itself: the pull request is open,
-    /// the closeout monitor is still watching it, and nothing has been recorded against it.
+    /// the closeout monitor is still watching it, and nothing has been recorded against it. A
+    /// pending Jira write stuck on an expired or missing twg login carries no lifecycle state of
+    /// its own (AGENTS.md's own needs-you relay table lists it as one of five reasons a row lands
+    /// there), so it can stand on a Delivered, AwaitingReview row exactly as well as it can stand
+    /// on any other — and it is never "the merge is yours", so this exception must not swallow it
+    /// into the Delivered section, where a reader scanning for a merge decision would never look
+    /// for it (independent pre-PR review, adversarial lens, cycle 11).
     /// </summary>
-    private static bool AwaitingMerge(LifecycleState state, RunDetails? run) =>
-        state == LifecycleState.Delivered && run?.State == RunState.AwaitingReview;
+    private static bool AwaitingMerge(TaskListItem task, LifecycleState state, RunDetails? run) =>
+        state == LifecycleState.Delivered
+        && run?.State == RunState.AwaitingReview
+        && !task.PendingJiraWriteIsAuthFailure;
 
     /// <summary>
     /// Attention-first ordering: what needs a human, then what has gone quiet, then what is
