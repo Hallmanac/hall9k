@@ -397,9 +397,8 @@ public static class WorkPromptBuilder
         prompt.AppendLine("     `old-tip` never held means step 0's clean-tree check was skipped; there is no");
         prompt.AppendLine("     local fix for that here, redo the recompose from a tip recorded once that");
         prompt.AppendLine("     content was itself committed as a checkpoint, not folded in at this step.");
-        prompt.AppendLine("     Check `git status");
-        prompt.AppendLine("     --porcelain` too, right here, and treat any untracked file it shows as the");
-        prompt.AppendLine("     same failure: the platform's own gate only warns on an untracked file (a");
+        prompt.AppendLine("     Check `git status --porcelain` too, right here, and treat any untracked file");
+        prompt.AppendLine("     it shows as the same failure: the platform's own gate only warns on an untracked file (a");
         prompt.AppendLine("     build byproduct can legitimately be one), so this file forgotten by the");
         prompt.AppendLine("     recompose is the check that actually stops it before it ships.");
         prompt.AppendLine("  Nothing happens between steps 1 and 2: no test run, no fix, no exploration.");
