@@ -363,8 +363,8 @@ public static class WorkPromptBuilder
         prompt.AppendLine("     against a tip that never held it: an untracked file only warns at the final");
         prompt.AppendLine("     contract, but here it would recompose into the new history while `old-tip`");
         prompt.AppendLine("     predates it, so the diff comes back non-empty for something that was added,");
-        prompt.AppendLine("     not omitted — record the pre-reset tip: `git rev-parse HEAD`. Step 3");
-        prompt.AppendLine("     checks against it, so this is not optional bookkeeping.");
+        prompt.AppendLine("     not omitted. Record the pre-reset tip: `git rev-parse HEAD` — step 3 checks");
+        prompt.AppendLine("     against it, so this is not optional bookkeeping.");
         prompt.AppendLine($"  1. Reset to the branch's own fork point, not the tip of `origin/{baseBranch}`");
         prompt.AppendLine("     itself: that ref lives in the shared repository and can move during this");
         prompt.AppendLine("     session (another worktree's fetch, a closeout branch cleanup), and resetting");
@@ -391,8 +391,13 @@ public static class WorkPromptBuilder
         prompt.AppendLine("     which commits exist, never the tree, so an empty diff should be automatic —");
         prompt.AppendLine("     but a file the commit-plan step forgot to stage lands as untracked rather");
         prompt.AppendLine("     than modified, which this diff catches and a plain `git status` glance can");
-        prompt.AppendLine("     miss. A non-empty diff means something was left out of the recomposed");
-        prompt.AppendLine("     commits; add it and recompose again before finishing. Check `git status");
+        prompt.AppendLine("     miss. A non-empty diff cuts two ways: something `old-tip` had that the");
+        prompt.AppendLine("     recompose is missing means the commit-plan step forgot to stage it — add it");
+        prompt.AppendLine("     and recompose again before finishing. Something the recompose has that");
+        prompt.AppendLine("     `old-tip` never held means step 0's clean-tree check was skipped; there is no");
+        prompt.AppendLine("     local fix for that here, redo the recompose from a tip recorded once that");
+        prompt.AppendLine("     content was itself committed as a checkpoint, not folded in at this step.");
+        prompt.AppendLine("     Check `git status");
         prompt.AppendLine("     --porcelain` too, right here, and treat any untracked file it shows as the");
         prompt.AppendLine("     same failure: the platform's own gate only warns on an untracked file (a");
         prompt.AppendLine("     build byproduct can legitimately be one), so this file forgotten by the");

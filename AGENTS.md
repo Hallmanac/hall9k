@@ -618,18 +618,28 @@ first-class interface, always, for every command:
 - **Commit as you go during a fresh build session, then recompose once, right before you
   finish.** Checkpoint commits along the way are crash protection, not authored history —
   they exist so an abnormal ending (context exhaustion, an early exit) strands at most the
-  increment since the last checkpoint. Once the full verification suite is green, reset to
-  the branch's own fork point (`git reset --mixed $(git merge-base origin/<base> HEAD)`,
-  never the moving tip of `origin/<base>` itself) and immediately recompose that tree into
-  real history — the commit-plan skill, if this repo ships one, or the same mechanics done
-  by hand — with nothing in between (no test run, no fix) so the recomposed commits
-  provably describe the exact tree that passed the suite. Verify tree identity afterward
-  (`git diff <old-tip> HEAD` must print nothing, the same check the narrative rebase path
-  requires), and the session is not done while `git status` shows anything uncommitted or
-  untracked — check it last and commit whatever remains. Origin incident (2026-08-29):
-  three no-commit strandings in one night, each a large session that finished its work and
-  left everything uncommitted with nothing to recover from an abnormal ending (decision
-  #104).
+  increment since the last checkpoint. Once the full verification suite is green and every
+  checkpoint is committed, record the pre-reset tip (`git rev-parse HEAD`) — step 3 below
+  checks the recompose against it — then reset to the branch's own fork point, never the
+  moving tip of `origin/<base>` itself (that ref lives in the shared repository and can move
+  mid-session). Capture the fork point into a variable and stop if it does not resolve; never
+  inline the substitution directly into the reset — an unresolved `origin/<base>` makes
+  `git merge-base` print nothing and exit nonzero, and `git reset --mixed $(...)` on an empty
+  substitution silently becomes a bare `git reset --mixed`, a no-op that exits 0 as though the
+  recompose had happened, with the tree-identity check below unable to catch it (the diff
+  would compare HEAD against itself and read clean):
+  `FORK_POINT=$(git merge-base origin/<base> HEAD)`
+  `test -n "$FORK_POINT" || { echo "no fork point resolved — stop here, do not reset" >&2; exit 1; }`
+  `git reset --mixed "$FORK_POINT"`
+  Then immediately recompose that tree into real history — the commit-plan skill, if this repo
+  ships one, or the same mechanics done by hand — with nothing in between (no test run, no fix)
+  so the recomposed commits provably describe the exact tree that passed the suite. Verify tree
+  identity afterward (`git diff <old-tip> HEAD`, against the tip recorded before the reset, must
+  print nothing, the same check the narrative rebase path requires), and the session is not done
+  while `git status` shows anything uncommitted or untracked — check it last and commit whatever
+  remains. Origin incident (2026-08-29): three no-commit strandings in one night, each a large
+  session that finished its work and left everything uncommitted with nothing to recover from an
+  abnormal ending (decision #104).
 
 ## Repo skills
 
