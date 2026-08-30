@@ -120,6 +120,19 @@ public sealed class JiraWriteRetryEngineTests(PostgresFixture postgres) : IClass
         IReadOnlyList<IEvent> stream = await query.Events.FetchStreamAsync(taskId, token: cts.Token);
         stream.Select(recorded => recorded.Data).OfType<JiraWriteFailed>().Should().ContainSingle(
             "twg gave the identical answer on every attempt, so only the first failure is new information");
+
+        // This test's own write is deliberately left auth-stuck above so the assertions could
+        // observe it — cleaned up here so it does not leak into a later test's own sweep
+        // (JiraWriteRetryEngineTests shares one Postgres fixture across every test in this class).
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            TaskAggregate current = (await session.Events.AggregateStreamAsync<TaskAggregate>(taskId, token: cts.Token))!;
+            session.Events.Append(taskId, TaskDecider.RecordJiraWriteFailure(
+                current, current.PendingJiraWriteId!.Value,
+                "Test cleanup: ending the auth-stuck write so it does not leak into a later test.",
+                isAuthFailure: false, Now));
+            await session.SaveChangesAsync(cts.Token);
+        }
     }
 
     [Fact]
