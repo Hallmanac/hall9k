@@ -75,10 +75,23 @@ public sealed class GitWorktreeManager(ILogger<GitWorktreeManager> logger) : IWo
             }
             else if (remoteExists)
             {
+                // `worktree add -b` writes no reflog entry for the branch's creation unless
+                // core.logAllRefUpdates is set on this repository — a config the platform
+                // only sets on a repo it clones itself (RepoMaterialiser.CloneAsync), never
+                // on a hand-cut bare clone a project was pointed at. Without that entry,
+                // origin's tip at creation time never appears in the branch reflog, so a
+                // later checkpoint recompose that diverges from it looks indistinguishable
+                // from someone else rewriting the branch to both WasEverLocalHeadAsync below
+                // and its twin in PullRequestOpener.PushBranchAsync — refusing a legitimate
+                // push, or hard-resetting a real recompose away, on a false "rewrite" read.
+                // Materialise the ref explicitly so the creation point is always recorded,
+                // regardless of repo config.
                 await RunGitAsync(
                     repositoryPath,
-                    $"worktree add --no-track -b {branch} \"{worktreePath}\" origin/{branch}",
+                    $"update-ref --create-reflog refs/heads/{branch} refs/remotes/origin/{branch} " +
+                    $"-m \"branch: Created from origin/{branch} by CheckoutExistingAsync\"",
                     cancellationToken);
+                await RunGitAsync(repositoryPath, $"worktree add \"{worktreePath}\" {branch}", cancellationToken);
             }
             else
             {

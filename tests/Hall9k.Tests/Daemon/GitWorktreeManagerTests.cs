@@ -408,6 +408,54 @@ public sealed class GitWorktreeManagerTests : IDisposable
         File.Exists(Path.Combine(followUp.Path, "WORK.md")).Should().BeTrue();
     }
 
+    /// <summary>
+    /// `worktree add -b` writes no reflog entry for a branch's creation unless
+    /// core.logAllRefUpdates is set — true by default for an ordinary clone (what every other
+    /// test in this file uses) but not guaranteed for a hand-cut bare clone a project was
+    /// pointed at rather than materialised by the platform's own <c>RepoMaterialiser</c>.
+    /// Without an explicit reflog entry recorded at creation, origin's tip at that moment
+    /// never appears in the branch reflog, so a later recompose diverging from it reads as an
+    /// external rewrite and gets hard-reset away (independent pre-PR review, cycle 5,
+    /// conformance and adversarial).
+    /// </summary>
+    [Fact]
+    public async Task Checkout_existing_records_the_origin_tip_it_recreated_from_even_without_reflog_config()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(1));
+        Guid taskId = DomainId.New();
+
+        Worktree first = await _manager.CreateAsync(
+            new WorktreeRequest(_repositoryPath, "main", taskId, DomainId.New(), "Recreate without reflog config"), cts.Token);
+        File.WriteAllText(Path.Combine(first.Path, "WORK.md"), "checkpoint\n");
+        Git(first.Path, "add -A");
+        Git(first.Path, "-c user.name=Test -c user.email=t@t commit -qm checkpoint");
+        Git(first.Path, $"push -q origin {first.Branch}");
+        await _manager.RemoveAsync(_repositoryPath, first.Path, cts.Token);
+        Git(_repositoryPath, $"branch -D {first.Branch}");
+
+        // A hand-cut bare clone never gets core.logAllRefUpdates set (only
+        // RepoMaterialiser.CloneAsync does) — disable it explicitly to reproduce that shape.
+        Git(_repositoryPath, "config core.logAllRefUpdates false");
+
+        Worktree recreated = await _manager.CheckoutExistingAsync(
+            new FollowUpWorktreeRequest(_repositoryPath, first.Branch, taskId, DomainId.New()), cts.Token);
+
+        // Recompose: reset to the fork point and compose fresh history, diverging from the
+        // tip this worktree was JUST recreated from — the checkpoint protocol's normal shape.
+        Git(recreated.Path, "reset --mixed HEAD~1");
+        File.WriteAllText(Path.Combine(recreated.Path, "WORK.md"), "recomposed\n");
+        Git(recreated.Path, "add -A");
+        Git(recreated.Path, "-c user.name=Test -c user.email=t@t commit -qm recomposed");
+        Directory.Delete(recreated.Path, recursive: true);
+
+        Worktree followUp = await _manager.CheckoutExistingAsync(
+            new FollowUpWorktreeRequest(_repositoryPath, first.Branch, taskId, DomainId.New()), cts.Token);
+
+        File.ReadAllText(Path.Combine(followUp.Path, "WORK.md")).Should().Be("recomposed\n",
+            "the branch's creation tip must be recorded in its reflog even when core.logAllRefUpdates " +
+            "is off, or this recompose reads as an external rewrite and gets hard-reset away");
+    }
+
     [Fact]
     public async Task Checkout_existing_of_an_unknown_branch_throws()
     {
