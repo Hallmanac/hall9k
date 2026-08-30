@@ -46,7 +46,8 @@ internal static class StatusFixtures
         string objective = "x",
         Guid? projectId = null,
         DateTimeOffset? addedAt = null,
-        DateTimeOffset? assignedAt = null) => new()
+        DateTimeOffset? assignedAt = null,
+        Guid? claimedByNodeId = null) => new()
         {
             Id = DomainId.New(),
             ProjectId = projectId ?? DomainId.New(),
@@ -57,6 +58,7 @@ internal static class StatusFixtures
             PullRequestUrl = pullRequest,
             AddedAt = addedAt ?? Now,
             AssignedAt = assignedAt,
+            ClaimedByNodeId = claimedByNodeId,
         };
 
     /// <summary>

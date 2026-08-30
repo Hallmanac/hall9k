@@ -57,7 +57,20 @@ internal static class InteractiveWorktreeGit
     {
         (int exitCode, _, string standardError) = await RunGitAsync(
             worktreePath, ["push", "--force-with-lease", "-u", "origin", branch], cancellationToken);
-        return (exitCode == 0, standardError.Trim());
+        if (exitCode == 0)
+        {
+            return (true, string.Empty);
+        }
+
+        // RunGitAsync's own (-1, "", "") sentinel for a git process that never started (the
+        // worktree directory vanished from under the claim, or git itself is missing from PATH)
+        // is otherwise indistinguishable from a git failure that simply wrote nothing to stderr,
+        // and reporting it verbatim left the operator staring at a bare "Push failed: " with no
+        // named cause (adversarial review, cycle 4).
+        string error = exitCode == -1 && standardError.IsBlank()
+            ? $"git could not be run against {worktreePath} — the worktree directory may no longer exist."
+            : standardError.Trim();
+        return (false, error);
     }
 
     /// <summary>

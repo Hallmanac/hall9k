@@ -43,6 +43,7 @@ public sealed class TaskRetriedProjectionTests
         view.State.Should().Be(TaskState.Queued);
         view.RetryBranch.Should().Be(Branch, "the launcher resumes the failed run's branch when it survives");
         view.RetryReason.Should().Be(RetryReason, "h9k task show renders it");
+        view.RetryReasonIsHandback.Should().BeFalse("a real failure earned this reason, not a handback");
         view.FailureReason.Should().Be(FailureReason, "retry does not erase why the task failed");
         view.ClaimedByNodeId.Should().BeNull();
         view.CurrentRunId.Should().BeNull();
@@ -82,5 +83,33 @@ public sealed class TaskRetriedProjectionTests
         view.State.Should().Be(TaskState.Queued, "the daemon's queue query picks the task up again");
         view.ClaimedByNodeId.Should().BeNull();
         view.CurrentRunId.Should().BeNull();
+    }
+
+    [Fact]
+    public void A_handback_reads_as_a_handback_never_as_a_retry()
+    {
+        // TaskHandedBack shares TaskRetried's RetryReason field (both resume the same branch,
+        // and WorkPromptBuilder wants the identical causeless "why this resumes" text either
+        // way), but h9k task show's fixed "Retried" row label must not attribute a never-failed
+        // handback to a retry that never happened (conformance review, cycle 4).
+        TaskDetailsProjection projection = new();
+        Guid id = DomainId.New();
+        Guid runId = DomainId.New();
+        const string handbackReason = "Stepping away; the migration script is drafted but untested.";
+
+        TaskDetails view = projection.Create(new FakeEvent<TaskAdded>(new TaskAdded(
+            id, DomainId.New(), "Do the thing", ["it is done"], TaskType.Feature,
+            null, null, null, Now, DomainId.New())));
+
+        projection.Apply(new FakeEvent<TaskHandedBack>(new TaskHandedBack(
+            id, runId, Branch, handbackReason, Now.AddHours(1), DomainId.New())), view);
+
+        view.RetryReason.Should().Be(handbackReason);
+        view.RetryReasonIsHandback.Should().BeTrue("this task never failed; nothing was retried");
+
+        projection.Apply(new FakeEvent<TaskRetried>(new TaskRetried(
+            id, runId, Branch, RetryReason, Now.AddHours(2), DomainId.New())), view);
+
+        view.RetryReasonIsHandback.Should().BeFalse("a later real retry replaces the handback marker");
     }
 }

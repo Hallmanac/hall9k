@@ -139,6 +139,14 @@ public sealed class TaskDetails
     /// <summary>The failed run's branch while a human-requested retry is pending: the launcher resumes it when it survives (Decisions Log #25).</summary>
     public string? RetryBranch { get; set; }
     public string? RetryReason { get; set; }
+    /// <summary>
+    /// Whether <see cref="RetryReason"/> was last set by <see cref="Events.TaskHandedBack"/>
+    /// rather than <see cref="Events.TaskRetried"/> — the two share the field (both resume the
+    /// same branch, WorkPromptBuilder wants the same causeless "why this resumes" text either
+    /// way), but <c>h9k task show</c>'s fixed "Retried" row label must not attribute a
+    /// never-failed handback to a retry that never happened (conformance review, cycle 4).
+    /// </summary>
+    public bool RetryReasonIsHandback { get; set; }
     /// <summary>The human's attestation that the objective was met despite the run failure (Decisions Log #27); shown by h9k task show.</summary>
     public string? ResolvedReason { get; set; }
     /// <summary>
@@ -424,6 +432,7 @@ public sealed class TaskDetailsProjection : SingleStreamProjection<TaskDetails, 
     {
         view.RetryBranch = @event.Data.Branch;
         view.RetryReason = @event.Data.Reason;
+        view.RetryReasonIsHandback = false;
         view.ClaimedByNodeId = null;
         view.CurrentRunId = null;
         view.State = TaskState.Queued;
@@ -436,6 +445,7 @@ public sealed class TaskDetailsProjection : SingleStreamProjection<TaskDetails, 
     {
         view.RetryBranch = @event.Data.Branch;
         view.RetryReason = @event.Data.Reason;
+        view.RetryReasonIsHandback = true;
         view.ClaimedByNodeId = null;
         view.CurrentRunId = null;
         view.State = TaskState.Queued;

@@ -242,7 +242,9 @@ public sealed class TaskPhaseSurfaceTests
         ];
 
         TaskStatusRow row = StatusFixtures.Compose(
-            StatusFixtures.Task(TaskState.Claimed, runId), interactive, liveness: SessionLiveness.Gone);
+            StatusFixtures.Task(TaskState.Claimed, runId, claimedByNodeId: Guid.Empty),
+            interactive,
+            liveness: SessionLiveness.Gone);
 
         row.Stalled.Should().BeFalse();
         row.Attention.NeedsYou.Should().BeFalse();
@@ -255,6 +257,29 @@ public sealed class TaskPhaseSurfaceTests
         row.Phase.Text.Should().Be("building");
         row.Phase.Liveness.Should().Be(SessionLiveness.NotApplicable);
         row.Phase.Markup.Should().NotContain("recorded process is gone");
+        row.Phase.Markup.Should().Contain("h9k task work re-enters this claim");
+    }
+
+    [Fact]
+    public void An_interactive_claim_that_exited_normally_still_reads_as_reenterable()
+    {
+        // InteractiveSessionEnded (a normal /exit or Ctrl+D) clears ActiveSessions entirely, so
+        // ActiveRole(run) reads Unknown and the observed session reads NotApplicable rather than
+        // Gone — neither of which the old guard (session == Gone && ActiveRole == Interactive)
+        // could ever see, so the row fell through to the ordinary Running case and read as an
+        // unattended headless run with no session recorded (adversarial review, cycle 4). The
+        // discriminator has to be task.ClaimedByNodeId, the Guid.Empty sentinel every other
+        // command on this surface reads, because it is the only thing that survives the session
+        // ending.
+        Guid runId = DomainId.New();
+        RunDetails interactive = StatusFixtures.Run(runId, RunState.Running, sessionProcessId: null);
+
+        TaskStatusRow row = StatusFixtures.Compose(
+            StatusFixtures.Task(TaskState.Claimed, runId, claimedByNodeId: Guid.Empty), interactive);
+
+        row.Phase.Text.Should().Be("building");
+        row.Phase.Liveness.Should().Be(SessionLiveness.NotApplicable);
+        row.Phase.Markup.Should().NotContain("no session recorded");
         row.Phase.Markup.Should().Contain("h9k task work re-enters this claim");
     }
 

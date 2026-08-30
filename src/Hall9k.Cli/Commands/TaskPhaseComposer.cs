@@ -82,7 +82,18 @@ internal static class TaskPhaseComposer
         // recorded process is gone" (TaskPhase.LivenessMarkup) misfiles that normal wait as a
         // machine failure, the same misfiling TaskStatusComposer.Silence's own interactive check
         // already argues against one field over (adversarial review, cycle 1).
-        if (session == SessionLiveness.Gone && ActiveRole(run) == AgentRole.Interactive)
+        // <para>
+        // Gated on task.ClaimedByNodeId rather than ActiveRole(run): a normal exit
+        // (InteractiveSessionEnded) clears ActiveSessions entirely, so ActiveRole(run) reads
+        // Unknown and session reads NotApplicable, not Gone — the same claim a Ctrl+C leaves
+        // rendering the honest "building" line above would otherwise fall through to the ordinary
+        // Running case and read as an unattended headless run with a lost process (adversarial
+        // review, cycle 4). ClaimedByNodeId is the sentinel every other command on this surface
+        // already reads for the same distinction and survives the session ending.
+        // </para>
+        if (task.ClaimedByNodeId == Guid.Empty
+            && run.State.Value == "Running"
+            && session != SessionLiveness.Alive)
         {
             // The lever leads: TaskRowLayout.cs renders this line with Overflow.Ellipsis, so a
             // narrow terminal truncates the tail first — putting the actionable half first keeps
