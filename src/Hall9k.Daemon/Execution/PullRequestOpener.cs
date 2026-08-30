@@ -58,26 +58,22 @@ public sealed class PullRequestOpener(
             // new history means a retried task resuming a branch this same opener already
             // pushed once (push succeeded, `gh pr create` then failed) diverges from that
             // earlier push. A plain push rejects that as non-fast-forward and strands the
-            // completed, gated work; --force-with-lease lands either rewrite while still
-            // refusing a tip this node has not fetched (a human or another node moved the
-            // branch). For the ordinary case — this node's own remote-tracking ref for the
-            // branch is current, which BestEffortFetchAsync keeps true on every worktree
-            // create/checkout — that behaves exactly like a plain push, including for a
-            // branch never pushed before, which matters because `h9k task deliver` now
-            // publishes an interactive claim's branch itself before this run reaches here, so
-            // `IsFollowUp` is no longer a reliable proxy for "does a remote copy already
-            // exist" (conformance review, cycle 1). It is narrower than a plain push only
-            // when this node holds no tracking ref at all for a branch origin already has (a
-            // best-effort fetch that never landed, or a bare clone missing the fetch refspec
-            // RepoMaterialiser corrects): there, the lease has nothing to compare against and
-            // git rejects the push outright rather than fast-forwarding (conformance and
-            // adversarial review, cycle 1). Never plain --force. A failed lease fails the run
-            // honestly below — no blind retry — and h9k pr resolve is the requeue lever.
-            // Origin incident (2026-08-17): the first two automatic follow-up runs rebased
-            // per the authored-history rule and a then-plain push rejected both,
-            // stranding completed, gated work in the worktrees.
-            string[] pushArguments = ["push", "--force-with-lease", "origin", run.Branch];
-            await RunInWorktreeAsync(run.WorktreePath, "git", pushArguments, cancellationToken);
+            // completed, gated work. PushBranchAsync below pins the lease's expected value
+            // explicitly, rather than trusting the bare flag against whatever this node's
+            // remote-tracking ref currently reads: BestEffortFetchAsync refreshes that ref
+            // on every worktree create/checkout regardless of whether the sync that follows
+            // actually integrates it (GitWorktreeManager.SyncToOriginBestEffortAsync's
+            // uncommitted-work veto, in particular), so a bare lease can pass — and silently
+            // overwrite — a tip this run never actually accounted for (conformance review,
+            // cycle 1). This matters for a first-time push too, not only a follow-up's: `h9k
+            // task deliver` now publishes an interactive claim's branch itself before this run
+            // reaches here, so `IsFollowUp` is no longer a reliable proxy for "does a remote
+            // copy already exist" (conformance review, cycle 1). Never plain --force. A
+            // refused or failed push fails the run honestly below — no blind retry — and h9k
+            // pr resolve is the requeue lever. Origin incident (2026-08-17): the first two
+            // automatic follow-up runs rebased per the authored-history rule and a then-plain
+            // push rejected both, stranding completed, gated work in the worktrees.
+            await PushBranchAsync(run.WorktreePath, run.Branch, cancellationToken);
             (string? pullRequestUrl, int pullRequestNumber) = task.PullRequestUrl is { } existingUrl
                 ? (existingUrl, PullRequestUrls.ParseNumber(existingUrl))
                 : await IsGitHubOriginAsync(run.WorktreePath, cancellationToken)
@@ -269,7 +265,68 @@ public sealed class PullRequestOpener(
         }
     }
 
+    /// <summary>
+    /// Pushes the branch with the lease pinned to a value this node knows is safe to overwrite,
+    /// rather than trusting the bare <c>--force-with-lease</c> flag against whatever this node's
+    /// remote-tracking ref currently reads (see the caller's comment for why that ref alone is
+    /// not proof the local branch actually accounts for it). Origin's current tip for the branch
+    /// is safe to overwrite when it fast-forwards into local HEAD, or when it was ever this
+    /// branch's own local tip per the branch ref's reflog — a rewrite of this node's own history
+    /// (the narrative-rebase follow-up path, Decisions Log #26, and the checkpoint-recompose path
+    /// this task adds) — the identical reflog check
+    /// <c>Hall9k.Daemon.Worktrees.GitWorktreeManager.WasEverLocalHeadAsync</c> uses on the pull
+    /// side. Anything else is a tip this node has never incorporated — someone else moved the
+    /// branch — and the push is refused rather than forced.
+    /// </summary>
+    private static async Task PushBranchAsync(string worktreePath, string branch, CancellationToken cancellationToken)
+    {
+        (int tipExit, string tipOutput, _) = await TryRunInWorktreeAsync(
+            worktreePath, "git", ["rev-parse", "--verify", "--quiet", $"refs/remotes/origin/{branch}"], cancellationToken);
+        if (tipExit != 0)
+        {
+            // Never pushed before: nothing on origin to protect against overwriting.
+            await RunInWorktreeAsync(worktreePath, "git", ["push", "--force-with-lease", "origin", branch], cancellationToken);
+            return;
+        }
+
+        string originTip = tipOutput.Trim();
+        (int ancestorExit, _, _) = await TryRunInWorktreeAsync(
+            worktreePath, "git", ["merge-base", "--is-ancestor", originTip, "HEAD"], cancellationToken);
+        bool safe = ancestorExit == 0;
+        if (!safe)
+        {
+            (int reflogExit, string reflogOutput, _) = await TryRunInWorktreeAsync(
+                worktreePath, "git", ["reflog", "show", branch, "--format=%H"], cancellationToken);
+            safe = reflogExit == 0 && reflogOutput
+                .Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                .Contains(originTip, StringComparer.Ordinal);
+        }
+
+        if (!safe)
+        {
+            throw new InvalidOperationException(
+                $"origin/{branch} is at {originTip}, a tip this node's own history never held and cannot "
+                + "fast-forward into — someone else moved the branch since this node last accounted for "
+                + "it. Refusing to force-push over it; h9k pr resolve is the way to requeue once the "
+                + "branch is sorted out.");
+        }
+
+        await RunInWorktreeAsync(
+            worktreePath, "git", ["push", $"--force-with-lease={branch}:{originTip}", "origin", branch], cancellationToken);
+    }
+
     private static async Task<string> RunInWorktreeAsync(
+        string worktreePath, string fileName, IReadOnlyList<string> arguments, CancellationToken cancellationToken)
+    {
+        (int exitCode, string standardOutput, string standardError) =
+            await TryRunInWorktreeAsync(worktreePath, fileName, arguments, cancellationToken);
+        return exitCode == 0
+            ? standardOutput + standardError
+            : throw new InvalidOperationException(
+                $"{fileName} {string.Join(' ', arguments)} exited {exitCode}: {standardError}");
+    }
+
+    private static async Task<(int ExitCode, string StandardOutput, string StandardError)> TryRunInWorktreeAsync(
         string worktreePath, string fileName, IReadOnlyList<string> arguments, CancellationToken cancellationToken)
     {
         using Process process = new();
@@ -291,10 +348,7 @@ public sealed class PullRequestOpener(
         Task<string> standardError = process.StandardError.ReadToEndAsync(cancellationToken);
         await process.WaitForExitAsync(cancellationToken);
 
-        return process.ExitCode == 0
-            ? (await standardOutput).Trim() + (await standardError).Trim()
-            : throw new InvalidOperationException(
-                $"{fileName} {string.Join(' ', arguments)} exited {process.ExitCode}: {(await standardError).Trim()}");
+        return (process.ExitCode, (await standardOutput).Trim(), (await standardError).Trim());
     }
 
     private async Task RecordFailureAsync(Guid runId, Guid taskId, string reason, CancellationToken cancellationToken)
