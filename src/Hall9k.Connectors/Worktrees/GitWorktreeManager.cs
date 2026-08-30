@@ -296,18 +296,26 @@ public sealed class GitWorktreeManager(ILogger<GitWorktreeManager> logger) : IWo
     /// resets to the branch's fork point and recomposes fresh commits over it, so a later
     /// resume whose recompose never got pushed sees a local tip that shares no ancestry
     /// with origin, exactly what an external rewrite looks like. <see cref="WasEverLocalHeadAsync"/>
-    /// tells the two apart: if origin's tip ever WAS this local branch's own tip (recorded
-    /// in the branch ref's own reflog, which every worktree that ever moved it shares — not
-    /// just this one), the divergence originated locally and the local tip is kept, the same
-    /// as the strictly-ahead case; only a tip this branch never held anywhere is treated as a
-    /// genuine rewrite on origin (narrative follow-ups force-push rebased history, Decisions
-    /// Log #26), where the remote tip is the pull request's truth and the worktree resets to
-    /// it. Checking the branch's own reflog rather than this worktree's private HEAD reflog
-    /// matters because a worktree can be removed and re-added on a surviving local branch (an
-    /// operator or a temp cleaner deleting the directory outside the platform's own
-    /// remove-then-delete-branch paths): the new worktree's HEAD reflog starts empty even
-    /// though the branch itself still remembers every tip it ever held (independent pre-PR
-    /// review, cycle 2). The old tip stays reachable via the reflog either way.
+    /// picks a side rather than proving one: if origin's tip ever WAS this local branch's own
+    /// tip (recorded in the branch ref's own reflog, which every worktree that ever moved it
+    /// shares — not just this one), the local tip is kept, the same as the strictly-ahead case.
+    /// This is chosen, not entailed — the reflog condition cannot distinguish "this local
+    /// checkpoint recompose never reached origin" from "origin was deliberately rolled back
+    /// (a human force-pushing over a bad automated tip) to a commit this branch once held", and
+    /// picking the local tip is wrong in the second case: nothing downstream re-checks the
+    /// human's intent, so a subsequent push can silently force the discarded tip back onto
+    /// origin. It is the chosen default anyway because the first case is the routine one this
+    /// task adds and the second is a deliberate, comparatively rare operator intervention. Only
+    /// a tip this branch
+    /// never held anywhere is treated as a genuine rewrite on origin (narrative follow-ups
+    /// force-push rebased history, Decisions Log #26), where the remote tip is the pull
+    /// request's truth and the worktree resets to it. Checking the branch's own reflog rather
+    /// than this worktree's private HEAD reflog matters because a worktree can be removed and
+    /// re-added on a surviving local branch (an operator or a temp cleaner deleting the
+    /// directory outside the platform's own remove-then-delete-branch paths): the new
+    /// worktree's HEAD reflog starts empty even though the branch itself still remembers every
+    /// tip it ever held (independent pre-PR review, cycle 2). The old tip stays reachable via
+    /// the reflog either way.
     /// </summary>
     private async Task SyncToOriginBestEffortAsync(
         string repositoryPath, string worktreePath, string branch, CancellationToken cancellationToken)
@@ -353,8 +361,9 @@ public sealed class GitWorktreeManager(ILogger<GitWorktreeManager> logger) : IWo
         if (await WasEverLocalHeadAsync(worktreePath, branch, originTip.Trim(), cancellationToken))
         {
             logger.LogInformation(
-                "Branch {Branch} diverged from a tip this branch held itself — a local checkpoint " +
-                "recompose that never reached origin, not a rewrite — keeping the local tip",
+                "Branch {Branch} diverged from a tip this branch held itself — treating it as a local " +
+                "checkpoint recompose that never reached origin rather than a rewrite — keeping the " +
+                "local tip",
                 branch);
             return;
         }

@@ -179,8 +179,9 @@ public sealed class AgentPromptBuilderTests : IDisposable
         prompt.Should().Contain("session is not done while `git status` shows anything uncommitted or");
         prompt.Should().Contain("untracked.", "the clean-tree contract covers untracked work too");
         prompt.Should().Contain(
-            "record the pre-reset tip: `git rev-parse HEAD`",
-            "the recompose records a tip to verify against, the same mechanic the narrative rebase uses");
+            "Record the pre-reset tip: `git rev-parse HEAD`",
+            "the recompose records a tip to verify against, the same mechanic the narrative rebase uses, " +
+            "stated as its own sentence rather than buried at the end of a parenthetical");
         prompt.Should().Contain(
             "With every last increment committed as a checkpoint",
             "step 0 requires a clean tree before recording the tip, so step 3's diff can't fail against work that never reached it");

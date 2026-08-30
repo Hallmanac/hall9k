@@ -73,7 +73,8 @@ public sealed class PullRequestOpener(
             // narrower race between that read and the push itself, where a concurrent run's own
             // BestEffortFetchAsync could otherwise advance the shared bare repo's ref in
             // between. Never plain --force. A refused or failed push fails the run honestly
-            // below — no blind retry — and h9k pr resolve is the requeue lever. Origin
+            // below, and h9k task retry is the requeue lever — the task lands Failed, where
+            // retry (not pr resolve, which only applies to a Done task's open PR) applies. Origin
             // incident (2026-08-17): the first two automatic follow-up runs rebased per the
             // authored-history rule and a then-plain push rejected both, stranding completed,
             // gated work in the worktrees.
@@ -317,8 +318,8 @@ public sealed class PullRequestOpener(
             throw new InvalidOperationException(
                 $"origin/{branch} is at {originTip}, a tip this node's own history never held and cannot "
                 + "fast-forward into — someone else moved the branch since this node last accounted for "
-                + "it. Refusing to force-push over it; h9k pr resolve is the way to requeue once the "
-                + "branch is sorted out.");
+                + "it. Refusing to force-push over it; this fails the run, so h9k task retry is the way "
+                + "to requeue once the branch is sorted out.");
         }
 
         await RunInWorktreeAsync(
