@@ -76,6 +76,18 @@ internal static class TaskPhaseComposer
             return new TaskPhase("condensing blocker context", session, "context synthesis running");
         }
 
+        // An interactive claim has no lease or heartbeat (Decisions Log #103): closing the
+        // terminal is a normal way to leave, and h9k task work re-enters the same claim. The
+        // Gone reading is correct — the process really is gone — but printing it in red as "the
+        // recorded process is gone" (TaskPhase.LivenessMarkup) misfiles that normal wait as a
+        // machine failure, the same misfiling TaskStatusComposer.Silence's own interactive check
+        // already argues against one field over (adversarial review, cycle 1).
+        if (session == SessionLiveness.Gone && ActiveRole(run) == AgentRole.Interactive)
+        {
+            return new TaskPhase("building", SessionLiveness.NotApplicable,
+                "no session attached here — closing the terminal is a normal way to leave; h9k task work re-enters this claim");
+        }
+
         return run.State.Value switch
         {
             "Dispatched" => new TaskPhase("starting up", session, "worktree and prompt being prepared"),
