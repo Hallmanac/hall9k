@@ -498,6 +498,109 @@ public sealed class PullRequestOpenerTests(PostgresFixture postgres) : IClassFix
     }
 
     /// <summary>
+    /// Adversarial review, cycle 3: a stale local <c>refs/remotes/origin/&lt;branch&gt;</c>
+    /// tracking ref for a branch origin no longer has (deleted externally — by hand, or by
+    /// another node's <c>DeleteBranchEverywhereAsync</c> — after this node last accounted
+    /// for it) must not turn a recoverable "origin has nothing for this branch" case into a
+    /// hard run failure. <see cref="GitWorktreeManager"/>'s best-effort fetch never runs
+    /// with <c>--prune</c>, so the stale tracking ref survives locally with no fetch of this
+    /// node's own to correct it before the push.
+    /// </summary>
+    [Fact]
+    public async Task A_stale_tracking_ref_for_a_branch_origin_no_longer_has_still_lands_via_force_with_lease()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        using DocumentStore store = DocumentStore.For(opts =>
+        {
+            opts.Connection(postgres.ConnectionString);
+            opts.ConfigureHall9k(AutoCreate.All);
+        });
+
+        Directory.CreateDirectory(_root);
+        string originPath = Path.Combine(_root, "origin.git");
+        string repoPath = Path.Combine(_root, "repo");
+        Git(_root, $"init --bare -b main \"{originPath}\"");
+        Git(_root, $"clone \"{originPath}\" \"{repoPath}\"");
+        File.WriteAllText(Path.Combine(repoPath, "README.md"), "# stale tracking ref test\n");
+        Git(repoPath, "add -A");
+        Git(repoPath, "-c user.name=Test -c user.email=t@t commit -qm init");
+        Git(repoPath, "push -q origin main");
+
+        GitWorktreeManager worktrees = new(NullLogger<GitWorktreeManager>.Instance);
+        Guid taskId = DomainId.New();
+        Guid firstRunId = DomainId.New();
+        Worktree worktree = await worktrees.CreateAsync(
+            new WorktreeRequest(repoPath, "main", taskId, firstRunId, "Stale tracking ref still lands"), cts.Token);
+        File.WriteAllText(Path.Combine(worktree.Path, "WORK.md"), "checkpoint\n");
+        Git(worktree.Path, "add -A");
+        Git(worktree.Path, "-c user.name=Test -c user.email=t@t commit -qm checkpoint");
+        // Run 1's push lands (and, via git's opportunistic update, refreshes this worktree's
+        // own refs/remotes/origin/<branch> tracking ref) but `gh pr create` then fails.
+        Git(worktree.Path, $"push -q origin {worktree.Branch}");
+
+        // The branch is deleted from origin by something other than this worktree's own
+        // push (an operator via GitHub's UI, or another node's cleanup) — this worktree
+        // never fetches, so its tracking ref still reads the old, now-nonexistent tip.
+        Git(originPath, $"branch -D {worktree.Branch}");
+
+        Guid secondRunId = DomainId.New();
+        Guid ownerId = DomainId.New();
+        Guid projectId = DomainId.New();
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            TaskAggregate task = new();
+            (task, object[] lifecycle) = TaskSeed.Start(
+                TaskDecider.Add(taskId, projectId, "Stale tracking ref still lands", ["branch lands despite the stale tracking ref"],
+                    TaskType.Chore, null, null, null, Now, ownerId),
+                ownerId, Now);
+            var firstClaim = TaskDecider.Claim(task, DomainId.New(), ownerId, firstRunId, Now);
+            task.Apply(firstClaim);
+            var failed = TaskDecider.Fail(task, firstRunId, "PR opening failed: gh pr create failed", Now);
+            task.Apply(failed);
+            var retried = TaskDecider.Retry(task, firstRunId, worktree.Branch, "retry after PR creation failure", Now, ownerId);
+            task.Apply(retried);
+            var secondClaim = TaskDecider.Claim(task, DomainId.New(), ownerId, secondRunId, Now);
+            task.Apply(secondClaim);
+            session.Events.StartStream<TaskAggregate>(taskId,
+                [.. lifecycle, firstClaim, failed, retried, secondClaim]);
+            session.Store(new TaskLease { Id = taskId, NodeId = secondClaim.NodeId, LeaseGeneration = 2, HeartbeatAt = Now });
+
+            session.Events.StartStream<RunAggregate>(firstRunId,
+                new RunDispatched(firstRunId, taskId, firstClaim.NodeId, ownerId, 1, DomainId.New(),
+                    worktree.Path, worktree.Branch, ExecutorMode.Subscription, Now),
+                new AgentSessionCompleted(firstRunId, Now),
+                new VerificationPassed(firstRunId, Now),
+                new RunFailed(firstRunId, "PR opening failed: gh pr create failed", Now));
+
+            session.Events.StartStream<RunAggregate>(secondRunId,
+                new RunDispatched(secondRunId, taskId, secondClaim.NodeId, ownerId, 2, DomainId.New(),
+                    worktree.Path, worktree.Branch, ExecutorMode.Subscription, Now),
+                new AgentSessionCompleted(secondRunId, Now),
+                new VerificationPassed(secondRunId, Now));
+
+            var registered = Hall9k.Domain.Features.Project.Handlers.ProjectDecider.Register(
+                projectId, ownerId, DomainId.New(), $"pr-{taskId:N}", repoPath, null, "main", Now);
+            session.Events.StartStream<Hall9k.Domain.Features.Project.ProjectAggregate>(registered.Id, registered);
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        PullRequestOpener opener = new(store, NullLogger<PullRequestOpener>.Instance);
+        await opener.OpenAsync(secondRunId, taskId, cts.Token);
+
+        // The branch must have been recreated on origin despite the stale local tracking
+        // ref, which would have rejected a lease pinned to the deleted, remembered tip.
+        (int exitCode, string output) = TryGit(originPath, $"rev-parse --verify refs/heads/{worktree.Branch}");
+        exitCode.Should().Be(0, $"the branch must land on origin despite the stale tracking ref (output: {output})");
+        (_, string localTip) = TryGit(worktree.Path, "rev-parse HEAD");
+        (_, string remoteTip) = TryGit(originPath, $"rev-parse {worktree.Branch}");
+        remoteTip.Trim().Should().Be(localTip.Trim());
+
+        await using IQuerySession query = store.QuerySession();
+        TaskListItem taskView = (await query.LoadAsync<TaskListItem>(taskId, cts.Token))!;
+        taskView.State.Value.Should().Be("Done", "the retried run completes despite the stale tracking ref");
+    }
+
+    /// <summary>
     /// The refusal branch that is the entire protective value of the cycle-1 fix
     /// (independent pre-PR review, cycle 2, conformance lens): nothing exercised a foreign
     /// tip on origin causing <see cref="PullRequestOpener"/>'s push guard to throw, so a

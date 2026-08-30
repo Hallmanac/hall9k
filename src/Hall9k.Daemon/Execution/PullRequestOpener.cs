@@ -285,22 +285,29 @@ public sealed class PullRequestOpener(
     /// </summary>
     private static async Task PushBranchAsync(string worktreePath, string branch, CancellationToken cancellationToken)
     {
+        // Asked of origin directly via ls-remote rather than read off the local
+        // refs/remotes/origin/<branch> tracking ref: that local ref is only ever refreshed
+        // by a fetch, BestEffortFetchAsync never prunes, and a branch origin has since
+        // lost (an earlier run's own push, later cleaned up by hand or by
+        // DeleteBranchEverywhereAsync elsewhere) would still read as a stale tip here
+        // (adversarial review, cycle 3).
         (int tipExit, string tipOutput, _) = await TryRunInWorktreeAsync(
-            worktreePath, "git", ["rev-parse", "--verify", "--quiet", $"refs/remotes/origin/{branch}"], cancellationToken);
+            worktreePath, "git", ["ls-remote", "--exit-code", "origin", $"refs/heads/{branch}"], cancellationToken);
         if (tipExit != 0)
         {
-            // No local tracking ref for the branch is not proof origin has nothing: a
-            // best-effort fetch that never landed, or a bare clone missing the fetch
-            // refspec RepoMaterialiser corrects, would look identical here while origin
-            // still holds a tip this node never accounted for. The bare lease below is
-            // safe regardless — with no remote-tracking ref to compare against, git
-            // rejects the push outright rather than fast-forwarding blindly, so it only
-            // succeeds when origin genuinely has nothing yet for this branch.
-            await RunInWorktreeAsync(worktreePath, "git", ["push", "--force-with-lease", "origin", branch], cancellationToken);
+            // Exit code 2 is ls-remote's documented signal that no ref on origin matched.
+            // The lease is pinned explicitly to "must not exist yet"
+            // (`--force-with-lease=<branch>:`, empty expected value) rather than left bare:
+            // a bare lease with no explicit value still falls back to protecting against
+            // this node's own (possibly stale) refs/remotes/origin/<branch>, which would
+            // reject exactly the push this branch exists to allow. The explicit
+            // expect-nonexistent form only succeeds when origin genuinely has nothing for
+            // this branch right now, and rejects if it does (verified empirically).
+            await RunInWorktreeAsync(worktreePath, "git", ["push", $"--force-with-lease={branch}:", "origin", branch], cancellationToken);
             return;
         }
 
-        string originTip = tipOutput.Trim();
+        string originTip = tipOutput.Split('\t', StringSplitOptions.RemoveEmptyEntries)[0].Trim();
         (int ancestorExit, _, _) = await TryRunInWorktreeAsync(
             worktreePath, "git", ["merge-base", "--is-ancestor", originTip, "HEAD"], cancellationToken);
         bool safe = ancestorExit == 0;
