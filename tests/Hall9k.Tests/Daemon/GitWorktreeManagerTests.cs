@@ -33,6 +33,13 @@ public sealed class GitWorktreeManagerTests : IDisposable
 
         _repositoryPath = Path.Combine(_root, "repo");
         Git(_root, $"clone \"{_originPath}\" \"{_repositoryPath}\"");
+
+        // Every worktree GitWorktreeManager cuts shares this repo's config, and content
+        // assertions below compare exact bytes written with File.WriteAllText — a Windows
+        // runner's default core.autocrlf=true would rewrite LF to CRLF on the checkouts that
+        // exercise the recompose-recreate paths, failing those assertions on content git never
+        // actually changed.
+        Git(_repositoryPath, "config core.autocrlf false");
     }
 
     [Fact]
@@ -454,6 +461,54 @@ public sealed class GitWorktreeManagerTests : IDisposable
         File.ReadAllText(Path.Combine(followUp.Path, "WORK.md")).Should().Be("recomposed\n",
             "the branch's creation tip must be recorded in its reflog even when core.logAllRefUpdates " +
             "is off, or this recompose reads as an external rewrite and gets hard-reset away");
+    }
+
+    /// <summary>
+    /// The prior regression test above only disables <c>core.logAllRefUpdates</c> after
+    /// <see cref="GitWorktreeManager.CreateAsync"/> already ran under a reflog-enabled clone, so it
+    /// exercised <see cref="GitWorktreeManager.CheckoutExistingAsync"/>'s recreate arm alone.
+    /// <c>CreateAsync</c> cut every fresh task branch with a plain <c>worktree add -b</c>, which
+    /// writes no reflog entry at all when the config is off from the start — and because git then
+    /// never creates the log file, every later commit and reset on that branch went unlogged too
+    /// (independent pre-PR review, cycle 6, conformance).
+    /// </summary>
+    [Fact]
+    public async Task Create_records_a_reflog_entry_even_without_reflog_config_so_a_later_recompose_survives()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(1));
+        Guid taskId = DomainId.New();
+
+        // A hand-cut bare clone never gets core.logAllRefUpdates set (only
+        // RepoMaterialiser.CloneAsync does) — disable it before the branch is ever created.
+        Git(_repositoryPath, "config core.logAllRefUpdates false");
+
+        Worktree first = await _manager.CreateAsync(
+            new WorktreeRequest(_repositoryPath, "main", taskId, DomainId.New(), "Create without reflog config"), cts.Token);
+
+        (_, string createdReflog) = TryGit(first.Path, $"reflog show {first.Branch} --format=%H");
+        createdReflog.Trim().Should().NotBeEmpty(
+            "CreateAsync must record its own creation tip in the branch reflog even when " +
+            "core.logAllRefUpdates is off, or every later commit and reset on the branch goes unlogged too");
+
+        // Checkpoint, push, then recompose in place — the exact shape a build session's
+        // checkpoint-and-reset protocol produces on a retry.
+        File.WriteAllText(Path.Combine(first.Path, "WORK.md"), "checkpoint\n");
+        Git(first.Path, "add -A");
+        Git(first.Path, "-c user.name=Test -c user.email=t@t commit -qm checkpoint");
+        Git(first.Path, $"push -q origin {first.Branch}");
+
+        Git(first.Path, "reset --mixed HEAD~1");
+        File.WriteAllText(Path.Combine(first.Path, "WORK.md"), "recomposed\n");
+        Git(first.Path, "add -A");
+        Git(first.Path, "-c user.name=Test -c user.email=t@t commit -qm recomposed");
+
+        Worktree followUp = await _manager.CheckoutExistingAsync(
+            new FollowUpWorktreeRequest(_repositoryPath, first.Branch, taskId, DomainId.New()), cts.Token);
+
+        Path.GetFileName(followUp.Path).Should().Be(Path.GetFileName(first.Path), "the retained worktree is reused");
+        File.ReadAllText(Path.Combine(followUp.Path, "WORK.md")).Should().Be("recomposed\n",
+            "the divergence originated in this worktree's own recompose, so it must not be discarded " +
+            "as if origin had rewritten the branch out from under it");
     }
 
     [Fact]
