@@ -21,7 +21,6 @@ using Hall9k.Domain.Shared.ValueObjects;
 using JasperFx.Events;
 using Marten;
 using Marten.Events;
-using Microsoft.Extensions.Logging.Abstractions;
 using Spectre.Console;
 using Spectre.Console.Cli;
 
@@ -351,7 +350,7 @@ public sealed class TaskWorkCommand : Hall9kAsyncCommand<TaskWorkCommand.Setting
         string runDirectory;
         try
         {
-            GitWorktreeManager worktrees = new(NullLogger<GitWorktreeManager>.Instance);
+            GitWorktreeManager worktrees = new(new ConsoleWorktreeLogger<GitWorktreeManager>());
             (worktree, resumesPreviousWork) = await CheckoutFreshOrRetryAsync(
                 worktrees, taskDetails, project, task.Id, runId, cancellationToken);
 
