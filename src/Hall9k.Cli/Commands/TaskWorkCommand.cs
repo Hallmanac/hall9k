@@ -29,9 +29,10 @@ namespace Hall9k.Cli.Commands;
 
 /// <summary>
 /// The operator's interactive claim (PLAN.md, an operator can work a task interactively): on a
-/// Queued task, claims it exactly as headless dispatch would (same branch, same worktree, same
-/// prompt and packet context — <see cref="WorkPromptBuilder"/> is the code both paths call), then
-/// launches a regular interactive Claude Code session attached to this terminal. The claim is
+/// Queued task, claims it exactly as headless dispatch would (same branch, same worktree, and the
+/// prompt assembled through the identical code — <see cref="WorkPromptBuilder"/> is the code both
+/// paths call, with its working rules swapped for an attached operator), then launches a regular
+/// interactive Claude Code session attached to this terminal. The claim is
 /// held by the human, not a process: no <c>TaskLease</c> is written, so there is nothing for a
 /// heartbeat to renew or an expiry sweep to reclaim, and closing the terminal is a normal way to
 /// leave — the task stays Claimed and re-running this command re-enters the same worktree and
