@@ -60,13 +60,21 @@ internal static class InteractiveWorktreeGit
         return (exitCode == 0, standardError.Trim());
     }
 
+    /// <summary>
+    /// <paramref name="workingDirectory"/> and <paramref name="headReference"/> default to the
+    /// claim's own worktree and its HEAD, but a caller whose worktree no longer exists on disk
+    /// (TaskReleaseCommand's own "worktree gone" case) can point this at the repository itself
+    /// with the branch name instead — worktrees share refs with the repository they were cut
+    /// from, so the branch's commits are still readable there even once the working directory
+    /// that held it is gone (adversarial review, cycle 1, TaskReleaseCommand.cs:129).
+    /// </summary>
     public static async Task<int> CountBranchCommitsAsync(
-        string worktreePath, string baseBranch, CancellationToken cancellationToken)
+        string workingDirectory, string baseBranch, CancellationToken cancellationToken, string headReference = "HEAD")
     {
         foreach (string baseRef in new[] { $"origin/{baseBranch}", baseBranch })
         {
             (int exitCode, string output, _) = await RunGitAsync(
-                worktreePath, ["rev-list", "--count", $"{baseRef}..HEAD"], cancellationToken);
+                workingDirectory, ["rev-list", "--count", $"{baseRef}..{headReference}"], cancellationToken);
             if (exitCode == 0 && int.TryParse(output.Trim(), out int count))
             {
                 return count;
