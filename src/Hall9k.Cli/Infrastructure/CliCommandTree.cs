@@ -619,7 +619,9 @@ public static class CliCommandTree
                     + "consumed. Closing the terminal is a normal way to leave — the task stays claimed, and "
                     + "running this again re-enters the same worktree and branch with a fresh session. Exits are "
                     + "h9k task deliver (push and hand into the standard pipeline), h9k task release (give it "
-                    + "back to the queue), or h9k task handback (let a headless agent finish from here).")
+                    + "back to the queue), or h9k task handback (let a headless agent finish from here). "
+                    + "Re-entry is refused when the claim's session was recorded on another machine this one "
+                    + "cannot check — --force attests you confirmed by hand that it has exited.")
                 .WithExample("task", "work", "28b19893");
             task.AddCommand<TaskVerifyCommand>("verify")
                 .WithDescription(

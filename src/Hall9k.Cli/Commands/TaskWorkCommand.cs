@@ -48,6 +48,10 @@ public sealed class TaskWorkCommand : Hall9kAsyncCommand<TaskWorkCommand.Setting
         [CommandArgument(0, "<ID>")]
         [Description("Task id (full, or an unambiguous fragment)")]
         public string Id { get; init; } = string.Empty;
+
+        [CommandOption("--force")]
+        [Description("Re-enter even though the claim's interactive session was recorded on another machine this one cannot check — attests you confirmed by hand that it has exited")]
+        public bool Force { get; init; }
     }
 
     protected override async Task<int> ExecuteAsync(Settings settings, CancellationToken cancellationToken)
@@ -90,7 +94,7 @@ public sealed class TaskWorkCommand : Hall9kAsyncCommand<TaskWorkCommand.Setting
         Guid claudeSessionId = DomainId.New();
 
         (Guid runId, string worktreePath, string branch, string runDirectory, bool resumesPreviousWork) = task.State == TaskState.Claimed && task.IsInteractiveClaim
-            ? await ReenterAsync(session, task, cancellationToken)
+            ? await ReenterAsync(session, task, settings.Force, cancellationToken)
             : await ClaimAndCutAsync(store, session, task, fence, context, claudeSessionId, cancellationToken);
 
         TaskDetails taskDetails = await session.LoadAsync<TaskDetails>(taskId, cancellationToken)
@@ -193,7 +197,7 @@ public sealed class TaskWorkCommand : Hall9kAsyncCommand<TaskWorkCommand.Setting
     }
 
     private static async Task<(Guid RunId, string WorktreePath, string Branch, string RunDirectory, bool ResumesPreviousWork)> ReenterAsync(
-        IDocumentSession session, TaskAggregate task, CancellationToken cancellationToken)
+        IDocumentSession session, TaskAggregate task, bool force, CancellationToken cancellationToken)
     {
         Guid runId = task.CurrentRunId
             ?? throw new DomainConflictException(
@@ -230,7 +234,7 @@ public sealed class TaskWorkCommand : Hall9kAsyncCommand<TaskWorkCommand.Setting
         // single-slot ActiveSessions record overwrites the first session's liveness record with
         // the second's — so the first session becomes invisible to verify/deliver/handback too
         // (adversarial review, cycle 2).
-        InteractiveSessionLiveness.EnsureNotAttachedElsewhere(run, task.Id, "work");
+        InteractiveSessionLiveness.EnsureNotAttachedElsewhere(run, task.Id, "work", force);
 
         AnsiConsole.MarkupLineInterpolated($"[dim]Re-entering task {task.Id}'s interactive claim.[/]");
         // Whatever the earlier session left — committed or not — is already sitting in this

@@ -543,10 +543,11 @@ claim's own interactive session is still attached in another terminal — exit i
 `/exit`). One exception: `verify` run from inside that very session (the one it is blocked
 waiting on, not racing) is allowed to check its own worktree.
 
-`verify`, `deliver`, `handback`, and `release` are also refused when the claim's session was
-recorded on a machine other than the one running the command — this machine cannot check whether
-it is still attached there. Confirm by hand on that machine that the session has exited (or that
-the machine is simply gone for good), then re-run with `--force` to proceed anyway.
+`work` (on re-entry), `verify`, `deliver`, `handback`, and `release` are also refused when the
+claim's session was recorded on a machine other than the one running the command — this machine
+cannot check whether it is still attached there. Confirm by hand on that machine that the session
+has exited (or that the machine is simply gone for good), then re-run with `--force` to proceed
+anyway.
 
 ## The recovery levers
 
