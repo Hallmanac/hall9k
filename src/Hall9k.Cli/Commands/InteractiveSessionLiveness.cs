@@ -48,14 +48,19 @@ internal static class InteractiveSessionLiveness
     /// <paramref name="force"/> is the operator's own attestation, after checking by hand, that a
     /// session recorded on another machine has actually exited — it only ever bypasses that
     /// unobservable cross-machine case; a session this machine can itself confirm is still alive
-    /// always refuses, force or not.
+    /// always refuses, force or not. <paramref name="quiet"/> suppresses only the cross-machine
+    /// --force notice below, for a caller that already showed this exact notice for this same run
+    /// earlier in the same command and would otherwise print it twice (h9k task work's own
+    /// pre-launch re-check, right after ReenterAsync's identical check — conformance review,
+    /// cycle 6). The return value tells such a caller whether the notice fired, so it can pass
+    /// <paramref name="quiet"/> on to its own repeat check.
     /// </summary>
-    public static void EnsureNotAttachedElsewhere(RunDetails run, Guid taskId, string action, bool force = false)
+    public static bool EnsureNotAttachedElsewhere(RunDetails run, Guid taskId, string action, bool force = false, bool quiet = false)
     {
         if (run.ActiveSessions.Find(session => session.Role == AgentRole.Interactive) is not { } session
             || session.StartedAt is not { } startedAt)
         {
-            return;
+            return false;
         }
 
         // A blank MachineName (a stream written before the field existed) is an unknown machine —
@@ -75,9 +80,13 @@ internal static class InteractiveSessionLiveness
         {
             if (force)
             {
-                AnsiConsole.MarkupLineInterpolated(
-                    $"[yellow]Task {taskId}'s interactive session (pid {session.ProcessId}) was recorded on machine '{session.MachineName}' and cannot be checked from here — proceeding on --force because you confirmed it has exited.[/]");
-                return;
+                if (!quiet)
+                {
+                    AnsiConsole.MarkupLineInterpolated(
+                        $"[yellow]Task {taskId}'s interactive session (pid {session.ProcessId}) was recorded on machine '{session.MachineName}' and cannot be checked from here — proceeding on --force because you confirmed it has exited.[/]");
+                }
+
+                return true;
             }
 
             throw new DomainConflictException(
@@ -89,7 +98,7 @@ internal static class InteractiveSessionLiveness
 
         if (session.MachineName.IsBlank() || !IsAlive(session.ProcessId, startedAt))
         {
-            return;
+            return false;
         }
 
         // A session this machine can itself confirm is alive is an observed fact, not an
