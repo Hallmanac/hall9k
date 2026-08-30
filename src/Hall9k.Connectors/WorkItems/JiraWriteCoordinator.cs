@@ -288,12 +288,30 @@ public static class JiraWriteCoordinator
         // RecordSuccessAsync deliberately runs outside every catch above: folding it into them
         // once turned a completed, verified write into a recorded JiraWriteFailed — for a card
         // that genuinely exists on the board — the moment recording the outcome itself hit a
-        // transient failure (independent pre-PR review, cycle 3, conformance lens). Left to
-        // propagate instead, the task simply stays pending: a create's own marker search finds
-        // the existing card on the next attempt rather than duplicating it, and
-        // JiraWriteRetryEngine's stale-pending ceiling sweep is the eventual backstop for a write
-        // that never gets a fresh attempt at all.
-        return await RecordSuccessAsync(session, taskId, writeId, operation, result, cancellationToken);
+        // transient failure (independent pre-PR review, cycle 3, conformance lens). A failure other
+        // than cancellation is still left to propagate: the task simply stays pending, a create's
+        // own marker search finds the existing card on the next attempt rather than duplicating it,
+        // and JiraWriteRetryEngine's stale-pending ceiling sweep is the eventual backstop for a
+        // write that never gets a fresh attempt at all.
+        try
+        {
+            return await RecordSuccessAsync(session, taskId, writeId, operation, result, cancellationToken);
+        }
+        // A cancellation firing here — after twg's own call already ran and was verified, but
+        // before RecordSuccessAsync's own aggregate-and-save could finish — used to escape this
+        // method raw, since it sits outside the twg-call try above on purpose (independent pre-PR
+        // review, cycle 2): distinguishPostAppendFailures's own catch in SubmitAsync excludes
+        // OperationCanceledException, so it propagated unwrapped past every caller, including
+        // JiraWriteRetryEngine.DrainMergeNoticeAsync's own post-submit bookkeeping, which never
+        // got the chance to clear the queue marker for a comment that had already posted. Given
+        // the identical short grace the twg-call catch above already uses, so a graceful stop
+        // (h9k daemon stop, or a Ctrl-C mid-attempt) still lets this write's own outcome —
+        // already known, since twg already ran — get recorded before this method returns.
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            using CancellationTokenSource grace = new(CancellationRecordingGrace);
+            return await RecordSuccessAsync(session, taskId, writeId, operation, result, grace.Token);
+        }
     }
 
     /// <summary>
@@ -364,19 +382,22 @@ public static class JiraWriteCoordinator
     }
 
     /// <summary>
-    /// Link a card twg just created and verified, tolerant of any failure at all: the write itself
-    /// is already safely recorded by the time this runs (<see cref="RecordSuccessAsync"/> saves it
-    /// first), so nothing here may ever be allowed to propagate back into <see cref="AttemptAsync"/>'s
-    /// own catch clauses, which record a <em>write</em> failure — and would find
-    /// <c>PendingJiraWriteId</c> already cleared by the success just saved, so
-    /// <see cref="TaskDecider.RecordJiraWriteFailure"/> would throw its own <see cref="DomainConflictException"/>
-    /// out of the coordinator entirely, replacing the real error with an unrelated one (independent
-    /// pre-PR review, adversarial lens, cycle 9). The two named causes are a lost race — a human or
-    /// another node linking this task to something else in the moment between the create being
-    /// requested (which the decider refuses unless the task carries no reference yet) and this
-    /// call — and a validation refusal from a key twg answered with but left blank; either way a
-    /// lost race or a refusal here costs a card that is not yet reflected in
-    /// <see cref="ExternalReference"/> rather than an unrecorded write.
+    /// Link a card twg just created and verified, tolerant of any failure at all — cancellation
+    /// included (independent pre-PR review, cycle 2 follow-up): the write itself is already
+    /// safely recorded by the time this runs (<see cref="RecordSuccessAsync"/> saves it first), so
+    /// nothing here may ever be allowed to propagate, whether back into <see cref="AttemptAsync"/>'s
+    /// own catch clauses or to an outer retry of <see cref="RecordSuccessAsync"/> itself — either
+    /// would find <c>PendingJiraWriteId</c> already cleared by the success just saved, and
+    /// <see cref="TaskDecider.RecordJiraWriteFailure"/> or a second <see cref="TaskDecider.RecordJiraWriteSuccess"/>
+    /// would throw its own <see cref="DomainConflictException"/> out of the coordinator entirely,
+    /// replacing the real error with an unrelated one (independent pre-PR review, adversarial lens,
+    /// cycle 9). The three named causes are a lost race — a human or another node linking this task
+    /// to something else in the moment between the create being requested (which the decider
+    /// refuses unless the task carries no reference yet) and this call — a validation refusal from
+    /// a key twg answered with but left blank, and a cancellation (a graceful daemon stop) landing
+    /// in this step's own aggregate-and-save; either way a lost race, a refusal, or a cancellation
+    /// here costs a card that is not yet reflected in <see cref="ExternalReference"/> rather than an
+    /// unrecorded write.
     /// </summary>
     private static async Task<JiraWriteAttemptResult> LinkCreatedCardAsync(
         IDocumentSession session, Guid taskId, TwgWriteResult result, Guid requestedByOwnerId, CancellationToken cancellationToken)
@@ -403,7 +424,7 @@ public static class JiraWriteCoordinator
             await session.SaveChangesAsync(cancellationToken);
             return new JiraWriteAttemptResult(JiraWriteOutcome.Succeeded, result.IssueKey, result.Summary);
         }
-        catch (Exception exception) when (exception is not OperationCanceledException)
+        catch (Exception exception)
         {
             return new JiraWriteAttemptResult(
                 JiraWriteOutcome.Succeeded,
