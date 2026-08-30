@@ -133,9 +133,10 @@ public sealed class TaskWorkCommand : Hall9kAsyncCommand<TaskWorkCommand.Setting
         // missing, the worktree vanishing) now never appends a started event with nothing to
         // pair it, instead of needing an ended event to close a pairing that never really began.
         int exitCode;
+        bool sessionStartRecorded;
         try
         {
-            exitCode = await LaunchInteractiveClaudeAsync(
+            (exitCode, sessionStartRecorded) = await LaunchInteractiveClaudeAsync(
                 worktreePath, prompt, claudeSessionId, settingsFile, project.SkipPermissions, runId,
                 // CancellationToken.None: by the time this runs, process.Start() has already
                 // spawned a real, terminal-attached claude — a Ctrl-C landing in the window before
@@ -154,11 +155,19 @@ public sealed class TaskWorkCommand : Hall9kAsyncCommand<TaskWorkCommand.Setting
                 + $"The claim is preserved — h9k task work {taskId} to try again, or h9k task release {taskId} to give it back.");
         }
 
-        // Always CancellationToken.None: a Ctrl-C that reached this point already cancelled the
-        // shared token (Program.cs), but the interactive session's own exit is real regardless —
-        // it must never be lost because the token it would otherwise use is already cancelled
-        // (conformance review, cycle 1).
-        await AppendSessionEndedAsync(store, runId, claudeSessionId, CancellationToken.None);
+        // Only when InteractiveSessionStarted actually landed (conformance review, cycle 4): a
+        // transient database error inside LaunchInteractiveClaudeAsync's own onStarted callback
+        // is swallowed there rather than propagated, so an ended event with no started event to
+        // pair it would otherwise be recorded — a shape InteractiveSessionStarted's own doc
+        // comment establishes only the other direction (an unmatched started is normal) as
+        // expected. Always CancellationToken.None: a Ctrl-C that reached this point already
+        // cancelled the shared token (Program.cs), but the interactive session's own exit is
+        // real regardless — it must never be lost because the token it would otherwise use is
+        // already cancelled (conformance review, cycle 1).
+        if (sessionStartRecorded)
+        {
+            await AppendSessionEndedAsync(store, runId, claudeSessionId, CancellationToken.None);
+        }
 
         AnsiConsole.MarkupLineInterpolated(exitCode == 0
             ? (FormattableString)$"[dim]Session ended (exit {exitCode}). Task {taskId} is still claimed —[/]"
@@ -474,7 +483,7 @@ public sealed class TaskWorkCommand : Hall9kAsyncCommand<TaskWorkCommand.Setting
         await endSession.SaveChangesAsync(cancellationToken);
     }
 
-    private static async Task<int> LaunchInteractiveClaudeAsync(
+    private static async Task<(int ExitCode, bool SessionStartRecorded)> LaunchInteractiveClaudeAsync(
         string worktreePath, string prompt, Guid sessionId, string settingsFile, bool skipPermissions, Guid runId,
         Func<int, DateTimeOffset, Task> onStarted, CancellationToken cancellationToken)
     {
@@ -516,6 +525,7 @@ public sealed class TaskWorkCommand : Hall9kAsyncCommand<TaskWorkCommand.Setting
         using IDisposable interactiveChildScope = InteractiveChildGuard.Enter();
         process.Start();
         DateTimeOffset startedAt = ReadStartedAt(process);
+        bool sessionStartRecorded = true;
         try
         {
             await onStarted(process.Id, startedAt);
@@ -529,7 +539,10 @@ public sealed class TaskWorkCommand : Hall9kAsyncCommand<TaskWorkCommand.Setting
             // exit or ever try the append again (adversarial review, cycle 3). Worst case with
             // this catch is an unrecorded session until the operator re-enters or ends it —
             // recoverable, and exactly the launch-never-started case's inverse this method's own
-            // comment above already names as unhandled.
+            // comment above already names as unhandled. sessionStartRecorded stays false so the
+            // caller never appends an InteractiveSessionEnded with nothing to pair it (conformance
+            // review, cycle 4).
+            sessionStartRecorded = false;
             AnsiConsole.MarkupLineInterpolated(
                 $"[yellow]Could not record the interactive session start ({exception.Message}); continuing.[/]");
         }
@@ -552,7 +565,7 @@ public sealed class TaskWorkCommand : Hall9kAsyncCommand<TaskWorkCommand.Setting
             await process.WaitForExitAsync(CancellationToken.None);
         }
 
-        return process.ExitCode;
+        return (process.ExitCode, sessionStartRecorded);
     }
 
     private static string ClaudeBinary() =>
