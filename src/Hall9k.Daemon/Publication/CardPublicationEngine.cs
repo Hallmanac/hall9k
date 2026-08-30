@@ -762,7 +762,19 @@ public sealed class CardPublicationEngine(
                 : "The session ended without a verified card key and left no result to read. Its prompt and "
                   + $"transcript are in {RunPaths.GlobalDirectory(sessionId)}.";
 
-        return (false, $"{what} {CheckTheBoard}");
+        // A session that submitted a write through h9k task write-jira and hit an unauthenticated
+        // twg has not left an unreported card behind: the write is recorded pending on the task
+        // (TaskDetails.PendingJiraWriteIsAuthFailure) and the retry sweep finishes it once 'twg
+        // login' succeeds. Reporting the generic CheckTheBoard caution there guesses at a stranded
+        // card that was never filed and sends the operator to push-to-jira again instead of to the
+        // retry that is already queued (independent pre-PR review, conformance lens, cycle 1).
+        string tail = await IsPendingAuthFailureAsync(taskId, cancellationToken)
+            ? "twg was not authenticated when the session submitted its write, so the write is "
+              + "recorded pending on the task rather than lost: it will retry automatically once you "
+              + "run 'twg login', and there is no card to check the board for yet."
+            : CheckTheBoard;
+
+        return (false, $"{what} {tail}");
     }
 
     /// <summary>
@@ -775,6 +787,19 @@ public sealed class CardPublicationEngine(
         await using IQuerySession session = store.QuerySession();
         TaskDetails? task = await session.LoadAsync<TaskDetails>(taskId, cancellationToken);
         return task?.ExternalReference.IsNotBlank() is true;
+    }
+
+    /// <summary>
+    /// Whether the task's own write-jira submission is sitting on an unauthenticated twg —
+    /// distinguishes "no card was ever filed" from "a card write is queued for the retry sweep"
+    /// for <see cref="WaitAsync"/>'s no-link outcome, the same fact <c>h9k task show</c> and the
+    /// attention pane's own needs-you row already read off this field.
+    /// </summary>
+    private async Task<bool> IsPendingAuthFailureAsync(Guid taskId, CancellationToken cancellationToken)
+    {
+        await using IQuerySession session = store.QuerySession();
+        TaskDetails? task = await session.LoadAsync<TaskDetails>(taskId, cancellationToken);
+        return task?.PendingJiraWriteIsAuthFailure is true;
     }
 
     /// <summary>
