@@ -33,6 +33,10 @@ public sealed class TaskReleaseCommand : Hall9kAsyncCommand<TaskReleaseCommand.S
         [CommandArgument(0, "<ID>")]
         [Description("Task id (full, or an unambiguous fragment)")]
         public string Id { get; init; } = string.Empty;
+
+        [CommandOption("--force")]
+        [Description("Release even though the claim's interactive session was recorded on another machine this one cannot check — attests you confirmed by hand that it has exited")]
+        public bool Force { get; init; }
     }
 
     protected override async Task<int> ExecuteAsync(Settings settings, CancellationToken cancellationToken)
@@ -64,7 +68,7 @@ public sealed class TaskReleaseCommand : Hall9kAsyncCommand<TaskReleaseCommand.S
             // in another terminal, may be editing this exact worktree right now — requeuing it
             // out from under that session double-books the task the moment the daemon claims it
             // headlessly (adversarial review, cycle 1).
-            InteractiveSessionLiveness.EnsureNotAttachedElsewhere(run, taskId, "release");
+            InteractiveSessionLiveness.EnsureNotAttachedElsewhere(run, taskId, "release", settings.Force);
 
             if (run.State != RunState.Dispatched && run.State != RunState.Running)
             {

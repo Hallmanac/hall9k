@@ -611,8 +611,9 @@ public static class CliCommandTree
             task.AddCommand<TaskWorkCommand>("work")
                 .WithDescription(
                     "Work a Queued task interactively: claims it, cuts the same branch and worktree headless "
-                    + "dispatch would, assembles the same prompt, and launches a regular interactive Claude Code "
-                    + "session attached to this terminal. The claim is held by you, not a process — no liveness "
+                    + "dispatch would, assembles the prompt through the identical code path (its working rules "
+                    + "swapped for an attached operator), and launches a regular interactive Claude Code session "
+                    + "attached to this terminal. The claim is held by you, not a process — no liveness "
                     + "lease, no heartbeat reclaim, and the dispatcher never claims a task you hold this way. "
                     + "Occupies zero concurrency slots: it starts even when the daemon's session ceiling is fully "
                     + "consumed. Closing the terminal is a normal way to leave — the task stays claimed, and "
@@ -626,14 +627,18 @@ public static class CliCommandTree
                     + "and record the outcome as the same gate events a headless run's own verification records. "
                     + "Reports modified-but-uncommitted files rather than refusing on them — the gates run "
                     + "against the worktree as it stands; h9k task deliver is the one that refuses on them, "
-                    + "before it pushes. Only for a task you hold interactively (h9k task work).")
+                    + "before it pushes. Only for a task you hold interactively (h9k task work). Refused when the "
+                    + "claim's session was recorded on another machine this one cannot check — --force attests "
+                    + "you confirmed by hand that it has exited.")
                 .WithExample("task", "verify", "28b19893");
             task.AddCommand<TaskDeliverCommand>("deliver")
                 .WithDescription(
                     "Deliver an interactive claim: refuses on uncommitted files, naming them, then pushes the "
                     + "branch and hands the run into the standard delivery pipeline — gates, the independent "
                     + "review loop, the pull request, the closeout watcher — indistinguishable downstream from a "
-                    + "headless run from this point on. Only for a task you hold interactively (h9k task work).")
+                    + "headless run from this point on. Only for a task you hold interactively (h9k task work). "
+                    + "Refused when the claim's session was recorded on another machine this one cannot check — "
+                    + "--force attests you confirmed by hand that it has exited.")
                 .WithExample("task", "deliver", "28b19893");
             task.AddCommand<TaskReleaseCommand>("release")
                 .WithDescription(
@@ -642,14 +647,18 @@ public static class CliCommandTree
                     + "headless work; let it finish, or h9k task abandon it) and on a claim that is not untouched: "
                     + "modified-but-uncommitted files, naming them, or commits beyond the base branch (h9k task "
                     + "handback or h9k task deliver instead). The worktree and branch are left on disk untouched; "
-                    + "nothing resumes them automatically (h9k task handback is the lever for that).")
+                    + "nothing resumes them automatically (h9k task handback is the lever for that). Refused when "
+                    + "the claim's session was recorded on another machine this one cannot check — --force "
+                    + "attests you confirmed by hand that it has exited.")
                 .WithExample("task", "release", "28b19893");
             task.AddCommand<TaskHandbackCommand>("handback")
                 .WithDescription(
                     "Hand an interactive claim to a headless agent partway through: refuses on uncommitted "
                     + "files (you are present to commit), releases your claim, and queues the task through "
                     + "normal dispatch. Mechanically the existing follow-up resume-existing-branch flow — the "
-                    + "next headless run resumes your branch instead of starting clean.")
+                    + "next headless run resumes your branch instead of starting clean. Refused when the claim's "
+                    + "session was recorded on another machine this one cannot check — --force attests you "
+                    + "confirmed by hand that it has exited.")
                 .WithExample("task", "handback", "28b19893")
                 .WithExample("task", "handback", "28b19893", "--reason", "\"Need to step away; the migration script is drafted but untested\"");
         });

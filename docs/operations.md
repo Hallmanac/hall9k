@@ -532,7 +532,7 @@ same worktree and branch with a fresh session.
 
 | Command | What it does |
 |---|---|
-| `h9k task work <id>` | Claims a Queued task, cuts the same branch/worktree/prompt headless dispatch would, and opens a regular interactive Claude Code session. On a task you already hold, re-enters that same worktree instead of claiming again. |
+| `h9k task work <id>` | Claims a Queued task, cuts the same branch and worktree headless dispatch would, assembles the prompt through the same code path (working rules swapped for an attached operator), and opens a regular interactive Claude Code session. On a task you already hold, re-enters that same worktree instead of claiming again. |
 | `h9k task verify <id>` | Runs the project's verification gates on demand against the claim's worktree, recording the outcome on the run's own stream exactly as a headless gate pass would. |
 | `h9k task deliver <id>` | Pushes the branch and hands the claim into the standard delivery pipeline — from here the run is indistinguishable from a headless one: gates, the pre-PR review loop, and the pull request all follow. |
 | `h9k task handback <id>` | Releases the human claim and queues the task through normal dispatch, so a headless agent resumes the branch from wherever the operator left it. |
@@ -542,6 +542,11 @@ same worktree and branch with a fresh session.
 claim's own interactive session is still attached in another terminal — exit it first (Ctrl+D or
 `/exit`). One exception: `verify` run from inside that very session (the one it is blocked
 waiting on, not racing) is allowed to check its own worktree.
+
+`verify`, `deliver`, `handback`, and `release` are also refused when the claim's session was
+recorded on a machine other than the one running the command — this machine cannot check whether
+it is still attached there. Confirm by hand on that machine that the session has exited (or that
+the machine is simply gone for good), then re-run with `--force` to proceed anyway.
 
 ## The recovery levers
 

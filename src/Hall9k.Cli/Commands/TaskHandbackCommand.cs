@@ -35,6 +35,10 @@ public sealed class TaskHandbackCommand : Hall9kAsyncCommand<TaskHandbackCommand
         [CommandOption("--reason <REASON>")]
         [Description("Why a headless agent is finishing this — recorded on the stream and carried into the follow-up's context")]
         public string? Reason { get; init; }
+
+        [CommandOption("--force")]
+        [Description("Hand back even though the claim's interactive session was recorded on another machine this one cannot check — attests you confirmed by hand that it has exited")]
+        public bool Force { get; init; }
     }
 
     protected override async Task<int> ExecuteAsync(Settings settings, CancellationToken cancellationToken)
@@ -61,7 +65,7 @@ public sealed class TaskHandbackCommand : Hall9kAsyncCommand<TaskHandbackCommand
         // An operator's own session, still attached in another terminal, owns this worktree right
         // now — handing it to a headless agent out from under it would double-book the same files
         // (adversarial review, cycle 1).
-        InteractiveSessionLiveness.EnsureNotAttachedElsewhere(run, taskId, "hand back");
+        InteractiveSessionLiveness.EnsureNotAttachedElsewhere(run, taskId, "hand back", settings.Force);
 
         // Mirrors TaskWorkCommand.ReenterAsync's own guard: once h9k task deliver hands the run
         // to the standard pipeline, the task can still read Claimed+interactive for the whole
