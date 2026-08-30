@@ -60,7 +60,10 @@ public sealed class TaskHandbackCommand : Hall9kAsyncCommand<TaskHandbackCommand
         }
 
         RunDetails run = await session.LoadAsync<RunDetails>(runId, cancellationToken)
-            ?? throw new DomainConflictException($"Task {taskId} is claimed interactively but run {runId} has no record.");
+            ?? throw new DomainConflictException(
+                $"Task {taskId} is claimed interactively but run {runId} has no record — the process likely died "
+                + $"while preparing the worktree. h9k task release {taskId} to give the claim back to the "
+                + "dispatch queue.");
 
         // An operator's own session, still attached in another terminal, owns this worktree right
         // now — handing it to a headless agent out from under it would double-book the same files

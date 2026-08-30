@@ -213,7 +213,9 @@ public sealed class TaskWorkCommand : Hall9kAsyncCommand<TaskWorkCommand.Setting
                 $"Task {task.Id} reads as interactively claimed but carries no current run — this needs a human look.");
         RunDetails run = await session.LoadAsync<RunDetails>(runId, cancellationToken)
             ?? throw new DomainConflictException(
-                $"Task {task.Id} is claimed interactively but run {runId} has no record — this needs a human look.");
+                $"Task {task.Id} is claimed interactively but run {runId} has no record — the process likely died "
+                + $"while preparing the worktree. h9k task release {task.Id} to give the claim back to the "
+                + "dispatch queue.");
 
         // Mirrors TaskDeliverCommand's own guard: once h9k task deliver hands the run to the
         // daemon's pipeline (AgentSessionCompleted moves it to Verifying), the task can still
