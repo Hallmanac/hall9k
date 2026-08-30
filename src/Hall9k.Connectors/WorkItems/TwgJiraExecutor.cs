@@ -489,15 +489,25 @@ public sealed class TwgJiraExecutor(ProcessRunner? runner = null, Uri? site = nu
     /// JSON. A value that is not itself valid JSON — a payload built directly rather than through
     /// <see cref="JiraWritePayload.FromJson"/>, this file's own tests among them — passes through
     /// unchanged, the plain text it always was.
+    /// A JSON <c>null</c> decodes to blank rather than the literal text "null", mirroring
+    /// <see cref="JiraWritePayload"/>'s own <c>DecodeFieldText</c> exactly: that copy is what
+    /// <c>Validate</c> checks a payload against before its intent is ever recorded, but this copy is
+    /// what actually reaches twg's <c>--summary</c>/<c>--description</c> flags — left undone here, a
+    /// null-valued field cleared validation on the strength of some other non-blank field and then
+    /// still sent the four-character text "null" as real content (independent pre-PR review,
+    /// adversarial lens, cycle 8).
     /// </summary>
     private static string DecodeFieldText(string value)
     {
         try
         {
             using JsonDocument document = JsonDocument.Parse(value);
-            return document.RootElement.ValueKind == JsonValueKind.String
-                ? document.RootElement.GetString() ?? value
-                : value;
+            return document.RootElement.ValueKind switch
+            {
+                JsonValueKind.String => document.RootElement.GetString() ?? value,
+                JsonValueKind.Null => string.Empty,
+                _ => value,
+            };
         }
         catch (JsonException)
         {

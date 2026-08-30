@@ -166,6 +166,30 @@ public sealed class TwgJiraExecutorTests
         create.Arguments.Should().NotContain(argument => argument.StartsWith("description=", StringComparison.Ordinal));
     }
 
+    /// <summary>
+    /// A JSON <c>null</c> field value decodes to blank rather than the literal text "null" — the
+    /// same rule <see cref="JiraWritePayload"/>'s own copy of this method already applies before
+    /// validation, but this copy is what actually reaches twg's <c>--summary</c> flag, so a
+    /// null-valued summary that cleared validation on the strength of some other field must not
+    /// still send the four-character word "null" as the card's real title (independent pre-PR
+    /// review, adversarial lens, cycle 8).
+    /// </summary>
+    [Fact]
+    public async Task A_null_valued_field_decodes_to_blank_rather_than_the_literal_word_null()
+    {
+        RecordingProcessRunner twg = RecordingProcessRunner.RespondingTo(arguments => new ProcessResult(
+            0, arguments.Contains("get") ? RealisticGetAnswer("PROJ-123") : RealisticCreateAnswer, string.Empty));
+        TwgJiraExecutor executor = new(twg.Runner);
+        JiraWritePayload payload = new(
+            "Dev Task", new Dictionary<string, string> { ["summary"] = "null", ["description"] = "Real body" }, null);
+
+        await executor.CreateAsync(Project, payload, Guid.NewGuid(), "/repo", CancellationToken.None);
+
+        (string FileName, IReadOnlyList<string> Arguments, string WorkingDirectory) create =
+            twg.Calls.Should().Contain(call => call.Arguments.Contains("create")).Subject;
+        create.Arguments.Should().NotContain("--summary", "a blank summary must not be sent at all");
+    }
+
     [Fact]
     public async Task A_create_searches_for_the_tasks_marker_before_creating_anything()
     {
