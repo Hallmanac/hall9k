@@ -3,6 +3,7 @@ using System.Diagnostics;
 using Hall9k.Domain.Features.Run;
 using Hall9k.Domain.Features.Run.Projections;
 using Hall9k.Domain.Shared.Exceptions;
+using Spectre.Console;
 
 namespace Hall9k.Cli.Commands;
 
@@ -44,8 +45,12 @@ internal static class InteractiveSessionLiveness
     /// still attached; a no-op otherwise (no interactive session was ever recorded, or the one
     /// that was has already ended or exited without a matching InteractiveSessionEnded — closing
     /// the terminal is a normal way to leave, so an operator who did that is not blocked here).
+    /// <paramref name="force"/> is the operator's own attestation, after checking by hand, that a
+    /// session recorded on another machine has actually exited — it only ever bypasses that
+    /// unobservable cross-machine case; a session this machine can itself confirm is still alive
+    /// always refuses, force or not.
     /// </summary>
-    public static void EnsureNotAttachedElsewhere(RunDetails run, Guid taskId, string action)
+    public static void EnsureNotAttachedElsewhere(RunDetails run, Guid taskId, string action, bool force = false)
     {
         if (run.ActiveSessions.Find(session => session.Role == AgentRole.Interactive) is not { } session
             || session.StartedAt is not { } startedAt)
@@ -60,14 +65,26 @@ internal static class InteractiveSessionLiveness
         // whether it is still alive — unobservable is not evidence of "gone", so this refuses
         // rather than silently proceeding (adversarial review, cycle 4; the earlier cycle-2
         // reading collapsed both cases into "proceed", which let a second machine race an
-        // operator's still-attached session on the first one).
+        // operator's still-attached session on the first one). --force is the human attestation
+        // lever every other unobservable-fact refusal in this codebase pairs a refusal with
+        // (h9k task resolve --reason, h9k task publish --no-existing-item): without it, a claim
+        // whose recorded session names a machine that is lost, reimaged, or simply not to hand
+        // could never be released, handed back, delivered, or re-entered from anywhere else
+        // (adversarial review, cycle 1).
         if (session.MachineName.IsNotBlank() && session.MachineName != Environment.MachineName)
         {
+            if (force)
+            {
+                AnsiConsole.MarkupLineInterpolated(
+                    $"[yellow]Task {taskId}'s interactive session (pid {session.ProcessId}) was recorded on machine '{session.MachineName}' and cannot be checked from here — proceeding on --force because you confirmed it has exited.[/]");
+                return;
+            }
+
             throw new DomainConflictException(
                 $"Task {taskId}'s interactive session (pid {session.ProcessId}) was recorded on machine "
                 + $"'{session.MachineName}' — this machine ('{Environment.MachineName}') cannot check whether "
-                + $"it is still attached there. Confirm on {session.MachineName} that the session has exited "
-                + $"before you {action} from here.");
+                + $"it is still attached there. Confirm on {session.MachineName} that the session has exited, "
+                + $"then re-run with --force to {action} from here.");
         }
 
         if (session.MachineName.IsBlank() || !IsAlive(session.ProcessId, startedAt))
@@ -75,9 +92,18 @@ internal static class InteractiveSessionLiveness
             return;
         }
 
-        throw new DomainConflictException(
-            $"Task {taskId}'s interactive session (pid {session.ProcessId}) is still attached in another "
-            + $"terminal — exit it first (Ctrl+D or /exit) before you {action} from here.");
+        // A session this machine can itself confirm is alive is an observed fact, not an
+        // unobservable one, and force never overrides it. The one case worth naming specially is
+        // self-invocation: the attached session running this very command against itself, which
+        // reads as "still attached" exactly like a second terminal would, but there is no second
+        // terminal to exit (conformance review, cycle 1).
+        bool selfInvocation =
+            Environment.GetEnvironmentVariable(InteractiveRunEnvironmentVariable) == run.Id.ToString();
+        throw new DomainConflictException(selfInvocation
+            ? $"Task {taskId}'s interactive session (pid {session.ProcessId}) is this very session — you cannot "
+              + $"{action} from inside it. Exit it first (Ctrl+D or /exit), then {action} from your own terminal."
+            : $"Task {taskId}'s interactive session (pid {session.ProcessId}) is still attached in another "
+              + $"terminal — exit it first (Ctrl+D or /exit) before you {action} from here.");
     }
 
     private static bool IsAlive(int processId, DateTimeOffset startedAt)

@@ -35,6 +35,10 @@ public sealed class TaskVerifyCommand : Hall9kAsyncCommand<TaskVerifyCommand.Set
         [CommandArgument(0, "<ID>")]
         [Description("Task id (full, or an unambiguous fragment)")]
         public string Id { get; init; } = string.Empty;
+
+        [CommandOption("--force")]
+        [Description("Verify even though the claim's interactive session was recorded on another machine this one cannot check — attests you confirmed by hand that it has exited")]
+        public bool Force { get; init; }
     }
 
     protected override async Task<int> ExecuteAsync(Settings settings, CancellationToken cancellationToken)
@@ -64,7 +68,7 @@ public sealed class TaskVerifyCommand : Hall9kAsyncCommand<TaskVerifyCommand.Set
         // with (conformance review, cycle 2).
         if (Environment.GetEnvironmentVariable(InteractiveSessionLiveness.InteractiveRunEnvironmentVariable) != runId.ToString())
         {
-            InteractiveSessionLiveness.EnsureNotAttachedElsewhere(run, taskId, "verify");
+            InteractiveSessionLiveness.EnsureNotAttachedElsewhere(run, taskId, "verify", settings.Force);
         }
 
         // Mirrors TaskWorkCommand.ReenterAsync's own guard: once h9k task deliver or handback
@@ -131,7 +135,7 @@ public sealed class TaskVerifyCommand : Hall9kAsyncCommand<TaskVerifyCommand.Set
                 continue;
             }
 
-            await RecordFailureAsync(session, runId, [gate.Name], summary, cancellationToken);
+            await RecordFailureAsync(session, runId, [gate.Name], cancellationToken);
             AnsiConsole.MarkupLineInterpolated($"[red]Gate '{gate.Name}' failed:[/]");
             AnsiConsole.WriteLine(summary);
             return ExitCodes.Conflict;
@@ -273,9 +277,9 @@ public sealed class TaskVerifyCommand : Hall9kAsyncCommand<TaskVerifyCommand.Set
     }
 
     private static async Task RecordFailureAsync(
-        IDocumentSession session, Guid runId, IReadOnlyList<string> failedGates, string reason, CancellationToken cancellationToken)
+        IDocumentSession session, Guid runId, IReadOnlyList<string> failedGates, CancellationToken cancellationToken)
     {
-        session.Events.Append(runId, new VerificationFailed(runId, failedGates, DateTimeOffset.UtcNow, Note: reason));
+        session.Events.Append(runId, new VerificationFailed(runId, failedGates, DateTimeOffset.UtcNow));
         await session.SaveChangesAsync(cancellationToken);
     }
 }

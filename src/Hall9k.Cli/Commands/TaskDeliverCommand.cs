@@ -38,6 +38,10 @@ public sealed class TaskDeliverCommand : Hall9kAsyncCommand<TaskDeliverCommand.S
         [CommandOption("--handoff <TEXT>")]
         [Description("What this run hands down to a dependent task or a resuming session (Decisions Log #36). Omit to be prompted on an interactive terminal, or to leave it unauthored on a non-interactive one.")]
         public string? Handoff { get; init; }
+
+        [CommandOption("--force")]
+        [Description("Deliver even though the claim's interactive session was recorded on another machine this one cannot check — attests you confirmed by hand that it has exited")]
+        public bool Force { get; init; }
     }
 
     protected override async Task<int> ExecuteAsync(Settings settings, CancellationToken cancellationToken)
@@ -63,7 +67,7 @@ public sealed class TaskDeliverCommand : Hall9kAsyncCommand<TaskDeliverCommand.S
         // An operator's own session, still attached in another terminal, may still be editing
         // this worktree — pushing and handing it into the standard pipeline out from under it
         // risks delivering a tree mid-edit (adversarial review, cycle 1).
-        InteractiveSessionLiveness.EnsureNotAttachedElsewhere(run, taskId, "deliver");
+        InteractiveSessionLiveness.EnsureNotAttachedElsewhere(run, taskId, "deliver", settings.Force);
 
         if (run.State != RunState.Dispatched && run.State != RunState.Running)
         {
