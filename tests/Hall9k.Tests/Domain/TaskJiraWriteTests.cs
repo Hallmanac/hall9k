@@ -114,6 +114,33 @@ public sealed class TaskJiraWriteTests
         validate.Should().Throw<DomainValidationException>().WithMessage("*needs a \"summary\" field*");
     }
 
+    /// <summary>
+    /// A field composed as the JSON literal <c>null</c> (an unfilled template slot) stores as the
+    /// four-character raw text "null", which is non-blank until it is decoded — the same defect
+    /// class as the blank-string case above, fixed the same way (independent pre-PR review,
+    /// adversarial lens, cycle 4).
+    /// </summary>
+    [Fact]
+    public void A_json_composed_null_summary_is_refused_the_same_as_a_missing_one()
+    {
+        JiraWritePayload payload = JiraWritePayload.FromJson(
+            """{"workItemType":"Dev Task","fields":{"summary":null,"description":"Fixes the thing"}}""");
+
+        Action validate = () => payload.Validate(JiraWriteOperation.Create);
+
+        validate.Should().Throw<DomainValidationException>().WithMessage("*needs a \"summary\" field*");
+    }
+
+    [Fact]
+    public void An_update_whose_only_field_is_json_null_is_refused_the_same_as_no_fields_at_all()
+    {
+        JiraWritePayload payload = JiraWritePayload.FromJson("""{"fields":{"summary":null}}""");
+
+        Action validate = () => payload.Validate(JiraWriteOperation.Update);
+
+        validate.Should().Throw<DomainValidationException>().WithMessage("*would change nothing*");
+    }
+
     [Fact]
     public void An_unrecognized_text_format_is_refused_before_anything_is_recorded()
     {

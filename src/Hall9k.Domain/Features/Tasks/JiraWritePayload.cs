@@ -168,15 +168,25 @@ public sealed record JiraWritePayload(
     /// flags — duplicated rather than shared because <c>Hall9k.Domain</c> references no other
     /// Hall9k project. A value that is not itself valid JSON (a payload built directly rather than
     /// through <see cref="FromJson"/>) passes through unchanged, the plain text it always was.
+    /// A JSON <c>null</c> decodes to blank rather than the literal text "null": <see cref="HasField"/>
+    /// and <see cref="HasAnyField"/> are the two callers that exist specifically to refuse a payload
+    /// with no real content before its intent is ever recorded, and the raw text of a JSON null is
+    /// four non-blank characters that would otherwise sail through both checks as if it were
+    /// content — an unfilled template slot composed as <c>{"summary":null}</c> would clear
+    /// validation and file a real card titled "null" (independent pre-PR review, adversarial lens,
+    /// cycle 4).
     /// </summary>
     private static string DecodeFieldText(string value)
     {
         try
         {
             using JsonDocument document = JsonDocument.Parse(value);
-            return document.RootElement.ValueKind == JsonValueKind.String
-                ? document.RootElement.GetString() ?? value
-                : value;
+            return document.RootElement.ValueKind switch
+            {
+                JsonValueKind.String => document.RootElement.GetString() ?? value,
+                JsonValueKind.Null => string.Empty,
+                _ => value,
+            };
         }
         catch (JsonException)
         {
