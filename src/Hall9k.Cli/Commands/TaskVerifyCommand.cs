@@ -120,12 +120,23 @@ public sealed class TaskVerifyCommand : Hall9kAsyncCommand<TaskVerifyCommand.Set
                 $"[yellow]Modified-but-uncommitted file(s) in the worktree (gates run against them anyway): {string.Join(", ", modified)}[/]");
         }
 
+        // RanFullScope/HeadSha together are ReviewEngine's own contract for "a full gate pass
+        // was actually recorded over exactly this head" (VerificationPassed's own doc comment) —
+        // true only when the tree was confirmed clean at the moment the gates ran. A dirty or
+        // unreadable tree ran the gates over HEAD-plus-something-else, so claiming RanFullScope
+        // against HeadSha there would be recording an unobserved fact as though it were observed
+        // (AGENTS.md's "never guess at unobserved facts"; adversarial review, cycle 6). Harmless
+        // today only because RunSupervisor.ResumePipeline always re-verifies and overwrites
+        // LastGate* before any review cycle reads it — the recorded fact should still be honest
+        // on its own terms, since h9k task show renders this run's verification history from it.
+        bool treeConfirmedClean = modified is not null && modified.Count == 0;
+
         string gatesFingerprint = VerifyCommand.Fingerprint(project.VerifyCommands);
 
         if (project.VerifyCommands.Count == 0)
         {
             string? headSha = await InteractiveWorktreeGit.GetHeadShaAsync(run.WorktreePath, cancellationToken);
-            await RecordPassAsync(session, runId, "No verification gates configured for this project.", headSha, gatesFingerprint, cancellationToken);
+            await RecordPassAsync(session, runId, "No verification gates configured for this project.", headSha, gatesFingerprint, treeConfirmedClean, cancellationToken);
             AnsiConsole.MarkupLine("[green]No verification gates configured for this project — nothing to run.[/]");
             return ExitCodes.Ok;
         }
@@ -147,7 +158,7 @@ public sealed class TaskVerifyCommand : Hall9kAsyncCommand<TaskVerifyCommand.Set
         }
 
         string? passHeadSha = await InteractiveWorktreeGit.GetHeadShaAsync(run.WorktreePath, cancellationToken);
-        await RecordPassAsync(session, runId, $"h9k task verify: {project.VerifyCommands.Count} gate(s) ran full scope.", passHeadSha, gatesFingerprint, cancellationToken);
+        await RecordPassAsync(session, runId, $"h9k task verify: {project.VerifyCommands.Count} gate(s) ran full scope.", passHeadSha, gatesFingerprint, treeConfirmedClean, cancellationToken);
         AnsiConsole.MarkupLineInterpolated($"[green]Verification passed ({project.VerifyCommands.Count} gate(s)).[/]");
         return ExitCodes.Ok;
     }
@@ -276,10 +287,10 @@ public sealed class TaskVerifyCommand : Hall9kAsyncCommand<TaskVerifyCommand.Set
 
     private static async Task RecordPassAsync(
         IDocumentSession session, Guid runId, string? note, string? headSha, string verifyCommandsFingerprint,
-        CancellationToken cancellationToken)
+        bool ranFullScope, CancellationToken cancellationToken)
     {
         session.Events.Append(
-            runId, new VerificationPassed(runId, DateTimeOffset.UtcNow, note, RanFullScope: true, headSha, verifyCommandsFingerprint));
+            runId, new VerificationPassed(runId, DateTimeOffset.UtcNow, note, ranFullScope, headSha, verifyCommandsFingerprint));
         await session.SaveChangesAsync(cancellationToken);
     }
 
