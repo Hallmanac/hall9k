@@ -82,7 +82,7 @@ internal static class TaskPhaseComposer
         // recorded process is gone" (TaskPhase.LivenessMarkup) misfiles that normal wait as a
         // machine failure, the same misfiling TaskStatusComposer.Silence's own interactive check
         // already argues against one field over (adversarial review, cycle 1).
-        // <para>
+        //
         // Gated on task.ClaimedByNodeId rather than ActiveRole(run): a normal exit
         // (InteractiveSessionEnded) clears ActiveSessions entirely, so ActiveRole(run) reads
         // Unknown and session reads NotApplicable, not Gone — the same claim a Ctrl+C leaves
@@ -90,15 +90,13 @@ internal static class TaskPhaseComposer
         // Running case and read as an unattended headless run with a lost process (adversarial
         // review, cycle 4). ClaimedByNodeId is the sentinel every other command on this surface
         // already reads for the same distinction and survives the session ending.
-        // </para>
-        // <para>
+        //
         // Gone or NotApplicable only — never Unobserved: a session recorded live on another
         // machine this one cannot check is an unread fact, not an absent one, and folding it in
         // here told a second machine's reader "closing the terminal is a normal way to leave"
         // about a claim that is, as far as anyone here can honestly say, still attached
         // (adversarial review, cycle 1). Unobserved falls through to the ordinary Running case
         // below instead, whose SessionGap/LivenessMarkup already say "liveness not observed here."
-        // </para>
         if (task.ClaimedByNodeId == Guid.Empty
             && run.State.Value == "Running"
             && session is SessionLiveness.Gone or SessionLiveness.NotApplicable)
