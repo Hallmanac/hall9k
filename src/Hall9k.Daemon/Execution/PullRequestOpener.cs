@@ -58,21 +58,25 @@ public sealed class PullRequestOpener(
             // new history means a retried task resuming a branch this same opener already
             // pushed once (push succeeded, `gh pr create` then failed) diverges from that
             // earlier push. A plain push rejects that as non-fast-forward and strands the
-            // completed, gated work. PushBranchAsync below pins the lease's expected value
-            // explicitly, rather than trusting the bare flag against whatever this node's
-            // remote-tracking ref currently reads: BestEffortFetchAsync refreshes that ref
-            // on every worktree create/checkout regardless of whether the sync that follows
-            // actually integrates it (GitWorktreeManager.SyncToOriginBestEffortAsync's
+            // completed, gated work. The bare flag alone is not the fix: it would still trust
+            // whatever this node's remote-tracking ref currently reads, and BestEffortFetchAsync
+            // refreshes that ref on every worktree create/checkout regardless of whether the sync
+            // that follows actually integrates it (GitWorktreeManager.SyncToOriginBestEffortAsync's
             // uncommitted-work veto, in particular), so a bare lease can pass — and silently
             // overwrite — a tip this run never actually accounted for (conformance review,
             // cycle 1). This matters for a first-time push too, not only a follow-up's: `h9k
             // task deliver` now publishes an interactive claim's branch itself before this run
             // reaches here, so `IsFollowUp` is no longer a reliable proxy for "does a remote
-            // copy already exist" (conformance review, cycle 1). Never plain --force. A
-            // refused or failed push fails the run honestly below — no blind retry — and h9k
-            // pr resolve is the requeue lever. Origin incident (2026-08-17): the first two
-            // automatic follow-up runs rebased per the authored-history rule and a then-plain
-            // push rejected both, stranding completed, gated work in the worktrees.
+            // copy already exist" (conformance review, cycle 1). PushBranchAsync below guards
+            // that with an explicit ancestor-or-reflog check before ever pushing, and only then
+            // pins the lease's expected value to the tip the guard just verified — closing the
+            // narrower race between that read and the push itself, where a concurrent run's own
+            // BestEffortFetchAsync could otherwise advance the shared bare repo's ref in
+            // between. Never plain --force. A refused or failed push fails the run honestly
+            // below — no blind retry — and h9k pr resolve is the requeue lever. Origin
+            // incident (2026-08-17): the first two automatic follow-up runs rebased per the
+            // authored-history rule and a then-plain push rejected both, stranding completed,
+            // gated work in the worktrees.
             await PushBranchAsync(run.WorktreePath, run.Branch, cancellationToken);
             (string? pullRequestUrl, int pullRequestNumber) = task.PullRequestUrl is { } existingUrl
                 ? (existingUrl, PullRequestUrls.ParseNumber(existingUrl))
@@ -284,7 +288,13 @@ public sealed class PullRequestOpener(
             worktreePath, "git", ["rev-parse", "--verify", "--quiet", $"refs/remotes/origin/{branch}"], cancellationToken);
         if (tipExit != 0)
         {
-            // Never pushed before: nothing on origin to protect against overwriting.
+            // No local tracking ref for the branch is not proof origin has nothing: a
+            // best-effort fetch that never landed, or a bare clone missing the fetch
+            // refspec RepoMaterialiser corrects, would look identical here while origin
+            // still holds a tip this node never accounted for. The bare lease below is
+            // safe regardless — with no remote-tracking ref to compare against, git
+            // rejects the push outright rather than fast-forwarding blindly, so it only
+            // succeeds when origin genuinely has nothing yet for this branch.
             await RunInWorktreeAsync(worktreePath, "git", ["push", "--force-with-lease", "origin", branch], cancellationToken);
             return;
         }

@@ -497,6 +497,108 @@ public sealed class PullRequestOpenerTests(PostgresFixture postgres) : IClassFix
         taskView.State.Value.Should().Be("Done", "the retried run completes once its diverged tip lands");
     }
 
+    /// <summary>
+    /// The refusal branch that is the entire protective value of the cycle-1 fix
+    /// (independent pre-PR review, cycle 2, conformance lens): nothing exercised a foreign
+    /// tip on origin causing <see cref="PullRequestOpener"/>'s push guard to throw, so a
+    /// later refactor that inverted the safety condition or dropped the reflog fallback
+    /// could reintroduce the silent overwrite cycle 1 fixed while the suite stayed green.
+    /// A second clone pushes a commit this worktree never fetched into HEAD or its own
+    /// reflog, reproducing the exact scenario the cycle-1 fix guards against.
+    /// </summary>
+    [Fact]
+    public async Task A_foreign_tip_on_origin_refuses_the_push_and_leaves_origin_untouched()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        using DocumentStore store = DocumentStore.For(opts =>
+        {
+            opts.Connection(postgres.ConnectionString);
+            opts.ConfigureHall9k(AutoCreate.All);
+        });
+
+        Directory.CreateDirectory(_root);
+        string originPath = Path.Combine(_root, "origin.git");
+        string repoPath = Path.Combine(_root, "repo");
+        Git(_root, $"init --bare -b main \"{originPath}\"");
+        Git(_root, $"clone \"{originPath}\" \"{repoPath}\"");
+        File.WriteAllText(Path.Combine(repoPath, "README.md"), "# foreign tip test\n");
+        Git(repoPath, "add -A");
+        Git(repoPath, "-c user.name=Test -c user.email=t@t commit -qm init");
+        Git(repoPath, "push -q origin main");
+
+        GitWorktreeManager worktrees = new(NullLogger<GitWorktreeManager>.Instance);
+        Guid taskId = DomainId.New();
+        Guid runId = DomainId.New();
+        Worktree worktree = await worktrees.CreateAsync(
+            new WorktreeRequest(repoPath, "main", taskId, runId, "Foreign tip refuses the push"), cts.Token);
+        File.WriteAllText(Path.Combine(worktree.Path, "WORK.md"), "agent output\n");
+        Git(worktree.Path, "add -A");
+        Git(worktree.Path, "-c user.name=Test -c user.email=t@t commit -qm \"Add WORK.md\"");
+        Git(worktree.Path, $"push -q origin {worktree.Branch}");
+        (_, string originalTip) = TryGit(originPath, $"rev-parse {worktree.Branch}");
+
+        // A second clone pushes a commit onto the same branch that this worktree never
+        // incorporates into HEAD or its own reflog.
+        string foreignClonePath = Path.Combine(_root, "foreign-clone");
+        Git(_root, $"clone \"{originPath}\" \"{foreignClonePath}\"");
+        Git(foreignClonePath, $"checkout -q {worktree.Branch}");
+        File.WriteAllText(Path.Combine(foreignClonePath, "FOREIGN.md"), "someone else's commit\n");
+        Git(foreignClonePath, "add -A");
+        Git(foreignClonePath, "-c user.name=Other -c user.email=o@o commit -qm \"Foreign commit\"");
+        Git(foreignClonePath, $"push -q origin {worktree.Branch}");
+
+        // The worktree fetches (as BestEffortFetchAsync would on the real pull side),
+        // refreshing its remote-tracking ref to the foreign tip without touching local HEAD
+        // or the branch's own reflog — the exact shape the cycle-1 fix guards against.
+        Git(worktree.Path, "fetch -q origin");
+        (_, string foreignTip) = TryGit(originPath, $"rev-parse {worktree.Branch}");
+
+        Guid ownerId = DomainId.New();
+        Guid projectId = DomainId.New();
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            TaskAggregate task = new();
+            (task, object[] lifecycle) = TaskSeed.Start(
+                TaskDecider.Add(taskId, projectId, "Foreign tip refuses the push", ["origin's foreign tip survives"],
+                    TaskType.Chore, null, null, null, Now, ownerId),
+                ownerId, Now);
+            var claimed = TaskDecider.Claim(task, DomainId.New(), ownerId, runId, Now);
+            session.Events.StartStream<TaskAggregate>(taskId, [.. lifecycle, claimed]);
+            session.Store(new TaskLease { Id = taskId, NodeId = claimed.NodeId, LeaseGeneration = 1, HeartbeatAt = Now });
+
+            session.Events.StartStream<RunAggregate>(runId,
+                new RunDispatched(runId, taskId, claimed.NodeId, ownerId, 1, DomainId.New(),
+                    worktree.Path, worktree.Branch, ExecutorMode.Subscription, Now),
+                new AgentSessionCompleted(runId, Now),
+                new VerificationPassed(runId, Now));
+
+            var registered = Hall9k.Domain.Features.Project.Handlers.ProjectDecider.Register(
+                projectId, ownerId, DomainId.New(), $"pr-{taskId:N}", repoPath, null, "main", Now);
+            session.Events.StartStream<Hall9k.Domain.Features.Project.ProjectAggregate>(registered.Id, registered);
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        PullRequestOpener opener = new(store, NullLogger<PullRequestOpener>.Instance);
+        await opener.OpenAsync(runId, taskId, cts.Token);
+
+        // Origin's foreign tip must survive untouched — the guard refused rather than
+        // force-overwriting it.
+        (_, string originTipAfter) = TryGit(originPath, $"rev-parse {worktree.Branch}");
+        originTipAfter.Trim().Should().Be(foreignTip.Trim(),
+            "the refused push must leave the foreign tip on origin exactly as it was");
+        originTipAfter.Trim().Should().NotBe(originalTip.Trim());
+
+        await using IQuerySession query = store.QuerySession();
+        TaskListItem taskView = (await query.LoadAsync<TaskListItem>(taskId, cts.Token))!;
+        taskView.State.Value.Should().Be("Failed", "a refused push fails the run honestly rather than retrying blindly");
+
+        Hall9k.Domain.Features.Run.Projections.RunDetails runView =
+            (await query.LoadAsync<Hall9k.Domain.Features.Run.Projections.RunDetails>(runId, cts.Token))!;
+        runView.State.Value.Should().Be("Failed");
+        runView.FailureReason.Should().Contain(
+            "someone else moved the branch", "the guard's own refusal message names what happened");
+    }
+
     private static void Git(string workingDirectory, string arguments)
     {
         (int exitCode, string output) = TryGit(workingDirectory, arguments);

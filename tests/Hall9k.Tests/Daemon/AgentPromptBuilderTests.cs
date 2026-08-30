@@ -190,6 +190,10 @@ public sealed class AgentPromptBuilderTests : IDisposable
         prompt.Should().Contain(
             "git diff <old-tip> HEAD",
             "the recompose is verified for tree identity too, not just the narrative rebase path");
+        prompt.Should().Contain(
+            "--porcelain` too, right here",
+            "the diff-only check can miss a file the recompose forgot to stage as untracked; " +
+            "porcelain status is checked too, since the platform's own gate only warns on it");
     }
 
     [Fact]
