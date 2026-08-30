@@ -43,7 +43,7 @@ public sealed class TokenBudgetRetryEngine(
     /// Every budget-parked run this node owns, retried once — a plain node-only filter, unlike
     /// RunSupervisor.ResumeStrandedPipelinesAsync's provenance comment once claimed: h9k task
     /// deliver records the delivering node's own id on AgentSessionCompleted (Decisions Log
-    /// #101), so an interactively delivered run parked mid review loop already carries a real
+    /// #103), so an interactively delivered run parked mid review loop already carries a real
     /// node id by the time it can reach BudgetParked, and DeliveredByNodeId is new alongside
     /// this feature, so no pre-fix stream with an empty NodeId here can exist to widen for
     /// (conformance review, cycle 4). Returns how many actually resumed.

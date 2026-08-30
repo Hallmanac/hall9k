@@ -112,7 +112,7 @@ public sealed class CloseoutEngine(
             Guid nodeId = node.NodeId;
             // ReviewPending is watched too: a run holds there while an errored review's
             // re-request waits for the reviewer to answer. h9k task deliver records the
-            // delivering node's own id on AgentSessionCompleted (Decisions Log #101), so an
+            // delivering node's own id on AgentSessionCompleted (Decisions Log #103), so an
             // interactively delivered run reaching these states already carries a real node id,
             // not the TaskAggregate.IsInteractiveClaim sentinel — no NodeId == Guid.Empty
             // widening here: DeliveredByNodeId is new alongside this feature, so no pre-fix

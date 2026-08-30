@@ -9,7 +9,7 @@ app.Configure(CliCommandTree.Configure);
 
 // Without this, Ctrl-C takes SIGINT's default action and the process terminates immediately —
 // no command's own cancellation handling (e.g. TaskWorkCommand's started/ended pairing, PLAN.md
-// #101) ever runs, because RunAsync(args) alone is handed CancellationToken.None and nothing else
+// #103) ever runs, because RunAsync(args) alone is handed CancellationToken.None and nothing else
 // requests a stop (independent pre-PR review, cycle 2). Cancelling here instead of letting the
 // default handler fire is what lets a command's own try/catch(OperationCanceledException) close
 // out cleanly before the process actually exits.
@@ -18,7 +18,7 @@ int cancelKeyPresses = 0;
 DateTimeOffset lastCancelKeyPressAt = DateTimeOffset.MinValue;
 // A repeat press only escalates within this window of the previous one — the "the first press
 // didn't work, so kill it" case the escalation exists for. Ctrl-C is also the ordinary Claude
-// Code keystroke for "stop generating" (h9k task work's own attached session, PLAN.md #101), and
+// Code keystroke for "stop generating" (h9k task work's own attached session, PLAN.md #103), and
 // a lifetime counter that never resets treated a second, unrelated press an hour later as the
 // same escalation: it killed h9k while the still-attached child survived the very keystroke that
 // killed its parent, silently leaving InteractiveSessionStarted unpaired (independent pre-PR
