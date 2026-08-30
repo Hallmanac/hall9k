@@ -627,11 +627,17 @@ public sealed class TaskAggregate
         // whatever was blocking it happens to clear (independent pre-PR review, cycle 5).
         HasQueuedJiraMergeNotice = false;
 
-        // A write stuck pending on an expired twg login is the same kind of marker again: the
-        // retry sweeps already exclude an abandoned task (independent pre-PR review, adversarial
-        // lens, cycle 5), so this write will never be retried, expired, or surfaced on the board —
-        // leaving it standing would just be TaskShowCommand rendering a permanently dead "twg
-        // could not authenticate" row as if it were still a live problem.
-        ClearPendingJiraWrite();
+        // Deliberately left standing here, unlike every other marker above: PendingJiraWriteId is
+        // the key JiraWriteCoordinator re-reads by writeId to record an already-in-flight write's
+        // outcome (RecordJiraWriteSuccess/RecordJiraWriteFailure both throw when it does not
+        // match), and a create or update dispatched moments before this abandon can still be
+        // executing against twg when this event lands — clearing it here would make that write's
+        // own outcome unrecordable even though twg genuinely carried it out, stranding a real card
+        // with a JiraWriteRequested on the stream and no JiraWriteSucceeded to match it
+        // (independent pre-PR review, adversarial lens, cycle 6). TaskDetails — not this aggregate
+        // — is what TaskShowCommand and the retry sweep's stale-write query actually read, so
+        // clearing the equivalent marker there (TaskDetails.Apply(TaskAbandoned)) is what stops
+        // the dead "twg could not authenticate" row and keeps this write's own outcome recordable
+        // at the same time.
     }
 }

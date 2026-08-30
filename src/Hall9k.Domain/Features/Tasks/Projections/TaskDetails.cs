@@ -471,6 +471,18 @@ public sealed class TaskDetailsProjection : SingleStreamProjection<TaskDetails, 
         // own comment has the reasoning): nothing here is still owed once a human has walked away,
         // and this view is exactly what the retry sweep queries to decide whether to drain it.
         view.HasQueuedJiraMergeNotice = false;
+
+        // A write stuck pending on an expired twg login is the same kind of marker again: the
+        // retry sweeps already exclude an abandoned task (independent pre-PR review, adversarial
+        // lens, cycle 5), so this write will never be retried, expired, or surfaced on the board —
+        // leaving it standing here would have TaskShowCommand render a permanently dead "twg could
+        // not authenticate" row as if it were still a live problem. Cleared here, on the read
+        // model, rather than on the aggregate (TaskAggregate.Apply(TaskAbandoned)'s own comment has
+        // the reasoning): the aggregate's own marker has to survive so an in-flight write's outcome
+        // stays recordable by writeId, and this view is what every reader — TaskShowCommand, the
+        // retry sweep's stale-write query — actually consults (independent pre-PR review,
+        // adversarial lens, cycle 6).
+        ClearPendingJiraWrite(view);
     }
 
     // Publication is a side errand, so none of these touch State: what they move is the pending
