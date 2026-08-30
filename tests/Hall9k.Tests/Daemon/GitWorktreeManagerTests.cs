@@ -351,6 +351,23 @@ public sealed class GitWorktreeManagerTests : IDisposable
     }
 
     /// <summary>
+    /// A repository that has already been removed from disk (a stale watched run whose project
+    /// was cleaned up elsewhere) must fail fast rather than retry the cross-process lock's
+    /// open-or-create until the caller's own cancellation fires — no process can ever release a
+    /// lock for a directory that no longer exists.
+    /// </summary>
+    [Fact]
+    public async Task Pruning_a_repository_that_no_longer_exists_fails_fast_instead_of_retrying_until_cancelled()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromSeconds(5));
+        string goneRepositoryPath = Path.Combine(_root, "gone-repo");
+
+        Func<Task> act = () => _manager.PruneAsync(goneRepositoryPath, cts.Token);
+
+        await act.Should().ThrowAsync<WorktreeException>().WithMessage("*no longer exists*");
+    }
+
+    /// <summary>
     /// No test at all covered this before (cycle-1 conformance finding, `PrReviewEngine.cs:50`):
     /// the fetch reads GitHub's own synthetic <c>refs/pull/&lt;n&gt;/head</c>, simulated here by
     /// writing that ref directly into the bare origin, exactly as GitHub itself maintains it.
