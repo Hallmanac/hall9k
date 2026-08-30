@@ -566,6 +566,50 @@ public sealed class TwgJiraExecutorTests
         }
     }
 
+    /// <summary>
+    /// A fifth way the marker search's own answer can be unconfirmable, distinct from the four
+    /// above: no <c>output_files: stdout:</c> line is present at all — a twg build that writes its
+    /// envelope elsewhere, or a wrapper that suppresses it — and what stdout does hold is blank.
+    /// The no-match branch used to trust that blank text as a confirmed answer unconditionally,
+    /// reading it the same way the bare-JSON-on-stdout fallback reads a genuine future-shaped
+    /// answer, instead of recognizing that an empty answer with no envelope at all is the
+    /// reaped-mid-read case in different clothes (independent pre-PR review, conformance and
+    /// adversarial lenses, cycle 10).
+    /// </summary>
+    [Fact]
+    public async Task A_marker_search_whose_stdout_has_no_envelope_and_reads_back_blank_refuses_rather_than_guesses()
+    {
+        Guid taskId = Guid.NewGuid();
+        RecordingProcessRunner twg = RecordingProcessRunner.Succeeding("   ");
+        TwgJiraExecutor executor = new(twg.Runner);
+
+        Func<Task> findByMarker = () => executor.FindByMarkerAsync(taskId, "/repo", CancellationToken.None);
+
+        TwgExecutionException exception = (await findByMarker.Should().ThrowAsync<TwgExecutionException>()).Which;
+        exception.Message.Should().Contain(TwgJiraExecutor.Marker(taskId));
+    }
+
+    /// <summary>
+    /// The sibling of the defect above, one call later: a dedup hit's own confirmation read can
+    /// also find no envelope pattern in its stdout, and a blank answer there must refuse rather
+    /// than be read as "does not carry the marker" (independent pre-PR review, conformance and
+    /// adversarial lenses, cycle 10).
+    /// </summary>
+    [Fact]
+    public async Task A_dedup_hit_whose_stdout_has_no_envelope_and_reads_back_blank_refuses_rather_than_guesses()
+    {
+        Guid taskId = Guid.NewGuid();
+        RecordingProcessRunner twg = RecordingProcessRunner.RespondingTo(arguments => arguments.Contains("get")
+            ? new ProcessResult(0, "   ", string.Empty)
+            : new ProcessResult(0, """[{"key":"PROJ-999"}]""", string.Empty));
+        TwgJiraExecutor executor = new(twg.Runner);
+
+        Func<Task> findByMarker = () => executor.FindByMarkerAsync(taskId, "/repo", CancellationToken.None);
+
+        TwgExecutionException exception = (await findByMarker.Should().ThrowAsync<TwgExecutionException>()).Which;
+        exception.Message.Should().Contain("PROJ-999").And.Contain(TwgJiraExecutor.Marker(taskId));
+    }
+
     [Fact]
     public async Task An_update_writes_the_fields_and_then_verifies_by_reading_back()
     {

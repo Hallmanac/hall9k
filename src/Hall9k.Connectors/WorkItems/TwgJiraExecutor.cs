@@ -956,8 +956,10 @@ public sealed class TwgJiraExecutor(ProcessRunner? runner = null, Uri? site = nu
         {
             // No temp file named at all — the bare-JSON-on-stdout fallback this class already
             // tolerates for a future twg version, not a read failure, so envelopeOutput is the
-            // whole answer and is trusted as such.
-            confirmedReadable = true;
+            // whole answer and is trusted as such — unless that whole answer is itself blank,
+            // which is the same reaped-mid-read false negative the temp-file branch below guards
+            // against (independent pre-PR review, conformance and adversarial lenses, cycle 10).
+            confirmedReadable = envelopeOutput.IsNotBlank();
             return envelopeOutput;
         }
 
