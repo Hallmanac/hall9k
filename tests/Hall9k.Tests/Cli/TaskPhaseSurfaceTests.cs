@@ -247,6 +247,15 @@ public sealed class TaskPhaseSurfaceTests
         row.Stalled.Should().BeFalse();
         row.Attention.NeedsYou.Should().BeFalse();
         row.Group.Should().Be(AttentionBucket.Working);
+
+        // The phase line is what an operator actually reads, and it drew the identical
+        // misfiling one field over: "building · the recorded process is gone" in red reports a
+        // normal terminal close as a machine failure, for a state PLAN.md #103 defines as normal
+        // and re-enterable with h9k task work (adversarial review, cycle 1).
+        row.Phase.Text.Should().Be("building");
+        row.Phase.Liveness.Should().Be(SessionLiveness.NotApplicable);
+        row.Phase.Markup.Should().NotContain("recorded process is gone");
+        row.Phase.Markup.Should().Contain("h9k task work re-enters this claim");
     }
 
     [Fact]
