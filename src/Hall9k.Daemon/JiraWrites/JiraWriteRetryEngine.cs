@@ -382,7 +382,8 @@ public sealed class JiraWriteRetryEngine(
                 node.OwnerId,
                 new TwgJiraExecutor(twgRunner, site),
                 project.RepositoryPath,
-                cancellationToken);
+                cancellationToken,
+                distinguishPostAppendFailures: true);
         }
         catch (Exception exception) when (exception is not OperationCanceledException)
         {

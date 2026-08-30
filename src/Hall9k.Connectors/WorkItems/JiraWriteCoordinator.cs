@@ -22,20 +22,24 @@ public enum JiraWriteOutcome
 public sealed record JiraWriteAttemptResult(JiraWriteOutcome Outcome, string? IssueKey, string Message);
 
 /// <summary>
-/// Thrown by <see cref="JiraWriteCoordinator.SubmitAsync"/> only once this write's own intent has
-/// already been durably appended, when something afterward — recording twg's own outcome, or
-/// linking a created card — fails before that outcome could be recorded (independent pre-PR
-/// review, cycle 6). Carries the write id <see cref="JiraWriteCoordinator.SubmitAsync"/> minted
-/// for it, because <c>PendingJiraWriteId</c> alone answers only "is a write outstanding", not
-/// whose: a caller that needs to tell "my own write may already have reached twg" apart from "a
-/// different write raced in before mine was ever appended" has to compare this id against the
-/// task's current pending write, not merely check whether one exists.
+/// Thrown by <see cref="JiraWriteCoordinator.SubmitAsync"/> only when its caller passed
+/// <c>distinguishPostAppendFailures: true</c> and this write's own intent had already been
+/// durably appended when something afterward — recording twg's own outcome, or linking a created
+/// card — failed before that outcome could be recorded (independent pre-PR review, cycle 6). Its
+/// mere presence is the whole signal: unlike <c>PendingJiraWriteId</c>, which only ever answers
+/// "is a write outstanding" and not whose, this exception is thrown from the one place that knows
+/// unambiguously that this call's own append committed, so a caller that needs to tell "my own
+/// write may already have reached twg" apart from "a different write raced in before mine was
+/// ever appended" catches this type rather than re-deriving the answer from the task's state
+/// afterward. <c>JiraWriteRetryEngine.DrainMergeNoticeAsync</c> is the only caller that
+/// opts in — an operator's own <c>h9k task write-jira</c> and closeout's own merge comment attempt
+/// (<c>CloseoutEngine.TellJiraAsync</c>) both let a post-append failure propagate unwrapped
+/// instead, since neither needs this discrimination and wrapping it would hide the underlying
+/// exception (an <c>NpgsqlException</c>, a <c>DomainConflictException</c>) from the CLI's own
+/// exception-to-exit-code mapping (independent pre-PR review, cycle 7).
 /// </summary>
-public sealed class JiraWriteSubmissionException(Guid writeId, Exception innerException)
-    : Exception(innerException.Message, innerException)
-{
-    public Guid WriteId { get; } = writeId;
-}
+public sealed class JiraWriteSubmissionException(Exception innerException)
+    : Exception(innerException.Message, innerException);
 
 /// <summary>
 /// The one place that turns a composed <see cref="JiraWritePayload"/> into a recorded, audited,
@@ -68,6 +72,16 @@ public static class JiraWriteCoordinator
     /// Submit a freshly composed write: validate it against the executor's own guardrails, record
     /// the intent with the full payload, then attempt it once.
     /// </summary>
+    /// <param name="distinguishPostAppendFailures">
+    /// Set only by a caller that itself needs to tell "this call's own write was durably appended
+    /// before something afterward failed" apart from an ordinary refusal that appended nothing —
+    /// <see cref="JiraWriteSubmissionException"/>'s own doc comment has the reasoning and names the
+    /// one caller that needs it. Everything else leaves this false, so a post-append failure (a
+    /// transient <c>NpgsqlException</c> from recording the outcome, a <see cref="DomainConflictException"/>
+    /// from a concurrent actor resolving the write first) propagates exactly as it always did,
+    /// reaching the CLI's own exception-to-exit-code mapping and closeout's already-generic catch
+    /// unwrapped (independent pre-PR review, cycle 7).
+    /// </param>
     public static async Task<JiraWriteAttemptResult> SubmitAsync(
         IDocumentSession session,
         Guid taskId,
@@ -78,7 +92,8 @@ public static class JiraWriteCoordinator
         Guid actingOwnerId,
         TwgJiraExecutor executor,
         string workingDirectory,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool distinguishPostAppendFailures = false)
     {
         // Checked before anything is recorded: a refused payload never reaches the stream at all,
         // so a disallowed field cannot be replayed later as though it had once been a real intent.
@@ -108,10 +123,18 @@ public static class JiraWriteCoordinator
 
         // Our own intent is durably on the stream by this point, so any exception from here on is
         // ambiguous in a way nothing earlier in this method is: it can no longer mean "nothing of
-        // ours was appended" the way the two throws above do. Wrapped with the write id it minted
-        // so a caller that needs to tell those two cases apart (JiraWriteRetryEngine's merge-notice
-        // drain) can compare it against whatever write the task shows outstanding afterward, rather
-        // than guessing from presence alone (independent pre-PR review, cycle 6).
+        // ours was appended" the way the two throws above do. Wrapped only for a caller that opted
+        // in (JiraWriteRetryEngine's merge-notice drain is the one that needs to tell those two
+        // cases apart); every other caller gets the failure exactly as it happened, so it still
+        // reaches the CLI's own exception-to-exit-code mapping (independent pre-PR review, cycle 6,
+        // narrowed cycle 7).
+        if (!distinguishPostAppendFailures)
+        {
+            return await AttemptAsync(
+                session, taskId, writeId, operation, requested.IssueKey, payload, defaultBoard, executor,
+                workingDirectory, cancellationToken);
+        }
+
         try
         {
             return await AttemptAsync(
@@ -120,7 +143,7 @@ public static class JiraWriteCoordinator
         }
         catch (Exception exception) when (exception is not OperationCanceledException)
         {
-            throw new JiraWriteSubmissionException(writeId, exception);
+            throw new JiraWriteSubmissionException(exception);
         }
     }
 

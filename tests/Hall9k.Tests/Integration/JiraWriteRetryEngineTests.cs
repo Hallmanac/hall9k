@@ -301,6 +301,87 @@ public sealed class JiraWriteRetryEngineTests(PostgresFixture postgres) : IClass
     }
 
     /// <summary>
+    /// Pins the discriminator <see cref="JiraWriteSubmissionException"/> exists to make, rather than
+    /// the coincidental case above where the racing failure clears the marker back to null. Here
+    /// the racing session, in the same transaction that fails this write's own pending marker,
+    /// requests a fresh write of its own too — so <c>PendingJiraWriteId</c> reads non-null by the
+    /// time <c>RecordSuccessAsync</c> tries to record this attempt's own outcome, exactly the shape
+    /// a version-based or id-comparison discriminator would misread as "somebody else's write, stays
+    /// queued" (independent pre-PR review, cycle 5's own committed fix). But twg's own call for
+    /// <em>this</em> attempt already posted the comment by the time that race lands, so the notice
+    /// must still be marked attempted or a later sweep re-posts the identical comment a second time.
+    /// Reverting <c>JiraWriteRetryEngine.cs</c>'s own check back to
+    /// <c>afterFailure?.PendingJiraWriteId is not null</c> fails this test while leaving every other
+    /// test in this class green (independent pre-PR review, cycle 7).
+    /// </summary>
+    [Fact]
+    public async Task A_merge_notice_drain_is_marked_attempted_even_when_a_fresh_write_races_in_behind_its_own_failed_outcome()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        using DocumentStore store = OpenStore();
+
+        Guid taskId = await SeedTaskAsync(store, new ExternalReference(WorkItemProvider.Jira, "PROJ-987"), cts.Token);
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            TaskAggregate task = (await session.Events.AggregateStreamAsync<TaskAggregate>(taskId, token: cts.Token))!;
+            session.Events.Append(taskId, TaskDecider.QueueJiraMergeNotice(task, Now));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        RecordingProcessRunner twg = RecordingProcessRunner.RespondingTo(arguments =>
+        {
+            if (arguments.Contains("get"))
+            {
+                // Twg's own comment call already succeeded by the time the mandatory read-back
+                // runs; racing both a failure for this write and a fresh request in here, in the
+                // same session, reproduces "our own outcome could not be recorded, and something
+                // else is now outstanding too" without needing to fault-inject Postgres.
+                using IDocumentSession racing = store.LightweightSession();
+                TaskAggregate current = racing.Events.AggregateStreamAsync<TaskAggregate>(taskId, token: cts.Token)
+                    .GetAwaiter().GetResult()!;
+                racing.Events.Append(taskId, TaskDecider.RecordJiraWriteFailure(
+                    current, current.PendingJiraWriteId!.Value, "Raced by another write.", isAuthFailure: false, Now));
+                racing.SaveChangesAsync(cts.Token).GetAwaiter().GetResult();
+
+                TaskAggregate cleared = racing.Events.AggregateStreamAsync<TaskAggregate>(taskId, token: cts.Token)
+                    .GetAwaiter().GetResult()!;
+                racing.Events.Append(taskId, TaskDecider.RequestJiraWrite(
+                    cleared, JiraWriteOperation.Comment, issueKey: null, "{}", DomainId.New(), Now, DomainId.New()));
+                racing.SaveChangesAsync(cts.Token).GetAwaiter().GetResult();
+
+                return new ProcessResult(0, """{"key":"PROJ-987"}""", string.Empty);
+            }
+
+            return new ProcessResult(0, "{}", string.Empty);
+        });
+
+        NodeContext node = await NewNodeAsync(store, cts.Token);
+        JiraWriteRetryEngine engine = new(store, node, twg.Runner, DefaultOptions(), NullLogger<JiraWriteRetryEngine>.Instance);
+
+        JiraWriteRetrySweepResult sweep = await engine.PollOnceAsync(cts.Token);
+
+        sweep.MergeNoticesDrained.Should().Be(
+            1, "twg's own call for this write succeeded, so the notice must not be left for a later sweep to re-post");
+        TaskAggregate? after = await LoadAsync(store, taskId, cts.Token);
+        after!.HasQueuedJiraMergeNotice.Should().BeFalse(
+            "attempted exactly once even though a fresh write is now outstanding on the task");
+        after.PendingJiraWriteId.Should().NotBeNull("the racing session's own fresh write is genuinely outstanding now");
+
+        // The racing session's own fresh write is deliberately left outstanding above so the
+        // assertions could observe it — cleaned up here so it does not leak into a later test's own
+        // sweep (JiraWriteRetryEngineTests shares one Postgres fixture across every test).
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            TaskAggregate afterRace = (await session.Events.AggregateStreamAsync<TaskAggregate>(taskId, token: cts.Token))!;
+            session.Events.Append(taskId, TaskDecider.RecordJiraWriteFailure(
+                afterRace, afterRace.PendingJiraWriteId!.Value,
+                "Test cleanup: ending the racing write so it does not leak into a later test.",
+                isAuthFailure: false, Now));
+            await session.SaveChangesAsync(cts.Token);
+        }
+    }
+
+    /// <summary>
     /// The physical dedup gate that protects a stuck <em>create</em> retry has no equivalent for
     /// the site-resolution guard covered above — this covers a different, previously untested
     /// branch instead: <c>JiraWriteCoordinator.RecordAlreadyLinkedAsync</c>, reached only from
