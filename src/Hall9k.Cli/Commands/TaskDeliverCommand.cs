@@ -204,6 +204,17 @@ public sealed class TaskDeliverCommand : Hall9kAsyncCommand<TaskDeliverCommand.S
                 + $"delivering. Branch {run.Branch} was already pushed; h9k task show {taskId} to see where it stands.");
         }
 
+        // Re-checked here too, not only at the top of this command: the window between that
+        // first check and this append (the git checks, the push, and PromptForHandoff blocking
+        // on operator input with no timeout) is long enough for a second terminal's h9k task
+        // work to pass its own pre-launch guard and launch a live Claude into this worktree —
+        // that guard only catches a delivery, release, or handback that beat it there, not one
+        // that starts after it already passed. Appending AgentSessionCompleted unconditionally
+        // from here would then hand this run to RunSupervisor.ResumeStrandedPipelinesAsync
+        // (gates, review sessions) while that second session is still editing the same tree
+        // (independent pre-PR review, cycle 8).
+        InteractiveSessionLiveness.EnsureNotAttachedElsewhere(runBeforeAppend, taskId, "deliver", settings.Force);
+
         // The delivering node's own id, not the sentinel the claim was dispatched under: from
         // here the run travels the identical daemon-driven pipeline a headless run's own
         // AgentSessionCompleted hands into (gates, review, fix sessions), and NodeLoad's own

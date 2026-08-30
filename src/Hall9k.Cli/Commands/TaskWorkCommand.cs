@@ -191,10 +191,13 @@ public sealed class TaskWorkCommand : Hall9kAsyncCommand<TaskWorkCommand.Setting
         // is swallowed there rather than propagated, so an ended event with no started event to
         // pair it would otherwise be recorded — a shape InteractiveSessionStarted's own doc
         // comment establishes only the other direction (an unmatched started is normal) as
-        // expected. Always CancellationToken.None: a Ctrl-C that reached this point already
-        // cancelled the shared token (Program.cs), but the interactive session's own exit is
-        // real regardless — it must never be lost because the token it would otherwise use is
-        // already cancelled (conformance review, cycle 1).
+        // expected. Always CancellationToken.None: while the child was attached, Program.cs
+        // suppresses Ctrl-C entirely rather than cancelling the shared token, so a press during
+        // the session leaves it uncancelled by the time execution reaches here — but a press
+        // landing in the narrow window after InteractiveChildGuard is disposed and before this
+        // line runs still escalates and cancels it, and the interactive session's own exit is
+        // real regardless of that race — it must never be lost to a token cancelled by a
+        // keystroke that arrived too late to mean anything else (conformance review, cycle 1).
         if (sessionStartRecorded)
         {
             await AppendSessionEndedAsync(store, runId, claudeSessionId, CancellationToken.None);
