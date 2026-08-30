@@ -409,7 +409,6 @@ public sealed class JiraWriteRetryEngine(
             // intent append itself (JiraWriteCoordinator.cs) are the two ways SubmitAsync refuses
             // before ever appending anything of its own, and neither is wrapped — so their absence
             // is itself the "somebody else's, nothing of ours got in" answer.
-            TaskAggregate? afterFailure = await session.Events.AggregateStreamAsync<TaskAggregate>(taskId, token: cancellationToken);
             if (exception is not JiraWriteSubmissionException)
             {
                 logger.LogWarning(exception,
@@ -430,10 +429,29 @@ public sealed class JiraWriteRetryEngine(
             // second time with nobody watching, exactly the "retry loop around an unwatched write"
             // this refuses to become (independent pre-PR review, cycle 4). Marked attempted here
             // instead of risking a duplicate.
-            if (afterFailure is { HasQueuedJiraMergeNotice: true })
+            //
+            // The read and the compensating append are themselves further calls on the same session
+            // whose own failure (a database outage, most plausibly) is what put this catch block in
+            // play — so they are guarded separately: if they too fail, the notice cannot be marked
+            // attempted, but that must not escape as an unhandled exception, which would skip this
+            // logging entirely and leave the sweep silently retrying (independent pre-PR review,
+            // adversarial lens, cycle 5).
+            try
             {
-                session.Events.Append(taskId, TaskDecider.RecordJiraMergeNoticeAttempted(afterFailure, DateTimeOffset.UtcNow));
-                await session.SaveChangesAsync(cancellationToken);
+                TaskAggregate? afterFailure = await session.Events.AggregateStreamAsync<TaskAggregate>(taskId, token: cancellationToken);
+                if (afterFailure is { HasQueuedJiraMergeNotice: true })
+                {
+                    session.Events.Append(taskId, TaskDecider.RecordJiraMergeNoticeAttempted(afterFailure, DateTimeOffset.UtcNow));
+                    await session.SaveChangesAsync(cancellationToken);
+                }
+            }
+            catch (Exception markException) when (markException is not OperationCanceledException)
+            {
+                logger.LogError(markException,
+                    "Task {TaskId}: the queued merge notice for {Reference} could not be marked "
+                    + "attempted after twg's own call ran, on top of the failure below — it stays "
+                    + "queued and may post a duplicate comment on a later sweep; check the board and "
+                    + "this task's Jira write history by hand", taskId, reference);
             }
 
             logger.LogError(exception,

@@ -626,5 +626,12 @@ public sealed class TaskAggregate
         // deliver a "the pull request merged" comment for work nobody intends to do the moment
         // whatever was blocking it happens to clear (independent pre-PR review, cycle 5).
         HasQueuedJiraMergeNotice = false;
+
+        // A write stuck pending on an expired twg login is the same kind of marker again: the
+        // retry sweeps already exclude an abandoned task (independent pre-PR review, adversarial
+        // lens, cycle 5), so this write will never be retried, expired, or surfaced on the board —
+        // leaving it standing would just be TaskShowCommand rendering a permanently dead "twg
+        // could not authenticate" row as if it were still a live problem.
+        ClearPendingJiraWrite();
     }
 }

@@ -773,9 +773,13 @@ public sealed class TwgJiraExecutor(ProcessRunner? runner = null, Uri? site = nu
     /// <summary>
     /// The array <see cref="ExtractAllKeys"/> needs whole, found the same way
     /// <see cref="FindEntity"/> locates its first element — itself, if it is already an array; its
-    /// first array-valued property (<c>data.issues</c>); or, failing that, its first object-valued
-    /// property searched the same way — but returned intact rather than descended into, so every
-    /// element survives for the caller to walk.
+    /// first array-valued property that itself carries a match (<c>data.issues</c>); or, failing
+    /// that, its first object-valued property searched the same way — but returned intact rather
+    /// than descended into, so every element survives for the caller to walk. An array-valued
+    /// property that carries no "key"-bearing element (an empty <c>errors</c> or <c>warnings</c>
+    /// list ahead of <c>issues</c> in the envelope's own property order) is skipped rather than
+    /// returned, the same way <see cref="FindEntity"/> keeps looking past an array whose own search
+    /// turns up nothing (independent pre-PR review, adversarial lens, cycle 5).
     /// </summary>
     private static JsonElement? FindArray(JsonElement value)
     {
@@ -788,7 +792,7 @@ public sealed class TwgJiraExecutor(ProcessRunner? runner = null, Uri? site = nu
         {
             foreach (JsonProperty property in value.EnumerateObject())
             {
-                if (property.Value.ValueKind == JsonValueKind.Array)
+                if (property.Value.ValueKind == JsonValueKind.Array && HasKeyElement(property.Value))
                 {
                     return property.Value;
                 }
@@ -804,6 +808,25 @@ public sealed class TwgJiraExecutor(ProcessRunner? runner = null, Uri? site = nu
         }
 
         return null;
+    }
+
+    /// <summary>
+    /// Whether any element of <paramref name="array"/> is an object carrying a "key" string —
+    /// the same shape <see cref="ExtractAllKeys"/> itself keeps, used by <see cref="FindArray"/>
+    /// to tell the array worth returning from one that just happens to sit ahead of it.
+    /// </summary>
+    private static bool HasKeyElement(JsonElement array)
+    {
+        foreach (JsonElement item in array.EnumerateArray())
+        {
+            if (item.ValueKind == JsonValueKind.Object
+                && item.TryGetProperty("key", out JsonElement key) && key.ValueKind == JsonValueKind.String)
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /// <summary>
