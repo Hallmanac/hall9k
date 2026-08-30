@@ -106,6 +106,28 @@ public sealed class TaskDeliverCommand : Hall9kAsyncCommand<TaskDeliverCommand.S
                 $"[yellow]Untracked file(s) in the worktree (not blocking delivery): {string.Join(", ", untracked)}[/]");
         }
 
+        // Refused here rather than left to the commits-beyond-base count below: that count reads
+        // run.Branch by name (via origin/refs, shared across the worktree), so an operator who
+        // left the worktree checked out somewhere else — detached at a commit that happens to
+        // build, or on another branch — would sail past it with git status clean and the count
+        // correct, only for every downstream reader (VerificationRunner's gates, the review
+        // packet's diff, PullRequestOpener's --head) to read the worktree's actual HEAD instead
+        // of the branch just published, gating and reviewing one tree while opening a pull
+        // request over another (adversarial review, cycle 4).
+        string? currentBranch = await InteractiveWorktreeGit.GetCurrentBranchAsync(run.WorktreePath, cancellationToken);
+        if (currentBranch is null)
+        {
+            AnsiConsole.MarkupLineInterpolated(
+                $"[yellow]Could not read the worktree's current branch at {run.WorktreePath}; skipping the branch-checkout check.[/]");
+        }
+        else if (currentBranch != run.Branch)
+        {
+            string where = currentBranch.Length == 0 ? "a detached commit" : $"'{currentBranch}'";
+            AnsiConsole.MarkupLineInterpolated(
+                $"[red]Task {taskId}'s worktree is checked out to {where}, not its claim branch '{run.Branch}' — check out '{run.Branch}' before delivering.[/]");
+            return ExitCodes.Conflict;
+        }
+
         // headReference is run.Branch by name rather than the worktree's own HEAD: an operator
         // who left the worktree with a different branch or a detached HEAD checked out (git
         // status clean either way) would otherwise have this count the wrong ref, report "N
