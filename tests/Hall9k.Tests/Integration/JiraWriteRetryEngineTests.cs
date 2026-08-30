@@ -353,6 +353,61 @@ public sealed class JiraWriteRetryEngineTests(PostgresFixture postgres) : IClass
     }
 
     /// <summary>
+    /// A second, narrower cancellation-grace hole independent pre-PR review, cycle 2 found: the
+    /// test above cancels while the read-back <em>call itself</em> fails, which
+    /// <c>JiraWriteCoordinator.AttemptAsync</c>'s own twg-call catch already handles. Here the
+    /// read-back succeeds — twg's comment call posted and verified — and the ambient token only
+    /// fires afterward, in the window <c>RecordSuccessAsync</c>'s own aggregate-and-save occupies.
+    /// That window sits outside every catch around the twg call, so the cancellation used to escape
+    /// <c>AttemptAsync</c>, <c>JiraWriteCoordinator.SubmitAsync</c> (whose own
+    /// <c>distinguishPostAppendFailures</c> catch excludes <see cref="OperationCanceledException"/>
+    /// on purpose) and <see cref="DrainMergeNoticeAsync"/> entirely, leaving
+    /// <c>PendingJiraWriteId</c> set for a comment that had already gone through — certain to repost
+    /// once the stale-pending ceiling eventually cleared it, since a comment carries no dedup gate.
+    /// </summary>
+    [Fact]
+    public async Task A_merge_notice_drain_records_its_own_success_despite_a_cancellation_that_fired_after_the_readback_succeeded()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        using DocumentStore store = OpenStore();
+
+        Guid taskId = await SeedTaskAsync(store, new ExternalReference(WorkItemProvider.Jira, "PROJ-852"), cts.Token);
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            TaskAggregate task = (await session.Events.AggregateStreamAsync<TaskAggregate>(taskId, token: cts.Token))!;
+            session.Events.Append(taskId, TaskDecider.QueueJiraMergeNotice(task, Now));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        RecordingProcessRunner twg = RecordingProcessRunner.RespondingTo(arguments =>
+        {
+            if (arguments.Contains("get"))
+            {
+                // The read-back succeeds — twg's own comment call already posted and this
+                // confirms it — before the ambient token fires. Cancelling only after building
+                // the result reproduces a daemon stop landing in RecordSuccessAsync's own
+                // aggregate-and-save, the window outside every catch around the twg call itself.
+                ProcessResult verified = new(0, """{"key":"PROJ-852"}""", string.Empty);
+                cts.Cancel();
+                return verified;
+            }
+
+            return new ProcessResult(0, "{}", string.Empty);
+        });
+
+        NodeContext node = await NewNodeAsync(store, cts.Token);
+        JiraWriteRetryEngine engine = new(store, node, twg.Runner, DefaultOptions(), NullLogger<JiraWriteRetryEngine>.Instance);
+
+        JiraWriteRetrySweepResult sweep = await engine.PollOnceAsync(cts.Token);
+
+        sweep.MergeNoticesDrained.Should().Be(1, "twg's own call succeeded, so the notice must not be left for a later sweep to re-post");
+        TaskAggregate? after = await LoadAsync(store, taskId, CancellationToken.None);
+        after!.HasQueuedJiraMergeNotice.Should().BeFalse(
+            "left set, the next sweep would repost the identical comment a second time — a comment has no dedup gate");
+        after.PendingJiraWriteId.Should().BeNull("the verified success must be recorded, not left pending for a comment that already went through");
+    }
+
+    /// <summary>
     /// Pins the discriminator <see cref="JiraWriteSubmissionException"/> exists to make, rather than
     /// the coincidental case above where the racing failure clears the marker back to null. Here
     /// the racing session, in the same transaction that fails this write's own pending marker,
