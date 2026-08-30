@@ -203,9 +203,14 @@ public sealed class TaskReleaseCommand : Hall9kAsyncCommand<TaskReleaseCommand.S
         // (adversarial review, cycle 1). When the worktree itself is gone, the branch the
         // operator committed to still lives in the repository (worktrees share refs), so the
         // check reads it there by name instead of failing along with the missing directory
-        // (adversarial review, cycle 1, TaskReleaseCommand.cs:129).
+        // (adversarial review, cycle 1, TaskReleaseCommand.cs:129). headReference is always
+        // run.Branch by name, never the worktree's own HEAD: an operator who detached HEAD or
+        // switched branches in the worktree (to compare something, say) leaves git status clean
+        // while HEAD no longer points at the claim's branch, and counting HEAD there would read
+        // the branch's real commits as zero and let this guard wave the orphaning through
+        // (conformance review, cycle 3).
         int commits = worktreeExists
-            ? await InteractiveWorktreeGit.CountBranchCommitsAsync(run.WorktreePath, project.BaseBranch, cancellationToken)
+            ? await InteractiveWorktreeGit.CountBranchCommitsAsync(run.WorktreePath, project.BaseBranch, cancellationToken, headReference: run.Branch)
             : await InteractiveWorktreeGit.CountBranchCommitsAsync(project.RepositoryPath, project.BaseBranch, cancellationToken, headReference: run.Branch);
         if (commits < 0)
         {

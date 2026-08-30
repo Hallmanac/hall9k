@@ -106,7 +106,12 @@ public sealed class TaskDeliverCommand : Hall9kAsyncCommand<TaskDeliverCommand.S
                 $"[yellow]Untracked file(s) in the worktree (not blocking delivery): {string.Join(", ", untracked)}[/]");
         }
 
-        int commits = await InteractiveWorktreeGit.CountBranchCommitsAsync(run.WorktreePath, project.BaseBranch, cancellationToken);
+        // headReference is run.Branch by name rather than the worktree's own HEAD: an operator
+        // who left the worktree with a different branch or a detached HEAD checked out (git
+        // status clean either way) would otherwise have this count the wrong ref, report "N
+        // commits to deliver" while pushing a branch that holds none, and hand PullRequestOpener
+        // an empty branch to fail on (conformance review, cycle 3).
+        int commits = await InteractiveWorktreeGit.CountBranchCommitsAsync(run.WorktreePath, project.BaseBranch, cancellationToken, headReference: run.Branch);
         if (commits < 0)
         {
             // Never guessed at as "holds commits" (InteractiveWorktreeGit's own contract,
