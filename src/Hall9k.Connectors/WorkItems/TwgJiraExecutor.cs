@@ -185,11 +185,12 @@ public sealed class TwgJiraExecutor(ProcessRunner? runner = null, Uri? site = nu
         {
             throw new TwgExecutionException(
                 TwgFailureKind.Other,
-                $"The marker search for {Marker(taskId)} could not be confirmed readable — either the "
-                + "temp file twg wrote its answer to was reaped or unreadable before this check could "
-                + "run, or it read back as malformed JSON. Refusing to create on an unconfirmed dedup "
-                + $"check; check the board by hand for {Marker(taskId)} and, if it is not there, run the "
-                + "write again.");
+                $"The marker search for {Marker(taskId)} could not be confirmed readable — twg's answer "
+                + "came back blank or unreadable: either it named a temp file that was reaped or "
+                + "unreadable before this check could run, it read back as malformed JSON, or it named "
+                + "no temp file at all and stdout itself was blank. Refusing to create on an unconfirmed "
+                + $"dedup check; check the board by hand for {Marker(taskId)} and, if it is not there, "
+                + "run the write again.");
         }
 
         foreach (string candidate in candidates.Take(MaxMarkerSearchCandidates))
@@ -231,7 +232,8 @@ public sealed class TwgJiraExecutor(ProcessRunner? runner = null, Uri? site = nu
     /// check against the whole payload finds it without needing to walk that tree.
     /// <para>
     /// A payload that could not be confirmed read — twg's own temp file reaped or unreadable
-    /// between the call and this check — throws rather than reads as "no marker": trusting the raw
+    /// between the call and this check, or no temp file named at all and stdout itself blank —
+    /// throws rather than reads as "no marker": trusting the raw
     /// envelope text in its place would silently fail toward duplication, since the envelope never
     /// contains the description the marker lives in, the opposite of what this dedup gate exists
     /// to prevent (independent pre-PR review, adversarial lens, cycle 3).
@@ -249,10 +251,11 @@ public sealed class TwgJiraExecutor(ProcessRunner? runner = null, Uri? site = nu
             throw new TwgExecutionException(
                 TwgFailureKind.Other,
                 $"twg found a card ({candidateKey}) that may already carry this task's marker, but its "
-                + "description could not be read back to confirm it — the temp file twg wrote it to was "
-                + "reaped or unreadable before this check could run. Refusing to create a second card on "
-                + $"an unconfirmed dedup check; check the board by hand for {Marker(taskId)} and, if it "
-                + "is not there, run the write again.");
+                + "description could not be read back to confirm it — twg's answer came back blank or "
+                + "unreadable: either the temp file it wrote the description to was reaped or unreadable "
+                + "before this check could run, or it named no temp file at all and stdout itself was "
+                + $"blank. Refusing to create a second card on an unconfirmed dedup check; check the "
+                + $"board by hand for {Marker(taskId)} and, if it is not there, run the write again.");
         }
 
         return payload.Contains(Marker(taskId), StringComparison.Ordinal);
