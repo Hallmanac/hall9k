@@ -325,8 +325,11 @@ public static class WorkPromptBuilder
     /// though nothing external touched the branch. <c>GitWorktreeManager.SyncToOriginBestEffortAsync</c>
     /// used to treat every diverged-with-a-clean-tree resume as a rewrite-on-origin and hard-reset to
     /// the remote tip, which destroyed exactly this recompose (independent pre-PR review, cycle 1,
-    /// both lenses): it now checks whether origin's tip was ever this worktree's own HEAD before
-    /// resetting, and keeps the local tip when it was. The tree-identity check in step 3 below is the
+    /// both lenses): it now checks whether origin's tip was ever the branch's own tip, per the
+    /// branch ref's own reflog rather than this worktree's private HEAD reflog (independent pre-PR
+    /// review, cycle 2 — the branch ref's reflog is what survives a worktree removed and re-added
+    /// on a surviving local branch, since the new worktree's own HEAD reflog starts empty), and
+    /// keeps the local tip when it was. The tree-identity check in step 3 below is the
     /// same reasoning applied one level down: the recompose itself must not silently drop a file the
     /// commit-plan step forgot to stage.
     /// </para>
@@ -366,10 +369,18 @@ public static class WorkPromptBuilder
         prompt.AppendLine("     itself: that ref lives in the shared repository and can move during this");
         prompt.AppendLine("     session (another worktree's fetch, a closeout branch cleanup), and resetting");
         prompt.AppendLine("     straight to its tip would recompose commits that revert whatever merged into");
-        prompt.AppendLine("     the base after this branch was cut. The fork point does not move:");
-        prompt.AppendLine($"     `git reset --mixed $(git merge-base origin/{baseBranch} HEAD)`. Fall back to");
-        prompt.AppendLine($"     `git merge-base {baseBranch} HEAD` only when this worktree carries no");
-        prompt.AppendLine($"     `origin/{baseBranch}` at all. A mixed reset changes which commits exist and");
+        prompt.AppendLine("     the base after this branch was cut. The fork point does not move. Capture it");
+        prompt.AppendLine("     into a variable and stop if it does not resolve — never inline the");
+        prompt.AppendLine($"     substitution directly into the reset: an unresolved `origin/{baseBranch}`");
+        prompt.AppendLine("     makes `git merge-base` print nothing and exit nonzero, and");
+        prompt.AppendLine("     `git reset --mixed $(...)` on an empty substitution silently becomes a bare");
+        prompt.AppendLine("     `git reset --mixed` — which resets to HEAD, changes nothing, and exits 0 as");
+        prompt.AppendLine("     though the recompose had happened, with step 3's diff unable to catch it");
+        prompt.AppendLine("     (the diff would compare HEAD against itself and read clean):");
+        prompt.AppendLine($"     `FORK_POINT=$(git merge-base origin/{baseBranch} HEAD 2>/dev/null || git merge-base {baseBranch} HEAD)`");
+        prompt.AppendLine("     `test -n \"$FORK_POINT\" || { echo \"no fork point resolved — stop here, do not reset\" >&2; exit 1; }`");
+        prompt.AppendLine("     `git reset --mixed \"$FORK_POINT\"`");
+        prompt.AppendLine("     A mixed reset changes which commits exist and");
         prompt.AppendLine("     leaves the working tree exactly as it is, so the tree itself does not move.");
         prompt.AppendLine("  2. Immediately invoke the commit-plan skill, if this repo ships one, to compose");
         prompt.AppendLine("     that tree into cohesive, buildable commits — the real, reviewable history for");
@@ -381,7 +392,11 @@ public static class WorkPromptBuilder
         prompt.AppendLine("     but a file the commit-plan step forgot to stage lands as untracked rather");
         prompt.AppendLine("     than modified, which this diff catches and a plain `git status` glance can");
         prompt.AppendLine("     miss. A non-empty diff means something was left out of the recomposed");
-        prompt.AppendLine("     commits; add it and recompose again before finishing.");
+        prompt.AppendLine("     commits; add it and recompose again before finishing. Check `git status");
+        prompt.AppendLine("     --porcelain` too, right here, and treat any untracked file it shows as the");
+        prompt.AppendLine("     same failure: the platform's own gate only warns on an untracked file (a");
+        prompt.AppendLine("     build byproduct can legitimately be one), so this file forgotten by the");
+        prompt.AppendLine("     recompose is the check that actually stops it before it ships.");
         prompt.AppendLine("  Nothing happens between steps 1 and 2: no test run, no fix, no exploration.");
         prompt.AppendLine("  That gap is exactly what the reset is for: because the tree never moves,");
         prompt.AppendLine("  the commits composed in step 2 describe the identical tree that passed the");

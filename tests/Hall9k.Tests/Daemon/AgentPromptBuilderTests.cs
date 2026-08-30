@@ -155,11 +155,16 @@ public sealed class AgentPromptBuilderTests : IDisposable
             "- `dotnet test`",
             "the recompose gate names the project's own verify commands rather than an unnamed suite");
         prompt.Should().Contain(
-            "git reset --mixed $(git merge-base origin/main HEAD)",
-            "the reset targets the branch's own fork point, not the moving tip of origin/main");
+            "FORK_POINT=$(git merge-base origin/main HEAD 2>/dev/null || git merge-base main HEAD)",
+            "the reset targets the branch's own fork point, not the moving tip of origin/main, " +
+            "falling back to the local base branch ref when origin/main does not resolve");
         prompt.Should().Contain(
-            "Fall back to",
-            "a worktree with no origin/main falls back to the local base branch ref");
+            "git reset --mixed \"$FORK_POINT\"",
+            "the reset uses the captured, verified fork point rather than an inline substitution " +
+            "that could silently resolve to nothing");
+        prompt.Should().Contain(
+            "stop here, do not reset",
+            "an unresolved fork point aborts loudly instead of falling through to a bare reset");
         prompt.Should().Contain("leaves the working tree exactly as", "a mixed reset never touches the tree");
         prompt.Should().Contain("commit-plan skill, if this repo ships one, to compose");
         prompt.Should().Contain(

@@ -32,4 +32,4 @@ Organize the current changes in this repository into cohesive, buildable commits
 1. Inspect the full change set: `git status` and `git diff` (plus `git diff --stat` for shape).
 2. Draft the plan: for each commit, list the files included and the commit message, in order.
 3. State the plan briefly in your output, then execute it commit by commit — stage exactly the planned files (`git add <paths>`, using `git add -p` when a file's hunks split across commits) and commit. Do not wait for approval unless the session is interactive and the human asked to review the plan first.
-4. Verify each commit builds if there is any doubt about ordering (`git stash --keep-index` or build after each commit).
+4. Verify each commit builds if there is any doubt about ordering: build after each commit (e.g. `dotnet build`). Never use `git stash` to check — the stash stack is shared across every worktree cut from this project's bare repository, so a concurrent build session's `git stash pop` can apply a different session's stashed changes into this worktree, or this one's into another's.
