@@ -383,6 +383,71 @@ public sealed class TaskJiraWriteTests
         attemptAgain.Should().Throw<DomainConflictException>().WithMessage("*no queued merge notice*");
     }
 
+    /// <summary>
+    /// The regression this guards against (independent pre-PR review, adversarial lens, cycle 6):
+    /// an operator abandons a task while its own write-jira call is still synchronously running
+    /// against twg. Clearing <see cref="TaskAggregate.PendingJiraWriteId"/> on abandon made that
+    /// in-flight write's own outcome unrecordable, throwing a <see cref="DomainConflictException"/>
+    /// out of <c>JiraWriteCoordinator</c> for a card twg had already created and verified. The
+    /// aggregate's own marker has to survive the abandon so the write started before it can still
+    /// be recorded by its writeId; the rendering fix belongs to the projections instead.
+    /// </summary>
+    [Fact]
+    public void Abandoning_a_task_leaves_its_in_flight_writes_outcome_recordable()
+    {
+        TaskAggregate task = Draft(new ExternalReference(WorkItemProvider.Jira, "PROJ-123"));
+        Guid writeId = DomainId.New();
+        task.Apply(TaskDecider.RequestJiraWrite(
+            task, JiraWriteOperation.Comment, null, "{}", writeId, Now, Owner));
+
+        task.Apply(new TaskAbandoned(task.Id, "work no longer needed", Now, Owner));
+
+        task.PendingJiraWriteId.Should().Be(
+            writeId, "a write already in flight when the task was abandoned must still resolve");
+
+        JiraWriteSucceeded succeeded = TaskDecider.RecordJiraWriteSuccess(task, writeId, "PROJ-123", "twg reported it", Now);
+        succeeded.WriteId.Should().Be(writeId);
+    }
+
+    /// <summary>
+    /// The projection is what TaskShowCommand and the retry sweep's stale-write query actually
+    /// read, so it has to drop the marker even though the aggregate deliberately keeps it standing
+    /// (the test above) — otherwise the abandoned task renders a permanently dead "twg could not
+    /// authenticate" row forever (independent pre-PR review, cycle 5, unfixed by cycle 6's own
+    /// change; adversarial lens, cycle 6).
+    /// </summary>
+    [Fact]
+    public void Abandoning_a_task_clears_its_pending_write_on_the_projection_only()
+    {
+        TaskAdded added = TaskDecider.Add(
+            DomainId.New(), DomainId.New(), "Objective", ["A criterion"], TaskType.Feature,
+            agentContext: null, constraints: null,
+            externalReference: new ExternalReference(WorkItemProvider.Jira, "PROJ-123"), Now, Owner);
+        Guid writeId = DomainId.New();
+        JiraWriteRequested requested = new(added.Id, writeId, JiraWriteOperation.Comment, "PROJ-123", "{}", Owner, Now);
+        JiraWriteFailed failed = new(added.Id, writeId, "twg is not authenticated", true, Now);
+        TaskAbandoned abandoned = new(added.Id, "work no longer needed", Now, Owner);
+
+        TaskDetailsProjection details = new();
+        TaskDetails detail = details.Create(new FakeEvent<TaskAdded>(added));
+        details.Apply(new FakeEvent<JiraWriteRequested>(requested), detail);
+        details.Apply(new FakeEvent<JiraWriteFailed>(failed), detail);
+        details.Apply(new FakeEvent<TaskAbandoned>(abandoned), detail);
+
+        detail.PendingJiraWriteId.Should().BeNull(
+            "this view is what TaskShowCommand renders and the retry sweep queries, so nothing here should look pending");
+        detail.PendingJiraWriteIsAuthFailure.Should().BeFalse();
+        detail.PendingJiraWriteFailureReason.Should().BeNull();
+
+        TaskAggregate task = new();
+        task.Apply(added);
+        task.Apply(requested);
+        task.Apply(failed);
+        task.Apply(abandoned);
+
+        task.PendingJiraWriteId.Should().Be(writeId, "the aggregate's own marker survives so the write stays recordable");
+    }
+
     [Fact]
     public void Abandoning_a_task_drops_its_queued_merge_notice_on_the_aggregate_and_the_projection()
     {
