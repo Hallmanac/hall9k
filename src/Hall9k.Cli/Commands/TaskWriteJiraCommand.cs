@@ -62,8 +62,10 @@ public sealed class TaskWriteJiraCommand : Hall9kAsyncCommand<TaskWriteJiraComma
 
         [CommandOption("--issue <KEY>")]
         [Description(
-            "The Jira item to update or comment on, when the task does not already carry one (its own "
-            + "linked item is used automatically otherwise). Not used for --op create.")]
+            "The Jira item to update or comment on. Optional when the task already carries a linked "
+            + "item — that item is used automatically — but takes precedence over it when both are "
+            + "present, so this also targets a different item than the one linked, deliberately. Not "
+            + "used for --op create.")]
         public string? Issue { get; init; }
     }
 
