@@ -266,6 +266,48 @@ public sealed class CardPublicationEngineTests(PostgresFixture postgres) : IClas
     }
 
     /// <summary>
+    /// A session that submitted its composed payload through h9k task write-jira and hit an
+    /// unauthenticated twg has not left an unreported card behind: the write is recorded pending
+    /// on the task, and the daemon's own retry sweep finishes it once 'twg login' succeeds. The
+    /// generic "check the board, a session may have filed a card and never told you" caution is
+    /// wrong here — no card was ever filed — and sends an operator to push-to-jira again instead of
+    /// to the retry that is already queued (independent pre-PR review, conformance lens, cycle 1).
+    /// </summary>
+    [Fact]
+    public async Task A_session_stuck_on_an_unauthenticated_twg_is_not_told_to_check_the_board()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        using DocumentStore store = NewStore();
+        NodeContext node = await NewNodeAsync(store, cts.Token);
+        Guid taskId = await SeedAsync(store, node, cts.Token);
+
+        Guid writeId = DomainId.New();
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            session.Events.Append(
+                taskId,
+                new JiraWriteRequested(taskId, writeId, JiraWriteOperation.Create, null, "{}", node.OwnerId, Now),
+                new JiraWriteFailed(taskId, writeId, "twg is not authenticated", IsAuthFailure: true, Now));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        FakeProcessManager processes = new();
+        ScriptedSession agentSession = new(
+            "Submitted the payload through h9k task write-jira; twg is not authenticated, so it is pending.",
+            processes);
+
+        await NewEngine(store, node, agentSession, processes).PollOnceAsync(cts.Token);
+
+        await using IQuerySession query = store.QuerySession();
+        TaskDetails task = (await query.LoadAsync<TaskDetails>(taskId, cts.Token))!;
+        task.PendingJiraWriteIsAuthFailure.Should().BeTrue("the pre-seeded write is still pending on an expired login");
+        task.PublicationOutcome.Should()
+            .Contain("not authenticated")
+            .And.Contain("retry automatically")
+            .And.NotContain("Check the board", "no card was ever filed for this session to have lost track of");
+    }
+
+    /// <summary>
     /// The seam failing underneath a session that is still running: what a transient IOException
     /// out of the tail read, or a dropped connection out of the linked check, looks like from the
     /// engine. Kills are passed through to the real fake, because whether the session was stopped
