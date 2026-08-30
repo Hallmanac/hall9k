@@ -25,6 +25,7 @@ public sealed class PlatformConfigFileSourceTests : IDisposable
         "Hall9k__MaxConcurrentAgentSessions",
         "Hall9k__ModelByRole__Build",
         "Hall9k__ModelByRole__Review",
+        "Hall9k__ModelByRole__ReviewVerify",
         "Hall9k__ModelByRole__Fix",
     ];
 
@@ -94,6 +95,26 @@ public sealed class PlatformConfigFileSourceTests : IDisposable
         PlatformConfigFileSource.Insert(builder);
 
         Bind(builder).ModelByRole.Review.Should().Be("sonnet");
+    }
+
+    /// <summary>
+    /// <c>ReviewVerify</c> is read by <c>DaemonOptions.ResolveVerifyReviewModel</c> directly rather
+    /// than through <c>RoleModelDefaults.For(AgentRole)</c> (Brian's ruling, 2026-08-29 — it is a
+    /// pass-shape override, not a seventh <c>AgentRole</c>), so this confirms the property name the
+    /// resolver reports under (<see cref="RoleModelSettings.ReviewVerify"/>) is the exact one
+    /// <c>ConfigurationBinder</c> actually binds — a mismatch there would make
+    /// <c>h9k config show</c>/<c>h9k daemon status</c> report a value the daemon never runs on.
+    /// </summary>
+    [Fact]
+    public async Task Model_by_role_review_verify_binds_from_the_config_file()
+    {
+        await PlatformConfigFile.WriteOperatingSettingsAsync(s => s.ModelByRole.ReviewVerify = "haiku", CancellationToken.None);
+        ConfigurationBuilder builder = new();
+        builder.AddEnvironmentVariables();
+
+        PlatformConfigFileSource.Insert(builder);
+
+        Bind(builder).ModelByRole.ReviewVerify.Should().Be("haiku");
     }
 
     [Fact]

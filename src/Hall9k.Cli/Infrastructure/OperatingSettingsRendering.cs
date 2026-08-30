@@ -47,7 +47,7 @@ public static class OperatingSettingsRendering
         ];
 
         rows.AddRange(report.ModelByRole.Select(role => (
-            $"model ({role.Role.ToLowerInvariant()})",
+            $"model ({KebabCase(role.Role)})",
             (role.Model.Value, role.Model.Origin) switch
             {
                 ({ Length: > 0 } value, _) => $"{value} ({role.Model.DescribeOrigin()})",
@@ -56,10 +56,33 @@ public static class OperatingSettingsRendering
                 // feature's origin incident named), not silence — naming its origin here is the
                 // only way this command can surface that it is shadowing a config-file value.
                 (_, SettingOrigin.EnvironmentVariable) =>
-                    $"(empty) ({role.Model.DescribeOrigin()}) — falls through to the project or platform default",
-                _ => "not set — falls through to the project or platform default",
+                    $"(empty) ({role.Model.DescribeOrigin()}) — falls through to {FallthroughDescription(role.Role)}",
+                _ => $"not set — falls through to {FallthroughDescription(role.Role)}",
             })));
 
         return rows;
     }
+
+    /// <summary>
+    /// Every ordinary role falls through to the project or platform default, but
+    /// <c>ReviewVerify</c> sits underneath the plain Review chain rather than beside it
+    /// (<c>DaemonOptions.ResolveVerifyReviewModel</c>) — an unset knob resolves to whatever
+    /// <c>--model-review</c> itself resolves to, which can outrank the project or platform
+    /// default. Stating the generic fallthrough for this one role would tell an operator running
+    /// on a configured <c>--model-review</c> that Verify passes run on the project or platform
+    /// default when they in fact run on that configured review model.
+    /// </summary>
+    private static string FallthroughDescription(string role) =>
+        role == nameof(RoleModelSettings.ReviewVerify)
+            ? "whatever --model-review itself resolves to"
+            : "the project or platform default";
+
+    /// <summary>
+    /// <c>role.Role</c> is a C# property name (<c>ReviewVerify</c>), matching the
+    /// <c>--model-review-verify</c>-shaped CLI flag it is set through only once split at each
+    /// internal capital, so the row label reads "review-verify" rather than "reviewverify".
+    /// </summary>
+    private static string KebabCase(string pascalCase) =>
+        string.Concat(pascalCase.Select((character, index) =>
+            index > 0 && char.IsUpper(character) ? $"-{character}" : character.ToString())).ToLowerInvariant();
 }

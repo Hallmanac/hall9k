@@ -496,7 +496,14 @@ The checkpoints, in the order the window sees them:
    dispatches one **Verify** reviewer, handed the prior cycle's own findings, each finding's fix
    position, and the commits added since that cycle, whose job is to confirm the fix and check its
    blast radius rather than rediscover the diff — its rounds count against the same per-track caps
-   a full cycle's would, and a dispute or cap-out parks exactly as before. Immediately before the
+   a full cycle's would, and a dispute or cap-out parks exactly as before. A Verify pass resolves
+   its own model, `--model-review-verify` (Decisions Log #105), separately from the plain Review
+   model Discovery and FinalFullPass keep resolving — the knob defaults to whatever Review itself
+   resolves to (no behavior change until set), and the standard install points it at the fix
+   model, since Verify's confirm-the-fix-and-check-blast-radius job is the most mechanical review
+   shape in the loop. Fix-round escalation (#90) still compares the plain Review and Fix models
+   only, never this knob, so a repeat finding a Verify pass itself reported escalates exactly as
+   it would have from Discovery. Immediately before the
    run may settle, one mandatory **FinalFullPass** runs both lenses fresh, whether or not a track
    had already gone dormant, so nothing reaches the remote on delta-green alone; a track it
    reawakens with a real finding is recorded reactivated rather than left stuck at an old

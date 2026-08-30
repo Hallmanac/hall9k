@@ -749,7 +749,10 @@ public sealed class ReviewEngine(
             context.Task, context.Project, context.Run.Branch, cycle, tracks, priorFindings, priorFixPosition,
             sinceSha, priorCycleMode, packet, context.PriorRulings);
         ExecutorMode executorMode = context.Run.ExecutorMode;
-        AgentModel model = _options.ResolveModel(AgentRole.Review, context.Task.Model, context.Project.Model);
+        // A Verify pass resolves its own knob rather than the plain Review chain (Brian's ruling,
+        // 2026-08-29): defaults to whatever Review itself would resolve to, so this is a no-op
+        // until an install sets --model-review-verify.
+        AgentModel model = _options.ResolveVerifyReviewModel(context.Task.Model, context.Project.Model);
         SpawnedAgent agent = await executor.SpawnAsync(new AgentSpawnRequest(
             context.RunId, sessionId, context.Run.WorktreePath, context.Run.RunDirectory, prompt, executorMode, model,
             context.Project.SkipPermissions, ReviewArtifactName(cycle, sessionId, ReviewLens.Verify))

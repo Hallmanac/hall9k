@@ -3261,6 +3261,72 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
     }
 
     /// <summary>
+    /// A Verify pass resolves the configured verify-review model (Brian's ruling, 2026-08-29) while
+    /// Discovery and FinalFullPass keep resolving the plain Review model — and a fix round
+    /// escalated by a repeat finding still resolves the plain Review model too, never the Verify
+    /// knob, even when the repeated finding was itself reported by a Verify pass. Escalation
+    /// (Decisions Log #90) compares the Review and Fix roles exactly as before; the Verify knob is
+    /// a pass-shape override, not a participant in that comparison.
+    /// </summary>
+    [Fact]
+    public async Task A_verify_pass_resolves_its_own_knob_while_discovery_finalfullpass_and_escalation_stay_on_review()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        using DocumentStore store = NewStore();
+        (Guid taskId, Guid runId, _) = await SeedVerifiedRunAsync(store, cts.Token);
+
+        DaemonOptions options = new()
+        {
+            DefaultModel = "claude-opus-5",
+            ModelByRole = new RoleModelDefaults { Review = "sonnet", ReviewVerify = "fable", Fix = "haiku" },
+            MaxComplianceReviewCycles = 10,
+        };
+        ScriptedExecutor executor = new(
+            // Cycle 1 (Discovery, both lenses): conformance finds a defect; adversarial goes dormant.
+            "FINDING: severity=high; scope=in-scope; at=src/Auth.cs:42\n"
+                + "Defect: the limiter never resets.\nScenario: the second request always 429s.\n\n"
+                + "VERDICT: needs-fixes",
+            "Nothing of my own.\n\nVERDICT: merge-ready",
+            // Fix round 1 over src/Auth.cs:42 — the first round, nothing to repeat yet.
+            "Reset the limiter.\n\nRESOLUTION: fixed",
+            // Cycle 2 (Verify, standing in for the surviving conformance track alone): the SAME location again.
+            "FINDING: severity=high; scope=in-scope; at=src/Auth.cs:42\n"
+                + "Defect: still never resets.\nScenario: still 429s.\n\nVERDICT: needs-fixes",
+            // Fix round 2 — a repeat of round 1's own location, dispatched over a Verify pass's own finding.
+            "Reset it for real this time.\n\nRESOLUTION: fixed",
+            // Cycle 3 (Verify again): reads clean.
+            "Fixed for real.\n\nVERDICT: merge-ready",
+            // Cycle 4: the mandatory final full pass, both lenses fresh.
+            "Still clean.\n\nVERDICT: merge-ready",
+            "Still nothing of my own.\n\nVERDICT: merge-ready");
+
+        bool mergeReady = await NewEngine(store, executor, options).ReviewAsync(runId, taskId, cts.Token);
+
+        mergeReady.Should().BeTrue();
+        executor.Spawns.Select(spawn => spawn.Model.Value).Should().Equal(
+            ["sonnet", "sonnet", "haiku", "fable", "sonnet", "fable", "sonnet", "sonnet"],
+            "Discovery (indices 0-1) and the FinalFullPass (indices 6-7) resolve Review's plain model; "
+                + "the Verify passes (indices 3 and 5) resolve the separate ReviewVerify knob; the first "
+                + "fix round (index 2) resolves the ordinary Fix model; and the second fix round (index 4), "
+                + "escalated by the Verify pass's own repeat finding, resolves Review's model rather than "
+                + "either the Fix model it would otherwise have run on or the Verify pass's own ReviewVerify model");
+
+        await using IQuerySession query = store.QuerySession();
+        List<object> events = [.. (await query.Events.FetchStreamAsync(runId, token: cts.Token)).Select(e => e.Data)];
+        events.OfType<ReviewDispatched>().Where(e => e.Mode == ReviewMode.Verify).Select(e => e.Model!.Value)
+            .Should().OnlyContain(model => model == "fable", "every recorded Verify pass carries the ReviewVerify model");
+        events.OfType<ReviewDispatched>().Where(e => e.Mode != ReviewMode.Verify).Select(e => e.Model!.Value)
+            .Should().OnlyContain(model => model == "sonnet", "Discovery and FinalFullPass keep recording the plain Review model");
+
+        List<ReviewFixDispatched> fixDispatches = [.. events.OfType<ReviewFixDispatched>()];
+        fixDispatches.Should().HaveCount(2);
+        fixDispatches[0].Escalated.Should().BeFalse();
+        fixDispatches[1].Escalated.Should().BeTrue(
+            "the second fix round repeats the first round's own location, exactly as Decisions Log #90 already escalates");
+        fixDispatches[1].EscalationReason.Should().NotBeNull().And.Contain("src/Auth.cs:42");
+    }
+
+    /// <summary>
     /// A second fix round dispatched over the same finding location the previous fix round was
     /// already given escalates to the review role's model (task: a second fix round over the same
     /// findings, origin: task 60 generation 2's Sonnet fix session dodged a flaky-test race by

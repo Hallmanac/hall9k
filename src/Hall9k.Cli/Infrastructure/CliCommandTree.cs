@@ -343,6 +343,7 @@ public static class CliCommandTree
                     + "and no environment variable to outrank it.")
                 .WithExample("config", "set", "--max-concurrent-agent-sessions", "4")
                 .WithExample("config", "set", "--model-review", "sonnet", "--model-fix", "haiku")
+                .WithExample("config", "set", "--model-review-verify", "sonnet")
                 .WithExample("config", "set", "--interactive-claim-stale-after-days", "5");
         });
 

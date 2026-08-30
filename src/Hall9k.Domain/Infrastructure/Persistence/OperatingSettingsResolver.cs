@@ -212,7 +212,14 @@ public static class OperatingSettingsResolver
     private static ResolvedSetting<string?> ResolveOptionalString(
         string environmentVariable, string? configured, string role, List<string> unusable)
     {
-        string spawnScope = $"agent sessions using the '{role}' role";
+        // ReviewVerify is not an AgentRole (DaemonOptions.ResolveVerifyReviewModel reads it
+        // directly, never through DaemonOptions.ResolveModel), so the "using the '{role}' role"
+        // phrasing every real role gets below would name a role that does not exist and overstate
+        // the blast radius — a bad ReviewVerify value only breaks a Verify-shape review pass, not
+        // every session that resolves the Review role.
+        string spawnScope = role == nameof(RoleModelSettings.ReviewVerify)
+            ? "a Verify-shape review pass"
+            : $"agent sessions using the '{role}' role";
 
         if (GetEnvironmentVariable(environmentVariable) is { } fromEnvironment)
         {

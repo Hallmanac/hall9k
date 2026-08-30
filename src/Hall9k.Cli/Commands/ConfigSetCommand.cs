@@ -43,6 +43,14 @@ public sealed class ConfigSetCommand : Hall9kAsyncCommand<ConfigSetCommand.Setti
         [Description("This node's model for the Review role — the independent reviewer over a run's diff. 'default' clears it.")]
         public string? ModelReview { get; init; }
 
+        [CommandOption("--model-review-verify <MODEL>")]
+        [Description(
+            "This node's model for a Verify-shape review pass specifically (a middle cycle confirming a fix and "
+            + "checking its blast radius, not the first pass or the mandatory final full pass) — a narrower knob "
+            + "under --model-review, not a new role. 'default' clears it, falling through to whatever --model-review "
+            + "itself resolves to.")]
+        public string? ModelReviewVerify { get; init; }
+
         [CommandOption("--model-fix <MODEL>")]
         [Description("This node's model for the Fix role — the session that applies review findings. 'default' clears it.")]
         public string? ModelFix { get; init; }
@@ -89,8 +97,9 @@ public sealed class ConfigSetCommand : Hall9kAsyncCommand<ConfigSetCommand.Setti
         bool onlyInteractiveClaimStaleAfterDaysChanged =
             settings.InteractiveClaimStaleAfterDays is not null
             && settings.MaxConcurrentAgentSessions is null && settings.DefaultModel is null
-            && settings.ModelBuild is null && settings.ModelReview is null && settings.ModelFix is null
-            && settings.ModelSynthesis is null && settings.ModelRefinement is null && settings.ModelPublication is null;
+            && settings.ModelBuild is null && settings.ModelReview is null && settings.ModelReviewVerify is null
+            && settings.ModelFix is null && settings.ModelSynthesis is null && settings.ModelRefinement is null
+            && settings.ModelPublication is null;
 
         if (onlyInteractiveClaimStaleAfterDaysChanged)
         {
@@ -110,9 +119,9 @@ public sealed class ConfigSetCommand : Hall9kAsyncCommand<ConfigSetCommand.Setti
     internal static void Validate(Settings settings)
     {
         if (settings.MaxConcurrentAgentSessions is null && settings.DefaultModel is null
-            && settings.ModelBuild is null && settings.ModelReview is null && settings.ModelFix is null
-            && settings.ModelSynthesis is null && settings.ModelRefinement is null && settings.ModelPublication is null
-            && settings.InteractiveClaimStaleAfterDays is null)
+            && settings.ModelBuild is null && settings.ModelReview is null && settings.ModelReviewVerify is null
+            && settings.ModelFix is null && settings.ModelSynthesis is null && settings.ModelRefinement is null
+            && settings.ModelPublication is null && settings.InteractiveClaimStaleAfterDays is null)
         {
             throw new DomainValidationException(
                 "Nothing to change — pass at least one setting, e.g. --max-concurrent-agent-sessions 4. "
@@ -154,6 +163,8 @@ public sealed class ConfigSetCommand : Hall9kAsyncCommand<ConfigSetCommand.Setti
         ApplyModel("default-model", settings.DefaultModel, value => operating.DefaultModel = value, changed);
         ApplyModel("model (build)", settings.ModelBuild, value => operating.ModelByRole.Build = value, changed);
         ApplyModel("model (review)", settings.ModelReview, value => operating.ModelByRole.Review = value, changed);
+        ApplyModel(
+            "model (review-verify)", settings.ModelReviewVerify, value => operating.ModelByRole.ReviewVerify = value, changed);
         ApplyModel("model (fix)", settings.ModelFix, value => operating.ModelByRole.Fix = value, changed);
         ApplyModel("model (synthesis)", settings.ModelSynthesis, value => operating.ModelByRole.Synthesis = value, changed);
         ApplyModel("model (refinement)", settings.ModelRefinement, value => operating.ModelByRole.Refinement = value, changed);

@@ -299,6 +299,31 @@ public sealed class DaemonOptions
     /// </summary>
     public AgentModel ResolveModel(AgentRole role, AgentModel? taskModel, AgentModel? projectModel) =>
         AgentModel.Resolve(taskModel, ModelByRole.For(role), projectModel, DefaultModel);
+
+    /// <summary>
+    /// The effective model for a <see cref="Hall9k.Domain.Features.Run.ReviewMode.Verify"/> pass
+    /// specifically (Brian's ruling, 2026-08-29): a task override still wins, same as any other
+    /// pass, but underneath it sits <see cref="RoleModelDefaults.ReviewVerify"/> rather than the
+    /// full role chain — a knob deliberately independent of <see cref="AgentRole"/>, because
+    /// Verify is still Review-role work (Decisions Log #33's session shape is unchanged), just a
+    /// different pass shape with its own mechanical, confirm-the-fix-and-check-blast-radius
+    /// profile. Left unset, this falls through to exactly what a Discovery or FinalFullPass pass
+    /// on the same task/project would resolve to, so the knob is opt-in and changes nothing until
+    /// an install sets it.
+    /// </summary>
+    public AgentModel ResolveVerifyReviewModel(AgentModel? taskModel, AgentModel? projectModel)
+    {
+        AgentModel taskOverride = AgentModel.FromInput(taskModel);
+        if (taskOverride != AgentModel.Unknown)
+        {
+            return taskOverride;
+        }
+
+        AgentModel verifyDefault = AgentModel.FromInput(ModelByRole.ReviewVerify);
+        return verifyDefault != AgentModel.Unknown
+            ? verifyDefault
+            : ResolveModel(AgentRole.Review, taskModel, projectModel);
+    }
 }
 
 /// <summary>
@@ -326,6 +351,16 @@ public sealed class RoleModelDefaults
 
     /// <summary>The session that writes a task up as a card in an external tracker (backlog 18).</summary>
     public string Publication { get; set; } = string.Empty;
+
+    /// <summary>
+    /// The Review role's model for a <see cref="Hall9k.Domain.Features.Run.ReviewMode.Verify"/>
+    /// pass specifically, underneath a task override but above <see cref="Review"/>'s own chain
+    /// (Brian's ruling, 2026-08-29): blank falls through to whatever <see cref="Review"/> itself
+    /// resolves to, so this is not a seventh <see cref="AgentRole"/> — Verify is still Review-role
+    /// work — it is a narrower override for one pass shape, read by
+    /// <see cref="DaemonOptions.ResolveVerifyReviewModel"/> rather than <see cref="For"/>.
+    /// </summary>
+    public string ReviewVerify { get; set; } = string.Empty;
 
     public AgentModel For(AgentRole role) => role switch
     {

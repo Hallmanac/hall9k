@@ -382,7 +382,7 @@ ones worth knowing:
 | `Hall9k__AdversarialSeverityGateFromCycle` | 4 | From this cycle, only a `high` re-triggers the adversarial loop |
 | `Hall9k__MaxFinalFullPassRounds` | 3 | The mandatory full-read pass immediately before settle's own cap: however many times it has run for this run, hitting this count without ever settling parks the run for a human |
 | `Hall9k__DefaultReviewRerequest` | disabled | Whether closeout asks reviewers for another pass after fixes push |
-| `Hall9k__DefaultModel`, `Hall9k__ModelByRole__*` | | The node's model policy, per role (build, review, fix, synthesis, refinement, publication) |
+| `Hall9k__DefaultModel`, `Hall9k__ModelByRole__*` | | The node's model policy, per role (build, review, fix, synthesis, refinement, publication), plus `Hall9k__ModelByRole__ReviewVerify` — not a seventh role, but a narrower override for a Verify-shape review pass specifically, blank falling through to whatever review resolves |
 
 The ceiling is set in sessions and spent in runs, so there is a conversion between the number you
 configure and the number of tasks in flight. A run tree's peak is however many review lenses a
@@ -437,6 +437,7 @@ once.
 h9k config show                                             # every setting, and where it came from
 h9k config set --max-concurrent-agent-sessions 4            # the concurrency ceiling
 h9k config set --model-review sonnet --model-fix haiku      # per-role model overrides
+h9k config set --model-review-verify sonnet                 # Verify-shape passes only; defaults to --model-review
 h9k config set --interactive-claim-stale-after-days 5       # the interactive-claim nudge threshold
 ```
 
