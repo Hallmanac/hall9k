@@ -123,23 +123,43 @@ public sealed class TwgJiraExecutor(ProcessRunner? runner = null, Uri? site = nu
     private readonly Uri? site = site;
 
     /// <summary>
+    /// Caps how many of <see cref="FindByMarkerAsync"/>'s own search hits get their own
+    /// confirming <c>get</c> call. <c>text ~</c> tokenizes the marker's own reserved characters
+    /// apart (see that method's own doc comment), so a mature board can return a full page of
+    /// loosely-matching candidates, and each confirmation is a synchronous twg call of its own —
+    /// left unbounded, a create's dedup gate could cost enough sequential process spawns to run
+    /// past <see cref="Daemon.DaemonOptions.PendingJiraWriteCeiling"/> in the worst case (that
+    /// option lives in the daemon project this connector cannot reference, so the number here is
+    /// duplicated rather than shared: 10 confirmations at <see cref="ExternalProcess.Deadline"/>
+    /// each stays comfortably under that 30-minute ceiling). Passed to the search itself as
+    /// <c>--limit</c> too (verified live against an installed twg: <c>jira workitem query</c>'s
+    /// own <c>--limit</c>/<c>-n</c>, "alias for --first"), so the search does not even return more
+    /// than this many candidates to begin with — the client-side cap on top is defense in depth
+    /// against a query that ignores or exceeds it (independent pre-PR review, adversarial lens,
+    /// cycle 3).
+    /// </summary>
+    private const int MaxMarkerSearchCandidates = 10;
+
+    /// <summary>
     /// The physical half of the dedup gate: does a card already carry this task's marker. Called
     /// before every create, first attempt and every later one alike, so a create that twg
     /// completed but hall9k never recorded is found rather than duplicated. <c>text ~</c> is a
     /// Lucene text-analysis match with no <c>ORDER BY</c> guarantee, so the search can return
     /// several candidates with the actual marker-carrying card anywhere among them — every
-    /// returned candidate is confirmed against its own description in search order
-    /// (<see cref="CandidateCarriesMarkerAsync"/>) until one carries the marker, rather than
-    /// trusting only whichever the search happened to rank first (independent pre-PR review,
-    /// adversarial lens, cycle 1: a first-hit-only check let a token-overlapping card that sorted
-    /// ahead of the real one mask an existing card and file a duplicate).
+    /// returned candidate, up to <see cref="MaxMarkerSearchCandidates"/>, is confirmed against its
+    /// own description in search order (<see cref="CandidateCarriesMarkerAsync"/>) until one
+    /// carries the marker, rather than trusting only whichever the search happened to rank first
+    /// (independent pre-PR review, adversarial lens, cycle 1: a first-hit-only check let a
+    /// token-overlapping card that sorted ahead of the real one mask an existing card and file a
+    /// duplicate).
     /// </summary>
     public async Task<string?> FindByMarkerAsync(Guid taskId, string workingDirectory, CancellationToken cancellationToken)
     {
         ProcessResult result = await RunAsync(
-            ["jira", "workitem", "query", "--jql", $"text ~ \"{Marker(taskId)}\"", "--output", "json", "--output-summary", "stats"],
+            ["jira", "workitem", "query", "--jql", $"text ~ \"{Marker(taskId)}\"", "--limit",
+             MaxMarkerSearchCandidates.ToString(), "--output", "json", "--output-summary", "stats"],
             workingDirectory, cancellationToken);
-        foreach (string candidate in ExtractAllKeys(result.StandardOutput))
+        foreach (string candidate in ExtractAllKeys(result.StandardOutput).Take(MaxMarkerSearchCandidates))
         {
             if (await CandidateCarriesMarkerAsync(candidate, taskId, workingDirectory, cancellationToken))
             {
