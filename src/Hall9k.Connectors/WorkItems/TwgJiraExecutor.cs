@@ -153,6 +153,13 @@ public sealed class TwgJiraExecutor(ProcessRunner? runner = null, Uri? site = nu
     /// token-overlapping card that sorted ahead of the real one mask an existing card and file a
     /// duplicate).
     /// <para>
+    /// The search's own answer is subject to the same "prove it, do not guess" doctrine before any
+    /// candidate is even looked at: if the search's own temp file could not be read back to confirm
+    /// (<see cref="ExtractAllKeys"/>'s own <c>confirmedReadable</c> out parameter), this refuses
+    /// rather than reading an unreadable answer as "no marker" (independent pre-PR review,
+    /// conformance lens, cycle 9).
+    /// </para>
+    /// <para>
     /// A page that comes back exactly full (<see cref="MaxMarkerSearchCandidates"/> keys, the most
     /// <c>--limit</c> would ever let through) is not trusted as an exhaustive negative even once
     /// every one of those candidates is confirmed clear: the query was capped at that many results,
