@@ -232,7 +232,8 @@ public sealed class TaskReleaseCommand : Hall9kAsyncCommand<TaskReleaseCommand.S
                   + "re-create the worktree from the branch.";
             throw new DomainConflictException(
                 $"Task {taskId}'s branch {run.Branch} holds {commits} commit(s) beyond {project.BaseBranch} — "
-                + "release is only for a claim nothing has been done in yet. " + recovery);
+                + "whether from this claim or one it resumed, the branch is not empty and release is only for "
+                + "a claim nothing has been done in yet. " + recovery);
         }
     }
 }
