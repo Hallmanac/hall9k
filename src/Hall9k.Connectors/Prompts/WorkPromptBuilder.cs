@@ -377,7 +377,7 @@ public static class WorkPromptBuilder
         prompt.AppendLine("     `git reset --mixed` — which resets to HEAD, changes nothing, and exits 0 as");
         prompt.AppendLine("     though the recompose had happened, with step 3's diff unable to catch it");
         prompt.AppendLine("     (the diff would compare HEAD against itself and read clean):");
-        prompt.AppendLine($"     `FORK_POINT=$(git merge-base origin/{baseBranch} HEAD 2>/dev/null || git merge-base {baseBranch} HEAD)`");
+        prompt.AppendLine($"     `FORK_POINT=$(git merge-base origin/{baseBranch} HEAD)`");
         prompt.AppendLine("     `test -n \"$FORK_POINT\" || { echo \"no fork point resolved — stop here, do not reset\" >&2; exit 1; }`");
         prompt.AppendLine("     `git reset --mixed \"$FORK_POINT\"`");
         prompt.AppendLine("     A mixed reset changes which commits exist and");
