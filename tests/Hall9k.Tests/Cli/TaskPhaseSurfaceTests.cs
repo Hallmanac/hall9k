@@ -227,7 +227,7 @@ public sealed class TaskPhaseSurfaceTests
     [Fact]
     public void A_gone_interactive_session_is_not_reported_as_a_stalled_process()
     {
-        // An interactive claim has no lease or heartbeat (Decisions Log #101): closing the
+        // An interactive claim has no lease or heartbeat (Decisions Log #103): closing the
         // terminal is a normal way to leave, and h9k task work re-enters the same claim. The
         // dead pid it leaves behind must not misfile the row as a stalled machine failure —
         // the lever that finding would print (h9k logs) is unusable, since an interactive

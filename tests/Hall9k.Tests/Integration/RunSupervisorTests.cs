@@ -114,7 +114,7 @@ public sealed class RunSupervisorTests(PostgresFixture postgres) : IClassFixture
 
     /// <summary>
     /// h9k task deliver pushes the branch and appends AgentSessionCompleted on an interactive
-    /// run's stream with the delivering node's own id (Decisions Log #101), moving it to
+    /// run's stream with the delivering node's own id (Decisions Log #103), moving it to
     /// Verifying with no monitor. This proves the pickup half of that hand-off:
     /// ResumeStrandedPipelinesAsync notices the stranded run and starts driving it through the
     /// same pipeline a headless run's own completion would — matched here by the delivering

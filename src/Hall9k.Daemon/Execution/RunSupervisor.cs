@@ -193,7 +193,7 @@ public sealed class RunSupervisor(
     /// is the sentinel <see cref="Guid.Empty"/> (<c>TaskAggregate.IsInteractiveClaim</c>'s own
     /// discriminator) only up to the point it is delivered: <c>h9k task deliver</c> records the
     /// delivering node's own id on <c>AgentSessionCompleted</c>, so <c>NodeLoad</c> counts it
-    /// against that node's concurrency ceiling from Verifying onward (Decisions Log #101's own
+    /// against that node's concurrency ceiling from Verifying onward (Decisions Log #103's own
     /// fix — a delivered run must count, or the ceiling undercounts). No widening for
     /// <c>NodeId == Guid.Empty</c> here: <c>DeliveredByNodeId</c> is new alongside this feature,
     /// so no stream predating it exists, and every run reaching Verifying or UnderReview has
