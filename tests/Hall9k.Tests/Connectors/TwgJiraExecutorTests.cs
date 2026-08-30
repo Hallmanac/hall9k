@@ -612,6 +612,30 @@ public sealed class TwgJiraExecutorTests
         exception.Kind.Should().Be(TwgFailureKind.Other);
     }
 
+    /// <summary>
+    /// An envelope's own <c>error.message</c> is twg's and Jira's text, not Hall9k's, and it
+    /// routinely quotes a composed field value back — so a permanent, non-auth refusal whose
+    /// message happens to contain "unauthorized" (because that word is in the composed summary
+    /// this create was refused over) must not classify as an expired login: an auth-classified
+    /// write has no retry ceiling, so a misclassification here retries a doomed write forever
+    /// (independent pre-PR review, adversarial lens, cycle 11).
+    /// </summary>
+    [Fact]
+    public async Task A_permanent_refusal_that_echoes_an_auth_word_from_the_envelope_is_not_misread_as_one()
+    {
+        RecordingProcessRunner twg = RecordingProcessRunner.FailingWithEnvelope(
+            1,
+            "TWG_COMMAND_FAILED",
+            "field 'summary' rejected: value 'Return 401 unauthorized instead of 500' exceeds 255 characters");
+        TwgJiraExecutor executor = new(twg.Runner);
+
+        Func<Task> comment = () => executor.CommentAsync("PROJ-123", "note", "markdown", "/repo", CancellationToken.None);
+
+        TwgExecutionException exception = (await comment.Should().ThrowAsync<TwgExecutionException>()).Which;
+        exception.IsAuthFailure.Should().BeFalse();
+        exception.Kind.Should().Be(TwgFailureKind.Other);
+    }
+
     [Fact]
     public async Task A_missing_twg_binary_is_told_apart_from_an_expired_login()
     {
