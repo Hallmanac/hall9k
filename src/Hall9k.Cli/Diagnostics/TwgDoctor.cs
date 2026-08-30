@@ -50,7 +50,23 @@ internal static class TwgDoctor
             return;
         }
 
-        Uri? site = connection?.SiteUrl;
+        if (connection?.SiteUrl is not { } site)
+        {
+            // No site to probe against means there is nothing to confirm: every actual write goes
+            // through the same connection?.SiteUrl check (TaskWriteJiraCommand, CardPublicationEngine,
+            // JiraWriteRetryEngine, CloseoutEngine) and is refused with NoJiraConnection regardless of
+            // what twg's own ambient login can do — including a connection registered before the site
+            // field existed, whose SiteUrl is null on an otherwise non-null connection. Probing that
+            // ambient tenant and reporting its success as "authenticated" would tell the operator the
+            // write path is healthy when nothing on it can run (independent pre-PR review, cycle 10).
+            AnsiConsole.MarkupLine(
+                $"[red]  No Jira connection is registered[/], and {names.EscapeMarkup()} track their "
+                + "backlog in Jira — every write to it will be refused until one is. Register one: "
+                + "[bold]h9k connection add jira --site https://your-org.atlassian.net --email "
+                + "you@example.com[/]");
+            return;
+        }
+
         TwgAuthProbeResult probe = await new TwgJiraExecutor(site: site)
             .ProbeAuthenticationAsync(Environment.CurrentDirectory, cancellationToken);
 

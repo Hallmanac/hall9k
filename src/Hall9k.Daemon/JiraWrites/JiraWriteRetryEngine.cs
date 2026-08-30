@@ -411,10 +411,16 @@ public sealed class JiraWriteRetryEngine(
             // is itself the "somebody else's, nothing of ours got in" answer.
             if (exception is not JiraWriteSubmissionException)
             {
+                // SubmitAsync refuses before ever appending anything for several reasons — a
+                // payload validation failure, a missing task stream, TaskDecider.RequestJiraWrite's
+                // own outstanding-write guard, or a lost optimistic-concurrency race on the intent
+                // append — and this catch cannot tell which one happened, only that none of them put
+                // anything of ours on the stream. Naming just one (independent pre-PR review,
+                // adversarial lens, cycle 10) would assert a cause nobody observed; the attached
+                // exception carries the real one.
                 logger.LogWarning(exception,
                     "Task {TaskId}: the queued merge notice for {Reference} was refused before "
-                    + "reaching twg — another Jira write is outstanding on this task; it stays "
-                    + "queued for the next sweep", taskId, reference);
+                    + "reaching twg; it stays queued for the next sweep", taskId, reference);
                 return false;
             }
 
