@@ -70,12 +70,13 @@ public sealed class TaskReleaseCommand : Hall9kAsyncCommand<TaskReleaseCommand.S
                 // closing, a killed process) leaves the task Claimed with a CurrentRunId that
                 // resolves to nothing. An interactive claim writes no TaskLease by design, so
                 // there is no expiry sweep to reclaim it the way a headless claim's would, and
-                // every other lever (work, handback, deliver, verify, unassign, retry) refuses a
-                // run with no record — h9k task work's own ReenterAsync sends the operator here
-                // by name (TaskWorkCommand.cs). Nothing has run yet at this point in
-                // ClaimAndCutAsync — RunDispatched is the last thing it commits — so there is
-                // nothing to check and no run to supersede, only the claim itself to give back
-                // (adversarial review, cycle 1).
+                // every other lever (work, handback, deliver, verify) refuses a run with no
+                // record — each one's own no-record message names h9k task release by id as the
+                // way out (TaskWorkCommand.cs, TaskDeliverCommand.cs, TaskHandbackCommand.cs,
+                // TaskVerifyCommand.cs — adversarial review, cycle 2). Nothing has run yet at
+                // this point in ClaimAndCutAsync — RunDispatched is the last thing it commits —
+                // so there is nothing to check and no run to supersede, only the claim itself to
+                // give back (adversarial review, cycle 1).
                 AnsiConsole.MarkupLineInterpolated(
                     $"[yellow]Task {taskId}'s run {currentRunId} has no record — its interactive claim never finished setting up (the process likely died while preparing the worktree). Releasing the claim; a partially-cut worktree or branch may be left on disk under this task's id and is safe to remove by hand.[/]");
             }
@@ -219,11 +220,19 @@ public sealed class TaskReleaseCommand : Hall9kAsyncCommand<TaskReleaseCommand.S
         }
         else if (commits > 0)
         {
+            // h9k task deliver needs the worktree itself (it pushes from run.WorktreePath) — naming
+            // it here on the worktree-gone path would send the operator to a command that fails
+            // with a bare "Push failed: " rather than a real error. Only handback, which tolerates
+            // a missing worktree (its uncommitted check degrades to skip, and CheckoutExistingAsync
+            // re-adds it), is offered there (adversarial review, cycle 2).
+            string recovery = worktreeExists
+                ? $"h9k task handback {taskId} to hand the committed work to a headless agent, or "
+                  + $"h9k task deliver {taskId} to submit it yourself."
+                : $"h9k task handback {taskId} to hand the committed work to a headless agent, which will "
+                  + "re-create the worktree from the branch.";
             throw new DomainConflictException(
                 $"Task {taskId}'s branch {run.Branch} holds {commits} commit(s) beyond {project.BaseBranch} — "
-                + "release is only for a claim nothing has been done in yet. "
-                + $"h9k task handback {taskId} to hand the committed work to a headless agent, or "
-                + $"h9k task deliver {taskId} to submit it yourself.");
+                + "release is only for a claim nothing has been done in yet. " + recovery);
         }
     }
 }

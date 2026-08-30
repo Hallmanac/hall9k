@@ -60,7 +60,10 @@ public sealed class TaskDeliverCommand : Hall9kAsyncCommand<TaskDeliverCommand.S
         }
 
         RunDetails run = await session.LoadAsync<RunDetails>(runId, cancellationToken)
-            ?? throw new DomainConflictException($"Task {taskId} is claimed interactively but run {runId} has no record.");
+            ?? throw new DomainConflictException(
+                $"Task {taskId} is claimed interactively but run {runId} has no record — the process likely died "
+                + $"while preparing the worktree. h9k task release {taskId} to give the claim back to the "
+                + "dispatch queue.");
         ProjectDetails project = await session.LoadAsync<ProjectDetails>(task.ProjectId, cancellationToken)
             ?? throw new DomainNotFoundException($"Task {taskId}'s project no longer exists.");
 

@@ -84,8 +84,11 @@ internal static class TaskPhaseComposer
         // already argues against one field over (adversarial review, cycle 1).
         if (session == SessionLiveness.Gone && ActiveRole(run) == AgentRole.Interactive)
         {
+            // The lever leads: TaskRowLayout.cs renders this line with Overflow.Ellipsis, so a
+            // narrow terminal truncates the tail first — putting the actionable half first keeps
+            // it visible even when the explanatory half is cut (adversarial review, cycle 2).
             return new TaskPhase("building", SessionLiveness.NotApplicable,
-                "no session attached here — closing the terminal is a normal way to leave; h9k task work re-enters this claim");
+                "h9k task work re-enters this claim; closing the terminal is a normal way to leave");
         }
 
         return run.State.Value switch

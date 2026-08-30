@@ -57,7 +57,10 @@ public sealed class TaskVerifyCommand : Hall9kAsyncCommand<TaskVerifyCommand.Set
         }
 
         RunDetails run = await session.LoadAsync<RunDetails>(runId, cancellationToken)
-            ?? throw new DomainConflictException($"Task {taskId} is claimed interactively but run {runId} has no record.");
+            ?? throw new DomainConflictException(
+                $"Task {taskId} is claimed interactively but run {runId} has no record — the process likely died "
+                + $"while preparing the worktree. h9k task release {taskId} to give the claim back to the "
+                + "dispatch queue.");
 
         // An operator's own session, still attached in another terminal, is editing and possibly
         // rebuilding this same worktree right now — running gates here would collide with it in
