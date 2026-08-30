@@ -273,10 +273,15 @@ public sealed class JiraWriteRetryEngine(
     {
         await using IDocumentSession session = store.LightweightSession();
         TaskAggregate? aggregate = await session.Events.AggregateStreamAsync<TaskAggregate>(task.Id, token: cancellationToken);
-        if (aggregate?.PendingJiraWriteId is not { } writeId)
+        if (aggregate?.PendingJiraWriteId is not { } writeId || writeId != task.PendingJiraWriteId)
         {
             // Resolved by something else between the read above and this attempt — an operator's
-            // own retry, or another node's sweep.
+            // own retry, or another node's sweep — or, when a write id is standing but it does not
+            // match the one this sweep snapshotted as stale, a different write entirely: this
+            // task's stale write already resolved and a fresh one (an operator's retry, or
+            // closeout's own merge comment) is now outstanding in its place. Ending that one would
+            // record a healthy write as timed out under the stale write's own timestamp
+            // (independent pre-PR review, adversarial lens, cycle 3).
             return false;
         }
 
