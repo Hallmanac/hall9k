@@ -508,10 +508,13 @@ public sealed class TwgJiraExecutor(ProcessRunner? runner = null, Uri? site = nu
     private const int AuthRequiredExitCode = 77;
 
     /// <summary>
-    /// twg reports a runtime failure — including an expired or missing login — through its own
-    /// JSON error envelope on stdout, exit code 77, with stderr left empty (verified live against
-    /// an installed twg, independent pre-PR review, cycle 3): none of the earlier stderr substring
-    /// checks could ever match, because the answer was never on that stream. The envelope is read
+    /// twg reports an expired or missing login through its own JSON error envelope on stdout, exit
+    /// code 77, <c>error.code: "AUTH_REQUIRED"</c>, with stderr left empty — verified live against
+    /// an installed twg (independent pre-PR review, adversarial lens, cycle 1): an ordinary runtime
+    /// failure unrelated to auth (a bad site, an unknown issue key) exits **1** with
+    /// <c>error.code: "TWG_COMMAND_FAILED"</c> in the same envelope shape, not 77. None of the
+    /// earlier stderr substring checks could ever match an auth failure, because the answer was
+    /// never on that stream. The envelope is read
     /// with the same <see cref="ReadPayloadJson"/>/<see cref="StdoutFilePathPattern"/> machinery
     /// <see cref="ExtractFirstKey"/> already uses for a success answer; stderr stays a fallback for
     /// whatever this class has not seen twg do yet (a spawn-level refusal outside twg's own
