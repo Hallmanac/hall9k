@@ -87,7 +87,7 @@ public sealed class CloseoutEngine(
     DaemonConnection connection,
     IPullRequestInspector inspector,
     IWorktreeManager worktrees,
-    ProcessRunner githubRunner,
+    ProcessRunner processRunner,
     IOptions<DaemonOptions> options,
     ILogger<CloseoutEngine> logger)
 {
@@ -1150,7 +1150,7 @@ public sealed class CloseoutEngine(
     /// drains the queue once the blocking write clears.
     /// </para>
     /// <para>
-    /// <see cref="githubRunner"/> is reused for twg rather than a second injected seam: the
+    /// <see cref="processRunner"/> is reused for twg rather than a second injected seam: the
     /// delegate is process-agnostic (it takes the tool's file name as an argument), and it is
     /// already registered once, generically, precisely so a write like this one is testable
     /// against a recorded process instead of the real, machine-authenticated twg.
@@ -1206,7 +1206,7 @@ public sealed class CloseoutEngine(
                 new JiraWritePayload(WorkItemType: null, Fields: null, Comment: MergeComment(project, task), Format: "plain"),
                 project.JiraProjectKey,
                 node.OwnerId,
-                new TwgJiraExecutor(githubRunner, site),
+                new TwgJiraExecutor(processRunner, site),
                 project.RepositoryPath,
                 cancellationToken);
 
@@ -1282,7 +1282,7 @@ public sealed class CloseoutEngine(
     /// explicit word Jira gets rather than a quieter closeout because the mention happened to be
     /// free.
     /// <para>
-    /// Built on <see cref="githubRunner"/> rather than a bare <c>new GitHubWorkItemProvider()</c>,
+    /// Built on <see cref="processRunner"/> rather than a bare <c>new GitHubWorkItemProvider()</c>,
     /// the same reason <see cref="TellJiraAsync"/> builds its <see cref="TwgJiraExecutor"/> on the
     /// same seam instead of reaching twg statically: it is what lets this write be exercised in
     /// the test suite against a recorded process instead of a live, machine-authenticated one
@@ -1294,7 +1294,7 @@ public sealed class CloseoutEngine(
     {
         try
         {
-            await new GitHubWorkItemProvider(githubRunner).CommentAsync(
+            await new GitHubWorkItemProvider(processRunner).CommentAsync(
                 reference, MergeComment(project, task), project.RepositoryPath, cancellationToken);
             logger.LogInformation("Task {TaskId}: told {Reference} that {Url} merged", taskId, reference, task.PullRequestUrl);
         }
