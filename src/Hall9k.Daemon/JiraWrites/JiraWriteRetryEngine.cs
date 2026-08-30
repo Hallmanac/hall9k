@@ -48,6 +48,20 @@ public sealed class JiraWriteRetryEngine(
     private readonly DaemonOptions _options = options.Value;
 
     /// <summary>
+    /// How long <see cref="DrainMergeNoticeAsync"/>'s own post-submit bookkeeping gets to clear the
+    /// queue marker once the caller's own token has already fired — the identical shape and
+    /// reasoning <see cref="Hall9k.Connectors.WorkItems.JiraWriteCoordinator"/>'s own cancellation
+    /// grace documents (independent pre-PR review, cycle 1): a cancellation between twg's own call
+    /// returning and this method's own re-aggregation read (a graceful <c>h9k daemon stop</c> mid-drain)
+    /// otherwise makes that read throw on the already-fired token immediately, before the queue
+    /// marker can be cleared, and <c>HasQueuedJiraMergeNotice</c> carries no ceiling sweep of its
+    /// own to backstop it the way a stuck write's <see cref="DaemonOptions.PendingJiraWriteCeiling"/>
+    /// does — so redelivery of the identical comment on the next sweep would be certain rather than
+    /// merely possible.
+    /// </summary>
+    private static readonly TimeSpan MergeNoticeBookkeepingGrace = TimeSpan.FromSeconds(5);
+
+    /// <summary>
     /// Test-only seam (independent pre-PR review, cycle 6): runs, when set, immediately before
     /// <see cref="DrainMergeNoticeAsync"/> calls <see cref="JiraWriteCoordinator.SubmitAsync"/> —
     /// the narrow window after this method's own outstanding-write guard has already read
@@ -444,11 +458,21 @@ public sealed class JiraWriteRetryEngine(
             // adversarial lens, cycle 5).
             try
             {
-                TaskAggregate? afterFailure = await session.Events.AggregateStreamAsync<TaskAggregate>(taskId, token: cancellationToken);
+                // A grace token of its own, the same reason JiraWriteCoordinator.AttemptAsync's own
+                // cancellation catch uses one: cancellationToken may already be fired by this point
+                // (the daemon stopping mid-drain), and reading with it here would throw immediately,
+                // before the queue marker could ever be cleared — leaving a comment that already
+                // posted queued for a certain repost on the next sweep.
+                using CancellationTokenSource? grace = cancellationToken.IsCancellationRequested
+                    ? new CancellationTokenSource(MergeNoticeBookkeepingGrace)
+                    : null;
+                CancellationToken bookkeepingToken = grace?.Token ?? cancellationToken;
+
+                TaskAggregate? afterFailure = await session.Events.AggregateStreamAsync<TaskAggregate>(taskId, token: bookkeepingToken);
                 if (afterFailure is { HasQueuedJiraMergeNotice: true })
                 {
                     session.Events.Append(taskId, TaskDecider.RecordJiraMergeNoticeAttempted(afterFailure, DateTimeOffset.UtcNow));
-                    await session.SaveChangesAsync(cancellationToken);
+                    await session.SaveChangesAsync(bookkeepingToken);
                 }
             }
             catch (Exception markException) when (markException is not OperationCanceledException)
@@ -479,14 +503,24 @@ public sealed class JiraWriteRetryEngine(
         // for, so it belongs inside the guard, not just the append and save that follow it.
         try
         {
+            // A grace token of its own, for the identical reason the failure path above now uses
+            // one: SubmitAsync can return normally here even though cancellationToken already fired
+            // — its own AttemptAsync records a cancelled write's outcome under a short grace period
+            // and returns rather than throwing — so re-aggregating with the caller's own already-
+            // fired token would still throw immediately, before the queue marker could be cleared.
+            using CancellationTokenSource? grace = cancellationToken.IsCancellationRequested
+                ? new CancellationTokenSource(MergeNoticeBookkeepingGrace)
+                : null;
+            CancellationToken bookkeepingToken = grace?.Token ?? cancellationToken;
+
             // Re-aggregate: SubmitAsync appended and saved its own events on this session, so the
             // in-memory task above is stale by the time the queue marker itself needs clearing.
-            TaskAggregate refreshed = await session.Events.AggregateStreamAsync<TaskAggregate>(taskId, token: cancellationToken)
+            TaskAggregate refreshed = await session.Events.AggregateStreamAsync<TaskAggregate>(taskId, token: bookkeepingToken)
                 ?? task;
             if (refreshed.HasQueuedJiraMergeNotice)
             {
                 session.Events.Append(taskId, TaskDecider.RecordJiraMergeNoticeAttempted(refreshed, DateTimeOffset.UtcNow));
-                await session.SaveChangesAsync(cancellationToken);
+                await session.SaveChangesAsync(bookkeepingToken);
             }
         }
         catch (Exception exception) when (exception is not OperationCanceledException)
