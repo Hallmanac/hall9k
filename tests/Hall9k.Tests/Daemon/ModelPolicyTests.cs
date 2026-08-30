@@ -81,6 +81,50 @@ public sealed class ModelPolicyTests
             .Should().Be(AgentModel.Haiku, "with no role opinion, the project default decides");
     }
 
+    /// <summary>
+    /// A Verify pass's model is a narrower knob under Review, not a seventh role (Brian's ruling,
+    /// 2026-08-29): left unset, it must fall through to exactly what Review itself resolves to on
+    /// the same task/project, including when Review carries its own configured override — the
+    /// acceptance bar for "the knob defaults to the review model, no behavior change until set".
+    /// </summary>
+    [Fact]
+    public void Unset_review_verify_falls_through_to_whatever_review_itself_resolves_to()
+    {
+        DaemonOptions options = new()
+        {
+            DefaultModel = "claude-opus-5",
+            ModelByRole = new RoleModelDefaults { Review = "sonnet" },
+        };
+
+        options.ResolveVerifyReviewModel(taskModel: null, projectModel: null).Should().Be(AgentModel.Sonnet);
+        options.ResolveVerifyReviewModel(taskModel: null, projectModel: AgentModel.Haiku).Should().Be(
+            AgentModel.Sonnet, "Review's own configured override still outranks the project default underneath it");
+    }
+
+    [Fact]
+    public void A_configured_review_verify_model_outranks_the_plain_review_chain()
+    {
+        DaemonOptions options = new()
+        {
+            DefaultModel = "claude-opus-5",
+            ModelByRole = new RoleModelDefaults { Review = "sonnet", ReviewVerify = "haiku" },
+        };
+
+        options.ResolveVerifyReviewModel(taskModel: null, projectModel: null).Should().Be(AgentModel.Haiku);
+    }
+
+    [Fact]
+    public void A_task_override_still_wins_over_the_review_verify_knob()
+    {
+        DaemonOptions options = new()
+        {
+            ModelByRole = new RoleModelDefaults { Review = "sonnet", ReviewVerify = "haiku" },
+        };
+
+        options.ResolveVerifyReviewModel(taskModel: AgentModel.Fable, projectModel: null)
+            .Should().Be(AgentModel.Fable, "a task-level override is the most specific level for every pass, Verify included");
+    }
+
     [Fact]
     public void A_fresh_spawn_always_states_its_model()
     {

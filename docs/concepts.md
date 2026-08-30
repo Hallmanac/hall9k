@@ -254,7 +254,12 @@ both lenses fresh — whether or not a track had already gone dormant — so not
 remote on delta-green alone; a track it reawakens with a genuine new finding is recorded
 reactivated rather than left stuck at an earlier conclusion, and a run that converges clean at
 cycle 1 pays no extra pass at all. Which shape a cycle ran under — Discovery, Verify, or
-FinalFullPass — is a deterministic engine decision recorded on the run stream.
+FinalFullPass — is a deterministic engine decision recorded on the run stream, and a Verify pass
+resolves its own configurable model (`--model-review-verify`, defaulting to whatever the plain
+Review model resolves to), separately from the Review model Discovery and FinalFullPass keep
+using — Verify's confirm-the-fix-and-check-blast-radius job is deliberately the cheapest to run at
+a lighter model, while the mandatory FinalFullPass still reads the whole branch fresh on the
+strongest model immediately before delivery.
 
 Reawakening a track deliberately gives it a fresh per-track cycle budget, measured from the cycle
 it was reawakened at rather than the run's absolute cycle count, so it gets a genuine chance to fix

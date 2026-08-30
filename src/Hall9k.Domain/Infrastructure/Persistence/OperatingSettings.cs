@@ -70,6 +70,15 @@ public sealed class RoleModelSettings
     [JsonConverter(typeof(LenientModelStringJsonConverter))]
     public string? Publication { get; set; }
 
+    /// <summary>
+    /// The Review role's model for a Verify-shape pass specifically (Brian's ruling, 2026-08-29):
+    /// blank falls through to whatever <see cref="Review"/> itself resolves to, so this is not a
+    /// seventh role — Verify is still Review-role work — it is a narrower override <see
+    /// cref="Hall9k.Daemon.Review.ReviewEngine"/>'s Verify dispatch reads on its own.
+    /// </summary>
+    [JsonConverter(typeof(LenientModelStringJsonConverter))]
+    public string? ReviewVerify { get; set; }
+
     [JsonExtensionData]
     public Dictionary<string, JsonElement>? Extra { get; set; }
 
@@ -78,6 +87,7 @@ public sealed class RoleModelSettings
     {
         yield return (nameof(Build), Build);
         yield return (nameof(Review), Review);
+        yield return (nameof(ReviewVerify), ReviewVerify);
         yield return (nameof(Fix), Fix);
         yield return (nameof(Synthesis), Synthesis);
         yield return (nameof(Refinement), Refinement);
