@@ -394,6 +394,17 @@ public sealed class GitWorktreeManager(ILogger<GitWorktreeManager> logger) : IWo
             {
                 return new FileStream(lockFilePath, FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None);
             }
+            catch (DirectoryNotFoundException)
+            {
+                // repositoryPath itself no longer exists (removed out-of-band, or pruned by
+                // an earlier step in the same call chain) — no process can ever release a
+                // lock for a directory that is gone, so retrying here would spin until the
+                // caller's own cancellation fires instead of failing honestly right away.
+                // CloseoutEngine.RemoveWorktreeBestEffortAsync's own best-effort catch already
+                // treats any non-cancellation exception as "safe to log and continue", which
+                // is exactly the right outcome for a repository that has already vanished.
+                throw new WorktreeException($"Repository {repositoryPath} no longer exists on disk.");
+            }
             catch (IOException)
             {
                 cancellationToken.ThrowIfCancellationRequested();
