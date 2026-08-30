@@ -144,7 +144,8 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
 
         if (details.RetryReason.IsNotBlank())
         {
-            header.AddRow("Retried", $"[yellow]{details.RetryReason.EscapeMarkup()}[/]");
+            string label = details.RetryReasonIsHandback ? "Handed back" : "Retried";
+            header.AddRow(label, $"[yellow]{details.RetryReason.EscapeMarkup()}[/]");
         }
 
         if (details.ResolvedReason.IsNotBlank())

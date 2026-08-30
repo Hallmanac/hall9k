@@ -385,10 +385,12 @@ public sealed class GitWorktreeManager(ILogger<GitWorktreeManager> logger) : IWo
     /// until disposed, so a second process racing the same repository waits here instead of
     /// losing a `git worktree add` / `git fetch` to a locked ref file.
     /// </summary>
-    private static async Task<FileStream> AcquireCrossProcessLockAsync(string repositoryPath, CancellationToken cancellationToken)
+    private async Task<FileStream> AcquireCrossProcessLockAsync(string repositoryPath, CancellationToken cancellationToken)
     {
         string lockDirectory = await ResolveLockDirectoryAsync(repositoryPath, cancellationToken);
         string lockFilePath = Path.Combine(lockDirectory, ".h9k-worktree.lock");
+        DateTimeOffset waitStarted = DateTimeOffset.UtcNow;
+        DateTimeOffset nextLogAt = waitStarted.AddSeconds(1);
         while (true)
         {
             try
@@ -409,6 +411,24 @@ public sealed class GitWorktreeManager(ILogger<GitWorktreeManager> logger) : IWo
             catch (IOException)
             {
                 cancellationToken.ThrowIfCancellationRequested();
+
+                // Unbounded on purpose (a holder wedged on a hung fetch still has to release
+                // eventually, and there is no safe value to time this out to), but silent for
+                // the whole wait was the actual defect: before this lock existed, the CLI never
+                // contended for anything the daemon held, so an operator running h9k task work
+                // against a repository the daemon's own GitWorktreeManager was mid-fetch on saw
+                // nothing at all print until they gave up and interrupted it (adversarial
+                // review, cycle 4). A periodic line naming the lock file is the minimum needed
+                // to tell "waiting on another h9k process" apart from "hung".
+                DateTimeOffset now = DateTimeOffset.UtcNow;
+                if (now >= nextLogAt)
+                {
+                    logger.LogInformation(
+                        "Waiting on cross-process worktree lock {LockFile} ({Elapsed:0}s elapsed) — another h9k process is using this repository",
+                        lockFilePath, (now - waitStarted).TotalSeconds);
+                    nextLogAt = now.AddSeconds(5);
+                }
+
                 await Task.Delay(50, cancellationToken);
             }
         }
