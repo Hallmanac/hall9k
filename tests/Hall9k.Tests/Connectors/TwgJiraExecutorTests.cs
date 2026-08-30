@@ -289,6 +289,39 @@ public sealed class TwgJiraExecutorTests
     }
 
     /// <summary>
+    /// The fix for the defect above's sibling (independent pre-PR review, adversarial lens, cycle
+    /// 1): the search can return several candidates with no ordering guarantee, so a token-overlap
+    /// false match sorting ahead of the real card must not stop the gate from confirming the rest
+    /// of the search's own results.
+    /// </summary>
+    [Fact]
+    public async Task A_second_search_hit_carrying_the_marker_is_found_when_the_first_does_not_carry_it()
+    {
+        Guid taskId = Guid.NewGuid();
+        Guid otherTaskId = Guid.NewGuid();
+        RecordingProcessRunner twg = RecordingProcessRunner.RespondingTo(arguments =>
+        {
+            if (arguments.Contains("PROJ-111"))
+            {
+                return new ProcessResult(0, RealisticDescriptionGetAnswer("PROJ-111", TwgJiraExecutor.Marker(otherTaskId)), string.Empty);
+            }
+
+            if (arguments.Contains("PROJ-222"))
+            {
+                return new ProcessResult(0, RealisticDescriptionGetAnswer("PROJ-222", TwgJiraExecutor.Marker(taskId)), string.Empty);
+            }
+
+            return new ProcessResult(0, """[{"key":"PROJ-111"},{"key":"PROJ-222"}]""", string.Empty);
+        });
+        TwgJiraExecutor executor = new(twg.Runner);
+
+        string? found = await executor.FindByMarkerAsync(taskId, "/repo", CancellationToken.None);
+
+        found.Should().Be(
+            "PROJ-222", "the first hit's tokens merely overlapped a different task's marker; the second hit is this task's real card");
+    }
+
+    /// <summary>
     /// A dedup hit's own confirmation read can find no readable payload at all — twg's own temp
     /// file for that <c>get</c> reaped or unreadable between the call and this check — and that
     /// must refuse rather than silently read as "no marker", which would create a second card on

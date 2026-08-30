@@ -125,24 +125,29 @@ public sealed class TwgJiraExecutor(ProcessRunner? runner = null, Uri? site = nu
     /// <summary>
     /// The physical half of the dedup gate: does a card already carry this task's marker. Called
     /// before every create, first attempt and every later one alike, so a create that twg
-    /// completed but hall9k never recorded is found rather than duplicated. The JQL search that
-    /// finds a candidate is confirmed against the candidate's own description before it is
-    /// trusted (<see cref="CandidateCarriesMarkerAsync"/>), because the search itself is not proof.
+    /// completed but hall9k never recorded is found rather than duplicated. <c>text ~</c> is a
+    /// Lucene text-analysis match with no <c>ORDER BY</c> guarantee, so the search can return
+    /// several candidates with the actual marker-carrying card anywhere among them — every
+    /// returned candidate is confirmed against its own description in search order
+    /// (<see cref="CandidateCarriesMarkerAsync"/>) until one carries the marker, rather than
+    /// trusting only whichever the search happened to rank first (independent pre-PR review,
+    /// adversarial lens, cycle 1: a first-hit-only check let a token-overlapping card that sorted
+    /// ahead of the real one mask an existing card and file a duplicate).
     /// </summary>
     public async Task<string?> FindByMarkerAsync(Guid taskId, string workingDirectory, CancellationToken cancellationToken)
     {
         ProcessResult result = await RunAsync(
             ["jira", "workitem", "query", "--jql", $"text ~ \"{Marker(taskId)}\"", "--output", "json", "--output-summary", "stats"],
             workingDirectory, cancellationToken);
-        string? candidate = ExtractFirstKey(result.StandardOutput);
-        if (candidate is null)
+        foreach (string candidate in ExtractAllKeys(result.StandardOutput))
         {
-            return null;
+            if (await CandidateCarriesMarkerAsync(candidate, taskId, workingDirectory, cancellationToken))
+            {
+                return candidate;
+            }
         }
 
-        return await CandidateCarriesMarkerAsync(candidate, taskId, workingDirectory, cancellationToken)
-            ? candidate
-            : null;
+        return null;
     }
 
     /// <summary>
@@ -641,6 +646,93 @@ public sealed class TwgJiraExecutor(ProcessRunner? runner = null, Uri? site = nu
                 ? key.GetString()
                 : null;
         }
+    }
+
+    /// <summary>
+    /// Every candidate key a query's answer carries, in the order twg's own search returned them —
+    /// the array <see cref="FindEntity"/> would otherwise only look inside for its first element
+    /// (<see cref="FindArray"/> locates that same <c>data.issues[]</c> array without descending
+    /// into it), used by <see cref="FindByMarkerAsync"/> so a marker search with several hits gets
+    /// every one confirmed rather than only whichever twg happened to rank first.
+    /// </summary>
+    private static IReadOnlyList<string> ExtractAllKeys(string envelopeOutput)
+    {
+        string json = ReadPayloadJson(envelopeOutput);
+        if (json.IsBlank())
+        {
+            return [];
+        }
+
+        JsonDocument document;
+        try
+        {
+            document = JsonDocument.Parse(json);
+        }
+        catch (JsonException)
+        {
+            return [];
+        }
+
+        using (document)
+        {
+            JsonElement data = document.RootElement.ValueKind == JsonValueKind.Object
+                && document.RootElement.TryGetProperty("data", out JsonElement dataElement)
+                ? dataElement
+                : document.RootElement;
+            if (FindArray(data) is not { } issues)
+            {
+                return [];
+            }
+
+            List<string> keys = [];
+            foreach (JsonElement item in issues.EnumerateArray())
+            {
+                if (item.ValueKind == JsonValueKind.Object
+                    && item.TryGetProperty("key", out JsonElement key) && key.ValueKind == JsonValueKind.String
+                    && key.GetString() is { } value)
+                {
+                    keys.Add(value);
+                }
+            }
+
+            return keys;
+        }
+    }
+
+    /// <summary>
+    /// The array <see cref="ExtractAllKeys"/> needs whole, found the same way
+    /// <see cref="FindEntity"/> locates its first element — itself, if it is already an array; its
+    /// first array-valued property (<c>data.issues</c>); or, failing that, its first object-valued
+    /// property searched the same way — but returned intact rather than descended into, so every
+    /// element survives for the caller to walk.
+    /// </summary>
+    private static JsonElement? FindArray(JsonElement value)
+    {
+        if (value.ValueKind == JsonValueKind.Array)
+        {
+            return value;
+        }
+
+        if (value.ValueKind == JsonValueKind.Object)
+        {
+            foreach (JsonProperty property in value.EnumerateObject())
+            {
+                if (property.Value.ValueKind == JsonValueKind.Array)
+                {
+                    return property.Value;
+                }
+            }
+
+            foreach (JsonProperty property in value.EnumerateObject())
+            {
+                if (property.Value.ValueKind == JsonValueKind.Object && FindArray(property.Value) is { } found)
+                {
+                    return found;
+                }
+            }
+        }
+
+        return null;
     }
 
     /// <summary>
