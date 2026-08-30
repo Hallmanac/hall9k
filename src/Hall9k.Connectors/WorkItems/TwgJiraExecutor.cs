@@ -291,6 +291,19 @@ public sealed class TwgJiraExecutor(ProcessRunner? runner = null, Uri? site = nu
     /// A comment on an existing card — never a transition, never a close, exactly the closeout
     /// write this surface exists to carry. Read back the same way <see cref="UpdateAsync"/> is:
     /// existence only, not the comment text itself.
+    /// <para>
+    /// Unlike a create, a comment has no dedup gate: <c>twg</c> exposes no way to list or search a
+    /// card's own comments, so nothing here can tell an earlier attempt's comment apart from a
+    /// fresh one before posting. An auth failure from the write call itself is safe to report as
+    /// the ordinary pending-authentication state — nothing happened yet, so the retry sweep's next
+    /// attempt starts clean — but an auth failure from the read-back below is not: the comment has
+    /// already landed by that point, and reporting it the same way would leave the pending write
+    /// standing for the retry sweep to post the identical comment a second time once <c>twg
+    /// login</c> succeeds (independent pre-PR review, adversarial lens, cycle 3). Reclassified here
+    /// as an ordinary (non-auth) failure instead, which clears the pending marker rather than
+    /// retrying automatically, and says so plainly: an operator has to look at the board before
+    /// deciding whether this needs resubmitting.
+    /// </para>
     /// </summary>
     public async Task<TwgWriteResult> CommentAsync(
         string issueKey, string comment, string format, string workingDirectory, CancellationToken cancellationToken)
@@ -299,7 +312,21 @@ public sealed class TwgJiraExecutor(ProcessRunner? runner = null, Uri? site = nu
             ["jira", "workitem", "comment", "create", "--issue-id", issueKey, "--body", comment,
              "--body-format", format, "--output", "json", "--output-summary", "stats"];
         await RunAsync(arguments, workingDirectory, cancellationToken);
-        return await VerifyAsync(issueKey, workingDirectory, cancellationToken, "commented on", confirmsExistenceOnly: true);
+        try
+        {
+            return await VerifyAsync(issueKey, workingDirectory, cancellationToken, "commented on", confirmsExistenceOnly: true);
+        }
+        catch (TwgExecutionException exception) when (exception.Kind == TwgFailureKind.AuthExpired)
+        {
+            throw new TwgExecutionException(
+                TwgFailureKind.Other,
+                $"twg posted the comment on {issueKey}, but reading it back to verify hit an expired or "
+                + "missing twg login rather than any other failure. This is not reported as the ordinary "
+                + "pending-authentication state, because the comment already landed: retrying it once "
+                + "'twg login' succeeds would post the identical comment a second time, since a comment "
+                + "carries no marker a later attempt could use to tell it apart from a fresh one. Check "
+                + $"{issueKey} before resubmitting.");
+        }
     }
 
     /// <summary>

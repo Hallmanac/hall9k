@@ -426,6 +426,28 @@ public sealed class TwgJiraExecutorTests
     }
 
     /// <summary>
+    /// An auth failure raised by the comment's own read-back verification — not the write call
+    /// itself — is not reported as the ordinary pending-authentication state: the comment already
+    /// landed by that point, and a comment has no dedup gate the way a create's marker search
+    /// does, so retrying it once 'twg login' succeeds would post the identical comment a second
+    /// time (independent pre-PR review, adversarial lens, cycle 3).
+    /// </summary>
+    [Fact]
+    public async Task An_auth_failure_from_the_comments_own_verification_is_not_reported_as_retryable()
+    {
+        RecordingProcessRunner twg = RecordingProcessRunner.RespondingTo(arguments => arguments.Contains("get")
+            ? new ProcessResult(77, """{"error":{"code":"AUTH_REQUIRED","message":"authentication required"}}""", string.Empty)
+            : new ProcessResult(0, "{}", string.Empty));
+        TwgJiraExecutor executor = new(twg.Runner);
+
+        Func<Task> comment = () => executor.CommentAsync("PROJ-123", "note", "markdown", "/repo", CancellationToken.None);
+
+        TwgExecutionException exception = (await comment.Should().ThrowAsync<TwgExecutionException>()).Which;
+        exception.IsAuthFailure.Should().BeFalse();
+        exception.Message.Should().Contain("PROJ-123").And.Contain("posted the comment").And.Contain("a second time");
+    }
+
+    /// <summary>
     /// The stderr substring classification stays as a fallback for a refusal that never reaches
     /// twg's own JSON envelope (a spawn-level or transport-level failure outside twg's control),
     /// even though a genuine twg auth refusal is never actually shaped this way.
