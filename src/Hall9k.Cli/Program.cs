@@ -42,9 +42,13 @@ Console.CancelKeyPress += (_, e) =>
         // escalation: letting the second one fall through to SIGINT's default action would
         // terminate h9k before it records the session as ended, leaving InteractiveSessionStarted
         // unpaired (adversarial review, cycle 4) — precisely what the escalation window exists
-        // elsewhere to avoid, not what it should cause here.
+        // elsewhere to avoid, not what it should cause here. Cancelling the shared token is
+        // exactly as wrong as letting SIGINT through: this same keystroke is ordinary input to
+        // the child, not to h9k, so the token must read exactly as uncancelled once the child's
+        // own (perfectly normal) exit lets the command resume — a press here poisoning it left
+        // the command's own post-session database reads throwing OperationCanceledException on
+        // an operator's completely ordinary session end (independent pre-PR review, cycle 7).
         e.Cancel = true;
-        cancellation.Cancel();
         return;
     }
 

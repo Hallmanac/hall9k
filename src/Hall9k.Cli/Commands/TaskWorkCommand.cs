@@ -190,7 +190,13 @@ public sealed class TaskWorkCommand : Hall9kAsyncCommand<TaskWorkCommand.Setting
         // abandoned, handed back, or released this exact claim while the session the operator
         // was just attached to was running, and the levers below only make sense while the
         // claim is still sitting where this session left it (adversarial review, cycle 6).
-        TaskDetails? taskAfterSession = await session.LoadAsync<TaskDetails>(taskId, cancellationToken);
+        // CancellationToken.None: the interactive session already ended by the time execution
+        // reaches here, so there is nothing left to cancel, and an ordinary Ctrl-C pressed as
+        // input to the now-exited child (or Claude Code's own double-tap exit gesture) must
+        // never turn a perfectly normal session end into a silent error exit that swallows the
+        // deliver/verify/work/handback/release guidance below (independent pre-PR review,
+        // cycle 7).
+        TaskDetails? taskAfterSession = await session.LoadAsync<TaskDetails>(taskId, CancellationToken.None);
         bool stillClaimedHere = taskAfterSession is not null
             && taskAfterSession.State == TaskState.Claimed
             && taskAfterSession.IsInteractiveClaim

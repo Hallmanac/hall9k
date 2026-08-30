@@ -162,8 +162,17 @@ public sealed class TaskDeliverCommand : Hall9kAsyncCommand<TaskDeliverCommand.S
         // down to a dependent — CloseoutEngine.ComposeHandoffAsync reads this same file off
         // disk at true closeout, agnostic of whether the run behind it was headless or
         // interactive, so writing it here is all that is missing (conformance review, cycle 1).
+        // CancellationToken.None from here on: the push above already landed, so the branch is
+        // published regardless of what happens next, and PromptForHandoff blocks on
+        // Console.ReadKey, which observes no token — an operator who presses Ctrl-C while it
+        // waits hits Program.cs's non-attached escalation branch, which cancels the shared
+        // token without ever unblocking the prompt. Passing that same token to the writes and
+        // appends below would let a keystroke meant to interrupt a stuck prompt instead poison
+        // every step after the operator finishes answering it, aborting a delivery that already
+        // pushed with the branch stranded and no AgentSessionCompleted ever appended
+        // (independent pre-PR review, cycle 7).
         string handoff = settings.Handoff ?? PromptForHandoff();
-        await WriteHandoffAsync(run.RunDirectory, handoff, cancellationToken);
+        await WriteHandoffAsync(run.RunDirectory, handoff, CancellationToken.None);
 
         // Re-checked immediately before the append that hands this run to the daemon's
         // pipeline, not only once above: PromptForHandoff blocks on operator input with no
@@ -176,7 +185,7 @@ public sealed class TaskDeliverCommand : Hall9kAsyncCommand<TaskDeliverCommand.S
         // 6). Reloading here (a lightweight session, so this hits the database rather than an
         // identity-map cache) narrows the window down to the append itself, mirroring
         // TaskWorkCommand's own pre-launch re-check.
-        TaskDetails taskBeforeAppend = await session.LoadAsync<TaskDetails>(taskId, cancellationToken)
+        TaskDetails taskBeforeAppend = await session.LoadAsync<TaskDetails>(taskId, CancellationToken.None)
             ?? throw new DomainConflictException($"Task {taskId} no longer exists — the claim was lost while delivering.");
         if (taskBeforeAppend.State != TaskState.Claimed || !taskBeforeAppend.IsInteractiveClaim || taskBeforeAppend.CurrentRunId != runId)
         {
@@ -186,7 +195,7 @@ public sealed class TaskDeliverCommand : Hall9kAsyncCommand<TaskDeliverCommand.S
                 + $"Branch {run.Branch} was already pushed; h9k task show {taskId} to see where it stands.");
         }
 
-        RunDetails runBeforeAppend = await session.LoadAsync<RunDetails>(runId, cancellationToken)
+        RunDetails runBeforeAppend = await session.LoadAsync<RunDetails>(runId, CancellationToken.None)
             ?? throw new DomainConflictException($"Task {taskId}'s run {runId} no longer has a record while delivering.");
         if (runBeforeAppend.State != RunState.Dispatched && runBeforeAppend.State != RunState.Running)
         {
@@ -201,11 +210,11 @@ public sealed class TaskDeliverCommand : Hall9kAsyncCommand<TaskDeliverCommand.S
         // ceiling measurement counts strictly by NodeId — an interactive claim's Guid.Empty
         // sentinel left in place past this point would make the whole pipeline invisible to
         // every node's session ceiling forever (conformance review, cycle 1).
-        BootstrapContext context = await NodeBootstrap.EnsureAsync(session, cancellationToken);
+        BootstrapContext context = await NodeBootstrap.EnsureAsync(session, CancellationToken.None);
         session.Events.Append(runId, new AgentSessionCompleted(runId, DateTimeOffset.UtcNow, context.NodeId));
-        await session.SaveChangesAsync(cancellationToken);
+        await session.SaveChangesAsync(CancellationToken.None);
 
-        await Doorbell.RingAsync($"task-delivered:{taskId}", cancellationToken);
+        await Doorbell.RingAsync($"task-delivered:{taskId}", CancellationToken.None);
         AnsiConsole.MarkupLineInterpolated(
             $"[dim]Branch {run.Branch} pushed. Task {taskId} handed into the standard delivery pipeline — h9k task show {taskId} to watch it.[/]");
         return ExitCodes.Ok;
