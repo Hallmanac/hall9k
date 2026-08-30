@@ -44,6 +44,20 @@ internal static class InteractiveWorktreeGit
     }
 
     /// <summary>
+    /// The branch the worktree is actually checked out to, or null when git could not be asked
+    /// (never guessed at as matching). <c>git branch --show-current</c> rather than
+    /// <c>rev-parse --abbrev-ref HEAD</c>: it exits 0 with empty output for a detached HEAD
+    /// instead of failing, so a caller can tell "git is unreadable" (null, warn and skip) apart
+    /// from "checked out somewhere else, including detached" (empty or a different name, block)
+    /// without a second command (conformance review, cycle 4).
+    /// </summary>
+    public static async Task<string?> GetCurrentBranchAsync(string worktreePath, CancellationToken cancellationToken)
+    {
+        (int exitCode, string output, _) = await RunGitAsync(worktreePath, ["branch", "--show-current"], cancellationToken);
+        return exitCode == 0 ? output.Trim() : null;
+    }
+
+    /// <summary>
     /// Always --force-with-lease, mirroring PullRequestOpener's own push exactly and for the same
     /// reason: a fresh branch cut by h9k task work has no remote history, so the lease is
     /// satisfied trivially and this behaves like a plain first push — but CheckoutFreshOrRetryAsync
