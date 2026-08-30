@@ -413,4 +413,31 @@ public sealed class TaskLifecycleSurfaceTests
 
         row.Attention.Cause.Should().Be("the blocker was abandoned");
     }
+
+    /// <summary>
+    /// A pull request open and awaiting review is the one case where a NeedsYou row is still
+    /// grouped under Delivered rather than the Needs-you section (the merge is genuinely the
+    /// reader's own to make), but that exception must not swallow a stuck Jira write riding along
+    /// on the same Delivered, AwaitingReview row: the write wants "twg login", not a merge
+    /// decision, and it has to stay in the section AGENTS.md's own relay table promises it —
+    /// otherwise `h9k status` and `h9k task list --state needs-you` both go quiet on it while the
+    /// daemon keeps retrying the same doomed write underneath (independent pre-PR review,
+    /// adversarial lens, cycle 11).
+    /// </summary>
+    [Fact]
+    public void A_stuck_jira_write_stays_needs_you_even_on_a_delivered_awaiting_review_row()
+    {
+        Guid runId = DomainId.New();
+        RunDetails awaitingReview = StatusFixtures.Run(runId, RunState.AwaitingReview, sessionProcessId: null);
+        TaskListItem task = StatusFixtures.Task(TaskState.Done, runId, pullRequest: "https://github.com/x/y/pull/10");
+        task.PendingJiraWriteIsAuthFailure = true;
+        task.PendingJiraWriteFailureReason = "twg is not authenticated";
+
+        TaskStatusRow row = StatusFixtures.Compose(task, awaitingReview);
+
+        row.State.Should().Be(LifecycleState.Delivered);
+        row.Group.Should().Be(AttentionBucket.NeedsYou);
+        row.Attention.Cause.Should().Be("twg is not authenticated");
+        row.Attention.Lever.Should().Be("twg login");
+    }
 }
