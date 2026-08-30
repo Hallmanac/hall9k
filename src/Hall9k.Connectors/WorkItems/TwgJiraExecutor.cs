@@ -102,9 +102,12 @@ public sealed class TwgJiraExecutor(ProcessRunner? runner = null, Uri? site = nu
     /// without touching any real card. A synthetic key (as opposed to a date far in the future)
     /// is rejected by Jira's own key-format validation before the search ever runs, which turns a
     /// healthy, authenticated install into "could not confirm" (independent pre-PR review, cycle
-    /// 1) — this compares a real field against a value nothing will ever satisfy instead.
+    /// 1) — this compares a real field against a value nothing will ever satisfy instead. Public
+    /// so a caller that cannot classify a probe's answer (<c>TwgDoctor</c>'s <c>Unknown</c> arm)
+    /// can quote the exact runnable command back instead of a placeholder (independent pre-PR
+    /// review, conformance lens, cycle 11).
     /// </summary>
-    private const string ProbeJql = "created > \"2999-01-01\"";
+    public const string ProbeJql = "created > \"2999-01-01\"";
 
     private readonly ProcessRunner runner = runner ?? ExternalProcess.Runner;
 
@@ -629,20 +632,32 @@ public sealed class TwgJiraExecutor(ProcessRunner? runner = null, Uri? site = nu
     private static TwgExecutionException Explain(ProcessResult result)
     {
         (string? code, string? message) = ReadErrorEnvelope(result.StandardOutput);
+        bool envelopeRead = code.IsNotBlank() || message.IsNotBlank();
         string reported = RelayedText.OneLine(message.IsNotBlank() ? message : result.StandardError).Trim();
 
+        // The substring fallback below only ever runs when there was no JSON envelope to read at
+        // all (a spawn-level or transport-level refusal outside twg's own control) — never against
+        // an envelope's own error.message, because that text is twg's and Jira's, and it routinely
+        // quotes a composed field value or a card's own adopted text straight back. A permanent
+        // refusal whose message happened to echo "unauthorized" or "token…expired" from the
+        // composed payload was misclassified as an expired login and retried forever, since an
+        // auth-classified write has no retry ceiling (independent pre-PR review, adversarial lens,
+        // cycle 11). When an envelope was read, the exit-code and error.code checks above are the
+        // only signal: twg's real auth refusal always carries one of them (cycle 3).
         bool authExpired = result.ExitCode == AuthRequiredExitCode
             || string.Equals(code, "AUTH_REQUIRED", StringComparison.OrdinalIgnoreCase)
-            || reported.Contains("twg login", StringComparison.OrdinalIgnoreCase)
-            || reported.Contains("not authenticated", StringComparison.OrdinalIgnoreCase)
-            || reported.Contains("unauthorized", StringComparison.OrdinalIgnoreCase)
-            || reported.Contains("authentication required", StringComparison.OrdinalIgnoreCase)
-            // Deliberately no bare "401" substring check: a digit sequence appears in plenty of
-            // ordinary refusals that have nothing to do with authentication — an issue key
-            // (PROJ-401), a custom field id (customfield_10401) — and matching on it converted a
-            // permanent refusal into a write retried forever (independent pre-PR review, cycle 1).
-            || reported.Contains("token", StringComparison.OrdinalIgnoreCase)
-                && reported.Contains("expired", StringComparison.OrdinalIgnoreCase);
+            || (!envelopeRead
+                && (reported.Contains("twg login", StringComparison.OrdinalIgnoreCase)
+                    || reported.Contains("not authenticated", StringComparison.OrdinalIgnoreCase)
+                    || reported.Contains("unauthorized", StringComparison.OrdinalIgnoreCase)
+                    || reported.Contains("authentication required", StringComparison.OrdinalIgnoreCase)
+                    // Deliberately no bare "401" substring check: a digit sequence appears in
+                    // plenty of ordinary refusals that have nothing to do with authentication — an
+                    // issue key (PROJ-401), a custom field id (customfield_10401) — and matching on
+                    // it converted a permanent refusal into a write retried forever (independent
+                    // pre-PR review, cycle 1).
+                    || (reported.Contains("token", StringComparison.OrdinalIgnoreCase)
+                        && reported.Contains("expired", StringComparison.OrdinalIgnoreCase))));
 
         string detail = reported.IsNotBlank() ? reported : Head(result.StandardOutput);
 
