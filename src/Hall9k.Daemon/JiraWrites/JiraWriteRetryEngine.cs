@@ -462,19 +462,21 @@ public sealed class JiraWriteRetryEngine(
             return true;
         }
 
-        // Re-aggregate: SubmitAsync appended and saved its own events on this session, so the
-        // in-memory task above is stale by the time the queue marker itself needs clearing.
-        TaskAggregate refreshed = await session.Events.AggregateStreamAsync<TaskAggregate>(taskId, token: cancellationToken)
-            ?? task;
         // SubmitAsync has already run and recorded its own outcome by this point — twg's own call
-        // is over, successfully or not — so a failure clearing the queue marker here must not
-        // escape to PollOnceAsync's own per-task catch, whose generic "left it queued" logging
-        // would misreport a comment that already posted (result.Outcome == Succeeded) as if
-        // nothing had happened. Guarded the same way the failure path above already guards its own
-        // compensating append, for the identical reason (independent pre-PR review, adversarial
-        // lens, cycle 8).
+        // is over, successfully or not — so a failure re-aggregating or clearing the queue marker
+        // here must not escape to PollOnceAsync's own per-task catch, whose generic "left it
+        // queued" logging would misreport a comment that already posted (result.Outcome ==
+        // Succeeded) as if nothing had happened. Guarded the same way the failure path above
+        // already guards its own compensating read and append, for the identical reason
+        // (independent pre-PR review, adversarial lens, cycles 8 and 9): the re-aggregation read
+        // is itself a further call on the same session whose own failure is what this catch exists
+        // for, so it belongs inside the guard, not just the append and save that follow it.
         try
         {
+            // Re-aggregate: SubmitAsync appended and saved its own events on this session, so the
+            // in-memory task above is stale by the time the queue marker itself needs clearing.
+            TaskAggregate refreshed = await session.Events.AggregateStreamAsync<TaskAggregate>(taskId, token: cancellationToken)
+                ?? task;
             if (refreshed.HasQueuedJiraMergeNotice)
             {
                 session.Events.Append(taskId, TaskDecider.RecordJiraMergeNoticeAttempted(refreshed, DateTimeOffset.UtcNow));
