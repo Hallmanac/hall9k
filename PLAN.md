@@ -330,7 +330,7 @@ Connectors run **on the node** (daemon/CLI reach external systems directly - `gh
 
 GitHub connector (issues + PRs + repos), piggybacking `gh` CLI auth, and a Jira **read** connector on a registered API token (Decisions Log #65). The adapter interface existing from day one is what made Jira an implementation rather than a refactor, which is the claim this section made and the thing backlog 18 tested.
 
-The two connectors are deliberately not symmetrical. Jira reads through `IWorkItemProvider` like GitHub does, and makes exactly one write of its own: a comment on the card when the pull request merges. Creating a card is not modelled at all, because issue types, required fields and routing rules are one organisation's configuration; `h9k task push-to-jira` dispatches an agent session that reads those rules from the project's own repo skills, and `h9k task link-jira` records the result only after the platform has read the card back.
+The two connectors are deliberately not symmetrical. Jira reads through `IWorkItemProvider` like GitHub does, but writing it is not configuration-agnostic the way GitHub's is, because issue types, required fields and routing rules are one organisation's configuration (Decisions Log #102): `h9k task push-to-jira` dispatches an agent session that reads those rules from the project's own repo skills and composes a payload (create, update, or comment) rather than calling Jira itself, and `h9k task write-jira` is the sole executor of every Jira write, validating the payload, executing it through the Atlassian CLI (twg), and recording the outcome only after reading the created or updated item back. `h9k task link-jira` remains the way to record a pre-existing card the platform did not create.
 
 ---
 
