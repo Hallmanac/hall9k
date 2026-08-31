@@ -156,15 +156,35 @@ internal static class AttentionComposer
         // two levers — InteractiveSessionLiveness.EnsureNotAttachedElsewhere refuses both
         // h9k task work re-entry and h9k task handback with "still attached in another terminal"
         // for exactly that observation, and never overrides it even with --force. Restricted to
-        // Gone or NotApplicable specifically, rather than everything but Alive (conformance and
-        // adversarial review, cycle 4): a session recorded on another machine reads Unobserved,
-        // the same unread-not-absent fact TaskPhaseComposer's own interactive branch refuses to
-        // call re-enterable one field over, and EnsureNotAttachedElsewhere refuses both levers
-        // for it too without --force — the identical contradiction this arm exists to avoid.
+        // Gone, NotApplicable, or an Unobserved claim IsInteractiveSessionElsewhere below reads as
+        // not-actually-elsewhere (adversarial review, cycle 6, following cycle 4's finding): a
+        // session whose MachineName genuinely names a different machine also reads Unobserved, and
+        // EnsureNotAttachedElsewhere refuses both levers for that one without --force — the
+        // identical contradiction this arm exists to avoid, so that case alone stays excluded.
+        // A blank MachineName is a different fact (a stream written before the field existed,
+        // ActiveSession.cs's own doc comment): EnsureNotAttachedElsewhere reads it as unobservable
+        // rather than "elsewhere" and proceeds without --force, so this arm can honestly nudge it
+        // too — leaving it excluded would mean the oldest claims, the ones the nudge exists for,
+        // could never be reached by it.
         if (task.State == TaskState.Claimed && task.IsInteractiveClaim && run is not null
             && (run.State == Domain.Features.Run.RunState.Dispatched
                 || run.State == Domain.Features.Run.RunState.Running)
-            && phase.Liveness is SessionLiveness.Gone or SessionLiveness.NotApplicable)
+            && (phase.Liveness is SessionLiveness.Gone or SessionLiveness.NotApplicable
+                || (phase.Liveness == SessionLiveness.Unobserved && !IsInteractiveSessionRecordedElsewhere(run)))
+            // RunDetails.LastInteractiveActivityAt null does not by itself mean never touched:
+            // it is also what a document written before this field existed reads, forever, until
+            // its claim's next attach or detach rewrites it for real (RunDetails.cs's own doc
+            // comment on the field). InteractiveSessionCount is the tell that distinguishes the
+            // two (conformance review, cycle 6) — it has been incremented by every
+            // InteractiveSessionStarted since long before this field existed — and a claim with
+            // count > 0 but no timestamp is exactly that pre-migration document: DispatchedAt is
+            // not a fallback for its last touch, it is the claim's original start, which can
+            // understate the real last touch by however long the claim has been open. Asserting
+            // staleness off it would be the same unobserved-fact guess the wording two lines
+            // below already refuses to make, so this arm stays silent on that claim rather than
+            // risk telling an operator who was here an hour ago that they have not been seen in
+            // days; it self-heals the moment any attach or detach next rewrites the document.
+            && !(run.LastInteractiveActivityAt is null && run.InteractiveSessionCount > 0))
         {
             TimeSpan age = now - (run.LastInteractiveActivityAt ?? run.DispatchedAt);
             if (age >= TimeSpan.FromDays(Math.Clamp(interactiveClaimStaleAfterDays, 1, MaxInteractiveClaimStaleAfterDays)))
@@ -451,4 +471,17 @@ internal static class AttentionComposer
 
     private static string Reason(string? recorded, string absent) =>
         recorded.IsNotBlank() ? recorded : absent;
+
+    /// <summary>
+    /// The same "is this session actually elsewhere" question
+    /// <see cref="InteractiveSessionLiveness.EnsureNotAttachedElsewhere"/> answers before it
+    /// refuses: true only for a recorded <see cref="Domain.Features.Run.ActiveSession.MachineName"/>
+    /// that names a real, different machine. A blank name is unobservable rather than elsewhere,
+    /// and reads false here exactly as it does there.
+    /// </summary>
+    private static bool IsInteractiveSessionRecordedElsewhere(RunDetails run) =>
+        run.ActiveSessions.Exists(session =>
+            session.Role == Domain.Features.Run.AgentRole.Interactive
+            && session.MachineName.IsNotBlank()
+            && session.MachineName != Environment.MachineName);
 }

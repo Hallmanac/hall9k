@@ -512,6 +512,7 @@ it:
 | the pull request is open and the task is unassigned | A follow-up reopened the task and it was then unassigned, so nothing will claim it | `h9k task assign` |
 | no run record is watching it for a merge | The pull request is open and no run is left to observe the merge | the pull request itself |
 | the run ended without a merge being observed | The run that owned an open pull request failed, or that pull request was closed unmerged | `h9k pr resolve`, or the pull request when it was closed unmerged |
+| an interactive claim (`h9k task work`) last recorded activity — or was claimed and has not recorded a touch since — long enough ago | An [interactive claim](#working-a-task-interactively) has sat past `interactiveClaimStaleAfterDays` with no attached session observed on this machine; nothing reclaims it, this is only a nudge | `h9k task work <id>` if it is still yours, or `h9k task handback <id>` to finish it headlessly |
 
 That is what the composer can say today, not a closed set: every cause is read off a record, so a
 new record adds a line here. Read the cause, then `h9k task show <id>`, then `h9k logs <id>` if
