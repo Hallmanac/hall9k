@@ -311,6 +311,105 @@ public static class WorkPromptBuilder
     }
 
     /// <summary>
+    /// The adversarial self-review phase (task: the build session ends with an adversarial
+    /// self-review loop): once the full suite is green and before the recompose, the session
+    /// re-reads its own finished diff assuming it wrote a defect into it. Placed here, inside
+    /// <see cref="AppendCheckpointCommitRules"/> and therefore only in the headless build path of
+    /// <see cref="Build"/>, for the same scoping reason the checkpoint/recompose protocol itself is
+    /// scoped there: a fix round resumes an existing PR branch and never runs this hunt.
+    /// <para>
+    /// Ordered after the suite is green and before the recompose on purpose: the hunt has to see
+    /// finished work rather than a mid-flight diff, and the recompose has to compose the tree the
+    /// hunt leaves behind, so nothing the hunt fixes is left out of the branch's real history.
+    /// </para>
+    /// <para>
+    /// The two named failure classes are both origin incidents from one afternoon (2026-08-30):
+    /// cea5ae6e's cycle 6 landed a reflog fix on one of two branch-creating arms, and b6dfcbe5's
+    /// park found a two-escape cancellation finding with only one escape closed — both a
+    /// blast-radius sweep by the author would have caught, and both instead cost a full external
+    /// review lap to surface. The third hunt, executing rather than proofreading an authored
+    /// procedure, is the same class the commit-plan skill's own unexecutable stash sequence was
+    /// caught by only when a reviewer actually ran it.
+    /// </para>
+    /// <para>
+    /// Deliberately narrow: no model change for this phase (the task's own experiment design
+    /// keeps the build session on its existing model, so before/after review-cycle counts
+    /// attribute to the prompt alone), and no expectation of catching the deep conjunction class
+    /// same-context review inherits the author's own assumptions on — that stays the external
+    /// reviewers' job.
+    /// </para>
+    /// </summary>
+    public static void AppendSelfReviewPhaseRules(StringBuilder prompt, ProjectDetails project)
+    {
+        if (project.VerifyCommands.Count == 0)
+        {
+            prompt.AppendLine("- **Self-review phase.** This project configures no verification gates (the");
+            prompt.AppendLine("  gate list below is empty), so once the work itself is done, and before the");
+            prompt.AppendLine("  recompose below, hunt your own branch for defects. It runs here — after the");
+            prompt.AppendLine("  work is finished, so the hunt sees finished work, and before the recompose,");
+            prompt.AppendLine("  so the recompose composes the tree the hunt leaves behind rather than the");
+            prompt.AppendLine("  tree that predates it.");
+        }
+        else
+        {
+            prompt.AppendLine("- **Self-review phase.** Once the full verification suite named below is");
+            prompt.AppendLine("  green, and before the recompose below, hunt your own branch for defects. It");
+            prompt.AppendLine("  runs here — after the suite passes, so the hunt sees finished work, and");
+            prompt.AppendLine("  before the recompose, so the recompose composes the tree the hunt leaves behind");
+            prompt.AppendLine("  rather than the tree that predates it.");
+        }
+        prompt.AppendLine("  Change hats for this phase: you are no longer the author, you are the hunter.");
+        prompt.AppendLine("  Assume the branch contains defects you wrote, and go looking for them the way");
+        prompt.AppendLine("  someone hostile to this diff would, not the way its author would.");
+        prompt.AppendLine("  Finding nothing is an expected, honest outcome of a genuine hunt — inventing a");
+        prompt.AppendLine("  finding so the round has something to report is the failure this phase is");
+        prompt.AppendLine("  guarding against, not the clean round.");
+        prompt.AppendLine("  Start every round from a fresh `git diff` against the branch base, read in");
+        prompt.AppendLine("  full — not from memory of what you wrote. A diff you already believe you know");
+        prompt.AppendLine("  is not a diff you actually reviewed.");
+        prompt.AppendLine("  Three hunts are mandatory every round:");
+        prompt.AppendLine("  1. **Refactor once-over.** Reread everything the diff touched as if it were");
+        prompt.AppendLine("     someone else's pull request: naming, structure, dead code, duplication, a");
+        prompt.AppendLine("     change that should have been smaller or cleaner.");
+        prompt.AppendLine("  2. **Blast-radius sweep.** For every behavior this branch changed, enumerate");
+        prompt.AppendLine("     every sibling site with the same shape and check each one actually got the");
+        prompt.AppendLine("     same treatment, rather than trusting your memory of having handled it. This");
+        prompt.AppendLine("     is the class that cost two full review laps in one afternoon here: a fix");
+        prompt.AppendLine("     landed on one of two branch-creating arms that needed it, and a two-escape");
+        prompt.AppendLine("     finding closed one escape and left the other open.");
+        prompt.AppendLine("  3. **Execute your own instructions.** Any skill step, command sequence, or");
+        prompt.AppendLine("     documented procedure you authored this session — run it, do not proofread");
+        prompt.AppendLine("     it. A step that reads correctly and fails the moment it is actually run is a");
+        prompt.AppendLine("     real defect a re-read never catches. Where a procedure's commands mutate");
+        prompt.AppendLine("     state, exercise it somewhere the side effects are safe — a scratch directory");
+        prompt.AppendLine("     made with `mktemp -d`, outside this worktree entirely —");
+        prompt.AppendLine("     never against this session's own live worktree. Clean it up once the hunt");
+        prompt.AppendLine("     is done: the working rules say work only here, and the scratch directory");
+        prompt.AppendLine("     is not part of that.");
+        prompt.AppendLine("  The loop is capped at two rounds, hard. Round one hunts the whole branch diff.");
+        prompt.AppendLine("  A finding that changes behavior or correctness gets fixed and");
+        prompt.AppendLine("  checkpoint-committed, then the full verification suite runs again before the");
+        prompt.AppendLine("  loop continues or the recompose begins — a fix that broke something is itself a");
+        prompt.AppendLine("  defect, and the recompose downstream only holds its own guarantee (the tree it");
+        prompt.AppendLine("  composes is the tree that passed the suite) if the suite ran after this phase's");
+        prompt.AppendLine("  last fix, not just before this phase started; a");
+        prompt.AppendLine("  style-only observation is fixed in place or skipped without extending the");
+        prompt.AppendLine("  loop — it is not what the cap is for. Only when round one fixed something above");
+        prompt.AppendLine("  the behavior-or-correctness bar does a round two run, against only the diff of");
+        prompt.AppendLine("  those fixes rather than the whole branch again, with the same three hunts");
+        prompt.AppendLine("  scoped to it. A round that finds nothing above that bar — including round");
+        prompt.AppendLine("  one — ends the loop right there, and after round two the loop ends");
+        prompt.AppendLine("  unconditionally either way: anything still suspected goes into the handoff for");
+        prompt.AppendLine("  the external reviewers, never a third round.");
+        prompt.AppendLine("  Every correctness-or-behavior finding this phase surfaces ends one of two ways");
+        prompt.AppendLine("  before you move on:");
+        prompt.AppendLine("  fixed and checkpoint-committed, or left with a stated, checkable reason it is");
+        prompt.AppendLine("  not actually a defect. A style-only finding needs no such reason — the rule");
+        prompt.AppendLine("  above already lets you fix it in place or skip it outright.");
+        prompt.AppendLine("  Deferring one to a note for later is not a third option.");
+    }
+
+    /// <summary>
     /// Checkpoint commits as crash protection, and the end-of-work recompose that turns them into
     /// the branch's real history (task: build sessions stop stranding finished work uncommitted).
     /// Only the headless path of <see cref="Build"/> uses this — a fresh session's own initial
@@ -360,83 +459,6 @@ public static class WorkPromptBuilder
     /// commit-plan step forgot to stage.
     /// </para>
     /// </summary>
-    /// <summary>
-    /// The adversarial self-review phase (task: the build session ends with an adversarial
-    /// self-review loop): once the full suite is green and before the recompose, the session
-    /// re-reads its own finished diff assuming it wrote a defect into it. Placed here, inside
-    /// <see cref="AppendCheckpointCommitRules"/> and therefore only in the headless build path of
-    /// <see cref="Build"/>, for the same scoping reason the checkpoint/recompose protocol itself is
-    /// scoped there: a fix round resumes an existing PR branch and never runs this hunt.
-    /// <para>
-    /// Ordered after the suite is green and before the recompose on purpose: the hunt has to see
-    /// finished work rather than a mid-flight diff, and the recompose has to compose the tree the
-    /// hunt leaves behind, so nothing the hunt fixes is left out of the branch's real history.
-    /// </para>
-    /// <para>
-    /// The two named failure classes are both origin incidents from one afternoon (2026-08-30):
-    /// cea5ae6e's cycle 6 landed a reflog fix on one of two branch-creating arms, and b6dfcbe5's
-    /// park found a two-escape cancellation finding with only one escape closed — both a
-    /// blast-radius sweep by the author would have caught, and both instead cost a full external
-    /// review lap to surface. The third hunt, executing rather than proofreading an authored
-    /// procedure, is the same class the commit-plan skill's own unexecutable stash sequence was
-    /// caught by only when a reviewer actually ran it.
-    /// </para>
-    /// <para>
-    /// Deliberately narrow: no model change for this phase (the task's own experiment design
-    /// keeps the build session on its existing model, so before/after review-cycle counts
-    /// attribute to the prompt alone), and no expectation of catching the deep conjunction class
-    /// same-context review inherits the author's own assumptions on — that stays the external
-    /// reviewers' job.
-    /// </para>
-    /// </summary>
-    public static void AppendSelfReviewPhaseRules(StringBuilder prompt)
-    {
-        prompt.AppendLine("- **Self-review phase.** Once the full verification suite above is green, and");
-        prompt.AppendLine("  before the recompose below, hunt your own branch for defects. It runs here —");
-        prompt.AppendLine("  after the suite passes, so the hunt sees finished work, and before the");
-        prompt.AppendLine("  recompose, so the recompose composes the tree the hunt leaves behind rather");
-        prompt.AppendLine("  than the tree that predates it.");
-        prompt.AppendLine("  Change hats for this phase: you are no longer the author, you are the hunter.");
-        prompt.AppendLine("  Assume the branch contains defects you wrote, and go looking for them the way");
-        prompt.AppendLine("  someone hostile to this diff would, not the way its author would.");
-        prompt.AppendLine("  Finding nothing is an expected, honest outcome of a genuine hunt — inventing a");
-        prompt.AppendLine("  finding so the round has something to report is the failure this phase is");
-        prompt.AppendLine("  guarding against, not the clean round.");
-        prompt.AppendLine("  Start every round from a fresh `git diff` against the branch base, read in");
-        prompt.AppendLine("  full — not from memory of what you wrote. A diff you already believe you know");
-        prompt.AppendLine("  is not a diff you actually reviewed.");
-        prompt.AppendLine("  Three hunts are mandatory every round:");
-        prompt.AppendLine("  1. **Refactor once-over.** Reread everything the diff touched as if it were");
-        prompt.AppendLine("     someone else's pull request: naming, structure, dead code, duplication, a");
-        prompt.AppendLine("     change that should have been smaller or cleaner.");
-        prompt.AppendLine("  2. **Blast-radius sweep.** For every behavior this branch changed, enumerate");
-        prompt.AppendLine("     every sibling site with the same shape and check each one actually got the");
-        prompt.AppendLine("     same treatment, rather than trusting your memory of having handled it. This");
-        prompt.AppendLine("     is the class that cost two full review laps in one afternoon here: a fix");
-        prompt.AppendLine("     landed on one of two branch-creating arms that needed it, and a two-escape");
-        prompt.AppendLine("     finding closed one escape and left the other open.");
-        prompt.AppendLine("  3. **Execute your own instructions.** Any skill step, command sequence, or");
-        prompt.AppendLine("     documented procedure you authored this session — run it, do not proofread");
-        prompt.AppendLine("     it. A step that reads correctly and fails the moment it is actually run is a");
-        prompt.AppendLine("     real defect a re-read never catches. Where a procedure's commands mutate");
-        prompt.AppendLine("     state, exercise it somewhere the side effects are safe — a scratch");
-        prompt.AppendLine("     repository or directory — never against this session's own live worktree.");
-        prompt.AppendLine("  The loop is capped at two rounds, hard. Round one hunts the whole branch diff.");
-        prompt.AppendLine("  A finding that changes behavior or correctness gets fixed and");
-        prompt.AppendLine("  checkpoint-committed before the loop continues or the recompose begins; a");
-        prompt.AppendLine("  style-only observation is fixed in place or skipped without extending the");
-        prompt.AppendLine("  loop — it is not what the cap is for. Only when round one fixed something above");
-        prompt.AppendLine("  the behavior-or-correctness bar does a round two run, against only the diff of");
-        prompt.AppendLine("  those fixes rather than the whole branch again, with the same three hunts");
-        prompt.AppendLine("  scoped to it. A round that finds nothing above that bar — including round");
-        prompt.AppendLine("  one — ends the loop right there, and after round two the loop ends");
-        prompt.AppendLine("  unconditionally either way: anything still suspected goes into the handoff for");
-        prompt.AppendLine("  the external reviewers, never a third round.");
-        prompt.AppendLine("  Every finding this phase surfaces ends one of two ways before you move on:");
-        prompt.AppendLine("  fixed and checkpoint-committed, or left with a stated, checkable reason it is");
-        prompt.AppendLine("  not actually a defect. Deferring one to a note for later is not a third option.");
-    }
-
     public static void AppendCheckpointCommitRules(StringBuilder prompt, ProjectDetails project)
     {
         string baseBranch = project.BaseBranch;
@@ -445,7 +467,7 @@ public static class WorkPromptBuilder
         prompt.AppendLine("  ending (context exhaustion, an early exit) strands at most the increment");
         prompt.AppendLine("  since the last checkpoint instead of the whole session. Message them");
         prompt.AppendLine("  plainly; none of them are what ships.");
-        AppendSelfReviewPhaseRules(prompt);
+        AppendSelfReviewPhaseRules(prompt, project);
         prompt.AppendLine("- **Once all the work is done, the full verification suite is green, and the");
         prompt.AppendLine("  self-review phase above has run its course, recompose the checkpoints into");
         prompt.AppendLine("  real history in one continuous step.**");

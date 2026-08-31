@@ -635,7 +635,21 @@ first-class interface, always, for every command:
   finish.** Checkpoint commits along the way are crash protection, not authored history —
   they exist so an abnormal ending (context exhaustion, an early exit) strands at most the
   increment since the last checkpoint. Once the full verification suite is green and every
-  checkpoint is committed, record the pre-reset tip (`git rev-parse HEAD`) — the tree-identity
+  checkpoint is committed, the session hunts its own finished diff for defects before recomposing
+  anything: an adversarial self-review, capped at two rounds, that reads a fresh
+  `git diff origin/<base>...HEAD` — naming `origin/` because a worktree's local base-branch ref is
+  routinely stale relative to the task's actual base — and runs three mandatory hunts (a
+  refactor once-over, a blast-radius sweep for sibling sites, and actually executing any procedure
+  the session authored rather than proofreading it). A correctness-or-behavior finding is fixed
+  and checkpoint-committed, or left with a stated, checkable reason it is not actually a defect; a
+  style-only finding is fixed in place and checkpoint-committed, or skipped outright with nothing
+  to commit. Whenever a fix does land — style-only included, not only a correctness-or-behavior
+  one — the full suite re-runs before the loop continues or the recompose begins, since a fix that
+  broke something is itself a defect the recompose must not ship silently; a skipped finding earns
+  neither a commit nor a re-run. Origin: two full external review laps
+  in one afternoon (2026-08-30, tasks cea5ae6e and b6dfcbe5) that a same-session hunt would have
+  caught before it ever reached a reviewer. Once that phase has run its course, record the
+  pre-reset tip (`git rev-parse HEAD`) — the tree-identity
   check below verifies the recompose against it — then reset to the branch's own fork point, never the
   moving tip of `origin/<base>` itself (that ref lives in the shared repository and can move
   mid-session). Capture the fork point into a variable and stop if it does not resolve; never
