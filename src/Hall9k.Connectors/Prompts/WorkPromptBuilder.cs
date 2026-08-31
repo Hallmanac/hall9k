@@ -28,7 +28,8 @@ public static class WorkPromptBuilder
         bool resumesPreviousWork = false,
         string? blockerContext = null,
         string? resumeReason = null,
-        bool isInteractive = false)
+        bool isInteractive = false,
+        bool isHandback = false)
     {
         StringBuilder prompt = new();
         prompt.AppendLine("# Task");
@@ -36,18 +37,42 @@ public static class WorkPromptBuilder
         prompt.AppendLine(task.Objective);
         prompt.AppendLine();
 
-        if (resumesPreviousWork)
+        if (resumesPreviousWork && isHandback)
+        {
+            // Unlike the causeless branch below, this one is not a guess: TaskDetails.RetryReasonIsHandback
+            // is set only from TaskHandedBack, so this run is dispatching because a human's own
+            // h9k task work claim was handed back (h9k task handback) — an observed fact, not the
+            // ambiguity the causeless wording exists to avoid asserting past.
+            prompt.AppendLine("## A human began this work interactively");
+            prompt.AppendLine();
+            prompt.AppendLine("An operator started this task with `h9k task work`, worked directly in this");
+            prompt.AppendLine("branch's worktree, and handed it back (`h9k task handback`) for you to finish");
+            prompt.AppendLine("headlessly. `h9k task handback` refuses while the worktree holds uncommitted");
+            prompt.AppendLine("files, so their work is committed on the branch and the tree should be clean —");
+            prompt.AppendLine("but check for yourself before writing anything (`git status`, `git log`,");
+            prompt.AppendLine("`git diff`), judge it against the acceptance");
+            prompt.AppendLine("criteria, and continue from it to completion. Do not start over; redoing finished");
+            prompt.AppendLine("work is the failure mode this note exists to prevent.");
+            if (resumeReason.IsNotBlank())
+            {
+                prompt.AppendLine();
+                prompt.AppendLine($"Why they handed it back, in their own words: {resumeReason}");
+            }
+
+            prompt.AppendLine();
+        }
+        else if (resumesPreviousWork)
         {
             // This branch resumes a retained worktree, and the retained worktree carries
             // whatever the prior attempt left — including uncommitted work (origin incident,
             // 2026-08-18: gen 2-4 of a review-parked task each rebuilt the same feature
             // from scratch instead of finding the finished work already in the worktree).
             // Worded without a cause on purpose: this same flag is true for a genuine failure
-            // retry (h9k task retry), a deliberate hand-off with nothing having failed (h9k
-            // task handback), and an operator simply re-entering their own still-open
+            // retry (h9k task retry) and an operator simply re-entering their own still-open
             // interactive claim (h9k task work) — asserting "a previous attempt failed" here
             // would be exactly the unobserved-fact guess AGENTS.md forbids on the feature's
-            // own headline path (adversarial review, cycle 1).
+            // own headline path (adversarial review, cycle 1). A handback (h9k task handback)
+            // is known rather than guessed, so it gets the more specific branch above instead.
             prompt.AppendLine("## A previous attempt worked here first");
             prompt.AppendLine();
             prompt.AppendLine("This run resumes an existing branch in a retained worktree. That is not");
