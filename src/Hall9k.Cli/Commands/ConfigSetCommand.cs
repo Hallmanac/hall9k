@@ -58,6 +58,14 @@ public sealed class ConfigSetCommand : Hall9kAsyncCommand<ConfigSetCommand.Setti
         [CommandOption("--model-publication <MODEL>")]
         [Description("This node's model for the Publication role — writing a task up as an external tracker card. 'default' clears it.")]
         public string? ModelPublication { get; init; }
+
+        [CommandOption("--interactive-claim-stale-after-days <DAYS>")]
+        [Description(
+            "How many days an interactive claim (h9k task work) can sit untouched before h9k status nudges "
+            + "about it, asking whether it is still yours or ready for h9k task handback (OperatingSettings."
+            + "DefaultInteractiveClaimStaleAfterDays, default 3). There is no reclaim to configure — the nudge "
+            + "is the whole remedy, never a timeout.")]
+        public int? InteractiveClaimStaleAfterDays { get; init; }
     }
 
     protected override async Task<int> ExecuteAsync(Settings settings, CancellationToken cancellationToken)
@@ -88,7 +96,8 @@ public sealed class ConfigSetCommand : Hall9kAsyncCommand<ConfigSetCommand.Setti
     {
         if (settings.MaxConcurrentAgentSessions is null && settings.DefaultModel is null
             && settings.ModelBuild is null && settings.ModelReview is null && settings.ModelFix is null
-            && settings.ModelSynthesis is null && settings.ModelRefinement is null && settings.ModelPublication is null)
+            && settings.ModelSynthesis is null && settings.ModelRefinement is null && settings.ModelPublication is null
+            && settings.InteractiveClaimStaleAfterDays is null)
         {
             throw new DomainValidationException(
                 "Nothing to change — pass at least one setting, e.g. --max-concurrent-agent-sessions 4. "
@@ -99,6 +108,13 @@ public sealed class ConfigSetCommand : Hall9kAsyncCommand<ConfigSetCommand.Setti
         {
             throw new DomainValidationException(
                 "--max-concurrent-agent-sessions must be at least 1 — a ceiling of zero would dispatch nothing.");
+        }
+
+        if (settings.InteractiveClaimStaleAfterDays is { } staleAfterDays && staleAfterDays < 1)
+        {
+            throw new DomainValidationException(
+                "--interactive-claim-stale-after-days must be at least 1 — a claim less than a day old is never "
+                + "stale.");
         }
     }
 
@@ -118,6 +134,12 @@ public sealed class ConfigSetCommand : Hall9kAsyncCommand<ConfigSetCommand.Setti
         ApplyModel("model (synthesis)", settings.ModelSynthesis, value => operating.ModelByRole.Synthesis = value, changed);
         ApplyModel("model (refinement)", settings.ModelRefinement, value => operating.ModelByRole.Refinement = value, changed);
         ApplyModel("model (publication)", settings.ModelPublication, value => operating.ModelByRole.Publication = value, changed);
+
+        if (settings.InteractiveClaimStaleAfterDays is { } staleAfterDays)
+        {
+            operating.InteractiveClaimStaleAfterDays = staleAfterDays;
+            changed.Add($"interactive-claim-stale-after-days = {staleAfterDays}");
+        }
     }
 
     /// <summary>

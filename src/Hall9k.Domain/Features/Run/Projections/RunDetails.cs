@@ -210,6 +210,14 @@ public sealed class RunDetails
     public Guid? InteractiveClaudeSessionId { get; set; }
     /// <summary>How many interactive attach/detach cycles this run has recorded (h9k task work, held and re-entered).</summary>
     public int InteractiveSessionCount { get; set; }
+    /// <summary>
+    /// The last time an interactive claim was actually touched — a session attaching or
+    /// detaching, whichever happened most recently — which is what the staleness nudge (h9k
+    /// status) measures a configured number of days against. Null until the claim's first
+    /// <see cref="InteractiveSessionStarted"/>, so a caller falls back to <see cref="DispatchedAt"/>
+    /// (the claim's own start) rather than guessing at an unobserved touch.
+    /// </summary>
+    public DateTimeOffset? LastInteractiveActivityAt { get; set; }
 }
 
 public sealed class RunDetailsProjection : SingleStreamProjection<RunDetails, Guid>
@@ -602,6 +610,7 @@ public sealed class RunDetailsProjection : SingleStreamProjection<RunDetails, Gu
     {
         view.InteractiveClaudeSessionId = @event.Data.ClaudeSessionId;
         view.InteractiveSessionCount++;
+        view.LastInteractiveActivityAt = @event.Data.StartedAt;
         StartSession(
             view, AgentRole.Interactive, ReviewLens.Unknown, @event.Data.ProcessId, @event.Data.StartedAt,
             @event.Data.MachineName);
@@ -625,6 +634,7 @@ public sealed class RunDetailsProjection : SingleStreamProjection<RunDetails, Gu
             view.CostUsd = (view.CostUsd ?? 0m) + cost;
         }
 
+        view.LastInteractiveActivityAt = @event.Data.EndedAt;
         EndSessions(view);
     }
 

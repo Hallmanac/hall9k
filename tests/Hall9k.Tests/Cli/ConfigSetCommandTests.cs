@@ -141,4 +141,27 @@ public sealed class ConfigSetCommandTests
 
         act.Should().Throw<DomainValidationException>().WithMessage("*not a usable model name*");
     }
+
+    [Fact]
+    public void An_interactive_claim_staleness_days_of_zero_is_refused()
+    {
+        ConfigSetCommand.Settings settings = new() { InteractiveClaimStaleAfterDays = 0 };
+
+        Action act = () => ConfigSetCommand.Validate(settings);
+
+        act.Should().Throw<DomainValidationException>().WithMessage("*at least 1*");
+    }
+
+    [Fact]
+    public void Applying_the_interactive_claim_staleness_days_sets_it_and_records_the_change()
+    {
+        ConfigSetCommand.Settings settings = new() { InteractiveClaimStaleAfterDays = 5 };
+        OperatingSettings operating = new();
+        List<string> changed = [];
+
+        ConfigSetCommand.Apply(settings, operating, changed);
+
+        operating.InteractiveClaimStaleAfterDays.Should().Be(5);
+        changed.Should().ContainSingle().Which.Should().Contain("5");
+    }
 }
