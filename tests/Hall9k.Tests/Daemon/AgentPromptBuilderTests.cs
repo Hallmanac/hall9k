@@ -366,16 +366,24 @@ public sealed class AgentPromptBuilderTests : IDisposable
         prompt.Should().Contain(
             "scoped to only the diff of those fixes",
             "round two reviews only the fix delta, not the whole branch again");
-        string tipFile = Path.Combine(Path.GetTempPath(), $"self-review-round-one-tip-{Path.GetFileName(_worktreePath)}");
+        string tipFile = Path.Combine(Path.GetTempPath(), $"self-review-round-one-tip-{Path.GetFileName(_worktreePath)}")
+            .Replace('\\', '/');
         prompt.Should().Contain(
-            $"`git diff \"$(cat {tipFile})\" HEAD`",
+            $"`git diff \"$(cat \"{tipFile}\")\" HEAD`",
             "round two's fix-delta range is named explicitly rather than left for the session to invent, " +
             "reading the round-one tip back from a file rather than a shell variable that would not " +
             "survive between tool calls (independent pre-PR review, cycle 1, both lenses)");
         prompt.Should().Contain(
-            $"`git rev-parse HEAD > {tipFile}`",
+            $"`git rev-parse HEAD > \"{tipFile}\"`",
             "the tip file's name is suffixed with this worktree's own directory name so two concurrent " +
-            "sessions on the same node never clobber each other's round-one tip (Copilot review, PR #118)");
+            "sessions on the same node never clobber each other's round-one tip (Copilot review, PR #118), " +
+            "forward-slashed and quoted so a Windows node's backslashed temp path is not eaten by the " +
+            "session's own POSIX-shaped shell (independent pre-PR review, cycle 1, both lenses)");
+        prompt.Should().Contain(
+            "Remove that file once this phase",
+            "the round-one tip file is scratch state for this phase alone and is never left behind, " +
+            "the same rule the hunt-3 scratch directory already follows (independent pre-PR review, " +
+            "cycle 1, adversarial lens)");
         prompt.Should().Contain(
             "the loop ends unconditionally either way",
             "the loop ends unconditionally after round two");
@@ -417,7 +425,11 @@ public sealed class AgentPromptBuilderTests : IDisposable
     /// <summary>
     /// The bar that gates a further round is behavior or correctness, not style: a style-only
     /// observation is fixed or skipped without extending the loop, and a round finding nothing
-    /// above that bar — including round one — ends the loop early.
+    /// above that bar — including round one — ends the loop early. The trigger ("fixed") and the
+    /// early-exit rule ("fixes nothing") use the same verb deliberately, so a finding round one
+    /// dismisses rather than fixes falls on the early-exit side too, rather than landing in the
+    /// gap between two rules stated with different verbs (independent pre-PR review, cycle 1,
+    /// adversarial lens).
     /// </summary>
     [Fact]
     public void Build_prompt_gates_the_self_review_second_round_on_correctness_not_style()
@@ -428,11 +440,22 @@ public sealed class AgentPromptBuilderTests : IDisposable
             "style-only finding never by itself earns a round two",
             "style findings never extend the loop");
         prompt.Should().Contain(
-            "Only when round one fixed something above",
+            "A finding round one dismisses rather than fixes does not earn one",
+            "a dismissed finding does not earn a round two either — nothing landed for it to diff " +
+            "(independent pre-PR review, cycle 1, adversarial lens)");
+        prompt.Should().Contain(
+            "Only when round one actually",
             "only a correctness-or-behavior fix in round one earns a round two");
         prompt.Should().Contain(
+            "fixed something above the behavior-or-correctness bar does a round two run",
+            "only a correctness-or-behavior fix in round one earns a round two");
+        prompt.Should().Contain(
+            "A round that fixes",
+            "the early-exit rule is stated with the same verb (\"fixes\") as the trigger rule, so " +
+            "the two no longer disagree about a dismissed finding");
+        prompt.Should().Contain(
             "ends the loop right there",
-            "a round finding nothing above the bar, including round one, ends the loop early");
+            "a round fixing nothing above the bar, including round one, ends the loop early");
     }
 
     /// <summary>
