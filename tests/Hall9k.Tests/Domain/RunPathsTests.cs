@@ -14,6 +14,17 @@ namespace Hall9k.Tests.Domain;
 /// <see cref="Hall9k.Domain.Features.Run.Projections.RunDetails"/> for the fallback a stream
 /// written before this existed replays through.
 /// </summary>
+// GlobalDirectory resolves through PlatformPaths.Home, which reads the process-wide HALL9K_HOME
+// variable — the same one the h9k-update scratch-home tests redirect. This class compares two
+// independently-resolved GlobalDirectory calls (or one against RunPaths.ResolveDirectory's own
+// fallback), so a mutation landing between those two reads is directly observable here; sharing
+// the "Hall9kHome" collection serializes this against every test that redirects the variable
+// (origin: RunPathsTests.With_no_home_a_new_run_falls_back_to_the_platform_global_location
+// intermittently observed an h9k-update-* scratch home, gate strikes on 34a618a6 2026-08-29 and
+// cea5ae6e 2026-08-30). The nested ResolveCurrentDirectoryTests and
+// AnticipateDirectoryAfterSweepTests classes below take an explicit home directory rather than
+// reading PlatformPaths.Home, so they carry no attribute of their own.
+[Collection("Hall9kHome")]
 public sealed class RunPathsTests
 {
     [Fact]
