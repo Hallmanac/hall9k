@@ -563,12 +563,6 @@ public sealed partial class VerificationRunner(
         return (modified, untracked);
     }
 
-    /// <summary>
-    /// Whether an untracked path belongs to the project's own source or test tree rather than
-    /// somewhere a gate's own build or test output tends to land. `git status`'s porcelain output
-    /// always uses a forward slash as the path separator, on every OS, so a literal prefix check
-    /// is safe without any platform-specific path handling.
-    /// </summary>
     private static async Task<(int ExitCode, string StandardOutput)> RunGitAsync(
         string workingDirectory, IReadOnlyList<string> arguments, CancellationToken cancellationToken)
     {

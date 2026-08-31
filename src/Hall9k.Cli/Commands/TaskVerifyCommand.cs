@@ -2,6 +2,7 @@ using System.ComponentModel;
 using System.Diagnostics;
 using System.Text;
 using Hall9k.Cli.Infrastructure;
+using Hall9k.Connectors.Worktrees;
 using Hall9k.Domain.Features.Project;
 using Hall9k.Domain.Features.Project.Projections;
 using Hall9k.Domain.Features.Run;
@@ -103,8 +104,28 @@ public sealed class TaskVerifyCommand : Hall9kAsyncCommand<TaskVerifyCommand.Set
             await InteractiveWorktreeGit.ListUncommittedFilesAsync(run.WorktreePath, cancellationToken);
         if (untracked.Count > 0)
         {
-            AnsiConsole.MarkupLineInterpolated(
-                $"[yellow]Untracked file(s) in the worktree (not counted against the check): {string.Join(", ", untracked)}[/]");
+            // Split the same way VerificationRunner and h9k task deliver do, with the same shared
+            // classification: an untracked path under src/ or tests/ is not "not counted" at all —
+            // it is exactly what the daemon's own pre-gate check, and h9k task deliver's refusal,
+            // will fail over once this claim is delivered. Saying "not counted against the check"
+            // about that path here would make this on-demand rehearsal read green for a tree that
+            // is about to fail for real (independent pre-PR review, adversarial finding, cycle 1).
+            IReadOnlyList<string> strandable =
+                [.. untracked.Where(path =>
+                    WorktreeGitStatus.IsUnderSourceOrTestTree(path) && !WorktreeGitStatus.IsKnownBuildOrTestOutput(path))];
+            IReadOnlyList<string> byproduct = [.. untracked.Except(strandable)];
+
+            if (strandable.Count > 0)
+            {
+                AnsiConsole.MarkupLineInterpolated(
+                    $"[yellow]Untracked file(s) under src/ or tests/ (not counted against this check, but h9k task deliver will refuse and the platform's own verification will fail the run over them): {string.Join(", ", strandable)}[/]");
+            }
+
+            if (byproduct.Count > 0)
+            {
+                AnsiConsole.MarkupLineInterpolated(
+                    $"[yellow]Untracked file(s) in the worktree (not counted against the check): {string.Join(", ", byproduct)}[/]");
+            }
         }
 
         if (modified is null)

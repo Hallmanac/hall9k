@@ -20,8 +20,13 @@ internal static class InteractiveWorktreeGit
     /// asked (never guessed at as clean). The parsing itself — the subtle part — is
     /// <see cref="WorktreeGitStatus.ParsePorcelain"/>, shared with
     /// <c>VerificationRunner.ListUncommittedFilesAsync</c> rather than duplicated: an untracked
-    /// file is often a gate byproduct the project's .gitignore has not caught up with, never
-    /// blocking, and that split is exactly what the shared parser hands back.
+    /// file is often a gate byproduct the project's .gitignore has not caught up with, but a
+    /// caller must not treat every untracked path as advisory — one under src/ or tests/ is
+    /// first-class strandable work that blocks both <c>h9k task deliver</c> and the daemon's own
+    /// pre-gate check (<see cref="WorktreeGitStatus.IsUnderSourceOrTestTree"/>; independent pre-PR
+    /// review, cycle 1: this comment used to call every untracked path "never blocking", which
+    /// stopped being true the moment VerificationRunner started failing the run over exactly this
+    /// class of file).
     /// </summary>
     public static async Task<(IReadOnlyList<string>? Modified, IReadOnlyList<string> Untracked)> ListUncommittedFilesAsync(
         string worktreePath, CancellationToken cancellationToken)
