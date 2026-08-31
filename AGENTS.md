@@ -29,7 +29,7 @@ h9k install                  # publish release binaries to ~/.hall9k/bin (no ser
 h9k update                   # refresh an already-installed machine from the latest GitHub release, no repo/SDK needed
 h9k uninstall [--purge-data] # take the platform off the machine; the database survives unless --purge-data (Decisions Log #83)
 h9k daemon start|stop|status # the CLI-owned daemon lifecycle (Decisions Log #31)
-h9k config show|set          # the daemon's durable operating settings: concurrency, model-by-role (backlog 59)
+h9k config show|set          # the daemon's durable operating settings: concurrency, model-by-role, interactive-claim-stale-after-days (backlog 59, Decisions Log #103)
 h9k doctor [--yes]           # diagnose the database situation and what to do about it; --yes remediates non-interactively, for scripts and dispatched agents (Decisions Log #73, #74, #99)
 h9k project add --name <n> --repo-url <url>   # register a project and create its home directory
 h9k project init <name>      # create, repair or refresh a project's home; idempotent
@@ -374,7 +374,7 @@ there.
 ### Questions and answers: the relay
 
 `h9k status` is where the platform asks for a human. Its **needs-you** section is the whole point
-of the pane, and today a row lands there for one of five reasons:
+of the pane, and today a row lands there for one of six reasons:
 
 | Row says | What happened | The lever |
 |---|---|---|
@@ -382,6 +382,7 @@ of the pane, and today a row lands there for one of five reasons:
 | `NeedsHuman`, closeout parked | The same obstruction survived its automatic-lap cap without clearing, or the pull request's lifetime automatic-closeout budget is spent (#22, #80) | `h9k pr resolve` |
 | `NeedsHuman`, dependency failed | A blocker died, so the dependent stays Blocked rather than silently unblocking (#34, #61) | recover the blocker |
 | needs-you, Jira write pending, Status unchanged | A Jira write (an operator's own `write-jira`, or a daemon-dispatched one such as closeout's own merge comment) is stuck on an expired or missing twg login (#102) — the write carries no lifecycle state of its own, so the row's Status stays whatever it already was (Working, Delivered, or Done) | `twg login` |
+| needs-you, "an interactive claim (h9k task work) was last touched …" | An `h9k task work` claim has sat untouched past the configured threshold (default 3 days) — closing the terminal is a normal way to leave an interactive claim (#103), so nothing reclaims it automatically; this is only a nudge asking whether it is still yours | `h9k task work <id>` if you're still on it, or `h9k task handback <id>` to finish it headlessly |
 | `Failed` | The run itself failed | `h9k task retry` / `resolve` / `abandon` |
 
 The Jira row is the odd one out: every other lever here is an `h9k` command, but this one clears

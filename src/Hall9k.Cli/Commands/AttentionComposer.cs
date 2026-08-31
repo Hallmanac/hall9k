@@ -19,6 +19,16 @@ namespace Hall9k.Cli.Commands;
 internal static class AttentionComposer
 {
     /// <summary>
+    /// The ceiling <see cref="ConfigSetCommand.Validate"/>'s own <c>&gt;= 1</c> rule guards only on
+    /// the CLI write path — a hand-edited config file skips that gate entirely (independent pre-PR
+    /// review, cycle 1), and an unclamped value can turn negative (nudging every interactive claim
+    /// immediately) or exceed <see cref="TimeSpan.MaxValue"/>'s ~10,675,199 days (throwing out of
+    /// <see cref="TimeSpan.FromDays"/> and taking <c>h9k status</c> down with it). Ten years is far
+    /// past any value an operator would set on purpose, so clamping here never changes real usage.
+    /// </summary>
+    private const int MaxInteractiveClaimStaleAfterDays = 3650;
+
+    /// <summary>
     /// What this row is asking of the reader. Ordered by who actually owns the next move: a task
     /// the human ended asks for nothing at all, an explicit park outranks everything that is
     /// still live, a dead blocker outranks a live one, and a lane the machinery is still working
@@ -104,28 +114,6 @@ internal static class AttentionComposer
             return new TaskAttention(AttentionLevel.NeedsYou, StallCause(phase), $"h9k logs {id}");
         }
 
-        // An interactive claim (h9k task work) carries no lease and no heartbeat by design
-        // (Decisions Log #103) — closing the terminal is a normal way to leave, so a quiet claim
-        // is never a fault the way a stalled headless run is, and nothing here ever reclaims one
-        // automatically (idea 3ba186b6: "a staleness nudge, not a timeout"). But a claim nobody
-        // has touched in a long time is easy to forget about, so the only remedy is asking: still
-        // yours, or ready to hand off? Measured from the last recorded touch — a session
-        // attaching or detaching (RunDetails.LastInteractiveActivityAt) — falling back to when
-        // the claim itself began (RunDetails.DispatchedAt) for a claim that has never yet
-        // recorded either, rather than guessing at a touch nobody observed.
-        if (task.State == TaskState.Claimed && task.IsInteractiveClaim && run is not null)
-        {
-            TimeSpan age = now - (run.LastInteractiveActivityAt ?? run.DispatchedAt);
-            if (age >= TimeSpan.FromDays(interactiveClaimStaleAfterDays))
-            {
-                return new TaskAttention(
-                    AttentionLevel.NeedsYou,
-                    $"an interactive claim (h9k task work) has sat untouched for {TaskStatusComposer.RelativeAge(age)} "
-                    + "— still yours, or ready to hand off?",
-                    $"h9k task work {id} if you're still on it, or h9k task handback {id} to finish it headlessly");
-            }
-        }
-
         // A Jira write is stuck on an expired or missing twg login (Brian's design, 2026-08-28) —
         // a handled, expected state rather than a crash, and one the operator clears in their own
         // terminal rather than through an h9k command. Checked after every park, failure,
@@ -144,6 +132,38 @@ internal static class AttentionComposer
                 AttentionLevel.NeedsYou,
                 Reason(task.PendingJiraWriteFailureReason, "a Jira write is pending and could not authenticate"),
                 "twg login");
+        }
+
+        // An interactive claim (h9k task work) carries no lease and no heartbeat by design
+        // (Decisions Log #103) — closing the terminal is a normal way to leave, so a quiet claim
+        // is never a fault the way a stalled headless run is, and nothing here ever reclaims one
+        // automatically (idea 3ba186b6: "a staleness nudge, not a timeout"). But a claim nobody
+        // has touched in a long time is easy to forget about, so the only remedy is asking: still
+        // yours, or ready to hand off? Measured from the last recorded touch — a session
+        // attaching or detaching (RunDetails.LastInteractiveActivityAt) — falling back to when
+        // the claim itself began (RunDetails.DispatchedAt) for a claim that has never yet
+        // recorded either, rather than guessing at a touch nobody observed.
+        // Checked after the Jira arm (independent pre-PR review, cycle 1: the ordering rationale
+        // above applies here too — a stale claim is never the reason a Jira write failed to
+        // authenticate, so it must not shadow the twg login row either) and gated on the run's
+        // own state (adversarial review, cycle 1): once h9k task deliver hands the run to the
+        // standard pipeline the task can still read Claimed+interactive for the whole review
+        // loop (TaskHandbackCommand and TaskWorkCommand both document this and refuse once
+        // run.State is past Dispatched/Running), so nudging here too would advertise both levers
+        // this row would in fact refuse — never advise a lever the platform will refuse.
+        if (task.State == TaskState.Claimed && task.IsInteractiveClaim && run is not null
+            && (run.State == Domain.Features.Run.RunState.Dispatched
+                || run.State == Domain.Features.Run.RunState.Running))
+        {
+            TimeSpan age = now - (run.LastInteractiveActivityAt ?? run.DispatchedAt);
+            if (age >= TimeSpan.FromDays(Math.Clamp(interactiveClaimStaleAfterDays, 1, MaxInteractiveClaimStaleAfterDays)))
+            {
+                return new TaskAttention(
+                    AttentionLevel.NeedsYou,
+                    $"an interactive claim (h9k task work) was last touched {TaskStatusComposer.RelativeAge(age)} "
+                    + "— still yours, or ready to hand off?",
+                    $"h9k task work {id} if you're still on it, or h9k task handback {id} to finish it headlessly");
+            }
         }
 
         // Parked on the clock, not on a person (backlog 40): the subscription usage

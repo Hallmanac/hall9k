@@ -158,7 +158,16 @@ internal static class TaskStatusComposer
         Dictionary<Guid, RunActivity> activity = runIds.Length == 0
             ? []
             : (await session.LoadManyAsync<RunActivity>(cancellationToken, runIds)).ToDictionary(a => a.Id);
-        OperatingSettings operatingSettings = await PlatformConfigFile.ReadOperatingSettingsAsync(cancellationToken);
+        // Every other describe-only caller (OperatingSettingsResolver, and through it
+        // h9k config show and h9k daemon status) deliberately reads through the non-throwing
+        // TryReadOperatingSettingsAsync so a malformed config file degrades to the built-in
+        // default instead of taking the caller down. A board render is exactly such a caller —
+        // ReadOperatingSettingsAsync is the write path's throwing variant, reserved for a merge
+        // write that genuinely cannot proceed until the file parses — so h9k status, task list,
+        // task show, project list/show and epic list/show must not die on a config-file value
+        // this render does not even write (independent pre-PR review, cycle 1).
+        OperatingSettings operatingSettings =
+            (await PlatformConfigFile.TryReadOperatingSettingsAsync(cancellationToken)).Settings;
 
         return new TaskStatusContext(
             runs,

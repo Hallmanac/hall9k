@@ -321,8 +321,30 @@ public sealed class TaskPhaseSurfaceTests
 
         row.Attention.NeedsYou.Should().BeTrue();
         row.Group.Should().Be(AttentionBucket.NeedsYou);
-        row.Attention.Cause.Should().Contain("untouched");
+        row.Attention.Cause.Should().Contain("was last touched").And.NotContain("untouched for");
         row.Attention.Lever.Should().Contain("h9k task work").And.Contain("h9k task handback");
+    }
+
+    /// <summary>
+    /// Once <c>h9k task deliver</c> hands the run to the standard pipeline, the task can still
+    /// read Claimed+interactive for the whole review loop — <c>TaskHandbackCommand</c> and
+    /// <c>TaskWorkCommand</c> both refuse once <c>run.State</c> is past Dispatched/Running
+    /// (adversarial pre-PR review, cycle 1) — so the nudge must not fire there either: both levers
+    /// it would advertise are ones the platform refuses.
+    /// </summary>
+    [Fact]
+    public void A_delivered_interactive_claim_does_not_nudge_even_when_long_untouched()
+    {
+        Guid runId = DomainId.New();
+        RunDetails delivered = StatusFixtures.Run(runId, RunState.AwaitingReview, sessionProcessId: null);
+        delivered.LastInteractiveActivityAt = StatusFixtures.Now.AddDays(-4);
+
+        TaskStatusRow row = StatusFixtures.Compose(
+            StatusFixtures.Task(TaskState.Claimed, runId, claimedByNodeId: Guid.Empty),
+            delivered,
+            interactiveClaimStaleAfterDays: 3);
+
+        row.Attention.Cause.Should().NotContain("was last touched");
     }
 
     [Fact]
@@ -355,7 +377,7 @@ public sealed class TaskPhaseSurfaceTests
             interactiveClaimStaleAfterDays: 3);
 
         row.Attention.NeedsYou.Should().BeTrue();
-        row.Attention.Cause.Should().Contain("untouched");
+        row.Attention.Cause.Should().Contain("was last touched");
     }
 
     [Fact]
