@@ -103,13 +103,14 @@ public sealed class TaskDeliverCommand : Hall9kAsyncCommand<TaskDeliverCommand.S
 
         if (untracked.Count > 0)
         {
-            // "Not blocking delivery" is still true of this push — an untracked file is never
-            // part of a commit, so deliver ships the branch exactly as it stands regardless — but
-            // it stopped being the whole story once VerificationRunner started failing the run
-            // outright over a new file under src/ or tests/ (independent pre-PR review,
-            // adversarial finding): the two messages used to disagree about the very same path.
             // Split the same way VerificationRunner does, with the same shared classification, so
-            // this warning says what will actually happen once the pipeline picks the run up.
+            // this check says what will actually happen once the pipeline picks the run up. An
+            // untracked file under src/ or tests/ is exactly as fatal to the pending run as a
+            // modified-but-uncommitted one: VerificationRunner fails the run over it before any
+            // gate runs, so pushing and handing off anyway would only spend a push, a run, and a
+            // retry to learn what this check already knows (independent pre-PR review, both
+            // lenses, cycle 1: this command used to warn and proceed into a guaranteed pre-gate
+            // failure). Refused here, the same as the modified-files case above.
             IReadOnlyList<string> strandable =
                 [.. untracked.Where(path =>
                     WorktreeGitStatus.IsUnderSourceOrTestTree(path) && !WorktreeGitStatus.IsKnownBuildOrTestOutput(path))];
@@ -118,7 +119,13 @@ public sealed class TaskDeliverCommand : Hall9kAsyncCommand<TaskDeliverCommand.S
             if (strandable.Count > 0)
             {
                 AnsiConsole.MarkupLineInterpolated(
-                    $"[yellow]Untracked file(s) under src/ or tests/ (not blocking this push, but the platform's own verification will fail the run over them once delivered): {string.Join(", ", strandable)}[/]");
+                    $"[red]Task {taskId}'s worktree has untracked file(s) under src/ or tests/; the platform's own verification will fail the run over them once delivered. Commit them first:[/]");
+                foreach (string file in strandable)
+                {
+                    AnsiConsole.MarkupLineInterpolated($"[red]  {file}[/]");
+                }
+
+                return ExitCodes.Conflict;
             }
 
             if (byproduct.Count > 0)
