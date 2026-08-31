@@ -432,7 +432,12 @@ public sealed class TaskPhaseSurfaceTests
 
         row.Phase.Liveness.Should().Be(SessionLiveness.Unobserved);
         row.Attention.NeedsYou.Should().BeTrue();
-        row.Attention.Cause.Should().Contain("was claimed").And.Contain("has not recorded a touch since");
+        // InteractiveSessionCount is positive here, so the wording must not claim no touch was ever
+        // recorded (conformance review, cycle 1 following cycle 7's own reading of that field) — it
+        // says a touch happened before this machine tracked exact touch times instead.
+        row.Attention.Cause.Should().Contain("was claimed")
+            .And.Contain("activity recorded before this machine tracked exact touch times")
+            .And.NotContain("has not recorded a touch since");
     }
 
     /// <summary>
