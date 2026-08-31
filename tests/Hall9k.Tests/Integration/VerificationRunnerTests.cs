@@ -381,6 +381,64 @@ public sealed class VerificationRunnerTests(PostgresFixture postgres) : IClassFi
     }
 
     /// <summary>
+    /// The failure message names untracked new files alongside modified ones (origin incident,
+    /// 2026-08-29, the Jira compose/execute task): a session left a whole feature's own core
+    /// files uncommitted, but the failure named only the modified files — a resuming agent that
+    /// faithfully committed just the named list would have shipped a hollow branch missing the
+    /// untracked source files entirely. A brand-new file under src/ is exactly that shape.
+    /// </summary>
+    [Fact]
+    public async Task An_untracked_source_file_fails_the_run_alongside_a_modified_one()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        using DocumentStore store = NewStore();
+        await InitGitWorktreeAsync(withTaskCommit: true, cts.Token, trackedFile: "half-done.cs");
+        await File.WriteAllTextAsync(Path.Combine(_worktree, "half-done.cs"), "left behind", cts.Token);
+        Directory.CreateDirectory(Path.Combine(_worktree, "src", "Hall9k.Connectors"));
+        await File.WriteAllTextAsync(
+            Path.Combine(_worktree, "src", "Hall9k.Connectors", "NewFeature.cs"), "brand new", cts.Token);
+        (Guid taskId, Guid runId) = await SeedAsync(store,
+            [new VerifyCommand("never", "echo should-not-run")], cts.Token);
+
+        bool passed = await NewRunner(store).VerifyAsync(runId, taskId, scopeSinceSha: null, "test", cts.Token);
+
+        passed.Should().BeFalse("an untracked new source file is stranded work, not a gate byproduct");
+        await using IQuerySession query = store.QuerySession();
+        RunDetails run = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
+        run.State.Value.Should().Be("Failed");
+        run.FailureReason.Should().Contain("half-done.cs", "the modified file must still be named");
+        run.FailureReason.Should().Contain("NewFeature.cs", "the untracked new source file must be named too");
+        run.FailedGates.Should().BeEmpty("no gate ever ran");
+    }
+
+    /// <summary>
+    /// A brand-new file under tests/ is the same shape as one under src/: it is the feature's
+    /// own work, not a gate byproduct, so it fails the run and is named even with no modified
+    /// file alongside it.
+    /// </summary>
+    [Fact]
+    public async Task An_untracked_test_file_alone_fails_the_run()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        using DocumentStore store = NewStore();
+        await InitGitWorktreeAsync(withTaskCommit: true, cts.Token);
+        Directory.CreateDirectory(Path.Combine(_worktree, "tests", "Hall9k.Tests"));
+        await File.WriteAllTextAsync(
+            Path.Combine(_worktree, "tests", "Hall9k.Tests", "NewFeatureTests.cs"), "brand new test", cts.Token);
+        (Guid taskId, Guid runId) = await SeedAsync(store,
+            [new VerifyCommand("never", "echo should-not-run")], cts.Token);
+
+        bool passed = await NewRunner(store).VerifyAsync(runId, taskId, scopeSinceSha: null, "test", cts.Token);
+
+        passed.Should().BeFalse("an untracked new test file is stranded work, not a gate byproduct");
+        await using IQuerySession query = store.QuerySession();
+        RunDetails run = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
+        run.State.Value.Should().Be("Failed");
+        run.FailureReason.Should().Contain("NewFeatureTests.cs");
+        run.FailedGates.Should().BeEmpty("no gate ever ran");
+    }
+
+    /// <summary>
     /// The shape the zero-commit check alone always missed (origin incident, PR #53's cycle-3
     /// fix round, 2026-08-26): some commits landed, but the session still ended with
     /// modified-but-uncommitted files sitting in the worktree. Gates on that tree would test
@@ -403,7 +461,7 @@ public sealed class VerificationRunnerTests(PostgresFixture postgres) : IClassFi
         await using IQuerySession query = store.QuerySession();
         RunDetails run = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
         run.State.Value.Should().Be("Failed");
-        run.FailureReason.Should().Contain("modified-but-uncommitted");
+        run.FailureReason.Should().Contain("uncommitted files");
         run.FailureReason.Should().Contain("half-done.cs");
         run.FailureReason.Should().NotContain("produced no commits", "this branch has commits; only files are stranded");
         run.FailedGates.Should().BeEmpty("no gate ever ran");
@@ -472,7 +530,7 @@ public sealed class VerificationRunnerTests(PostgresFixture postgres) : IClassFi
         passed.Should().BeFalse("a research task can still strand a modified file, exempt or not");
         await using IQuerySession query = store.QuerySession();
         RunDetails run = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
-        run.FailureReason.Should().Contain("modified-but-uncommitted");
+        run.FailureReason.Should().Contain("uncommitted files");
         run.FailureReason.Should().Contain("notes.md");
     }
 
