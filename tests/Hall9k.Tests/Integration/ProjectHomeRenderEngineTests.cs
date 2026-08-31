@@ -32,6 +32,7 @@ namespace Hall9k.Tests.Integration;
 /// cover the rendering and the filesystem mechanics in isolation.
 /// </summary>
 [Trait("Category", "RequiresDocker")]
+[Collection("Hall9kHome")]
 public sealed class ProjectHomeRenderEngineTests(PostgresFixture postgres) : IClassFixture<PostgresFixture>, IDisposable
 {
     private static readonly DateTimeOffset Now = new(2026, 8, 23, 12, 0, 0, TimeSpan.Zero);
