@@ -153,6 +153,23 @@ public sealed class ConfigSetCommandTests
     }
 
     [Fact]
+    public void An_interactive_claim_staleness_days_beyond_the_boards_own_ceiling_is_refused()
+    {
+        // AttentionComposer.MaxInteractiveClaimStaleAfterDays is the ceiling h9k status itself
+        // clamps to (independent pre-PR review, cycle 4) — this write path has to refuse past it
+        // too, or a value like 5000 would write and print green as though applied while the
+        // board silently clamped it to 3650 on every render.
+        ConfigSetCommand.Settings settings = new()
+        {
+            InteractiveClaimStaleAfterDays = AttentionComposer.MaxInteractiveClaimStaleAfterDays + 1,
+        };
+
+        Action act = () => ConfigSetCommand.Validate(settings);
+
+        act.Should().Throw<DomainValidationException>().WithMessage("*must be at most*");
+    }
+
+    [Fact]
     public void Applying_the_interactive_claim_staleness_days_sets_it_and_records_the_change()
     {
         ConfigSetCommand.Settings settings = new() { InteractiveClaimStaleAfterDays = 5 };

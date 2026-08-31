@@ -155,11 +155,16 @@ internal static class AttentionComposer
         // the nudge fire on a session this machine can see is Alive right now, offering the same
         // two levers — InteractiveSessionLiveness.EnsureNotAttachedElsewhere refuses both
         // h9k task work re-entry and h9k task handback with "still attached in another terminal"
-        // for exactly that observation, and never overrides it even with --force.
+        // for exactly that observation, and never overrides it even with --force. Restricted to
+        // Gone or NotApplicable specifically, rather than everything but Alive (conformance and
+        // adversarial review, cycle 4): a session recorded on another machine reads Unobserved,
+        // the same unread-not-absent fact TaskPhaseComposer's own interactive branch refuses to
+        // call re-enterable one field over, and EnsureNotAttachedElsewhere refuses both levers
+        // for it too without --force — the identical contradiction this arm exists to avoid.
         if (task.State == TaskState.Claimed && task.IsInteractiveClaim && run is not null
             && (run.State == Domain.Features.Run.RunState.Dispatched
                 || run.State == Domain.Features.Run.RunState.Running)
-            && phase.Liveness != SessionLiveness.Alive)
+            && phase.Liveness is SessionLiveness.Gone or SessionLiveness.NotApplicable)
         {
             TimeSpan age = now - (run.LastInteractiveActivityAt ?? run.DispatchedAt);
             if (age >= TimeSpan.FromDays(Math.Clamp(interactiveClaimStaleAfterDays, 1, MaxInteractiveClaimStaleAfterDays)))
@@ -167,10 +172,14 @@ internal static class AttentionComposer
                 // A claim that never recorded a touch (no InteractiveSessionStarted yet) says so
                 // rather than claiming one happened (conformance review, cycle 2: the old wording
                 // asserted "was last touched" for this case too, contradicting the never-guess
-                // rule stated three lines above it).
+                // rule stated three lines above it). The touched case hedges the same way
+                // (adversarial review, cycle 4): LastInteractiveActivityAt only moves on an
+                // attach or detach, so h9k task verify's own gate runs on this same claim leave
+                // no trace here, and asserting "was last touched" would claim a fact — that this
+                // was the most recent activity — this field cannot actually see.
                 string activity = run.LastInteractiveActivityAt is null
                     ? $"was claimed {TaskStatusComposer.RelativeAge(age)} and has not recorded a touch since"
-                    : $"was last touched {TaskStatusComposer.RelativeAge(age)}";
+                    : $"last recorded activity {TaskStatusComposer.RelativeAge(age)}";
                 return new TaskAttention(
                     AttentionLevel.NeedsYou,
                     $"an interactive claim (h9k task work) {activity} — still yours, or ready to hand off?",

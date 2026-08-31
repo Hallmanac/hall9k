@@ -321,7 +321,7 @@ public sealed class TaskPhaseSurfaceTests
 
         row.Attention.NeedsYou.Should().BeTrue();
         row.Group.Should().Be(AttentionBucket.NeedsYou);
-        row.Attention.Cause.Should().Contain("was last touched").And.NotContain("untouched for");
+        row.Attention.Cause.Should().Contain("last recorded activity").And.NotContain("untouched for");
         row.Attention.Lever.Should().Contain("h9k task work").And.Contain("h9k task handback");
     }
 
@@ -353,7 +353,40 @@ public sealed class TaskPhaseSurfaceTests
             interactiveClaimStaleAfterDays: 3);
 
         row.Phase.Liveness.Should().Be(SessionLiveness.Alive);
-        row.Attention.Cause.Should().NotContain("was last touched").And.NotContain("was claimed");
+        row.Attention.Cause.Should().NotContain("last recorded activity").And.NotContain("was claimed");
+        row.Attention.NeedsYou.Should().BeFalse();
+    }
+
+    /// <summary>
+    /// Unobserved (a session recorded on another machine this one cannot check) must not nudge
+    /// either, for the identical reason Alive does not: the phase line above already reads
+    /// "liveness not observed here" rather than claiming the claim is re-enterable
+    /// (<c>TaskPhaseComposer</c>'s own interactive branch admits only Gone or NotApplicable), and
+    /// <c>InteractiveSessionLiveness.EnsureNotAttachedElsewhere</c> refuses both
+    /// <c>h9k task work</c> and <c>h9k task handback</c> for exactly this observation without
+    /// <c>--force</c> — advertising them free would be the same "never advise a lever the
+    /// platform will refuse" defect the Alive guard above exists to prevent (conformance and
+    /// adversarial review, cycle 4).
+    /// </summary>
+    [Fact]
+    public void An_interactive_claim_unobserved_on_another_machine_does_not_nudge()
+    {
+        Guid runId = DomainId.New();
+        RunDetails interactive = StatusFixtures.Run(runId, RunState.Running, sessionProcessId: null);
+        interactive.LastInteractiveActivityAt = StatusFixtures.Now.AddDays(-4);
+        interactive.ActiveSessions =
+        [
+            new ActiveSession(AgentRole.Interactive, ReviewLens.Unknown, 4711, StatusFixtures.Now, "machine-a"),
+        ];
+
+        TaskStatusRow row = StatusFixtures.Compose(
+            StatusFixtures.Task(TaskState.Claimed, runId, claimedByNodeId: Guid.Empty),
+            interactive,
+            liveness: SessionLiveness.Unobserved,
+            interactiveClaimStaleAfterDays: 3);
+
+        row.Phase.Liveness.Should().Be(SessionLiveness.Unobserved);
+        row.Attention.Cause.Should().NotContain("last recorded activity").And.NotContain("was claimed");
         row.Attention.NeedsYou.Should().BeFalse();
     }
 
@@ -376,7 +409,7 @@ public sealed class TaskPhaseSurfaceTests
             delivered,
             interactiveClaimStaleAfterDays: 3);
 
-        row.Attention.Cause.Should().NotContain("was last touched");
+        row.Attention.Cause.Should().NotContain("last recorded activity");
     }
 
     [Fact]
@@ -409,7 +442,7 @@ public sealed class TaskPhaseSurfaceTests
             interactiveClaimStaleAfterDays: 3);
 
         row.Attention.NeedsYou.Should().BeTrue();
-        row.Attention.Cause.Should().Contain("was claimed").And.NotContain("was last touched");
+        row.Attention.Cause.Should().Contain("was claimed").And.NotContain("last recorded activity");
     }
 
     [Fact]
