@@ -343,12 +343,13 @@ public static class WorkPromptBuilder
     {
         if (project.VerifyCommands.Count == 0)
         {
-            prompt.AppendLine("- **Self-review phase.** This project configures no verification gates (the");
-            prompt.AppendLine("  gate list below is empty), so once the work itself is done, and before the");
-            prompt.AppendLine("  recompose below, hunt your own branch for defects. It runs here — after the");
-            prompt.AppendLine("  work is finished, so the hunt sees finished work, and before the recompose,");
-            prompt.AppendLine("  so the recompose composes the tree the hunt leaves behind rather than the");
-            prompt.AppendLine("  tree that predates it.");
+            prompt.AppendLine("- **Self-review phase.** This project configures no verification gates, so its");
+            prompt.AppendLine("  suite is vacuously green already (the recompose step below states the same");
+            prompt.AppendLine("  thing); once the work itself is done, and before the recompose below, hunt");
+            prompt.AppendLine("  your own branch for defects. It runs here — after the work is finished, so");
+            prompt.AppendLine("  the hunt sees finished work, and before the recompose, so the recompose");
+            prompt.AppendLine("  composes the tree the hunt leaves behind rather than the tree that predates");
+            prompt.AppendLine("  it.");
         }
         else
         {
@@ -388,11 +389,22 @@ public static class WorkPromptBuilder
         prompt.AppendLine("     is not part of that.");
         prompt.AppendLine("  The loop is capped at two rounds, hard. Round one hunts the whole branch diff.");
         prompt.AppendLine("  A finding that changes behavior or correctness gets fixed and");
-        prompt.AppendLine("  checkpoint-committed, then the full verification suite runs again before the");
-        prompt.AppendLine("  loop continues or the recompose begins — a fix that broke something is itself a");
-        prompt.AppendLine("  defect, and the recompose downstream only holds its own guarantee (the tree it");
-        prompt.AppendLine("  composes is the tree that passed the suite) if the suite ran after this phase's");
-        prompt.AppendLine("  last fix, not just before this phase started; a");
+        prompt.AppendLine("  checkpoint-committed, then");
+        if (project.VerifyCommands.Count == 0)
+        {
+            prompt.AppendLine("  the loop continues or the recompose begins directly — this project");
+            prompt.AppendLine("  configures no verification gates, so there is no suite to re-run, and the");
+            prompt.AppendLine("  recompose downstream still holds its own guarantee (the tree it composes is");
+            prompt.AppendLine("  the tree the fix left behind) vacuously; a");
+        }
+        else
+        {
+            prompt.AppendLine("  the full verification suite runs again before the");
+            prompt.AppendLine("  loop continues or the recompose begins — a fix that broke something is itself a");
+            prompt.AppendLine("  defect, and the recompose downstream only holds its own guarantee (the tree it");
+            prompt.AppendLine("  composes is the tree that passed the suite) if the suite ran after this phase's");
+            prompt.AppendLine("  last fix, not just before this phase started; a");
+        }
         prompt.AppendLine("  style-only observation is fixed in place or skipped without extending the");
         prompt.AppendLine("  loop — it is not what the cap is for. Only when round one fixed something above");
         prompt.AppendLine("  the behavior-or-correctness bar does a round two run, against only the diff of");
