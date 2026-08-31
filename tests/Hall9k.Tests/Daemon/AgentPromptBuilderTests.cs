@@ -212,6 +212,12 @@ public sealed class AgentPromptBuilderTests : IDisposable
     /// Fix rounds resume an existing PR branch and keep the fixup/autosquash flow via
     /// absorb-review-fixes (Decisions Log #26); the checkpoint-and-recompose protocol is scoped
     /// to a fresh build session's own initial work and must not leak into these prompts.
+    /// <see cref="AgentPromptBuilder.BuildReviewFix"/>, the pre-PR review loop's own fix
+    /// round, is checked alongside the other three for the same non-leak (conformance review,
+    /// cycle 1): were <c>AppendCheckpointCommitRules</c> ever hoisted into a helper shared with
+    /// <c>Build</c>, this is what would catch the mixed-reset protocol leaking into it. It is
+    /// asserted separately from the fixup/autosquash checks below, since it folds review fixes
+    /// in with plain commits rather than <c>absorb-review-fixes</c>'s fixup flow.
     /// </summary>
     [Fact]
     public void Fix_round_prompts_do_not_carry_the_checkpoint_recompose_protocol()
@@ -219,7 +225,7 @@ public sealed class AgentPromptBuilderTests : IDisposable
         ProjectDetails project = SomeProject();
         project.VerifyCommands = [new VerifyCommand("test", "dotnet test")];
 
-        string[] fixRoundPrompts =
+        string[] fixupFlowPrompts =
         [
             AgentPromptBuilder.BuildFollowUp(
                 SomeTask(), project, "task/1-slug", "https://github.com/x/y/pull/7", CommitStyle.Narrative),
@@ -229,7 +235,7 @@ public sealed class AgentPromptBuilderTests : IDisposable
                 SomeTask(), project, "task/1-slug", "https://github.com/x/y/pull/7", CommitStyle.Narrative),
         ];
 
-        foreach (string prompt in fixRoundPrompts)
+        foreach (string prompt in fixupFlowPrompts)
         {
             prompt.Should().NotContain("Commit as you go, one logical unit at a time");
             prompt.Should().NotContain("git reset --mixed");
@@ -237,6 +243,11 @@ public sealed class AgentPromptBuilderTests : IDisposable
             prompt.Should().Contain(
                 "GIT_SEQUENCE_EDITOR=: git rebase -i --autosquash origin/main", "autosquash is unchanged");
         }
+
+        string reviewFixPrompt = AgentPromptBuilder.BuildReviewFix(
+            SomeTask(), "task/1-slug", "findings go here", cycle: 1);
+        reviewFixPrompt.Should().NotContain("Commit as you go, one logical unit at a time");
+        reviewFixPrompt.Should().NotContain("git reset --mixed");
     }
 
     [Fact]
