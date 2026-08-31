@@ -156,8 +156,8 @@ internal static class AttentionComposer
         // two levers — InteractiveSessionLiveness.EnsureNotAttachedElsewhere refuses both
         // h9k task work re-entry and h9k task handback with "still attached in another terminal"
         // for exactly that observation, and never overrides it even with --force. Restricted to
-        // Gone, NotApplicable, or an Unobserved claim IsInteractiveSessionElsewhere below reads as
-        // not-actually-elsewhere (adversarial review, cycle 6, following cycle 4's finding): a
+        // Gone, NotApplicable, or an Unobserved claim IsInteractiveSessionRecordedElsewhere below
+        // reads as not-actually-elsewhere (adversarial review, cycle 6, following cycle 4's finding): a
         // session whose MachineName genuinely names a different machine also reads Unobserved, and
         // EnsureNotAttachedElsewhere refuses both levers for that one without --force — the
         // identical contradiction this arm exists to avoid, so that case alone stays excluded.
@@ -166,11 +166,13 @@ internal static class AttentionComposer
         // rather than "elsewhere" and proceeds without --force, so this arm can honestly nudge it
         // too — leaving it excluded would mean the oldest claims, the ones the nudge exists for,
         // could never be reached by it.
+        bool reachedViaKnownGoneOrEnded = phase.Liveness is SessionLiveness.Gone or SessionLiveness.NotApplicable;
+        bool reachedViaLegacyBlankMachineName = run is not null
+            && phase.Liveness == SessionLiveness.Unobserved && !IsInteractiveSessionRecordedElsewhere(run);
         if (task.State == TaskState.Claimed && task.IsInteractiveClaim && run is not null
             && (run.State == Domain.Features.Run.RunState.Dispatched
                 || run.State == Domain.Features.Run.RunState.Running)
-            && (phase.Liveness is SessionLiveness.Gone or SessionLiveness.NotApplicable
-                || (phase.Liveness == SessionLiveness.Unobserved && !IsInteractiveSessionRecordedElsewhere(run)))
+            && (reachedViaKnownGoneOrEnded || reachedViaLegacyBlankMachineName)
             // RunDetails.LastInteractiveActivityAt null does not by itself mean never touched:
             // it is also what a document written before this field existed reads, forever, until
             // its claim's next attach or detach rewrites it for real (RunDetails.cs's own doc
@@ -184,7 +186,17 @@ internal static class AttentionComposer
             // below already refuses to make, so this arm stays silent on that claim rather than
             // risk telling an operator who was here an hour ago that they have not been seen in
             // days; it self-heals the moment any attach or detach next rewrites the document.
-            && !(run.LastInteractiveActivityAt is null && run.InteractiveSessionCount > 0))
+            // Scoped to the Gone/NotApplicable arm only (conformance review, cycle 7, following
+            // cycle 6's own finding): a claim reached via reachedViaLegacyBlankMachineName cannot
+            // be this ambiguous case in the first place — StartSession clears and re-adds the
+            // session with the current MachineName and RunDetails.LastInteractiveActivityAt
+            // together on every InteractiveSessionStarted/Ended, so a still-blank MachineName is
+            // itself the proof that no touch has landed since MachineName tracking began, not an
+            // absence of proof. Excluding this arm from the guard is what makes the oldest claims
+            // — the ones the broadening above exists to reach — nudgeable at all; leaving the
+            // guard unscoped made that broadening dead code, since every claim it could reach also
+            // satisfies this guard's own suppression condition.
+            && !(reachedViaKnownGoneOrEnded && run.LastInteractiveActivityAt is null && run.InteractiveSessionCount > 0))
         {
             TimeSpan age = now - (run.LastInteractiveActivityAt ?? run.DispatchedAt);
             if (age >= TimeSpan.FromDays(Math.Clamp(interactiveClaimStaleAfterDays, 1, MaxInteractiveClaimStaleAfterDays)))
