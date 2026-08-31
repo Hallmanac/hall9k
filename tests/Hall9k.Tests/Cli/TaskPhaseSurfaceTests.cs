@@ -391,6 +391,38 @@ public sealed class TaskPhaseSurfaceTests
     }
 
     /// <summary>
+    /// A blank <c>MachineName</c> (a stream written before the field existed) is not the same
+    /// unobservable fact as a name that names a real other machine: it also reads Unobserved here
+    /// (<c>SessionOnThisMachine</c> falls back to the run-level answer, which is always false for
+    /// an interactive claim's <see cref="Guid.Empty"/> sentinel node), but
+    /// <c>InteractiveSessionLiveness.EnsureNotAttachedElsewhere</c> proceeds without <c>--force</c>
+    /// for exactly this claim, so both advertised levers would actually work — the nudge has to
+    /// reach it too, or the oldest claims (the population it exists for) could never be nudged
+    /// (adversarial review, cycle 6).
+    /// </summary>
+    [Fact]
+    public void An_interactive_claim_unobserved_with_a_blank_machine_name_still_nudges()
+    {
+        Guid runId = DomainId.New();
+        RunDetails interactive = StatusFixtures.Run(runId, RunState.Running, sessionProcessId: null);
+        interactive.LastInteractiveActivityAt = StatusFixtures.Now.AddDays(-4);
+        interactive.ActiveSessions =
+        [
+            new ActiveSession(AgentRole.Interactive, ReviewLens.Unknown, 4711, StatusFixtures.Now),
+        ];
+
+        TaskStatusRow row = StatusFixtures.Compose(
+            StatusFixtures.Task(TaskState.Claimed, runId, claimedByNodeId: Guid.Empty),
+            interactive,
+            liveness: SessionLiveness.Unobserved,
+            interactiveClaimStaleAfterDays: 3);
+
+        row.Phase.Liveness.Should().Be(SessionLiveness.Unobserved);
+        row.Attention.NeedsYou.Should().BeTrue();
+        row.Attention.Cause.Should().Contain("last recorded activity");
+    }
+
+    /// <summary>
     /// Once <c>h9k task deliver</c> hands the run to the standard pipeline, the task can still
     /// read Claimed+interactive for the whole review loop — <c>TaskHandbackCommand</c> and
     /// <c>TaskWorkCommand</c> both refuse once <c>run.State</c> is past Dispatched/Running
@@ -443,6 +475,33 @@ public sealed class TaskPhaseSurfaceTests
 
         row.Attention.NeedsYou.Should().BeTrue();
         row.Attention.Cause.Should().Contain("was claimed").And.NotContain("last recorded activity");
+    }
+
+    /// <summary>
+    /// <c>LastInteractiveActivityAt</c> null does not by itself mean never touched: a document
+    /// written before the field existed reads that way forever, until its claim's next attach or
+    /// detach rewrites it for real (<c>RunDetails.cs</c>'s own doc comment). A positive
+    /// <c>InteractiveSessionCount</c> is the tell that touches did happen, and
+    /// <c>DispatchedAt</c> — the claim's own start, not a fallback for its last touch — can
+    /// understate the real last touch by however long the claim has been open. Asserting
+    /// staleness off it would be the exact unobserved-fact guess this nudge otherwise refuses to
+    /// make, so it stays silent on this claim rather than risk telling an operator who was here
+    /// recently that they have not been seen in days (conformance review, cycle 6).
+    /// </summary>
+    [Fact]
+    public void An_interactive_claim_touched_before_the_timestamp_field_existed_does_not_nudge()
+    {
+        Guid runId = DomainId.New();
+        RunDetails interactive = StatusFixtures.Run(
+            runId, RunState.Running, sessionProcessId: null, dispatchedAt: StatusFixtures.Now.AddDays(-10));
+        interactive.InteractiveSessionCount = 2;
+
+        TaskStatusRow row = StatusFixtures.Compose(
+            StatusFixtures.Task(TaskState.Claimed, runId, claimedByNodeId: Guid.Empty),
+            interactive,
+            interactiveClaimStaleAfterDays: 3);
+
+        row.Attention.NeedsYou.Should().BeFalse();
     }
 
     [Fact]
