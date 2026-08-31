@@ -399,13 +399,26 @@ public sealed class TaskPhaseSurfaceTests
     /// for exactly this claim, so both advertised levers would actually work — the nudge has to
     /// reach it too, or the oldest claims (the population it exists for) could never be nudged
     /// (adversarial review, cycle 6).
+    /// <para>
+    /// <see cref="RunDetails.LastInteractiveActivityAt"/> is null here rather than set, and
+    /// <see cref="RunDetails.InteractiveSessionCount"/> is positive: that is the only shape a real
+    /// blank-<c>MachineName</c> document can actually have (conformance review, cycle 7) —
+    /// <c>RunDetailsProjection.StartSession</c> writes <c>MachineName</c> and
+    /// <c>LastInteractiveActivityAt</c> together on every <c>InteractiveSessionStarted</c>/
+    /// <c>Ended</c>, so a still-blank name is itself proof no touch has landed since machine-name
+    /// tracking began, while <c>InteractiveSessionCount</c> was already being incremented before
+    /// that tracking existed. A non-null timestamp beside a blank name cannot occur on a real
+    /// projection and would silently hide a regression where the guard below (correctly) still
+    /// suppresses the nudge because it saw a timestamp, not because this arm actually worked.
+    /// </para>
     /// </summary>
     [Fact]
     public void An_interactive_claim_unobserved_with_a_blank_machine_name_still_nudges()
     {
         Guid runId = DomainId.New();
-        RunDetails interactive = StatusFixtures.Run(runId, RunState.Running, sessionProcessId: null);
-        interactive.LastInteractiveActivityAt = StatusFixtures.Now.AddDays(-4);
+        RunDetails interactive = StatusFixtures.Run(
+            runId, RunState.Running, sessionProcessId: null, dispatchedAt: StatusFixtures.Now.AddDays(-4));
+        interactive.InteractiveSessionCount = 1;
         interactive.ActiveSessions =
         [
             new ActiveSession(AgentRole.Interactive, ReviewLens.Unknown, 4711, StatusFixtures.Now),
@@ -419,7 +432,7 @@ public sealed class TaskPhaseSurfaceTests
 
         row.Phase.Liveness.Should().Be(SessionLiveness.Unobserved);
         row.Attention.NeedsYou.Should().BeTrue();
-        row.Attention.Cause.Should().Contain("last recorded activity");
+        row.Attention.Cause.Should().Contain("was claimed").And.Contain("has not recorded a touch since");
     }
 
     /// <summary>
