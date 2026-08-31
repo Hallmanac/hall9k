@@ -726,9 +726,8 @@ public sealed record ReviewPassCompleted( // ONE lens of the cycle returned its 
         Findings = null,                 //   disposition the loop chose (log #63) — classification
                                          //   only, never the text. Null on pre-#63 streams.
     ReviewMode? Mode = null,             // which shape THIS pass's cycle took; null reads Discovery
-    int? Turns = null,                   // the pass's own session cost (task: a dispatched review
-    long? InputTokens = null);           //   session starts with the diff already assembled) — claude's
-                                         //   num_turns and every billed input token, cache reads and
+    int? Turns = null,                   // the pass's own session cost — claude's own num_turns
+    long? InputTokens = null);           //   and every billed input token, cache reads and
                                          //   writes included. Null on streams written before either
                                          //   field existed.
 public sealed record ReviewCompleted(    // the CYCLE's merged verdict over every lens (log #59),

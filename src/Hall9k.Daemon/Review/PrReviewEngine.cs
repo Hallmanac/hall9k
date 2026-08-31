@@ -37,14 +37,13 @@ namespace Hall9k.Daemon.Review;
 /// observation").
 /// <para>
 /// Deliberately reuses only the stateless primitives ReviewEngine itself is built from —
-/// <see cref="AgentPromptBuilder.BuildPrReviewLens"/>, <see cref="ReviewPacketAssembler"/>,
-/// <see cref="SessionResultWaiter"/> — never ReviewEngine's own cycle/track/fix-loop state
-/// machine, which is built entirely around a diff this
-/// platform may fix and merge. Reusing that machine's own events (ReviewDispatched,
-/// ReviewPassCompleted) would risk a restarted daemon's adoption sweep resuming a pr-review
-/// run through ReviewEngine.DriveAsync itself; the two small events this class owns
-/// (PrReviewConformanceDispatched/Completed, PrReviewDelivered) exist so that can never
-/// happen.
+/// <see cref="AgentPromptBuilder.BuildPrReviewLens"/>, <see cref="SessionResultWaiter"/> —
+/// never ReviewEngine's own cycle/track/fix-loop state machine, which is built entirely
+/// around a diff this platform may fix and merge. Reusing that machine's own events
+/// (ReviewDispatched, ReviewPassCompleted) would risk a restarted daemon's adoption sweep
+/// resuming a pr-review run through ReviewEngine.DriveAsync itself; the two small events
+/// this class owns (PrReviewConformanceDispatched/Completed, PrReviewDelivered) exist so
+/// that can never happen.
 /// </para>
 /// </summary>
 public sealed class PrReviewEngine(
@@ -343,10 +342,9 @@ public sealed class PrReviewEngine(
         // lens filing findings against a different range than the adversarial lens actually read
         // (cycle-3 conformance finding).
         string baseBranch = run.PrReviewBaseRefName.IsNotBlank() ? run.PrReviewBaseRefName : project.BaseBranch;
-        ReviewPacket? packet = await ReviewPacketAssembler.AssembleAsync(run.WorktreePath, baseBranch, sinceSha: null, cancellationToken);
 
         Guid sessionId = DomainId.New();
-        string prompt = AgentPromptBuilder.BuildPrReviewLens(task, project, run.Branch, ReviewLens.Conformance, packet, baseBranch);
+        string prompt = AgentPromptBuilder.BuildPrReviewLens(task, project, run.Branch, ReviewLens.Conformance, baseBranch);
         AgentModel model = _options.ResolveModel(AgentRole.Review, task.Model, project.Model);
         SpawnedAgent agent = await executor.SpawnAsync(new AgentSpawnRequest(
             runId, sessionId, run.WorktreePath, runDirectory, prompt, (ExecutorMode)run.ExecutorMode, model,
