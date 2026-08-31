@@ -26,7 +26,7 @@ internal static class AttentionComposer
     /// <see cref="TimeSpan.FromDays"/> and taking <c>h9k status</c> down with it). Ten years is far
     /// past any value an operator would set on purpose, so clamping here never changes real usage.
     /// </summary>
-    private const int MaxInteractiveClaimStaleAfterDays = 3650;
+    internal const int MaxInteractiveClaimStaleAfterDays = 3650;
 
     /// <summary>
     /// What this row is asking of the reader. Ordered by who actually owns the next move: a task
@@ -150,18 +150,30 @@ internal static class AttentionComposer
         // standard pipeline the task can still read Claimed+interactive for the whole review
         // loop (TaskHandbackCommand and TaskWorkCommand both document this and refuse once
         // run.State is past Dispatched/Running), so nudging here too would advertise both levers
-        // this row would in fact refuse — never advise a lever the platform will refuse.
+        // this row would in fact refuse — never advise a lever the platform will refuse. Also
+        // gated on liveness (conformance review, cycle 2): the run-state guard alone still let
+        // the nudge fire on a session this machine can see is Alive right now, offering the same
+        // two levers — InteractiveSessionLiveness.EnsureNotAttachedElsewhere refuses both
+        // h9k task work re-entry and h9k task handback with "still attached in another terminal"
+        // for exactly that observation, and never overrides it even with --force.
         if (task.State == TaskState.Claimed && task.IsInteractiveClaim && run is not null
             && (run.State == Domain.Features.Run.RunState.Dispatched
-                || run.State == Domain.Features.Run.RunState.Running))
+                || run.State == Domain.Features.Run.RunState.Running)
+            && phase.Liveness != SessionLiveness.Alive)
         {
             TimeSpan age = now - (run.LastInteractiveActivityAt ?? run.DispatchedAt);
             if (age >= TimeSpan.FromDays(Math.Clamp(interactiveClaimStaleAfterDays, 1, MaxInteractiveClaimStaleAfterDays)))
             {
+                // A claim that never recorded a touch (no InteractiveSessionStarted yet) says so
+                // rather than claiming one happened (conformance review, cycle 2: the old wording
+                // asserted "was last touched" for this case too, contradicting the never-guess
+                // rule stated three lines above it).
+                string activity = run.LastInteractiveActivityAt is null
+                    ? $"was claimed {TaskStatusComposer.RelativeAge(age)} and has not recorded a touch since"
+                    : $"was last touched {TaskStatusComposer.RelativeAge(age)}";
                 return new TaskAttention(
                     AttentionLevel.NeedsYou,
-                    $"an interactive claim (h9k task work) was last touched {TaskStatusComposer.RelativeAge(age)} "
-                    + "— still yours, or ready to hand off?",
+                    $"an interactive claim (h9k task work) {activity} — still yours, or ready to hand off?",
                     $"h9k task work {id} if you're still on it, or h9k task handback {id} to finish it headlessly");
             }
         }

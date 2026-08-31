@@ -426,10 +426,18 @@ cannot reach: a daemon started by autostart (a launchd `LaunchAgent` or a Window
 logon task) has no operator shell to export anything into, so before backlog 59 it always ran on
 built-in defaults no matter what the operator had configured by hand.
 
+The same config file also carries `interactiveClaimStaleAfterDays` (backlog 59, Decisions Log
+#103): how long an [interactive claim](#working-a-task-interactively) can sit untouched before
+`h9k status` nudges about it, three days by default. It has no environment-variable tier and no
+daemon-startup binding — there is no daemon-side reclaim to configure, ever, so `h9k status`
+resolves it fresh from the config file on every render rather than off a process that started
+once.
+
 ```bash
-h9k config show                                        # every setting, and where it came from
-h9k config set --max-concurrent-agent-sessions 4        # the concurrency ceiling
-h9k config set --model-review sonnet --model-fix haiku  # per-role model overrides
+h9k config show                                             # every setting, and where it came from
+h9k config set --max-concurrent-agent-sessions 4            # the concurrency ceiling
+h9k config set --model-review sonnet --model-fix haiku      # per-role model overrides
+h9k config set --interactive-claim-stale-after-days 5       # the interactive-claim nudge threshold
 ```
 
 `h9k config set` writes to the config file; `h9k config show` resolves a setting the same way
@@ -529,6 +537,12 @@ An operator can work a Queued task in their own terminal instead of dispatching 
 claim is held by the human, not a process — there is no lease and no heartbeat reclaim — so
 closing the terminal is a normal way to leave, and re-running `h9k task work <id>` re-enters the
 same worktree and branch with a fresh session.
+
+Nothing reclaims a quiet claim automatically, but a long-untouched one is easy to forget about:
+once it has sat past `interactiveClaimStaleAfterDays` (three days by default, [configurable
+above](#daemon-operating-settings)) with no attached session observed on this machine, `h9k
+status` nudges it into needs-you asking whether it is still yours or ready to hand off — never a
+reclaim, only a question (Decisions Log #103).
 
 | Command | What it does |
 |---|---|

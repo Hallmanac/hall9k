@@ -56,9 +56,20 @@ public sealed class ConfigShowCommand : Hall9kAsyncCommand<ConfigShowCommand.Set
         // cycle 1).
         OperatingSettings configured = (await PlatformConfigFile.TryReadOperatingSettingsAsync(cancellationToken)).Settings;
         int staleAfterDays = configured.InteractiveClaimStaleAfterDays ?? OperatingSettings.DefaultInteractiveClaimStaleAfterDays;
+        // The raw configured value is still shown — this is the one command built to diagnose a
+        // hand-edited file — but AttentionComposer only ever nudges at the clamped one, so an
+        // out-of-range value (ConfigSetCommand.Validate guards only the CLI write path) says both
+        // rather than reporting a number the board never actually applies (conformance review,
+        // cycle 2).
+        int clampedStaleAfterDays = Math.Clamp(staleAfterDays, 1, AttentionComposer.MaxInteractiveClaimStaleAfterDays);
+        string staleAfterDaysOrigin = configured.InteractiveClaimStaleAfterDays is null
+            ? "default"
+            : staleAfterDays == clampedStaleAfterDays
+                ? "config file"
+                : $"config file; out of the board's 1-{AttentionComposer.MaxInteractiveClaimStaleAfterDays} day range, so it nudges at {clampedStaleAfterDays}";
         table.AddRow(
             "interactive-claim-stale-after-days",
-            $"{staleAfterDays} ({(configured.InteractiveClaimStaleAfterDays is null ? "default" : "config file")})".EscapeMarkup());
+            $"{staleAfterDays} ({staleAfterDaysOrigin})".EscapeMarkup());
 
         AnsiConsole.Write(table);
         AnsiConsole.MarkupLine(
