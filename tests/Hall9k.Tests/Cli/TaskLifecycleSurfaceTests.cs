@@ -373,6 +373,28 @@ public sealed class TaskLifecycleSurfaceTests
     }
 
     /// <summary>
+    /// The companion direction for the interactive-claim nudge (Decisions Log #103): a stale
+    /// claim is never the reason a Jira write failed to authenticate, so it must not shadow the
+    /// twg login row either (adversarial pre-PR review, cycle 1) — the nudge arm is checked after
+    /// this one for exactly that reason.
+    /// </summary>
+    [Fact]
+    public void A_stuck_jira_write_does_not_hide_behind_a_stale_interactive_claim_nudge()
+    {
+        Guid runId = DomainId.New();
+        RunDetails interactive = StatusFixtures.Run(runId, RunState.Running, sessionProcessId: null);
+        interactive.LastInteractiveActivityAt = StatusFixtures.Now.AddDays(-4);
+        TaskListItem task = StatusFixtures.Task(TaskState.Claimed, runId, claimedByNodeId: Guid.Empty);
+        task.PendingJiraWriteIsAuthFailure = true;
+        task.PendingJiraWriteFailureReason = "twg is not authenticated";
+
+        TaskStatusRow row = StatusFixtures.Compose(task, interactive);
+
+        row.Attention.Cause.Should().Be("twg is not authenticated");
+        row.Attention.Lever.Should().Be("twg login");
+    }
+
+    /// <summary>
     /// A budget park clears itself on a clock and is explicitly not an ask, so it must not
     /// outrank a stuck write — the opposite ordering that independent pre-PR review cycle 2 found:
     /// the pending-write arm had been moved past BudgetParked, so a task parked on a spent budget

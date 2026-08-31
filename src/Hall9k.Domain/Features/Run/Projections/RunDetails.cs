@@ -216,6 +216,16 @@ public sealed class RunDetails
     /// status) measures a configured number of days against. Null until the claim's first
     /// <see cref="InteractiveSessionStarted"/>, so a caller falls back to <see cref="DispatchedAt"/>
     /// (the claim's own start) rather than guessing at an unobserved touch.
+    /// <para>
+    /// Also null on a document written before this field existed, even one whose claim has since
+    /// been touched (independent pre-PR review, cycle 1): <see cref="RunDetailsProjection"/> is
+    /// registered Inline with no backfill for this field the way
+    /// <see cref="Hall9k.Domain.Infrastructure.Persistence.TaskLifecycleProjectionBackfill"/>
+    /// rebuilds <c>TaskListItem</c>/<c>TaskDetails</c> for their own late-added fields, so the
+    /// <see cref="DispatchedAt"/> fallback can understate a real recent touch until the next
+    /// attach or detach rewrites the document for real. Self-healing, but the fallback is stating
+    /// an unobserved fact rather than avoiding one until it does.
+    /// </para>
     /// </summary>
     public DateTimeOffset? LastInteractiveActivityAt { get; set; }
 }

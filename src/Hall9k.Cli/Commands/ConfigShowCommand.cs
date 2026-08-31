@@ -48,7 +48,13 @@ public sealed class ConfigShowCommand : Hall9kAsyncCommand<ConfigShowCommand.Set
         // Not part of the report above: nothing binds this through DaemonOptions (there is no
         // daemon-side reclaim to configure, ever — h9k status reads it fresh on every render), so
         // it carries no environment-variable tier and none of that pipeline's crash consequences.
-        OperatingSettings configured = await PlatformConfigFile.ReadOperatingSettingsAsync(cancellationToken);
+        // Read through the same non-throwing TryReadOperatingSettingsAsync the report above
+        // already used (report.ConfigFileProblem already names a malformed file), rather than the
+        // write path's throwing ReadOperatingSettingsAsync: this is the one command built to
+        // diagnose a broken config file, so it must still print its table on one — not abort
+        // after the red problem line with the table never written (independent pre-PR review,
+        // cycle 1).
+        OperatingSettings configured = (await PlatformConfigFile.TryReadOperatingSettingsAsync(cancellationToken)).Settings;
         int staleAfterDays = configured.InteractiveClaimStaleAfterDays ?? OperatingSettings.DefaultInteractiveClaimStaleAfterDays;
         table.AddRow(
             "interactive-claim-stale-after-days",
