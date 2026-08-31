@@ -284,10 +284,13 @@ public sealed class AgentPromptBuilderTests : IDisposable
     {
         string prompt = AgentPromptBuilder.Build(SomeTask(), SomeProject(), "task/1-slug", _worktreePath);
 
-        prompt.Should().Contain("Start every round from a fresh `git diff` against the branch base, read in");
+        prompt.Should().Contain("Start every round from a fresh `git diff origin/main...HEAD`,");
         prompt.Should().Contain(
             "not from memory of what you wrote",
             "the hunt must read the diff, not recall what the session believes it already wrote");
+        prompt.Should().Contain(
+            "routinely stale relative to this task's actual base",
+            "the diff instruction names origin/ explicitly so the hunt never reads a stale local base ref");
     }
 
     /// <summary>
@@ -316,8 +319,11 @@ public sealed class AgentPromptBuilderTests : IDisposable
             "the safe place is explicitly not this session's own worktree");
         prompt.Should().Contain(
             "mktemp -d",
-            "the safe place is a named location outside the worktree, not merely a word (\"scratch\") " +
-            "with nowhere the working rules' \"work only here\" clause allows it to exist");
+            "the safe place is a named location outside the worktree, not merely a word (\"scratch\")");
+        prompt.Should().Contain(
+            "deliberate, temporary exception to \"work only here\"",
+            "the scratch directory is granted as an explicit exception to the worktree-only rule, " +
+            "not conceded as a violation of it (adversarial review, cycle 1)");
     }
 
     /// <summary>
@@ -335,11 +341,34 @@ public sealed class AgentPromptBuilderTests : IDisposable
             "against only the diff of",
             "round two reviews only the fix delta, not the whole branch again");
         prompt.Should().Contain(
-            "after round two the loop ends",
+            "the loop ends unconditionally either way",
             "the loop ends unconditionally after round two");
         prompt.Should().Contain(
-            "never a third round",
-            "anything still suspected after round two goes to the handoff instead of a third round");
+            "no third round",
+            "the loop is capped at two rounds with no third round, whatever is still unresolved");
+    }
+
+    /// <summary>
+    /// A correctness-or-behavior finding round two itself turns up is not exempt from the
+    /// fix-or-dismiss rule just because the round cap is about to end the loop: the cap bounds how
+    /// many rounds you hunt in, not what a finding you already made is owed. Origin: adversarial
+    /// review cycle 1 caught the prior wording mandating and forbidding the same disposition four
+    /// lines apart, leaving a round-two finding with no legal way to end.
+    /// </summary>
+    [Fact]
+    public void Build_prompt_does_not_let_the_round_cap_excuse_a_round_two_finding_from_being_resolved()
+    {
+        string prompt = AgentPromptBuilder.Build(SomeTask(), SomeProject(), "task/1-slug", _worktreePath);
+
+        prompt.Should().Contain(
+            "not what you owe once something is found",
+            "the cap bounds hunting, not the disposition of what the hunting already found");
+        prompt.Should().Contain(
+            "including one round two turns up: fix",
+            "a round-two correctness finding still has to be fixed and committed in that same round");
+        prompt.Should().Contain(
+            "without that alone starting a round",
+            "fixing a round-two finding does not itself trigger an illegal round three");
     }
 
     /// <summary>
@@ -353,7 +382,7 @@ public sealed class AgentPromptBuilderTests : IDisposable
         string prompt = AgentPromptBuilder.Build(SomeTask(), SomeProject(), "task/1-slug", _worktreePath);
 
         prompt.Should().Contain(
-            "style-only observation is fixed in place or skipped without extending",
+            "style-only finding never by itself earns a round two",
             "style findings never extend the loop");
         prompt.Should().Contain(
             "Only when round one fixed something above",
@@ -366,10 +395,13 @@ public sealed class AgentPromptBuilderTests : IDisposable
     /// <summary>
     /// A self-review fix is not proven safe by having merely run before the suite once, at the
     /// top of the session — the fix has to be checked by the suite itself, or the recompose a few
-    /// lines below is describing a tree the gates never actually saw.
+    /// lines below is describing a tree the gates never actually saw. This applies to a style-only
+    /// fix exactly as much as a correctness one: a phrasing-only edit can still break a test that
+    /// asserts on exact substrings, so skipping the re-run for a style-only fix would let a broken
+    /// tree reach the recompose (conformance review, cycle 1).
     /// </summary>
     [Fact]
-    public void Build_prompt_reruns_the_suite_after_a_self_review_fix_before_recomposing()
+    public void Build_prompt_reruns_the_suite_after_every_self_review_fix_before_recomposing()
     {
         ProjectDetails project = SomeProject();
         project.VerifyCommands = [new VerifyCommand("test", "dotnet test")];
@@ -377,29 +409,44 @@ public sealed class AgentPromptBuilderTests : IDisposable
         string prompt = AgentPromptBuilder.Build(SomeTask(), project, "task/1-slug", _worktreePath);
 
         prompt.Should().Contain(
-            "checkpoint-committed, then",
-            "a correctness-or-behavior fix earns a suite re-run before the loop continues or the recompose begins");
+            "Whenever a fix does land,",
+            "a fix — not a skip — is what triggers the suite re-run");
         prompt.Should().Contain(
-            "the full verification suite runs again",
-            "a project with real gates re-runs them, not a vacuous stand-in");
+            "the full verification suite runs again — after every fix this phase makes,",
+            "a project with real gates re-runs them after every fix, not a vacuous stand-in");
+        prompt.Should().Contain(
+            "style-only included, not only a correctness-or-behavior one",
+            "the suite re-run is not gated on the fix being above the correctness-or-behavior bar");
+        prompt.Should().Contain(
+            "a skip produces no edit, so it",
+            "a skipped style-only finding earns neither a checkpoint commit nor a suite re-run");
     }
 
     /// <summary>
     /// A project configuring no verification gates has no suite for a self-review fix to re-run —
     /// telling it to "re-run the full verification suite" would point at something that does not
-    /// exist, the same fallback the recompose gate already uses a few lines below.
+    /// exist, the same fallback the recompose gate already uses a few lines below. The recompose's
+    /// own tree-preserving guarantee still holds regardless of gates — restating it as "vacuous"
+    /// would misdescribe a real, load-bearing property of the mixed reset as an empty one
+    /// (adversarial review, cycle 1).
     /// </summary>
     [Fact]
-    public void Build_prompt_states_the_self_review_fix_rerun_as_vacuous_when_the_project_configures_no_gates()
+    public void Build_prompt_states_the_self_review_fix_rerun_precondition_when_the_project_configures_no_gates()
     {
         string prompt = AgentPromptBuilder.Build(SomeTask(), SomeProject(), "task/1-slug", _worktreePath);
 
         prompt.Should().Contain(
-            "checkpoint-committed, then",
+            "Whenever a fix does land,",
             "the fix-and-continue sentence is still stated even with no gates");
         prompt.Should().Contain(
             "configures no verification gates, so there is no suite to re-run",
             "the fix-and-continue sentence states its own precondition rather than pointing at a suite that does not exist");
+        prompt.Should().Contain(
+            "fix left behind) regardless of gates",
+            "the recompose's tree-preserving guarantee holds regardless of gates, not \"vacuously\"");
+        prompt.Should().NotContain(
+            "left behind) vacuously",
+            "the recompose's tree-preserving guarantee is real and load-bearing, not an empty one");
         prompt.Should().NotContain("the full verification suite runs again");
     }
 
@@ -414,13 +461,39 @@ public sealed class AgentPromptBuilderTests : IDisposable
     {
         string prompt = AgentPromptBuilder.Build(SomeTask(), SomeProject(), "task/1-slug", _worktreePath);
 
-        prompt.Should().Contain("fixed and checkpoint-committed, or left with a stated, checkable reason it is");
+        prompt.Should().Contain("fixed and checkpoint-committed, or");
+        prompt.Should().Contain("left with a stated, checkable reason it is not actually a defect");
         prompt.Should().Contain(
-            "Deferring one to a note for later is not a third option",
+            "is not a third option",
             "a self-review finding cannot be left as a note instead of fixed or dismissed with a reason");
         prompt.Should().Contain(
             "A style-only finding needs no such reason",
             "a style-only finding may be skipped without the checkable-reason requirement that binds a real defect");
+    }
+
+    /// <summary>
+    /// The cap's own escape hatch for a genuine, never-pinned-down suspicion must name an audience
+    /// that can actually see it. The pre-PR review lenses run before the pull request even exists
+    /// and receive no handoff or summary text (<see cref="AgentPromptBuilder.BuildReview"/> takes
+    /// task, project, branch, cycle, packet and prior rulings only), so "the external reviewers" was
+    /// a false claim about where the text goes. The real, load-bearing readers are whatever task
+    /// depends on this one (<c>BlockerHandoffQuery</c>) and the human reading the run — both
+    /// independent review lenses confirmed the same defect (conformance and adversarial, cycle 1).
+    /// </summary>
+    [Fact]
+    public void Build_prompt_sends_an_unresolved_self_review_suspicion_to_the_handoff_and_summary_not_the_reviewers()
+    {
+        string prompt = AgentPromptBuilder.Build(SomeTask(), SomeProject(), "task/1-slug", _worktreePath);
+
+        prompt.Should().Contain(
+            "Record that in your final summary",
+            "an unpinned-down suspicion goes into the final summary, which a human actually reads");
+        prompt.Should().Contain(
+            "the audience for both is whatever task depends on this",
+            "the handoff's real audience is a dependent task, not the pre-PR review lenses");
+        prompt.Should().NotContain(
+            "for the external reviewers",
+            "the review lenses run before the PR exists and never receive the handoff or final summary");
     }
 
     /// <summary>
