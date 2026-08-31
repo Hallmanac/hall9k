@@ -75,12 +75,12 @@ public sealed record TestGateScope
 
 /// <summary>
 /// Computes a <see cref="TestGateScope"/> from the worktree's own git history and current source
-/// tree — the same "read what's actually there" discipline <see cref="ReviewPacketAssembler"/>
-/// already applies to the review packet, aimed at test selection instead. Mapping is deterministic
-/// platform code (a git diff since the fix cycle's own head, then a static reference match against
-/// the declared types in the test tree), never an agent's judgment call: <see cref="ResolveAsync"/>
-/// only ever narrows the test run when every touched file resolved to at least one referencing
-/// test class; anything it cannot read or map confidently returns <see cref="TestGateScope.Full"/>.
+/// tree — the same "read what's actually there" discipline applied to test selection. Mapping is
+/// deterministic platform code (a git diff since the fix cycle's own head, then a static reference
+/// match against the declared types in the test tree), never an agent's judgment call:
+/// <see cref="ResolveAsync"/> only ever narrows the test run when every touched file resolved to
+/// at least one referencing test class; anything it cannot read or map confidently returns
+/// <see cref="TestGateScope.Full"/>.
 /// </summary>
 public static partial class TestScopeResolver
 {

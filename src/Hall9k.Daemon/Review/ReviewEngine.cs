@@ -645,15 +645,9 @@ public sealed class ReviewEngine(
                 context, cycle, lenses, headSha, sinceSha, priorCycleMode, cancellationToken);
         }
 
-        // Discovery and FinalFullPass both read the whole branch diff against the base, whatever
-        // sinceSha holds — only a Verify dispatch reads a delta (see this method's own doc) — so
-        // one packet, assembled once, covers every lens this cycle dispatches rather than one
-        // `git diff` per lens.
-        ReviewPacket? packet = await ReviewPacketAssembler.AssembleAsync(
-            context.Run.WorktreePath, context.Project.BaseBranch, sinceSha: null, cancellationToken);
         foreach (ReviewLens lens in lenses)
         {
-            if (!await DispatchReviewPassAsync(context, cycle, lens, mode, headSha, packet, cancellationToken))
+            if (!await DispatchReviewPassAsync(context, cycle, lens, mode, headSha, cancellationToken))
             {
                 return false;
             }
@@ -670,7 +664,7 @@ public sealed class ReviewEngine(
     /// once-per-iteration check, which this same cycle can outlive across several lenses.
     /// </summary>
     private async Task<bool> DispatchReviewPassAsync(
-        ReviewContext context, int cycle, ReviewLens lens, ReviewMode mode, string? headSha, ReviewPacket? packet,
+        ReviewContext context, int cycle, ReviewLens lens, ReviewMode mode, string? headSha,
         CancellationToken cancellationToken)
     {
         if (!await EnsureCurrentGenerationAsync(context, cancellationToken))
@@ -683,7 +677,7 @@ public sealed class ReviewEngine(
         // (task: review cycles after the first) — the mandatory final pass is discovery-grade
         // rigor at a later cycle number, not a different prompt.
         string prompt = AgentPromptBuilder.BuildReview(
-            context.Task, context.Project, context.Run.Branch, cycle, lens, packet, context.PriorRulings);
+            context.Task, context.Project, context.Run.Branch, cycle, lens, context.PriorRulings);
         ExecutorMode executorMode = context.Run.ExecutorMode;
         // Every lens is review work, so they resolve the same role in the chain (log #33) —
         // and each dispatch records the model it actually got, per pass.
@@ -738,16 +732,11 @@ public sealed class ReviewEngine(
             RunPaths.ReviewFindingsFile(runDirectory, previousCycle), cancellationToken);
         string priorFixPosition = await ReadIfExistsAsync(
             RunPaths.ReviewFixPositionFile(runDirectory, previousCycle), cancellationToken);
-        // sinceSha is the prior cycle's own tip, exactly the delta boundary the packet's diff
-        // should read from too; null falls back to the whole base-branch diff, the same fallback
-        // this pass's own prompt text already states (BuildReviewVerify's "since" instruction).
-        ReviewPacket? packet = await ReviewPacketAssembler.AssembleAsync(
-            context.Run.WorktreePath, context.Project.BaseBranch, sinceSha, cancellationToken);
 
         Guid sessionId = DomainId.New();
         string prompt = AgentPromptBuilder.BuildReviewVerify(
             context.Task, context.Project, context.Run.Branch, cycle, tracks, priorFindings, priorFixPosition,
-            sinceSha, priorCycleMode, packet, context.PriorRulings);
+            sinceSha, priorCycleMode, context.PriorRulings);
         ExecutorMode executorMode = context.Run.ExecutorMode;
         // A Verify pass resolves its own knob rather than the plain Review chain (Brian's ruling,
         // 2026-08-29): defaults to whatever Review itself would resolve to, so this is a no-op

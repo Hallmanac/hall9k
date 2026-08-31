@@ -6,9 +6,8 @@ using Xunit;
 namespace Hall9k.Tests.Daemon;
 
 /// <summary>
-/// A fix cycle's test gate (task: a fix cycle's verification gate) — every case here is the same
-/// "never guess, fall back full" discipline <see cref="ReviewPacketAssemblerTests"/> already
-/// exercises for the review packet, aimed at test selection instead.
+/// A fix cycle's test gate (task: a fix cycle's verification gate) — the same "never guess, fall
+/// back full" discipline applied to test selection.
 /// </summary>
 public sealed class TestScopeResolverTests : IDisposable
 {
@@ -435,8 +434,8 @@ public sealed class TestScopeResolverTests : IDisposable
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
         {
-            // Best-effort cleanup, same as ReviewPacketAssemblerTests: a locked pack file on some
-            // platforms is not worth failing the test run over.
+            // Best-effort cleanup: a locked pack file on some platforms is not worth failing the
+            // test run over.
         }
     }
 }

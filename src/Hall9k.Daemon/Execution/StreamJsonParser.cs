@@ -8,9 +8,8 @@ namespace Hall9k.Daemon.Execution;
 /// splits it (fresh prompt input, cache reads, cache writes) because the three price
 /// differently; CostUsd is whatever the result reported, never recomputed from these counts.
 /// Turns is claude's own `num_turns` count — the session's own record of how many round trips
-/// it took, which is what a packet-assembled review session (task: a dispatched review session
-/// starts with the diff already assembled) is trying to cut, and what a before-versus-after
-/// production comparison needs read back per pass. Null when the result payload carried no
+/// it took, read back per pass so any future before-versus-after production comparison of a
+/// review-prompt change is a query rather than a re-measurement. Null when the result payload carried no
 /// `num_turns` field or an unparseable one — never guessed at as zero, which would read as a
 /// session that took no round trips at all rather than one this parser could not measure.
 /// </summary>

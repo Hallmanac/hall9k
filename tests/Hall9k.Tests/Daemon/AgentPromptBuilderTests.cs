@@ -507,10 +507,10 @@ public sealed class AgentPromptBuilderTests : IDisposable
     /// <summary>
     /// A pr-review lens's mechanics differ from the ordinary pre-PR loop in three ways this
     /// covers: the diff range is the pull request's own base, never the project's default branch
-    /// (which the packet was actually assembled against — the two disagree whenever the pull
-    /// request targets anything else); the checkout is a detached, branch-less worktree, not a
-    /// named branch; and nothing ever built or tested a foreign pull request, so the gate status
-    /// must say so rather than claim an observation nobody made.
+    /// (the two disagree whenever the pull request targets anything else); the checkout is a
+    /// detached, branch-less worktree, not a named branch; and nothing ever built or tested a
+    /// foreign pull request, so the gate status must say so rather than claim an observation
+    /// nobody made.
     /// </summary>
     [Fact]
     public void Pr_review_lens_states_the_pull_requests_own_base_branch_never_the_projects()
@@ -520,10 +520,10 @@ public sealed class AgentPromptBuilderTests : IDisposable
         project.VerifyCommands = [new VerifyCommand("build", "dotnet build"), new VerifyCommand("test", "dotnet test")];
 
         string prompt = AgentPromptBuilder.BuildPrReviewLens(
-            SomeTask(), project, "pr/42", ReviewLens.Conformance, packet: null, baseBranch: "release/2.0");
+            SomeTask(), project, "pr/42", ReviewLens.Conformance, baseBranch: "release/2.0");
 
         prompt.Should().Contain("git diff origin/release/2.0...HEAD",
-            "the range the packet was actually assembled from, never the project's own default branch");
+            "the pull request's own base, never the project's own default branch");
         prompt.Should().NotContain("git diff origin/main...HEAD");
         prompt.Should().NotContain("on branch `pr/42`", "no such ref exists in a detached checkout");
         prompt.Should().Contain("detached checkout");
@@ -547,7 +547,7 @@ public sealed class AgentPromptBuilderTests : IDisposable
         ProjectDetails project = SomeProject();
 
         string prompt = AgentPromptBuilder.BuildPrReviewLens(
-            SomeTask(), project, "pr/42", ReviewLens.Conformance, packet: null, baseBranch: "main");
+            SomeTask(), project, "pr/42", ReviewLens.Conformance, baseBranch: "main");
 
         prompt.Should().NotContain("Acceptance criteria:\n- Requests over the limit get 429",
             "the criteria must never be presented as the diff's own standard");
@@ -571,7 +571,7 @@ public sealed class AgentPromptBuilderTests : IDisposable
         ProjectDetails project = SomeProject();
 
         string prompt = AgentPromptBuilder.BuildPrReviewLens(
-            SomeTask(), project, "pr/42", ReviewLens.Conformance, packet: null, baseBranch: "main");
+            SomeTask(), project, "pr/42", ReviewLens.Conformance, baseBranch: "main");
 
         prompt.Should().NotContain("## What the diff is supposed to do\n\nAdd rate limiting to auth endpoints",
             "the task's own objective must never be presented as the diff's own standard");
@@ -595,9 +595,9 @@ public sealed class AgentPromptBuilderTests : IDisposable
         ProjectDetails project = SomeProject();
 
         string conformance = AgentPromptBuilder.BuildPrReviewLens(
-            SomeTask(), project, "pr/42", ReviewLens.Conformance, packet: null, baseBranch: "main");
+            SomeTask(), project, "pr/42", ReviewLens.Conformance, baseBranch: "main");
         string adversarial = AgentPromptBuilder.BuildPrReviewLens(
-            SomeTask(), project, "pr/42", ReviewLens.Adversarial, packet: null, baseBranch: "main");
+            SomeTask(), project, "pr/42", ReviewLens.Adversarial, baseBranch: "main");
 
         foreach (string prompt in new[] { conformance, adversarial })
         {
@@ -622,9 +622,9 @@ public sealed class AgentPromptBuilderTests : IDisposable
         ProjectDetails project = SomeProject();
 
         string conformance = AgentPromptBuilder.BuildPrReviewLens(
-            SomeTask(), project, "pr/42", ReviewLens.Conformance, packet: null, baseBranch: "main");
+            SomeTask(), project, "pr/42", ReviewLens.Conformance, baseBranch: "main");
         string adversarial = AgentPromptBuilder.BuildPrReviewLens(
-            SomeTask(), project, "pr/42", ReviewLens.Adversarial, packet: null, baseBranch: "main");
+            SomeTask(), project, "pr/42", ReviewLens.Adversarial, baseBranch: "main");
 
         foreach (string prompt in new[] { conformance, adversarial })
         {
@@ -652,7 +652,7 @@ public sealed class AgentPromptBuilderTests : IDisposable
         ProjectDetails project = SomeProject();
 
         string prompt = AgentPromptBuilder.BuildPrReviewLens(
-            SomeTask(), project, "pr/42", ReviewLens.Adversarial, packet: null, baseBranch: "main");
+            SomeTask(), project, "pr/42", ReviewLens.Adversarial, baseBranch: "main");
 
         prompt.Should().NotContain("A second",
             "the two pr-review lenses never run at the same time, so this claim is never true here");
@@ -707,159 +707,21 @@ public sealed class AgentPromptBuilderTests : IDisposable
     }
 
     /// <summary>
-    /// No packet is the platform's own fallback shape (an assembly failure, or a caller — an
-    /// older code path, this test file's other cases — that never supplied one): the prompt
-    /// still names the diff command directly, exactly as it always has.
+    /// The review prompt never embeds a diff (Brian's ruling, 2026-08-29, reverting the
+    /// review-packet task: measured cycle-1 input cost never dropped the promised 20%, so the
+    /// reviewer goes back to reading the branch itself). The prompt still names the diff command
+    /// directly, in the origin-first form that task's own correctness fix left unchanged by this
+    /// revert.
     /// </summary>
     [Fact]
-    public void Review_prompt_without_a_packet_omits_the_packet_section()
+    public void Review_prompt_never_embeds_a_diff_and_names_the_diff_command_instead()
     {
         string prompt = AgentPromptBuilder.BuildReview(
             SomeTask(), SomeProject(), "task/1-slug", cycle: 1, ReviewLens.Conformance);
 
         prompt.Should().NotContain("Packet (a starting point");
-        prompt.Should().Contain("git diff origin/main...HEAD", "the fallback instruction still names the diff itself");
-    }
-
-    /// <summary>
-    /// The packet's whole point (task: a dispatched review session starts with the diff already
-    /// assembled): the diff and every touched file's full text ride in the prompt, and the
-    /// reviewer is told plainly that reading past it is still expected — never that it bounds
-    /// the review.
-    /// </summary>
-    [Fact]
-    public void Review_prompt_with_a_packet_carries_the_diff_and_full_file_text_as_a_starting_point()
-    {
-        ReviewPacket packet = new(
-            "main...HEAD", "diff --git a/Widget.cs b/Widget.cs\n+class Widget { }\n",
-            ["Widget.cs"], new Dictionary<string, string> { ["Widget.cs"] = "class Widget { }\n" }, Omissions: []);
-
-        string prompt = AgentPromptBuilder.BuildReview(
-            SomeTask(), SomeProject(), "task/1-slug", cycle: 1, ReviewLens.Conformance, packet);
-
-        prompt.Should().Contain("Packet (a starting point, not a boundary)");
-        prompt.Should().Contain("This packet bounds nothing.");
-        prompt.Should().Contain("diff --git a/Widget.cs b/Widget.cs");
-        prompt.Should().Contain("Touched files (1):");
-        prompt.Should().Contain("`Widget.cs`");
-        prompt.Should().Contain("full current text");
-        prompt.Should().Contain("class Widget { }");
-    }
-
-    /// <summary>
-    /// Over the packet's size cap, the platform never truncates a file's content silently (the
-    /// task's own acceptance criteria): the diff and the file list still ride in, and the one
-    /// oversized file's text is dropped rather than cut short — but that omission costs only the
-    /// oversized file itself, not every file in the packet (conformance and adversarial review,
-    /// cycle 1).
-    /// </summary>
-    [Fact]
-    public void Review_prompt_with_an_oversized_file_keeps_the_diff_and_file_list_but_drops_that_files_text()
-    {
-        ReviewPacket packet = new(
-            "main...HEAD", "diff --git a/Huge.cs b/Huge.cs\n+lots of content\n",
-            ["Huge.cs"], FileContents: new Dictionary<string, string>(),
-            Omissions: [new FileOmission("Huge.cs", FileOmissionReason.TooLarge)]);
-
-        string prompt = AgentPromptBuilder.BuildReview(
-            SomeTask(), SomeProject(), "task/1-slug", cycle: 1, ReviewLens.Conformance, packet);
-
-        prompt.Should().Contain("Packet (a starting point, not a boundary)");
-        prompt.Should().Contain("diff --git a/Huge.cs b/Huge.cs");
-        prompt.Should().Contain("text omitted: `Huge.cs` (too large for the packet's remaining budget)");
-        prompt.Should().NotContain("(full current text)", "the oversized file carries no body of its own");
-    }
-
-    /// <summary>
-    /// The "full current text ... unless noted otherwise" promise in the packet's own intro
-    /// (cycle-3 conformance and adversarial review) is honest only when a file it could not embed
-    /// is actually named and why. A deleted file and a binary file ride in the same packet so the
-    /// rendered list carries both reasons, not just whichever one a narrower test would exercise.
-    /// </summary>
-    [Fact]
-    public void Review_prompt_with_a_packet_names_every_omitted_files_text_and_why()
-    {
-        ReviewPacket packet = new(
-            "main...HEAD", "diff --git a/Widget.cs b/Widget.cs\n+class Widget { }\n",
-            ["Widget.cs", "doomed.txt", "asset.png"],
-            new Dictionary<string, string> { ["Widget.cs"] = "class Widget { }\n" },
-            Omissions:
-            [
-                new FileOmission("doomed.txt", FileOmissionReason.Deleted),
-                new FileOmission("asset.png", FileOmissionReason.Binary),
-            ]);
-
-        string prompt = AgentPromptBuilder.BuildReview(
-            SomeTask(), SomeProject(), "task/1-slug", cycle: 1, ReviewLens.Conformance, packet);
-
-        prompt.Should().Contain("text omitted: `doomed.txt` (deleted)");
-        prompt.Should().Contain("text omitted: `asset.png` (binary)");
-    }
-
-    /// <summary>
-    /// The packet carries nothing about the task's objective or acceptance criteria, so handing
-    /// it to the adversarial lens does not reopen the blindness boundary
-    /// <see cref="Adversarial_review_prompt_hunts_defects_without_ever_naming_the_criteria"/>
-    /// already covers.
-    /// </summary>
-    [Fact]
-    public void Adversarial_review_prompt_with_a_packet_still_never_names_the_objective()
-    {
-        ReviewPacket packet = new(
-            "main...HEAD", "diff --git a/Widget.cs b/Widget.cs\n+class Widget { }\n",
-            ["Widget.cs"], new Dictionary<string, string> { ["Widget.cs"] = "class Widget { }\n" }, Omissions: []);
-
-        string prompt = AgentPromptBuilder.BuildReview(
-            SomeTask(), SomeProject(), "task/1-slug", cycle: 1, ReviewLens.Adversarial, packet);
-
-        prompt.Should().Contain("Packet (a starting point, not a boundary)");
-        prompt.Should().NotContain("Add rate limiting to auth endpoints", "the objective stays withheld from this lens");
-        prompt.Should().NotContain("Requests over the limit get 429");
-    }
-
-    /// <summary>
-    /// A packet file whose own content contains a bare three-backtick fence — a markdown file
-    /// documenting a fenced code block, say — must not close the packet's own fence early: doing
-    /// so would let the file's remainder, and every subsequent file's heading, escape into the
-    /// prompt as unquoted text (adversarial and conformance review, cycle 1). The same hazard
-    /// applies to the diff block.
-    /// </summary>
-    [Fact]
-    public void Packet_file_content_containing_a_backtick_fence_does_not_escape_its_own_block()
-    {
-        const string DocContent = "# Doc\n\nExample:\n\n```bash\ndotnet build\n```\n\nMore prose after the fence.\n";
-        ReviewPacket packet = new(
-            "main...HEAD", "diff --git a/DOC.md b/DOC.md\n+```bash\n+dotnet build\n+```\n",
-            ["DOC.md", "Widget.cs"],
-            new Dictionary<string, string> { ["DOC.md"] = DocContent, ["Widget.cs"] = "class Widget { }\n" },
-            Omissions: []);
-
-        string prompt = AgentPromptBuilder.BuildReview(
-            SomeTask(), SomeProject(), "task/1-slug", cycle: 1, ReviewLens.Conformance, packet);
-
-        prompt.Should().Contain("````diff", "the diff itself embeds a triple-backtick fence and needs a longer one too");
-        prompt.Should().Contain("````markdown", "the fence must run longer than the content's own triple backticks");
-        prompt.Should().Contain("More prose after the fence.");
-        prompt.Should().Contain("`Widget.cs` (full current text)", "Widget.cs's heading must still read as prompt structure, not quoted content");
-        prompt.Should().Contain("class Widget { }");
-    }
-
-    /// <summary>A Verify-cycle pass gets the same packet section as any other review pass.</summary>
-    [Fact]
-    public void Verify_review_prompt_with_a_packet_carries_the_packet_section_too()
-    {
-        ReviewPacket packet = new(
-            "abc123..HEAD", "diff --git a/Fix.cs b/Fix.cs\n+// fixed\n",
-            ["Fix.cs"], new Dictionary<string, string> { ["Fix.cs"] = "// fixed\n" }, Omissions: []);
-
-        string prompt = AgentPromptBuilder.BuildReviewVerify(
-            SomeTask(), SomeProject(), "task/1-slug", cycle: 2,
-            tracks: [ReviewLens.Conformance], priorFindings: "none", priorFixPosition: "none",
-            sinceSha: "abc123", priorCycleMode: ReviewMode.Discovery, packet: packet);
-
-        prompt.Should().Contain("Packet (a starting point, not a boundary)");
-        prompt.Should().Contain("diff --git a/Fix.cs b/Fix.cs");
-        prompt.Should().Contain("// fixed");
+        prompt.Should().NotContain("diff --git");
+        prompt.Should().Contain("git diff origin/main...HEAD", "the reviewer reads the diff itself via this command");
     }
 
     /// <summary>
@@ -936,7 +798,7 @@ public sealed class AgentPromptBuilderTests : IDisposable
     public void Echoing_the_pr_review_settled_rulings_trailer_does_not_name_a_finding()
     {
         string prompt = AgentPromptBuilder.BuildPrReviewLens(
-            SomeTask(), SomeProject(), "pr/42", ReviewLens.Conformance, packet: null, baseBranch: "main");
+            SomeTask(), SomeProject(), "pr/42", ReviewLens.Conformance, baseBranch: "main");
 
         int start = prompt.IndexOf("## How to review", StringComparison.Ordinal);
         string trailer = prompt[..start];
@@ -1109,7 +971,7 @@ public sealed class AgentPromptBuilderTests : IDisposable
     public void Echoing_the_pr_review_how_to_review_bullet_does_not_name_a_finding()
     {
         string prompt = AgentPromptBuilder.BuildPrReviewLens(
-            SomeTask(), SomeProject(), "pr/42", ReviewLens.Conformance, packet: null, baseBranch: "main");
+            SomeTask(), SomeProject(), "pr/42", ReviewLens.Conformance, baseBranch: "main");
 
         int start = prompt.IndexOf("## How to review", StringComparison.Ordinal);
         int end = prompt.IndexOf("## ", start + 1, StringComparison.Ordinal);

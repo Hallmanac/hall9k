@@ -111,9 +111,9 @@ public sealed class TaskDeliverCommand : Hall9kAsyncCommand<TaskDeliverCommand.S
         // left the worktree checked out somewhere else — detached at a commit that happens to
         // build, or on another branch — would sail past it with git status clean and the count
         // correct, only for every downstream reader (VerificationRunner's gates, the review
-        // packet's diff, PullRequestOpener's --head) to read the worktree's actual HEAD instead
-        // of the branch just published, gating and reviewing one tree while opening a pull
-        // request over another (adversarial review, cycle 4).
+        // prompt's own diff read, PullRequestOpener's --head) to read the worktree's actual
+        // HEAD instead of the branch just published, gating and reviewing one tree while
+        // opening a pull request over another (adversarial review, cycle 4).
         string? currentBranch = await InteractiveWorktreeGit.GetCurrentBranchAsync(run.WorktreePath, cancellationToken);
         if (currentBranch is null)
         {
