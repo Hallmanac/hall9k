@@ -279,7 +279,7 @@ public sealed class PullRequestOpener(
     /// branch's own local tip per the branch ref's reflog — a rewrite of this node's own history
     /// (the narrative-rebase follow-up path, Decisions Log #26, and the checkpoint-recompose path
     /// this task adds) — the identical reflog check
-    /// <c>Hall9k.Daemon.Worktrees.GitWorktreeManager.WasEverLocalHeadAsync</c> uses on the pull
+    /// <c>Hall9k.Connectors.Worktrees.GitWorktreeManager.WasEverLocalHeadAsync</c> uses on the pull
     /// side. Anything else is a tip this node has never incorporated — someone else moved the
     /// branch — and the push is refused rather than forced.
     /// </summary>

@@ -58,13 +58,19 @@ internal static class InteractiveWorktreeGit
     }
 
     /// <summary>
-    /// Always --force-with-lease, mirroring PullRequestOpener's own push exactly and for the same
-    /// reason: a fresh branch cut by h9k task work has no remote history, so the lease is
+    /// Always --force-with-lease, for the same reason PullRequestOpener's own push carries the
+    /// flag: a fresh branch cut by h9k task work has no remote history, so the bare lease is
     /// satisfied trivially and this behaves like a plain first push — but CheckoutFreshOrRetryAsync
     /// resumes a task's RetryBranch (h9k task retry after a failed deliver) or a handed-back
     /// branch, either of which may already carry the history this same push published last time,
     /// now rewritten per the narrative-commit-style fixup/rebase doctrine. A plain push there is
-    /// rejected non-fast-forward with no lever left to publish the rebased tree.
+    /// rejected non-fast-forward with no lever left to publish the rebased tree. This no longer
+    /// mirrors PullRequestOpener's push exactly, though: that one now runs an ancestor-or-reflog
+    /// guard before pinning the lease's expected value explicitly (Decisions Log #104), refusing
+    /// outright rather than forcing over a tip it cannot account for, while this one still trusts
+    /// the bare flag against whatever this node's own refs/remotes/origin/&lt;branch&gt; last read —
+    /// a gap the interactive path has not needed to close yet (a foreign push onto a pre-PR task
+    /// branch has no routine source in a single-node install).
     /// </summary>
     public static async Task<(bool Succeeded, string Error)> PushAsync(
         string worktreePath, string branch, CancellationToken cancellationToken)

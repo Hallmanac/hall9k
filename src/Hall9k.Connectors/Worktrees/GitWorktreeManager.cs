@@ -29,18 +29,24 @@ public sealed class GitWorktreeManager(ILogger<GitWorktreeManager> logger) : IWo
             // `worktree add -b` writes no reflog entry for the branch's creation unless
             // core.logAllRefUpdates is set on this repository — a config the platform only
             // sets on a repo it clones itself (RepoMaterialiser.CloneAsync), never on a
-            // hand-cut bare clone a project was pointed at. Without that entry, the branch's
-            // creation tip never appears in its reflog, so a later checkpoint recompose that
-            // diverges from it looks indistinguishable from someone else rewriting the branch
-            // to both WasEverLocalHeadAsync below and its twin in PullRequestOpener.PushBranchAsync
-            // — refusing a legitimate push, or hard-resetting a real recompose away, on a false
-            // "rewrite" read. Materialise the ref explicitly first, the same way
-            // CheckoutExistingAsync's remoteExists arm does, so the creation point is always
-            // recorded regardless of repo config. The trailing empty <oldvalue> makes this a
-            // create-only compare-and-swap — `worktree add -b` refused outright when the branch
-            // already existed, and a plain update-ref would silently force-move it instead,
-            // which is unsafe when ResolveBranchNameAsync's run-suffixed retry name collides
-            // with another retry's (independent pre-PR review, cycle 8).
+            // hand-cut bare clone a project was pointed at. For a fresh branch this rarely
+            // bites on its own: a linked worktree is not bare, so log_all_ref_updates defaults
+            // on there regardless of the shared bare repo's setting, and the checkpoint-recompose
+            // protocol's own fork-point reset lands back on exactly this creation tip anyway,
+            // which logs it independently of this line (verified empirically; adversarial
+            // review, cycle 1). The real hazard is CheckoutExistingAsync's remoteExists arm
+            // below, which recreates a local branch ref from origin's tip after the ref itself
+            // was deleted while origin still held it — no later fork-point reset ever revisits
+            // that exact tip again, so an unlogged recreation there is invisible to both
+            // WasEverLocalHeadAsync below and its twin in PullRequestOpener.PushBranchAsync,
+            // reading a resumed recompose as someone else's rewrite. Materialise the ref
+            // explicitly here too, the same way that arm does, so both creation paths behave
+            // identically — this copy costs nothing even though only the other one is
+            // load-bearing. The trailing empty <oldvalue> makes this a create-only
+            // compare-and-swap — `worktree add -b` refused outright when the branch already
+            // existed, and a plain update-ref would silently force-move it instead, which is
+            // unsafe when ResolveBranchNameAsync's run-suffixed retry name collides with
+            // another retry's (independent pre-PR review, cycle 8).
             await RunGitAsync(
                 repositoryPath,
                 $"update-ref --create-reflog refs/heads/{branch} {startPoint} \"\" " +

@@ -466,11 +466,18 @@ public sealed class GitWorktreeManagerTests : IDisposable
     /// <summary>
     /// The prior regression test above only disables <c>core.logAllRefUpdates</c> after
     /// <see cref="GitWorktreeManager.CreateAsync"/> already ran under a reflog-enabled clone, so it
-    /// exercised <see cref="GitWorktreeManager.CheckoutExistingAsync"/>'s recreate arm alone.
-    /// <c>CreateAsync</c> cut every fresh task branch with a plain <c>worktree add -b</c>, which
-    /// writes no reflog entry at all when the config is off from the start — and because git then
-    /// never creates the log file, every later commit and reset on that branch went unlogged too
-    /// (independent pre-PR review, cycle 6, conformance).
+    /// exercised <see cref="GitWorktreeManager.CheckoutExistingAsync"/>'s recreate arm alone. This
+    /// test sets the config to an explicit <c>false</c> before the branch is ever created, which is
+    /// stronger than the real hand-cut-bare-clone shape (the config simply absent, not set false):
+    /// an explicit <c>false</c> disables logging everywhere including inside this linked, non-bare
+    /// worktree, whereas an absent config defaults per-directory (off in the bare repository, on in
+    /// the worktree per git's own bare-repository default), so a real hand-cut clone's checkpoint
+    /// commit would still log itself even without <c>CreateAsync</c>'s own reflog entry. This test's
+    /// explicit-false shape genuinely needs that entry — without it, git never creates the log file
+    /// at all, and the checkpoint commit that follows has nothing to append to (independent pre-PR
+    /// review, cycle 6 conformance; cycle 1 adversarial, correcting cycle 6's premise about the real
+    /// hand-cut-bare-clone shape, which does not hit this failure — see the code comment at
+    /// <see cref="GitWorktreeManager.CreateAsync"/> and Decisions Log #104 for the corrected story).
     /// </summary>
     [Fact]
     public async Task Create_records_a_reflog_entry_even_without_reflog_config_so_a_later_recompose_survives()
@@ -478,8 +485,9 @@ public sealed class GitWorktreeManagerTests : IDisposable
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(1));
         Guid taskId = DomainId.New();
 
-        // A hand-cut bare clone never gets core.logAllRefUpdates set (only
-        // RepoMaterialiser.CloneAsync does) — disable it before the branch is ever created.
+        // Explicit false, not merely absent — see the summary above for why that distinction
+        // is what makes this test's shape (rather than a real hand-cut bare clone's) actually
+        // depend on CreateAsync's own reflog entry.
         Git(_repositoryPath, "config core.logAllRefUpdates false");
 
         Worktree first = await _manager.CreateAsync(
@@ -488,7 +496,8 @@ public sealed class GitWorktreeManagerTests : IDisposable
         (_, string createdReflog) = TryGit(first.Path, $"reflog show {first.Branch} --format=%H");
         createdReflog.Trim().Should().NotBeEmpty(
             "CreateAsync must record its own creation tip in the branch reflog even when " +
-            "core.logAllRefUpdates is off, or every later commit and reset on the branch goes unlogged too");
+            "core.logAllRefUpdates is explicitly off, or git never creates the log file for the " +
+            "checkpoint commit that follows to append to");
 
         // Checkpoint, push, then recompose in place — the exact shape a build session's
         // checkpoint-and-reset protocol produces on a retry.
