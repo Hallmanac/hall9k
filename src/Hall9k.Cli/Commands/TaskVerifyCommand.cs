@@ -110,10 +110,7 @@ public sealed class TaskVerifyCommand : Hall9kAsyncCommand<TaskVerifyCommand.Set
             // will fail over once this claim is delivered. Saying "not counted against the check"
             // about that path here would make this on-demand rehearsal read green for a tree that
             // is about to fail for real (independent pre-PR review, adversarial finding, cycle 1).
-            IReadOnlyList<string> strandable =
-                [.. untracked.Where(path =>
-                    WorktreeGitStatus.IsUnderSourceOrTestTree(path) && !WorktreeGitStatus.IsKnownBuildOrTestOutput(path))];
-            IReadOnlyList<string> byproduct = [.. untracked.Except(strandable)];
+            (IReadOnlyList<string> strandable, IReadOnlyList<string> byproduct) = WorktreeGitStatus.SplitUntracked(untracked);
 
             if (strandable.Count > 0)
             {

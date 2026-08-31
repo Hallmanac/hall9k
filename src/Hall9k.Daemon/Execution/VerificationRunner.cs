@@ -112,12 +112,8 @@ public sealed partial class VerificationRunner(
             // is still just as likely a gate byproduct the project's .gitignore has not caught up
             // with, so it stays a warn-only signal — failing on it would be the same unclearable
             // defect.
-            IReadOnlyList<string> strandableUntrackedFiles =
-                [.. untrackedFiles.Where(path =>
-                    WorktreeGitStatus.IsUnderSourceOrTestTree(path) && !WorktreeGitStatus.IsKnownBuildOrTestOutput(path))];
-            IReadOnlyList<string> byproductUntrackedFiles =
-                [.. untrackedFiles.Where(path =>
-                    !WorktreeGitStatus.IsUnderSourceOrTestTree(path) || WorktreeGitStatus.IsKnownBuildOrTestOutput(path))];
+            (IReadOnlyList<string> strandableUntrackedFiles, IReadOnlyList<string> byproductUntrackedFiles) =
+                WorktreeGitStatus.SplitUntracked(untrackedFiles);
 
             if (byproductUntrackedFiles.Count > 0)
             {
@@ -140,6 +136,18 @@ public sealed partial class VerificationRunner(
                 ? null
                 : [.. strandableUntrackedFiles, .. modifiedFiles];
 
+            // "Uncommitted" alone stopped saying enough once strandedFiles started mixing
+            // tracked-modified paths (already `git add`ed; `git commit` alone picks them up) with
+            // brand-new untracked ones (`git add` first, since `git commit -am` silently skips
+            // them) — a resuming agent reading only "uncommitted" could `git commit -am` the
+            // modified half and reproduce the exact hollow-branch shape this check exists to catch
+            // (independent pre-PR review, conformance finding, cycle 3). Built once so both reasons
+            // below stay in sync.
+            string? untrackedClarification = strandableUntrackedFiles.Count > 0
+                ? $" {strandableUntrackedFiles.Count} of these {(strandableUntrackedFiles.Count == 1 ? "is" : "are")} " +
+                  "new and untracked, not modified — `git add` before `git commit`, since `git commit -a` alone will not pick them up."
+                : null;
+
             // Research tasks are exempt from the no-commit check — their deliverable is the
             // transcript, not commits (the one TaskType whose legitimate output is empty);
             // every other type ships its work as commits. The uncommitted-files check right
@@ -153,7 +161,8 @@ public sealed partial class VerificationRunner(
                     string reason = strandedFiles is { Count: > 0 }
                         ? $"Agent produced no commits: branch '{run.Branch}' holds nothing beyond " +
                           $"'{project.BaseBranch}'. The session ended with uncommitted files still sitting " +
-                          $"in the worktree instead of being committed: {SummarizeFiles(strandedFiles)}."
+                          $"in the worktree instead of being committed: {SummarizeFiles(strandedFiles)}." +
+                          $"{untrackedClarification}"
                         : $"Agent produced no commits: branch '{run.Branch}' holds nothing beyond " +
                           $"'{project.BaseBranch}'. The session ended without committing its work, so the " +
                           "gates were not run against the unmodified tree.";
@@ -176,8 +185,8 @@ public sealed partial class VerificationRunner(
             {
                 string reason =
                     "The session ended with uncommitted files still sitting in the worktree: " +
-                    $"{SummarizeFiles(strandedFiles)}. Finished work left uncommitted never reaches " +
-                    "the pull request, so the gates were not run until it is committed.";
+                    $"{SummarizeFiles(strandedFiles)}.{untrackedClarification} Finished work left uncommitted " +
+                    "never reaches the pull request, so the gates were not run until it is committed.";
                 await FailBeforeGatesAsync(runId, taskId, reason, cancellationToken);
                 logger.LogWarning("Run {RunId} failed before the gates: {Reason}", runId, reason);
                 return false;
