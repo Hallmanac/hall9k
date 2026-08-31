@@ -346,8 +346,10 @@ public sealed class AgentPromptBuilderTests : IDisposable
             "never actually run",
             "the un-relocatable procedure is read for confidence, not executed");
         prompt.Should().Contain(
-            "records why relocation could not make it safe",
-            "the exception still requires a stated reason rather than a silent skip back to proofreading");
+            "record why relocation could not make it safe in your final",
+            "the exception still requires a stated reason rather than a silent skip back to proofreading, " +
+            "recorded in the summary/handoff rather than a finding, since a procedure read as correct " +
+            "produces none (conformance review, cycle 1)");
     }
 
     /// <summary>
@@ -364,7 +366,7 @@ public sealed class AgentPromptBuilderTests : IDisposable
         prompt.Should().Contain(
             "scoped to only the diff of those fixes",
             "round two reviews only the fix delta, not the whole branch again");
-        string tipFile = $"/tmp/self-review-round-one-tip-{Path.GetFileName(_worktreePath)}";
+        string tipFile = Path.Combine(Path.GetTempPath(), $"self-review-round-one-tip-{Path.GetFileName(_worktreePath)}");
         prompt.Should().Contain(
             $"`git diff \"$(cat {tipFile})\" HEAD`",
             "round two's fix-delta range is named explicitly rather than left for the session to invent, " +

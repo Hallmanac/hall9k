@@ -641,7 +641,12 @@ first-class interface, always, for every command:
   routinely stale relative to the task's actual base — and runs three mandatory hunts (a
   refactor once-over, a blast-radius sweep for sibling sites, and actually executing any documented
   procedure in the branch's diff — whether the session authored it this session or it arrived
-  already in the diff a resumed run inherited — rather than proofreading it). A
+  already in the diff a resumed run inherited — rather than proofreading it, inside a scratch
+  directory made with `mktemp -d` outside the worktree wherever the procedure mutates state, and
+  read rather than run instead whenever no relocation makes it safe — a live daemon or its
+  database, a machine-wide install, a destructive maintenance command, or a write to an external
+  service — recording why in the summary and handoff rather than in a finding, since a procedure
+  read as correct produces none). A
   correctness-or-behavior finding is fixed and checkpoint-committed, or left with a stated,
   checkable reason it is not actually a defect; a
   style-only finding is fixed in place and checkpoint-committed, or skipped outright with nothing
