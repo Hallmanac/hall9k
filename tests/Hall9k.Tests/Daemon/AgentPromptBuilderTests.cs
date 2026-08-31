@@ -209,6 +209,156 @@ public sealed class AgentPromptBuilderTests : IDisposable
     }
 
     /// <summary>
+    /// Task: the build session ends with an adversarial self-review loop. Ordering is the load-
+    /// bearing part — the hunt has to see finished work (after the suite is green) and the
+    /// recompose has to compose the post-hunt tree (before the recompose), so this pins the
+    /// sequence rather than just the presence of the phase.
+    /// </summary>
+    [Fact]
+    public void Build_prompt_names_a_self_review_phase_ordered_after_the_suite_and_before_the_recompose()
+    {
+        ProjectDetails project = SomeProject();
+        project.VerifyCommands = [new VerifyCommand("test", "dotnet test")];
+
+        string prompt = AgentPromptBuilder.Build(SomeTask(), project, "task/1-slug", _worktreePath);
+
+        int checkpointAt = prompt.IndexOf("Commit as you go, one logical unit at a time", StringComparison.Ordinal);
+        int selfReviewAt = prompt.IndexOf("**Self-review phase.**", StringComparison.Ordinal);
+        int recomposeAt = prompt.IndexOf("recompose the checkpoints into", StringComparison.Ordinal);
+        checkpointAt.Should().BeGreaterThan(-1);
+        selfReviewAt.Should().BeGreaterThan(-1);
+        recomposeAt.Should().BeGreaterThan(-1);
+        selfReviewAt.Should().BeGreaterThan(checkpointAt, "the hunt is named after checkpoint discipline");
+        selfReviewAt.Should().BeLessThan(recomposeAt, "the hunt runs before the recompose composes its tree");
+        prompt.Should().Contain(
+            "after the suite passes, so the hunt sees finished work",
+            "the prompt states the reason for the ordering, not just the ordering itself");
+        prompt.Should().Contain(
+            "the recompose composes the tree the hunt leaves behind",
+            "the prompt states why the hunt precedes the recompose specifically");
+        prompt.Should().Contain(
+            "self-review phase above has run its course, recompose",
+            "the recompose gate itself now names the self-review phase as a precondition");
+    }
+
+    /// <summary>
+    /// The framing has to be adversarial in the prompt's own words, and paired with the explicit
+    /// clause that a clean round is honest — otherwise the framing alone pressures the session
+    /// into manufacturing a finding just to have something to report.
+    /// </summary>
+    [Fact]
+    public void Build_prompt_frames_self_review_adversarially_and_names_a_clean_round_as_honest()
+    {
+        string prompt = AgentPromptBuilder.Build(SomeTask(), SomeProject(), "task/1-slug", _worktreePath);
+
+        prompt.Should().Contain("you are no longer the author, you are the hunter");
+        prompt.Should().Contain("Assume the branch contains defects you wrote");
+        prompt.Should().Contain(
+            "Finding nothing is an expected, honest outcome of a genuine hunt",
+            "a clean round is named as the expected honest outcome, not a failure to find something");
+        prompt.Should().Contain(
+            "inventing a",
+            "the prompt names inventing a finding, not the clean round, as the actual failure");
+        prompt.Should().Contain("guarding against, not the clean round");
+    }
+
+    [Fact]
+    public void Build_prompt_starts_self_review_from_a_fresh_diff_not_memory()
+    {
+        string prompt = AgentPromptBuilder.Build(SomeTask(), SomeProject(), "task/1-slug", _worktreePath);
+
+        prompt.Should().Contain("Start every round from a fresh `git diff` against the branch base, read in");
+        prompt.Should().Contain(
+            "not from memory of what you wrote",
+            "the hunt must read the diff, not recall what the session believes it already wrote");
+    }
+
+    /// <summary>
+    /// The three mandatory hunts named by the task, plus the requirement that a state-mutating
+    /// procedure is actually exercised somewhere safe rather than merely proofread.
+    /// </summary>
+    [Fact]
+    public void Build_prompt_names_the_three_mandatory_self_review_hunts()
+    {
+        string prompt = AgentPromptBuilder.Build(SomeTask(), SomeProject(), "task/1-slug", _worktreePath);
+
+        prompt.Should().Contain("**Refactor once-over.**");
+        prompt.Should().Contain("**Blast-radius sweep.**");
+        prompt.Should().Contain(
+            "enumerate",
+            "the blast-radius hunt requires enumerating sibling sites, not just recalling the fix");
+        prompt.Should().Contain("**Execute your own instructions.**");
+        prompt.Should().Contain(
+            "run it, do not proofread",
+            "the third hunt requires actually running an authored procedure, not reading it back");
+        prompt.Should().Contain(
+            "exercise it somewhere the side effects are safe",
+            "a state-mutating procedure must be run somewhere safe");
+        prompt.Should().Contain(
+            "never against this session's own live worktree",
+            "the safe place is explicitly not this session's own worktree");
+    }
+
+    /// <summary>
+    /// The hard two-round cap: round two only happens when round one's fix crossed the
+    /// behavior-or-correctness bar, it reviews only the delta of that fix rather than the whole
+    /// branch again, and the loop ends unconditionally after round two regardless of outcome.
+    /// </summary>
+    [Fact]
+    public void Build_prompt_caps_the_self_review_loop_at_two_rounds_scoped_to_the_fix_diff()
+    {
+        string prompt = AgentPromptBuilder.Build(SomeTask(), SomeProject(), "task/1-slug", _worktreePath);
+
+        prompt.Should().Contain("The loop is capped at two rounds, hard.");
+        prompt.Should().Contain(
+            "against only the diff of",
+            "round two reviews only the fix delta, not the whole branch again");
+        prompt.Should().Contain(
+            "after round two the loop ends",
+            "the loop ends unconditionally after round two");
+        prompt.Should().Contain(
+            "never a third round",
+            "anything still suspected after round two goes to the handoff instead of a third round");
+    }
+
+    /// <summary>
+    /// The bar that gates a further round is behavior or correctness, not style: a style-only
+    /// observation is fixed or skipped without extending the loop, and a round finding nothing
+    /// above that bar — including round one — ends the loop early.
+    /// </summary>
+    [Fact]
+    public void Build_prompt_gates_the_self_review_second_round_on_correctness_not_style()
+    {
+        string prompt = AgentPromptBuilder.Build(SomeTask(), SomeProject(), "task/1-slug", _worktreePath);
+
+        prompt.Should().Contain(
+            "style-only observation is fixed in place or skipped without extending",
+            "style findings never extend the loop");
+        prompt.Should().Contain(
+            "Only when round one fixed something above",
+            "only a correctness-or-behavior fix in round one earns a round two");
+        prompt.Should().Contain(
+            "ends the loop right there",
+            "a round finding nothing above the bar, including round one, ends the loop early");
+    }
+
+    /// <summary>
+    /// Every self-review finding must resolve before the session moves on — fixed and
+    /// checkpoint-committed, or dismissed with a stated, checkable reason — never deferred to a
+    /// note for someone else to chase later.
+    /// </summary>
+    [Fact]
+    public void Build_prompt_forbids_deferring_a_self_review_finding_to_a_note()
+    {
+        string prompt = AgentPromptBuilder.Build(SomeTask(), SomeProject(), "task/1-slug", _worktreePath);
+
+        prompt.Should().Contain("fixed and checkpoint-committed, or left with a stated, checkable reason it is");
+        prompt.Should().Contain(
+            "Deferring one to a note for later is not a third option",
+            "a self-review finding cannot be left as a note instead of fixed or dismissed with a reason");
+    }
+
+    /// <summary>
     /// Fix rounds resume an existing PR branch and keep the fixup/autosquash flow via
     /// absorb-review-fixes (Decisions Log #26); the checkpoint-and-recompose protocol is scoped
     /// to a fresh build session's own initial work and must not leak into these prompts.
@@ -239,6 +389,7 @@ public sealed class AgentPromptBuilderTests : IDisposable
         {
             prompt.Should().NotContain("Commit as you go, one logical unit at a time");
             prompt.Should().NotContain("git reset --mixed");
+            prompt.Should().NotContain("**Self-review phase.**", "the hunt belongs to the initial build session only");
             prompt.Should().Contain("git commit --fixup=<owning-commit>", "the amend path is unchanged");
             prompt.Should().Contain(
                 "GIT_SEQUENCE_EDITOR=: git rebase -i --autosquash origin/main", "autosquash is unchanged");
@@ -248,6 +399,7 @@ public sealed class AgentPromptBuilderTests : IDisposable
             SomeTask(), "task/1-slug", "findings go here", cycle: 1);
         reviewFixPrompt.Should().NotContain("Commit as you go, one logical unit at a time");
         reviewFixPrompt.Should().NotContain("git reset --mixed");
+        reviewFixPrompt.Should().NotContain("**Self-review phase.**", "the hunt belongs to the initial build session only");
     }
 
     [Fact]
