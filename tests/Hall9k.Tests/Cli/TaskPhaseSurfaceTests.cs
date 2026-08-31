@@ -326,6 +326,38 @@ public sealed class TaskPhaseSurfaceTests
     }
 
     /// <summary>
+    /// The run-state guard alone (Dispatched/Running) is not enough: a claim's interactive
+    /// session this machine can see is genuinely alive right now still read run.State ==
+    /// Running, so the nudge fired anyway (conformance review, cycle 2) and advertised two
+    /// levers that both refuse — <c>InteractiveSessionLiveness.EnsureNotAttachedElsewhere</c>
+    /// refuses <c>h9k task work</c> re-entry and <c>h9k task handback</c> alike for a session it
+    /// observes alive, and does not honour <c>--force</c> for that case. Gating on
+    /// <c>phase.Liveness</c> — which is what that guard itself would observe — closes it.
+    /// </summary>
+    [Fact]
+    public void An_interactive_claim_with_a_session_observed_alive_right_now_does_not_nudge()
+    {
+        Guid runId = DomainId.New();
+        RunDetails interactive = StatusFixtures.Run(runId, RunState.Running, sessionProcessId: null);
+        interactive.LastInteractiveActivityAt = StatusFixtures.Now.AddDays(-4);
+        interactive.ActiveSessions =
+        [
+            new ActiveSession(
+                AgentRole.Interactive, ReviewLens.Unknown, 4711, StatusFixtures.Now, StatusFixtures.ThisMachine),
+        ];
+
+        TaskStatusRow row = StatusFixtures.Compose(
+            StatusFixtures.Task(TaskState.Claimed, runId, claimedByNodeId: Guid.Empty),
+            interactive,
+            liveness: SessionLiveness.Alive,
+            interactiveClaimStaleAfterDays: 3);
+
+        row.Phase.Liveness.Should().Be(SessionLiveness.Alive);
+        row.Attention.Cause.Should().NotContain("was last touched").And.NotContain("was claimed");
+        row.Attention.NeedsYou.Should().BeFalse();
+    }
+
+    /// <summary>
     /// Once <c>h9k task deliver</c> hands the run to the standard pipeline, the task can still
     /// read Claimed+interactive for the whole review loop — <c>TaskHandbackCommand</c> and
     /// <c>TaskWorkCommand</c> both refuse once <c>run.State</c> is past Dispatched/Running
@@ -377,7 +409,7 @@ public sealed class TaskPhaseSurfaceTests
             interactiveClaimStaleAfterDays: 3);
 
         row.Attention.NeedsYou.Should().BeTrue();
-        row.Attention.Cause.Should().Contain("was last touched");
+        row.Attention.Cause.Should().Contain("was claimed").And.NotContain("was last touched");
     }
 
     [Fact]
