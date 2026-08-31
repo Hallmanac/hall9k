@@ -612,9 +612,14 @@ first-class interface, always, for every command:
   then-plain push rejected both rebased branches ("failed to push some refs"), and both
   runs failed with completed, gated work stranded in the worktrees; this file briefly
   told agents to run the force push themselves as the workaround, until the daemon became
-  force-aware (decision #26). A fresh build session's own end-of-work checkpoint recompose
-  (below) means even a first-time push can now diverge from an earlier attempt at the
-  same branch, so every push takes the lease, not only a follow-up's (decision #104).
+  force-aware (decision #26), which is where the push became unconditional across fresh and
+  follow-up branches alike — decision #104 did not widen that scope. What #104 added is a
+  guard in front of the lease: a fresh build session's own end-of-work checkpoint recompose
+  (below) can make a retried run's branch diverge from a tip this same task already pushed,
+  and a bare lease could pass — and silently overwrite — a tip this run never accounted for,
+  so the daemon's pull-request push now runs an explicit ancestor-or-reflog check before
+  pinning the lease's expected value, refusing the push outright rather than forcing over
+  anything it cannot account for (decision #104).
 - **Commit as you go during a fresh build session, then recompose once, right before you
   finish.** Checkpoint commits along the way are crash protection, not authored history —
   they exist so an abnormal ending (context exhaustion, an early exit) strands at most the
