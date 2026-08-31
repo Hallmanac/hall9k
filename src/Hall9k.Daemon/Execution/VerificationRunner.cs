@@ -99,15 +99,25 @@ public sealed partial class VerificationRunner(
             // file inside a wholly untracked directory is reported by its own path rather than
             // collapsed into one directory entry (conformance review, independent pre-PR review
             // cycle 2), and .gitignore matches (bin/, obj/, artifacts/) never appear here at
-            // all — git status omits an ignored path by default, so nothing extra is needed to
-            // keep generated output out of this list. Anything untracked outside src/ or tests/
-            // (a coverage report at the repo root, a project home's own workspace notes) is
-            // still just as likely a gate byproduct the project's .gitignore has not caught up
-            // with, so it stays a warn-only signal — failing on it would be a defect a retry can
-            // never clear, since the next session's gates regenerate the same file.
-            IReadOnlyList<string> strandableUntrackedFiles = [.. untrackedFiles.Where(IsUnderSourceOrTestTree)];
+            // all — git status omits an ignored path by default. That still leaves a known
+            // .NET build/test byproduct that lands inside src/ or tests/ on a project whose own
+            // .gitignore has not caught up with it — a `dotnet test --logger trx` run's default
+            // `TestResults/` directory chief among them — which IsKnownBuildOrTestOutput excludes
+            // by well-known directory name regardless of .gitignore, the same way `bin/` and
+            // `obj/` are excluded whether or not a project ignores them (independent pre-PR
+            // review cycle 1: without this, a fully committed session could fail before any gate
+            // over its own gate's coverage output, a defect no retry can ever clear since the
+            // next session's gates regenerate the same file). Anything untracked outside src/ or
+            // tests/ (a coverage report at the repo root, a project home's own workspace notes)
+            // is still just as likely a gate byproduct the project's .gitignore has not caught up
+            // with, so it stays a warn-only signal — failing on it would be the same unclearable
+            // defect.
+            IReadOnlyList<string> strandableUntrackedFiles =
+                [.. untrackedFiles.Where(path =>
+                    WorktreeGitStatus.IsUnderSourceOrTestTree(path) && !WorktreeGitStatus.IsKnownBuildOrTestOutput(path))];
             IReadOnlyList<string> byproductUntrackedFiles =
-                [.. untrackedFiles.Where(path => !IsUnderSourceOrTestTree(path))];
+                [.. untrackedFiles.Where(path =>
+                    !WorktreeGitStatus.IsUnderSourceOrTestTree(path) || WorktreeGitStatus.IsKnownBuildOrTestOutput(path))];
 
             if (byproductUntrackedFiles.Count > 0)
             {
@@ -117,14 +127,18 @@ public sealed partial class VerificationRunner(
                     runId, run.WorktreePath, SummarizeFiles(byproductUntrackedFiles));
             }
 
-            // The failing list a resuming agent or a human sees: every modified-but-uncommitted
-            // tracked file, plus every untracked new file under src/ or tests/ — named together
-            // so committing only the modified ones can never look sufficient. Null only when git
-            // itself was unobservable above; in that case untracked came back empty too, so there
-            // is nothing to strand strandableUntrackedFiles with.
+            // The failing list a resuming agent or a human sees: every untracked new file under
+            // src/ or tests/, plus every modified-but-uncommitted tracked file — untracked first
+            // so `SummarizeFiles`' MaxListedFiles cap, on a wide session, never drops preferentially
+            // from the class this check exists to make visible (conformance review finding: a
+            // session with 22 modified files and 3 new untracked ones would otherwise list all 22
+            // modified and elide the 3 untracked as "and 3 more"). Named together so committing
+            // only the modified ones can never look sufficient. Null only when git itself was
+            // unobservable above; in that case untracked came back empty too, so there is nothing
+            // to strand.
             IReadOnlyList<string>? strandedFiles = modifiedFiles is null
                 ? null
-                : [.. modifiedFiles, .. strandableUntrackedFiles];
+                : [.. strandableUntrackedFiles, .. modifiedFiles];
 
             // Research tasks are exempt from the no-commit check — their deliverable is the
             // transcript, not commits (the one TaskType whose legitimate output is empty);
@@ -516,15 +530,21 @@ public sealed partial class VerificationRunner(
     /// different rules to each: one under src/ or tests/ is first-class strandable work (origin
     /// incident, 2026-08-29, the Jira compose/execute task — a whole feature's new source files
     /// named only in a warning, not the failing list, so a faithful commit of the named files
-    /// still shipped a hollow branch), while one elsewhere is still as likely a gate's own build
-    /// or test output (a coverage report,
-    /// `TestResults/`, a lint cache) the project's `.gitignore` has not caught up with, and failing
-    /// on that would be a defect a retry can never clear, since the next session's gates regenerate
-    /// the same file (adversarial review, independent pre-PR review cycle 1). A `.gitignore` match
-    /// (`bin/`, `obj/`, `artifacts/`) never reaches either list: git status omits an ignored path
-    /// by default, with no `--ignored` flag passed here. The modified-list slot is null when git
-    /// cannot answer, the same "never guess" convention <see cref="CountBranchCommitsAsync"/>
-    /// already follows: an unobservable worktree is never reported as clean.
+    /// still shipped a hollow branch), while one elsewhere (a coverage report at the repo root, a
+    /// project home's own workspace notes) is still as likely a gate's own build or test output
+    /// the project's `.gitignore` has not caught up with, and failing on that would be a defect a
+    /// retry can never clear, since the next session's gates regenerate the same file (adversarial
+    /// review, independent pre-PR review cycle 1). A `.gitignore` match (`bin/`, `obj/`,
+    /// `artifacts/`) never reaches either list: git status omits an ignored path by default, with
+    /// no `--ignored` flag passed here. A well-known .NET build or test output directory landing
+    /// inside src/ or tests/ anyway — `TestResults/` (VSTest's own default results directory)
+    /// chief among them — is excluded from the strandable list the same way, by name, regardless
+    /// of `.gitignore` (<see cref="WorktreeGitStatus.IsKnownBuildOrTestOutput"/>; independent pre-PR review cycle 1
+    /// again — without it, that directory living inside the test project's own folder under
+    /// tests/ would otherwise fail a fully committed run on its own gate's coverage output). The
+    /// modified-list slot is null when git cannot answer, the same "never guess" convention
+    /// <see cref="CountBranchCommitsAsync"/> already follows: an unobservable worktree is never
+    /// reported as clean.
     /// </summary>
     private static async Task<(IReadOnlyList<string>? Modified, IReadOnlyList<string> Untracked)>
         ListUncommittedFilesAsync(string worktreePath, CancellationToken cancellationToken)
@@ -549,9 +569,6 @@ public sealed partial class VerificationRunner(
     /// always uses a forward slash as the path separator, on every OS, so a literal prefix check
     /// is safe without any platform-specific path handling.
     /// </summary>
-    private static bool IsUnderSourceOrTestTree(string path) =>
-        path.StartsWith("src/", StringComparison.Ordinal) || path.StartsWith("tests/", StringComparison.Ordinal);
-
     private static async Task<(int ExitCode, string StandardOutput)> RunGitAsync(
         string workingDirectory, IReadOnlyList<string> arguments, CancellationToken cancellationToken)
     {

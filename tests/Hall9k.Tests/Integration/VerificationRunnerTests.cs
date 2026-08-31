@@ -439,6 +439,33 @@ public sealed class VerificationRunnerTests(PostgresFixture postgres) : IClassFi
     }
 
     /// <summary>
+    /// `TestResults/` is VSTest's own default results directory (`dotnet test --logger trx`,
+    /// `--collect:"XPlat Code Coverage"`), and it commonly lands inside a test project's own
+    /// directory under tests/ — exactly the tree the check above treats as first-class strandable
+    /// work. Without a byproduct exclusion that reaches inside src/ and tests/ too (not just
+    /// `.gitignore`, which this repo's own does not name `TestResults/`), a fully committed
+    /// session's own gate output would fail the run, a defect no retry could ever clear since the
+    /// next session's gates regenerate the same file (independent pre-PR review cycle 1).
+    /// </summary>
+    [Fact]
+    public async Task An_untracked_TestResults_directory_under_tests_does_not_fail_the_run()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        using DocumentStore store = NewStore();
+        await InitGitWorktreeAsync(withTaskCommit: true, cts.Token);
+        Directory.CreateDirectory(Path.Combine(_worktree, "tests", "Hall9k.Tests", "TestResults"));
+        await File.WriteAllTextAsync(
+            Path.Combine(_worktree, "tests", "Hall9k.Tests", "TestResults", "host.trx"), "gate byproduct", cts.Token);
+        (Guid taskId, Guid runId) = await SeedAsync(store, [new VerifyCommand("truth", "true")], cts.Token);
+
+        bool passed = await NewRunner(store).VerifyAsync(runId, taskId, scopeSinceSha: null, "test", cts.Token);
+
+        passed.Should().BeTrue("TestResults/ under tests/ is a gate byproduct, not stranded agent work");
+        await using IQuerySession query = store.QuerySession();
+        (await query.LoadAsync<RunDetails>(runId, cts.Token))!.State.Value.Should().Be("Verifying");
+    }
+
+    /// <summary>
     /// The shape the zero-commit check alone always missed (origin incident, PR #53's cycle-3
     /// fix round, 2026-08-26): some commits landed, but the session still ended with
     /// modified-but-uncommitted files sitting in the worktree. Gates on that tree would test
@@ -472,13 +499,18 @@ public sealed class VerificationRunnerTests(PostgresFixture postgres) : IClassFi
     }
 
     /// <summary>
-    /// An untracked file is not stranded agent work — it is as likely to be a gate's own
-    /// byproduct (a coverage report, a lint cache) that the project's `.gitignore` does not yet
-    /// name, and failing a run on it would be a defect a retry can never clear, since the next
-    /// session's gates regenerate the same file (independent pre-PR review, adversarial finding).
-    /// The uncommitted-files check separates untracked entries out of `git status --porcelain -z`
-    /// for exactly this reason, and only warns about them (independent pre-PR review, cycle 2
-    /// conformance finding) rather than failing the run.
+    /// Outside src/ and tests/, an untracked file is not stranded agent work — it is as likely to
+    /// be a gate's own byproduct (a coverage report, a lint cache) that the project's
+    /// `.gitignore` does not yet name, and failing a run on it would be a defect a retry can
+    /// never clear, since the next session's gates regenerate the same file (independent pre-PR
+    /// review, adversarial finding). The uncommitted-files check separates untracked entries out
+    /// of `git status --porcelain -z` for exactly this reason, and only warns about them
+    /// (independent pre-PR review, cycle 2 conformance finding) rather than failing the run. This
+    /// fixture plants the file at the repo root rather than under a test project's own directory,
+    /// deliberately: an untracked file under src/ or tests/ instead fails the run (see
+    /// <see cref="An_untracked_source_file_fails_the_run_alongside_a_modified_one"/> and
+    /// <see cref="An_untracked_test_file_alone_fails_the_run"/>), except for a well-known .NET
+    /// build/test output directory such as `TestResults/` even there.
     /// </summary>
     [Fact]
     public async Task An_untracked_file_left_in_the_worktree_does_not_fail_the_run()

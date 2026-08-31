@@ -1,5 +1,6 @@
 using System.ComponentModel;
 using Hall9k.Cli.Infrastructure;
+using Hall9k.Connectors.Worktrees;
 using Hall9k.Domain.Features.Project.Projections;
 using Hall9k.Domain.Features.Run;
 using Hall9k.Domain.Features.Run.Events;
@@ -102,8 +103,29 @@ public sealed class TaskDeliverCommand : Hall9kAsyncCommand<TaskDeliverCommand.S
 
         if (untracked.Count > 0)
         {
-            AnsiConsole.MarkupLineInterpolated(
-                $"[yellow]Untracked file(s) in the worktree (not blocking delivery): {string.Join(", ", untracked)}[/]");
+            // "Not blocking delivery" is still true of this push — an untracked file is never
+            // part of a commit, so deliver ships the branch exactly as it stands regardless — but
+            // it stopped being the whole story once VerificationRunner started failing the run
+            // outright over a new file under src/ or tests/ (independent pre-PR review,
+            // adversarial finding): the two messages used to disagree about the very same path.
+            // Split the same way VerificationRunner does, with the same shared classification, so
+            // this warning says what will actually happen once the pipeline picks the run up.
+            IReadOnlyList<string> strandable =
+                [.. untracked.Where(path =>
+                    WorktreeGitStatus.IsUnderSourceOrTestTree(path) && !WorktreeGitStatus.IsKnownBuildOrTestOutput(path))];
+            IReadOnlyList<string> byproduct = [.. untracked.Except(strandable)];
+
+            if (strandable.Count > 0)
+            {
+                AnsiConsole.MarkupLineInterpolated(
+                    $"[yellow]Untracked file(s) under src/ or tests/ (not blocking this push, but the platform's own verification will fail the run over them once delivered): {string.Join(", ", strandable)}[/]");
+            }
+
+            if (byproduct.Count > 0)
+            {
+                AnsiConsole.MarkupLineInterpolated(
+                    $"[yellow]Untracked file(s) in the worktree (not blocking delivery): {string.Join(", ", byproduct)}[/]");
+            }
         }
 
         // Refused here rather than left to the commits-beyond-base count below: that count reads
