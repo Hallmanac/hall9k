@@ -47,12 +47,13 @@ public static class WorkPromptBuilder
             prompt.AppendLine();
             prompt.AppendLine("An operator started this task with `h9k task work`, worked directly in this");
             prompt.AppendLine("branch's worktree, and handed it back (`h9k task handback`) for you to finish");
-            prompt.AppendLine("headlessly. `h9k task handback` refuses while the worktree holds uncommitted");
-            prompt.AppendLine("files, so their work is committed on the branch and the tree should be clean —");
-            prompt.AppendLine("but check for yourself before writing anything (`git status`, `git log`,");
-            prompt.AppendLine("`git diff`), judge it against the acceptance");
-            prompt.AppendLine("criteria, and continue from it to completion. Do not start over; redoing finished");
-            prompt.AppendLine("work is the failure mode this note exists to prevent.");
+            prompt.AppendLine("headlessly. `h9k task handback` only refuses on tracked files it finds modified");
+            prompt.AppendLine("or staged — it never checks untracked files, and skips the check entirely if git");
+            prompt.AppendLine("could not be read — so their work may be committed on the branch, sitting");
+            prompt.AppendLine("uncommitted in the tree (tracked or not), or both. Before writing anything,");
+            prompt.AppendLine("review what is there (`git status`, `git log`, `git diff`), judge it against the");
+            prompt.AppendLine("acceptance criteria, and continue from it to completion. Do not start over;");
+            prompt.AppendLine("redoing finished work is the failure mode this note exists to prevent.");
             if (resumeReason.IsNotBlank())
             {
                 prompt.AppendLine();
