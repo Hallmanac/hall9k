@@ -86,8 +86,23 @@ public sealed class ConfigSetCommand : Hall9kAsyncCommand<ConfigSetCommand.Setti
             AnsiConsole.MarkupLineInterpolated($"[green]{line}[/]");
         }
 
-        AnsiConsole.MarkupLineInterpolated(
-            $"[dim]Written to {Hall9kDatabase.ConfigFile} — a running daemon picks this up on its next start (h9k daemon stop, then h9k daemon start); h9k config show prints the effective settings.[/]");
+        bool onlyInteractiveClaimStaleAfterDaysChanged =
+            settings.InteractiveClaimStaleAfterDays is not null
+            && settings.MaxConcurrentAgentSessions is null && settings.DefaultModel is null
+            && settings.ModelBuild is null && settings.ModelReview is null && settings.ModelFix is null
+            && settings.ModelSynthesis is null && settings.ModelRefinement is null && settings.ModelPublication is null;
+
+        if (onlyInteractiveClaimStaleAfterDaysChanged)
+        {
+            AnsiConsole.MarkupLineInterpolated(
+                $"[dim]Written to {Hall9kDatabase.ConfigFile} — h9k status reads this fresh on every render, so it is already in force; there is no daemon restart or environment variable involved.[/]");
+        }
+        else
+        {
+            AnsiConsole.MarkupLineInterpolated(
+                $"[dim]Written to {Hall9kDatabase.ConfigFile} — a running daemon picks this up on its next start (h9k daemon stop, then h9k daemon start); h9k config show prints the effective settings. (--interactive-claim-stale-after-days, if you set it, is already in force — h9k status reads it fresh from the file, with no daemon restart involved.)[/]");
+        }
+
         return ExitCodes.Ok;
     }
 
