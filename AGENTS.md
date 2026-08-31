@@ -649,10 +649,10 @@ first-class interface, always, for every command:
   neither a commit nor a re-run. Origin: two full external review laps
   in one afternoon (2026-08-30, tasks cea5ae6e and b6dfcbe5) that a same-session hunt would have
   caught before it ever reached a reviewer. Once that phase has run its course, record the
-  pre-reset tip (`git rev-parse HEAD`) — the tree-identity
-  check below verifies the recompose against it — then reset to the branch's own fork point, never the
-  moving tip of `origin/<base>` itself (that ref lives in the shared repository and can move
-  mid-session). Capture the fork point into a variable and stop if it does not resolve; never
+  pre-reset tip (`git rev-parse HEAD`) — the tree-identity check below verifies the recompose
+  against it — then reset to the branch's own fork point, never the moving tip of
+  `origin/<base>` itself (that ref lives in the shared repository and can move mid-session).
+  Capture the fork point into a variable and stop if it does not resolve; never
   inline the substitution directly into the reset — an unresolved `origin/<base>` makes
   `git merge-base` print nothing and exit nonzero, and `git reset --mixed $(...)` on an empty
   substitution silently becomes a bare `git reset --mixed`, a no-op that exits 0 as though the
