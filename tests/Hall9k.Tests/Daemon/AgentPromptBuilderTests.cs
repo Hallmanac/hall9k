@@ -336,6 +336,18 @@ public sealed class AgentPromptBuilderTests : IDisposable
             "deliberate, temporary exception to \"work only here\"",
             "the scratch directory is granted as an explicit exception to the worktree-only rule, " +
             "not conceded as a violation of it (adversarial review, cycle 1)");
+        prompt.Should().Contain(
+            "h9k uninstall --purge-data",
+            "a procedure that mutates a resource this session does not own outright — the live daemon, " +
+            "its database, a machine-wide install, an external service write — cannot be made safe by " +
+            "relocating to a scratch directory, so hunt 3 needs a named exception for it rather than an " +
+            "unqualified mandate to run everything (adversarial review, cycle 1)");
+        prompt.Should().Contain(
+            "never actually run",
+            "the un-relocatable procedure is read for confidence, not executed");
+        prompt.Should().Contain(
+            "records why relocation could not make it safe",
+            "the exception still requires a stated reason rather than a silent skip back to proofreading");
     }
 
     /// <summary>
@@ -352,15 +364,26 @@ public sealed class AgentPromptBuilderTests : IDisposable
         prompt.Should().Contain(
             "scoped to only the diff of those fixes",
             "round two reviews only the fix delta, not the whole branch again");
+        string tipFile = $"/tmp/self-review-round-one-tip-{Path.GetFileName(_worktreePath)}";
         prompt.Should().Contain(
-            "`git diff $ROUND_ONE_START HEAD`",
-            "round two's fix-delta range is named explicitly rather than left for the session to invent");
+            $"`git diff \"$(cat {tipFile})\" HEAD`",
+            "round two's fix-delta range is named explicitly rather than left for the session to invent, " +
+            "reading the round-one tip back from a file rather than a shell variable that would not " +
+            "survive between tool calls (independent pre-PR review, cycle 1, both lenses)");
+        prompt.Should().Contain(
+            $"`git rev-parse HEAD > {tipFile}`",
+            "the tip file's name is suffixed with this worktree's own directory name so two concurrent " +
+            "sessions on the same node never clobber each other's round-one tip (Copilot review, PR #118)");
         prompt.Should().Contain(
             "the loop ends unconditionally either way",
             "the loop ends unconditionally after round two");
         prompt.Should().Contain(
             "no third round",
-            "the loop is capped at two rounds with no third round, whatever is still unresolved");
+            "the loop is capped at two rounds with no third round");
+        prompt.Should().Contain(
+            "the only thing still open when it ends is a suspicion that never rose to",
+            "only an unpinned suspicion may still be open when the loop ends — a real finding is never " +
+            "legal to leave unresolved, round cap or not (adversarial review, cycle 1)");
     }
 
     /// <summary>
@@ -379,8 +402,11 @@ public sealed class AgentPromptBuilderTests : IDisposable
             "not what you owe once something is found",
             "the cap bounds hunting, not the disposition of what the hunting already found");
         prompt.Should().Contain(
-            "including one round two turns up: fix",
+            "including one that",
             "a round-two correctness finding still has to be fixed and committed in that same round");
+        prompt.Should().Contain(
+            "round two turns up: fix and commit it there, same as round one",
+            "the finding round two itself turns up is resolved the same way round one's are");
         prompt.Should().Contain(
             "without that alone starting a round",
             "fixing a round-two finding does not itself trigger an illegal round three");
