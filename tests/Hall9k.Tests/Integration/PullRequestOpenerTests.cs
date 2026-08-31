@@ -392,10 +392,12 @@ public sealed class PullRequestOpenerTests(PostgresFixture postgres) : IClassFix
     }
 
     /// <summary>
-    /// Task: build sessions stop stranding finished work uncommitted. Every push is now
-    /// --force-with-lease, not only a follow-up's — a fresh <c>Build</c> session's own
-    /// end-of-work checkpoint recompose can diverge a retried run's branch from a tip this
-    /// same opener already pushed once (push succeeded, `gh pr create` then failed). The
+    /// Task: build sessions stop stranding finished work uncommitted. Every push was already
+    /// --force-with-lease unconditionally before this task (decision #103's <c>h9k task deliver</c>
+    /// change made <c>IsFollowUp</c> an unreliable proxy for "does a remote copy already exist") —
+    /// a fresh <c>Build</c> session's own end-of-work checkpoint recompose can diverge a retried
+    /// run's branch from a tip this same opener already pushed once (push succeeded, `gh pr
+    /// create` then failed). The
     /// sibling test above (<see cref="Follow_up_with_rewritten_history_force_pushes_the_rebased_branch"/>)
     /// covers exactly this shape for <c>IsFollowUp: true</c>; this covers the non-follow-up
     /// arm the review found untested (cycle 1, adversarial lens).

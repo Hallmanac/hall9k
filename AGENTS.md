@@ -612,9 +612,12 @@ first-class interface, always, for every command:
   then-plain push rejected both rebased branches ("failed to push some refs"), and both
   runs failed with completed, gated work stranded in the worktrees; this file briefly
   told agents to run the force push themselves as the workaround, until the daemon became
-  force-aware (decision #26), which is where the push became unconditional across fresh and
-  follow-up branches alike — decision #104 did not widen that scope. What #104 added is a
-  guard in front of the lease: a fresh build session's own end-of-work checkpoint recompose
+  force-aware (decision #26) — but #26 kept the plain push for a first run and gated the
+  lease on `RunDispatched.IsFollowUp`; the push became unconditional across fresh and
+  follow-up branches alike only later, under decision #103's `h9k task deliver` change,
+  which made `IsFollowUp` an unreliable proxy for "does a remote copy already exist" —
+  decision #104 did not widen that scope. What #104 added is a guard in front of the lease:
+  a fresh build session's own end-of-work checkpoint recompose
   (below) can make a retried run's branch diverge from a tip this same task already pushed,
   and a bare lease could pass — and silently overwrite — a tip this run never accounted for,
   so the daemon's pull-request push now runs an explicit ancestor-or-reflog check before
