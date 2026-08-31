@@ -344,7 +344,7 @@ public static class WorkPromptBuilder
         // Suffixed with the worktree's own directory name (unique per session, since a node
         // dispatches each concurrent session into its own worktree) so two build sessions
         // running at once on the same node never clobber one another's round-one tip file.
-        string tipFile = $"/tmp/self-review-round-one-tip-{Path.GetFileName(worktreePath)}";
+        string tipFile = Path.Combine(Path.GetTempPath(), $"self-review-round-one-tip-{Path.GetFileName(worktreePath)}");
         if (project.VerifyCommands.Count == 0)
         {
             prompt.AppendLine("- **Self-review phase.** This project configures no verification gates, so its");
@@ -415,9 +415,11 @@ public static class WorkPromptBuilder
         prompt.AppendLine("     command (`h9k uninstall --purge-data`), or a write to an external service");
         prompt.AppendLine("     (`gh`, `twg`, a registered connection). A procedure in that shape is read in");
         prompt.AppendLine("     enough functional detail to be confident it does what it claims —");
-        prompt.AppendLine("     never actually run — and the finding");
-        prompt.AppendLine("     records why relocation could not make it safe, rather than silently");
-        prompt.AppendLine("     falling back to a proofread with nothing said about it.");
+        prompt.AppendLine("     never actually run. A procedure you conclude is correct this way produces no");
+        prompt.AppendLine("     finding, so record why relocation could not make it safe in your final");
+        prompt.AppendLine("     summary and the handoff below instead — the same vehicle this phase already");
+        prompt.AppendLine("     uses for a suspicion that never rises to a stated finding — rather than");
+        prompt.AppendLine("     silently falling back to a proofread with nothing said about it.");
         prompt.AppendLine("  Every finding this phase surfaces, in round one or round two, ends in one of");
         prompt.AppendLine("  its dispositions before you move on: a correctness-or-behavior finding is");
         prompt.AppendLine("  fixed and checkpoint-committed, or");
