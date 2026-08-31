@@ -144,9 +144,27 @@ public sealed class TaskDetails
     /// rather than <see cref="Events.TaskRetried"/> — the two share the field (both resume the
     /// same branch, WorkPromptBuilder wants the same causeless "why this resumes" text either
     /// way), but <c>h9k task show</c>'s fixed "Retried" row label must not attribute a
-    /// never-failed handback to a retry that never happened (conformance review, cycle 4).
+    /// never-failed handback to a retry that never happened (conformance review, cycle 4). Pure
+    /// provenance of the text: unlike <see cref="ResumesFromHandback"/>, a requeue does not touch
+    /// this — nothing re-sets <see cref="RetryReason"/> when a requeue happens, so nothing should
+    /// re-label it either (conformance review, cycle 7, following cycle 6's finding: clearing
+    /// this on <see cref="Events.TaskRequeued"/> fixed the prompt consumer below by breaking this
+    /// one, mislabeling a handback's own text as "Retried" the moment its next headless attempt
+    /// requeues).
     /// </summary>
     public bool RetryReasonIsHandback { get; set; }
+    /// <summary>
+    /// Whether the run about to claim this task next is resuming directly from a still-unbroken
+    /// human handback — an observed fact <c>WorkPromptBuilder</c> states plainly, rather than the
+    /// causeless "a previous attempt worked here" wording it falls back to otherwise (adversarial
+    /// review, cycle 1). Answers a different question than <see cref="RetryReasonIsHandback"/>'s
+    /// "which event last set the label text": this one is severed by <see cref="Events.TaskRequeued"/>
+    /// (adversarial review, cycle 6) because a headless run claimed after a handback can itself
+    /// die and requeue, and the abandoned, ungated work that run's own attempt left behind is not
+    /// a human's finished work — while the label above must survive that same requeue so
+    /// <c>h9k task show</c> still calls the text what it is.
+    /// </summary>
+    public bool ResumesFromHandback { get; set; }
     /// <summary>The human's attestation that the objective was met despite the run failure (Decisions Log #27); shown by h9k task show.</summary>
     public string? ResolvedReason { get; set; }
     /// <summary>
@@ -356,7 +374,7 @@ public sealed class TaskDetailsProjection : SingleStreamProjection<TaskDetails, 
         view.State = TaskState.Claimed;
     }
 
-    // RetryReasonIsHandback survives a requeue's own state reset by default, but WorkPromptBuilder
+    // ResumesFromHandback survives a requeue's own state reset by default, but WorkPromptBuilder
     // reads it as "the run about to claim this task is resuming because of a handback", not "a
     // handback happened somewhere in this task's history" — and a lease expiry or a run failure is
     // this requeue's actual cause, not the handback that put a still-earlier run on this branch
@@ -364,12 +382,15 @@ public sealed class TaskDetailsProjection : SingleStreamProjection<TaskDetails, 
     // the next headless run that its own predecessor's abandoned, ungated work was a human's
     // finished work not to be redone). Clearing it here is honest either way: a genuine handback
     // sets it again through TaskHandedBack's own Apply below, immediately before the requeued task
-    // is next claimed.
+    // is next claimed. RetryReasonIsHandback does NOT clear here (conformance review, cycle 7):
+    // it answers a different question — which event last wrote RetryReason's text — and a requeue
+    // rewrites neither the text nor which event wrote it, so h9k task show's label must not change
+    // either. A genuine retry (TaskRetried, below) is the only other thing that can change it.
     public void Apply(IEvent<TaskRequeued> @event, TaskDetails view)
     {
         view.ClaimedByNodeId = null;
         view.CurrentRunId = null;
-        view.RetryReasonIsHandback = false;
+        view.ResumesFromHandback = false;
         view.State = TaskState.Queued;
     }
 
@@ -443,6 +464,7 @@ public sealed class TaskDetailsProjection : SingleStreamProjection<TaskDetails, 
         view.RetryBranch = @event.Data.Branch;
         view.RetryReason = @event.Data.Reason;
         view.RetryReasonIsHandback = false;
+        view.ResumesFromHandback = false;
         view.ClaimedByNodeId = null;
         view.CurrentRunId = null;
         view.State = TaskState.Queued;
@@ -456,6 +478,7 @@ public sealed class TaskDetailsProjection : SingleStreamProjection<TaskDetails, 
         view.RetryBranch = @event.Data.Branch;
         view.RetryReason = @event.Data.Reason;
         view.RetryReasonIsHandback = true;
+        view.ResumesFromHandback = true;
         view.ClaimedByNodeId = null;
         view.CurrentRunId = null;
         view.State = TaskState.Queued;

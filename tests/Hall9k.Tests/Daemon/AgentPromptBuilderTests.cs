@@ -1394,11 +1394,11 @@ public sealed class AgentPromptBuilderTests : IDisposable
     [Fact]
     public void Handback_prompt_states_plainly_that_a_human_began_the_work_interactively()
     {
-        // Unlike the causeless retry/reentry wording above, TaskDetails.RetryReasonIsHandback is
+        // Unlike the causeless retry/reentry wording above, TaskDetails.ResumesFromHandback is
         // set only from TaskHandedBack — an observed fact, not the three-way ambiguity that
         // wording exists to avoid asserting past.
         TaskDetails task = SomeTask();
-        task.RetryReasonIsHandback = true;
+        task.ResumesFromHandback = true;
 
         string prompt = AgentPromptBuilder.Build(
             task, SomeProject(), "task/1-slug", _worktreePath, resumesPreviousWork: true);
@@ -1413,7 +1413,7 @@ public sealed class AgentPromptBuilderTests : IDisposable
     public void Handback_prompt_carries_the_operators_own_handback_reason()
     {
         TaskDetails task = SomeTask();
-        task.RetryReasonIsHandback = true;
+        task.ResumesFromHandback = true;
         task.RetryReason = "ran out of time before a meeting";
 
         string prompt = AgentPromptBuilder.Build(
