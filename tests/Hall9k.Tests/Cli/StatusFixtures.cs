@@ -65,6 +65,9 @@ internal static class StatusFixtures
     /// A run in the given state, with a recorded build session unless a test says otherwise. The
     /// branch defaults to a real-looking one because every run has one: RunDispatched carries it,
     /// so a blank branch is a case a test has to ask for rather than one it can fall into.
+    /// DispatchedAt defaults recent for the same reason: every real run's RunDispatched carries
+    /// one, and left at its zero default it would read as millennia old, spuriously triggering
+    /// the interactive-claim staleness nudge on any fixture that does not ask for a specific one.
     /// </summary>
     public static RunDetails Run(
         Guid id,
@@ -72,13 +75,15 @@ internal static class StatusFixtures
         int? sessionProcessId = 4711,
         AgentRole? sessionRole = null,
         int? pullRequestNumber = null,
-        string branch = "task/28b19893-x") => new()
+        string branch = "task/28b19893-x",
+        DateTimeOffset? dispatchedAt = null) => new()
         {
             Id = id,
             State = state,
             Branch = branch,
             ActiveSessions = sessionProcessId is { } pid ? [Session(sessionRole ?? AgentRole.Build, pid)] : [],
             PullRequestNumber = pullRequestNumber,
+            DispatchedAt = dispatchedAt ?? Now.AddMinutes(-10),
         };
 
     /// <summary>
@@ -99,14 +104,16 @@ internal static class StatusFixtures
         IReadOnlyDictionary<int, SessionLiveness>? livenessByProcess = null,
         DispatchPressure? pressure = null,
         int budgetParkedRuns = 0,
-        IReadOnlyDictionary<Guid, int>? budgetParkedByProject = null) =>
+        IReadOnlyDictionary<Guid, int>? budgetParkedByProject = null,
+        int? interactiveClaimStaleAfterDays = null) =>
         TaskStatusComposer.Compose(
             task,
             Context(
                 run, silentSince, liveness, owners, projects, livenessByProcess, pressure,
                 // The count is per project (backlog 40), and a test that only cares how many runs
                 // this row's own project is holding says the number and lets the fixture key it.
-                budgetParkedByProject ?? new Dictionary<Guid, int> { [task.ProjectId] = budgetParkedRuns }),
+                budgetParkedByProject ?? new Dictionary<Guid, int> { [task.ProjectId] = budgetParkedRuns },
+                interactiveClaimStaleAfterDays),
             now ?? Now);
 
     public static TaskStatusContext Context(
@@ -117,7 +124,8 @@ internal static class StatusFixtures
         IReadOnlyDictionary<Guid, string>? projects = null,
         IReadOnlyDictionary<int, SessionLiveness>? livenessByProcess = null,
         DispatchPressure? pressure = null,
-        IReadOnlyDictionary<Guid, int>? budgetParkedRuns = null)
+        IReadOnlyDictionary<Guid, int>? budgetParkedRuns = null,
+        int? interactiveClaimStaleAfterDays = null)
     {
         Dictionary<Guid, RunDetails> runs = run is null ? [] : new Dictionary<Guid, RunDetails> { [run.Id] = run };
         Dictionary<Guid, RunActivity> activity = run is null || silentSince is null
@@ -138,6 +146,8 @@ internal static class StatusFixtures
             new StubSessionObserver(liveness, livenessByProcess),
             ThisMachine,
             pressure,
-            budgetParkedRuns);
+            budgetParkedRuns,
+            interactiveClaimStaleAfterDays
+                ?? Hall9k.Domain.Infrastructure.Persistence.OperatingSettings.DefaultInteractiveClaimStaleAfterDays);
     }
 }

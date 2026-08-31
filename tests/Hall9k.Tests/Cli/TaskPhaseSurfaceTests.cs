@@ -305,6 +305,60 @@ public sealed class TaskPhaseSurfaceTests
     }
 
     [Fact]
+    public void An_interactive_claim_untouched_past_the_configured_days_nudges_needs_you()
+    {
+        // A human-held claim has no lease or heartbeat by design (Decisions Log #103), so the
+        // only remedy for a forgotten one is the attention pane asking about it — never an
+        // automatic reclaim (idea 3ba186b6).
+        Guid runId = DomainId.New();
+        RunDetails interactive = StatusFixtures.Run(runId, RunState.Running, sessionProcessId: null);
+        interactive.LastInteractiveActivityAt = StatusFixtures.Now.AddDays(-4);
+
+        TaskStatusRow row = StatusFixtures.Compose(
+            StatusFixtures.Task(TaskState.Claimed, runId, claimedByNodeId: Guid.Empty),
+            interactive,
+            interactiveClaimStaleAfterDays: 3);
+
+        row.Attention.NeedsYou.Should().BeTrue();
+        row.Group.Should().Be(AttentionBucket.NeedsYou);
+        row.Attention.Cause.Should().Contain("untouched");
+        row.Attention.Lever.Should().Contain("h9k task work").And.Contain("h9k task handback");
+    }
+
+    [Fact]
+    public void An_interactive_claim_touched_within_the_configured_days_does_not_nudge()
+    {
+        Guid runId = DomainId.New();
+        RunDetails interactive = StatusFixtures.Run(runId, RunState.Running, sessionProcessId: null);
+        interactive.LastInteractiveActivityAt = StatusFixtures.Now.AddDays(-1);
+
+        TaskStatusRow row = StatusFixtures.Compose(
+            StatusFixtures.Task(TaskState.Claimed, runId, claimedByNodeId: Guid.Empty),
+            interactive,
+            interactiveClaimStaleAfterDays: 3);
+
+        row.Attention.NeedsYou.Should().BeFalse();
+    }
+
+    [Fact]
+    public void An_interactive_claim_with_no_recorded_touch_falls_back_to_when_it_was_claimed()
+    {
+        // LastInteractiveActivityAt is null until the claim's first InteractiveSessionStarted —
+        // never guessed at as more recent than the claim's own DispatchedAt.
+        Guid runId = DomainId.New();
+        RunDetails interactive = StatusFixtures.Run(
+            runId, RunState.Running, sessionProcessId: null, dispatchedAt: StatusFixtures.Now.AddDays(-4));
+
+        TaskStatusRow row = StatusFixtures.Compose(
+            StatusFixtures.Task(TaskState.Claimed, runId, claimedByNodeId: Guid.Empty),
+            interactive,
+            interactiveClaimStaleAfterDays: 3);
+
+        row.Attention.NeedsYou.Should().BeTrue();
+        row.Attention.Cause.Should().Contain("untouched");
+    }
+
+    [Fact]
     public void A_check_name_from_github_cannot_repaint_the_board_it_is_printed_on()
     {
         // FailingChecks is read off gh pr view, so a workflow job is named by whoever named it.

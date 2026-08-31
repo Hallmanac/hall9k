@@ -45,6 +45,15 @@ public sealed class ConfigShowCommand : Hall9kAsyncCommand<ConfigShowCommand.Set
             table.AddRow(label, value.EscapeMarkup());
         }
 
+        // Not part of the report above: nothing binds this through DaemonOptions (there is no
+        // daemon-side reclaim to configure, ever — h9k status reads it fresh on every render), so
+        // it carries no environment-variable tier and none of that pipeline's crash consequences.
+        OperatingSettings configured = await PlatformConfigFile.ReadOperatingSettingsAsync(cancellationToken);
+        int staleAfterDays = configured.InteractiveClaimStaleAfterDays ?? OperatingSettings.DefaultInteractiveClaimStaleAfterDays;
+        table.AddRow(
+            "interactive-claim-stale-after-days",
+            $"{staleAfterDays} ({(configured.InteractiveClaimStaleAfterDays is null ? "default" : "config file")})".EscapeMarkup());
+
         AnsiConsole.Write(table);
         AnsiConsole.MarkupLine(
             "\n[dim]Change a setting:[/] h9k config set --max-concurrent-agent-sessions 4");

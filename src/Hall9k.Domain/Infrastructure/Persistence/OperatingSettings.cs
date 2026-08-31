@@ -21,12 +21,25 @@ public sealed class OperatingSettings
     /// <summary>Mirrors <c>DaemonOptions.MaxConcurrentAgentSessions</c>'s shipped default, so the two never drift apart.</summary>
     public const int DefaultMaxConcurrentAgentSessions = 3;
 
+    /// <summary>
+    /// How many days an interactive claim (h9k task work) can sit untouched before h9k status
+    /// nudges about it (Decisions Log #103's own follow-up, idea 3ba186b6: "a staleness nudge,
+    /// not a timeout"). Read directly by the CLI's attention composer rather than through
+    /// <see cref="OperatingSettingsResolver"/> — nothing binds it through <c>DaemonOptions</c>,
+    /// since no daemon process acts on it (there is deliberately no reclaim, ever), so it carries
+    /// no environment-variable tier and no daemon-startup consequence the way the resolved
+    /// settings above do.
+    /// </summary>
+    public const int DefaultInteractiveClaimStaleAfterDays = 3;
+
     public int? MaxConcurrentAgentSessions { get; set; }
 
     [JsonConverter(typeof(LenientModelStringJsonConverter))]
     public string? DefaultModel { get; set; }
 
     public RoleModelSettings ModelByRole { get; set; } = new();
+
+    public int? InteractiveClaimStaleAfterDays { get; set; }
 
     [JsonExtensionData]
     public Dictionary<string, JsonElement>? Extra { get; set; }

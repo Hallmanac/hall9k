@@ -19,6 +19,8 @@ public sealed class TaskListItem
     public TaskState State { get; set; } = TaskState.Unknown;
     public int LeaseGeneration { get; set; }
     public Guid? ClaimedByNodeId { get; set; }
+    /// <summary>The h9k task work claim's own tell (<see cref="TaskAggregate.IsInteractiveClaim"/>'s mirror): the sentinel node id an operator's claim records rather than a real node's.</summary>
+    public bool IsInteractiveClaim => ClaimedByNodeId == Guid.Empty;
     public Guid? CurrentRunId { get; set; }
     public string? ExternalReference { get; set; }
     public string? PullRequestUrl { get; set; }

@@ -6,6 +6,7 @@ using Hall9k.Domain.Features.Run.Documents;
 using Hall9k.Domain.Features.Run.Projections;
 using Hall9k.Domain.Features.Tasks;
 using Hall9k.Domain.Features.Tasks.Projections;
+using Hall9k.Domain.Infrastructure.Persistence;
 using Marten;
 
 namespace Hall9k.Cli.Commands;
@@ -50,7 +51,8 @@ internal sealed record TaskStatusContext(
     ISessionObserver Sessions,
     string MachineName,
     DispatchPressure? Pressure = null,
-    IReadOnlyDictionary<Guid, int>? BudgetParkedRuns = null);
+    IReadOnlyDictionary<Guid, int>? BudgetParkedRuns = null,
+    int InteractiveClaimStaleAfterDays = OperatingSettings.DefaultInteractiveClaimStaleAfterDays);
 
 /// <summary>
 /// The one truth about how a task reads. Every surface that shows a task — h9k status,
@@ -156,6 +158,7 @@ internal static class TaskStatusComposer
         Dictionary<Guid, RunActivity> activity = runIds.Length == 0
             ? []
             : (await session.LoadManyAsync<RunActivity>(cancellationToken, runIds)).ToDictionary(a => a.Id);
+        OperatingSettings operatingSettings = await PlatformConfigFile.ReadOperatingSettingsAsync(cancellationToken);
 
         return new TaskStatusContext(
             runs,
@@ -166,7 +169,8 @@ internal static class TaskStatusComposer
             ProcessSessionObserver.Instance,
             Environment.MachineName,
             await DispatchPressure.ReadAsync(session, now, cancellationToken),
-            BudgetParkedByProject(tasks, runs));
+            BudgetParkedByProject(tasks, runs),
+            operatingSettings.InteractiveClaimStaleAfterDays ?? OperatingSettings.DefaultInteractiveClaimStaleAfterDays);
     }
 
     /// <summary>
@@ -187,8 +191,9 @@ internal static class TaskStatusComposer
         TaskPhase phase = TaskPhaseComposer.Compose(task, run, state, session, heldByCeiling);
         (bool stalled, string activity) = Silence(task, run, state, session, context, now);
         TaskAttention attention = AttentionComposer.Compose(
-            task, run, state, phase, stalled,
-            context.BudgetParkedRuns?.GetValueOrDefault(task.ProjectId) ?? 0);
+            task, run, state, phase, stalled, now,
+            context.BudgetParkedRuns?.GetValueOrDefault(task.ProjectId) ?? 0,
+            context.InteractiveClaimStaleAfterDays);
         AttentionBucket group = Group(task, run, state, attention, stalled);
 
         return new TaskStatusRow(

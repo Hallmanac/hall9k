@@ -36,7 +36,9 @@ internal static class AttentionComposer
         LifecycleState state,
         TaskPhase phase,
         bool stalled,
-        int budgetParkedRuns = 0)
+        DateTimeOffset now,
+        int budgetParkedRuns = 0,
+        int interactiveClaimStaleAfterDays = Domain.Infrastructure.Persistence.OperatingSettings.DefaultInteractiveClaimStaleAfterDays)
     {
         string id = TaskListCommand.ShortId(task.Id);
 
@@ -100,6 +102,28 @@ internal static class AttentionComposer
         if (stalled)
         {
             return new TaskAttention(AttentionLevel.NeedsYou, StallCause(phase), $"h9k logs {id}");
+        }
+
+        // An interactive claim (h9k task work) carries no lease and no heartbeat by design
+        // (Decisions Log #103) — closing the terminal is a normal way to leave, so a quiet claim
+        // is never a fault the way a stalled headless run is, and nothing here ever reclaims one
+        // automatically (idea 3ba186b6: "a staleness nudge, not a timeout"). But a claim nobody
+        // has touched in a long time is easy to forget about, so the only remedy is asking: still
+        // yours, or ready to hand off? Measured from the last recorded touch — a session
+        // attaching or detaching (RunDetails.LastInteractiveActivityAt) — falling back to when
+        // the claim itself began (RunDetails.DispatchedAt) for a claim that has never yet
+        // recorded either, rather than guessing at a touch nobody observed.
+        if (task.State == TaskState.Claimed && task.IsInteractiveClaim && run is not null)
+        {
+            TimeSpan age = now - (run.LastInteractiveActivityAt ?? run.DispatchedAt);
+            if (age >= TimeSpan.FromDays(interactiveClaimStaleAfterDays))
+            {
+                return new TaskAttention(
+                    AttentionLevel.NeedsYou,
+                    $"an interactive claim (h9k task work) has sat untouched for {TaskStatusComposer.RelativeAge(age)} "
+                    + "— still yours, or ready to hand off?",
+                    $"h9k task work {id} if you're still on it, or h9k task handback {id} to finish it headlessly");
+            }
         }
 
         // A Jira write is stuck on an expired or missing twg login (Brian's design, 2026-08-28) —

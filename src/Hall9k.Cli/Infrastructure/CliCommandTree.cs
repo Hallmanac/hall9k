@@ -335,7 +335,8 @@ public static class CliCommandTree
                     + "up the change on its next start (h9k daemon stop, then h9k daemon start) — it binds "
                     + "configuration once, at startup, the same as every environment variable it reads.")
                 .WithExample("config", "set", "--max-concurrent-agent-sessions", "4")
-                .WithExample("config", "set", "--model-review", "sonnet", "--model-fix", "haiku");
+                .WithExample("config", "set", "--model-review", "sonnet", "--model-fix", "haiku")
+                .WithExample("config", "set", "--interactive-claim-stale-after-days", "5");
         });
 
         config.AddBranch("idea", idea =>
