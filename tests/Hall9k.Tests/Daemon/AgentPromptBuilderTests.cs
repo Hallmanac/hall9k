@@ -209,6 +209,23 @@ public sealed class AgentPromptBuilderTests : IDisposable
     }
 
     /// <summary>
+    /// The self-review phase's own precondition sentence must not point at a verification suite
+    /// that does not exist for a project configuring none — it names the work itself as done,
+    /// the same fallback the recompose gate uses a few lines below.
+    /// </summary>
+    [Fact]
+    public void Build_prompt_states_the_self_review_precondition_as_vacuous_when_the_project_configures_no_gates()
+    {
+        string prompt = AgentPromptBuilder.Build(SomeTask(), SomeProject(), "task/1-slug", _worktreePath);
+
+        prompt.Should().Contain(
+            "This project configures no verification gates",
+            "the self-review phase states its own precondition rather than pointing at a suite that does not exist");
+        prompt.Should().Contain("**Self-review phase.** This project configures no verification gates");
+        prompt.Should().NotContain("full verification suite named below is");
+    }
+
+    /// <summary>
     /// Task: the build session ends with an adversarial self-review loop. Ordering is the load-
     /// bearing part — the hunt has to see finished work (after the suite is green) and the
     /// recompose has to compose the post-hunt tree (before the recompose), so this pins the
@@ -297,6 +314,10 @@ public sealed class AgentPromptBuilderTests : IDisposable
         prompt.Should().Contain(
             "never against this session's own live worktree",
             "the safe place is explicitly not this session's own worktree");
+        prompt.Should().Contain(
+            "mktemp -d",
+            "the safe place is a named location outside the worktree, not merely a word (\"scratch\") " +
+            "with nowhere the working rules' \"work only here\" clause allows it to exist");
     }
 
     /// <summary>
@@ -343,9 +364,25 @@ public sealed class AgentPromptBuilderTests : IDisposable
     }
 
     /// <summary>
-    /// Every self-review finding must resolve before the session moves on — fixed and
-    /// checkpoint-committed, or dismissed with a stated, checkable reason — never deferred to a
-    /// note for someone else to chase later.
+    /// A self-review fix is not proven safe by having merely run before the suite once, at the
+    /// top of the session — the fix has to be checked by the suite itself, or the recompose a few
+    /// lines below is describing a tree the gates never actually saw.
+    /// </summary>
+    [Fact]
+    public void Build_prompt_reruns_the_suite_after_a_self_review_fix_before_recomposing()
+    {
+        string prompt = AgentPromptBuilder.Build(SomeTask(), SomeProject(), "task/1-slug", _worktreePath);
+
+        prompt.Should().Contain(
+            "checkpoint-committed, then the full verification suite runs again",
+            "a correctness-or-behavior fix earns a suite re-run before the loop continues or the recompose begins");
+    }
+
+    /// <summary>
+    /// Every self-review finding at or above the correctness-or-behavior bar must resolve before
+    /// the session moves on — fixed and checkpoint-committed, or dismissed with a stated, checkable
+    /// reason — never deferred to a note for someone else to chase later. A style-only finding is
+    /// exempt: the loop rule above already lets it be fixed in place or skipped outright.
     /// </summary>
     [Fact]
     public void Build_prompt_forbids_deferring_a_self_review_finding_to_a_note()
@@ -356,6 +393,9 @@ public sealed class AgentPromptBuilderTests : IDisposable
         prompt.Should().Contain(
             "Deferring one to a note for later is not a third option",
             "a self-review finding cannot be left as a note instead of fixed or dismissed with a reason");
+        prompt.Should().Contain(
+            "A style-only finding needs no such reason",
+            "a style-only finding may be skipped without the checkable-reason requirement that binds a real defect");
     }
 
     /// <summary>
