@@ -497,9 +497,12 @@ public static class WorkPromptBuilder
     public static void AppendCommitDisciplineRuleForInteractiveSession(StringBuilder prompt)
     {
         prompt.AppendLine("- Commit as you go, new files included. `h9k task deliver` refuses to push while the");
-        prompt.AppendLine("  worktree holds modified-but-uncommitted files, naming them, and an untracked file");
-        prompt.AppendLine("  never ships even though it only warns — `git add` it and commit rather than leaving");
-        prompt.AppendLine("  it for the warning to catch.");
+        prompt.AppendLine("  worktree holds modified-but-uncommitted files, naming them; an untracked file does not");
+        prompt.AppendLine("  block delivery, but a new, never-`git add`ed file under src/ or tests/ still fails");
+        prompt.AppendLine("  the platform's own verification outright once the claim is delivered — an untracked");
+        prompt.AppendLine("  file only warns without failing outside those trees (a build byproduct can");
+        prompt.AppendLine("  legitimately be one there) — so `git add` it and commit rather than leaving it for");
+        prompt.AppendLine("  a warning to catch.");
     }
 
     /// <summary>

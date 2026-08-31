@@ -51,4 +51,29 @@ public static class WorktreeGitStatus
 
         return (modified, untracked);
     }
+
+    /// <summary>
+    /// Whether an untracked path belongs to the project's own source or test tree rather than
+    /// somewhere a gate's own build or test output tends to land. `git status`'s porcelain output
+    /// always uses a forward slash as the path separator, on every OS, so a literal prefix check
+    /// is safe without any platform-specific path handling. Shared by
+    /// <c>VerificationRunner</c>'s pre-gate check and <c>h9k task deliver</c>'s own untracked-file
+    /// warning, so the two say the same thing about the same path (independent pre-PR review,
+    /// adversarial finding: the two used to disagree, one calling a path "not blocking" that the
+    /// other would go on to fail the run over).
+    /// </summary>
+    public static bool IsUnderSourceOrTestTree(string path) =>
+        path.StartsWith("src/", StringComparison.Ordinal) || path.StartsWith("tests/", StringComparison.Ordinal);
+
+    /// <summary>
+    /// A well-known .NET build or test output directory appearing anywhere in the path, matched
+    /// by name the same way `bin/` and `obj/` are excluded whether or not a project's own
+    /// `.gitignore` names them — `TestResults/` is VSTest's own default results directory
+    /// (`dotnet test --logger trx`, `--collect:"XPlat Code Coverage"`), and it commonly lands
+    /// inside a test project's own directory under tests/, so a run that regenerates it every
+    /// gate pass must never be treated as agent work left behind (independent pre-PR review
+    /// cycle 1).
+    /// </summary>
+    public static bool IsKnownBuildOrTestOutput(string path) =>
+        path.Split('/').Any(segment => segment is "bin" or "obj" or "TestResults");
 }
