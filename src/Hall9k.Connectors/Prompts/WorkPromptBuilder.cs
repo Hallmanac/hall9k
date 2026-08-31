@@ -344,7 +344,13 @@ public static class WorkPromptBuilder
         // Suffixed with the worktree's own directory name (unique per session, since a node
         // dispatches each concurrent session into its own worktree) so two build sessions
         // running at once on the same node never clobber one another's round-one tip file.
-        string tipFile = Path.Combine(Path.GetTempPath(), $"self-review-round-one-tip-{Path.GetFileName(worktreePath)}");
+        // Forward-slashed and quoted at every interpolation site below: the session runs this
+        // command in a POSIX-shaped shell regardless of host OS, and Path.GetTempPath()'s
+        // backslashes on Windows would otherwise be consumed as shell escapes, silently
+        // collapsing the path and writing the tip file inside the worktree instead of outside it
+        // (independent pre-PR review, cycle 1, both lenses).
+        string tipFile = Path.Combine(Path.GetTempPath(), $"self-review-round-one-tip-{Path.GetFileName(worktreePath)}")
+            .Replace('\\', '/');
         if (project.VerifyCommands.Count == 0)
         {
             prompt.AppendLine("- **Self-review phase.** This project configures no verification gates, so its");
@@ -387,7 +393,10 @@ public static class WorkPromptBuilder
         prompt.AppendLine("  this worktree instead, where it survives the gap. The filename is suffixed");
         prompt.AppendLine("  with this worktree's own directory name so a concurrent session in a sibling");
         prompt.AppendLine("  worktree on the same node never clobbers this one's tip:");
-        prompt.AppendLine($"  `git rev-parse HEAD > {tipFile}`.");
+        prompt.AppendLine($"  `git rev-parse HEAD > \"{tipFile}\"`. Remove that file once this phase");
+        prompt.AppendLine("  ends, whichever round it ends on — like the hunt-3 scratch directory below,");
+        prompt.AppendLine("  it is scratch state for this phase alone and does not belong on the node");
+        prompt.AppendLine("  afterward.");
         prompt.AppendLine("  Three hunts are mandatory every round:");
         prompt.AppendLine("  1. **Refactor once-over.** Reread everything the diff touched as if it were");
         prompt.AppendLine("     someone else's pull request: naming, structure, dead code, duplication, a");
@@ -456,10 +465,14 @@ public static class WorkPromptBuilder
             prompt.AppendLine("  just before this phase started.");
         }
         prompt.AppendLine("  A style-only finding never by itself earns a round two — that is not what the");
-        prompt.AppendLine("  cap is for. Only when round one fixed something above the behavior-or-correctness");
-        prompt.AppendLine("  bar does a round two run, scoped to only the diff of those fixes —");
-        prompt.AppendLine($"  `git diff \"$(cat {tipFile})\" HEAD` — rather than the whole");
-        prompt.AppendLine("  branch again, with the same three hunts scoped to it. A round that finds");
+        prompt.AppendLine("  cap is for. A finding round one dismisses rather than fixes does not earn one");
+        prompt.AppendLine("  either: nothing landed, so the recorded tip and the current tip are identical,");
+        prompt.AppendLine("  and a round two would review an empty diff and call it clean — the exact");
+        prompt.AppendLine("  failure the tip-file mechanic exists to prevent. Only when round one actually");
+        prompt.AppendLine("  fixed something above the behavior-or-correctness bar does a round two run,");
+        prompt.AppendLine("  scoped to only the diff of those fixes —");
+        prompt.AppendLine($"  `git diff \"$(cat \"{tipFile}\")\" HEAD` — rather than the whole");
+        prompt.AppendLine("  branch again, with the same three hunts scoped to it. A round that fixes");
         prompt.AppendLine("  nothing above that bar — including round one — ends the loop right there.");
         prompt.AppendLine("  After round two the loop ends unconditionally either way: no third round —");
         prompt.AppendLine("  and the only thing still open when it ends is a suspicion that never rose to");
