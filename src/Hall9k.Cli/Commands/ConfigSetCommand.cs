@@ -121,8 +121,9 @@ public sealed class ConfigSetCommand : Hall9kAsyncCommand<ConfigSetCommand.Setti
         {
             throw new DomainValidationException(
                 $"--interactive-claim-stale-after-days must be at most {AttentionComposer.MaxInteractiveClaimStaleAfterDays} "
-                + "— h9k status clamps to that ceiling (independent pre-PR review, cycle 4), so a larger value would "
-                + "write and confirm as though applied while the board silently refused it.");
+                + $"— h9k status clamps any larger value down to {AttentionComposer.MaxInteractiveClaimStaleAfterDays} days "
+                + "when it nudges a stale claim, so writing one here would confirm a setting the board would not "
+                + "actually honour.");
         }
     }
 
