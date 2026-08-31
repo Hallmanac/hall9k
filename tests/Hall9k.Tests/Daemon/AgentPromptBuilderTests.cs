@@ -371,11 +371,36 @@ public sealed class AgentPromptBuilderTests : IDisposable
     [Fact]
     public void Build_prompt_reruns_the_suite_after_a_self_review_fix_before_recomposing()
     {
+        ProjectDetails project = SomeProject();
+        project.VerifyCommands = [new VerifyCommand("test", "dotnet test")];
+
+        string prompt = AgentPromptBuilder.Build(SomeTask(), project, "task/1-slug", _worktreePath);
+
+        prompt.Should().Contain(
+            "checkpoint-committed, then",
+            "a correctness-or-behavior fix earns a suite re-run before the loop continues or the recompose begins");
+        prompt.Should().Contain(
+            "the full verification suite runs again",
+            "a project with real gates re-runs them, not a vacuous stand-in");
+    }
+
+    /// <summary>
+    /// A project configuring no verification gates has no suite for a self-review fix to re-run —
+    /// telling it to "re-run the full verification suite" would point at something that does not
+    /// exist, the same fallback the recompose gate already uses a few lines below.
+    /// </summary>
+    [Fact]
+    public void Build_prompt_states_the_self_review_fix_rerun_as_vacuous_when_the_project_configures_no_gates()
+    {
         string prompt = AgentPromptBuilder.Build(SomeTask(), SomeProject(), "task/1-slug", _worktreePath);
 
         prompt.Should().Contain(
-            "checkpoint-committed, then the full verification suite runs again",
-            "a correctness-or-behavior fix earns a suite re-run before the loop continues or the recompose begins");
+            "checkpoint-committed, then",
+            "the fix-and-continue sentence is still stated even with no gates");
+        prompt.Should().Contain(
+            "configures no verification gates, so there is no suite to re-run",
+            "the fix-and-continue sentence states its own precondition rather than pointing at a suite that does not exist");
+        prompt.Should().NotContain("the full verification suite runs again");
     }
 
     /// <summary>
