@@ -25,9 +25,10 @@ namespace Hall9k.Daemon.Execution;
 /// never actually carry: a no-commit check for a branch that carries nothing at all (Research
 /// tasks exempt; their deliverable is the transcript), and an uncommitted-files check
 /// (backlog 57, not exempt for any task type) for a session that ended with
-/// modified-but-uncommitted files still sitting in the worktree — a failure that names every
-/// file left behind so a human or a retry session finds the work instead of losing it. The
-/// reviewer agent is Slice 3.
+/// modified-but-uncommitted files, or brand-new untracked files under src/ or tests/, still
+/// sitting in the worktree — a failure that names every file left behind, of either kind, so a
+/// human or a retry session finds the whole feature instead of committing only the modified
+/// half of it and shipping a hollow branch. The reviewer agent is Slice 3.
 /// </summary>
 public sealed partial class VerificationRunner(
     IDocumentStore store,
@@ -74,10 +75,10 @@ public sealed partial class VerificationRunner(
         // a human or a retry session finds the finished work instead of rediscovering it.
         if (project is not null)
         {
-            (IReadOnlyList<string>? uncommittedFiles, IReadOnlyList<string> untrackedFiles) =
+            (IReadOnlyList<string>? modifiedFiles, IReadOnlyList<string> untrackedFiles) =
                 await ListUncommittedFilesAsync(run.WorktreePath, cancellationToken);
 
-            if (uncommittedFiles is null)
+            if (modifiedFiles is null)
             {
                 // Git is unobservable here (not a repo, permission denied, `git` missing from
                 // PATH); never guess — proceed and let the gates surface whatever is actually
@@ -89,40 +90,56 @@ public sealed partial class VerificationRunner(
                     runId, run.WorktreePath);
             }
 
-            if (untrackedFiles.Count > 0)
+            // An untracked path under src/ or tests/ is treated as first-class strandable work,
+            // not a softer signal: it is exactly the shape that stranded a feature's own core
+            // files (TwgJiraExecutor.cs, JiraWriteCoordinator.cs) behind a failure message that
+            // named only the modified files, so an agent that faithfully committed the named
+            // list still delivered a hollow branch (origin incident, 2026-08-29, the Jira
+            // compose/execute task). git status is run with `--untracked-files=all`, so a new
+            // file inside a wholly untracked directory is reported by its own path rather than
+            // collapsed into one directory entry (conformance review, independent pre-PR review
+            // cycle 2), and .gitignore matches (bin/, obj/, artifacts/) never appear here at
+            // all — git status omits an ignored path by default, so nothing extra is needed to
+            // keep generated output out of this list. Anything untracked outside src/ or tests/
+            // (a coverage report at the repo root, a project home's own workspace notes) is
+            // still just as likely a gate byproduct the project's .gitignore has not caught up
+            // with, so it stays a warn-only signal — failing on it would be a defect a retry can
+            // never clear, since the next session's gates regenerate the same file.
+            IReadOnlyList<string> strandableUntrackedFiles = [.. untrackedFiles.Where(IsUnderSourceOrTestTree)];
+            IReadOnlyList<string> byproductUntrackedFiles =
+                [.. untrackedFiles.Where(path => !IsUnderSourceOrTestTree(path))];
+
+            if (byproductUntrackedFiles.Count > 0)
             {
-                // A softer signal than a failure (conformance review): an untracked file is
-                // usually a gate byproduct the project's .gitignore has not caught up with, but
-                // it can just as easily be a brand-new source file the session forgot to `git
-                // add` — the prompt rule promises the platform names "anything left modified but
-                // uncommitted", so silence here would be a real gap. This never fails the run:
-                // git status is run with `--untracked-files=all`, so a new file inside a wholly
-                // untracked directory is reported by its own path rather than collapsed into one
-                // directory entry (conformance review, independent pre-PR review cycle 2), and it
-                // is ListUncommittedFilesAsync below that classifies `?? ` entries into this
-                // separate warn-only list, precisely so a retry cannot be permanently
-                // unclearable on a byproduct the gates regenerate every run.
                 logger.LogWarning(
                     "Run {RunId}: the worktree at {WorktreePath} has untracked file(s) not counted against the " +
                     "uncommitted-files check: {Files}",
-                    runId, run.WorktreePath, SummarizeFiles(untrackedFiles));
+                    runId, run.WorktreePath, SummarizeFiles(byproductUntrackedFiles));
             }
+
+            // The failing list a resuming agent or a human sees: every modified-but-uncommitted
+            // tracked file, plus every untracked new file under src/ or tests/ — named together
+            // so committing only the modified ones can never look sufficient. Null only when git
+            // itself was unobservable above; in that case untracked came back empty too, so there
+            // is nothing to strand strandableUntrackedFiles with.
+            IReadOnlyList<string>? strandedFiles = modifiedFiles is null
+                ? null
+                : [.. modifiedFiles, .. strandableUntrackedFiles];
 
             // Research tasks are exempt from the no-commit check — their deliverable is the
             // transcript, not commits (the one TaskType whose legitimate output is empty);
             // every other type ships its work as commits. The uncommitted-files check right
-            // below is not exempt: a research task that left modified files behind still
-            // stranded work, whatever its deliverable is.
+            // below is not exempt: a research task that left modified or untracked files behind
+            // still stranded work, whatever its deliverable is.
             if (task.Type != TaskType.Research)
             {
                 int? commits = await CountBranchCommitsAsync(run.WorktreePath, project.BaseBranch, cancellationToken);
                 if (commits == 0)
                 {
-                    string reason = uncommittedFiles is { Count: > 0 }
+                    string reason = strandedFiles is { Count: > 0 }
                         ? $"Agent produced no commits: branch '{run.Branch}' holds nothing beyond " +
-                          $"'{project.BaseBranch}'. The session ended with modified-but-uncommitted files " +
-                          $"still sitting in the worktree instead of being committed: " +
-                          $"{SummarizeFiles(uncommittedFiles)}."
+                          $"'{project.BaseBranch}'. The session ended with uncommitted files still sitting " +
+                          $"in the worktree instead of being committed: {SummarizeFiles(strandedFiles)}."
                         : $"Agent produced no commits: branch '{run.Branch}' holds nothing beyond " +
                           $"'{project.BaseBranch}'. The session ended without committing its work, so the " +
                           "gates were not run against the unmodified tree.";
@@ -141,11 +158,11 @@ public sealed partial class VerificationRunner(
                 }
             }
 
-            if (uncommittedFiles is { Count: > 0 })
+            if (strandedFiles is { Count: > 0 })
             {
                 string reason =
-                    "The session ended with modified-but-uncommitted files still sitting in the worktree: " +
-                    $"{SummarizeFiles(uncommittedFiles)}. Finished work left uncommitted never reaches " +
+                    "The session ended with uncommitted files still sitting in the worktree: " +
+                    $"{SummarizeFiles(strandedFiles)}. Finished work left uncommitted never reaches " +
                     "the pull request, so the gates were not run until it is committed.";
                 await FailBeforeGatesAsync(runId, taskId, reason, cancellationToken);
                 logger.LogWarning("Run {RunId} failed before the gates: {Reason}", runId, reason);
@@ -495,14 +512,19 @@ public sealed partial class VerificationRunner(
     /// itself — including the rename/copy entry's second NUL-terminated field — is
     /// <see cref="WorktreeGitStatus.ParsePorcelain"/>, shared with the interactive claim's own
     /// checks (<c>InteractiveWorktreeGit</c>) rather than duplicated (adversarial review, cycle 4).
-    /// Untracked files are reported separately rather than folded into the failing list: a gate's
-    /// own build or test output (a coverage report, `TestResults/`, a lint cache) the project's
-    /// `.gitignore` does not yet name is not stranded agent work, and failing a run on it is a
-    /// defect a retry can never clear, since the next session's gates regenerate the same file
-    /// (adversarial review, independent pre-PR review cycle 1). The modified-list slot is null
-    /// when git cannot answer, the same "never guess" convention
-    /// <see cref="CountBranchCommitsAsync"/> already follows: an unobservable worktree is never
-    /// reported as clean.
+    /// Untracked files are reported separately from the modified list because the caller applies
+    /// different rules to each: one under src/ or tests/ is first-class strandable work (origin
+    /// incident, 2026-08-29, the Jira compose/execute task — a whole feature's new source files
+    /// named only in a warning, not the failing list, so a faithful commit of the named files
+    /// still shipped a hollow branch), while one elsewhere is still as likely a gate's own build
+    /// or test output (a coverage report,
+    /// `TestResults/`, a lint cache) the project's `.gitignore` has not caught up with, and failing
+    /// on that would be a defect a retry can never clear, since the next session's gates regenerate
+    /// the same file (adversarial review, independent pre-PR review cycle 1). A `.gitignore` match
+    /// (`bin/`, `obj/`, `artifacts/`) never reaches either list: git status omits an ignored path
+    /// by default, with no `--ignored` flag passed here. The modified-list slot is null when git
+    /// cannot answer, the same "never guess" convention <see cref="CountBranchCommitsAsync"/>
+    /// already follows: an unobservable worktree is never reported as clean.
     /// </summary>
     private static async Task<(IReadOnlyList<string>? Modified, IReadOnlyList<string> Untracked)>
         ListUncommittedFilesAsync(string worktreePath, CancellationToken cancellationToken)
@@ -520,6 +542,15 @@ public sealed partial class VerificationRunner(
         (IReadOnlyList<string> modified, IReadOnlyList<string> untracked) = WorktreeGitStatus.ParsePorcelain(output);
         return (modified, untracked);
     }
+
+    /// <summary>
+    /// Whether an untracked path belongs to the project's own source or test tree rather than
+    /// somewhere a gate's own build or test output tends to land. `git status`'s porcelain output
+    /// always uses a forward slash as the path separator, on every OS, so a literal prefix check
+    /// is safe without any platform-specific path handling.
+    /// </summary>
+    private static bool IsUnderSourceOrTestTree(string path) =>
+        path.StartsWith("src/", StringComparison.Ordinal) || path.StartsWith("tests/", StringComparison.Ordinal);
 
     private static async Task<(int ExitCode, string StandardOutput)> RunGitAsync(
         string workingDirectory, IReadOnlyList<string> arguments, CancellationToken cancellationToken)

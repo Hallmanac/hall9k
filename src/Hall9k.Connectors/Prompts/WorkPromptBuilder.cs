@@ -386,8 +386,9 @@ public static class WorkPromptBuilder
 
         prompt.AppendLine("  0. With every last increment committed as a checkpoint — `git status` must show");
         prompt.AppendLine("     nothing uncommitted or untracked before this step, or step 3 below will fail");
-        prompt.AppendLine("     against a tip that never held it: an untracked file only warns at the final");
-        prompt.AppendLine("     contract, but here it would recompose into the new history while `old-tip`");
+        prompt.AppendLine("     against a tip that never held it: a new, never-`git add`ed file under src/ or");
+        prompt.AppendLine("     tests/ fails the final contract outright, and even one outside those trees that");
+        prompt.AppendLine("     only warns there would still recompose into the new history while `old-tip`");
         prompt.AppendLine("     predates it, so the diff comes back non-empty for something that was added,");
         prompt.AppendLine("     not omitted. Record the pre-reset tip: `git rev-parse HEAD` — step 3 checks");
         prompt.AppendLine("     against it, so this is not optional bookkeeping.");
@@ -424,9 +425,10 @@ public static class WorkPromptBuilder
         prompt.AppendLine("     local fix for that here, redo the recompose from a tip recorded once that");
         prompt.AppendLine("     content was itself committed as a checkpoint, not folded in at this step.");
         prompt.AppendLine("     Check `git status --porcelain` too, right here, and treat any untracked file");
-        prompt.AppendLine("     it shows as the same failure: the platform's own gate only warns on an untracked file (a");
-        prompt.AppendLine("     build byproduct can legitimately be one), so this file forgotten by the");
-        prompt.AppendLine("     recompose is the check that actually stops it before it ships.");
+        prompt.AppendLine("     it shows as the same failure: the platform's own gate fails outright on one");
+        prompt.AppendLine("     under src/ or tests/, and only warns on one elsewhere (a build byproduct can");
+        prompt.AppendLine("     legitimately be one there), so this file forgotten by the recompose is the");
+        prompt.AppendLine("     check that actually stops it before it ships.");
         prompt.AppendLine("  Nothing happens between steps 1 and 2: no test run, no fix, no exploration.");
         prompt.AppendLine("  That gap is exactly what the reset is for: because the tree never moves,");
         prompt.AppendLine("  the commits composed in step 2 describe the identical tree that passed the");
@@ -475,10 +477,12 @@ public static class WorkPromptBuilder
         prompt.AppendLine("  the foreground and wait for it to finish before you rely on its result or move");
         prompt.AppendLine("  on. Commit everything before that final message, new files included: a tracked");
         prompt.AppendLine("  file left modified or staged but uncommitted when the session ends is stranded there,");
-        prompt.AppendLine("  and the platform fails the run naming exactly which files were left behind. An");
-        prompt.AppendLine("  untracked file only warns rather than fails — a gate's own build output can land");
-        prompt.AppendLine("  there too — but it still never ships, so `git add` it and commit rather than");
-        prompt.AppendLine("  counting on the warning to catch it.");
+        prompt.AppendLine("  and the platform fails the run naming exactly which files were left behind — a new,");
+        prompt.AppendLine("  never-`git add`ed file under src/ or tests/ counts too, named in the same failure,");
+        prompt.AppendLine("  so committing only the modified files it also names still leaves a hollow branch");
+        prompt.AppendLine("  behind. An untracked file outside src/ and tests/ only warns — a gate's own build");
+        prompt.AppendLine("  output can land there too — but it still never ships, so `git add` it and commit");
+        prompt.AppendLine("  rather than counting on the warning to catch it.");
     }
 
     /// <summary>
