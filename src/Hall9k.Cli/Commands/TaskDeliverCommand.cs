@@ -111,15 +111,12 @@ public sealed class TaskDeliverCommand : Hall9kAsyncCommand<TaskDeliverCommand.S
             // retry to learn what this check already knows (independent pre-PR review, both
             // lenses, cycle 1: this command used to warn and proceed into a guaranteed pre-gate
             // failure). Refused here, the same as the modified-files case above.
-            IReadOnlyList<string> strandable =
-                [.. untracked.Where(path =>
-                    WorktreeGitStatus.IsUnderSourceOrTestTree(path) && !WorktreeGitStatus.IsKnownBuildOrTestOutput(path))];
-            IReadOnlyList<string> byproduct = [.. untracked.Except(strandable)];
+            (IReadOnlyList<string> strandable, IReadOnlyList<string> byproduct) = WorktreeGitStatus.SplitUntracked(untracked);
 
             if (strandable.Count > 0)
             {
                 AnsiConsole.MarkupLineInterpolated(
-                    $"[red]Task {taskId}'s worktree has untracked file(s) under src/ or tests/; the platform's own verification will fail the run over them once delivered. Commit them first:[/]");
+                    $"[red]Task {taskId}'s worktree has untracked file(s) under src/ or tests/; delivery refuses to push over them. Commit them first:[/]");
                 foreach (string file in strandable)
                 {
                     AnsiConsole.MarkupLineInterpolated($"[red]  {file}[/]");

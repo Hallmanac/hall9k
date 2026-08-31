@@ -76,4 +76,22 @@ public static class WorktreeGitStatus
     /// </summary>
     public static bool IsKnownBuildOrTestOutput(string path) =>
         path.Split('/').Any(segment => segment is "bin" or "obj" or "TestResults");
+
+    /// <summary>
+    /// Splits a list of untracked paths into strandable work (under src/ or tests/, and not a
+    /// known build/test byproduct) and everything else, using <see cref="IsUnderSourceOrTestTree"/>
+    /// and <see cref="IsKnownBuildOrTestOutput"/> together the one way every caller needs them.
+    /// Previously this pairing was written out longhand at each call site
+    /// (<c>VerificationRunner</c>, <c>h9k task deliver</c>, <c>h9k task verify</c>), so a future
+    /// change to the rule risked landing on some of them and not others without any build or test
+    /// failure to catch the drift (independent pre-PR review, cycle 3).
+    /// </summary>
+    public static (IReadOnlyList<string> Strandable, IReadOnlyList<string> Byproduct) SplitUntracked(
+        IReadOnlyList<string> untracked)
+    {
+        IReadOnlyList<string> strandable =
+            [.. untracked.Where(path => IsUnderSourceOrTestTree(path) && !IsKnownBuildOrTestOutput(path))];
+        IReadOnlyList<string> byproduct = [.. untracked.Except(strandable)];
+        return (strandable, byproduct);
+    }
 }

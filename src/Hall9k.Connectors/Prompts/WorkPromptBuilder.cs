@@ -492,17 +492,18 @@ public static class WorkPromptBuilder
     /// process-dies-at-final-message claim rather than repeating it (adversarial review, cycle
     /// 4). The commit-everything discipline still applies, for a different reason —
     /// <c>h9k task verify</c> and <c>h9k task deliver</c> read this worktree, and
-    /// <c>h9k task deliver</c> refuses to push while it holds modified-but-uncommitted files.
+    /// <c>h9k task deliver</c> refuses to push outright over a modified-but-uncommitted file or a
+    /// new, never-<c>git add</c>ed one under src/ or tests/ (commit <c>3e582806</c> widened the
+    /// refusal to the latter; a rule still claiming only modified files block delivery would be
+    /// stale again — independent pre-PR review, cycle 3).
     /// </summary>
     public static void AppendCommitDisciplineRuleForInteractiveSession(StringBuilder prompt)
     {
-        prompt.AppendLine("- Commit as you go, new files included. `h9k task deliver` refuses to push while the");
-        prompt.AppendLine("  worktree holds modified-but-uncommitted files, naming them; an untracked file does not");
-        prompt.AppendLine("  block delivery, but a new, never-`git add`ed file under src/ or tests/ still fails");
-        prompt.AppendLine("  the platform's own verification outright once the claim is delivered — an untracked");
-        prompt.AppendLine("  file only warns without failing outside those trees (a build byproduct can");
-        prompt.AppendLine("  legitimately be one there) — so `git add` it and commit rather than leaving it for");
-        prompt.AppendLine("  a warning to catch.");
+        prompt.AppendLine("- Commit as you go, new files included. `h9k task deliver` refuses to push, naming the");
+        prompt.AppendLine("  files, while the worktree holds either a modified-but-uncommitted file or a new,");
+        prompt.AppendLine("  never-`git add`ed one under src/ or tests/ — an untracked file only warns without");
+        prompt.AppendLine("  blocking delivery outside those trees (a build byproduct can legitimately be one");
+        prompt.AppendLine("  there) — so `git add` it and commit rather than leaving it for a warning to catch.");
     }
 
     /// <summary>
