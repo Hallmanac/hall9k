@@ -7,6 +7,12 @@ using Xunit;
 
 namespace Hall9k.Tests.Domain;
 
+// A_stream_with_no_recorded_run_directory_falls_back_to_the_global_location compares
+// RunAggregate's own RunPaths.GlobalDirectory fallback (resolved once, at Apply) against a
+// second, independent RunPaths.GlobalDirectory call — both read the process-wide HALL9K_HOME
+// variable PlatformPaths.Home resolves, so this races any test that redirects it the same way
+// RunPathsTests does; see the note there for the origin incident.
+[Collection("Hall9kHome")]
 public sealed class RunAggregateTests
 {
     private static readonly DateTimeOffset Now = new(2026, 8, 16, 12, 0, 0, TimeSpan.Zero);

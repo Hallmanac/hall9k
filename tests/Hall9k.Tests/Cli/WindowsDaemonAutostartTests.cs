@@ -6,6 +6,7 @@ using Xunit;
 
 namespace Hall9k.Tests.Cli;
 
+[Collection("Hall9kHome")]
 public sealed class WindowsDaemonAutostartTests
 {
     private const string Binary = @"C:\Users\someone\.hall9k\bin\h9kd.exe";
