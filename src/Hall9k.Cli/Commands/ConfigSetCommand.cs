@@ -116,6 +116,14 @@ public sealed class ConfigSetCommand : Hall9kAsyncCommand<ConfigSetCommand.Setti
                 "--interactive-claim-stale-after-days must be at least 1 — a claim less than a day old is never "
                 + "stale.");
         }
+
+        if (settings.InteractiveClaimStaleAfterDays > AttentionComposer.MaxInteractiveClaimStaleAfterDays)
+        {
+            throw new DomainValidationException(
+                $"--interactive-claim-stale-after-days must be at most {AttentionComposer.MaxInteractiveClaimStaleAfterDays} "
+                + "— h9k status clamps to that ceiling (independent pre-PR review, cycle 4), so a larger value would "
+                + "write and confirm as though applied while the board silently refused it.");
+        }
     }
 
     /// <summary>The mutation <see cref="PlatformConfigFile.WriteOperatingSettingsAsync"/> runs, isolated for direct testing.</summary>

@@ -277,11 +277,11 @@ Covered in [operations.md](operations.md#the-daemon-lifecycle) and [INSTALL.md](
 
 `h9k config show` · `h9k config set`
 
-The concurrency ceiling and the per-role model overrides, durable in the platform config file so
-a fresh machine or an autostarted daemon runs with the operator's settings without an environment
-variable ritual. `show` resolves and names each setting's origin (environment variable, config
-file, or built-in default); `set` merges a change into the file. See
-[operations.md](operations.md#daemon-operating-settings).
+The concurrency ceiling, the per-role model overrides, and the interactive-claim staleness
+threshold, durable in the platform config file so a fresh machine or an autostarted daemon runs
+with the operator's settings without an environment variable ritual. `show` resolves and names
+each setting's origin (environment variable, config file, or built-in default); `set` merges a
+change into the file. See [operations.md](operations.md#daemon-operating-settings).
 
 ## Identifiers
 
