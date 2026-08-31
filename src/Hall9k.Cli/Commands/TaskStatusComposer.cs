@@ -202,7 +202,8 @@ internal static class TaskStatusComposer
         TaskAttention attention = AttentionComposer.Compose(
             task, run, state, phase, stalled, now,
             context.BudgetParkedRuns?.GetValueOrDefault(task.ProjectId) ?? 0,
-            context.InteractiveClaimStaleAfterDays);
+            context.InteractiveClaimStaleAfterDays,
+            context.MachineName);
         AttentionBucket group = Group(task, run, state, attention, stalled);
 
         return new TaskStatusRow(

@@ -48,8 +48,10 @@ internal static class AttentionComposer
         bool stalled,
         DateTimeOffset now,
         int budgetParkedRuns = 0,
-        int interactiveClaimStaleAfterDays = Domain.Infrastructure.Persistence.OperatingSettings.DefaultInteractiveClaimStaleAfterDays)
+        int interactiveClaimStaleAfterDays = Domain.Infrastructure.Persistence.OperatingSettings.DefaultInteractiveClaimStaleAfterDays,
+        string? machineName = null)
     {
+        machineName ??= Environment.MachineName;
         string id = TaskListCommand.ShortId(task.Id);
 
         // A task a human walked away from owes that human nothing, whatever its last run is
@@ -168,7 +170,7 @@ internal static class AttentionComposer
         // could never be reached by it.
         bool reachedViaKnownGoneOrEnded = phase.Liveness is SessionLiveness.Gone or SessionLiveness.NotApplicable;
         bool reachedViaLegacyBlankMachineName = run is not null
-            && phase.Liveness == SessionLiveness.Unobserved && !IsInteractiveSessionRecordedElsewhere(run);
+            && phase.Liveness == SessionLiveness.Unobserved && !IsInteractiveSessionRecordedElsewhere(run, machineName);
         if (task.State == TaskState.Claimed && task.IsInteractiveClaim && run is not null
             && (run.State == Domain.Features.Run.RunState.Dispatched
                 || run.State == Domain.Features.Run.RunState.Running)
@@ -209,9 +211,18 @@ internal static class AttentionComposer
                 // attach or detach, so h9k task verify's own gate runs on this same claim leave
                 // no trace here, and asserting "was last touched" would claim a fact — that this
                 // was the most recent activity — this field cannot actually see.
-                string activity = run.LastInteractiveActivityAt is null
-                    ? $"was claimed {TaskStatusComposer.RelativeAge(age)} and has not recorded a touch since"
-                    : $"last recorded activity {TaskStatusComposer.RelativeAge(age)}";
+                // InteractiveSessionCount > 0 with LastInteractiveActivityAt null is a claim that
+                // recorded a touch before this machine started tracking exact touch times (the
+                // legacy-blank-MachineName arm can reach a claim like this: a document whose
+                // session started before MachineName and LastInteractiveActivityAt began being
+                // set together). Saying "has not recorded a touch since" there would contradict
+                // the count sitting right next to it, so that case gets its own honest wording
+                // instead of either the never-touched or the precise-last-touch claim.
+                string activity = run.LastInteractiveActivityAt is not null
+                    ? $"last recorded activity {TaskStatusComposer.RelativeAge(age)}"
+                    : run.InteractiveSessionCount > 0
+                        ? $"was claimed {TaskStatusComposer.RelativeAge(age)}, with activity recorded before this machine tracked exact touch times"
+                        : $"was claimed {TaskStatusComposer.RelativeAge(age)} and has not recorded a touch since";
                 return new TaskAttention(
                     AttentionLevel.NeedsYou,
                     $"an interactive claim (h9k task work) {activity} — still yours, or ready to hand off?",
@@ -490,10 +501,19 @@ internal static class AttentionComposer
     /// refuses: true only for a recorded <see cref="Domain.Features.Run.ActiveSession.MachineName"/>
     /// that names a real, different machine. A blank name is unobservable rather than elsewhere,
     /// and reads false here exactly as it does there.
+    /// <para>
+    /// Compares against the caller's own <paramref name="machineName"/> rather than
+    /// <see cref="Environment.MachineName"/> directly, so this reads "is this machine" the same
+    /// way <see cref="TaskStatusComposer.SessionOnThisMachine"/> does — through the
+    /// <see cref="TaskStatusContext.MachineName"/> seam — instead of a second, independent answer
+    /// to the identical question that only happens to agree in production (adversarial review,
+    /// cycle 1: the two disagreed under a test-supplied machine name, since only production sets
+    /// <c>TaskStatusContext.MachineName</c> from <c>Environment.MachineName</c>).
+    /// </para>
     /// </summary>
-    private static bool IsInteractiveSessionRecordedElsewhere(RunDetails run) =>
+    private static bool IsInteractiveSessionRecordedElsewhere(RunDetails run, string machineName) =>
         run.ActiveSessions.Exists(session =>
             session.Role == Domain.Features.Run.AgentRole.Interactive
             && session.MachineName.IsNotBlank()
-            && session.MachineName != Environment.MachineName);
+            && session.MachineName != machineName);
 }
