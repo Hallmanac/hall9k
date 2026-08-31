@@ -223,6 +223,10 @@ public sealed class AgentPromptBuilderTests : IDisposable
             "the self-review phase states its own precondition rather than pointing at a suite that does not exist");
         prompt.Should().Contain("**Self-review phase.** This project configures no verification gates");
         prompt.Should().NotContain("full verification suite named below is");
+        prompt.Should().Contain(
+            "the work itself is done and every checkpoint is committed",
+            "the hunt's own diff range only shows committed work, so an uncommitted last increment " +
+            "must be checked in before the hunt starts (adversarial review, cycle 4)");
     }
 
     /// <summary>
@@ -248,11 +252,15 @@ public sealed class AgentPromptBuilderTests : IDisposable
         selfReviewAt.Should().BeGreaterThan(checkpointAt, "the hunt is named after checkpoint discipline");
         selfReviewAt.Should().BeLessThan(recomposeAt, "the hunt runs before the recompose composes its tree");
         prompt.Should().Contain(
-            "after the suite passes, so the hunt sees finished work",
+            "the hunt's diff actually shows the newest work",
             "the prompt states the reason for the ordering, not just the ordering itself");
         prompt.Should().Contain(
             "the recompose composes the tree the hunt leaves behind",
             "the prompt states why the hunt precedes the recompose specifically");
+        prompt.Should().Contain(
+            "green and every checkpoint is committed",
+            "the hunt's own diff range only shows committed work, so an uncommitted last increment " +
+            "must be checked in before the hunt starts (adversarial review, cycle 4)");
         prompt.Should().Contain(
             "self-review phase above has run its course, recompose",
             "the recompose gate itself now names the self-review phase as a precondition");
@@ -284,7 +292,7 @@ public sealed class AgentPromptBuilderTests : IDisposable
     {
         string prompt = AgentPromptBuilder.Build(SomeTask(), SomeProject(), "task/1-slug", _worktreePath);
 
-        prompt.Should().Contain("Start every round from a fresh `git diff origin/main...HEAD`,");
+        prompt.Should().Contain("Round one starts from a fresh `git diff origin/main...HEAD`,");
         prompt.Should().Contain(
             "not from memory of what you wrote",
             "the hunt must read the diff, not recall what the session believes it already wrote");
@@ -312,6 +320,10 @@ public sealed class AgentPromptBuilderTests : IDisposable
             "run it, do not proofread",
             "the third hunt requires actually running an authored procedure, not reading it back");
         prompt.Should().Contain(
+            "documented procedure in this branch's diff — whether you wrote it this",
+            "the hunt covers the whole branch diff, including a procedure resumed from an interactive " +
+            "claim or a retry rather than authored by this session (conformance review, cycle 4)");
+        prompt.Should().Contain(
             "exercise it somewhere the side effects are safe",
             "a state-mutating procedure must be run somewhere safe");
         prompt.Should().Contain(
@@ -338,8 +350,11 @@ public sealed class AgentPromptBuilderTests : IDisposable
 
         prompt.Should().Contain("The loop is capped at two rounds, hard.");
         prompt.Should().Contain(
-            "against only the diff of",
+            "scoped to only the diff of those fixes",
             "round two reviews only the fix delta, not the whole branch again");
+        prompt.Should().Contain(
+            "`git diff $ROUND_ONE_START HEAD`",
+            "round two's fix-delta range is named explicitly rather than left for the session to invent");
         prompt.Should().Contain(
             "the loop ends unconditionally either way",
             "the loop ends unconditionally after round two");

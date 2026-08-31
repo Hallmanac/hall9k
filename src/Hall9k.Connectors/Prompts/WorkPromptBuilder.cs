@@ -345,19 +345,22 @@ public static class WorkPromptBuilder
         {
             prompt.AppendLine("- **Self-review phase.** This project configures no verification gates, so its");
             prompt.AppendLine("  suite is vacuously green already (the recompose step below states the same");
-            prompt.AppendLine("  thing); once the work itself is done, and before the recompose below, hunt");
-            prompt.AppendLine("  your own branch for defects. It runs here — after the work is finished, so");
-            prompt.AppendLine("  the hunt sees finished work, and before the recompose, so the recompose");
-            prompt.AppendLine("  composes the tree the hunt leaves behind rather than the tree that predates");
-            prompt.AppendLine("  it.");
+            prompt.AppendLine("  thing); once the work itself is done and every checkpoint is committed, and");
+            prompt.AppendLine("  before the recompose below, hunt your own branch for defects. It runs here —");
+            prompt.AppendLine("  after the work is finished and the tree is clean, so the hunt's diff actually");
+            prompt.AppendLine("  shows the newest work rather than missing whatever is still sitting");
+            prompt.AppendLine("  uncommitted, and before the recompose, so the recompose composes the tree the");
+            prompt.AppendLine("  hunt leaves behind rather than the tree that predates it.");
         }
         else
         {
             prompt.AppendLine("- **Self-review phase.** Once the full verification suite named below is");
-            prompt.AppendLine("  green, and before the recompose below, hunt your own branch for defects. It");
-            prompt.AppendLine("  runs here — after the suite passes, so the hunt sees finished work, and");
-            prompt.AppendLine("  before the recompose, so the recompose composes the tree the hunt leaves behind");
-            prompt.AppendLine("  rather than the tree that predates it.");
+            prompt.AppendLine("  green and every checkpoint is committed, and before the recompose below, hunt");
+            prompt.AppendLine("  your own branch for defects. It runs here — after the suite passes and the");
+            prompt.AppendLine("  tree is clean, so the hunt's diff actually shows the newest work rather than");
+            prompt.AppendLine("  missing whatever is still sitting uncommitted, and before the recompose, so");
+            prompt.AppendLine("  the recompose composes the tree the hunt leaves behind rather than the tree");
+            prompt.AppendLine("  that predates it.");
         }
         prompt.AppendLine("  Change hats for this phase: you are no longer the author, you are the hunter.");
         prompt.AppendLine("  Assume the branch contains defects you wrote, and go looking for them the way");
@@ -365,11 +368,14 @@ public static class WorkPromptBuilder
         prompt.AppendLine("  Finding nothing is an expected, honest outcome of a genuine hunt — inventing a");
         prompt.AppendLine("  finding so the round has something to report is the failure this phase is");
         prompt.AppendLine("  guarding against, not the clean round.");
-        prompt.AppendLine($"  Start every round from a fresh `git diff origin/{project.BaseBranch}...HEAD`,");
-        prompt.AppendLine("  read in full — not from memory of what you wrote. A worktree's local base-branch");
-        prompt.AppendLine("  ref is routinely stale relative to this task's actual base, so name `origin/` in");
-        prompt.AppendLine("  the range; a diff you already believe you know is not a diff you actually");
-        prompt.AppendLine("  reviewed.");
+        prompt.AppendLine("  The loop is capped at two rounds, hard.");
+        prompt.AppendLine($"  Round one starts from a fresh `git diff origin/{project.BaseBranch}...HEAD`,");
+        prompt.AppendLine("  read in full — not from memory of what you wrote. A worktree's local");
+        prompt.AppendLine("  base-branch ref is routinely stale relative to this task's actual base, so name");
+        prompt.AppendLine("  `origin/` in the range; a diff you already believe you know is not a diff you");
+        prompt.AppendLine("  actually reviewed. Before hunting, capture the current tip so a round two, if");
+        prompt.AppendLine("  one runs, can diff only its own fixes instead of the whole branch again:");
+        prompt.AppendLine("  `ROUND_ONE_START=$(git rev-parse HEAD)`.");
         prompt.AppendLine("  Three hunts are mandatory every round:");
         prompt.AppendLine("  1. **Refactor once-over.** Reread everything the diff touched as if it were");
         prompt.AppendLine("     someone else's pull request: naming, structure, dead code, duplication, a");
@@ -381,29 +387,41 @@ public static class WorkPromptBuilder
         prompt.AppendLine("     landed on one of two branch-creating arms that needed it, and a two-escape");
         prompt.AppendLine("     finding closed one escape and left the other open.");
         prompt.AppendLine("  3. **Execute your own instructions.** Any skill step, command sequence, or");
-        prompt.AppendLine("     documented procedure you authored this session — run it, do not proofread");
+        prompt.AppendLine("     documented procedure in this branch's diff — whether you wrote it this");
+        prompt.AppendLine("     session or it arrived already in the diff you resumed — run it, do not proofread");
         prompt.AppendLine("     it. A step that reads correctly and fails the moment it is actually run is a");
-        prompt.AppendLine("     real defect a re-read never catches. Where a procedure's commands mutate");
-        prompt.AppendLine("     state, exercise it somewhere the side effects are safe — a scratch directory");
-        prompt.AppendLine("     made with `mktemp -d`, outside this worktree entirely —");
+        prompt.AppendLine("     real defect a re-read never catches. Where a procedure's commands");
+        prompt.AppendLine("     mutate state, exercise it somewhere the side effects are safe — a scratch");
+        prompt.AppendLine("     directory made with `mktemp -d`, outside this worktree entirely —");
         prompt.AppendLine("     never against this session's own live worktree. The scratch directory is a");
         prompt.AppendLine("     deliberate, temporary exception to \"work only here\" — for exercising a");
         prompt.AppendLine("     procedure's side effects safely, not for leaving work in progress. Clean it");
         prompt.AppendLine("     up once the hunt is done.");
-        prompt.AppendLine("  The loop is capped at two rounds, hard. Round one hunts the whole branch diff.");
-        prompt.AppendLine("  Every finding this phase surfaces ends in one of its dispositions before you");
-        prompt.AppendLine("  move on: a correctness-or-behavior finding is fixed and checkpoint-committed,");
-        prompt.AppendLine("  or left with a stated, checkable reason it is not actually a defect (the same");
-        prompt.AppendLine("  rule spelled out below); a style-only finding is fixed in place and");
+        prompt.AppendLine("  Every finding this phase surfaces, in round one or round two, ends in one of");
+        prompt.AppendLine("  its dispositions before you move on: a correctness-or-behavior finding is");
+        prompt.AppendLine("  fixed and checkpoint-committed, or");
+        prompt.AppendLine("  left with a stated, checkable reason it is not actually a defect — the cap");
+        prompt.AppendLine("  bounds how many rounds you hunt in, not what you owe once something is found,");
+        prompt.AppendLine("  so a real finding is never legal to defer instead,");
+        prompt.AppendLine("  including one round two turns up: fix");
+        prompt.AppendLine("  and commit it there, same as round one,");
+        prompt.AppendLine("  without that alone starting a round");
+        prompt.AppendLine("  three. A style-only finding needs no such reason: it is fixed in place and");
         prompt.AppendLine("  checkpoint-committed, or skipped outright — a skip produces no edit, so it");
         prompt.AppendLine("  earns neither a checkpoint commit nor a suite re-run.");
+        prompt.AppendLine("  Deferring a real finding to a note for later is not a third option; the one");
+        prompt.AppendLine("  thing that does carry forward unresolved is a genuine suspicion that never");
+        prompt.AppendLine("  rose to a stated, checkable finding — something noticed but not pinned down");
+        prompt.AppendLine("  enough to act on. Record that in your final summary and in the handoff below:");
+        prompt.AppendLine("  the audience for both is whatever task depends on this one and the human");
+        prompt.AppendLine("  reading the run, not the review that follows.");
         prompt.AppendLine("  Whenever a fix does land,");
         if (project.VerifyCommands.Count == 0)
         {
             prompt.AppendLine("  the loop continues or the recompose begins directly — this project");
             prompt.AppendLine("  configures no verification gates, so there is no suite to re-run, and the");
             prompt.AppendLine("  recompose downstream still holds its own guarantee (the tree it composes is");
-            prompt.AppendLine("  the tree the fix left behind) regardless of gates; a");
+            prompt.AppendLine("  the tree the fix left behind) regardless of gates.");
         }
         else
         {
@@ -413,28 +431,16 @@ public static class WorkPromptBuilder
             prompt.AppendLine("  defect regardless of how the finding that prompted it was graded, and the");
             prompt.AppendLine("  recompose downstream only holds its own guarantee (the tree it composes is the");
             prompt.AppendLine("  tree that passed the suite) if the suite ran after this phase's last fix, not");
-            prompt.AppendLine("  just before this phase started; a");
+            prompt.AppendLine("  just before this phase started.");
         }
-        prompt.AppendLine("  style-only finding never by itself earns a round two — that is not what the cap");
-        prompt.AppendLine("  is for. Only when round one fixed something above the behavior-or-correctness bar");
-        prompt.AppendLine("  does a round two run, against only the diff of those fixes rather than the whole");
-        prompt.AppendLine("  branch again, with the same three hunts scoped to it. A round that finds nothing");
-        prompt.AppendLine("  above that bar — including round one — ends the loop right there. After round two");
-        prompt.AppendLine("  the loop ends unconditionally either way: no third round, whatever is still");
-        prompt.AppendLine("  unresolved.");
-        prompt.AppendLine("  Every correctness-or-behavior finding this phase surfaces, in round one or round");
-        prompt.AppendLine("  two, ends one of two ways before you move on: fixed and checkpoint-committed, or");
-        prompt.AppendLine("  left with a stated, checkable reason it is not actually a defect. The cap bounds");
-        prompt.AppendLine("  how many rounds you hunt in, not what you owe once something is found — a real");
-        prompt.AppendLine("  finding is never legal to defer instead, including one round two turns up: fix");
-        prompt.AppendLine("  and commit it there, same as round one, without that alone starting a round");
-        prompt.AppendLine("  three. A style-only finding needs no such reason — the rule above already lets");
-        prompt.AppendLine("  you fix it in place or skip it outright. Deferring a real finding to a note for");
-        prompt.AppendLine("  later is not a third option; the one thing that does carry forward unresolved is");
-        prompt.AppendLine("  a genuine suspicion that never rose to a stated, checkable finding — something");
-        prompt.AppendLine("  noticed but not pinned down enough to act on. Record that in your final summary");
-        prompt.AppendLine("  and in the handoff below: the audience for both is whatever task depends on this");
-        prompt.AppendLine("  one and the human reading the run, not the review that follows.");
+        prompt.AppendLine("  A style-only finding never by itself earns a round two — that is not what the");
+        prompt.AppendLine("  cap is for. Only when round one fixed something above the behavior-or-correctness");
+        prompt.AppendLine("  bar does a round two run, scoped to only the diff of those fixes —");
+        prompt.AppendLine("  `git diff $ROUND_ONE_START HEAD` — rather than the whole branch again, with the");
+        prompt.AppendLine("  same three hunts scoped to it. A round that finds nothing above that bar —");
+        prompt.AppendLine("  including round one — ends the loop right there.");
+        prompt.AppendLine("  After round two the loop ends unconditionally either way: no third round,");
+        prompt.AppendLine("  whatever is still unresolved.");
     }
 
     /// <summary>
