@@ -356,10 +356,20 @@ public sealed class TaskDetailsProjection : SingleStreamProjection<TaskDetails, 
         view.State = TaskState.Claimed;
     }
 
+    // RetryReasonIsHandback survives a requeue's own state reset by default, but WorkPromptBuilder
+    // reads it as "the run about to claim this task is resuming because of a handback", not "a
+    // handback happened somewhere in this task's history" — and a lease expiry or a run failure is
+    // this requeue's actual cause, not the handback that put a still-earlier run on this branch
+    // (adversarial review, cycle 6: a headless run's lease expiring after a handback otherwise told
+    // the next headless run that its own predecessor's abandoned, ungated work was a human's
+    // finished work not to be redone). Clearing it here is honest either way: a genuine handback
+    // sets it again through TaskHandedBack's own Apply below, immediately before the requeued task
+    // is next claimed.
     public void Apply(IEvent<TaskRequeued> @event, TaskDetails view)
     {
         view.ClaimedByNodeId = null;
         view.CurrentRunId = null;
+        view.RetryReasonIsHandback = false;
         view.State = TaskState.Queued;
     }
 

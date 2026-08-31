@@ -112,4 +112,37 @@ public sealed class TaskRetriedProjectionTests
 
         view.RetryReasonIsHandback.Should().BeFalse("a later real retry replaces the handback marker");
     }
+
+    [Fact]
+    public void A_lease_expiry_after_a_handback_clears_the_handback_marker()
+    {
+        // WorkPromptBuilder reads RetryReasonIsHandback as "the run about to claim this task is
+        // resuming because of a handback", not "a handback happened somewhere in this task's
+        // history". A headless run claimed after a handback can itself die (its lease expiring,
+        // or the run failing retryably) and requeue — the requeue's own cause is the lease or the
+        // failure, not the earlier handback, and the abandoned, ungated work that run's own
+        // attempt left behind is not a human's finished work (adversarial review, cycle 6).
+        TaskDetailsProjection projection = new();
+        Guid id = DomainId.New();
+        Guid runId = DomainId.New();
+        const string handbackReason = "Stepping away; the migration script is drafted but untested.";
+
+        TaskDetails view = projection.Create(new FakeEvent<TaskAdded>(new TaskAdded(
+            id, DomainId.New(), "Do the thing", ["it is done"], TaskType.Feature,
+            null, null, null, Now, DomainId.New())));
+
+        projection.Apply(new FakeEvent<TaskHandedBack>(new TaskHandedBack(
+            id, runId, Branch, handbackReason, Now.AddHours(1), DomainId.New())), view);
+        view.RetryReasonIsHandback.Should().BeTrue();
+
+        Guid headlessRunId = DomainId.New();
+        projection.Apply(new FakeEvent<TaskClaimed>(new TaskClaimed(
+            id, DomainId.New(), DomainId.New(), 2, headlessRunId, Now.AddHours(2))), view);
+        projection.Apply(new FakeEvent<TaskRequeued>(new TaskRequeued(
+            id, RequeueReason.LeaseExpired, Now.AddHours(3))), view);
+
+        view.RetryBranch.Should().Be(Branch, "the next run still resumes the same branch");
+        view.RetryReasonIsHandback.Should().BeFalse(
+            "the requeue's cause is the lease expiry, not the earlier handback");
+    }
 }
