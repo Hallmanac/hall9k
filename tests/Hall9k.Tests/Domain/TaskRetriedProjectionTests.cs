@@ -106,22 +106,29 @@ public sealed class TaskRetriedProjectionTests
 
         view.RetryReason.Should().Be(handbackReason);
         view.RetryReasonIsHandback.Should().BeTrue("this task never failed; nothing was retried");
+        view.ResumesFromHandback.Should().BeTrue("the very next claim resumes directly from this handback");
 
         projection.Apply(new FakeEvent<TaskRetried>(new TaskRetried(
             id, runId, Branch, RetryReason, Now.AddHours(2), DomainId.New())), view);
 
         view.RetryReasonIsHandback.Should().BeFalse("a later real retry replaces the handback marker");
+        view.ResumesFromHandback.Should().BeFalse("a real retry, not a handback, is what resumes now");
     }
 
     [Fact]
-    public void A_lease_expiry_after_a_handback_clears_the_handback_marker()
+    public void A_lease_expiry_after_a_handback_clears_only_the_next_claim_s_resume_marker()
     {
-        // WorkPromptBuilder reads RetryReasonIsHandback as "the run about to claim this task is
+        // WorkPromptBuilder reads ResumesFromHandback as "the run about to claim this task is
         // resuming because of a handback", not "a handback happened somewhere in this task's
         // history". A headless run claimed after a handback can itself die (its lease expiring,
         // or the run failing retryably) and requeue — the requeue's own cause is the lease or the
         // failure, not the earlier handback, and the abandoned, ungated work that run's own
         // attempt left behind is not a human's finished work (adversarial review, cycle 6).
+        // RetryReasonIsHandback answers a different question — which event last wrote
+        // RetryReason's text — and a requeue rewrites neither, so h9k task show's "Handed back"
+        // label must survive the requeue even though the prompt-facing marker does not
+        // (conformance review, cycle 7, following cycle 6's finding that clearing the one field
+        // for both consumers broke whichever one wasn't being fixed).
         TaskDetailsProjection projection = new();
         Guid id = DomainId.New();
         Guid runId = DomainId.New();
@@ -134,6 +141,7 @@ public sealed class TaskRetriedProjectionTests
         projection.Apply(new FakeEvent<TaskHandedBack>(new TaskHandedBack(
             id, runId, Branch, handbackReason, Now.AddHours(1), DomainId.New())), view);
         view.RetryReasonIsHandback.Should().BeTrue();
+        view.ResumesFromHandback.Should().BeTrue();
 
         Guid headlessRunId = DomainId.New();
         projection.Apply(new FakeEvent<TaskClaimed>(new TaskClaimed(
@@ -142,7 +150,10 @@ public sealed class TaskRetriedProjectionTests
             id, RequeueReason.LeaseExpired, Now.AddHours(3))), view);
 
         view.RetryBranch.Should().Be(Branch, "the next run still resumes the same branch");
-        view.RetryReasonIsHandback.Should().BeFalse(
+        view.RetryReason.Should().Be(handbackReason, "a requeue does not rewrite the resume text");
+        view.ResumesFromHandback.Should().BeFalse(
             "the requeue's cause is the lease expiry, not the earlier handback");
+        view.RetryReasonIsHandback.Should().BeTrue(
+            "the resume text was still last written by the handback, not a retry that never happened");
     }
 }

@@ -38,7 +38,7 @@ public static class WorkPromptBuilder
 
         if (resumesPreviousWork && isHandback)
         {
-            // Unlike the causeless branch below, this one is not a guess: TaskDetails.RetryReasonIsHandback
+            // Unlike the causeless branch below, this one is not a guess: TaskDetails.ResumesFromHandback
             // is set only from TaskHandedBack, so this run is dispatching because a human's own
             // h9k task work claim was handed back (h9k task handback) — an observed fact, not the
             // ambiguity the causeless wording exists to avoid asserting past.
