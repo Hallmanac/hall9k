@@ -32,7 +32,7 @@ public sealed class GitWorktreeManager(ILogger<GitWorktreeManager> logger) : IWo
             // hand-cut bare clone a project was pointed at. Without that entry, the branch's
             // creation tip never appears in its reflog, so a later checkpoint recompose that
             // diverges from it looks indistinguishable from someone else rewriting the branch
-            // to both WasEverLocalHeadAsync above and its twin in PullRequestOpener.PushBranchAsync
+            // to both WasEverLocalHeadAsync below and its twin in PullRequestOpener.PushBranchAsync
             // — refusing a legitimate push, or hard-resetting a real recompose away, on a false
             // "rewrite" read. Materialise the ref explicitly first, the same way
             // CheckoutExistingAsync's remoteExists arm does, so the creation point is always

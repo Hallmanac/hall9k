@@ -702,6 +702,90 @@ public sealed class PullRequestOpenerTests(PostgresFixture postgres) : IClassFix
             "someone else moved the branch", "the guard's own refusal message names what happened");
     }
 
+    /// <summary>
+    /// The other nonzero-exit arm of the push guard (independent pre-PR review, cycle 1,
+    /// conformance lens): only <c>tipExit == 2</c> (origin has no such ref) and the refusal
+    /// branch had a test, leaving the <c>tipExit != 0</c> case (origin unreadable, distinct
+    /// from origin-having-nothing) unpinned. A collapse of the two nonzero exits back into
+    /// one, treating any <c>ls-remote</c> failure as "origin has nothing," would push with
+    /// <c>--force-with-lease=&lt;branch&gt;:</c> against an unreachable remote instead of
+    /// failing the run honestly. Origin is made unreachable by deleting the bare repository
+    /// out from under the worktree's already-configured remote, after the worktree is created
+    /// (so creation's own fetch still succeeds), reproducing a remote that answers neither
+    /// "here is the tip" nor "no such ref" but simply cannot be read.
+    /// </summary>
+    [Fact]
+    public async Task An_unreadable_origin_at_push_time_fails_the_run_rather_than_guessing_it_has_nothing()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        using DocumentStore store = DocumentStore.For(opts =>
+        {
+            opts.Connection(postgres.ConnectionString);
+            opts.ConfigureHall9k(AutoCreate.All);
+        });
+
+        Directory.CreateDirectory(_root);
+        string originPath = Path.Combine(_root, "origin.git");
+        string repoPath = Path.Combine(_root, "repo");
+        Git(_root, $"init --bare -b main \"{originPath}\"");
+        Git(_root, $"clone \"{originPath}\" \"{repoPath}\"");
+        File.WriteAllText(Path.Combine(repoPath, "README.md"), "# unreadable origin test\n");
+        Git(repoPath, "add -A");
+        Git(repoPath, "-c user.name=Test -c user.email=t@t commit -qm init");
+        Git(repoPath, "push -q origin main");
+
+        GitWorktreeManager worktrees = new(NullLogger<GitWorktreeManager>.Instance);
+        Guid taskId = DomainId.New();
+        Guid runId = DomainId.New();
+        Worktree worktree = await worktrees.CreateAsync(
+            new WorktreeRequest(repoPath, "main", taskId, runId, "Unreadable origin fails the run"), cts.Token);
+        File.WriteAllText(Path.Combine(worktree.Path, "WORK.md"), "agent output\n");
+        Git(worktree.Path, "add -A");
+        Git(worktree.Path, "-c user.name=Test -c user.email=t@t commit -qm \"Add WORK.md\"");
+
+        // Origin is gone by the time the push guard's ls-remote runs: unreachable, not
+        // merely empty of this ref.
+        Directory.Delete(originPath, recursive: true);
+
+        Guid ownerId = DomainId.New();
+        Guid projectId = DomainId.New();
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            TaskAggregate task = new();
+            (task, object[] lifecycle) = TaskSeed.Start(
+                TaskDecider.Add(taskId, projectId, "Unreadable origin fails the run", ["origin unreachable fails honestly"],
+                    TaskType.Chore, null, null, null, Now, ownerId),
+                ownerId, Now);
+            var claimed = TaskDecider.Claim(task, DomainId.New(), ownerId, runId, Now);
+            session.Events.StartStream<TaskAggregate>(taskId, [.. lifecycle, claimed]);
+            session.Store(new TaskLease { Id = taskId, NodeId = claimed.NodeId, LeaseGeneration = 1, HeartbeatAt = Now });
+
+            session.Events.StartStream<RunAggregate>(runId,
+                new RunDispatched(runId, taskId, claimed.NodeId, ownerId, 1, DomainId.New(),
+                    worktree.Path, worktree.Branch, ExecutorMode.Subscription, Now),
+                new AgentSessionCompleted(runId, Now),
+                new VerificationPassed(runId, Now));
+
+            var registered = Hall9k.Domain.Features.Project.Handlers.ProjectDecider.Register(
+                projectId, ownerId, DomainId.New(), $"pr-{taskId:N}", repoPath, null, "main", Now);
+            session.Events.StartStream<Hall9k.Domain.Features.Project.ProjectAggregate>(registered.Id, registered);
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        PullRequestOpener opener = new(store, NullLogger<PullRequestOpener>.Instance);
+        await opener.OpenAsync(runId, taskId, cts.Token);
+
+        await using IQuerySession query = store.QuerySession();
+        TaskListItem taskView = (await query.LoadAsync<TaskListItem>(taskId, cts.Token))!;
+        taskView.State.Value.Should().Be("Failed", "an unreadable origin fails the run honestly rather than guessing it has nothing");
+
+        Hall9k.Domain.Features.Run.Projections.RunDetails runView =
+            (await query.LoadAsync<Hall9k.Domain.Features.Run.Projections.RunDetails>(runId, cts.Token))!;
+        runView.State.Value.Should().Be("Failed");
+        runView.FailureReason.Should().Contain(
+            "could not read origin's current tip", "the guard's own refusal message names what happened");
+    }
+
     private static void Git(string workingDirectory, string arguments)
     {
         (int exitCode, string output) = TryGit(workingDirectory, arguments);
