@@ -1263,6 +1263,37 @@ public sealed class AgentPromptBuilderTests : IDisposable
     }
 
     [Fact]
+    public void Handback_prompt_states_plainly_that_a_human_began_the_work_interactively()
+    {
+        // Unlike the causeless retry/reentry wording above, TaskDetails.RetryReasonIsHandback is
+        // set only from TaskHandedBack — an observed fact, not the three-way ambiguity that
+        // wording exists to avoid asserting past.
+        TaskDetails task = SomeTask();
+        task.RetryReasonIsHandback = true;
+
+        string prompt = AgentPromptBuilder.Build(
+            task, SomeProject(), "task/1-slug", _worktreePath, resumesPreviousWork: true);
+
+        prompt.Should().Contain("A human began this work interactively");
+        prompt.Should().Contain("h9k task work");
+        prompt.Should().Contain("h9k task handback");
+        prompt.Should().NotContain("A previous attempt worked here first");
+    }
+
+    [Fact]
+    public void Handback_prompt_carries_the_operators_own_handback_reason()
+    {
+        TaskDetails task = SomeTask();
+        task.RetryReasonIsHandback = true;
+        task.RetryReason = "ran out of time before a meeting";
+
+        string prompt = AgentPromptBuilder.Build(
+            task, SomeProject(), "task/1-slug", _worktreePath, resumesPreviousWork: true);
+
+        prompt.Should().Contain("ran out of time before a meeting");
+    }
+
+    [Fact]
     public void Fresh_run_prompt_carries_no_previous_attempt_warning()
     {
         string prompt = AgentPromptBuilder.Build(SomeTask(), SomeProject(), "task/1-slug", _worktreePath);
