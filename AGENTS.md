@@ -632,9 +632,11 @@ first-class interface, always, for every command:
   anything: an adversarial self-review, capped at two rounds, that reads a fresh
   `git diff origin/<base>...HEAD` — naming `origin/` because a worktree's local base-branch ref is
   routinely stale relative to the task's actual base — and runs three mandatory hunts (a
-  refactor once-over, a blast-radius sweep for sibling sites, and actually executing any procedure
-  the session authored rather than proofreading it). A correctness-or-behavior finding is fixed
-  and checkpoint-committed, or left with a stated, checkable reason it is not actually a defect; a
+  refactor once-over, a blast-radius sweep for sibling sites, and actually executing any documented
+  procedure in the branch's diff — whether the session authored it this session or it arrived
+  already in the diff a resumed run inherited — rather than proofreading it). A
+  correctness-or-behavior finding is fixed and checkpoint-committed, or left with a stated,
+  checkable reason it is not actually a defect; a
   style-only finding is fixed in place and checkpoint-committed, or skipped outright with nothing
   to commit. Whenever a fix does land — style-only included, not only a correctness-or-behavior
   one — the full suite re-runs before the loop continues or the recompose begins, since a fix that

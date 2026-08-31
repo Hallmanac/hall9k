@@ -147,7 +147,7 @@ public static class WorkPromptBuilder
         else
         {
             prompt.AppendLine("  the platform verifies and opens the PR after you finish.");
-            AppendCheckpointCommitRules(prompt, project);
+            AppendCheckpointCommitRules(prompt, project, worktreePath);
             AppendSessionEndsAtFinalMessageRule(prompt);
         }
 
@@ -339,8 +339,12 @@ public static class WorkPromptBuilder
     /// reviewers' job.
     /// </para>
     /// </summary>
-    public static void AppendSelfReviewPhaseRules(StringBuilder prompt, ProjectDetails project)
+    public static void AppendSelfReviewPhaseRules(StringBuilder prompt, ProjectDetails project, string worktreePath)
     {
+        // Suffixed with the worktree's own directory name (unique per session, since a node
+        // dispatches each concurrent session into its own worktree) so two build sessions
+        // running at once on the same node never clobber one another's round-one tip file.
+        string tipFile = $"/tmp/self-review-round-one-tip-{Path.GetFileName(worktreePath)}";
         if (project.VerifyCommands.Count == 0)
         {
             prompt.AppendLine("- **Self-review phase.** This project configures no verification gates, so its");
@@ -373,9 +377,17 @@ public static class WorkPromptBuilder
         prompt.AppendLine("  read in full — not from memory of what you wrote. A worktree's local");
         prompt.AppendLine("  base-branch ref is routinely stale relative to this task's actual base, so name");
         prompt.AppendLine("  `origin/` in the range; a diff you already believe you know is not a diff you");
-        prompt.AppendLine("  actually reviewed. Before hunting, capture the current tip so a round two, if");
-        prompt.AppendLine("  one runs, can diff only its own fixes instead of the whole branch again:");
-        prompt.AppendLine("  `ROUND_ONE_START=$(git rev-parse HEAD)`.");
+        prompt.AppendLine("  actually reviewed. Before hunting, record the current tip so a round two, if");
+        prompt.AppendLine("  one runs, can diff only its own fixes instead of the whole branch again. A");
+        prompt.AppendLine("  shell variable does not survive between separate tool calls, so setting one");
+        prompt.AppendLine("  here and reading it back several tool calls into round two gets nothing —");
+        prompt.AppendLine("  `git diff $EMPTY HEAD` silently degrades to `git diff HEAD`, which prints");
+        prompt.AppendLine("  nothing and exits 0 against the clean tree this phase requires, so round two");
+        prompt.AppendLine("  would review an empty diff and call it clean. Write the tip to a file outside");
+        prompt.AppendLine("  this worktree instead, where it survives the gap. The filename is suffixed");
+        prompt.AppendLine("  with this worktree's own directory name so a concurrent session in a sibling");
+        prompt.AppendLine("  worktree on the same node never clobbers this one's tip:");
+        prompt.AppendLine($"  `git rev-parse HEAD > {tipFile}`.");
         prompt.AppendLine("  Three hunts are mandatory every round:");
         prompt.AppendLine("  1. **Refactor once-over.** Reread everything the diff touched as if it were");
         prompt.AppendLine("     someone else's pull request: naming, structure, dead code, duplication, a");
@@ -396,17 +408,25 @@ public static class WorkPromptBuilder
         prompt.AppendLine("     never against this session's own live worktree. The scratch directory is a");
         prompt.AppendLine("     deliberate, temporary exception to \"work only here\" — for exercising a");
         prompt.AppendLine("     procedure's side effects safely, not for leaving work in progress. Clean it");
-        prompt.AppendLine("     up once the hunt is done.");
+        prompt.AppendLine("     up once the hunt is done. A relocated directory only contains a procedure");
+        prompt.AppendLine("     whose side effects stay local to it — it does nothing for one that mutates a");
+        prompt.AppendLine("     resource this session does not own outright: a live daemon or its database, a");
+        prompt.AppendLine("     machine-wide install (`h9k install`, `h9k update`), a destructive maintenance");
+        prompt.AppendLine("     command (`h9k uninstall --purge-data`), or a write to an external service");
+        prompt.AppendLine("     (`gh`, `twg`, a registered connection). A procedure in that shape is read in");
+        prompt.AppendLine("     enough functional detail to be confident it does what it claims —");
+        prompt.AppendLine("     never actually run — and the finding");
+        prompt.AppendLine("     records why relocation could not make it safe, rather than silently");
+        prompt.AppendLine("     falling back to a proofread with nothing said about it.");
         prompt.AppendLine("  Every finding this phase surfaces, in round one or round two, ends in one of");
         prompt.AppendLine("  its dispositions before you move on: a correctness-or-behavior finding is");
         prompt.AppendLine("  fixed and checkpoint-committed, or");
-        prompt.AppendLine("  left with a stated, checkable reason it is not actually a defect — the cap");
+        prompt.AppendLine("  left with a stated, checkable reason it is not actually a defect. The cap");
         prompt.AppendLine("  bounds how many rounds you hunt in, not what you owe once something is found,");
-        prompt.AppendLine("  so a real finding is never legal to defer instead,");
-        prompt.AppendLine("  including one round two turns up: fix");
-        prompt.AppendLine("  and commit it there, same as round one,");
-        prompt.AppendLine("  without that alone starting a round");
-        prompt.AppendLine("  three. A style-only finding needs no such reason: it is fixed in place and");
+        prompt.AppendLine("  so a real finding is never legal to defer instead — including one that");
+        prompt.AppendLine("  round two turns up: fix and commit it there, same as round one,");
+        prompt.AppendLine("  without that alone starting a round three.");
+        prompt.AppendLine("  A style-only finding needs no such reason: it is fixed in place and");
         prompt.AppendLine("  checkpoint-committed, or skipped outright — a skip produces no edit, so it");
         prompt.AppendLine("  earns neither a checkpoint commit nor a suite re-run.");
         prompt.AppendLine("  Deferring a real finding to a note for later is not a third option; the one");
@@ -436,11 +456,13 @@ public static class WorkPromptBuilder
         prompt.AppendLine("  A style-only finding never by itself earns a round two — that is not what the");
         prompt.AppendLine("  cap is for. Only when round one fixed something above the behavior-or-correctness");
         prompt.AppendLine("  bar does a round two run, scoped to only the diff of those fixes —");
-        prompt.AppendLine("  `git diff $ROUND_ONE_START HEAD` — rather than the whole branch again, with the");
-        prompt.AppendLine("  same three hunts scoped to it. A round that finds nothing above that bar —");
-        prompt.AppendLine("  including round one — ends the loop right there.");
-        prompt.AppendLine("  After round two the loop ends unconditionally either way: no third round,");
-        prompt.AppendLine("  whatever is still unresolved.");
+        prompt.AppendLine($"  `git diff \"$(cat {tipFile})\" HEAD` — rather than the whole");
+        prompt.AppendLine("  branch again, with the same three hunts scoped to it. A round that finds");
+        prompt.AppendLine("  nothing above that bar — including round one — ends the loop right there.");
+        prompt.AppendLine("  After round two the loop ends unconditionally either way: no third round —");
+        prompt.AppendLine("  and the only thing still open when it ends is a suspicion that never rose to");
+        prompt.AppendLine("  a stated finding; a real finding is never legal to leave unresolved, round");
+        prompt.AppendLine("  cap or not.");
     }
 
     /// <summary>
@@ -493,7 +515,7 @@ public static class WorkPromptBuilder
     /// commit-plan step forgot to stage.
     /// </para>
     /// </summary>
-    public static void AppendCheckpointCommitRules(StringBuilder prompt, ProjectDetails project)
+    public static void AppendCheckpointCommitRules(StringBuilder prompt, ProjectDetails project, string worktreePath)
     {
         string baseBranch = project.BaseBranch;
         prompt.AppendLine("- **Commit as you go, one logical unit at a time.** Each commit here is");
@@ -501,7 +523,7 @@ public static class WorkPromptBuilder
         prompt.AppendLine("  ending (context exhaustion, an early exit) strands at most the increment");
         prompt.AppendLine("  since the last checkpoint instead of the whole session. Message them");
         prompt.AppendLine("  plainly; none of them are what ships.");
-        AppendSelfReviewPhaseRules(prompt, project);
+        AppendSelfReviewPhaseRules(prompt, project, worktreePath);
         prompt.AppendLine("- **Once all the work is done, the full verification suite is green, and the");
         prompt.AppendLine("  self-review phase above has run its course, recompose the checkpoints into");
         prompt.AppendLine("  real history in one continuous step.**");
