@@ -133,10 +133,12 @@ internal static class TaskPhaseComposer
     }
 
     /// <summary>
-    /// Which round of review, and which leg of it. The cycle cap is the daemon's configuration
-    /// (DaemonOptions.MaxComplianceReviewCycles / MaxAdversarialReviewCycles) and the CLI cannot
-    /// read it, so the line says which cycle the run is on and stops rather than printing an
-    /// "of N" it would have to guess.
+    /// Which round of review, and which leg of it. The cycle cap now resolves task &gt; project &gt;
+    /// node &gt; compiled default (Decisions Log #108, <c>ReviewCapResolver</c>) rather than being a
+    /// single daemon-wide constant, and this line stops short of resolving that chain itself
+    /// (a task and project read, plus the node's own config) just to print "of N" — it says which
+    /// cycle the run is on and leaves the cap to <c>h9k task show</c>'s own override row and
+    /// <c>h9k config show</c>/<c>h9k project show</c> rather than guessing or re-deriving it here.
     /// </summary>
     private static TaskPhase Review(RunDetails run, SessionLiveness session)
     {

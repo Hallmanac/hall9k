@@ -154,13 +154,16 @@ public static class ReviewTrackPolicy
     /// Whether this track has run as many cycles as it may. Measured from
     /// <paramref name="budgetBaseCycle"/> so a human's needs-fixes park resolution is the fresh
     /// grant it is meant to be (log #22) rather than one cycle before an immediate re-park.
+    /// <paramref name="caps"/> is resolved task &gt; project &gt; node &gt; compiled default
+    /// (<see cref="ReviewCapResolver"/>, task: the review cycle caps become settable), so a
+    /// task-level takeover — a cap set at or below the track's current cycle count — is exactly
+    /// what tips this true at the very next check.
     /// </summary>
-    public static bool CapReached(ReviewLens lens, int cycle, int budgetBaseCycle, DaemonOptions options) =>
-        cycle - budgetBaseCycle >= CapFor(lens, options);
+    public static bool CapReached(ReviewLens lens, int cycle, int budgetBaseCycle, ResolvedReviewCaps caps) =>
+        cycle - budgetBaseCycle >= CapFor(lens, caps);
 
     /// <summary>The cycle cap for a track. An unrecognized lens takes the conformance cap — the stricter of the two.</summary>
-    public static int CapFor(ReviewLens lens, DaemonOptions options) =>
-        lens == ReviewLens.Adversarial ? options.MaxAdversarialReviewCycles : options.MaxComplianceReviewCycles;
+    public static int CapFor(ReviewLens lens, ResolvedReviewCaps caps) => caps.CapFor(lens).Value;
 
     /// <summary>
     /// Whether the severity gate is in force for this track, measured in absolute cycles and

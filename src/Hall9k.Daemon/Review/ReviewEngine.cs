@@ -176,6 +176,13 @@ public sealed class ReviewEngine(
                 return false;
             }
 
+            // Resolved fresh every iteration — not once per ReviewAsync call, the way
+            // ReviewContext itself is — so a task or project override set anywhere in this run's
+            // lifetime is seen at the very next cap check (task: the review cycle caps become
+            // settable at three levels), including the takeover lever: a task cap set at or below
+            // a track's current cycle count.
+            ResolvedReviewCaps caps = await ResolveReviewCapsAsync(context, cancellationToken);
+
             switch (run.ReviewPhase)
             {
                 case ReviewPhase.None:
@@ -310,6 +317,12 @@ public sealed class ReviewEngine(
                         // own note on what that means for its FinalFullPassRounds reset.
                         if (MaySettleReason(run) is { } settlingReason)
                         {
+                            if (await ParkIfLifetimeBudgetExceededAsync(
+                                context, run, caps, settlingReason, cancellationToken))
+                            {
+                                return false;
+                            }
+
                             LogSettleReason(run, settlingReason);
                             await SettleAsync(run, cancellationToken);
                             break;
@@ -329,10 +342,11 @@ public sealed class ReviewEngine(
                         // resolve — MaySettleReason's other unconditional clause — never reaches this check
                         // at all (cycle-5 finding): the cap bounds only the automatic
                         // scoped-then-full-then-fix iteration, never a human-ended run.
-                        if (FinalFullPassCapReached(run))
+                        if (FinalFullPassCapReached(run, caps))
                         {
                             await ParkAsync(
-                                context.RunId, context.TaskId, FinalFullPassCapParkReason(run), cancellationToken);
+                                context.RunId, context.TaskId,
+                                FinalFullPassCapParkReason(run, caps.MaxFinalFullPassRounds), cancellationToken);
                             return false;
                         }
 
@@ -353,9 +367,16 @@ public sealed class ReviewEngine(
                     // NeedsFullGateBeforeSettling's own negation, so MaySettleReason is guaranteed
                     // non-null here (its NothingOwed clause is that same negation restated) rather
                     // than a fact this call site has to re-establish on its own.
-                    LogSettleReason(run, MaySettleReason(run) ?? throw new InvalidOperationException(
+                    SettleReason ordinarySettleReason = MaySettleReason(run) ?? throw new InvalidOperationException(
                         $"Run {run.Id}: reached the ordinary settle path with no settle reason — " +
-                        "NeedsFullGateBeforeSettling's own negation should have guaranteed one."));
+                        "NeedsFullGateBeforeSettling's own negation should have guaranteed one.");
+                    if (await ParkIfLifetimeBudgetExceededAsync(
+                        context, run, caps, ordinarySettleReason, cancellationToken))
+                    {
+                        return false;
+                    }
+
+                    LogSettleReason(run, ordinarySettleReason);
                     await SettleAsync(run, cancellationToken);
                     break;
 
@@ -385,11 +406,14 @@ public sealed class ReviewEngine(
 
                     break;
 
-                case ReviewPhase.FixNeeded when CappedTrack(run) is { } capped:
-                    await ParkAsync(context.RunId, context.TaskId, CapParkReason(run, capped), cancellationToken);
-                    return false;
-
                 case ReviewPhase.FixNeeded:
+                    if (CappedTrack(run, caps) is { } capped)
+                    {
+                        await ParkAsync(
+                            context.RunId, context.TaskId, CapParkReason(run, capped, caps), cancellationToken);
+                        return false;
+                    }
+
                     if (!await DispatchFixSessionAsync(context, run, cancellationToken))
                     {
                         return false;
@@ -444,6 +468,12 @@ public sealed class ReviewEngine(
 
                     if (run.ActiveReviewLenses.Count == 0 && MaySettleReason(run) is { } reverifySettleReason)
                     {
+                        if (await ParkIfLifetimeBudgetExceededAsync(
+                            context, run, caps, reverifySettleReason, cancellationToken))
+                        {
+                            return false;
+                        }
+
                         // Every track has concluded AND the mandatory final full pass already ran
                         // (or a human overruled the loop, or the severity bar already called it),
                         // so there is nobody left to re-review for and the loop goes on to record
@@ -458,10 +488,11 @@ public sealed class ReviewEngine(
                     // can reach a FinalFullPass dispatch straight from Reverify (every track just
                     // concluded again without ever passing back through Settling), and the per-track
                     // caps still cannot catch a track the final pass itself keeps reawakening.
-                    if (reverifyMode == ReviewMode.FinalFullPass && FinalFullPassCapReached(run))
+                    if (reverifyMode == ReviewMode.FinalFullPass && FinalFullPassCapReached(run, caps))
                     {
                         await ParkAsync(
-                            context.RunId, context.TaskId, FinalFullPassCapParkReason(run), cancellationToken);
+                            context.RunId, context.TaskId,
+                            FinalFullPassCapParkReason(run, caps.MaxFinalFullPassRounds), cancellationToken);
                         return false;
                     }
 
@@ -1272,13 +1303,19 @@ public sealed class ReviewEngine(
             // note has to say the true thing for THIS cycle: CapParkReason points a human at the
             // same file a dispatching fix session reads, and the note is wrong for one of them
             // unless it knows which cycle it is describing.
+            // Resolved fresh here rather than threaded down from DriveAsync's own per-iteration
+            // `caps` local: the review pass this method just recorded (AwaitReviewPassAsync's own
+            // WaitForSessionResultAsync) can itself have waited real wall-clock minutes to hours,
+            // so DriveAsync's `caps` — resolved before that wait started — is exactly the kind of
+            // stale snapshot ResolveReviewCapsAsync's own doc warns against reusing.
+            ResolvedReviewCaps capsForDispatchCheck = await ResolveReviewCapsAsync(context, cancellationToken);
             bool fixSessionWillDispatch = anyFixFinding
                 && !plans.Any(plan => plan.Continues
                     && ReviewTrackPolicy.CapReached(
                         plan.Lens,
                         run.ReviewCycle,
                         reactivatedThisCycle.Contains(plan.Lens) ? cycle : run.TrackBudgetBaseCycle(plan.Lens),
-                        _options));
+                        capsForDispatchCheck));
 
             await WriteMergedFindingsAsync(
                 runDirectory, cycle, run.CurrentCycleMode, completed, plans, routed, fixSessionWillDispatch,
@@ -2759,21 +2796,23 @@ public sealed class ReviewEngine(
         File.Exists(path) ? await File.ReadAllTextAsync(path, cancellationToken) : string.Empty;
 
     /// <summary>The first still-active track that has run as many cycles as it may, or null while every track has room.</summary>
-    private ReviewLens? CappedTrack(RunAggregate run) =>
+    private static ReviewLens? CappedTrack(RunAggregate run, ResolvedReviewCaps caps) =>
         run.ActiveReviewLenses.FirstOrDefault(lens =>
-            ReviewTrackPolicy.CapReached(lens, run.ReviewCycle, run.TrackBudgetBaseCycle(lens), _options));
+            ReviewTrackPolicy.CapReached(lens, run.ReviewCycle, run.TrackBudgetBaseCycle(lens), caps));
 
     /// <summary>
     /// Whether the mandatory <see cref="ReviewMode.FinalFullPass"/> has already run as many times
-    /// as <see cref="DaemonOptions.MaxFinalFullPassRounds"/> allows (task: review cycles after the
-    /// first, cycle-3 finding). This is deliberately independent of <see cref="CappedTrack"/>: a
-    /// track the final pass keeps reawakening has its own budget base bumped by that very
-    /// reactivation (<see cref="RunAggregate.TrackBudgetBaseCycle"/>'s own doc says why), so it can
-    /// keep passing <see cref="ReviewTrackPolicy.CapReached"/> forever while the mandatory pass
-    /// itself never stops re-running — this is the bound that catches that instead.
+    /// as <paramref name="caps"/>'s resolved <see cref="ResolvedReviewCaps.MaxFinalFullPassRounds"/>
+    /// allows (task: review cycles after the first, cycle-3 finding; caps resolved task &gt;
+    /// project &gt; node &gt; compiled default, task: the review cycle caps become settable). This
+    /// is deliberately independent of <see cref="CappedTrack"/>: a track the final pass keeps
+    /// reawakening has its own budget base bumped by that very reactivation (<see
+    /// cref="RunAggregate.TrackBudgetBaseCycle"/>'s own doc says why), so it can keep passing
+    /// <see cref="ReviewTrackPolicy.CapReached"/> forever while the mandatory pass itself never
+    /// stops re-running — this is the bound that catches that instead.
     /// </summary>
-    private bool FinalFullPassCapReached(RunAggregate run) =>
-        run.FinalFullPassRounds >= _options.MaxFinalFullPassRounds;
+    private static bool FinalFullPassCapReached(RunAggregate run, ResolvedReviewCaps caps) =>
+        run.FinalFullPassRounds >= caps.MaxFinalFullPassRounds.Value;
 
     /// <summary>
     /// Why hitting <see cref="FinalFullPassCapReached"/> parks the run: not a spent budget in the
@@ -2784,9 +2823,11 @@ public sealed class ReviewEngine(
     /// (cycle-3 cap-park finding): the counter itself only counts how many consecutive mandatory
     /// full passes have run, which can climb without any track ever being reawakened (an ordinary,
     /// still-active track can keep the cycle going on its own), and the park text must never assert
-    /// a reawakening nobody observed.
+    /// a reawakening nobody observed. <paramref name="cap"/> names its own resolved value and
+    /// level, so an operator reading the park knows whether a tight task or project override or
+    /// the node ended the loop (task: the review cycle caps become settable at three levels).
     /// </summary>
-    private string FinalFullPassCapParkReason(RunAggregate run)
+    private static string FinalFullPassCapParkReason(RunAggregate run, ResolvedReviewCap cap)
     {
         string findings = RunPaths.ReviewFindingsFile(ParkedRunDirectory(run), run.ReviewCycle);
         string why = run.ReviewTrackReactivations > 0
@@ -2796,10 +2837,10 @@ public sealed class ReviewEngine(
               "many times in a row";
         return $"This run has dispatched the mandatory final full review pass — every lens, fresh " +
             $"context, immediately before the run may settle — {run.FinalFullPassRounds} consecutive " +
-            $"time(s) without ever reaching a clean settle: its cap. {why}; either way it is worth a " +
-            $"human's look rather than another automatic round. Unresolved findings: {findings}. Fix " +
-            "in the worktree and resolve with h9k review resolve --merge-ready, grant a fresh round " +
-            "with --needs-fixes, or abandon the task.";
+            $"time(s) without ever reaching a clean settle: its cap of {cap.Value}, from {cap.Describe()}. " +
+            $"{why}; either way it is worth a human's look rather than another automatic round. " +
+            $"Unresolved findings: {findings}. Fix in the worktree and resolve with " +
+            "h9k review resolve --merge-ready, grant a fresh round with --needs-fixes, or abandon the task.";
     }
 
     /// <summary>
@@ -2807,9 +2848,13 @@ public sealed class ReviewEngine(
     /// and the reason says which: conformance running out is "nothing automated is left to
     /// try", while adversarial running out is "the machine kept finding real problems, and
     /// somebody should look at why" — not a failure, and not a budget quietly spent.
+    /// <paramref name="caps"/>'s own resolved cap for <paramref name="capped"/> names its value and
+    /// level, so the park message says whether a tight task or project override or the node ended
+    /// the loop (task: the review cycle caps become settable at three levels).
     /// </summary>
-    private string CapParkReason(RunAggregate run, ReviewLens capped)
+    private static string CapParkReason(RunAggregate run, ReviewLens capped, ResolvedReviewCaps caps)
     {
+        ResolvedReviewCap cap = caps.CapFor(capped);
         string findings = RunPaths.ReviewFindingsFile(ParkedRunDirectory(run), run.ReviewCycle);
         string levers =
             $"Unresolved findings: {findings}. Fix in the worktree and resolve with " +
@@ -2817,9 +2862,113 @@ public sealed class ReviewEngine(
         int cycles = run.ReviewCycle - run.TrackBudgetBaseCycle(capped);
 
         return capped == ReviewLens.Adversarial
-            ? $"{AdversarialCapReason(run, cycles)} {levers}"
-            : $"The conformance review is still returning findings after {cycles} cycles, its cap — the work " +
-              $"has been told the same thing {cycles} times, so nothing automated is left to try. " + levers;
+            ? $"{AdversarialCapReason(run, cycles)} Its cap is {cap.Value}, from {cap.Describe()}. {levers}"
+            : $"The conformance review is still returning findings after {cycles} cycles, its cap of " +
+              $"{cap.Value} (from {cap.Describe()}) — the work has been told the same thing {cycles} times, " +
+              "so nothing automated is left to try. " + levers;
+    }
+
+    /// <summary>
+    /// Resolves this run's task and project caps fresh — a pure store read, no git call — so a
+    /// task or project override set anywhere in this run's own lifetime is seen at the very next
+    /// cap check rather than only on a future run (task: the review cycle caps become settable at
+    /// three levels). Read fresh here rather than off <see cref="ReviewContext.Task"/> or
+    /// <see cref="ReviewContext.Project"/>, the same reasoning
+    /// <see cref="VerifyCommandsFingerprintMatchesAsync"/> already gives for a project setting
+    /// that can change mid-run: that snapshot is loaded once at the very top of
+    /// <see cref="DriveAsync"/>, before this run's own review passes and fix sessions — which can
+    /// each run for real wall-clock minutes to hours — ever dispatch.
+    /// </summary>
+    private async Task<ResolvedReviewCaps> ResolveReviewCapsAsync(ReviewContext context, CancellationToken cancellationToken)
+    {
+        await using IQuerySession query = store.QuerySession();
+        TaskDetails? task = await query.LoadAsync<TaskDetails>(context.TaskId, cancellationToken);
+        ProjectDetails? project = await query.LoadAsync<ProjectDetails>(context.Project.Id, cancellationToken);
+        return ReviewCapResolver.Resolve(task, project, _options);
+    }
+
+    /// <summary>
+    /// Every review cycle this task has spent, across every run and follow-up it has had (task:
+    /// the review cycle caps become settable at three levels — the fourth, lifetime setting). A
+    /// stranding, a retry, or a follow-up round each start a fresh run stream with its own
+    /// per-run counters reset to zero (<see cref="RunAggregate.ReviewBudgetBaseCycle"/>,
+    /// <see cref="RunAggregate.FinalFullPassRounds"/>), which is exactly how task b6dfcbe5 reached
+    /// 52 review cycles across nine generations with no per-run cap ever seeing the task's true
+    /// history (2026-08-30): no cap is measured against this count, so summing it here rather than
+    /// maintaining a second counter is enough (<see cref="RunDetails.ReviewCycle"/> already IS each
+    /// run's own high-water cycle mark). Every OTHER run of this task is read off <see
+    /// cref="RunDetails"/> — the same by-<c>TaskId</c> join <see cref="LoadPriorRulingsAsync"/>
+    /// already uses — and the CURRENT run's own count comes from <paramref name="run"/> itself
+    /// rather than its own (possibly not-yet-caught-up) <see cref="RunDetails"/> projection, since
+    /// the aggregate just loaded at the top of this iteration is the freshest source available for
+    /// it.
+    /// </summary>
+    private async Task<int> LifetimeReviewCycleCountAsync(
+        ReviewContext context, RunAggregate run, CancellationToken cancellationToken)
+    {
+        await using IQuerySession query = store.QuerySession();
+        // Projects to the one scalar field summed below instead of materializing full RunDetails
+        // documents for every prior run (PR #121 review) — the same discipline
+        // CloseoutEngine.ReviewRerequestCountAsync already applies for its own per-run tally.
+        IReadOnlyList<int> otherRunCycles = await query.Query<RunDetails>()
+            .Where(candidate => candidate.TaskId == context.TaskId && candidate.Id != context.RunId)
+            .Select(candidate => candidate.ReviewCycle)
+            .ToListAsync(cancellationToken);
+        return run.ReviewCycle + otherRunCycles.Sum();
+    }
+
+    /// <summary>
+    /// Parks the run instead of settling when this task's lifetime review-cycle budget is spent
+    /// (task: the review cycle caps become settable at three levels), and reports whether it did.
+    /// Skipped outright for <see cref="SettleReason.Human"/>: a human's own <c>h9k review resolve
+    /// --merge-ready</c> is exactly the "human resolution" the budget waits for (Brian's ruling,
+    /// 2026-08-29) — the same <see cref="RunAggregate.HumanEndedTheLoop"/> mechanism that already
+    /// lets a human's verdict bypass <see cref="FinalFullPassCapReached"/> — so a settle a human
+    /// just explicitly granted is never re-parked here, while every settle this method DOES reach
+    /// (<see cref="SettleReason.Bar"/> or <see cref="SettleReason.NothingOwed"/>, an automatic
+    /// convergence with no human involved) still parks for one, even a fully clean one: the
+    /// pathology this budget exists to catch already happened by the time the count is this high,
+    /// and it is worth a human's look regardless of how cleanly THIS particular cycle converged.
+    /// </summary>
+    private async Task<bool> ParkIfLifetimeBudgetExceededAsync(
+        ReviewContext context, RunAggregate run, ResolvedReviewCaps caps, SettleReason settlingReason,
+        CancellationToken cancellationToken)
+    {
+        if (settlingReason == SettleReason.Human)
+        {
+            return false;
+        }
+
+        int totalCycles = await LifetimeReviewCycleCountAsync(context, run, cancellationToken);
+        if (totalCycles <= caps.LifetimeReviewCycleBudget.Value)
+        {
+            return false;
+        }
+
+        await ParkAsync(
+            context.RunId, context.TaskId,
+            LifetimeBudgetParkReason(run, totalCycles, caps.LifetimeReviewCycleBudget), cancellationToken);
+        return true;
+    }
+
+    /// <summary>
+    /// Why the task-lifetime review-cycle budget parks the run: not this run's own doing, but the
+    /// task's whole history across every stranding, retry, and follow-up round it has had — none
+    /// of which ever reset this count the way they reset a run's own per-run caps (task: the
+    /// review cycle caps become settable at three levels). <paramref name="budget"/> names its own
+    /// resolved value and level, so an operator reading the park knows whether a tight task or
+    /// project override or the generous node default is what the task finally exceeded.
+    /// </summary>
+    private static string LifetimeBudgetParkReason(RunAggregate run, int totalCycles, ResolvedReviewCap budget)
+    {
+        string findings = RunPaths.ReviewFindingsFile(ParkedRunDirectory(run), run.ReviewCycle);
+        return $"This task has spent {totalCycles} review cycle(s) across every run and follow-up it has had — " +
+            $"past its lifetime review-cycle budget of {budget.Value}, from {budget.Describe()}. A stranding, a " +
+            "retry, or a follow-up round each start with a clean per-run cap, so none of them ever saw this " +
+            "task's true history; this budget does, and does not reset the way those do. Worth a human's look " +
+            $"even though this cycle converged cleanly. Unresolved findings: {findings}. Fix in the worktree and " +
+            "resolve with h9k review resolve --merge-ready, grant a fresh round with --needs-fixes, or abandon " +
+            "the task.";
     }
 
     /// <summary>
