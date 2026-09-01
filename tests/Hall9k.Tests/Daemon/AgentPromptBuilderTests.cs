@@ -1714,6 +1714,147 @@ public sealed class AgentPromptBuilderTests : IDisposable
         prompt.Should().Contain("do not quietly re-grade it");
     }
 
+    /// <summary>
+    /// The review-fix session's own self-check phase (task: the review fix session ends with a
+    /// mandatory self-check phase before handing back), ordered after every finding is fixed or
+    /// disputed and before the resolution line — so the phase sees the finished fix, and the
+    /// resolution the platform parses still comes last.
+    /// </summary>
+    [Fact]
+    public void Review_fix_prompt_carries_a_self_check_phase_ordered_before_resolution()
+    {
+        string prompt = AgentPromptBuilder.BuildReviewFix(
+            SomeTask(), "task/1-slug", "findings go here", cycle: 1);
+
+        prompt.Should().Contain("**Self-check phase.**");
+
+        int disputeAt = prompt.IndexOf("would be deciding your own way past that", StringComparison.Ordinal);
+        int selfCheckAt = prompt.IndexOf("**Self-check phase.**", StringComparison.Ordinal);
+        int resolutionAt = prompt.IndexOf("## Resolution (required)", StringComparison.Ordinal);
+        disputeAt.Should().BeGreaterThan(-1);
+        selfCheckAt.Should().BeGreaterThan(-1);
+        resolutionAt.Should().BeGreaterThan(-1);
+        selfCheckAt.Should().BeGreaterThan(disputeAt, "the phase runs after the findings are fixed or disputed");
+        resolutionAt.Should().BeGreaterThan(selfCheckAt, "the session still concludes with the resolution line");
+
+        prompt.Should().Contain("full extra verify-plus-fix lap", "the phase states why it exists");
+        prompt.Should().Contain("cheaper fix-role model", "the reason names the model risk the phase compensates for");
+    }
+
+    /// <summary>
+    /// The class sweep is mandatory per finding, not a suggestion: a finding's stated line is
+    /// one instance of its shape, and every sibling site has to be swept and named so the verify
+    /// pass can check the enumeration rather than rediscover it (same class of escape as
+    /// cea5ae6e cycle 6 and b6dfcbe5's park, both 2026-08-30).
+    /// </summary>
+    [Fact]
+    public void Self_check_phase_makes_the_class_sweep_mandatory_and_named_in_the_summary()
+    {
+        string prompt = AgentPromptBuilder.BuildReviewFix(
+            SomeTask(), "task/1-slug", "findings go here", cycle: 1);
+
+        prompt.Should().Contain("Class sweep, mandatory per finding");
+        prompt.Should().Contain("not the boundary of it");
+        prompt.Should().Contain("enumerate every other");
+        prompt.Should().Contain("Name every site you swept");
+        prompt.Should().Contain("so the verify pass can check your enumeration");
+    }
+
+    /// <summary>
+    /// The regression comparison is mandatory per replaced behavior: an unjustified narrowing or
+    /// widening is treated as a finding against the fix itself, not a note for later (the
+    /// cea5ae6e cycle 8 regression this guards against: a hurried reflog fix silently swapped
+    /// create-only branch materialisation for a force-move).
+    /// </summary>
+    [Fact]
+    public void Self_check_phase_makes_the_regression_comparison_mandatory_per_replaced_behavior()
+    {
+        string prompt = AgentPromptBuilder.BuildReviewFix(
+            SomeTask(), "task/1-slug", "findings go here", cycle: 1);
+
+        prompt.Should().Contain("Regression comparison, mandatory per replaced behavior");
+        prompt.Should().Contain("what the old code did that the new code no longer does");
+        prompt.Should().Contain("confirm");
+        prompt.Should().Contain("is a finding against your own fix");
+    }
+
+    /// <summary>
+    /// The touched tests run in the foreground before the session concludes, and the instruction
+    /// teaches the near-maximum timeout that makes a foreground run survivable (2026-09-01
+    /// transcript mining across 399 fix sessions: the command tool's 2-minute default killed
+    /// obedient foreground runs of the 8-minute suite).
+    /// </summary>
+    [Fact]
+    public void Self_check_phase_runs_the_touched_tests_in_the_foreground_with_a_near_maximum_timeout()
+    {
+        string prompt = AgentPromptBuilder.BuildReviewFix(
+            SomeTask(), "task/1-slug", "findings go here", cycle: 1);
+
+        prompt.Should().Contain("Run the touched tests, in the foreground");
+        prompt.Should().Contain("do not");
+        prompt.Should().Contain("background them");
+        prompt.Should().Contain("590-600 seconds");
+    }
+
+    /// <summary>
+    /// The phase is a single pass, not a loop: a suspicion that never rises to a stated finding
+    /// carries forward into the summary for the verify pass, which is the next station
+    /// regardless of what this phase finds.
+    /// </summary>
+    [Fact]
+    public void Self_check_phase_is_a_single_pass_not_a_loop()
+    {
+        string prompt = AgentPromptBuilder.BuildReviewFix(
+            SomeTask(), "task/1-slug", "findings go here", cycle: 1);
+
+        prompt.Should().Contain("one pass — not a loop");
+        prompt.Should().Contain("This phase is one pass, not a loop");
+        prompt.Should().Contain("the verify pass is the next station regardless");
+    }
+
+    /// <summary>
+    /// The fix prompt gets the same clean-tree closing contract the build prompt carries
+    /// (strandings #8 and #9, 2026-08-31: two fix sessions in one morning each completed a
+    /// coherent cycle fix and ended without committing it, caught only by the platform's
+    /// pre-gate check at the cost of an operator salvage-and-retry lap).
+    /// </summary>
+    [Fact]
+    public void Review_fix_prompt_ends_with_the_clean_tree_final_contract()
+    {
+        string prompt = AgentPromptBuilder.BuildReviewFix(
+            SomeTask(), "task/1-slug", "findings go here", cycle: 1);
+
+        prompt.Should().Contain(
+            "The session is not done while `git status` shows anything modified or",
+            "the fix prompt never carried this closing contract before, unlike the build prompt");
+        prompt.Should().Contain("including whatever");
+        prompt.Should().Contain("this phase's own hunt just fixed");
+    }
+
+    /// <summary>
+    /// Scope check: the self-check phase belongs to the review-fix prompt alone. The build
+    /// prompt keeps its own adversarial self-review loop unchanged, and the review lens prompts
+    /// never fix anything, so neither should ever carry this phase's own heading.
+    /// </summary>
+    [Fact]
+    public void Self_check_phase_does_not_leak_into_the_build_prompt_or_the_review_lens_prompts()
+    {
+        string buildPrompt = AgentPromptBuilder.Build(SomeTask(), SomeProject(), "task/1-slug", _worktreePath);
+        string conformanceLens = AgentPromptBuilder.BuildReview(
+            SomeTask(), SomeProject(), "task/1-slug", cycle: 1, ReviewLens.Conformance);
+        string adversarialLens = AgentPromptBuilder.BuildReview(
+            SomeTask(), SomeProject(), "task/1-slug", cycle: 1, ReviewLens.Adversarial);
+
+        foreach (string prompt in new[] { buildPrompt, conformanceLens, adversarialLens })
+        {
+            prompt.Should().NotContain("**Self-check phase.**");
+            prompt.Should().NotContain("Class sweep, mandatory per finding");
+            prompt.Should().NotContain("Regression comparison, mandatory per replaced behavior");
+        }
+
+        buildPrompt.Should().Contain("**Self-review phase.**", "the build session's own hunt is untouched");
+    }
+
     private void WriteSkill(string name, string description)
     {
         string skillDirectory = Path.Combine(_worktreePath, ".claude", "skills", name);

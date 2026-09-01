@@ -1634,6 +1634,7 @@ public static class AgentPromptBuilder
         prompt.AppendLine("  The severity decides how the review loop converges, so re-grading one yourself");
         prompt.AppendLine("  would be deciding your own way past that. The platform hands disputes to a human");
         prompt.AppendLine("  with both positions on record.");
+        AppendReviewFixSelfCheckPhaseRules(prompt);
         prompt.AppendLine();
         prompt.AppendLine("## Resolution (required)");
         prompt.AppendLine();
@@ -1650,6 +1651,89 @@ public static class AgentPromptBuilder
         prompt.AppendLine("graded.");
 
         return prompt.ToString();
+    }
+
+    /// <summary>
+    /// The review-fix session's own self-check phase (task: the review fix session ends with a
+    /// mandatory self-check phase before handing back), scaled down from the build session's
+    /// adversarial self-review loop (<see cref="WorkPromptBuilder.AppendSelfReviewPhaseRules"/>)
+    /// to the size a fix round actually is: small and targeted, so this is one pass, not a loop.
+    /// Ordered after every finding is fixed or disputed and before the resolution line, so the
+    /// hunt sees the finished fix rather than a mid-flight one.
+    /// <para>
+    /// Origin, both from one afternoon (2026-08-30): cea5ae6e cycle 6 landed a reflog fix on one
+    /// of two branch-creating arms that needed it — the verify pass's blast-radius check caught
+    /// the sibling only because it happened to be the Opus review model, not the fix model —
+    /// and b6dfcbe5's park found a two-escape cancellation finding with only one escape closed.
+    /// A third instance, cea5ae6e cycle 8, was the regression class: the second, hurried
+    /// application of the same reflog fix swapped create-only branch materialisation for a
+    /// silent force-move. All three would have been caught by their own fix session's author,
+    /// which is the whole point of running this before the verify pass has to. Deliberately
+    /// sequenced ahead of the review-model-to-fix-model knob (Decisions Log #92, #105): both
+    /// catches above were made by a verify pass running the review model, the shape that knob
+    /// moves onto the cheaper fix model, so this phase is the compensating control that has to
+    /// land first.
+    /// </para>
+    /// <para>
+    /// The clean-tree closing line and the foreground-test instruction are their own origins,
+    /// separate from the self-check phase itself: strandings #8 (a94dcd35) and #9 (70d5e8de),
+    /// both 2026-08-31 and both review-fix sessions, each completed a coherent cycle fix and
+    /// ended without committing it — caught only by <c>VerificationRunner</c>'s pre-gate check,
+    /// at the cost of an operator salvage-and-retry lap; the build prompt got this same closing
+    /// contract from cea5ae6e's commit discipline, and the fix prompt never had. And 2026-09-01
+    /// transcript mining across 399 fix sessions found the command tool's 2-minute default
+    /// killing obedient foreground test runs of an 8-minute suite — sessions adapted by
+    /// detaching the run and then dying waiting on it — while every clean full-suite survivor
+    /// had passed an explicit 590-600 second timeout.
+    /// </para>
+    /// <para>
+    /// Deliberately narrow, matching the build session's own phase: no model change (the fix
+    /// session keeps whatever model it already resolved to, so a before/after verify-pass
+    /// comparison attributes to the prompt alone), and scoped to this one prompt — the build
+    /// prompt and the review lens prompts are untouched.
+    /// </para>
+    /// </summary>
+    private static void AppendReviewFixSelfCheckPhaseRules(StringBuilder prompt)
+    {
+        prompt.AppendLine("- **Self-check phase.** Once every finding above is fixed or disputed, and before");
+        prompt.AppendLine("  you conclude, run one pass — not a loop — over your own fix: assume you left");
+        prompt.AppendLine("  something half-applied, or that your own fix introduced a regression, and go");
+        prompt.AppendLine("  looking for it the way a hostile reviewer would. Both have already escaped a fix");
+        prompt.AppendLine("  session here and cost a full extra verify-plus-fix lap. Catching either yourself");
+        prompt.AppendLine("  now is the more reliable check: the verify pass that would otherwise have to");
+        prompt.AppendLine("  catch it may itself be running on the cheaper fix-role model rather than the");
+        prompt.AppendLine("  review model, and a subtle half-fix or self-introduced regression is exactly");
+        prompt.AppendLine("  the failure mode a cheaper model is least equipped to catch.");
+        prompt.AppendLine("  This phase is one pass, not a loop: whatever is still merely suspected once it");
+        prompt.AppendLine("  ends belongs in your final summary for the verify pass to look at next, not a");
+        prompt.AppendLine("  second pass here — the verify pass is the next station regardless of what you");
+        prompt.AppendLine("  find in this one.");
+        prompt.AppendLine("  1. **Class sweep, mandatory per finding.** Treat every finding's stated line as");
+        prompt.AppendLine("     one instance of its defect, not the boundary of it: enumerate every other");
+        prompt.AppendLine("     site sharing the same shape and fix or explicitly clear each one — a site you");
+        prompt.AppendLine("     looked at and judged fine counts as cleared, one you never looked at does");
+        prompt.AppendLine("     not. Name every site you swept, including the ones you cleared and why, in");
+        prompt.AppendLine("     your final summary, so the verify pass can check your enumeration instead of");
+        prompt.AppendLine("     rediscovering it from a blank slate.");
+        prompt.AppendLine("  2. **Regression comparison, mandatory per replaced behavior.** For every finding");
+        prompt.AppendLine("     whose fix replaced, removed, narrowed, or widened existing behavior, state in");
+        prompt.AppendLine("     your summary what the old code did that the new code no longer does, and confirm");
+        prompt.AppendLine("     that difference is intended. A narrowing or widening you cannot justify that");
+        prompt.AppendLine("     way is a finding against your own fix, not a note for later — fix it before");
+        prompt.AppendLine("     you conclude, the same as any other real finding this phase surfaces.");
+        prompt.AppendLine("  3. **Run the touched tests, in the foreground.** Run the tests that touch the");
+        prompt.AppendLine("     code you changed and wait for them to finish before you conclude; do not");
+        prompt.AppendLine("     background them, and do not skip this because the platform re-verifies after");
+        prompt.AppendLine("     you finish — this phase exists so an escape is caught here instead of costing");
+        prompt.AppendLine("     that separate lap. Request an explicit near-maximum timeout on the command,");
+        prompt.AppendLine("     590-600 seconds: a foreground run left on a tool's short default timeout does");
+        prompt.AppendLine("     not fail loudly, it dies mid-suite, and a session that notices tends to");
+        prompt.AppendLine("     background the run instead and then end the session still waiting on a result");
+        prompt.AppendLine("     nothing will ever deliver.");
+        prompt.AppendLine("- **The session is not done while `git status` shows anything modified or");
+        prompt.AppendLine("  untracked.** Commit everything before your final message, including whatever");
+        prompt.AppendLine("  this phase's own hunt just fixed — a completed fix left uncommitted is not a");
+        prompt.AppendLine("  finished fix.");
     }
 
     /// <summary>
