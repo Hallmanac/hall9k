@@ -343,7 +343,7 @@ prints the command's own help back at you, so one bad invocation costs one comma
 ### The judgment the window owns: sequencing the ready set
 
 The dispatcher is deliberately mechanical. It takes queued tasks in order, up to the node's
-session ceiling (#64), and it has **no idea whether two of them collide**. `--blocked-by` enforces
+run ceiling (`--max-concurrent-task-runs`, #64, #109), and it has **no idea whether two of them collide**. `--blocked-by` enforces
 sequencing, but only as declared: the graph is enforced, never inferred. Inferring it is the
 window's job, and it is real work.
 
