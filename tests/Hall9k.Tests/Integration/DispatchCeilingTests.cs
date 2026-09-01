@@ -91,11 +91,7 @@ public sealed class DispatchCeilingTests(PostgresFixture postgres) : IClassFixtu
             load.LiveRuns.Should().Be(2,
                 "the sweep that fills the node is the one whose deferrals need explaining, so it "
                 + "publishes what it is carrying when it leaves, not what it found on arrival");
-            load.MaxConcurrentRuns.Should().Be(2);
-            load.LiveAgentSessions.Should().Be(2 * NodeLoad.PeakAgentSessionsPerRun,
-                "the ceiling is set in the unit the machine runs out of — a run under review is one "
-                + "resident session per review lens, not one process");
-            load.MaxConcurrentAgentSessions.Should().Be(2 * NodeLoad.PeakAgentSessionsPerRun);
+            load.MaxConcurrentRuns.Should().Be(2, "the ceiling is configured directly in runs (Decisions Log #108)");
             load.MachineName.Should().Be(Environment.MachineName);
         }
 
@@ -385,17 +381,12 @@ public sealed class DispatchCeilingTests(PostgresFixture postgres) : IClassFixtu
         return node;
     }
 
-    /// <summary>
-    /// An engine whose ceiling is stated in runs, which is what every assertion here is about.
-    /// The setting itself is denominated in agent sessions (Decisions Log #64), so the helper
-    /// buys each run the peak its tree can hold — the same conversion the daemon does, from the
-    /// same constant, so a third review lens moves the tests and the dispatcher together.
-    /// </summary>
+    /// <summary>An engine whose ceiling is stated directly in runs (Decisions Log #108).</summary>
     private DispatchEngine Engine(IDocumentStore store, NodeContext node, int maxConcurrentRuns) => new(
         store, node, new DaemonConnection(postgres.ConnectionString), new FakeProcessManager(),
         Options.Create(new DaemonOptions
         {
-            MaxConcurrentAgentSessions = maxConcurrentRuns * NodeLoad.PeakAgentSessionsPerRun,
+            MaxConcurrentTaskRuns = maxConcurrentRuns,
             LeaseTimeout = TimeSpan.FromSeconds(60),
         }),
         NullLogger<DispatchEngine>.Instance);

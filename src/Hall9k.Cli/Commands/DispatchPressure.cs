@@ -10,12 +10,14 @@ namespace Hall9k.Cli.Commands;
 /// Absent when no measurement is current, which reads as "nothing known about capacity" —
 /// the pane then says nothing about slots rather than inventing a number.
 /// <para>
-/// Runs, because a slot is what a queued task is waiting for. The setting behind the number is
-/// denominated in agent sessions and a run's review occupancy varies by cycle mode (one per
-/// review lens on discovery and final-full-pass cycles, one total on the verify cycles between
-/// them), so the conversion is the daemon's and is published already done: the section heading
-/// names the lever in its own unit, and no CLI surface has to know how many processes a run
-/// tree is worth.
+/// Runs, because a slot is what a queued task is waiting for and, as of Decisions Log #108,
+/// the setting behind the number (<c>DaemonOptions.MaxConcurrentTaskRuns</c>) is denominated
+/// directly in runs too — the section heading names the lever in its own unit with no
+/// conversion in between. A run's own review occupancy (one process per lens on discovery and
+/// final-full-pass cycles, one total on the verify cycles between them, fewer still under a
+/// lowered session cap) is <c>DaemonOptions.SessionCapPerRun</c>'s own concern, bounded per run
+/// rather than reserved against this node-wide ceiling; no CLI surface has to know how many
+/// processes a run tree is worth.
 /// </para>
 /// </summary>
 internal sealed record DispatchPressure(int LiveRuns, int MaxConcurrentRuns)

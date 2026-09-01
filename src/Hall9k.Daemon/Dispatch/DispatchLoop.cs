@@ -25,6 +25,7 @@ public sealed class DispatchLoop(
     IWorktreeManager worktrees,
     CloseoutEngine closeout,
     IOptions<DaemonOptions> options,
+    OperatingSettingsReport concurrencySettings,
     IConfiguration configuration,
     ILogger<DispatchLoop> logger) : BackgroundService
 {
@@ -38,15 +39,27 @@ public sealed class DispatchLoop(
         logger.LogInformation("Node {NodeId} (owner {OwnerId}) starting", node.NodeId, node.OwnerId);
 
         // The ceiling is stated up front because it is the answer to "why is my queue not
-        // moving" (Decisions Log #64), and because it is per-machine configuration: the number
-        // this node carries is not the number the next one carries.
-        NodeLoad ceiling = new(LiveRuns: 0, _options.MaxConcurrentAgentSessions);
+        // moving" (Decisions Log #64, #108), and because it is per-machine configuration: the
+        // number this node carries is not the number the next one carries.
         logger.LogInformation(
-            "Concurrency ceiling: at most {MaxConcurrentAgentSessions} resident agent session(s) on this node "
-            + "at once, which is {MaxConcurrentRuns} live run(s) at {PeakAgentSessionsPerRun} session(s) each "
-            + "(configure with {Section}:{Setting})",
-            _options.MaxConcurrentAgentSessions, ceiling.MaxConcurrentRuns, NodeLoad.PeakAgentSessionsPerRun,
-            DaemonOptions.SectionName, nameof(DaemonOptions.MaxConcurrentAgentSessions));
+            "Concurrency ceiling: at most {MaxConcurrentTaskRuns} task run(s) live on this node at once "
+            + "(configure with {Section}:{Setting} or h9k config set --max-concurrent-task-runs <n>); the "
+            + "per-run session cap defaults to {SessionCapPerRun} and is overridable per task with "
+            + "h9k task set-session-cap",
+            _options.MaxConcurrentTaskRuns, DaemonOptions.SectionName, nameof(DaemonOptions.MaxConcurrentTaskRuns),
+            _options.SessionCapPerRun);
+        if (concurrencySettings.MaxConcurrentTaskRunsConvertedFromLegacy)
+        {
+            logger.LogInformation(
+                "{MaxConcurrentTaskRunsSetting} is not set — this node's ceiling of {MaxConcurrentTaskRuns} run(s) "
+                + "was converted (floor(sessions/2), minimum 1) from the retired {LegacySetting}, resolved from "
+                + "{LegacyOrigin}. Set {MaxConcurrentTaskRunsSetting} directly "
+                + "(h9k config set --max-concurrent-task-runs <n>) to stop relying on the conversion",
+                nameof(DaemonOptions.MaxConcurrentTaskRuns), _options.MaxConcurrentTaskRuns,
+                nameof(DaemonOptions.MaxConcurrentAgentSessions), concurrencySettings.MaxConcurrentTaskRuns.DescribeOrigin(),
+                nameof(DaemonOptions.MaxConcurrentTaskRuns));
+        }
+
         WarnAboutRetiredCeilingSetting();
 
         // Before anything reads the task projections: bring documents written by an older
@@ -139,13 +152,19 @@ public sealed class DispatchLoop(
     }
 
     /// <summary>
-    /// Say out loud that a configured <c>MaxConcurrentRuns</c> is no longer read (Decisions Log
-    /// #64). The setting was not renamed, it was re-denominated: it used to mean runs and the
-    /// ceiling is now set in agent sessions, so the old number cannot be carried over as an
-    /// alias without silently meaning something else — a tower told to run four would get four
-    /// sessions, which is one or two runs. Binding it quietly would be a guess about intent
-    /// (AGENTS.md: never guess at unobserved facts), and dropping it quietly would leave an
-    /// operator watching a ceiling they thought they had raised. So it is dropped out loud.
+    /// Say out loud that a configured <c>MaxConcurrentRuns</c> — the original, pre-#64 key, not
+    /// <see cref="DaemonOptions.MaxConcurrentAgentSessions"/> — is no longer read. Originally
+    /// (Decisions Log #64) the ceiling moved from this run-denominated key to the session-
+    /// denominated <c>MaxConcurrentAgentSessions</c>, so the old number could not be carried over
+    /// as an alias without silently meaning something else — a tower told to run four would get
+    /// four sessions, which is one or two runs. Decisions Log #108 has since moved the ceiling back
+    /// to a run-denominated key, <see cref="DaemonOptions.MaxConcurrentTaskRuns"/>, which this
+    /// retired key's own value would in fact carry over unchanged — but binding it quietly would
+    /// still be a guess about intent (AGENTS.md: never guess at unobserved facts): the two
+    /// denominations only coincide again today, and an operator who set this key and forgot about
+    /// it should not have that guess made silently on a future re-denomination either. Binding it
+    /// quietly would be a guess about intent, and dropping it quietly would leave an operator
+    /// watching a ceiling they thought they had raised. So it is dropped out loud.
     /// </summary>
     private void WarnAboutRetiredCeilingSetting()
     {
@@ -156,11 +175,12 @@ public sealed class DispatchLoop(
         }
 
         logger.LogWarning(
-            "{RetiredSetting} is set but is no longer read — the ceiling is now configured in agent "
-            + "sessions as {Section}:{Setting}, which is a different unit, so the old value is not "
-            + "carried over. This node runs on the ceiling logged above until you set the new one",
+            "{RetiredSetting} is set but is no longer read — the ceiling is now configured directly "
+            + "in task runs as {Section}:{Setting} (h9k config set --max-concurrent-task-runs <n>), "
+            + "so the old value is not carried over. This node runs on the ceiling logged above "
+            + "until you set the new one",
             $"{DaemonOptions.SectionName}:{retired}",
-            DaemonOptions.SectionName, nameof(DaemonOptions.MaxConcurrentAgentSessions));
+            DaemonOptions.SectionName, nameof(DaemonOptions.MaxConcurrentTaskRuns));
     }
 
     private async Task WaitForPostgresAsync(CancellationToken cancellationToken)

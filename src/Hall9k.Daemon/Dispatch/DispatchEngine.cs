@@ -430,10 +430,9 @@ public sealed class DispatchEngine(
     }
 
     /// <summary>
-    /// The live-run count this node claims against, and the session ceiling it is measured
-    /// against (Decisions Log #64). The counting rule itself is <see cref="NodeLoad.LiveSlots"/>;
-    /// the conversion from run trees to resident sessions is <see cref="NodeLoad"/>'s; the
-    /// two queries here are just what it needs: this node's leases, and the runs that could
+    /// The live-run count this node claims against, and the run ceiling it is measured against
+    /// (Decisions Log #64, #108). The counting rule itself is <see cref="NodeLoad.LiveSlots"/>;
+    /// the two queries here are just what it needs: this node's leases, and the runs that could
     /// answer for them.
     /// </summary>
     private async Task<NodeLoad> MeasureLoadAsync(IQuerySession session, CancellationToken cancellationToken)
@@ -462,7 +461,7 @@ public sealed class DispatchEngine(
                 .ToListAsync(cancellationToken);
 
         List<RunListItem> runs = [.. live, .. leaseRuns.Where(run => live.All(other => other.Id != run.Id))];
-        return new NodeLoad(NodeLoad.LiveSlots(nodeId, leases, runs).Count, _options.MaxConcurrentAgentSessions);
+        return new NodeLoad(NodeLoad.LiveSlots(nodeId, leases, runs).Count, _options.MaxConcurrentTaskRuns);
     }
 
     /// <summary>
@@ -480,8 +479,6 @@ public sealed class DispatchEngine(
             MachineName = Environment.MachineName,
             LiveRuns = load.LiveRuns,
             MaxConcurrentRuns = load.MaxConcurrentRuns,
-            LiveAgentSessions = load.LiveAgentSessions,
-            MaxConcurrentAgentSessions = load.MaxConcurrentAgentSessions,
             ObservedAt = now,
         });
         await session.SaveChangesAsync(cancellationToken);
@@ -514,11 +511,10 @@ public sealed class DispatchEngine(
 
         _reportedOverCeiling = true;
         logger.LogWarning(
-            "This node is carrying {LiveRuns} live run(s) against a ceiling of {MaxConcurrentRuns} "
-            + "({LiveAgentSessions} of {MaxConcurrentAgentSessions} agent session(s) reserved) — a resolved "
+            "This node is carrying {LiveRuns} live run(s) against a ceiling of {MaxConcurrentRuns} — a resolved "
             + "review park or a run resumed by startup adoption re-entered a session tree this node had "
             + "released. Nothing further is claimed until it is back under the ceiling",
-            load.LiveRuns, load.MaxConcurrentRuns, load.LiveAgentSessions, load.MaxConcurrentAgentSessions);
+            load.LiveRuns, load.MaxConcurrentRuns);
     }
 
     /// <summary>
@@ -532,10 +528,8 @@ public sealed class DispatchEngine(
         {
             logger.LogInformation(
                 "Task {TaskId} stays queued: this node is at its concurrency ceiling "
-                + "({LiveRuns} of {MaxConcurrentRuns} live run(s), reserving {LiveAgentSessions} of "
-                + "{MaxConcurrentAgentSessions} agent session(s)) — it is claimed as a slot frees up",
-                taskId, load.LiveRuns, load.MaxConcurrentRuns,
-                load.LiveAgentSessions, load.MaxConcurrentAgentSessions);
+                + "({LiveRuns} of {MaxConcurrentRuns} live run(s)) — it is claimed as a slot frees up",
+                taskId, load.LiveRuns, load.MaxConcurrentRuns);
         }
 
         _deferredClaims.Clear();

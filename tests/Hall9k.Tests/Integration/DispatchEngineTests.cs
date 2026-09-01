@@ -35,10 +35,10 @@ public sealed class DispatchEngineTests(PostgresFixture postgres) : IClassFixtur
 
         NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
 
-        // A cap of three runs, bought in the unit the setting is denominated in (log #64).
+        // A cap of three runs, stated directly (Decisions Log #108).
         DaemonOptions options = new()
         {
-            MaxConcurrentAgentSessions = 3 * NodeLoad.PeakAgentSessionsPerRun,
+            MaxConcurrentTaskRuns = 3,
             LeaseTimeout = TimeSpan.FromSeconds(60),
         };
         DispatchEngine engine = new(
@@ -118,7 +118,7 @@ public sealed class DispatchEngineTests(PostgresFixture postgres) : IClassFixtur
 
         NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
 
-        DaemonOptions options = new() { MaxConcurrentAgentSessions = 500, LeaseTimeout = TimeSpan.FromSeconds(60) };
+        DaemonOptions options = new() { MaxConcurrentTaskRuns = 500, LeaseTimeout = TimeSpan.FromSeconds(60) };
         DispatchEngine engine = new(
             store, node, new DaemonConnection(postgres.ConnectionString), new FakeProcessManager(),
             Options.Create(options), NullLogger<DispatchEngine>.Instance);
@@ -194,7 +194,7 @@ public sealed class DispatchEngineTests(PostgresFixture postgres) : IClassFixtur
 
         NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
 
-        DaemonOptions options = new() { MaxConcurrentAgentSessions = 500, LeaseTimeout = TimeSpan.FromSeconds(60) };
+        DaemonOptions options = new() { MaxConcurrentTaskRuns = 500, LeaseTimeout = TimeSpan.FromSeconds(60) };
         DispatchEngine engine = new(
             store, node, new DaemonConnection(postgres.ConnectionString), new FakeProcessManager(),
             Options.Create(options), NullLogger<DispatchEngine>.Instance);
@@ -272,7 +272,7 @@ public sealed class DispatchEngineTests(PostgresFixture postgres) : IClassFixtur
 
         // A generous cap: this class shares one database, so other tests' queued work and
         // leases may be present — the assertions below target this task alone.
-        DaemonOptions options = new() { MaxConcurrentAgentSessions = 500, LeaseTimeout = TimeSpan.FromSeconds(60) };
+        DaemonOptions options = new() { MaxConcurrentTaskRuns = 500, LeaseTimeout = TimeSpan.FromSeconds(60) };
         DispatchEngine engine = new(
             store, node, new DaemonConnection(postgres.ConnectionString), new FakeProcessManager(),
             Options.Create(options), NullLogger<DispatchEngine>.Instance);

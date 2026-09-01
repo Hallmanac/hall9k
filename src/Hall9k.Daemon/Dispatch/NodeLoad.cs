@@ -1,4 +1,3 @@
-using Hall9k.Domain.Features.Run;
 using Hall9k.Domain.Features.Run.Projections;
 using Hall9k.Domain.Features.Tasks.Documents;
 
@@ -14,65 +13,33 @@ namespace Hall9k.Daemon.Dispatch;
 public sealed record LiveSlot(Guid TaskId, Guid? RunId);
 
 /// <summary>
-/// What this node is carrying right now against what it may carry (Decisions Log #64).
+/// What this node is carrying right now against what it may carry (Decisions Log #64, #108).
 /// The ceiling exists because the machine, not the platform, was enforcing one: the origin
 /// incident (2026-08-21) was an OOM that killed three of four concurrently dispatched agent
 /// sessions the first time the queue went four wide.
 /// <para>
-/// The configured ceiling is denominated in <em>agent sessions</em>, because sessions are what
-/// the machine runs out of memory for, and a run tree is not one session. This record is the
-/// conversion: it counts run trees, since a run is the only thing the dispatcher can decline to
-/// start, and charges each one the peak number of sessions its tree can hold at once.
+/// The configured ceiling is denominated directly in <em>task runs</em> as of Decisions Log #108
+/// (<c>DaemonOptions.MaxConcurrentTaskRuns</c>) — the thing an operator actually reasons about,
+/// and the only thing the dispatcher can decline to start. The whole-life reservation this record
+/// used to compute by dividing a session budget by a run's peak session cost dissolves along with
+/// the old unit: a run's own peak concurrent sessions is now bounded per-phase by
+/// <c>DaemonOptions.SessionCapPerRun</c> (<c>ReviewEngine</c>'s own concern), never reserved for
+/// the run's whole life against this node's ceiling.
 /// </para>
 /// </summary>
-public sealed record NodeLoad(int LiveRuns, int MaxConcurrentAgentSessions)
+public sealed record NodeLoad(int LiveRuns, int ConfiguredMaxConcurrentRuns)
 {
     /// <summary>
-    /// The most agent sessions one run tree can have resident at the same time, derived from
-    /// the lens list rather than written down, so appending a third lens tightens the ceiling
-    /// instead of quietly doubling what the machine is asked to hold.
-    /// <para>
-    /// A review cycle spawns every active lens together and waits on them together
-    /// (<c>ReviewEngine.DispatchReviewPassesAsync</c>, log #59), so a run under review is
-    /// <see cref="ReviewLens.CycleLenses"/> processes, not one. Every other stage of a run tree
-    /// is strictly sequential and costs one session: the blocker-synthesis pass is awaited
-    /// before the build session spawns, the build session has exited by the time the
-    /// verification gates run, and a fix session is the only thing resident in its phase.
-    /// </para>
+    /// The ceiling actually enforced: never below 1, so a misconfigured
+    /// <c>max-concurrent-task-runs</c> of zero or less dispatches one run at a time rather than
+    /// nothing at all — the same floor the retired session-denominated ceiling's own
+    /// <c>Math.Max(1, …)</c> derivation guaranteed, and the floor
+    /// <see cref="Hall9k.Domain.Infrastructure.Persistence.OperatingSettingsResolver.WarnIfBelowRunFloor"/>'s
+    /// own operator-facing warning already promises. Every read of the ceiling — <see cref="Capacity"/>
+    /// included — goes through this property rather than <see cref="ConfiguredMaxConcurrentRuns"/>
+    /// directly, so a node reporting or logging its ceiling never shows the unfloored raw value.
     /// </summary>
-    public static readonly int PeakAgentSessionsPerRun = Math.Max(1, ReviewLens.CycleLenses.Count);
-
-    /// <summary>
-    /// What this node is holding in the unit the ceiling is set in: every live run charged its
-    /// peak, not its current, session count. Charged at the peak on purpose — a run that is
-    /// building today reaches its review cycle on this same machine, and a ceiling that only
-    /// counted what was resident this second would claim three build sessions and then watch
-    /// them become six. Reserving is what makes "cannot start more agents than the machine can
-    /// hold" a guarantee about what the dispatcher <em>starts</em>, rather than an average.
-    /// <para>
-    /// It is deliberately not a guarantee about what is resident, and the gap is one recorded
-    /// exception rather than an oversight (Decisions Log #64). A run whose review park a human
-    /// resolves re-enters the pipeline through <c>RunSupervisor.ResumeStrandedPipelinesAsync</c>,
-    /// and a stranded one re-enters through startup adoption; neither asks this record anything,
-    /// and both hand a worktree back to a session tree the node had already released. So
-    /// <see cref="LiveRuns"/> can sit above <see cref="MaxConcurrentRuns"/>. That overshoot is
-    /// accepted, because refusing a human's explicit resume to protect a number is the worse
-    /// trade, and it is bounded rather than compounding: <see cref="Capacity"/> reads zero, so
-    /// the dispatcher claims nothing further until the node is back under. Accepted is not the
-    /// same as invisible, so the sweep that measures it says so
-    /// (<c>DispatchEngine.ReportOverCeiling</c>) instead of leaving the machine's memory
-    /// pressure with a symptom and no recorded cause.
-    /// </para>
-    /// </summary>
-    public int LiveAgentSessions => LiveRuns * PeakAgentSessionsPerRun;
-
-    /// <summary>
-    /// The session ceiling as a number of runs, which is the unit the dispatcher claims in and
-    /// the one a human reads on the pane. Never zero: a session budget smaller than one run's
-    /// peak would dispatch nothing at all, and a node that silently does no work is a worse
-    /// answer than a node that runs one task over a budget it cannot honour anyway.
-    /// </summary>
-    public int MaxConcurrentRuns => Math.Max(1, MaxConcurrentAgentSessions / PeakAgentSessionsPerRun);
+    public int MaxConcurrentRuns => Math.Max(1, ConfiguredMaxConcurrentRuns);
 
     /// <summary>
     /// How many more runs may start right now; never negative, because a node can be over its
@@ -104,8 +71,9 @@ public sealed record NodeLoad(int LiveRuns, int MaxConcurrentAgentSessions)
     /// 2026-08-22) — the ceiling counts what the machine has to hold, and the machine holds
     /// both.
     /// <para>
-    /// A slot is a session <em>tree</em>, and how many processes a tree is worth is
-    /// <see cref="PeakAgentSessionsPerRun"/>'s question, not this one's.
+    /// A slot is a session <em>tree</em>, and how many processes are resident inside it at once
+    /// is <c>DaemonOptions.SessionCapPerRun</c>'s question (<c>ReviewEngine</c>'s own concern),
+    /// not this one's.
     /// </para>
     /// <para>
     /// Everything else has released its slot: a parked run is waiting on a human with no

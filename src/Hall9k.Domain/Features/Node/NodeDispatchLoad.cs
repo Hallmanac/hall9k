@@ -21,26 +21,16 @@ public sealed class NodeDispatchLoad
     /// </summary>
     public string MachineName { get; set; } = string.Empty;
 
-    /// <summary>Agent session trees this node was supervising when the sweep ran, one per run.</summary>
+    /// <summary>Task runs this node was supervising when the sweep ran.</summary>
     public int LiveRuns { get; set; }
 
     /// <summary>
-    /// The ceiling in the unit the sweep claims in: how many runs it would have started on an
-    /// empty node. Derived from <see cref="MaxConcurrentAgentSessions"/> by the daemon's
-    /// counting rule and published rather than re-derived, so a reader never has to know how
-    /// many sessions a run tree is worth.
+    /// The configured ceiling the count was measured against — <c>DaemonOptions.MaxConcurrentTaskRuns</c>,
+    /// admission's own unit as of Decisions Log #108. Published rather than re-derived, so a reader
+    /// never has to know how many sessions a run tree is worth, or that the setting behind this
+    /// number was ever denominated any other way.
     /// </summary>
     public int MaxConcurrentRuns { get; set; }
-
-    /// <summary>
-    /// The processes those runs reserve: every live run charged the peak sessions its tree can
-    /// hold at once, which is what the machine has to have memory for. This is the number the
-    /// origin incident was about, so it is the one recorded, not just the run count it came from.
-    /// </summary>
-    public int LiveAgentSessions { get; set; }
-
-    /// <summary>The configured ceiling (DaemonOptions.MaxConcurrentAgentSessions) the count was measured against.</summary>
-    public int MaxConcurrentAgentSessions { get; set; }
 
     /// <summary>
     /// When the sweep took this measurement. A reader that finds it stale has learned nothing
