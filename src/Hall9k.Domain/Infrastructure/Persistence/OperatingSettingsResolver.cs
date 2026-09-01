@@ -13,7 +13,13 @@ namespace Hall9k.Domain.Infrastructure.Persistence;
 /// </summary>
 public static class OperatingSettingsResolver
 {
-    private const string EnvironmentPrefix = "Hall9k__";
+    /// <summary>
+    /// The <c>Hall9k__</c> section-separator convention every concurrency-setting environment
+    /// variable name is built from — public so a remedy message naming one of these variables (the
+    /// daemon's own startup log, or <c>h9k config show</c>/<c>h9k daemon status</c>) builds the same
+    /// name this resolver reads, rather than a copy that can drift from it.
+    /// </summary>
+    public const string EnvironmentPrefix = "Hall9k__";
 
     public static async Task<OperatingSettingsReport> ResolveAsync(CancellationToken cancellationToken)
     {

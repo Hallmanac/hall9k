@@ -48,33 +48,52 @@ public sealed class DispatchLoop(
             + "h9k task set-session-cap",
             _options.MaxConcurrentTaskRuns, DaemonOptions.SectionName, nameof(DaemonOptions.MaxConcurrentTaskRuns),
             _options.SessionCapPerRun);
-        if (concurrencySettings.MaxConcurrentTaskRunsShadowsConfigFileValue)
+        if (concurrencySettings.MaxConcurrentTaskRunsConvertedFromLegacy)
         {
-            // The env-resolved legacy conversion won ahead of a max-concurrent-task-runs value
-            // that is already set in the config file — "set it directly" would be a no-op here,
-            // since the environment variable still outranks the file regardless of which key it
-            // names (independent pre-PR review, cycle 1, adversarial lens).
+            // The remedy differs by where the conversion itself resolved, not by whether the
+            // config file happens to already carry a max-concurrent-task-runs value: an
+            // environment variable naming only the legacy key still outranks a config-file value
+            // for the new one regardless of which key it names, so "set it in the file" only
+            // works when the conversion resolved at the config-file level. Resolved at the
+            // environment level, that remedy is a no-op whether or not the file already has a
+            // value — MaxConcurrentTaskRunsShadowsConfigFileValue names only the narrower case
+            // where it does, not the whole shape the remedy needs to avoid (independent pre-PR
+            // review, cycle 1 and cycle 2, adversarial lens).
             string legacyOrigin = concurrencySettings.MaxConcurrentTaskRuns.DescribeOrigin();
-            logger.LogInformation(
-                "This node's ceiling of {MaxConcurrentTaskRuns} run(s) was converted (floor(sessions/2), minimum "
-                + "1) from the retired {LegacySetting}, resolved from {LegacyOrigin} — which outranks the "
-                + "{MaxConcurrentTaskRunsSetting} value already set in the platform config file, since an "
-                + "environment variable naming only the legacy key still outranks a config-file value for the "
-                + "new one. Unset {LegacyOrigin}, or export {MaxConcurrentTaskRunsSetting} directly, to use the "
-                + "config file's value instead of the conversion",
-                _options.MaxConcurrentTaskRuns, nameof(DaemonOptions.MaxConcurrentAgentSessions), legacyOrigin,
-                nameof(DaemonOptions.MaxConcurrentTaskRuns), legacyOrigin, nameof(DaemonOptions.MaxConcurrentTaskRuns));
-        }
-        else if (concurrencySettings.MaxConcurrentTaskRunsConvertedFromLegacy)
-        {
-            logger.LogInformation(
-                "{MaxConcurrentTaskRunsSetting} is not set — this node's ceiling of {MaxConcurrentTaskRuns} run(s) "
-                + "was converted (floor(sessions/2), minimum 1) from the retired {LegacySetting}, resolved from "
-                + "{LegacyOrigin}. Set {MaxConcurrentTaskRunsSetting} directly "
-                + "(h9k config set --max-concurrent-task-runs <n>) to stop relying on the conversion",
-                nameof(DaemonOptions.MaxConcurrentTaskRuns), _options.MaxConcurrentTaskRuns,
-                nameof(DaemonOptions.MaxConcurrentAgentSessions), concurrencySettings.MaxConcurrentTaskRuns.DescribeOrigin(),
-                nameof(DaemonOptions.MaxConcurrentTaskRuns));
+            if (concurrencySettings.MaxConcurrentTaskRuns.Origin == SettingOrigin.EnvironmentVariable)
+            {
+                // The "unset" clause names the bare variable (Source, e.g. "Hall9k__MaxConcurrentAgentSessions"),
+                // not the provenance string DescribeOrigin() builds for it (e.g. "env: Hall9k__MaxConcurrentAgentSessions")
+                // — "Unset env: Hall9k__…" reads as an instruction to unset a thing called "env: Hall9k__…" rather
+                // than naming the actual variable an operator's shell would recognize.
+                string legacySource = concurrencySettings.MaxConcurrentTaskRuns.Source
+                    ?? $"{OperatingSettingsResolver.EnvironmentPrefix}{nameof(DaemonOptions.MaxConcurrentAgentSessions)}";
+                string newEnvironmentVariable =
+                    $"{OperatingSettingsResolver.EnvironmentPrefix}{nameof(DaemonOptions.MaxConcurrentTaskRuns)}";
+                string outranksClause = concurrencySettings.MaxConcurrentTaskRunsShadowsConfigFileValue
+                    ? " — which outranks the {MaxConcurrentTaskRunsSetting} value already set in the platform config file, since an "
+                        + "environment variable naming only the legacy key still outranks a config-file value for the new one"
+                    : ". Setting {MaxConcurrentTaskRunsSetting} in the platform config file would not change this: an "
+                        + "environment variable naming only the legacy key still outranks a config-file value for the new one";
+                logger.LogInformation(
+                    "This node's ceiling of {MaxConcurrentTaskRuns} run(s) was converted (floor(sessions/2), minimum "
+                    + "1) from the retired {LegacySetting}, resolved from {LegacyOrigin}" + outranksClause
+                    + ". Unset {LegacySource}, or export {NewEnvironmentVariable} directly, to use a ceiling you set "
+                    + "yourself instead of the conversion",
+                    _options.MaxConcurrentTaskRuns, nameof(DaemonOptions.MaxConcurrentAgentSessions), legacyOrigin,
+                    nameof(DaemonOptions.MaxConcurrentTaskRuns), legacySource, newEnvironmentVariable);
+            }
+            else
+            {
+                logger.LogInformation(
+                    "{MaxConcurrentTaskRunsSetting} is not set — this node's ceiling of {MaxConcurrentTaskRuns} run(s) "
+                    + "was converted (floor(sessions/2), minimum 1) from the retired {LegacySetting}, resolved from "
+                    + "{LegacyOrigin}. Set {MaxConcurrentTaskRunsSetting} directly "
+                    + "(h9k config set --max-concurrent-task-runs <n>) to stop relying on the conversion",
+                    nameof(DaemonOptions.MaxConcurrentTaskRuns), _options.MaxConcurrentTaskRuns,
+                    nameof(DaemonOptions.MaxConcurrentAgentSessions), legacyOrigin,
+                    nameof(DaemonOptions.MaxConcurrentTaskRuns));
+            }
         }
 
         WarnAboutRetiredCeilingSetting();
@@ -208,13 +227,19 @@ public sealed class DispatchLoop(
     /// malformed config-file value or an unparseable environment variable is silently floored or
     /// defaulted with nothing in the daemon's own output naming the mistake (independent pre-PR
     /// review, cycle 1, adversarial lens: none of this was logged before, where every one of these
-    /// used to be a loud <c>ConfigurationBinder</c> startup crash instead).
+    /// used to be a loud <c>ConfigurationBinder</c> startup crash instead). The consequence sentence
+    /// itself is <see cref="ConfigFileProblem.DescribeConsequence"/>, not a hand-copy of the CLI
+    /// rendering — <c>Hall9k.Cli.Infrastructure.OperatingSettingsRendering</c> lives in
+    /// <c>Hall9k.Cli</c>, which the reference graph forbids the daemon from referencing, so sharing
+    /// the sentence means it has to live in Domain, where both projects can reach it (independent
+    /// pre-PR review, cycle 2, adversarial lens: this used to interpolate the raw
+    /// <see cref="ConfigFileProblemConsequence"/> enum member instead of prose).
     /// </summary>
     private void WarnAboutUnusableConcurrencySettings()
     {
         if (concurrencySettings.ConfigFileProblem is { } problem)
         {
-            logger.LogWarning("{Message} ({Consequence})", problem.Message, problem.Consequence);
+            logger.LogWarning("{Message} {Consequence}", problem.Message, problem.DescribeConsequence());
         }
 
         foreach (string unusable in concurrencySettings.UnusableEnvironmentVariables)

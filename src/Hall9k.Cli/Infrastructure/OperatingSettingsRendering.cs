@@ -21,12 +21,11 @@ public static class OperatingSettingsRendering
 
         if (report.ConfigFileProblem is { } problem)
         {
-            string consequence = problem.Consequence switch
-            {
-                ConfigFileProblemConsequence.SettingIsIgnored =>
-                    "The daemon's own ConfigurationBinder has no conversion for this value, so this setting does not take its value from the file — every other setting in the file, and environment variables and built-in defaults, still apply. What it resolved to instead (usually the built-in default, but zero for an empty JSON object on a numeric setting) is in the row below.",
-                _ => "The daemon skips the file for this run — environment variables and built-in defaults still apply.",
-            };
+            string consequence = problem.Consequence == ConfigFileProblemConsequence.SettingIsIgnored
+                ? problem.DescribeConsequence()
+                    + " What it resolved to instead (usually the built-in default, but zero for an empty JSON "
+                    + "object on a numeric setting) is in the row below."
+                : problem.DescribeConsequence();
             lines.Add($"{problem.Message} {consequence}");
         }
 
@@ -37,11 +36,7 @@ public static class OperatingSettingsRendering
 
     public static IReadOnlyList<(string Label, string Value)> Rows(OperatingSettingsReport report)
     {
-        string maxConcurrentTaskRunsValue = report.MaxConcurrentTaskRunsConvertedFromLegacy
-            ? $"{report.MaxConcurrentTaskRuns.Value} (converted from the retired max-concurrent-agent-sessions, "
-              + $"{report.MaxConcurrentTaskRuns.DescribeOrigin()} — set max-concurrent-task-runs directly to stop "
-              + "relying on the conversion)"
-            : $"{report.MaxConcurrentTaskRuns.Value} ({report.MaxConcurrentTaskRuns.DescribeOrigin()})";
+        string maxConcurrentTaskRunsValue = DescribeMaxConcurrentTaskRuns(report);
 
         List<(string Label, string Value)> rows =
         [
@@ -68,6 +63,42 @@ public static class OperatingSettingsRendering
             })));
 
         return rows;
+    }
+
+    /// <summary>
+    /// The max-concurrent-task-runs row's value: plain when nothing converted it, and one of two
+    /// different remedies when the retired max-concurrent-agent-sessions key converted instead —
+    /// "set it directly" only actually works when the conversion itself resolved at the config-file
+    /// level. When it resolved at the environment level, an environment variable naming only the
+    /// legacy key still outranks a config-file value for the new one regardless of whether the file
+    /// already carries one, so "set it directly" is a no-op there; unsetting the legacy variable, or
+    /// exporting the new one directly, is the only remedy that actually changes what this node runs
+    /// with (independent pre-PR review, cycle 2, adversarial lens — the prior wording gave this
+    /// no-op remedy in both shapes).
+    /// </summary>
+    private static string DescribeMaxConcurrentTaskRuns(OperatingSettingsReport report)
+    {
+        if (!report.MaxConcurrentTaskRunsConvertedFromLegacy)
+        {
+            return $"{report.MaxConcurrentTaskRuns.Value} ({report.MaxConcurrentTaskRuns.DescribeOrigin()})";
+        }
+
+        string origin = report.MaxConcurrentTaskRuns.DescribeOrigin();
+        if (report.MaxConcurrentTaskRuns.Origin != SettingOrigin.EnvironmentVariable)
+        {
+            return $"{report.MaxConcurrentTaskRuns.Value} (converted from the retired max-concurrent-agent-sessions, "
+                + $"{origin} — set max-concurrent-task-runs directly to stop relying on the conversion)";
+        }
+
+        string newEnvironmentVariable = $"{OperatingSettingsResolver.EnvironmentPrefix}{nameof(OperatingSettings.MaxConcurrentTaskRuns)}";
+        string outranks = report.MaxConcurrentTaskRunsShadowsConfigFileValue
+            ? "the platform config file already sets max-concurrent-task-runs directly, but "
+            : string.Empty;
+        return $"{report.MaxConcurrentTaskRuns.Value} (converted from the retired max-concurrent-agent-sessions, "
+            + $"{origin} — {outranks}an environment variable naming only the legacy key still outranks a "
+            + "config-file value for the new one, so setting max-concurrent-task-runs directly would not change "
+            + $"this; unset max-concurrent-agent-sessions, or export {newEnvironmentVariable} directly, to stop "
+            + "relying on the conversion)";
     }
 
     /// <summary>
