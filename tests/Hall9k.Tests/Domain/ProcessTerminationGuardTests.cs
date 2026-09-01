@@ -23,7 +23,11 @@ namespace Hall9k.Tests.Domain;
 /// concurrency PLAN.md decision #108 fixed two days later, which OOM-kills the test host in a way
 /// that presents identically at the VSTest level. This guard exists so the hypothesis this
 /// investigation cleared stays cleared: a future process-terminating call reachable from a test
-/// fails the build here instead of ever reaching a human as an unexplained crash again. This is a
+/// via production code under <c>src/</c> fails the build here instead of ever reaching a human as
+/// an unexplained crash again. A call added directly inside the test tree itself — a fake, a
+/// fixture, a helper under <c>tests/</c> — is equally reachable from a test but is not scanned
+/// here; unlike the two blind spots documented below, this scope limit is not otherwise guarded
+/// against. This is a
 /// source scan rather than a runtime check for the same reason <see cref="ContainerRoutingGuardTests"/>
 /// is: the failure mode is "the call exists at all", which by construction this process can never
 /// intercept by actually exercising it — the whole point is that nothing may ever call it during a
@@ -31,8 +35,9 @@ namespace Hall9k.Tests.Domain;
 /// <para>
 /// The scan matches against comment/string-stripped source
 /// (<see cref="TestSourceTree.StripCommentsAndStrings"/>), not the raw text, so a file that only
-/// names <c>Environment.Exit</c>/<c>Environment.FailFast</c> in a doc comment — this file's own
-/// doc comment above among them — is never mistaken for a real call.
+/// names <c>Environment.Exit</c>/<c>Environment.FailFast</c> in a doc comment is never mistaken
+/// for a real call. This guard scans only <c>src/</c>, though, so that protection is never
+/// exercised against this file's own doc comment above — the guard simply never reads it.
 /// </para>
 /// <para>
 /// The two <c>Program.cs</c> entry points are the sole exemption, by relative path exactly like
@@ -43,11 +48,16 @@ namespace Hall9k.Tests.Domain;
 /// call to live if either entry point ever needs one, and nowhere else.
 /// </para>
 /// <para>
-/// The marker list only names the two literal spellings <c>Environment.Exit</c> and
-/// <c>Environment.FailFast</c>, so it does not catch an equivalent termination reached another
-/// way — <c>Process.GetCurrentProcess().Kill()</c>, or a <c>using static System.Environment;</c>
-/// with a bare <c>Exit(1)</c> — the same class of blind spot <see cref="ContainerRoutingGuardTests"/>
-/// documents for its own scan. This guard cannot follow a termination there.
+/// The marker list also matches <c>GetCurrentProcess().Kill</c>: two legitimate call sites
+/// (<see cref="Hall9k.Daemon.SingleInstanceGuard"/> and
+/// <see cref="Hall9k.Daemon.WindowsStopRequestWatcher"/>) already hold
+/// <c>Process.GetCurrentProcess()</c> for benign <c>Id</c>/<c>StartTime</c> reads, and appending
+/// <c>.Kill()</c> at either site would tear down the test host exactly as
+/// <c>Environment.Exit</c> would. It does not catch every equivalent, though — a file that adds
+/// <c>using static System.Environment;</c> and calls a bare <c>Exit(1)</c> reaches the same
+/// termination through an unqualified name this scan cannot distinguish from an ordinary method
+/// call, the same class of blind spot <see cref="ContainerRoutingGuardTests"/> documents for its
+/// own scan. This guard cannot follow a termination there.
 /// </para>
 /// </summary>
 public sealed class ProcessTerminationGuardTests
@@ -56,6 +66,7 @@ public sealed class ProcessTerminationGuardTests
     [
         "Environment.Exit",
         "Environment.FailFast",
+        "GetCurrentProcess().Kill",
     ];
 
     /// <summary>
@@ -167,11 +178,13 @@ public sealed class ProcessTerminationGuardTests
         const string syntheticQualifiedCode = "if (failure) { System.Environment.Exit(1); }";
         const string syntheticInnocentComment = "// Environment.FailFast(\"never actually called\")";
         const string syntheticLookAlikeCode = "if (failure) { FakeEnvironment.Exit(1); }";
+        const string syntheticKillCode = "if (failure) { Process.GetCurrentProcess().Kill(); }";
 
         (string strippedOffending, _, _) = TestSourceTree.StripCommentsAndStrings(syntheticOffendingCode);
         (string strippedQualified, _, _) = TestSourceTree.StripCommentsAndStrings(syntheticQualifiedCode);
         (string strippedComment, _, _) = TestSourceTree.StripCommentsAndStrings(syntheticInnocentComment);
         (string strippedLookAlike, _, _) = TestSourceTree.StripCommentsAndStrings(syntheticLookAlikeCode);
+        (string strippedKill, _, _) = TestSourceTree.StripCommentsAndStrings(syntheticKillCode);
 
         // Each name says what the scan actually reports for that snippet, not what the assertion
         // below wants it to be — a boolean named for the desired verdict rather than the observed
@@ -185,6 +198,8 @@ public sealed class ProcessTerminationGuardTests
             marker => ContainsMarkerAsIdentifier(strippedComment, marker));
         bool scanSeesALookAlikeMember = TerminationMarkers.Any(
             marker => ContainsMarkerAsIdentifier(strippedLookAlike, marker));
+        bool scanSeesAProcessKill = TerminationMarkers.Any(
+            marker => ContainsMarkerAsIdentifier(strippedKill, marker));
 
         scanSeesARealCall.Should().BeTrue(
             "the marker list no longer matches a real Environment.Exit call, or comment/string " +
@@ -200,5 +215,9 @@ public sealed class ProcessTerminationGuardTests
             "a member of an unrelated type whose name merely ends in the marker text — a test shim " +
             "named FakeEnvironment, say — terminates nothing, so the leading-boundary check must " +
             "rule it out rather than failing the build on a file that is not an offender");
+        scanSeesAProcessKill.Should().BeTrue(
+            "Process.GetCurrentProcess().Kill() terminates the process exactly as Environment.Exit " +
+            "does, and the two legitimate GetCurrentProcess() reads in this tree (SingleInstanceGuard, " +
+            "WindowsStopRequestWatcher) never call .Kill(), so this marker must not have gone dark");
     }
 }
