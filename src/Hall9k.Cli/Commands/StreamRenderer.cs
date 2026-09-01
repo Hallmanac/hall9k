@@ -1,11 +1,24 @@
 using System.Text;
 using System.Text.Json;
+using Hall9k.Cli.Infrastructure;
 
 namespace Hall9k.Cli.Commands;
 
 /// <summary>
 /// Human-readable rendering of a run's stream.jsonl. Tolerant by design: unknown or
 /// malformed lines render as dimmed raw text rather than failing the command.
+/// <para>
+/// A transcript is outside text (<see cref="ExternalText"/>): the model id, tool names, and the
+/// assistant's own prose are not hall9k's, and a malformed line's raw fallback is unparsed input
+/// straight from the file. Every interpolation site that carries any of that routes through
+/// <see cref="ExternalText.OneLineMarkup"/> (the model id, tool name, and malformed-line
+/// fallback, each framed inside a single line of its own) or
+/// <see cref="ExternalText.ForTerminalMarkup"/> (the assistant's own prose, rendered as a block
+/// that is meant to keep the line breaks the assistant wrote) so a value that happens to look
+/// like Spectre markup (<c>claude-opus-5[1m]</c>, parsed as a color tag named <c>1m</c> if left
+/// raw) or that carries a terminal escape sequence can neither crash the command nor reach the
+/// terminal unsanitised.
+/// </para>
 /// </summary>
 public static class StreamRenderer
 {
@@ -43,9 +56,14 @@ public static class StreamRenderer
                 _ => null,
             };
         }
-        catch (JsonException)
+        catch (Exception ex) when (ex is JsonException or InvalidOperationException or KeyNotFoundException or FormatException or OverflowException)
         {
-            return $"  [dim]{line}[/]";
+            // JsonException is a parse failure; the rest are System.Text.Json's own reaction to a
+            // shape it didn't expect (a missing property, a root that isn't an object, a value of
+            // the wrong kind) - structurally valid JSON that is still not the transcript shape
+            // this method assumes. Every such line is malformed from this renderer's point of
+            // view, so it gets the same raw-text fallback as a JSON syntax error.
+            return $"  [dim]{ExternalText.OneLineMarkup(line)}[/]";
         }
     }
 
@@ -58,7 +76,7 @@ public static class StreamRenderer
         }
 
         string model = root.TryGetProperty("model", out JsonElement m) ? m.GetString() ?? "?" : "?";
-        return $"[dim]— session started ({model}) —[/]";
+        return $"[dim]— session started ({ExternalText.OneLineMarkup(model)}) —[/]";
     }
 
     private static string? RenderAssistant(JsonElement root)
@@ -80,13 +98,13 @@ public static class StreamRenderer
                     string text = item.GetProperty("text").GetString() ?? string.Empty;
                     if (text.IsNotBlank())
                     {
-                        output.AppendLine(Spectre.Console.Markup.Escape(text.Trim()));
+                        output.AppendLine(ExternalText.ForTerminalMarkup(text.Trim()));
                     }
 
                     break;
                 case "tool_use":
                     string tool = item.TryGetProperty("name", out JsonElement n) ? n.GetString() ?? "?" : "?";
-                    output.AppendLine($"  [blue]⚙ {tool}[/]");
+                    output.AppendLine($"  [blue]⚙ {ExternalText.OneLineMarkup(tool)}[/]");
                     break;
             }
         }

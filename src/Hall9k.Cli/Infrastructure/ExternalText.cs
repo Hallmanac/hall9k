@@ -52,4 +52,17 @@ public static class ExternalText
     /// </para>
     /// </summary>
     public static string OneLineMarkup(string text) => OneLine(text).EscapeMarkup();
+
+    /// <summary>
+    /// Outside text ready to be interpolated into a markup string as a block: sanitised for the
+    /// terminal first, escaped for Spectre second, the same order <see cref="OneLineMarkup"/>
+    /// applies — but keeping <see cref="ForTerminal"/>'s layout (line breaks, tabs) rather than
+    /// folding it to one line. Use this only for a value that is meant to keep its own line
+    /// breaks when it renders (rendered prose, printed as the multi-line block the author wrote
+    /// it as); use <see cref="OneLineMarkup"/> for a value framed inside a single line of markup,
+    /// even a value — a raw fallback line straight from a file, say — that would not itself carry
+    /// a line break in practice, since a stray one is exactly what a single-line frame cannot
+    /// afford to let through.
+    /// </summary>
+    public static string ForTerminalMarkup(string text) => ForTerminal(text).EscapeMarkup();
 }
