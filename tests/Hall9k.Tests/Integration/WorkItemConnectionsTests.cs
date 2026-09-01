@@ -110,11 +110,23 @@ public sealed class WorkItemConnectionsTests(PostgresFixture postgres) : IClassF
     /// <summary>
     /// The importer this install would build, with the Jira half's request seam pinned to a
     /// requester that throws if it is ever actually invoked. Every test here reaches Jira only
-    /// down a path that refuses before a request is built, so nothing should ever call it — going
-    /// through this helper rather than <see cref="WorkItemConnections.ImporterAsync"/> directly is
-    /// what turns that from an unstated fact about which cases happen to be registered into an
-    /// enforced one, and what makes a case added later (a single valid connection, imported for
-    /// real) fail loudly here instead of issuing a live HTTPS call to Atlassian.
+    /// down a path that refuses before a request is built, so nothing should ever call it, and a
+    /// case added later (a single valid connection, imported for real) fails loudly here rather
+    /// than issuing a live HTTPS request to Atlassian.
+    /// <para>
+    /// That last part holds only for a case routed through this helper, and nothing enforces that
+    /// routing. <see cref="WorkItemConnections.ImporterAsync"/> is a public static; calling it
+    /// directly is the spelling this file's own three call sites used until they were moved here,
+    /// and the spelling every other caller in the tree still uses, so a case written that way
+    /// falls straight through to <c>JiraHttp.Requester</c>'s real-HTTP default. This is a
+    /// convention among the cases in this file, not a rule the build checks, and it is recorded
+    /// as the blind spot it is rather than as coverage, the way each source-scanning guard on
+    /// this branch records its own (PLAN.md §16 #110 exists because a guard doc claimed a reach
+    /// its marker did not have). It is deliberately not given a guard of its own: the three
+    /// sibling guards each enforce a rule across dozens of sites tree-wide, while this rule has
+    /// one call site in one file, so a scan asserting "this call pins a requester" would be a
+    /// fourth coverage claim to keep true for no additional reach.
+    /// </para>
     /// <para>
     /// The GitHub half has no equivalent seam through this entry point — <c>ImporterAsync</c>
     /// constructs <c>GitHubWorkItemProvider</c> and <c>GitHubPullRequestProvider</c> on
