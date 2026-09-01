@@ -958,6 +958,17 @@ its own, `MaxFinalFullPassRounds` (3): however many cycles have run as `FinalFul
 hitting that count without ever settling parks the run for a human, exactly like a capped
 track does. **MergeReady requires every lens clean.**
 
+All three numbers above are compiled defaults only when nothing overrides them (Decisions Log
+#108): each is settable durably at the node (`h9k config set`), overridden per project (`h9k
+project set`), and overridden again per task (`h9k task set-review-caps`, settable at any time —
+even against a task whose run is live, which is the documented takeover lever for a task
+observed grinding: a cap set at or below the track's current cycle count parks it at the very
+next check), strictly `task > project > node > compiled default`, resolved per cap
+independently. A fourth setting, the task-lifetime review-cycle budget (default 25), sums
+`ReviewCycle` across every run and follow-up a task has had — immune to the resets a stranding,
+retry, or follow-up round gives the three per-run caps above — and follows the same hierarchy
+and visibility surfaces.
+
 - **merge-ready** → that track concludes Clean and goes dormant; when the last track does,
   `ReviewSettled` records how the loop ended and `PullRequestOpener` proceeds (§2.2 follows).
 - **needs-fixes** → **one** fix session runs in the same worktree with the *merged* findings

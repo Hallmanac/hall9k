@@ -382,6 +382,7 @@ ones worth knowing:
 | `Hall9k__MaxAdversarialReviewCycles` | 10 | The adversarial track's cap |
 | `Hall9k__AdversarialSeverityGateFromCycle` | 4 | From this cycle, only a `high` re-triggers the adversarial loop |
 | `Hall9k__MaxFinalFullPassRounds` | 3 | The mandatory full-read pass immediately before settle's own cap: however many times it has run for this run, hitting this count without ever settling parks the run for a human |
+| `Hall9k__LifetimeReviewCycleBudget` | 25 | The task-lifetime ceiling on review cycles, counted across every run and follow-up a task has had — immune to the per-run resets a stranding, retry, or follow-up round gives the three caps above; generous, so it only catches genuine pathology |
 | `Hall9k__DefaultReviewRerequest` | disabled | Whether closeout asks reviewers for another pass after fixes push |
 | `Hall9k__DefaultModel`, `Hall9k__ModelByRole__*` | | The node's model policy, per role (build, review, fix, synthesis, refinement, publication), plus `Hall9k__ModelByRole__ReviewVerify` — not a seventh role, but a narrower override for a Verify-shape review pass specifically, blank falling through to whatever review resolves |
 
@@ -422,8 +423,9 @@ queue that is not moving has many causes and a stopped daemon is the commonest.
 
 ### Daemon operating settings
 
-The concurrency ceiling and the model-by-role policy are durable, not just environment variables
-(backlog 59): they also load from the `"hall9k"` section of the platform config file
+The concurrency ceiling, the model-by-role policy, and the four review-cycle caps are durable, not
+just environment variables (backlog 59): they also load from the `"hall9k"` section of the platform
+config file
 (`~/.hall9k/config.json`, the same file [§Postgres](#postgres) uses for `connectionString`),
 deliberately outside `bin/` — an update replaces `bin/` wholesale, and these settings belong to
 the machine, not the build. Precedence, highest first:
@@ -454,7 +456,20 @@ h9k task set-session-cap 28b19893 1                         # override the cap f
 h9k config set --model-review sonnet --model-fix haiku      # per-role model overrides
 h9k config set --model-review-verify sonnet                 # Verify-shape passes only; defaults to --model-review
 h9k config set --interactive-claim-stale-after-days 5       # the interactive-claim nudge threshold
+h9k config set --max-compliance-review-cycles 5 --lifetime-review-cycle-budget 40   # the node's review-cycle caps
 ```
+
+The four review-cycle caps (Decisions Log #108) — the conformance and adversarial track cycle
+caps, the mandatory final-full-pass round cap, and the task-lifetime review-cycle budget — resolve
+strictly `task > project > node > compiled default`, each independently of the other three: a
+project or task that sets only one still inherits the rest from the levels above. `h9k config set`
+is the node level; `h9k project set` carries the identical four options (`'default'` clears a
+project override back to the node); `h9k task set-review-caps <ID>` is the task level, and is
+deliberately different from every other task setting — it is settable at any time, including while
+the task's run is live, so the daemon picks it up at the very next cap check. That is also the
+documented takeover lever for a task observed grinding: setting a cap at or below the track's
+current cycle count parks the run there, no new state or command beyond the setting itself. `h9k
+task show` prints any per-task override; `h9k project show` prints the project's own.
 
 `h9k config set` writes to the config file; `h9k config show` resolves a setting the same way
 `DaemonOptions` binds it at daemon startup — env, then config file, then default — and names the
