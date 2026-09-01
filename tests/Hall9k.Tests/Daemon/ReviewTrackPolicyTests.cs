@@ -15,6 +15,9 @@ public sealed class ReviewTrackPolicyTests
 {
     private static readonly DaemonOptions Options = new();
 
+    /// <summary>The compiled defaults, resolved with no task or project override — what every existing cap test exercised before caps became settable.</summary>
+    private static readonly ResolvedReviewCaps Caps = ReviewCapResolver.Resolve(task: null, project: null, Options);
+
     [Fact]
     public void A_clean_verdict_ends_the_track_clean_with_nothing_left_over()
     {
@@ -231,16 +234,16 @@ public sealed class ReviewTrackPolicyTests
     [Fact]
     public void The_caps_differ_per_track_and_a_human_grant_re_measures_them()
     {
-        ReviewTrackPolicy.CapFor(ReviewLens.Conformance, Options).Should().Be(3);
-        ReviewTrackPolicy.CapFor(ReviewLens.Adversarial, Options).Should().Be(10);
+        ReviewTrackPolicy.CapFor(ReviewLens.Conformance, Caps).Should().Be(3);
+        ReviewTrackPolicy.CapFor(ReviewLens.Adversarial, Caps).Should().Be(10);
 
-        ReviewTrackPolicy.CapReached(ReviewLens.Conformance, cycle: 3, budgetBaseCycle: 0, Options)
+        ReviewTrackPolicy.CapReached(ReviewLens.Conformance, cycle: 3, budgetBaseCycle: 0, Caps)
             .Should().BeTrue();
-        ReviewTrackPolicy.CapReached(ReviewLens.Adversarial, cycle: 3, budgetBaseCycle: 0, Options)
+        ReviewTrackPolicy.CapReached(ReviewLens.Adversarial, cycle: 3, budgetBaseCycle: 0, Caps)
             .Should().BeFalse("the adversarial track is only bounded at ten");
-        ReviewTrackPolicy.CapReached(ReviewLens.Adversarial, cycle: 10, budgetBaseCycle: 0, Options)
+        ReviewTrackPolicy.CapReached(ReviewLens.Adversarial, cycle: 10, budgetBaseCycle: 0, Caps)
             .Should().BeTrue();
-        ReviewTrackPolicy.CapReached(ReviewLens.Conformance, cycle: 3, budgetBaseCycle: 3, Options)
+        ReviewTrackPolicy.CapReached(ReviewLens.Conformance, cycle: 3, budgetBaseCycle: 3, Caps)
             .Should().BeFalse("a human's needs-fixes resolution is a fresh grant, not one cycle before a re-park");
     }
 
@@ -256,7 +259,7 @@ public sealed class ReviewTrackPolicyTests
     [Fact]
     public void A_human_grant_re_measures_the_cap_but_never_re_opens_the_severity_gate()
     {
-        ReviewTrackPolicy.CapReached(ReviewLens.Adversarial, cycle: 11, budgetBaseCycle: 10, Options)
+        ReviewTrackPolicy.CapReached(ReviewLens.Adversarial, cycle: 11, budgetBaseCycle: 10, Caps)
             .Should().BeFalse("the human granted a fresh round of cycles");
 
         ReviewTrackPlan plan = Decide(

@@ -1903,6 +1903,102 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
     }
 
     /// <summary>
+    /// The takeover lever (task: the review cycle caps become settable at three levels, Brian's
+    /// ruling 2026-08-29): a task-level cap set at or below a track's current cycle count parks
+    /// the run at the very next cap check, with no new state or command beyond the setting
+    /// itself. The node's own MaxComplianceReviewCycles stays at its generous default (3) —
+    /// without the task override this run would still have two more cycles of room.
+    /// </summary>
+    [Fact]
+    public async Task A_task_level_cap_at_or_below_the_current_cycle_count_parks_the_run_as_a_takeover()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        using DocumentStore store = NewStore();
+        (Guid taskId, Guid runId, _) = await SeedVerifiedRunAsync(store, cts.Token);
+
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            TaskAggregate task = (await session.Events.AggregateStreamAsync<TaskAggregate>(taskId, token: cts.Token))!;
+            var overridden = TaskDecider.OverrideReviewCaps(
+                task, Optional<int?>.Of(1), Optional<int?>.None, Optional<int?>.None, Optional<int?>.None,
+                Now, DomainId.New());
+            session.Events.Append(taskId, overridden);
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        ScriptedExecutor executor = new(
+            "FINDING: severity=medium; scope=in-scope; at=A.cs:1\nDefect: the criterion is not met.\n\n"
+            + "VERDICT: needs-fixes",
+            "Nothing of my own.\n\nVERDICT: merge-ready");
+        bool mergeReady = await NewEngine(store, executor, new DaemonOptions { MaxComplianceReviewCycles = 3 })
+            .ReviewAsync(runId, taskId, cts.Token);
+
+        mergeReady.Should().BeFalse(
+            "the task override capped conformance at 1, even though the node's own cap of 3 has two cycles left");
+        executor.Spawns.Should().HaveCount(2, "the run parks before ever dispatching a fix session");
+
+        await using IQuerySession query = store.QuerySession();
+        RunDetails run = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
+        run.State.Should().Be(RunState.ReviewParked);
+        run.ReviewCycle.Should().Be(1);
+        run.ParkedReason.Should().Contain("its cap of 1").And.Contain("a task override");
+    }
+
+    /// <summary>
+    /// The fourth setting, the task-lifetime review-cycle budget (task: the review cycle caps
+    /// become settable at three levels): it parks the run at a settle point even when this
+    /// particular run would otherwise settle cleanly — the pathology it exists to catch already
+    /// happened by the time the count is this high, so it is worth a human's look regardless of
+    /// how cleanly this cycle converged. The per-run caps (MaxComplianceReviewCycles,
+    /// MaxAdversarialReviewCycles) are left at their generous defaults and never trip on their
+    /// own; only the lifetime budget, set low here, ends the loop.
+    /// </summary>
+    [Fact]
+    public async Task A_lifetime_review_cycle_budget_parks_a_run_that_would_otherwise_settle_cleanly()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        using DocumentStore store = NewStore();
+        (Guid taskId, Guid runId, _) = await SeedVerifiedRunAsync(store, cts.Token);
+
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            TaskAggregate task = (await session.Events.AggregateStreamAsync<TaskAggregate>(taskId, token: cts.Token))!;
+            var overridden = TaskDecider.OverrideReviewCaps(
+                task, Optional<int?>.None, Optional<int?>.None, Optional<int?>.None, Optional<int?>.Of(2),
+                Now, DomainId.New());
+            session.Events.Append(taskId, overridden);
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        ScriptedExecutor executor = new(
+            // Cycle 1: conformance needs a fix; adversarial is clean and goes dormant.
+            "FINDING: severity=medium; scope=in-scope; at=A.cs:1\nDefect: the criterion is not met.\n\n"
+            + "VERDICT: needs-fixes",
+            "Nothing of my own.\n\nVERDICT: merge-ready",
+            "Tried.\n\nRESOLUTION: fixed",
+            // Cycle 2: one Verify pass over conformance alone — it confirms clean, so both tracks
+            // have now concluded, but a Verify cycle is never itself a settle-worthy fresh read.
+            "Confirmed fixed.\n\nVERDICT: merge-ready",
+            // Cycle 3: the mandatory final full pass, both lenses fresh and clean — the run would
+            // ordinarily settle right here (three cycles total) were it not for the budget of 2.
+            "Still clean.\n\nVERDICT: merge-ready",
+            "Still clean too.\n\nVERDICT: merge-ready");
+        bool mergeReady = await NewEngine(store, executor, new DaemonOptions())
+            .ReviewAsync(runId, taskId, cts.Token);
+
+        mergeReady.Should().BeFalse("this task has spent 3 review cycles, past its lifetime budget of 2");
+
+        await using IQuerySession query = store.QuerySession();
+        RunDetails run = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
+        run.State.Should().Be(RunState.ReviewParked);
+        run.ReviewCycle.Should().Be(3, "the run had genuinely converged clean at the mandatory final pass");
+        run.ParkedReason.Should()
+            .Contain("3 review cycle(s)")
+            .And.Contain("lifetime review-cycle budget of 2")
+            .And.Contain("a task override");
+    }
+
+    /// <summary>
     /// Independent pre-PR review, cycle 2, conformance finding #1: the mandatory FinalFullPass
     /// can reawaken a track that went dormant cycles ago, and the earliest that pass can possibly
     /// land is cycle 3 — already <c>MaxComplianceReviewCycles</c>' own absolute count measured
