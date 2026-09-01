@@ -158,44 +158,45 @@ public sealed class NodeLoadTests
         // Resolving a park hands a worktree back to a session while the node is already full;
         // refusing the human's explicit resume would be the worse trade, so the overshoot is
         // allowed and simply reads as no capacity.
-        NodeLoad over = new(LiveRuns: 4, MaxConcurrentAgentSessions: 3 * NodeLoad.PeakAgentSessionsPerRun);
+        NodeLoad over = new(LiveRuns: 4, ConfiguredMaxConcurrentRuns: 3);
 
         over.Capacity.Should().Be(0);
         over.AtCeiling.Should().BeTrue();
     }
 
     [Fact]
-    public void A_run_reserves_every_session_its_tree_can_hold_at_once()
+    public void Every_configured_run_ceiling_is_meaningful()
     {
-        // The ceiling is set in sessions because sessions are what the machine runs out of, and
-        // a run tree is not one session: a review cycle spawns every active lens together and
-        // waits on them together (log #59). A run ceiling derived by ignoring that let a node
-        // configured for three sessions hold six Opus processes — more than the four that caused
-        // the origin OOM (pre-PR review of this branch, 2026-08-22).
-        NodeLoad.PeakAgentSessionsPerRun.Should().Be(ReviewLens.CycleLenses.Count,
-            "a run under review is one resident session per lens, and appending a third lens has "
-            + "to tighten the ceiling rather than quietly enlarge what the machine is asked to hold");
+        // Decisions Log #108: the ceiling is configured directly in runs now, so — unlike the
+        // retired session-denominated setting, where 2 and 3 sessions both admitted exactly one
+        // run under a peak of 2 — every distinct value admits a distinct number of runs.
+        NodeLoad two = new(LiveRuns: 0, ConfiguredMaxConcurrentRuns: 2);
+        NodeLoad three = new(LiveRuns: 0, ConfiguredMaxConcurrentRuns: 3);
 
-        NodeLoad node = new(LiveRuns: 1, MaxConcurrentAgentSessions: 6);
-
-        node.LiveAgentSessions.Should().Be(NodeLoad.PeakAgentSessionsPerRun,
-            "the peak is reserved from the moment the run is claimed, not counted once it is "
-            + "reached — a run that is building today reviews on this same machine");
-        node.MaxConcurrentRuns.Should().Be(6 / NodeLoad.PeakAgentSessionsPerRun);
-        node.Capacity.Should().Be((6 / NodeLoad.PeakAgentSessionsPerRun) - 1);
+        two.Capacity.Should().Be(2);
+        three.Capacity.Should().Be(3);
+        two.Capacity.Should().NotBe(three.Capacity);
     }
 
     [Fact]
-    public void A_session_budget_too_small_for_one_run_still_dispatches_one()
+    public void A_zero_or_negative_configured_ceiling_still_dispatches_one_run()
     {
-        // A budget below one run's peak cannot be honoured by any schedule that does work at
-        // all, and a node that silently dispatches nothing is the worse of the two answers: the
-        // human sees a queue that never moves with no failure to point at.
-        NodeLoad starved = new(LiveRuns: 0, MaxConcurrentAgentSessions: 1);
+        // Independent pre-PR review, cycle 1 (conformance and adversarial lenses, both high): the
+        // sub-1 floor the retired session-denominated ceiling's own Math.Max(1, …) derivation
+        // guaranteed was dropped along with it, so a hand-edited config file or environment
+        // variable setting max-concurrent-task-runs to 0 (or lower — h9k config set itself refuses
+        // below 1, but a hand-edited file or env var skips that gate entirely) made the node
+        // dispatch nothing at all, forever, while OperatingSettingsResolver.WarnIfBelowRunFloor's
+        // own warning told the operator the daemon "floors this to exactly one concurrent run
+        // rather than dispatching nothing" — a false claim about the very behavior it exists to
+        // explain.
+        NodeLoad zero = new(LiveRuns: 0, ConfiguredMaxConcurrentRuns: 0);
+        NodeLoad negative = new(LiveRuns: 0, ConfiguredMaxConcurrentRuns: -5);
 
-        starved.MaxConcurrentRuns.Should().Be(1);
-        starved.Capacity.Should().Be(1);
-        starved.AtCeiling.Should().BeFalse();
+        zero.MaxConcurrentRuns.Should().Be(1);
+        zero.Capacity.Should().Be(1);
+        negative.MaxConcurrentRuns.Should().Be(1);
+        negative.Capacity.Should().Be(1);
     }
 
     private static TaskLease Lease(Guid taskId, int generation = 1, Guid? nodeId = null) => new()

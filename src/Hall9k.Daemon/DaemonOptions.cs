@@ -10,32 +10,54 @@ public sealed class DaemonOptions
     public const string SectionName = "Hall9k";
 
     /// <summary>
-    /// How many agent sessions this node may have resident at once (PLAN.md §6.4 guidance,
-    /// Decisions Log #64). Sessions rather than runs, because a session is the process the
-    /// machine runs out of memory for and a run tree is not one process: a review cycle spawns
-    /// every active lens together and waits on them together (log #59), so a run under review
-    /// is <c>ReviewLens.CycleLenses.Count</c> resident sessions. The dispatcher converts, in
-    /// <c>NodeLoad</c>: it claims in runs, because a run is the only thing it can decline to
-    /// start, and charges each live run the peak sessions its tree can hold. Everything past
-    /// the ceiling stays Queued and is claimed as slots free up.
-    /// <para>
-    /// A run gives its sessions back when its tree ends: completed, failed, parked, or handed
-    /// to a follow-up with nothing running. A task waiting on a merge observation holds no
-    /// memory and so holds nothing.
-    /// </para>
-    /// <para>
-    /// Configuration rather than a constant because the right number is a property of the
-    /// machine: the tower with the memory to hold six agent sessions and the laptop that
-    /// panicked at four are the same platform with different answers. The shipped default is
-    /// the count this machine was observed to carry, which on a two-lens review cycle means one
-    /// run at a time — deliberately, because the alternative is budgeting for the average and
-    /// discovering the peak the way the origin incident did. Origin incident (2026-08-21): an
-    /// OOM killed three of four concurrently dispatched agent sessions the first time the queue
-    /// went four wide, because the dispatcher claimed everything eligible and left the enforcing
-    /// to the machine.
-    /// </para>
+    /// How many agent sessions this node may have resident at once, as configured — retired as
+    /// the node's own admission unit by Decisions Log #108, which moved that job to
+    /// <see cref="MaxConcurrentTaskRuns"/>. Nothing in the daemon's own admission math reads this
+    /// bound property directly any more; the legacy-key conversion and <c>h9k daemon status</c>'s
+    /// own naming of it both read the raw environment variable and config file themselves, through
+    /// <see cref="OperatingSettingsResolver"/>, so a pre-#108 value stays diagnosable without this
+    /// property being in the loop at all. Excluded from Program.cs's own <c>Bind()</c> call for
+    /// exactly that reason: an unparseable value for a setting nothing reads would otherwise still
+    /// crash startup for free (the property's own setter accessibility does not stop
+    /// <c>ConfigurationBinder</c> from attempting — and failing — the conversion; see
+    /// <see cref="MaxConcurrentTaskRuns"/>'s own doc).
     /// </summary>
     public int MaxConcurrentAgentSessions { get; set; } = OperatingSettings.DefaultMaxConcurrentAgentSessions;
+
+    /// <summary>
+    /// How many task runs may be live on this node at once (Decisions Log #108, superseding the
+    /// session-denominated <see cref="MaxConcurrentAgentSessions"/> as the node's own admission
+    /// unit): the thing an operator actually reasons about, so every value is meaningful — no two
+    /// settings admit the identical number of runs the way 2 and 3 sessions both did under the old
+    /// whole-life reservation. <c>NodeLoad</c> claims directly in this unit now; the old peak-
+    /// sessions-per-run reservation this setting used to be divided by dissolves along with it —
+    /// phases spawn what they need up to the run's own <see cref="SessionCapPerRun"/>, not a
+    /// number reserved for the run's whole life.
+    /// <para>
+    /// Resolved through <see cref="OperatingSettingsResolver"/> rather than plain
+    /// <c>ConfigurationBinder</c> binding — see this property's <see langword="internal"/> setter
+    /// — because the retired-key conversion needs the same per-precedence-level walk
+    /// <c>h9k config show</c> and <c>h9k daemon status</c> already perform, which
+    /// <c>IConfiguration</c>'s own merged view cannot express on its own. The internal setter alone
+    /// does not keep <c>ConfigurationBinder</c> from touching this key — it still converts a
+    /// section's raw value before checking whether it can assign it, so an unparseable value would
+    /// crash <c>Bind()</c> regardless — which is why Program.cs also excludes this key from the
+    /// section its generic <c>Bind()</c> call sees.
+    /// </para>
+    /// </summary>
+    public int MaxConcurrentTaskRuns { get; internal set; } = OperatingSettings.DefaultMaxConcurrentTaskRuns;
+
+    /// <summary>
+    /// How many agent sessions one run may hold simultaneously, globally by default (Decisions Log
+    /// #108, Brian's ruling 2026-08-30) — overridable per task from the CLI at any time via
+    /// <c>h9k task set-session-cap</c>, even mid-run, in which case <c>ReviewEngine</c> reads the
+    /// task's own override in place of this default. A cap of 1 serializes the two review lenses
+    /// instead of dispatching them together; the shipped default of 3 is deliberate headroom above
+    /// today's routine peak of 2, inert until a future coded activity actually overlaps a third
+    /// session — see <see cref="MaxConcurrentTaskRuns"/>'s own doc for why this property is also
+    /// resolved through <see cref="OperatingSettingsResolver"/> rather than plain binding.
+    /// </summary>
+    public int SessionCapPerRun { get; internal set; } = OperatingSettings.DefaultSessionCapPerRun;
 
     /// <summary>Fallback sweep interval; the doorbell usually wakes the loop sooner.</summary>
     public TimeSpan PollInterval { get; set; } = TimeSpan.FromSeconds(5);

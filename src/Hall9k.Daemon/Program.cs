@@ -14,6 +14,7 @@ using Hall9k.Domain;
 using Hall9k.Domain.Infrastructure.Persistence;
 using Hall9k.Domain.Infrastructure.Storage;
 using JasperFx;
+using Microsoft.Extensions.Configuration;
 using Wolverine;
 using Wolverine.Marten;
 
@@ -97,7 +98,27 @@ if (!resolution.IsConfigured)
 
 string connectionString = resolution.Value;
 
-builder.Services.AddOptions<DaemonOptions>().Bind(builder.Configuration.GetSection(DaemonOptions.SectionName));
+// MaxConcurrentTaskRuns, SessionCapPerRun and MaxConcurrentAgentSessions are excluded from this
+// generic Bind() and resolved separately (DaemonOptionsBinding's own doc explains why an internal
+// setter alone does not keep ConfigurationBinder away from a key). The retired-key conversion
+// (Decisions Log #108) needs the same per-precedence-level walk h9k config show and h9k daemon
+// status already perform, which IConfiguration's own merged view of env, the config file, and
+// appsettings.json cannot express: whether a level's own answer came from max-concurrent-task-runs
+// directly or from converting max-concurrent-agent-sessions has to be decided per level, not from
+// one flattened key.
+IConfiguration bindableDaemonSection = DaemonOptionsBinding.ExcludingKeys(
+    builder.Configuration.GetSection(DaemonOptions.SectionName), DaemonOptionsBinding.ResolverOwnedKeys);
+builder.Services.AddOptions<DaemonOptions>().Bind(bindableDaemonSection);
+
+// Resolved before the host is even built, so this is a one-time read no different in cost from
+// the connection-string resolution just above it.
+OperatingSettingsReport concurrencyReport = await OperatingSettingsResolver.ResolveAsync(CancellationToken.None);
+builder.Services.AddSingleton(concurrencyReport);
+builder.Services.PostConfigure<DaemonOptions>(options =>
+{
+    options.MaxConcurrentTaskRuns = concurrencyReport.MaxConcurrentTaskRuns.Value;
+    options.SessionCapPerRun = concurrencyReport.SessionCapPerRun.Value;
+});
 builder.Services.AddSingleton(new DaemonConnection(connectionString));
 builder.Services.AddSingleton<NodeContext>();
 builder.Services.AddSingleton(ProcessManagers.ForCurrentPlatform());

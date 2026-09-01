@@ -186,7 +186,7 @@ public sealed class LeaseLivenessTests(PostgresFixture postgres) : IClassFixture
 
     private DispatchEngine NewEngine(DocumentStore store, NodeContext node, FakeProcessManager processes) =>
         new(store, node, new DaemonConnection(postgres.ConnectionString), processes,
-            Options.Create(new DaemonOptions { MaxConcurrentAgentSessions = 500, LeaseTimeout = TimeSpan.FromSeconds(60) }),
+            Options.Create(new DaemonOptions { MaxConcurrentTaskRuns = 500, LeaseTimeout = TimeSpan.FromSeconds(60) }),
             NullLogger<DispatchEngine>.Instance);
 
     /// <summary>A claimed task whose lease heartbeat sits at the given time; no run stream, no pid.</summary>

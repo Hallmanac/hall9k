@@ -231,7 +231,7 @@ public sealed class RunSupervisorTests(PostgresFixture postgres) : IClassFixture
         // assertions below would pass even with AdoptOrphansAsync's own
         // RefreshAdoptedLeaseAsync deleted. Denying the sweep that signal means the only
         // thing that can keep the lease fresh by the time it runs is adoption's own refresh.
-        DaemonOptions options = new() { MaxConcurrentAgentSessions = 500, LeaseTimeout = TimeSpan.FromSeconds(60) };
+        DaemonOptions options = new() { MaxConcurrentTaskRuns = 500, LeaseTimeout = TimeSpan.FromSeconds(60) };
         DispatchEngine engine = new(
             store, node, new DaemonConnection(postgres.ConnectionString), new FakeProcessManager(),
             Options.Create(options), NullLogger<DispatchEngine>.Instance);
