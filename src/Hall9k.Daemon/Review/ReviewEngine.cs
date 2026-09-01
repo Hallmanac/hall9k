@@ -2853,10 +2853,27 @@ public sealed class ReviewEngine(
     /// a reawakening nobody observed. <paramref name="cap"/> names its own resolved value and
     /// level, so an operator reading the park knows whether a tight task or project override or
     /// the node ended the loop (task: the review cycle caps become settable at three levels).
+    /// <para>
+    /// <see cref="TaskDecider.OverrideReviewCaps"/> floors this cap at 0 for a task override
+    /// exactly like the two per-track caps (<c>ReviewCapValidation.RefuseNegativeCap</c>), which
+    /// makes <see cref="FinalFullPassCapReached"/> true on the very first check — before this run
+    /// has ever dispatched a final full pass. The ordinary wording below asserts
+    /// <c>run.FinalFullPassRounds</c> repetitions that did not happen in that case (independent
+    /// pre-PR review, cycle 3: the sibling defect <see cref="TakeoverCapParkReason"/> already
+    /// fixed for the two per-track caps), so this cap gets the identical takeover branch first.
+    /// </para>
     /// </summary>
     private static string FinalFullPassCapParkReason(RunAggregate run, ResolvedReviewCap cap)
     {
         string findings = RunPaths.ReviewFindingsFile(ParkedRunDirectory(run), run.ReviewCycle);
+
+        if (cap.Value <= 0)
+        {
+            return TakeoverCapParkReason(
+                "mandatory final full review pass", "--max-final-full-pass-rounds", cap, findings,
+                "the run would just park again with this same reason before the mandatory pass ever ran");
+        }
+
         string why = run.ReviewTrackReactivations > 0
             ? "A track keeps being reawakened just as the loop is about to conclude, which either " +
               "means the fixes keep introducing new issues or the loop is oscillating"
@@ -2879,15 +2896,18 @@ public sealed class ReviewEngine(
     /// level, so the park message says whether a tight task or project override or the node ended
     /// the loop (task: the review cycle caps become settable at three levels).
     /// <para>
-    /// A task-level override can legally floor at 0 (only the task level does; project, node, and
-    /// the compiled default all floor at 1), and 0 parks every single cycle immediately — before a
-    /// granted round's fix session ever gets to dispatch — so a grant here never buys the one real
-    /// cycle it buys at any other cap (independent pre-PR review, cycle 2, adversarial lens: the
-    /// same "stop offering a lever this park can't use" defect commit 53bd0998 already fixed for the
-    /// lifetime-budget park). That case gets its own message instead of the ordinary cycles-and-cap
-    /// phrasing below, which would otherwise read as "after 0 cycles" on the very grant meant to buy
-    /// one — and it points at raising or clearing the override with <c>h9k task set-review-caps</c>
-    /// rather than at <c>--needs-fixes</c>.
+    /// A task-level override can legally floor at 0 by design (project and the compiled default
+    /// both floor at 1 through their own decider validation), and a node value can reach 0 too,
+    /// though never through <c>h9k config set</c>'s own validation — only a hand-edited config
+    /// file or an environment variable skips that gate (independent pre-PR review, cycle 3). Either
+    /// way, 0 parks every single cycle immediately — before a granted round's fix session ever gets
+    /// to dispatch — so a grant here never buys the one real cycle it buys at any other cap
+    /// (independent pre-PR review, cycle 2, adversarial lens: the same "stop offering a lever this
+    /// park can't use" defect commit 53bd0998 already fixed for the lifetime-budget park). That case
+    /// gets its own message instead of the ordinary cycles-and-cap phrasing below, which would
+    /// otherwise read as "after 0 cycles" on the very grant meant to buy one — and it names
+    /// whichever level actually supplied the value, and that level's own lever, rather than
+    /// assuming the task level regardless.
     /// </para>
     /// </summary>
     private static string CapParkReason(RunAggregate run, ReviewLens capped, ResolvedReviewCaps caps)
@@ -2897,7 +2917,12 @@ public sealed class ReviewEngine(
 
         if (cap.Value <= 0)
         {
-            return TakeoverCapParkReason(capped, cap, findings);
+            (string name, string flag) = capped == ReviewLens.Adversarial
+                ? ("adversarial review", "--max-adversarial-review-cycles")
+                : ("conformance review", "--max-compliance-review-cycles");
+            return TakeoverCapParkReason(
+                name, flag, cap, findings,
+                "the run would just park again with this same reason before a fix session ever ran");
         }
 
         string levers =
@@ -2913,22 +2938,44 @@ public sealed class ReviewEngine(
     }
 
     /// <summary>
-    /// The cap-0-or-below park text for <see cref="CapParkReason"/>: a task-level takeover cap
-    /// that low parks the run before any fix session it grants can dispatch, so
-    /// <c>--needs-fixes</c> is not offered here the way it is at every real cap — granting it would
-    /// just re-park identically, forever, with nothing ever actually fixed in between.
+    /// The cap-0-or-below park text shared by every per-run cap that a takeover value can floor
+    /// (<see cref="CapParkReason"/>'s two per-track caps, and <see cref="FinalFullPassCapParkReason"/>'s
+    /// own): a cap that low parks the run before the thing it caps — a fix session, or the
+    /// mandatory final full pass — ever gets to run, so <c>--needs-fixes</c> is not offered the way
+    /// it is at every real cap — granting it would just re-park identically, forever, with nothing
+    /// ever actually run in between. <paramref name="neverRanClause"/> names the specific thing
+    /// that never ran, since the two callers differ (a fix session vs. the mandatory pass itself).
+    /// <para>
+    /// The task level is not the only one this can reach (independent pre-PR review, cycle 3): a
+    /// node value read straight off <see cref="DaemonOptions"/> has no floor of its own — only
+    /// <c>h9k config set</c>'s own validation refuses a value below 1, and a hand-edited config
+    /// file or an environment variable skips that gate entirely — so <paramref name="cap"/>'s own
+    /// <see cref="ResolvedReviewCap.Level"/> decides which lever this message actually offers,
+    /// rather than hard-coding the task-level one regardless of which level supplied the value.
+    /// A project override cannot reach here today (<c>ProjectDecider.ChangeSettings</c> floors
+    /// every one of these at 1 with no bypass), and the compiled defaults are always at least 1,
+    /// but both levels still get an honest lever rather than a task-only assumption, since neither
+    /// invariant is enforced at this call site.
+    /// </para>
     /// </summary>
-    private static string TakeoverCapParkReason(ReviewLens capped, ResolvedReviewCap cap, string findings)
+    private static string TakeoverCapParkReason(
+        string name, string flag, ResolvedReviewCap cap, string findings, string neverRanClause)
     {
-        (string name, string flag) = capped == ReviewLens.Adversarial
-            ? ("adversarial", "--max-adversarial-review-cycles")
-            : ("conformance", "--max-compliance-review-cycles");
-        return $"The {name} review's task-level cap is {cap.Value}, from {cap.Describe()} — a cap that low " +
-            "parks every cycle immediately, so granting a fresh round with --needs-fixes cannot buy the work " +
-            "any progress here the way it does at a real cap: the run would just park again with this same " +
-            $"reason before a fix session ever ran. Unresolved findings: {findings}. Resolve with h9k review " +
-            $"resolve --merge-ready, or raise the cap (or clear it with h9k task set-review-caps <id> {flag} " +
-            "default) before granting another round, or abandon the task.";
+        string lever = cap.Level switch
+        {
+            ReviewCapLevel.Task => $"raise it or clear it with h9k task set-review-caps <id> {flag} default",
+            ReviewCapLevel.Project => $"raise it or clear it with h9k project set <name> {flag} default",
+            ReviewCapLevel.Node =>
+                $"raise it with h9k config set {flag} <N> — h9k config set itself refuses a value below 1, " +
+                "so a cap this low can only have reached the config file through a hand edit or an " +
+                "environment variable; writing any valid value through h9k config set overwrites it",
+            _ => $"raise it with h9k config set {flag} <N>",
+        };
+        return $"The {name}'s cap is {cap.Value}, from {cap.Describe()} — a cap that low parks every cycle " +
+            "immediately, so granting a fresh round with --needs-fixes cannot buy the work any progress " +
+            $"here the way it does at a real cap: {neverRanClause}. Unresolved findings: {findings}. Resolve " +
+            $"with h9k review resolve --merge-ready, or {lever} before granting another round, or abandon " +
+            "the task.";
     }
 
     /// <summary>
