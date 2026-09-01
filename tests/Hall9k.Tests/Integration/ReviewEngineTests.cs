@@ -536,8 +536,7 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
     private async Task<(Guid TaskId, Guid RunId, string WorktreePath, Guid ProjectId)> SeedVerifiedRunWithTestGateAsync(
         DocumentStore store, CancellationToken cancellationToken, bool recordVerifyCommandsFingerprint = true)
     {
-        NodeContext node = new();
-        await node.InitializeAsync(store, cancellationToken);
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cancellationToken);
 
         Guid taskId = DomainId.New();
         Guid runId = DomainId.New();
@@ -1283,8 +1282,7 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
         (await NewEngine(store, firstExecutor).ReviewAsync(firstRunId, firstTaskId, cts.Token))
             .Should().BeTrue();
 
-        NodeContext node = new();
-        await node.InitializeAsync(store, cts.Token);
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
         string secondWorktree = Path.Combine(_home, $"wt-{DomainId.New():N}");
         Directory.CreateDirectory(secondWorktree);
         (Guid secondTaskId, Guid secondRunId, _) = await SeedVerifiedRunInProjectAsync(
@@ -3663,8 +3661,7 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
         using DocumentStore store = NewStore();
         (Guid taskId, Guid runId, _) = await SeedVerifiedRunAsync(store, cts.Token);
 
-        NodeContext node = new();
-        await node.InitializeAsync(store, cts.Token);
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
         await using (IDocumentSession session = store.LightweightSession())
         {
             TaskAggregate task = (await session.Events.AggregateStreamAsync<TaskAggregate>(taskId, token: cts.Token))!;
@@ -3813,8 +3810,7 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
     private async Task<(Guid TaskId, Guid RunId, Guid MainSessionId)> SeedVerifiedRunAsync(
         DocumentStore store, IReadOnlyList<string> acceptanceCriteria, CancellationToken cancellationToken)
     {
-        NodeContext node = new();
-        await node.InitializeAsync(store, cancellationToken);
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cancellationToken);
 
         Guid taskId = DomainId.New();
         Guid runId = DomainId.New();
@@ -3892,8 +3888,7 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
     private async Task<(Guid TaskId, Guid RunId, Guid MainSessionId)> SeedVerifiedRebaseFollowUpRunAsync(
         DocumentStore store, CancellationToken cancellationToken)
     {
-        NodeContext node = new();
-        await node.InitializeAsync(store, cancellationToken);
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cancellationToken);
 
         Guid taskId = DomainId.New();
         Guid runId = DomainId.New();
@@ -3947,8 +3942,7 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
     private async Task<(Guid TaskId, Guid RunId, Guid MainSessionId)> SeedRebaseDisputeParkedRunAsync(
         DocumentStore store, CancellationToken cancellationToken)
     {
-        NodeContext node = new();
-        await node.InitializeAsync(store, cancellationToken);
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cancellationToken);
 
         Guid taskId = DomainId.New();
         Guid runId = DomainId.New();
@@ -4002,8 +3996,7 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
     private async Task<(Guid TaskId, Guid RunId, Guid MainSessionId)> SeedReviewThreadDisputeParkedRunAsync(
         DocumentStore store, CancellationToken cancellationToken)
     {
-        NodeContext node = new();
-        await node.InitializeAsync(store, cancellationToken);
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cancellationToken);
 
         Guid taskId = DomainId.New();
         Guid runId = DomainId.New();

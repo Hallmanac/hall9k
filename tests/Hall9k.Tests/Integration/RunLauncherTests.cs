@@ -140,8 +140,7 @@ public sealed class RunLauncherTests(PostgresFixture postgres) : IClassFixture<P
             opts.Connection(postgres.ConnectionString);
             opts.ConfigureHall9k(AutoCreate.All);
         });
-        NodeContext node = new();
-        await node.InitializeAsync(store, cts.Token);
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
 
         // The incident shape: the task completed with a PR, a follow-up was queued, its
         // generation died mid-flight, the lease expired, and the requeue reclaimed the
@@ -245,8 +244,7 @@ public sealed class RunLauncherTests(PostgresFixture postgres) : IClassFixture<P
             opts.Connection(postgres.ConnectionString);
             opts.ConfigureHall9k(AutoCreate.All);
         });
-        NodeContext node = new();
-        await node.InitializeAsync(store, cts.Token);
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
 
         Guid taskId = DomainId.New();
         Guid staleRunId = DomainId.New();
@@ -381,8 +379,7 @@ public sealed class RunLauncherTests(PostgresFixture postgres) : IClassFixture<P
             opts.Connection(postgres.ConnectionString);
             opts.ConfigureHall9k(AutoCreate.All);
         });
-        NodeContext node = new();
-        await node.InitializeAsync(store, cts.Token);
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
 
         Guid taskId = DomainId.New();
         Guid runId = DomainId.New();
@@ -455,8 +452,7 @@ public sealed class RunLauncherTests(PostgresFixture postgres) : IClassFixture<P
             opts.Connection(postgres.ConnectionString);
             opts.ConfigureHall9k(AutoCreate.All);
         });
-        NodeContext node = new();
-        await node.InitializeAsync(store, cts.Token);
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
 
         Guid taskId = DomainId.New();
         Guid runId = DomainId.New();
@@ -533,8 +529,7 @@ public sealed class RunLauncherTests(PostgresFixture postgres) : IClassFixture<P
             opts.Connection(postgres.ConnectionString);
             opts.ConfigureHall9k(AutoCreate.All);
         });
-        NodeContext node = new();
-        await node.InitializeAsync(store, cts.Token);
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
 
         Guid taskId = DomainId.New();
         Guid runId = DomainId.New();
@@ -634,8 +629,7 @@ public sealed class RunLauncherTests(PostgresFixture postgres) : IClassFixture<P
             opts.Connection(postgres.ConnectionString);
             opts.ConfigureHall9k(AutoCreate.All);
         });
-        NodeContext node = new();
-        await node.InitializeAsync(store, cts.Token);
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
 
         Guid taskId = DomainId.New();
         Guid firstRunId = DomainId.New();

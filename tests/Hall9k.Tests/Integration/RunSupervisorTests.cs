@@ -127,8 +127,7 @@ public sealed class RunSupervisorTests(PostgresFixture postgres) : IClassFixture
         using CancellationTokenSource cts = new(TimeSpan.FromSeconds(30));
         using DocumentStore store = NewStore();
 
-        NodeContext node = new();
-        await node.InitializeAsync(store, cts.Token);
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
 
         Guid taskId = DomainId.New();
         Guid runId = DomainId.New();
@@ -607,8 +606,7 @@ public sealed class RunSupervisorTests(PostgresFixture postgres) : IClassFixture
         DocumentStore store, CancellationToken cancellationToken,
         bool asFollowUp = false, FollowUpKind? followUpKind = null)
     {
-        NodeContext node = new();
-        await node.InitializeAsync(store, cancellationToken);
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cancellationToken);
 
         Guid taskId = DomainId.New();
         Guid runId = DomainId.New();

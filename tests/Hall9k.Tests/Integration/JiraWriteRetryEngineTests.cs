@@ -656,8 +656,7 @@ public sealed class JiraWriteRetryEngineTests(PostgresFixture postgres) : IClass
 
     private static async Task<NodeContext> NewNodeAsync(DocumentStore store, CancellationToken cancellationToken)
     {
-        NodeContext node = new();
-        await node.InitializeAsync(store, cancellationToken);
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cancellationToken);
         return node;
     }
 

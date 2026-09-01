@@ -46,8 +46,7 @@ public sealed class ReviewResolveCommandTests(PostgresFixture postgres) : IClass
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
         using DocumentStore store = NewStore();
-        NodeContext node = new();
-        await node.InitializeAsync(store, cts.Token);
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
         (Guid taskId, Guid runId) = await SeedParkedPrReviewRunAsync(store, node, cts.Token);
 
         await using IDocumentSession session = store.LightweightSession();
@@ -66,8 +65,7 @@ public sealed class ReviewResolveCommandTests(PostgresFixture postgres) : IClass
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
         using DocumentStore store = NewStore();
-        NodeContext node = new();
-        await node.InitializeAsync(store, cts.Token);
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
         (Guid taskId, Guid runId) = await SeedParkedPrReviewRunAsync(store, node, cts.Token);
 
         await using IDocumentSession session = store.LightweightSession();
@@ -85,8 +83,7 @@ public sealed class ReviewResolveCommandTests(PostgresFixture postgres) : IClass
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
         using DocumentStore store = NewStore();
-        NodeContext node = new();
-        await node.InitializeAsync(store, cts.Token);
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
         (Guid taskId, Guid runId) = await SeedParkedPrReviewRunAsync(store, node, cts.Token);
 
         // Resolving merge-ready rings the doorbell, which resolves its connection off

@@ -33,8 +33,7 @@ public sealed class TaskDispatchGuardTests(PostgresFixture postgres) : IClassFix
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
         using DocumentStore store = NewStore();
-        NodeContext node = new();
-        await node.InitializeAsync(store, cts.Token);
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
         DispatchEngine engine = NewEngine(store, node);
 
         Guid otherOwner = DomainId.New();
@@ -74,8 +73,7 @@ public sealed class TaskDispatchGuardTests(PostgresFixture postgres) : IClassFix
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
         using DocumentStore store = NewStore();
-        NodeContext node = new();
-        await node.InitializeAsync(store, cts.Token);
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
         DispatchEngine engine = NewEngine(store, node);
 
         Guid merged = DomainId.New();
@@ -119,8 +117,7 @@ public sealed class TaskDispatchGuardTests(PostgresFixture postgres) : IClassFix
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
         using DocumentStore store = NewStore();
-        NodeContext node = new();
-        await node.InitializeAsync(store, cts.Token);
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
         DispatchEngine engine = NewEngine(store, node);
 
         Guid resolvedByHand = DomainId.New();
@@ -160,8 +157,7 @@ public sealed class TaskDispatchGuardTests(PostgresFixture postgres) : IClassFix
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
         using DocumentStore store = NewStore();
-        NodeContext node = new();
-        await node.InitializeAsync(store, cts.Token);
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
         DispatchEngine engine = NewEngine(store, node);
 
         Guid blocker = DomainId.New();
@@ -221,8 +217,7 @@ public sealed class TaskDispatchGuardTests(PostgresFixture postgres) : IClassFix
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
         using DocumentStore store = NewStore();
-        NodeContext node = new();
-        await node.InitializeAsync(store, cts.Token);
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
         DispatchEngine engine = NewEngine(store, node);
 
         Guid blocker = DomainId.New();
@@ -278,8 +273,7 @@ public sealed class TaskDispatchGuardTests(PostgresFixture postgres) : IClassFix
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
         using DocumentStore store = NewStore();
-        NodeContext node = new();
-        await node.InitializeAsync(store, cts.Token);
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
         DispatchEngine engine = NewEngine(store, node);
 
         Guid blocker = DomainId.New();
@@ -332,8 +326,7 @@ public sealed class TaskDispatchGuardTests(PostgresFixture postgres) : IClassFix
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
         using DocumentStore store = NewStore();
-        NodeContext node = new();
-        await node.InitializeAsync(store, cts.Token);
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
         DispatchEngine engine = NewEngine(store, node);
 
         Guid first = DomainId.New();
@@ -390,8 +383,7 @@ public sealed class TaskDispatchGuardTests(PostgresFixture postgres) : IClassFix
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
         using DocumentStore store = NewStore();
-        NodeContext node = new();
-        await node.InitializeAsync(store, cts.Token);
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
         DispatchEngine engine = NewEngine(store, node);
 
         Guid retried = DomainId.New();

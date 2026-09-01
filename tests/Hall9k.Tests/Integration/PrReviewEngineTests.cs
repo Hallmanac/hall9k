@@ -146,8 +146,7 @@ public sealed class PrReviewEngineTests(PostgresFixture postgres) : IClassFixtur
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
         using DocumentStore store = NewStore();
-        NodeContext node = new();
-        await node.InitializeAsync(store, cts.Token);
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
 
         (Guid taskId, Guid runId, string runDirectory) = await SeedClaimedPrReviewRunAsync(store, node, cts.Token);
 
@@ -181,8 +180,7 @@ public sealed class PrReviewEngineTests(PostgresFixture postgres) : IClassFixtur
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
         using DocumentStore store = NewStore();
-        NodeContext node = new();
-        await node.InitializeAsync(store, cts.Token);
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
 
         (Guid taskId, Guid runId, string runDirectory) = await SeedClaimedPrReviewRunAsync(store, node, cts.Token);
 
@@ -222,8 +220,7 @@ public sealed class PrReviewEngineTests(PostgresFixture postgres) : IClassFixtur
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
         using DocumentStore store = NewStore();
-        NodeContext node = new();
-        await node.InitializeAsync(store, cts.Token);
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
 
         (Guid taskId, Guid runId, string runDirectory) = await SeedClaimedPrReviewRunAsync(store, node, cts.Token);
 
@@ -264,8 +261,7 @@ public sealed class PrReviewEngineTests(PostgresFixture postgres) : IClassFixtur
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
         using DocumentStore store = NewStore();
-        NodeContext node = new();
-        await node.InitializeAsync(store, cts.Token);
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
 
         (Guid taskId, Guid runId, string runDirectory) = await SeedClaimedPrReviewRunAsync(store, node, cts.Token);
         await ReclaimUnderNewGenerationAsync(store, node, taskId, cts.Token);
@@ -299,8 +295,7 @@ public sealed class PrReviewEngineTests(PostgresFixture postgres) : IClassFixtur
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
         using DocumentStore store = NewStore();
-        NodeContext node = new();
-        await node.InitializeAsync(store, cts.Token);
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
 
         (Guid taskId, Guid runId, string runDirectory) = await SeedClaimedPrReviewRunAsync(store, node, cts.Token);
 
@@ -330,8 +325,7 @@ public sealed class PrReviewEngineTests(PostgresFixture postgres) : IClassFixtur
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
         using DocumentStore store = NewStore();
-        NodeContext node = new();
-        await node.InitializeAsync(store, cts.Token);
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
 
         (Guid taskId, Guid runId, string runDirectory) = await SeedClaimedPrReviewRunAsync(store, node, cts.Token);
         Guid conformanceSessionId = DomainId.New();
@@ -371,8 +365,7 @@ public sealed class PrReviewEngineTests(PostgresFixture postgres) : IClassFixtur
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
         using DocumentStore store = NewStore();
-        NodeContext node = new();
-        await node.InitializeAsync(store, cts.Token);
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
 
         (Guid taskId, Guid runId, string runDirectory) = await SeedDeliveredPrReviewRunAsync(store, node, cts.Token);
         await ReclaimUnderNewGenerationAsync(store, node, taskId, cts.Token);
@@ -402,8 +395,7 @@ public sealed class PrReviewEngineTests(PostgresFixture postgres) : IClassFixtur
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
         using DocumentStore store = NewStore();
-        NodeContext node = new();
-        await node.InitializeAsync(store, cts.Token);
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
 
         (Guid taskId, Guid runId, string runDirectory) = await SeedDeliveredPrReviewRunAsync(store, node, cts.Token);
 

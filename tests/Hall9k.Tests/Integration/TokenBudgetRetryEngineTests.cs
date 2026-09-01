@@ -60,8 +60,7 @@ public sealed class TokenBudgetRetryEngineTests(PostgresFixture postgres) : ICla
             opts.Connection(postgres.ConnectionString);
             opts.ConfigureHall9k(AutoCreate.All);
         });
-        NodeContext node = new();
-        await node.InitializeAsync(store, cts.Token);
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
 
         Guid taskId = DomainId.New();
         Guid runId = DomainId.New();

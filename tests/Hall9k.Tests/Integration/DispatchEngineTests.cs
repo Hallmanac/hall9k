@@ -33,8 +33,7 @@ public sealed class DispatchEngineTests(PostgresFixture postgres) : IClassFixtur
             opts.ConfigureHall9k(AutoCreate.All);
         });
 
-        NodeContext node = new();
-        await node.InitializeAsync(store, cts.Token);
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
 
         // A cap of three runs, bought in the unit the setting is denominated in (log #64).
         DaemonOptions options = new()
@@ -117,8 +116,7 @@ public sealed class DispatchEngineTests(PostgresFixture postgres) : IClassFixtur
             opts.ConfigureHall9k(AutoCreate.All);
         });
 
-        NodeContext node = new();
-        await node.InitializeAsync(store, cts.Token);
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
 
         DaemonOptions options = new() { MaxConcurrentAgentSessions = 500, LeaseTimeout = TimeSpan.FromSeconds(60) };
         DispatchEngine engine = new(
@@ -194,8 +192,7 @@ public sealed class DispatchEngineTests(PostgresFixture postgres) : IClassFixtur
             opts.ConfigureHall9k(AutoCreate.All);
         });
 
-        NodeContext node = new();
-        await node.InitializeAsync(store, cts.Token);
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
 
         DaemonOptions options = new() { MaxConcurrentAgentSessions = 500, LeaseTimeout = TimeSpan.FromSeconds(60) };
         DispatchEngine engine = new(
@@ -271,8 +268,7 @@ public sealed class DispatchEngineTests(PostgresFixture postgres) : IClassFixtur
             opts.ConfigureHall9k(AutoCreate.All);
         });
 
-        NodeContext node = new();
-        await node.InitializeAsync(store, cts.Token);
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
 
         // A generous cap: this class shares one database, so other tests' queued work and
         // leases may be present — the assertions below target this task alone.
