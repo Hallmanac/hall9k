@@ -495,11 +495,13 @@ public static class CliCommandTree
                     + "independently of the other three. Deliberately state-agnostic, unlike h9k task "
                     + "revise: settable at any time, including while the task's run is live — the daemon "
                     + "picks it up at the next cap check. Setting a cap at or below the cycles that track "
-                    + "has run since its last human takeover grant (0, if it has never had one — not the "
-                    + "same as the absolute review cycle h9k status/h9k task show print, which never resets) "
-                    + "parks the run there: the documented takeover lever for a task observed grinding — "
-                    + "0 always parks immediately, since that count can never be negative. 'default' clears "
-                    + "an override back to the level above.")
+                    + "has run since its last human takeover grant (0, if it has never had one, which is "
+                    + "also when this count matches the absolute review cycle h9k status/h9k task show "
+                    + "print — a grant or a track reactivation moves this count's own base forward, and "
+                    + "only from there do the two numbers diverge) parks the run there: the documented "
+                    + "takeover lever for a task observed grinding — 0 always parks immediately, since "
+                    + "that count can never be negative. 'default' clears an override back to the level "
+                    + "above.")
                 .WithExample("task", "set-review-caps", "28b19893", "--max-compliance-review-cycles", "1")
                 .WithExample("task", "set-review-caps", "28b19893", "--lifetime-review-cycle-budget", "40")
                 .WithExample("task", "set-review-caps", "28b19893", "--max-adversarial-review-cycles", "default");

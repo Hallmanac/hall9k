@@ -358,9 +358,13 @@ public sealed class TaskLifecycleSurfaceTests
     /// <summary>
     /// Independent pre-PR review, cycle 5, adversarial finding: a cap-0 takeover park or the
     /// lifetime-budget park accepts <c>--needs-fixes</c> rather than refusing it outright, but
-    /// granting one there just re-parks the run identically before a fix session ever runs — the
-    /// park's own reason already says so. The row's lever must agree with that reason instead of
-    /// offering the command its own park text says buys no progress.
+    /// granting one there will not clear the park. The fixture below is the per-track cap-0 case,
+    /// where nothing ever runs before the identical re-park; a final-full-pass or lifetime-budget
+    /// cap-0 park dispatches one more fix session but re-parks right behind it just the same,
+    /// since the cap or budget itself never resets (cycle 2, adversarial lens: the original
+    /// wording claimed "nothing ever runs in between" held for every cap-0 case, which is false
+    /// for those latter two). The row's lever must agree with the park's own reason instead of
+    /// offering the command as though it settled anything.
     /// </summary>
     [Fact]
     public void A_park_where_needs_fixes_buys_no_progress_offers_only_merge_ready()
@@ -368,8 +372,8 @@ public sealed class TaskLifecycleSurfaceTests
         Guid runId = DomainId.New();
         RunDetails parked = StatusFixtures.Run(runId, RunState.ReviewParked);
         parked.ParkedReason = "The conformance review's cap is 0, from a task override — a cap that low " +
-            "parks every cycle immediately, so granting a fresh round with --needs-fixes cannot buy the " +
-            "work any progress here.";
+            "parks every cycle immediately, so granting a fresh round with --needs-fixes will not clear " +
+            "this park.";
         parked.ParkedNeedsFixesOffersNoProgress = true;
         TaskListItem task = StatusFixtures.Task(TaskState.Claimed, runId);
 

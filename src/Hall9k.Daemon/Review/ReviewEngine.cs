@@ -2957,10 +2957,13 @@ public sealed class ReviewEngine(
     /// The cap-0-or-below park text shared by every per-run cap that a takeover value can floor
     /// (<see cref="CapParkReason"/>'s two per-track caps, and <see cref="FinalFullPassCapParkReason"/>'s
     /// own): a cap that low parks the run before the thing it caps — a fix session, or the
-    /// mandatory final full pass — ever gets to run, so <c>--needs-fixes</c> is not offered the way
-    /// it is at every real cap — granting it would just re-park identically, forever, with nothing
-    /// ever actually run in between. <paramref name="neverRanClause"/> names the specific thing
-    /// that never ran, since the two callers differ (a fix session vs. the mandatory pass itself).
+    /// mandatory final full pass — ever gets to run, so granting <c>--needs-fixes</c> will not clear
+    /// this park: a per-track cap-0 never even dispatches a fix session, while a final-full-pass
+    /// cap-0 dispatches one but re-parks right behind it, since the cap itself never resets
+    /// (independent pre-PR review, cycle 2, adversarial lens: the original wording claimed nothing
+    /// ever runs in between the grant and the re-park, which is false for the final-full-pass
+    /// case). <paramref name="neverRanClause"/> names the specific thing that never ran, since the
+    /// two callers differ (a fix session vs. the mandatory pass itself).
     /// <para>
     /// The task level is not the only one this can reach (independent pre-PR review, cycle 3): a
     /// node value read straight off <see cref="DaemonOptions"/> has no floor of its own — only
@@ -3004,8 +3007,8 @@ public sealed class ReviewEngine(
               "works either way and is picked up at the very next cap check with no daemon restart."
             : string.Empty;
         return $"The {name}'s cap is {cap.Value}, from {cap.Describe()} — a cap that low parks every cycle " +
-            "immediately, so granting a fresh round with --needs-fixes cannot buy the work any progress " +
-            $"here the way it does at a real cap: {neverRanClause}. Unresolved findings: {findings}. Resolve " +
+            $"immediately, so granting a fresh round with --needs-fixes will not clear this park: " +
+            $"{neverRanClause}. Unresolved findings: {findings}. Resolve " +
             $"with h9k review resolve --merge-ready, or {lever} before granting another round, or abandon " +
             $"the task.{nodeNote}";
     }
