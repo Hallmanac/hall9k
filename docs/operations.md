@@ -459,7 +459,7 @@ h9k config set --interactive-claim-stale-after-days 5       # the interactive-cl
 h9k config set --max-compliance-review-cycles 5 --lifetime-review-cycle-budget 40   # the node's review-cycle caps
 ```
 
-The four review-cycle caps (Decisions Log #108) — the conformance and adversarial track cycle
+The four review-cycle caps (Decisions Log #112) — the conformance and adversarial track cycle
 caps, the mandatory final-full-pass round cap, and the task-lifetime review-cycle budget — resolve
 strictly `task > project > node > compiled default`, each independently of the other three: a
 project or task that sets only one still inherits the rest from the levels above. `h9k config set`
@@ -472,8 +472,8 @@ track has run since its last human takeover grant (0, if it has never had one, w
 this count matches the absolute review cycle number `h9k status`/`h9k task show` print — a grant or
 a track reactivation moves this count's own base forward, and only from there do the two numbers
 diverge) parks the run there, no new state or command beyond the setting itself — 0 always parks
-immediately, since that count can never be negative. `h9k task show` prints any per-task override; `h9k project show`
-prints the project's own.
+immediately, since that count can never be negative. `h9k task show` prints any per-task
+override; `h9k project show` prints the project's own.
 
 `h9k config set` writes to the config file; `h9k config show` resolves a setting the same way
 `DaemonOptions` binds it at daemon startup — env, then config file, then default — and names the

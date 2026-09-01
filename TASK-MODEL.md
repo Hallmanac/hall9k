@@ -959,13 +959,14 @@ hitting that count without ever settling parks the run for a human, exactly like
 track does. **MergeReady requires every lens clean.**
 
 All three numbers above are compiled defaults only when nothing overrides them (Decisions Log
-#108): each is settable durably at the node (`h9k config set`), overridden per project (`h9k
+#112): each is settable durably at the node (`h9k config set`), overridden per project (`h9k
 project set`), and overridden again per task (`h9k task set-review-caps`, settable at any time —
 even against a task whose run is live, which is the documented takeover lever for a task
 observed grinding: a cap set at or below the cycles that track has run since its last human
-takeover grant (0, if it has never had one — not the same as the absolute review cycle number
-`h9k status`/`h9k task show` print, which never resets) parks it at the very next check, and 0
-always parks immediately since that count can never be negative), strictly
+takeover grant (0, if it has never had one, which is also when this count matches the absolute
+review cycle number `h9k status`/`h9k task show` print — a grant or a track reactivation moves
+this count's own base forward, and only from there do the two numbers diverge) parks it at the
+very next check, and 0 always parks immediately since that count can never be negative), strictly
 `task > project > node > compiled default`, resolved per cap
 independently. A fourth setting, the task-lifetime review-cycle budget (default 25), sums
 `ReviewCycle` across every run and follow-up a task has had — immune to the resets a stranding,
