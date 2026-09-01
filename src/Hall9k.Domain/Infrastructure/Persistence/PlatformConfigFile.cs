@@ -285,16 +285,20 @@ public static class PlatformConfigFile
     /// <summary>
     /// Every leaf that mirrors a non-nullable <c>int</c> on <c>DaemonOptions</c> and so shares
     /// <c>maxConcurrentAgentSessions</c>'s own <c>ConfigurationBinder</c> quirk (<see
-    /// cref="ApplyIntBinderQuirk"/>'s own doc says what that quirk is). One list so a future int
-    /// setting shaped the same way inherits the guard rather than silently exempting itself.
+    /// cref="ApplyIntBinderQuirk"/>'s own doc says what that quirk is), paired with the setter that
+    /// assigns the parsed value onto <see cref="OperatingSettings"/>. One list drives both halves of
+    /// the guard — <see cref="DaemonFailsToStartOn"/>'s key names and <see
+    /// cref="ApplyIntBinderQuirks"/>'s assignments — so a future int setting shaped the same way is
+    /// added once here and inherits both, rather than needing a second copy of the key name that can
+    /// drift from this one.
     /// </summary>
-    private static readonly string[] IntBinderQuirkKeys =
+    private static readonly (string Key, Action<OperatingSettings, int> Assign)[] IntBinderQuirkKeys =
     [
-        "maxConcurrentAgentSessions",
-        "maxComplianceReviewCycles",
-        "maxAdversarialReviewCycles",
-        "maxFinalFullPassRounds",
-        "lifetimeReviewCycleBudget",
+        ("maxConcurrentAgentSessions", (settings, value) => settings.MaxConcurrentAgentSessions = value),
+        ("maxComplianceReviewCycles", (settings, value) => settings.MaxComplianceReviewCycles = value),
+        ("maxAdversarialReviewCycles", (settings, value) => settings.MaxAdversarialReviewCycles = value),
+        ("maxFinalFullPassRounds", (settings, value) => settings.MaxFinalFullPassRounds = value),
+        ("lifetimeReviewCycleBudget", (settings, value) => settings.LifetimeReviewCycleBudget = value),
     ];
 
     /// <summary>
@@ -316,12 +320,15 @@ public static class PlatformConfigFile
             return false;
         }
 
-        bool maxConcurrentAgentSessionsIsFabricatedZero =
-            ApplyIntBinderQuirk(section, "maxConcurrentAgentSessions", value => settings.MaxConcurrentAgentSessions = value);
-        ApplyIntBinderQuirk(section, "maxComplianceReviewCycles", value => settings.MaxComplianceReviewCycles = value);
-        ApplyIntBinderQuirk(section, "maxAdversarialReviewCycles", value => settings.MaxAdversarialReviewCycles = value);
-        ApplyIntBinderQuirk(section, "maxFinalFullPassRounds", value => settings.MaxFinalFullPassRounds = value);
-        ApplyIntBinderQuirk(section, "lifetimeReviewCycleBudget", value => settings.LifetimeReviewCycleBudget = value);
+        bool maxConcurrentAgentSessionsIsFabricatedZero = false;
+        foreach ((string key, Action<OperatingSettings, int> assign) in IntBinderQuirkKeys)
+        {
+            bool fired = ApplyIntBinderQuirk(section, key, value => assign(settings, value));
+            if (key == "maxConcurrentAgentSessions")
+            {
+                maxConcurrentAgentSessionsIsFabricatedZero = fired;
+            }
+        }
 
         return maxConcurrentAgentSessionsIsFabricatedZero;
     }
