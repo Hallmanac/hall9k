@@ -25,7 +25,7 @@ namespace Hall9k.Tests.Integration;
 /// default, one container each. Gating inside the one fixture every container-backed test already
 /// depends on bounds the total regardless of collection membership, and bounds it for a class
 /// added next month with no extra annotation to remember — the corresponding guard,
-/// <see cref="ContainerRoutingGuardTests"/>, fails the build if any test class starts a Postgres
+/// <see cref="Hall9k.Tests.Domain.ContainerRoutingGuardTests"/>, fails the build if any test class starts a Postgres
 /// container any other way. Four is chosen conservatively: it is nowhere near the eleven that
 /// caused the OOM, while still giving the suite's largest tier (29 classes as of this writing)
 /// real parallel throughput rather than serializing it outright — see PLAN.md §16 #108 for the
@@ -36,11 +36,23 @@ public sealed class PostgresFixture : IAsyncLifetime
 {
     private const int MaxConcurrentContainers = 4;
 
-    // Generous relative to the ~7-8 minute full-suite wall-clock measured under this bound
-    // (PLAN.md §16 #108): a class queued behind the other three should never wait anywhere near
-    // this long, so hitting it means the gate or the Docker daemon is genuinely stuck rather than
-    // just busy, and failing loudly beats the suite hanging with no diagnostic.
-    private static readonly TimeSpan GateWaitTimeout = TimeSpan.FromMinutes(10);
+    // The permit is held for a class's entire run, not just its container startup (see
+    // InitializeAsync/DisposeAsync below), so with 4 permits and up to 14 classes/collections
+    // contending (the 13 standalone classes, each its own implicit collection that xUnit starts
+    // regardless of maxParallelThreads, plus the serialized Hall9kHome collection holding one
+    // permit continuously across its 16 member classes), the last waiter can sit behind several
+    // predecessors' full class durations — bounded only by the whole Postgres tier's own wall
+    // clock, measured at 7m29s-8m4s locally under this bound (PLAN.md §16 #108). This budget
+    // covers only the queue wait, not container startup (see ContainerStartTimeout below), so it
+    // is sized with real headroom above that measured tier duration even under a loaded or
+    // slower-than-local machine; hitting it means the gate or the Docker daemon is genuinely
+    // stuck rather than just busy, and failing loudly beats the suite hanging with no diagnostic.
+    private static readonly TimeSpan GateWaitTimeout = TimeSpan.FromMinutes(15);
+
+    // Separate from GateWaitTimeout so a long queue wait never eats into this budget: once a
+    // class has its permit, starting a single Postgres container should never come close to this
+    // regardless of how long the wait before it was.
+    private static readonly TimeSpan ContainerStartTimeout = TimeSpan.FromMinutes(2);
 
     private static readonly SemaphoreSlim ConcurrencyGate = new(MaxConcurrentContainers, MaxConcurrentContainers);
 
@@ -59,18 +71,29 @@ public sealed class PostgresFixture : IAsyncLifetime
 
     public async Task InitializeAsync()
     {
-        using CancellationTokenSource timeout = new(GateWaitTimeout);
-
-        await ConcurrencyGate.WaitAsync(timeout.Token);
+        using CancellationTokenSource gateTimeout = new(GateWaitTimeout);
+        await ConcurrencyGate.WaitAsync(gateTimeout.Token);
         _gateAcquired = true;
 
         try
         {
-            await _container.StartAsync(timeout.Token);
+            using CancellationTokenSource startTimeout = new(ContainerStartTimeout);
+            await _container.StartAsync(startTimeout.Token);
         }
         catch
         {
-            ReleaseGate();
+            // Docker may have created and partially started the container before the failure, so
+            // dispose it before releasing the permit — otherwise a container the gate no longer
+            // knows about can briefly outlive the bound it exists to enforce.
+            try
+            {
+                await _container.DisposeAsync();
+            }
+            finally
+            {
+                ReleaseGate();
+            }
+
             throw;
         }
     }
