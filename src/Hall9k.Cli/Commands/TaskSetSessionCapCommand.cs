@@ -14,7 +14,7 @@ namespace Hall9k.Cli.Commands;
 
 /// <summary>
 /// Sets this task's own override of how many agent sessions its run may hold simultaneously
-/// (Decisions Log #108, Brian's ruling 2026-08-30). Deliberately state-agnostic, unlike
+/// (Decisions Log #109, Brian's ruling 2026-08-30). Deliberately state-agnostic, unlike
 /// <see cref="TaskReviseCommand"/>: it is meant to apply at any time, including while the task's
 /// run is live, and takes effect at the run's very next session dispatch — raising it lets the
 /// next phase fan out wider, and lowering it never terminates a session already running.

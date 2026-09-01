@@ -516,7 +516,7 @@ public static class CliCommandTree
             task.AddCommand<TaskSetSessionCapCommand>("set-session-cap")
                 .WithDescription(
                     "Override how many agent sessions this task's own run may hold simultaneously (Decisions Log "
-                    + "#108) — the global default is 3, and this overrides it for this task alone, at any time, "
+                    + "#109) — the global default is 3, and this overrides it for this task alone, at any time, "
                     + "including while the task's run is live. A cap of 1 serializes the run's two review lenses "
                     + "instead of dispatching them together, for maximum throttle. Takes effect at the run's next "
                     + "session dispatch: raising it lets the next phase fan out wider, lowering it never "

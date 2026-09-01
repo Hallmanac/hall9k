@@ -26,7 +26,7 @@ public sealed class NodeDispatchLoad
 
     /// <summary>
     /// The configured ceiling the count was measured against — <c>DaemonOptions.MaxConcurrentTaskRuns</c>,
-    /// admission's own unit as of Decisions Log #108. Published rather than re-derived, so a reader
+    /// admission's own unit as of Decisions Log #109. Published rather than re-derived, so a reader
     /// never has to know how many sessions a run tree is worth, or that the setting behind this
     /// number was ever denominated any other way.
     /// </summary>

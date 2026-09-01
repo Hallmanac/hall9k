@@ -116,7 +116,7 @@ public sealed class TaskDetails
     public int Revisions { get; set; }
     /// <summary>The task's model override; Unknown means the per-role, project, and platform links decide (Decisions Log #33).</summary>
     public AgentModel Model { get; set; } = AgentModel.Unknown;
-    /// <summary>This task's own session-cap override; null means the node's global default decides (Decisions Log #108).</summary>
+    /// <summary>This task's own session-cap override; null means the node's global default decides (Decisions Log #109).</summary>
     public int? SessionCap { get; set; }
     public int LeaseGeneration { get; set; }
     public Guid? ClaimedByNodeId { get; set; }

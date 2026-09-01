@@ -101,7 +101,7 @@ string connectionString = resolution.Value;
 // MaxConcurrentTaskRuns, SessionCapPerRun and MaxConcurrentAgentSessions are excluded from this
 // generic Bind() and resolved separately (DaemonOptionsBinding's own doc explains why an internal
 // setter alone does not keep ConfigurationBinder away from a key). The retired-key conversion
-// (Decisions Log #108) needs the same per-precedence-level walk h9k config show and h9k daemon
+// (Decisions Log #109) needs the same per-precedence-level walk h9k config show and h9k daemon
 // status already perform, which IConfiguration's own merged view of env, the config file, and
 // appsettings.json cannot express: whether a level's own answer came from max-concurrent-task-runs
 // directly or from converting max-concurrent-agent-sessions has to be decided per level, not from

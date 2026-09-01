@@ -10,7 +10,7 @@ namespace Hall9k.Tests.Daemon;
 /// <c>ConfigurationBinder</c> from converting a resolver-owned key — an <see langword="internal"/>
 /// setter alone does not, because <c>BindProperty</c> converts a section's raw value before it
 /// ever checks whether the property has a public setter to assign it through. Origin: the
-/// independent pre-PR review of Decisions Log #108 (cycle 1, both lenses) found the internal-setter
+/// independent pre-PR review of Decisions Log #109 (cycle 1, both lenses) found the internal-setter
 /// claim on <c>DaemonOptions.MaxConcurrentTaskRuns</c> and <c>DaemonOptions.SessionCapPerRun</c>
 /// false — an unparseable value for either still crashed <c>Bind()</c>.
 /// </summary>

@@ -21,7 +21,7 @@ public sealed class ConfigSetCommand : Hall9kAsyncCommand<ConfigSetCommand.Setti
     {
         [CommandOption("--max-concurrent-agent-sessions <N>")]
         [Description(
-            "Retired as the node's own admission unit by Decisions Log #108 — use --max-concurrent-task-runs "
+            "Retired as the node's own admission unit by Decisions Log #109 — use --max-concurrent-task-runs "
             + "instead. Still writable and still read as a fallback: when max-concurrent-task-runs is absent at a "
             + "given level (environment variable or config file), this converts (floor(n/2), minimum 1 run).")]
         public int? MaxConcurrentAgentSessions { get; init; }
@@ -29,7 +29,7 @@ public sealed class ConfigSetCommand : Hall9kAsyncCommand<ConfigSetCommand.Setti
         [CommandOption("--max-concurrent-task-runs <N>")]
         [Description(
             "How many task runs may be live on this node at once (DaemonOptions.MaxConcurrentTaskRuns, Decisions "
-            + "Log #108) — every value is meaningful, unlike the retired --max-concurrent-agent-sessions, where a "
+            + "Log #109) — every value is meaningful, unlike the retired --max-concurrent-agent-sessions, where a "
             + "run's two-lens review cycle meant 3 sessions and 2 sessions both admitted exactly one run. Durable "
             + "here, so an autostart-launched daemon (no shell to export it into) still runs at the ceiling this "
             + "machine can actually hold. An interactive claim (h9k task work) occupies zero runs and is never "
@@ -39,7 +39,7 @@ public sealed class ConfigSetCommand : Hall9kAsyncCommand<ConfigSetCommand.Setti
         [CommandOption("--session-cap-per-run <N>")]
         [Description(
             "The global default for how many agent sessions one run may hold simultaneously "
-            + "(DaemonOptions.SessionCapPerRun, Decisions Log #108, default 3) — overridable per task at any time, "
+            + "(DaemonOptions.SessionCapPerRun, Decisions Log #109, default 3) — overridable per task at any time, "
             + "even mid-run, with h9k task set-session-cap, which is the one that takes effect at the run's next "
             + "session dispatch without a restart. This flag only changes the global default a running daemon "
             + "reads once at its own startup, so it takes effect on the daemon's next start like every other "

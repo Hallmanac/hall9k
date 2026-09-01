@@ -167,7 +167,7 @@ public sealed class NodeLoadTests
     [Fact]
     public void Every_configured_run_ceiling_is_meaningful()
     {
-        // Decisions Log #108: the ceiling is configured directly in runs now, so — unlike the
+        // Decisions Log #109: the ceiling is configured directly in runs now, so — unlike the
         // retired session-denominated setting, where 2 and 3 sessions both admitted exactly one
         // run under a peak of 2 — every distinct value admits a distinct number of runs.
         NodeLoad two = new(LiveRuns: 0, ConfiguredMaxConcurrentRuns: 2);

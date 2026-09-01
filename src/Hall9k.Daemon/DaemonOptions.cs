@@ -11,11 +11,11 @@ public sealed class DaemonOptions
 
     /// <summary>
     /// How many agent sessions this node may have resident at once, as configured — retired as
-    /// the node's own admission unit by Decisions Log #108, which moved that job to
+    /// the node's own admission unit by Decisions Log #109, which moved that job to
     /// <see cref="MaxConcurrentTaskRuns"/>. Nothing in the daemon's own admission math reads this
     /// bound property directly any more; the legacy-key conversion and <c>h9k daemon status</c>'s
     /// own naming of it both read the raw environment variable and config file themselves, through
-    /// <see cref="OperatingSettingsResolver"/>, so a pre-#108 value stays diagnosable without this
+    /// <see cref="OperatingSettingsResolver"/>, so a pre-#109 value stays diagnosable without this
     /// property being in the loop at all. Excluded from Program.cs's own <c>Bind()</c> call for
     /// exactly that reason: an unparseable value for a setting nothing reads would otherwise still
     /// crash startup for free (the property's own setter accessibility does not stop
@@ -25,7 +25,7 @@ public sealed class DaemonOptions
     public int MaxConcurrentAgentSessions { get; set; } = OperatingSettings.DefaultMaxConcurrentAgentSessions;
 
     /// <summary>
-    /// How many task runs may be live on this node at once (Decisions Log #108, superseding the
+    /// How many task runs may be live on this node at once (Decisions Log #109, superseding the
     /// session-denominated <see cref="MaxConcurrentAgentSessions"/> as the node's own admission
     /// unit): the thing an operator actually reasons about, so every value is meaningful — no two
     /// settings admit the identical number of runs the way 2 and 3 sessions both did under the old
@@ -49,7 +49,7 @@ public sealed class DaemonOptions
 
     /// <summary>
     /// How many agent sessions one run may hold simultaneously, globally by default (Decisions Log
-    /// #108, Brian's ruling 2026-08-30) — overridable per task from the CLI at any time via
+    /// #109, Brian's ruling 2026-08-30) — overridable per task from the CLI at any time via
     /// <c>h9k task set-session-cap</c>, even mid-run, in which case <c>ReviewEngine</c> reads the
     /// task's own override in place of this default. A cap of 1 serializes the two review lenses
     /// instead of dispatching them together; the shipped default of 3 is deliberate headroom above
