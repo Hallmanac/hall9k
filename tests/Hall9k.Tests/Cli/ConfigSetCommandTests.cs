@@ -101,6 +101,38 @@ public sealed class ConfigSetCommandTests
     }
 
     [Fact]
+    public void A_review_cap_below_one_is_refused()
+    {
+        ConfigSetCommand.Settings settings = new() { MaxAdversarialReviewCycles = 0 };
+
+        Action act = () => ConfigSetCommand.Validate(settings);
+
+        act.Should().Throw<DomainValidationException>().WithMessage("*max-adversarial-review-cycles*at least 1*");
+    }
+
+    [Fact]
+    public void Applying_the_four_review_caps_sets_each_one_and_records_the_change()
+    {
+        ConfigSetCommand.Settings settings = new()
+        {
+            MaxComplianceReviewCycles = 4,
+            MaxAdversarialReviewCycles = 12,
+            MaxFinalFullPassRounds = 2,
+            LifetimeReviewCycleBudget = 40,
+        };
+        OperatingSettings operating = new();
+        List<string> changed = [];
+
+        ConfigSetCommand.Apply(settings, operating, changed);
+
+        operating.MaxComplianceReviewCycles.Should().Be(4);
+        operating.MaxAdversarialReviewCycles.Should().Be(12);
+        operating.MaxFinalFullPassRounds.Should().Be(2);
+        operating.LifetimeReviewCycleBudget.Should().Be(40);
+        changed.Should().HaveCount(4);
+    }
+
+    [Fact]
     public void A_session_cap_per_run_of_zero_is_refused()
     {
         ConfigSetCommand.Settings settings = new() { SessionCapPerRun = 0 };

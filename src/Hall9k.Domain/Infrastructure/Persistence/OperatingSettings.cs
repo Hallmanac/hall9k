@@ -90,6 +90,23 @@ public sealed class OperatingSettings
     /// </summary>
     public const int DefaultInteractiveClaimStaleAfterDays = 3;
 
+    /// <summary>Mirrors <c>DaemonOptions.MaxComplianceReviewCycles</c>'s shipped default (Decisions Log #63).</summary>
+    public const int DefaultMaxComplianceReviewCycles = 3;
+
+    /// <summary>Mirrors <c>DaemonOptions.MaxAdversarialReviewCycles</c>'s shipped default (Decisions Log #63).</summary>
+    public const int DefaultMaxAdversarialReviewCycles = 10;
+
+    /// <summary>Mirrors <c>DaemonOptions.MaxFinalFullPassRounds</c>'s shipped default (Decisions Log #93).</summary>
+    public const int DefaultMaxFinalFullPassRounds = 3;
+
+    /// <summary>
+    /// Mirrors <c>DaemonOptions.LifetimeReviewCycleBudget</c>'s shipped default: generous enough
+    /// that only genuine pathology — a task ground across strandings, retries, and follow-up
+    /// rounds so many times that every per-run cap kept getting a fresh start — ever reaches it
+    /// (origin: task b6dfcbe5 reached 52 review cycles across nine generations, 2026-08-30).
+    /// </summary>
+    public const int DefaultLifetimeReviewCycleBudget = 25;
+
     public int? MaxConcurrentAgentSessions { get; set; }
 
     [JsonConverter(typeof(LenientModelStringJsonConverter))]
@@ -98,6 +115,26 @@ public sealed class OperatingSettings
     public RoleModelSettings ModelByRole { get; set; } = new();
 
     public int? InteractiveClaimStaleAfterDays { get; set; }
+
+    /// <summary>
+    /// This node's override of the conformance review track's cycle cap (Decisions Log #63);
+    /// null defers to <see cref="DefaultMaxComplianceReviewCycles"/>. Task &gt; project &gt; node &gt;
+    /// compiled default is the resolution order every one of these four caps shares.
+    /// </summary>
+    public int? MaxComplianceReviewCycles { get; set; }
+
+    /// <summary>This node's override of the adversarial review track's cycle cap (Decisions Log #63); null defers to the compiled default.</summary>
+    public int? MaxAdversarialReviewCycles { get; set; }
+
+    /// <summary>This node's override of the mandatory final-full-pass round cap (Decisions Log #93); null defers to the compiled default.</summary>
+    public int? MaxFinalFullPassRounds { get; set; }
+
+    /// <summary>
+    /// This node's override of the task-lifetime review-cycle budget: cycles summed across every
+    /// run and follow-up a task has had, immune to the per-run resets a stranding, retry, or
+    /// follow-up round would otherwise give it. Null defers to <see cref="DefaultLifetimeReviewCycleBudget"/>.
+    /// </summary>
+    public int? LifetimeReviewCycleBudget { get; set; }
 
     [JsonExtensionData]
     public Dictionary<string, JsonElement>? Extra { get; set; }

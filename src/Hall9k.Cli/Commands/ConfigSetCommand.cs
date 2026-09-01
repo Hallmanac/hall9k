@@ -89,6 +89,38 @@ public sealed class ConfigSetCommand : Hall9kAsyncCommand<ConfigSetCommand.Setti
         [Description("This node's model for the Publication role — writing a task up as an external tracker card. 'default' clears it.")]
         public string? ModelPublication { get; init; }
 
+        [CommandOption("--max-compliance-review-cycles <N>")]
+        [Description(
+            "This node's cycle cap for the conformance review track (DaemonOptions.MaxComplianceReviewCycles, "
+            + "default 3, Decisions Log #63) — how many times the conformance reviewer may be told the same "
+            + "thing before the run parks for a human. Resolves task override > project override (h9k project "
+            + "set) > this node value > the compiled default (task: the review cycle caps become settable).")]
+        public int? MaxComplianceReviewCycles { get; init; }
+
+        [CommandOption("--max-adversarial-review-cycles <N>")]
+        [Description(
+            "This node's cycle cap for the adversarial review track (DaemonOptions.MaxAdversarialReviewCycles, "
+            + "default 10, Decisions Log #63) — deliberately far larger than the conformance cap, since the "
+            + "severity gate, not this counter, is what ends the track in practice. Same resolution order as "
+            + "--max-compliance-review-cycles.")]
+        public int? MaxAdversarialReviewCycles { get; init; }
+
+        [CommandOption("--max-final-full-pass-rounds <N>")]
+        [Description(
+            "This node's cap on consecutive mandatory final-full-pass rounds (DaemonOptions.MaxFinalFullPassRounds, "
+            + "default 3, Decisions Log #93) — the independent bound for a track the final pass keeps "
+            + "reawakening. Same resolution order as --max-compliance-review-cycles.")]
+        public int? MaxFinalFullPassRounds { get; init; }
+
+        [CommandOption("--lifetime-review-cycle-budget <N>")]
+        [Description(
+            "This node's task-lifetime review-cycle budget (DaemonOptions.LifetimeReviewCycleBudget, default 25) "
+            + "— cycles counted across every run and follow-up a task has had, immune to the per-run resets a "
+            + "stranding, retry, or follow-up round otherwise gives the three caps above. Generous by design: it "
+            + "only catches genuine pathology. Once exceeded, every subsequent settle point parks for a human "
+            + "until a human resolution. Same resolution order as --max-compliance-review-cycles.")]
+        public int? LifetimeReviewCycleBudget { get; init; }
+
         [CommandOption("--interactive-claim-stale-after-days <DAYS>")]
         [Description(
             "How many days an interactive claim (h9k task work) can sit untouched before h9k status nudges "
@@ -122,7 +154,9 @@ public sealed class ConfigSetCommand : Hall9kAsyncCommand<ConfigSetCommand.Setti
             && settings.SessionCapPerRun is null && settings.DefaultModel is null
             && settings.ModelBuild is null && settings.ModelReview is null && settings.ModelReviewVerify is null
             && settings.ModelFix is null && settings.ModelSynthesis is null && settings.ModelRefinement is null
-            && settings.ModelPublication is null;
+            && settings.ModelPublication is null && settings.MaxComplianceReviewCycles is null
+            && settings.MaxAdversarialReviewCycles is null && settings.MaxFinalFullPassRounds is null
+            && settings.LifetimeReviewCycleBudget is null;
 
         if (onlyInteractiveClaimStaleAfterDaysChanged)
         {
@@ -145,7 +179,9 @@ public sealed class ConfigSetCommand : Hall9kAsyncCommand<ConfigSetCommand.Setti
             && settings.SessionCapPerRun is null && settings.DefaultModel is null
             && settings.ModelBuild is null && settings.ModelReview is null && settings.ModelReviewVerify is null
             && settings.ModelFix is null && settings.ModelSynthesis is null && settings.ModelRefinement is null
-            && settings.ModelPublication is null && settings.InteractiveClaimStaleAfterDays is null)
+            && settings.ModelPublication is null && settings.InteractiveClaimStaleAfterDays is null
+            && settings.MaxComplianceReviewCycles is null && settings.MaxAdversarialReviewCycles is null
+            && settings.MaxFinalFullPassRounds is null && settings.LifetimeReviewCycleBudget is null)
         {
             throw new DomainValidationException(
                 "Nothing to change — pass at least one setting, e.g. --max-concurrent-task-runs 2. "
@@ -169,6 +205,26 @@ public sealed class ConfigSetCommand : Hall9kAsyncCommand<ConfigSetCommand.Setti
             throw new DomainValidationException(
                 "--session-cap-per-run must be at least 1 — a cap of zero would dispatch nothing for a run's "
                 + "next session.");
+        }
+
+        if (settings.MaxComplianceReviewCycles is { } complianceCap && complianceCap < 1)
+        {
+            throw new DomainValidationException("--max-compliance-review-cycles must be at least 1.");
+        }
+
+        if (settings.MaxAdversarialReviewCycles is { } adversarialCap && adversarialCap < 1)
+        {
+            throw new DomainValidationException("--max-adversarial-review-cycles must be at least 1.");
+        }
+
+        if (settings.MaxFinalFullPassRounds is { } finalFullPassCap && finalFullPassCap < 1)
+        {
+            throw new DomainValidationException("--max-final-full-pass-rounds must be at least 1.");
+        }
+
+        if (settings.LifetimeReviewCycleBudget is { } lifetimeBudget && lifetimeBudget < 1)
+        {
+            throw new DomainValidationException("--lifetime-review-cycle-budget must be at least 1.");
         }
 
         if (settings.InteractiveClaimStaleAfterDays is { } staleAfterDays && staleAfterDays < 1)
@@ -223,6 +279,30 @@ public sealed class ConfigSetCommand : Hall9kAsyncCommand<ConfigSetCommand.Setti
         {
             operating.InteractiveClaimStaleAfterDays = staleAfterDays;
             changed.Add($"interactive-claim-stale-after-days = {staleAfterDays}");
+        }
+
+        if (settings.MaxComplianceReviewCycles is { } complianceCap)
+        {
+            operating.MaxComplianceReviewCycles = complianceCap;
+            changed.Add($"max-compliance-review-cycles = {complianceCap}");
+        }
+
+        if (settings.MaxAdversarialReviewCycles is { } adversarialCap)
+        {
+            operating.MaxAdversarialReviewCycles = adversarialCap;
+            changed.Add($"max-adversarial-review-cycles = {adversarialCap}");
+        }
+
+        if (settings.MaxFinalFullPassRounds is { } finalFullPassCap)
+        {
+            operating.MaxFinalFullPassRounds = finalFullPassCap;
+            changed.Add($"max-final-full-pass-rounds = {finalFullPassCap}");
+        }
+
+        if (settings.LifetimeReviewCycleBudget is { } lifetimeBudget)
+        {
+            operating.LifetimeReviewCycleBudget = lifetimeBudget;
+            changed.Add($"lifetime-review-cycle-budget = {lifetimeBudget}");
         }
     }
 

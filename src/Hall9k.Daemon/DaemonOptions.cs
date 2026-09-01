@@ -135,7 +135,7 @@ public sealed class DaemonOptions
     /// conformance review still returning findings at this cycle parks, because at that point
     /// nothing automated is left to try.
     /// </summary>
-    public int MaxComplianceReviewCycles { get; set; } = 3;
+    public int MaxComplianceReviewCycles { get; set; } = OperatingSettings.DefaultMaxComplianceReviewCycles;
 
     /// <summary>
     /// Cycles the adversarial track may run before the run parks (Decisions Log #63). It is
@@ -144,7 +144,7 @@ public sealed class DaemonOptions
     /// finding real high-severity problems — a fact a human should look at rather than a
     /// budget that quietly ran out.
     /// </summary>
-    public int MaxAdversarialReviewCycles { get; set; } = 10;
+    public int MaxAdversarialReviewCycles { get; set; } = OperatingSettings.DefaultMaxAdversarialReviewCycles;
 
     /// <summary>
     /// Rounds the mandatory <see cref="ReviewMode.FinalFullPass"/> may run before the run
@@ -157,7 +157,22 @@ public sealed class DaemonOptions
     /// however many times the mandatory pass has run for this run, once it reaches this count
     /// without ever settling, a human looks rather than the loop grinding forever.
     /// </summary>
-    public int MaxFinalFullPassRounds { get; set; } = 3;
+    public int MaxFinalFullPassRounds { get; set; } = OperatingSettings.DefaultMaxFinalFullPassRounds;
+
+    /// <summary>
+    /// The task-lifetime ceiling on review cycles, counted across every run and follow-up a task
+    /// has had — cycles are recorded per run (<see cref="RunAggregate.ReviewCycle"/>), so this is
+    /// summed at cap-check time rather than kept as a second counter
+    /// (<c>ReviewEngine.LifetimeReviewCycleCountAsync</c>). Immune to the per-run resets a
+    /// stranding, retry, or follow-up round would otherwise give <see cref="MaxComplianceReviewCycles"/>,
+    /// <see cref="MaxAdversarialReviewCycles"/>, and <see cref="MaxFinalFullPassRounds"/> — the
+    /// gap that let task b6dfcbe5 reach 52 review cycles across nine generations with every
+    /// per-run cap firing correctly and repeatedly, because no cap ever saw the task's true
+    /// history (2026-08-30). Generous by design: it exists to catch genuine pathology, not to
+    /// second-guess an ordinary multi-generation task. Once exceeded, every subsequent settle
+    /// point parks for a human until a human resolution (<c>ReviewEngine.ParkIfLifetimeBudgetExceededAsync</c>).
+    /// </summary>
+    public int LifetimeReviewCycleBudget { get; set; } = OperatingSettings.DefaultLifetimeReviewCycleBudget;
 
     /// <summary>
     /// The first adversarial cycle the severity gate applies to (Decisions Log #63). A Low or an

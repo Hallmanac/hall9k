@@ -30,6 +30,10 @@ public sealed class OperatingSettingsResolverTests : IDisposable
         "Hall9k__ModelByRole__Synthesis",
         "Hall9k__ModelByRole__Refinement",
         "Hall9k__ModelByRole__Publication",
+        "Hall9k__MaxComplianceReviewCycles",
+        "Hall9k__MaxAdversarialReviewCycles",
+        "Hall9k__MaxFinalFullPassRounds",
+        "Hall9k__LifetimeReviewCycleBudget",
     ];
 
     private readonly string home = Path.Combine(Path.GetTempPath(), $"h9k-resolve-{Path.GetRandomFileName()}");

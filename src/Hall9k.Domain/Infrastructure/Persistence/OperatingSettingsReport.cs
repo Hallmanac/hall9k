@@ -8,18 +8,21 @@ public sealed record RoleModelSetting(string Role, ResolvedSetting<string?> Mode
 /// unpersisted in-process outcome rather than a value object: a document-level failure the
 /// daemon already skips gracefully at startup (a syntax error, or valid JSON whose top level is
 /// not an object — environment variables and built-in defaults still apply, none of the file's
-/// settings take effect); and a value-shape failure on any leaf, which <c>ConfigurationBinder</c>
-/// silently leaves at its default while binding every sibling key normally — so the file is
-/// still in force, just not for that one setting. The three concurrency keys can no longer crash
-/// the daemon outright: <c>Hall9k.Daemon.DaemonOptionsBinding.ResolverOwnedKeys</c> excludes them
-/// from the daemon's own <c>ConfigurationBinder</c> call (Decisions Log #111's follow-up), which
-/// retired the one leaf (<c>maxConcurrentAgentSessions</c>) that used to; every other
-/// <c>DaemonOptions</c> leaf in this section is still bound through <c>ConfigurationBinder</c> and
-/// can still crash startup on a bad value (independent pre-PR review, cycle 4, adversarial lens).
+/// settings take effect); a value-shape failure on the four review-cycle-cap leaves
+/// <c>ConfigurationBinder</c> has no guard for, which crashes the daemon outright; and a
+/// value-shape failure on any other leaf, which <c>ConfigurationBinder</c> silently leaves at its
+/// default while binding every sibling key normally — so the file is still in force, just not for
+/// that one setting. The three concurrency keys can no longer crash the daemon this second way:
+/// <c>Hall9k.Daemon.DaemonOptionsBinding.ResolverOwnedKeys</c> excludes them from the daemon's own
+/// <c>ConfigurationBinder</c> call (Decisions Log #111's follow-up), which retired the one leaf
+/// (<c>maxConcurrentAgentSessions</c>) that used to; every other <c>DaemonOptions</c> leaf in this
+/// section — the four review-cycle caps included — is still bound through <c>ConfigurationBinder</c>
+/// and can still crash startup on a bad value (independent pre-PR review, cycle 4, adversarial lens).
 /// </summary>
 public enum ConfigFileProblemConsequence
 {
     DaemonSkipsFile,
+    DaemonFailsToStart,
     SettingIsIgnored,
 }
 
@@ -63,6 +66,9 @@ public sealed record ConfigFileProblem(
             "The daemon's own ConfigurationBinder has no conversion for this value, so this setting does not "
             + "take its value from the file — every other setting in the file, and environment variables and "
             + "built-in defaults, still apply.",
+        ConfigFileProblemConsequence.DaemonFailsToStart =>
+            "The daemon's own ConfigurationBinder crashes at startup on this value — nothing in the file, "
+            + "environment variables, or built-in defaults takes effect until it is fixed.",
         _ => "The daemon skips the file for this run — environment variables and built-in defaults still apply.",
     };
 }
@@ -70,7 +76,7 @@ public sealed record ConfigFileProblem(
 /// <summary>The outcome of a non-throwing operating-settings read: the settings, or why not.</summary>
 /// <param name="MaxConcurrentAgentSessionsIsFabricatedZero">
 /// Whether <see cref="OperatingSettings.MaxConcurrentAgentSessions"/>'s <c>0</c> on
-/// <paramref name="Settings"/> is <c>PlatformConfigFile.ApplyMaxConcurrentAgentSessionsBinderQuirk</c>'s
+/// <paramref name="Settings"/> is <c>PlatformConfigFile.ApplyIntBinderQuirks</c>'s
 /// own simulation of what <c>ConfigurationBinder</c> would have bound a JSON <c>null</c> or
 /// <c>{}</c> leaf to, rather than a real configured <c>0</c> read from the file. That simulation
 /// exists only for <c>h9k config show</c>'s own accuracy about the retired key's JSON shape;
@@ -92,6 +98,14 @@ public sealed record ConfigFileReadResult(
     /// </summary>
     public static ConfigFileReadResult Failed(string message) =>
         new(new OperatingSettings(), new ConfigFileProblem(message, ConfigFileProblemConsequence.DaemonSkipsFile), false);
+
+    /// <summary>
+    /// A value-shape failure on one of the four review-cycle-cap leaves <c>ConfigurationBinder</c>
+    /// crashes the daemon on — the document parsed, but nothing in it can be trusted to be what
+    /// the daemon will actually run with, because the daemon will not run at all.
+    /// </summary>
+    public static ConfigFileReadResult DaemonCrashes(string message) =>
+        new(new OperatingSettings(), new ConfigFileProblem(message, ConfigFileProblemConsequence.DaemonFailsToStart), false);
 
     /// <summary>
     /// A value-shape failure on any leaf: <paramref name="settings"/> is the partial
@@ -147,4 +161,8 @@ public sealed record OperatingSettingsReport(
     ResolvedSetting<string> DefaultModel,
     IReadOnlyList<RoleModelSetting> ModelByRole,
     ConfigFileProblem? ConfigFileProblem,
-    IReadOnlyList<string> UnusableEnvironmentVariables);
+    IReadOnlyList<string> UnusableEnvironmentVariables,
+    ResolvedSetting<int> MaxComplianceReviewCycles,
+    ResolvedSetting<int> MaxAdversarialReviewCycles,
+    ResolvedSetting<int> MaxFinalFullPassRounds,
+    ResolvedSetting<int> LifetimeReviewCycleBudget);

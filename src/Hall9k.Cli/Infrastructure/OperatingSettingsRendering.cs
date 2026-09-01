@@ -44,6 +44,14 @@ public static class OperatingSettingsRendering
             ("session-cap-per-run", $"{report.SessionCapPerRun.Value} ({report.SessionCapPerRun.DescribeOrigin()})"),
             ("max-concurrent-agent-sessions (retired)", DescribeMaxConcurrentAgentSessions(report)),
             ("default-model", $"{report.DefaultModel.Value} ({report.DefaultModel.DescribeOrigin()})"),
+            ("max-compliance-review-cycles",
+                $"{report.MaxComplianceReviewCycles.Value} ({report.MaxComplianceReviewCycles.DescribeOrigin()})"),
+            ("max-adversarial-review-cycles",
+                $"{report.MaxAdversarialReviewCycles.Value} ({report.MaxAdversarialReviewCycles.DescribeOrigin()})"),
+            ("max-final-full-pass-rounds",
+                $"{report.MaxFinalFullPassRounds.Value} ({report.MaxFinalFullPassRounds.DescribeOrigin()})"),
+            ("lifetime-review-cycle-budget",
+                $"{report.LifetimeReviewCycleBudget.Value} ({report.LifetimeReviewCycleBudget.DescribeOrigin()})"),
         ];
 
         rows.AddRange(report.ModelByRole.Select(role => (
