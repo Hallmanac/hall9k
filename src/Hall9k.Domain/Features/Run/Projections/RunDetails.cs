@@ -188,10 +188,11 @@ public sealed class RunDetails
     public string? ParkedReason { get; set; }
     /// <summary>
     /// Whether the review park just recorded in <see cref="ParkedReason"/> is one where granting
-    /// <c>--needs-fixes</c> cannot buy the work any progress (a cap-0 takeover park, or the
-    /// lifetime-budget park) — mirrors <see cref="ReviewParked.NeedsFixesOffersNoProgress"/>
-    /// so <c>h9k status</c>'s lever agrees with the park text instead of offering a verdict the
-    /// run's own reason already says is useless here.
+    /// <c>--needs-fixes</c> cannot clear the park (a per-track cap-0 takeover park, a
+    /// final-full-pass cap-0 park, or the lifetime-budget park) — mirrors
+    /// <see cref="ReviewParked.NeedsFixesOffersNoProgress"/> so <c>h9k status</c>'s lever agrees
+    /// with the park text instead of offering a verdict that cannot actually resolve this park,
+    /// whether or not it dispatches a fix session on the way to re-parking.
     /// </summary>
     public bool ParkedNeedsFixesOffersNoProgress { get; set; }
     /// <summary>

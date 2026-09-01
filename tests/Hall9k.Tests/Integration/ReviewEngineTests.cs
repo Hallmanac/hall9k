@@ -4196,7 +4196,7 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
             new VerificationRunner(store, Options.Create(new DaemonOptions()), NullLogger<VerificationRunner>.Instance),
             Options.Create(new DaemonOptions()), logger);
 
-        await engine.ParkAsync(staleRunId, taskId, "No parseable verdict.", cts.Token);
+        await engine.ParkAsync(staleRunId, taskId, "No parseable verdict.", cancellationToken: cts.Token);
 
         await using IQuerySession query = store.QuerySession();
         RunDetails run = (await query.LoadAsync<RunDetails>(staleRunId, cts.Token))!;
