@@ -4,10 +4,11 @@ namespace Hall9k.Tests.Domain;
 
 /// <summary>
 /// Shared by every source-scanning guard test (<see cref="Hall9k.Tests.Domain.ContainerRoutingGuardTests"/>,
-/// <see cref="Hall9k.Tests.Domain.HomeEnvironmentIsolationTests"/>): both walk the whole test
-/// tree from their own file's location, both need to tell a real source file from build output,
-/// and both strip comments and string literals before matching so quoted prose cannot be
-/// mistaken for real code.
+/// <see cref="Hall9k.Tests.Domain.HomeEnvironmentIsolationTests"/>, and
+/// <see cref="Hall9k.Tests.Domain.ProcessTerminationGuardTests"/>): each walks a whole tree from
+/// its own file's location — the first two the test tree, the third <c>src/</c> instead — each
+/// needs to tell a real source file from build output, and each strips comments and string
+/// literals before matching so quoted prose cannot be mistaken for real code.
 /// </summary>
 internal static class TestSourceTree
 {
@@ -32,15 +33,50 @@ internal static class TestSourceTree
     }
 
     /// <summary>
+    /// The repository's <c>src</c> directory, found by continuing <see cref="RootDirectory"/>'s
+    /// own walk upward from <c>tests/Hall9k.Tests</c> until an ancestor holding a <c>src</c>
+    /// child is reached — rather than a hardcoded relative ascent from the test project, which
+    /// would be correct only for the one nesting depth it was tuned for — so a guard scanning
+    /// production source (<see cref="Hall9k.Tests.Domain.ProcessTerminationGuardTests"/>) stays
+    /// correct if the test project is ever moved deeper or shallower under <c>tests/</c>.
+    /// <para>
+    /// The nearest such ancestor wins, which is this repository's own root; an outer directory
+    /// that happened to hold a <c>src</c> of its own is never reached, because the walk stops
+    /// before it. If none is found at all, that is reported as the walk failing rather than as a
+    /// missing directory, since the ascent is the part a layout change breaks first.
+    /// </para>
+    /// </summary>
+    public static string SourceDirectory([System.Runtime.CompilerServices.CallerFilePath] string here = "")
+    {
+        string testsRoot = RootDirectory(here);
+        string? directory = testsRoot;
+
+        while (directory is not null && !Directory.Exists(Path.Combine(directory, "src")))
+        {
+            directory = Path.GetDirectoryName(directory);
+        }
+
+        return directory is null
+            ? throw new InvalidOperationException(
+                $"walked up from '{testsRoot}' to the filesystem root without finding a directory "
+                + "holding a 'src' child — the repository layout this guard resolves against has changed")
+            : Path.Combine(directory, "src");
+    }
+
+    /// <summary>
     /// True for a file under a <c>bin</c> or <c>obj</c> build-output directory, which
     /// <see cref="Directory.EnumerateFiles(string, string, SearchOption)"/>'s recursive search
     /// otherwise walks right along with the real sources — generated files there
     /// (<c>*.GlobalUsings.g.cs</c>, <c>*.AssemblyInfo.cs</c>, and the like) would make a scan's
     /// file and hit counts depend on which configurations happen to be built locally.
     /// </summary>
-    public static bool IsBuildOutput(string testsDirectory, string file)
+    /// <param name="rootDirectory">The tree being scanned — the test tree for
+    /// <see cref="ContainerRoutingGuardTests"/> and <see cref="HomeEnvironmentIsolationTests"/>,
+    /// or <c>src/</c> for <see cref="ProcessTerminationGuardTests"/>.</param>
+    /// <param name="file">A file found under <paramref name="rootDirectory"/>.</param>
+    public static bool IsBuildOutput(string rootDirectory, string file)
     {
-        string relative = Path.GetRelativePath(testsDirectory, file);
+        string relative = Path.GetRelativePath(rootDirectory, file);
         string[] segments = relative.Split(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
 
         return segments.Any(segment =>
