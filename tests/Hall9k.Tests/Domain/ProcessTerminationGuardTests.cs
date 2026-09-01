@@ -18,26 +18,24 @@ namespace Hall9k.Tests.Domain;
 /// was added investigating an origin incident (2026-08-29: a full 2295/2295 green run reported
 /// "Test Run Aborted. Reason: Test host process crashed" instead of a passing summary) as one of
 /// two hypotheses for the crash; the investigation found no such call anywhere in this tree, live
-/// or in the history at the time of the incident, and the mechanism that actually explains it —
-/// documented in the PR this guard shipped with — was the then-unbounded Testcontainers Postgres
-/// concurrency PLAN.md decision #108 fixed two days later, which OOM-kills the test host in a way
-/// that presents identically at the VSTest level. This guard exists so the hypothesis this
-/// investigation cleared stays cleared: a future process-terminating call reachable from a test
-/// via production code under <c>src/</c> fails the build here instead of ever reaching a human as
-/// an unexplained crash again. A call added directly inside the test tree itself — a fake, a
-/// fixture, a helper under <c>tests/</c> — is equally reachable from a test but is not scanned
-/// here; unlike the two blind spots documented below, this scope limit is not otherwise guarded
-/// against. This is a
-/// source scan rather than a runtime check for the same reason <see cref="ContainerRoutingGuardTests"/>
-/// is: the failure mode is "the call exists at all", which by construction this process can never
-/// intercept by actually exercising it — the whole point is that nothing may ever call it during a
-/// test run to find out.
+/// or in the history at the time of the incident. PLAN.md decision #108's then-unbounded
+/// Testcontainers Postgres concurrency, fixed two days later, is the remaining explanation the
+/// timeline supports once both cleared hypotheses are eliminated — not itself directly confirmed
+/// for that specific abort (decisions #109, #110 record what was and was not checked). This guard
+/// exists so the hypothesis this investigation cleared stays cleared: a future process-terminating
+/// call reachable from a test via production code under <c>src/</c> fails the build here instead
+/// of ever reaching a human as an unexplained crash again. A call added directly inside the test
+/// tree itself — a fake, a fixture, a helper under <c>tests/</c> — is equally reachable from a
+/// test, and decision #110 closed that scope gap: the scan below now covers <c>tests/</c> too,
+/// this file's own doc comment included. This is a source scan rather than a runtime check for the
+/// same reason <see cref="ContainerRoutingGuardTests"/> is: the failure mode is "the call exists at
+/// all", which by construction this process can never intercept by actually exercising it — the
+/// whole point is that nothing may ever call it during a test run to find out.
 /// <para>
 /// The scan matches against comment/string-stripped source
 /// (<see cref="TestSourceTree.StripCommentsAndStrings"/>), not the raw text, so a file that only
-/// names <c>Environment.Exit</c>/<c>Environment.FailFast</c> in a doc comment is never mistaken
-/// for a real call. This guard scans only <c>src/</c>, though, so that protection is never
-/// exercised against this file's own doc comment above — the guard simply never reads it.
+/// names <c>Environment.Exit</c>/<c>Environment.FailFast</c> in a doc comment — this one included,
+/// now that the scan reads <c>tests/</c> as well as <c>src/</c> — is never mistaken for a real call.
 /// </para>
 /// <para>
 /// The two <c>Program.cs</c> entry points are the sole exemption, by relative path exactly like
@@ -48,13 +46,19 @@ namespace Hall9k.Tests.Domain;
 /// call to live if either entry point ever needs one, and nowhere else.
 /// </para>
 /// <para>
-/// The marker list also matches <c>GetCurrentProcess().Kill</c>: two legitimate call sites
+/// The marker list also matches <c>GetCurrentProcess().Kill</c>, but it does not actually cover
+/// what it was added to cover. Two legitimate call sites
 /// (<see cref="Hall9k.Daemon.SingleInstanceGuard"/> and
 /// <see cref="Hall9k.Daemon.WindowsStopRequestWatcher"/>) already hold
-/// <c>Process.GetCurrentProcess()</c> for benign <c>Id</c>/<c>StartTime</c> reads, and appending
-/// <c>.Kill()</c> at either site would tear down the test host exactly as
-/// <c>Environment.Exit</c> would. It does not catch every equivalent, though — a file that adds
-/// <c>using static System.Environment;</c> and calls a bare <c>Exit(1)</c> reaches the same
+/// <c>Process.GetCurrentProcess()</c> for benign <c>Id</c>/<c>StartTime</c> reads, but both bind it
+/// to a local (<c>using Process current = Process.GetCurrentProcess();</c>) rather than chaining
+/// off the expression directly, so a <c>.Kill()</c> added at either site would read
+/// <c>current.Kill();</c> — which the literal marker <c>GetCurrentProcess().Kill</c> can never
+/// match. The marker still catches a <c>.Kill()</c> chained directly off a fresh
+/// <c>Process.GetCurrentProcess()</c> call anywhere else in the scanned tree, but it is not the
+/// safety net for these two sites that it looks like; that gap sits alongside the one documented
+/// next rather than being closed by it. It does not catch every equivalent, either — a file that
+/// adds <c>using static System.Environment;</c> and calls a bare <c>Exit(1)</c> reaches the same
 /// termination through an unqualified name this scan cannot distinguish from an ordinary method
 /// call, the same class of blind spot <see cref="ContainerRoutingGuardTests"/> documents for its
 /// own scan. This guard cannot follow a termination there.
@@ -109,28 +113,47 @@ public sealed class ProcessTerminationGuardTests
 
     private static readonly string[] ExemptRelativePaths =
     [
-        Path.Combine("Hall9k.Cli", "Program.cs"),
-        Path.Combine("Hall9k.Daemon", "Program.cs"),
+        Path.Combine("src", "Hall9k.Cli", "Program.cs"),
+        Path.Combine("src", "Hall9k.Daemon", "Program.cs"),
     ];
 
     [Fact]
     public void No_production_code_outside_program_cs_terminates_the_process()
     {
         string sourceDirectory = TestSourceTree.SourceDirectory();
+        string testsDirectory = TestSourceTree.RootDirectory();
 
+        // repositoryRoot is sourceDirectory's own parent (SourceDirectory() resolves to
+        // "<repositoryRoot>/src"), which testsDirectory also sits under
+        // ("<repositoryRoot>/tests/Hall9k.Tests") — a single common base lets every offender and
+        // every exemption below be reported by one repository-relative path regardless of which
+        // of the two trees it came from, rather than a src/-relative path that reads wrong for a
+        // tests/ file.
+        string repositoryRoot = Path.GetDirectoryName(sourceDirectory)
+            ?? throw new InvalidOperationException($"'{sourceDirectory}' has no parent directory");
+
+        // Decision #110: a process-terminating call added directly inside the test tree — a fake,
+        // a fixture, a helper — is exactly as reachable from a test as one added to production
+        // code, so both trees are scanned here rather than src/ alone.
         string[] files =
         [
             .. Directory.EnumerateFiles(sourceDirectory, "*.cs", SearchOption.AllDirectories)
-               .Where(file => !ExemptRelativePaths.Contains(Path.GetRelativePath(sourceDirectory, file)))
                .Where(file => !TestSourceTree.IsBuildOutput(sourceDirectory, file)),
+            .. Directory.EnumerateFiles(testsDirectory, "*.cs", SearchOption.AllDirectories)
+               .Where(file => !TestSourceTree.IsBuildOutput(testsDirectory, file)),
         ];
 
         List<string> offenders = [];
 
         foreach (string file in files)
         {
+            string relativePath = Path.GetRelativePath(repositoryRoot, file);
+            if (ExemptRelativePaths.Contains(relativePath))
+            {
+                continue;
+            }
+
             (string code, _, bool balanced) = TestSourceTree.StripCommentsAndStrings(File.ReadAllText(file));
-            string relativePath = Path.GetRelativePath(sourceDirectory, file);
 
             if (!balanced)
             {
@@ -159,13 +182,15 @@ public sealed class ProcessTerminationGuardTests
             "\"Test host process crashed\" instead of reporting its actual summary)");
 
         files.Length.Should().BeGreaterThan(
-            100,
-            "this is far fewer .cs files than src/ actually holds — TestSourceTree.SourceDirectory() is " +
-            "probably no longer resolving to the repository's src/ directory");
+            500,
+            "this is far fewer .cs files than src/ and tests/ together actually hold — " +
+            "TestSourceTree.SourceDirectory()/RootDirectory() are probably no longer resolving to " +
+            "the repository's src/ and tests/Hall9k.Tests directories");
 
         // A positive control on the scan itself, the same reason ContainerRoutingGuardTests keeps
-        // one: with no real offending call left in src/ for the marker list to find (that is the
-        // point of the guard), a scan that has gone dark — StripCommentsAndStrings regressed into
+        // one: with no real offending call left in src/ or tests/ for the marker list to find
+        // (that is the point of the guard), a scan that has gone dark — StripCommentsAndStrings
+        // regressed into
         // over-stripping, or ContainsMarkerAsIdentifier stopped recognizing its own marker text —
         // would report success while checking nothing, with no failing assertion above to say so.
         // Built from a synthetic snippet rather than pointing at a real file, since (unlike
@@ -179,12 +204,18 @@ public sealed class ProcessTerminationGuardTests
         const string syntheticInnocentComment = "// Environment.FailFast(\"never actually called\")";
         const string syntheticLookAlikeCode = "if (failure) { FakeEnvironment.Exit(1); }";
         const string syntheticKillCode = "if (failure) { Process.GetCurrentProcess().Kill(); }";
+        // Environment.ExitCode sets a value and terminates nothing (the doc comment on
+        // ContainsMarkerAsIdentifier promises it is not mistaken for Environment.Exit), but
+        // nothing below exercised that: dropping or inverting the trailing-boundary check would
+        // still pass every other control here while flagging this line as an offender.
+        const string syntheticExitCodeAssignment = "Environment.ExitCode = 1;";
 
         (string strippedOffending, _, _) = TestSourceTree.StripCommentsAndStrings(syntheticOffendingCode);
         (string strippedQualified, _, _) = TestSourceTree.StripCommentsAndStrings(syntheticQualifiedCode);
         (string strippedComment, _, _) = TestSourceTree.StripCommentsAndStrings(syntheticInnocentComment);
         (string strippedLookAlike, _, _) = TestSourceTree.StripCommentsAndStrings(syntheticLookAlikeCode);
         (string strippedKill, _, _) = TestSourceTree.StripCommentsAndStrings(syntheticKillCode);
+        (string strippedExitCodeAssignment, _, _) = TestSourceTree.StripCommentsAndStrings(syntheticExitCodeAssignment);
 
         // Each name says what the scan actually reports for that snippet, not what the assertion
         // below wants it to be — a boolean named for the desired verdict rather than the observed
@@ -200,6 +231,8 @@ public sealed class ProcessTerminationGuardTests
             marker => ContainsMarkerAsIdentifier(strippedLookAlike, marker));
         bool scanSeesAProcessKill = TerminationMarkers.Any(
             marker => ContainsMarkerAsIdentifier(strippedKill, marker));
+        bool scanSeesAnExitCodeAssignment = TerminationMarkers.Any(
+            marker => ContainsMarkerAsIdentifier(strippedExitCodeAssignment, marker));
 
         scanSeesARealCall.Should().BeTrue(
             "the marker list no longer matches a real Environment.Exit call, or comment/string " +
@@ -217,7 +250,13 @@ public sealed class ProcessTerminationGuardTests
             "rule it out rather than failing the build on a file that is not an offender");
         scanSeesAProcessKill.Should().BeTrue(
             "Process.GetCurrentProcess().Kill() terminates the process exactly as Environment.Exit " +
-            "does, and the two legitimate GetCurrentProcess() reads in this tree (SingleInstanceGuard, " +
-            "WindowsStopRequestWatcher) never call .Kill(), so this marker must not have gone dark");
+            "does, so this marker must not have gone dark — though it does not, on its own, cover " +
+            "the two legitimate GetCurrentProcess() reads in this tree (SingleInstanceGuard, " +
+            "WindowsStopRequestWatcher): both bind the result to a local first, so a .Kill() added " +
+            "at either site would read current.Kill(), which this marker's literal text never matches");
+        scanSeesAnExitCodeAssignment.Should().BeFalse(
+            "Environment.ExitCode sets a value and terminates nothing, so the trailing-boundary " +
+            "check must rule it out rather than failing the build on a file that only ever sets an " +
+            "exit code, never calls Exit");
     }
 }
