@@ -55,8 +55,8 @@ public static class OperatingSettingsResolver
                     $"{EnvironmentPrefix}ModelByRole__{pair.Role}", pair.Model, pair.Role, unusableEnvironmentVariables)))];
 
         return new OperatingSettingsReport(
-            concurrency, maxConcurrentTaskRuns, convertedFromLegacy, shadowsConfigFileValue, sessionCapPerRun,
-            defaultModel, roles, read.Problem, unusableEnvironmentVariables);
+            concurrency, read.MaxConcurrentAgentSessionsIsFabricatedZero, maxConcurrentTaskRuns, convertedFromLegacy,
+            shadowsConfigFileValue, sessionCapPerRun, defaultModel, roles, read.Problem, unusableEnvironmentVariables);
     }
 
     /// <summary>

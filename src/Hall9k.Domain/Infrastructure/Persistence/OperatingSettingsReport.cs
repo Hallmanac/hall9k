@@ -109,9 +109,17 @@ public sealed record ConfigFileReadResult(
 /// "set max-concurrent-task-runs" remedy would not actually apply, since the environment variable
 /// still outranks the file regardless of which key it names (independent pre-PR review, cycle 1,
 /// adversarial lens).
+/// <see cref="MaxConcurrentAgentSessionsIsFabricatedZero"/> mirrors
+/// <see cref="ConfigFileReadResult.MaxConcurrentAgentSessionsIsFabricatedZero"/> forward into the
+/// report so a renderer can tell the difference between a genuinely configured zero (which really
+/// is consulted as a fallback wherever <c>max-concurrent-task-runs</c> is absent at that level) and
+/// this binder-quirk simulation of a <c>null</c> or <c>{}</c> leaf, which
+/// <see cref="OperatingSettingsResolver.ResolveMaxConcurrentTaskRuns"/> deliberately treats as
+/// absent rather than falling back to (independent pre-PR review, cycle 1, both lenses).
 /// </summary>
 public sealed record OperatingSettingsReport(
     ResolvedSetting<int> MaxConcurrentAgentSessions,
+    bool MaxConcurrentAgentSessionsIsFabricatedZero,
     ResolvedSetting<int> MaxConcurrentTaskRuns,
     bool MaxConcurrentTaskRunsConvertedFromLegacy,
     bool MaxConcurrentTaskRunsShadowsConfigFileValue,
