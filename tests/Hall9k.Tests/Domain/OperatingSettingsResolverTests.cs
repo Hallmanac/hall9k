@@ -643,6 +643,27 @@ public sealed class OperatingSettingsResolverTests : IDisposable
     }
 
     [Fact]
+    public async Task A_below_floor_legacy_key_does_not_warn_when_a_new_key_at_the_same_level_decides_the_ceiling()
+    {
+        // The retired key's own below-1 warning used to fire unconditionally, even when
+        // max-concurrent-task-runs — set at the same level — is what the ceiling actually resolved
+        // to. That told an operator dispatch had floored to one run while the node genuinely
+        // admitted eight (independent pre-PR review, cycle 4, adversarial lens).
+        await PlatformConfigFile.WriteOperatingSettingsAsync(s =>
+        {
+            s.MaxConcurrentTaskRuns = 8;
+            s.MaxConcurrentAgentSessions = 0;
+        }, CancellationToken.None);
+
+        OperatingSettingsReport report = await OperatingSettingsResolver.ResolveAsync(CancellationToken.None);
+
+        report.MaxConcurrentTaskRuns.Value.Should().Be(8);
+        report.MaxConcurrentTaskRunsConvertedFromLegacy.Should().BeFalse();
+        report.UnusableEnvironmentVariables.Should().NotContain(
+            warning => warning.Contains("max-concurrent-agent-sessions") && warning.Contains("floors"));
+    }
+
+    [Fact]
     public async Task A_config_file_session_cap_per_run_outranks_the_default()
     {
         await PlatformConfigFile.WriteOperatingSettingsAsync(s => s.SessionCapPerRun = 1, CancellationToken.None);

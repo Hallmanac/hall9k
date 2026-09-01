@@ -28,14 +28,15 @@ public static class OperatingSettingsResolver
 
         List<string> unusableEnvironmentVariables = [];
 
+        (ResolvedSetting<int> maxConcurrentTaskRuns, bool convertedFromLegacy, bool shadowsConfigFileValue) =
+            ResolveMaxConcurrentTaskRuns(configured, unusableEnvironmentVariables);
+
         ResolvedSetting<int> concurrency = ResolveInt(
             $"{EnvironmentPrefix}MaxConcurrentAgentSessions",
             configured.MaxConcurrentAgentSessions,
             OperatingSettings.DefaultMaxConcurrentAgentSessions,
+            convertedFromLegacy,
             unusableEnvironmentVariables);
-
-        (ResolvedSetting<int> maxConcurrentTaskRuns, bool convertedFromLegacy, bool shadowsConfigFileValue) =
-            ResolveMaxConcurrentTaskRuns(configured, unusableEnvironmentVariables);
 
         ResolvedSetting<int> sessionCapPerRun =
             ResolveSessionCapPerRun(configured.SessionCapPerRun, unusableEnvironmentVariables);
@@ -202,9 +203,17 @@ public static class OperatingSettingsResolver
     /// never this method's result. The variable's raw value is recorded in
     /// <paramref name="unusable"/> instead, so a caller can name the mistake rather than the
     /// resolver quietly outranking it.
+    /// <paramref name="legacyKeyDecidesCeiling"/> gates the below-1 warning specifically: it is
+    /// <see cref="ResolveMaxConcurrentTaskRuns"/>'s own <c>ConvertedFromLegacy</c> answer, true
+    /// only when the retired key's conversion is what the run ceiling actually resolved to. A
+    /// <c>max-concurrent-task-runs</c> key set at the same or a higher precedence level always
+    /// outranks the legacy key there, so this value can be below 1 while the node dispatches at
+    /// full width — warning unconditionally would tell an operator dispatch has floored to one
+    /// run when it has not (independent pre-PR review, cycle 4, adversarial lens).
     /// </summary>
     private static ResolvedSetting<int> ResolveInt(
-        string environmentVariable, int? configured, int fallback, List<string> unusable)
+        string environmentVariable, int? configured, int fallback, bool legacyKeyDecidesCeiling,
+        List<string> unusable)
     {
         // Unlike ResolveString, an empty value is not treated as unset here: a shell that expands
         // an unset variable into "" (Hall9k__MaxConcurrentAgentSessions= with nothing after it —
@@ -214,7 +223,11 @@ public static class OperatingSettingsResolver
         {
             if (int.TryParse(fromEnvironment, out int parsed))
             {
-                WarnIfBelowCeilingFloor(environmentVariable, parsed, unusable);
+                if (legacyKeyDecidesCeiling)
+                {
+                    WarnIfBelowCeilingFloor(environmentVariable, parsed, unusable);
+                }
+
                 return new ResolvedSetting<int>(parsed, SettingOrigin.EnvironmentVariable, environmentVariable);
             }
 
@@ -226,7 +239,11 @@ public static class OperatingSettingsResolver
 
         if (configured is { } value)
         {
-            WarnIfBelowCeilingFloor(Hall9kDatabase.ConfigFile, value, unusable);
+            if (legacyKeyDecidesCeiling)
+            {
+                WarnIfBelowCeilingFloor(Hall9kDatabase.ConfigFile, value, unusable);
+            }
+
             return new ResolvedSetting<int>(value, SettingOrigin.PlatformConfigFile, Hall9kDatabase.ConfigFile);
         }
 

@@ -35,9 +35,15 @@ public sealed record NodeLoad(int LiveRuns, int ConfiguredMaxConcurrentRuns)
     /// nothing at all — the same floor the retired session-denominated ceiling's own
     /// <c>Math.Max(1, …)</c> derivation guaranteed, and the floor
     /// <see cref="Hall9k.Domain.Infrastructure.Persistence.OperatingSettingsResolver.WarnIfBelowRunFloor"/>'s
-    /// own operator-facing warning already promises. Every read of the ceiling — <see cref="Capacity"/>
-    /// included — goes through this property rather than <see cref="ConfiguredMaxConcurrentRuns"/>
-    /// directly, so a node reporting or logging its ceiling never shows the unfloored raw value.
+    /// own operator-facing warning already promises. Every admission decision this record makes —
+    /// <see cref="Capacity"/> included — goes through this property rather than
+    /// <see cref="ConfiguredMaxConcurrentRuns"/> directly. The two operator-facing surfaces that
+    /// report the configured ceiling by name (the daemon's own startup log, and
+    /// <c>h9k config show</c>/<c>h9k daemon status</c> via <c>OperatingSettingsReport</c>) read
+    /// the unfloored value on purpose, so the floor stays a named, separate line rather than a
+    /// silently substituted number —
+    /// <see cref="Hall9k.Domain.Infrastructure.Persistence.OperatingSettingsResolver.WarnIfBelowRunFloor"/>
+    /// is what tells the operator dispatch has floored to one run when it shows.
     /// </summary>
     public int MaxConcurrentRuns => Math.Max(1, ConfiguredMaxConcurrentRuns);
 
