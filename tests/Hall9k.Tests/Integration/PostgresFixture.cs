@@ -15,7 +15,8 @@ namespace Hall9k.Tests.Integration;
 /// origin: decision #75 named up to eleven <c>PostgresFixture</c> instances starting concurrently
 /// under <c>dotnet test</c> as the likelier source of the connection flakes backlog 53's retry now
 /// absorbs, and that count stacked with other load — several agent sessions and a Parallels VM —
-/// OOMed the machine twice in two days, 2026-08-24). The bound is per process, not per machine: N
+/// OOMed the machine on 2026-08-23 and again on 2026-08-24, forcing Brian to kill nearly
+/// everything both times). The bound is per process, not per machine: N
 /// concurrently dispatched sessions each running <c>dotnet test</c> still put up to 4N containers
 /// on the host, exactly the kind of stacking that caused the origin OOM. The gate lives here
 /// rather than on any xUnit collection attribute because xUnit collections only bound concurrency
@@ -37,22 +38,32 @@ public sealed class PostgresFixture : IAsyncLifetime
     private const int MaxConcurrentContainers = 4;
 
     // The permit is held for a class's entire run, not just its container startup (see
-    // InitializeAsync/DisposeAsync below), so with 4 permits and up to 14 classes/collections
-    // contending (the 13 standalone classes, each its own implicit collection that xUnit starts
-    // regardless of maxParallelThreads, plus the serialized Hall9kHome collection holding one
-    // permit continuously across its 16 member classes), the last waiter can sit behind several
-    // predecessors' full class durations — bounded only by the whole Postgres tier's own wall
-    // clock, measured at 7m29s-8m4s locally under this bound (PLAN.md §16 #108). This budget
-    // covers only the queue wait, not container startup (see ContainerStartTimeout below), so it
-    // is sized with real headroom above that measured tier duration even under a loaded or
-    // slower-than-local machine; hitting it means the gate or the Docker daemon is genuinely
-    // stuck rather than just busy, and failing loudly beats the suite hanging with no diagnostic.
+    // InitializeAsync/DisposeAsync below). Every Postgres-backed class declares
+    // IClassFixture<PostgresFixture> for itself, and xUnit builds one instance per test class, so
+    // the permit is acquired and released at every class boundary: the tier makes 29 acquisitions
+    // (the 13 standalone classes plus the Hall9kHome collection's 16), not one per collection.
+    // At most 14 of those contend in parallel — the 13 standalone classes, each its own implicit
+    // collection that xUnit starts regardless of maxParallelThreads, plus the Hall9kHome
+    // collection, which runs its own 16 members one at a time — so with 4 permits any single
+    // acquisition can sit behind several predecessors' full class durations, and the Hall9kHome
+    // collection, which is both the majority of the tier's Postgres work and serialized, re-queues
+    // for that wait 16 separate times rather than holding one permit straight through. Any one
+    // wait is still bounded by the whole Postgres tier's own wall clock, measured at 7m29s-8m4s
+    // locally under this bound (PLAN.md §16 #108). This budget covers only the queue wait, not
+    // container startup (see ContainerStartTimeout below), so it is sized with real headroom above
+    // that measured tier duration even under a loaded or slower-than-local machine; hitting it
+    // means the gate or the Docker daemon is genuinely stuck rather than just busy, and failing
+    // loudly beats the suite hanging with no diagnostic.
     private static readonly TimeSpan GateWaitTimeout = TimeSpan.FromMinutes(15);
 
     // Separate from GateWaitTimeout so a long queue wait never eats into this budget: once a
     // class has its permit, starting a single Postgres container should never come close to this
-    // regardless of how long the wait before it was.
-    private static readonly TimeSpan ContainerStartTimeout = TimeSpan.FromMinutes(2);
+    // regardless of how long the wait before it was. Testcontainers pulls the image inside
+    // StartAsync when it is not already cached, so on a cold host (a fresh CI runner, chiefly)
+    // this budget also has to cover that pull, not just Postgres's own startup — sized with real
+    // headroom above a warm-host start for that reason, rather than at the few seconds a warm
+    // start alone would need.
+    private static readonly TimeSpan ContainerStartTimeout = TimeSpan.FromMinutes(5);
 
     private static readonly SemaphoreSlim ConcurrencyGate = new(MaxConcurrentContainers, MaxConcurrentContainers);
 
@@ -72,13 +83,37 @@ public sealed class PostgresFixture : IAsyncLifetime
     public async Task InitializeAsync()
     {
         using CancellationTokenSource gateTimeout = new(GateWaitTimeout);
-        await ConcurrencyGate.WaitAsync(gateTimeout.Token);
+
+        try
+        {
+            await ConcurrencyGate.WaitAsync(gateTimeout.Token);
+        }
+        catch (OperationCanceledException canceled) when (gateTimeout.IsCancellationRequested)
+        {
+            throw new TimeoutException(
+                $"timed out after {GateWaitTimeout} waiting for a concurrency gate permit " +
+                $"({MaxConcurrentContainers} max concurrent Postgres containers) — the gate or " +
+                "the Docker daemon is genuinely stuck rather than just busy",
+                canceled);
+        }
+
         _gateAcquired = true;
 
         try
         {
             using CancellationTokenSource startTimeout = new(ContainerStartTimeout);
-            await _container.StartAsync(startTimeout.Token);
+
+            try
+            {
+                await _container.StartAsync(startTimeout.Token);
+            }
+            catch (OperationCanceledException canceled) when (startTimeout.IsCancellationRequested)
+            {
+                throw new TimeoutException(
+                    $"the Postgres container did not finish starting within {ContainerStartTimeout} " +
+                    "(a cold host's image pull counts against this budget too) — Docker or the pull is genuinely stuck",
+                    canceled);
+            }
         }
         catch (Exception startFailure)
         {
