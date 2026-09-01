@@ -21,7 +21,7 @@ public static class PlatformConfigFile
 
     /// <summary>
     /// The three concurrency leaves <c>Hall9k.Daemon.DaemonOptionsBinding.ResolverOwnedKeys</c>
-    /// excludes from the daemon's own <c>ConfigurationBinder</c> call (Decisions Log #109's
+    /// excludes from the daemon's own <c>ConfigurationBinder</c> call (Decisions Log #111's
     /// follow-up), named here independently by <see cref="OperatingSettings"/>'s own property
     /// names — Domain cannot reference the Daemon project, so this list and the daemon's own
     /// cannot share a single source, but a rename of either would fail to compile rather than
@@ -85,7 +85,7 @@ public static class PlatformConfigFile
     /// inside an otherwise well-formed document never crashes the daemon either
     /// (<c>Hall9k.Daemon.DaemonOptionsBinding.ResolverOwnedKeys</c> excludes every concurrency
     /// setting this section carries from the daemon's own <c>ConfigurationBinder</c> call,
-    /// Decisions Log #109's follow-up), so the diagnosis recovers the same siblings rather than
+    /// Decisions Log #111's follow-up), so the diagnosis recovers the same siblings rather than
     /// discarding the whole section — a healthy <c>maxConcurrentTaskRuns</c> sitting next to a
     /// malformed <c>maxConcurrentAgentSessions</c> must not be reported as skipped too.
     /// </summary>

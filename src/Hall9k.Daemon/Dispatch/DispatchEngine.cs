@@ -431,7 +431,7 @@ public sealed class DispatchEngine(
 
     /// <summary>
     /// The live-run count this node claims against, and the run ceiling it is measured against
-    /// (Decisions Log #64, #109). The counting rule itself is <see cref="NodeLoad.LiveSlots"/>;
+    /// (Decisions Log #64, #111). The counting rule itself is <see cref="NodeLoad.LiveSlots"/>;
     /// the two queries here are just what it needs: this node's leases, and the runs that could
     /// answer for them.
     /// </summary>

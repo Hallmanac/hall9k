@@ -50,7 +50,7 @@ internal static class DaemonOptionsBinding
     /// config-file-then-default walk (<c>appsettings.json</c>, <c>appsettings.{Environment}.json</c>,
     /// a command-line argument, user secrets) that sets <see cref="DaemonOptions.MaxConcurrentTaskRuns"/>
     /// or <see cref="DaemonOptions.SessionCapPerRun"/> to a value the daemon does not actually run
-    /// on. Before Decisions Log #109 excluded these keys from Program.cs's own <c>Bind()</c> call,
+    /// on. Before Decisions Log #111 excluded these keys from Program.cs's own <c>Bind()</c> call,
     /// they bound off the whole merged <see cref="IConfiguration"/> like any other
     /// <see cref="DaemonOptions"/> member, so a value in <c>appsettings.Development.json</c> or on
     /// the command line took effect; today <c>PostConfigure</c> overwrites both with
@@ -104,7 +104,7 @@ internal static class DaemonOptionsBinding
             + "another configuration source the daemon's operating-settings resolver does not read — the daemon "
             + $"dispatches at {effectiveValue.ToString(CultureInfo.InvariantCulture)} instead, since {flagLabel} is "
             + $"resolved only from the {OperatingSettingsResolver.EnvironmentPrefix}{key} environment variable and "
-            + $"the platform config file (Decisions Log #109). Set it through one of those instead: "
+            + $"the platform config file (Decisions Log #111). Set it through one of those instead: "
             + $"h9k config set {flag} <n>, or export {OperatingSettingsResolver.EnvironmentPrefix}{key}=<n>.");
     }
 }

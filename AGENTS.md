@@ -29,7 +29,7 @@ h9k install                  # publish release binaries to ~/.hall9k/bin (no ser
 h9k update                   # refresh an already-installed machine from the latest GitHub release, no repo/SDK needed
 h9k uninstall [--purge-data] # take the platform off the machine; the database survives unless --purge-data (Decisions Log #83)
 h9k daemon start|stop|status # the CLI-owned daemon lifecycle (Decisions Log #31)
-h9k config show|set          # the daemon's durable operating settings: node ceiling (--max-concurrent-task-runs), the per-run session cap default (--session-cap-per-run), model-by-role, interactive-claim-stale-after-days (backlog 59, Decisions Log #103, #109)
+h9k config show|set          # the daemon's durable operating settings: node ceiling (--max-concurrent-task-runs), the per-run session cap default (--session-cap-per-run), model-by-role, interactive-claim-stale-after-days (backlog 59, Decisions Log #103, #111)
 h9k doctor [--yes]           # diagnose the database situation and what to do about it; --yes remediates non-interactively, for scripts and dispatched agents (Decisions Log #73, #74, #99)
 h9k project add --name <n> --repo-url <url>   # register a project and create its home directory
 h9k project init <name>      # create, repair or refresh a project's home; idempotent
@@ -131,7 +131,7 @@ h9k task publish <id> [--assign]                  # the readiness gate; --assign
 h9k task publish <id> --no-existing-item          # required if a tracking backlog policy finds no linked item yet and has no publication already pending
 h9k task publish <id> --untracked                 # the same gate's other exit: deliberately skip tracking for this task, attested on the stream
 h9k task assign <id> [<owner>]                    # the dispatch trigger — Queued, or Blocked on dependencies
-h9k task set-session-cap <id> <cap>               # override how many agent sessions this task's run may hold at once; settable any time, even mid-run (Decisions Log #109)
+h9k task set-session-cap <id> <cap>               # override how many agent sessions this task's run may hold at once; settable any time, even mid-run (Decisions Log #111)
 h9k task unassign <id>                            # back to Published (refused while leased)
 h9k task draft <id>                               # Published back to Draft, so it can be revised
 ```
@@ -343,7 +343,7 @@ prints the command's own help back at you, so one bad invocation costs one comma
 ### The judgment the window owns: sequencing the ready set
 
 The dispatcher is deliberately mechanical. It takes queued tasks in order, up to the node's
-run ceiling (`--max-concurrent-task-runs`, #64, #109), and it has **no idea whether two of them collide**. `--blocked-by` enforces
+run ceiling (`--max-concurrent-task-runs`, #64, #111), and it has **no idea whether two of them collide**. `--blocked-by` enforces
 sequencing, but only as declared: the graph is enforced, never inferred. Inferring it is the
 window's job, and it is real work.
 

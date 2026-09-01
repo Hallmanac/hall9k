@@ -71,7 +71,7 @@ public sealed class StatusCommand : Hall9kAsyncCommand<StatusCommand.Settings>
             // it is one setting for the node, not a per-task action. h9k config set writes the
             // daemon's durable operating settings (~/.hall9k/config.json), read by absolute path
             // regardless of the daemon's working directory; options bind at startup, hence the
-            // restart. Run-denominated end to end (Decisions Log #109) — no operator-facing
+            // restart. Run-denominated end to end (Decisions Log #111) — no operator-facing
             // surface needs to know how many sessions a run tree is worth to interpret this.
             listed += Section(rows, AttentionBucket.Queued, "queued",
                 "[blue]Queued[/] [dim]— the node is at its concurrency ceiling; each of these starts as a "

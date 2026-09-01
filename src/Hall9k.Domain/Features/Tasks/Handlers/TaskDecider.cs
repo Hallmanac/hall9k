@@ -340,7 +340,7 @@ public static class TaskDecider
 
     /// <summary>
     /// Sets this task's own override of how many agent sessions its run may hold simultaneously
-    /// (Decisions Log #109, Brian's ruling 2026-08-30) — deliberately state-agnostic, unlike
+    /// (Decisions Log #111, Brian's ruling 2026-08-30) — deliberately state-agnostic, unlike
     /// <see cref="Revise"/>: it is meant to be set "even mid-run", including against a task whose
     /// run is Claimed and UnderReview right now, so the daemon can pick it up at the run's very
     /// next session dispatch. Lowering it never terminates a session already spawned; raising it

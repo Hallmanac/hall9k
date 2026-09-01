@@ -60,7 +60,7 @@ public static class OperatingSettingsResolver
     }
 
     /// <summary>
-    /// The node ceiling, resolved in its own unit (Decisions Log #109): a
+    /// The node ceiling, resolved in its own unit (Decisions Log #111): a
     /// <c>max-concurrent-task-runs</c> key wins wherever it is set, and only where it is absent
     /// does the retired <c>max-concurrent-agent-sessions</c> key convert — checked at each
     /// precedence level independently, exactly as the acceptance criteria demand, rather than as
@@ -209,7 +209,7 @@ public static class OperatingSettingsResolver
     /// <see cref="ResolveMaxConcurrentTaskRuns"/> and <see cref="ResolveSessionCapPerRun"/>'s own
     /// int resolution, an unparseable value here does not crash the daemon: this key is excluded
     /// from the section <c>Hall9k.Daemon.DaemonOptionsBinding</c> hands its <c>ConfigurationBinder</c>
-    /// call (Decisions Log #109's follow-up), and nothing else reads the bound
+    /// call (Decisions Log #111's follow-up), and nothing else reads the bound
     /// <see cref="DaemonOptions.MaxConcurrentAgentSessions"/> property at dispatch time — the
     /// retired-key conversion itself reads the raw environment variable and config file directly,
     /// never this method's result. The variable's raw value is recorded in
@@ -281,7 +281,7 @@ public static class OperatingSettingsResolver
     }
 
     /// <summary>
-    /// The per-run session cap's own resolution (Decisions Log #109) — deliberately not
+    /// The per-run session cap's own resolution (Decisions Log #111) — deliberately not
     /// <see cref="ResolveInt"/>, whose unparseable-value and below-floor messages are both
     /// hardcoded to describe <c>max-concurrent-agent-sessions</c> specifically:
     /// <c>DaemonOptions.SessionCapPerRun</c>, the same as <c>DaemonOptions.MaxConcurrentTaskRuns</c>,

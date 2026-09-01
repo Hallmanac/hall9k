@@ -143,7 +143,7 @@ Per-project and per-owner settings resolving most-specific-wins over a node defa
 gates, agent model per role, parallelism, commit style, context links, skip-permissions, the Jira
 board binding, the backlog policy and its free-text routing guidance, and the post-fix review
 re-request policy. The node has a ceiling the dispatcher respects, counted directly in task runs
-(Decisions Log #109) — the retired session-denominated setting still converts when the new one is
+(Decisions Log #111) — the retired session-denominated setting still converts when the new one is
 absent, and a per-run session cap (global default, overridable per task even mid-run) governs how
 many agent sessions one run may hold simultaneously.
 

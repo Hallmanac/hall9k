@@ -1353,7 +1353,7 @@ public static class AgentPromptBuilder
     /// The mechanics every review pass shares: which diff, verified findings only, read-only,
     /// and the one rule the second lens made necessary — no builds and no test runs.
     /// A cycle's passes read the same worktree; at the default session cap they run
-    /// concurrently (log #59), and even at a lower cap (Decisions Log #109) that instead
+    /// concurrently (log #59), and even at a lower cap (Decisions Log #111) that instead
     /// serializes them within the cycle, no individual pass can tell from inside the sandbox
     /// whether another is sharing the worktree at that instant. Two builds that do overlap
     /// would share one `obj/`/`bin/` and fail each other with file-in-use errors, so the rule

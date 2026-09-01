@@ -12,7 +12,7 @@ namespace Hall9k.Tests.Daemon;
 /// <c>ConfigurationBinder</c> from converting a resolver-owned key — an <see langword="internal"/>
 /// setter alone does not, because <c>BindProperty</c> converts a section's raw value before it
 /// ever checks whether the property has a public setter to assign it through. Origin: the
-/// independent pre-PR review of Decisions Log #109 (cycle 1, both lenses) found the internal-setter
+/// independent pre-PR review of Decisions Log #111 (cycle 1, both lenses) found the internal-setter
 /// claim on <c>DaemonOptions.MaxConcurrentTaskRuns</c> and <c>DaemonOptions.SessionCapPerRun</c>
 /// false — an unparseable value for either still crashed <c>Bind()</c>.
 /// </summary>
@@ -74,7 +74,7 @@ public sealed class DaemonOptionsBindingTests
             .GetSection("Hall9k");
 
     /// <summary>
-    /// The regression itself: before Decisions Log #109 excluded these keys from the daemon's own
+    /// The regression itself: before Decisions Log #111 excluded these keys from the daemon's own
     /// <c>Bind()</c> call, a value here — appsettings.json, appsettings.Development.json, a
     /// command-line argument, user secrets — bound normally and the daemon ran on it.
     /// <c>PostConfigure</c> now overwrites it with the resolver's own answer unconditionally, with

@@ -324,7 +324,7 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
     }
 
     /// <summary>
-    /// The one behavior-bearing change a per-run session cap makes (Decisions Log #109, Brian's
+    /// The one behavior-bearing change a per-run session cap makes (Decisions Log #111, Brian's
     /// ruling 2026-08-30): at a cap of 1, the second lens is not spawned until the first lens's
     /// own result has already been recorded on the stream — proven here by the literal order
     /// <see cref="ReviewDispatched"/> and <see cref="ReviewPassCompleted"/> land in, which is
@@ -371,7 +371,7 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
 
     /// <summary>
     /// A task's own <c>h9k task set-session-cap</c> override wins over the node's global default
-    /// (Decisions Log #109) — proven the same way as the node-default test above, but with the
+    /// (Decisions Log #111) — proven the same way as the node-default test above, but with the
     /// node left at a default that would NOT serialize and only the task overridden to 1.
     /// </summary>
     [Fact]
