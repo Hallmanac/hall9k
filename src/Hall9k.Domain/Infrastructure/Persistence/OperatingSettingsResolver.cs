@@ -234,27 +234,25 @@ public static class OperatingSettingsResolver
     /// that carries no per-precedence-level conversion of its own (unlike
     /// <see cref="ResolveMaxConcurrentTaskRuns"/> and <see cref="ResolveSessionCapPerRun"/>).
     /// Unlike <see cref="ResolveString"/>, a set-but-unparseable value cannot just ride through as
-    /// itself, or a caller would report an origin and a value nothing actually runs with. Unlike
-    /// <see cref="ResolveMaxConcurrentTaskRuns"/> and <see cref="ResolveSessionCapPerRun"/>'s own
-    /// int resolution, an unparseable value here does not crash the daemon: this key is excluded
-    /// from the section <c>Hall9k.Daemon.DaemonOptionsBinding</c> hands its <c>ConfigurationBinder</c>
-    /// call (Decisions Log #111's follow-up), and nothing else reads the bound
-    /// <see cref="DaemonOptions.MaxConcurrentAgentSessions"/> property at dispatch time — the
-    /// retired-key conversion itself reads the raw environment variable and config file directly,
-    /// never this method's result. The variable's raw value is recorded in
-    /// <paramref name="unusable"/> instead, so a caller can name the mistake rather than the
-    /// resolver quietly outranking it.
-    /// <paramref name="legacyKeyDecidesCeiling"/> gates the below-1 warning specifically: it is
-    /// <see cref="ResolveMaxConcurrentTaskRuns"/>'s own <c>ConvertedFromLegacy</c> answer, true
-    /// only when the retired key's conversion is what the run ceiling actually resolved to. A
-    /// <c>max-concurrent-task-runs</c> key set at the same or a higher precedence level always
-    /// outranks the legacy key there, so this value can be below 1 while the node dispatches at
-    /// full width — warning unconditionally would tell an operator dispatch has floored to one
-    /// run when it has not (independent pre-PR review, cycle 4, adversarial lens).
+    /// itself, or a caller would report an origin and a value nothing actually runs with. For most
+    /// call sites (the four review-cycle caps) <see cref="DaemonOptions"/> binds the equivalent key
+    /// through <c>ConfigurationBinder</c>, which throws at options-resolution time rather than
+    /// keeping the config-file/default value; <c>max-concurrent-agent-sessions</c> is the one
+    /// exception, excluded from that <c>Bind()</c> call entirely (Decisions Log #111's follow-up),
+    /// and nothing else reads the bound <see cref="DaemonOptions.MaxConcurrentAgentSessions"/>
+    /// property at dispatch time — the retired-key conversion itself reads the raw environment
+    /// variable and config file directly, never this method's result — so an unparseable value
+    /// there merely falls back rather than crashing. Either way, the variable's raw value is
+    /// recorded in <paramref name="unusable"/> instead, so a caller can name the mistake rather
+    /// than the resolver quietly outranking it.
+    /// <paramref name="warnIfOutOfRange"/> has no default: every call site names its own floor
+    /// check, or passes <c>null</c> explicitly for a setting that is genuinely unbounded — a
+    /// silently-omitted argument would report an out-of-range value as a healthy in-force setting
+    /// with no line naming the gap (independent pre-PR review, cycle 1, adversarial lens).
     /// </summary>
     private static ResolvedSetting<int> ResolveInt(
         string environmentVariable, int? configured, int fallback, List<string> unusable,
-        Action<string, int, List<string>>? warnIfOutOfRange = null)
+        Action<string, int, List<string>>? warnIfOutOfRange)
     {
         // Unlike ResolveString, an empty value is not treated as unset here: a shell that expands
         // an unset variable into "" (Hall9k__MaxConcurrentAgentSessions= with nothing after it —
