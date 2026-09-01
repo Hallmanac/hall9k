@@ -29,13 +29,38 @@ public sealed class TaskSetSessionCapCommand : Hall9kAsyncCommand<TaskSetSession
 
         [CommandArgument(1, "<CAP>")]
         [Description(
-            "How many agent sessions this task's run may hold simultaneously, at least 1. A cap of 1 serializes "
-            + "the two review lenses instead of dispatching them together, for maximum throttle; today's routine "
-            + "peak is 2, so anything above 2 is inert headroom until a future coded activity actually overlaps a "
-            + "third session. Settable any time, including on a task with no live run yet — it takes effect at "
-            + "the run's next session dispatch, once one exists, and never terminates a session already running. "
-            + "An interactive claim (h9k task work) occupies zero runs and ignores this cap entirely.")]
-        public int Cap { get; init; }
+            "How many agent sessions this task's run may hold simultaneously, at least 1 — or 'default' to clear "
+            + "this task's own override and let the node's global session-cap-per-run decide again. A cap of 1 "
+            + "serializes the two review lenses instead of dispatching them together, for maximum throttle; "
+            + "today's routine peak is 2, so anything above 2 is inert headroom until a future coded activity "
+            + "actually overlaps a third session. Settable any time, including on a task with no live run yet — "
+            + "it takes effect at the run's next session dispatch, once one exists, and never terminates a "
+            + "session already running. An interactive claim (h9k task work) occupies zero runs and ignores this "
+            + "cap entirely.")]
+        public string Cap { get; init; } = string.Empty;
+    }
+
+    /// <summary>
+    /// 'default' is the same clearing idiom every sibling override surface uses (a project's
+    /// --jira 'none', a model override's blank/'default') — case-insensitive so a shell habit of
+    /// capitalizing it does not refuse what every other numeric input here accepts case-sensitively
+    /// anyway (numbers have no case to get wrong).
+    /// </summary>
+    private static int? ParseCap(string raw, Guid taskId)
+    {
+        if (string.Equals(raw, "default", StringComparison.OrdinalIgnoreCase))
+        {
+            return null;
+        }
+
+        if (int.TryParse(raw, out int value))
+        {
+            return value;
+        }
+
+        throw new DomainValidationException(
+            $"'{raw}' is not a whole number or 'default' (task {taskId}) — pass a whole number at least 1, or "
+            + "'default' to clear this task's own override and let the node's global session-cap-per-run decide again.");
     }
 
     protected override async Task<int> ExecuteAsync(Settings settings, CancellationToken cancellationToken)
@@ -47,14 +72,17 @@ public sealed class TaskSetSessionCapCommand : Hall9kAsyncCommand<TaskSetSession
         TaskAggregate task = await session.Events.AggregateStreamAsync<TaskAggregate>(taskId, token: cancellationToken)
             ?? throw new DomainNotFoundException($"No task {taskId}.");
 
+        int? cap = ParseCap(settings.Cap, taskId);
+
         BootstrapContext context = await NodeBootstrap.EnsureAsync(session, cancellationToken);
         TaskSessionCapOverridden overridden = TaskDecider.OverrideSessionCap(
-            task, settings.Cap, DateTimeOffset.UtcNow, context.OwnerId);
+            task, cap, DateTimeOffset.UtcNow, context.OwnerId);
         session.Events.Append(taskId, overridden);
         await session.SaveChangesAsync(cancellationToken);
 
+        string description = cap is { } value ? value.ToString() : "the node's global default";
         AnsiConsole.MarkupLine(
-            $"[green]Task {TaskListCommand.ShortId(taskId)} session cap set to {settings.Cap}[/] — takes effect "
+            $"[green]Task {TaskListCommand.ShortId(taskId)} session cap set to {description}[/] — takes effect "
             + "at the run's next session dispatch, once one exists; a session already running is never terminated. "
             + "An interactive claim (h9k task work) occupies zero runs and ignores this cap.");
         return ExitCodes.Ok;

@@ -89,8 +89,8 @@ public static class PlatformConfigFile
         try
         {
             OperatingSettings settings = DeserializeSectionCore(document);
-            ApplyMaxConcurrentAgentSessionsBinderQuirk(document, settings);
-            return ConfigFileReadResult.Ok(settings);
+            bool maxConcurrentAgentSessionsIsFabricatedZero = ApplyMaxConcurrentAgentSessionsBinderQuirk(document, settings);
+            return ConfigFileReadResult.Ok(settings, maxConcurrentAgentSessionsIsFabricatedZero);
         }
         catch (JsonException exception)
         {
@@ -112,7 +112,7 @@ public static class PlatformConfigFile
     {
         if (Section(document) is not { } section)
         {
-            return ConfigFileReadResult.SettingIgnored(new(), ShapeErrorMessage(exception));
+            return ConfigFileReadResult.SettingIgnored(new(), ShapeErrorMessage(exception), false);
         }
 
         JsonObject recovery = (JsonObject)section.DeepClone();
@@ -123,8 +123,8 @@ public static class PlatformConfigFile
         {
             OperatingSettings settings = recovery.Deserialize<OperatingSettings>(SerializerOptions) ?? new();
             settings.ModelByRole ??= new();
-            ApplyMaxConcurrentAgentSessionsBinderQuirk(document, settings);
-            return ConfigFileReadResult.SettingIgnored(settings, ShapeErrorMessage(exception));
+            bool maxConcurrentAgentSessionsIsFabricatedZero = ApplyMaxConcurrentAgentSessionsBinderQuirk(document, settings);
+            return ConfigFileReadResult.SettingIgnored(settings, ShapeErrorMessage(exception), maxConcurrentAgentSessionsIsFabricatedZero);
         }
         catch (JsonException)
         {
@@ -132,7 +132,7 @@ public static class PlatformConfigFile
             // recovered rather than looping, the same conservative outcome as before this fix.
             // Neither leaf crashes ConfigurationBinder (see TryReadOperatingSettingsAsync's own
             // doc), so both malformed key orders converge on this same SettingIgnored verdict.
-            return ConfigFileReadResult.SettingIgnored(new(), ShapeErrorMessage(exception));
+            return ConfigFileReadResult.SettingIgnored(new(), ShapeErrorMessage(exception), false);
         }
     }
 
@@ -197,12 +197,13 @@ public static class PlatformConfigFile
     /// <c>ConfigurationBinder</c> any more — see <see cref="TryReadOperatingSettingsAsync"/>'s
     /// own doc.
     /// </summary>
-    private static void ApplyMaxConcurrentAgentSessionsBinderQuirk(JsonObject document, OperatingSettings settings)
+    /// <summary>Returns whether the quirk fired — see <see cref="ConfigFileReadResult.MaxConcurrentAgentSessionsIsFabricatedZero"/>.</summary>
+    private static bool ApplyMaxConcurrentAgentSessionsBinderQuirk(JsonObject document, OperatingSettings settings)
     {
         if (Section(document) is not { } section
             || FindKeyIgnoringCase(section, "maxConcurrentAgentSessions") is not { } key)
         {
-            return;
+            return false;
         }
 
         bool bindsToZero = section[key] switch
@@ -216,6 +217,8 @@ public static class PlatformConfigFile
         {
             settings.MaxConcurrentAgentSessions = 0;
         }
+
+        return bindsToZero;
     }
 
     /// <summary>

@@ -29,7 +29,8 @@ public static class OperatingSettingsResolver
         List<string> unusableEnvironmentVariables = [];
 
         (ResolvedSetting<int> maxConcurrentTaskRuns, bool convertedFromLegacy, bool shadowsConfigFileValue) =
-            ResolveMaxConcurrentTaskRuns(configured, unusableEnvironmentVariables);
+            ResolveMaxConcurrentTaskRuns(
+                configured, read.MaxConcurrentAgentSessionsIsFabricatedZero, unusableEnvironmentVariables);
 
         ResolvedSetting<int> concurrency = ResolveInt(
             $"{EnvironmentPrefix}MaxConcurrentAgentSessions",
@@ -74,8 +75,16 @@ public static class OperatingSettingsResolver
     /// since the environment variable still outranks the file regardless (independent pre-PR
     /// review, cycle 1, adversarial lens).
     /// </summary>
+    /// <param name="maxConcurrentAgentSessionsIsFabricatedZero">
+    /// <see cref="ConfigFileReadResult.MaxConcurrentAgentSessionsIsFabricatedZero"/> — when true,
+    /// <paramref name="configured"/>'s <c>MaxConcurrentAgentSessions</c> is a simulated <c>0</c>
+    /// for a file leaf that actually held no number at all, so the config-file level treats it as
+    /// absent rather than converting a fabricated zero into a run ceiling of one (independent
+    /// pre-PR review, cycle 1, adversarial lens).
+    /// </param>
     private static (ResolvedSetting<int> Setting, bool ConvertedFromLegacy, bool ShadowsConfigFileValue)
-        ResolveMaxConcurrentTaskRuns(OperatingSettings configured, List<string> unusable)
+        ResolveMaxConcurrentTaskRuns(
+            OperatingSettings configured, bool maxConcurrentAgentSessionsIsFabricatedZero, List<string> unusable)
     {
         if (ResolveRunsAtLevel(
                 GetEnvironmentVariable($"{EnvironmentPrefix}MaxConcurrentTaskRuns"),
@@ -87,8 +96,11 @@ public static class OperatingSettingsResolver
             return (fromEnvironment.Setting, fromEnvironment.ConvertedFromLegacy, shadowsConfigFileValue);
         }
 
+        string? legacyAtFileLevel = maxConcurrentAgentSessionsIsFabricatedZero
+            ? null
+            : configured.MaxConcurrentAgentSessions?.ToString();
         if (ResolveRunsAtLevel(
-                configured.MaxConcurrentTaskRuns?.ToString(), configured.MaxConcurrentAgentSessions?.ToString(),
+                configured.MaxConcurrentTaskRuns?.ToString(), legacyAtFileLevel,
                 Hall9kDatabase.ConfigFile, Hall9kDatabase.ConfigFile,
                 SettingOrigin.PlatformConfigFile, unusable) is { } fromFile)
         {

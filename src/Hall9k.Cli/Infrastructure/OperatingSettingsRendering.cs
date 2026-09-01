@@ -42,9 +42,7 @@ public static class OperatingSettingsRendering
         [
             ("max-concurrent-task-runs", maxConcurrentTaskRunsValue),
             ("session-cap-per-run", $"{report.SessionCapPerRun.Value} ({report.SessionCapPerRun.DescribeOrigin()})"),
-            ("max-concurrent-agent-sessions (retired)",
-                $"{report.MaxConcurrentAgentSessions.Value} ({report.MaxConcurrentAgentSessions.DescribeOrigin()}) "
-                + "— read only as a fallback when max-concurrent-task-runs is absent"),
+            ("max-concurrent-agent-sessions (retired)", DescribeMaxConcurrentAgentSessions(report)),
             ("default-model", $"{report.DefaultModel.Value} ({report.DefaultModel.DescribeOrigin()})"),
         ];
 
@@ -99,6 +97,24 @@ public static class OperatingSettingsRendering
             + "config-file value for the new one, so setting max-concurrent-task-runs directly would not change "
             + $"this; unset max-concurrent-agent-sessions, or export {newEnvironmentVariable} directly, to stop "
             + "relying on the conversion)";
+    }
+
+    /// <summary>
+    /// The retired key's own row: "read only as a fallback" is true whenever this value came from
+    /// somewhere real (an environment variable or the config file — it is consulted at that same
+    /// level whenever max-concurrent-task-runs is absent there), but it overclaims on a fresh
+    /// install where nothing sets either key anywhere: the resolver never actually reads this
+    /// setting for anything in that case, it just falls straight through to
+    /// <c>DefaultMaxConcurrentTaskRuns</c>, so the value shown here is this key's own unused
+    /// built-in default, not a fallback in force (independent pre-PR review, cycle 1, adversarial
+    /// lens).
+    /// </summary>
+    private static string DescribeMaxConcurrentAgentSessions(OperatingSettingsReport report)
+    {
+        string value = $"{report.MaxConcurrentAgentSessions.Value} ({report.MaxConcurrentAgentSessions.DescribeOrigin()})";
+        return report.MaxConcurrentAgentSessions.Origin == SettingOrigin.Default
+            ? $"{value} — not set anywhere, so there is nothing here for max-concurrent-task-runs to fall back to"
+            : $"{value} — read only as a fallback when max-concurrent-task-runs is absent";
     }
 
     /// <summary>

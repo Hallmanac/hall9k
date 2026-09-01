@@ -49,4 +49,38 @@ public sealed class OperatingSettingsRenderingTests
 
         row.Value.Should().Be("not set — falls through to the project or platform default");
     }
+
+    /// <summary>
+    /// On a fresh install the retired row's own value is its unused built-in default, never
+    /// actually read from anywhere — claiming it is "read only as a fallback" would assert a
+    /// relationship that does not hold, since the resolver never consults this setting at all when
+    /// nothing sets either key anywhere (independent pre-PR review, cycle 1, adversarial lens).
+    /// </summary>
+    [Fact]
+    public void A_retired_key_at_its_own_unused_default_is_not_described_as_a_fallback_in_force()
+    {
+        OperatingSettingsReport report = ReportWithOneRole(nameof(RoleModelSettings.Build), null);
+
+        (string Label, string Value) row = OperatingSettingsRendering.Rows(report)
+            .Single(r => r.Label == "max-concurrent-agent-sessions (retired)");
+
+        row.Value.Should().NotContain("read only as a fallback");
+        row.Value.Should().Contain("nothing here for max-concurrent-task-runs to fall back to");
+    }
+
+    /// <summary>The counterpart case: something genuinely configured the retired key, so the fallback claim is true.</summary>
+    [Fact]
+    public void A_retired_key_actually_configured_somewhere_is_described_as_a_fallback()
+    {
+        OperatingSettingsReport template = ReportWithOneRole(nameof(RoleModelSettings.Build), null);
+        OperatingSettingsReport report = template with
+        {
+            MaxConcurrentAgentSessions = new ResolvedSetting<int>(6, SettingOrigin.PlatformConfigFile, "config.json"),
+        };
+
+        (string Label, string Value) row = OperatingSettingsRendering.Rows(report)
+            .Single(r => r.Label == "max-concurrent-agent-sessions (retired)");
+
+        row.Value.Should().Contain("read only as a fallback when max-concurrent-task-runs is absent");
+    }
 }

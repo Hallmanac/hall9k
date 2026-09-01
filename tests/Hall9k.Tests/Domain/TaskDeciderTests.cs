@@ -1029,6 +1029,25 @@ public sealed class TaskDeciderTests
             .WithMessage("*at least 1*", "a cap of zero would dispatch nothing for the run's next session");
     }
 
+    /// <summary>
+    /// The recovery <c>TaskDetails.SessionCap</c>'s own doc already promised ("null means the
+    /// node's global default decides") but no command could reach until this fix: once pinned, the
+    /// override used to be permanent for the task's whole life (independent pre-PR review, cycle 1,
+    /// adversarial lens).
+    /// </summary>
+    [Fact]
+    public void OverrideSessionCap_can_be_cleared_back_to_the_nodes_global_default()
+    {
+        TaskAggregate task = ClaimedTask();
+        task.Apply(TaskDecider.OverrideSessionCap(task, 1, Now, Owner));
+
+        TaskSessionCapOverridden cleared = TaskDecider.OverrideSessionCap(task, null, Now, Owner);
+        task.Apply(cleared);
+
+        cleared.SessionCap.Should().BeNull();
+        task.SessionCap.Should().BeNull("clearing the override returns the task to the node's global default");
+    }
+
     [Fact]
     public void OverrideSessionCap_can_be_lowered_then_raised_and_the_latest_value_wins()
     {

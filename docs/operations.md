@@ -450,7 +450,7 @@ once.
 h9k config show                                             # every setting, and where it came from
 h9k config set --max-concurrent-task-runs 2                 # the node's run ceiling
 h9k config set --session-cap-per-run 1                      # the per-run session cap's global default
-h9k task set-session-cap 28b19893 1                          # override the cap for one task, even mid-run
+h9k task set-session-cap 28b19893 1                         # override the cap for one task, even mid-run
 h9k config set --model-review sonnet --model-fix haiku      # per-role model overrides
 h9k config set --model-review-verify sonnet                 # Verify-shape passes only; defaults to --model-review
 h9k config set --interactive-claim-stale-after-days 5       # the interactive-claim nudge threshold

@@ -119,6 +119,16 @@ builder.Services.PostConfigure<DaemonOptions>(options =>
     options.MaxConcurrentTaskRuns = concurrencyReport.MaxConcurrentTaskRuns.Value;
     options.SessionCapPerRun = concurrencyReport.SessionCapPerRun.Value;
 });
+
+// bindableDaemonSection above already has these keys stripped out, so this walks the
+// un-excluded section instead — appsettings.json, a command-line argument, or any other source
+// PostConfigure just overrode without saying so (independent pre-PR review, cycle 1, adversarial
+// lens).
+foreach (string message in DaemonOptionsBinding.DescribeConfigurationSourcesTheResolverIgnores(
+    builder.Configuration.GetSection(DaemonOptions.SectionName), concurrencyReport))
+{
+    Console.Error.WriteLine(message);
+}
 builder.Services.AddSingleton(new DaemonConnection(connectionString));
 builder.Services.AddSingleton<NodeContext>();
 builder.Services.AddSingleton(ProcessManagers.ForCurrentPlatform());

@@ -50,24 +50,40 @@ public sealed record ConfigFileProblem(string Message, ConfigFileProblemConseque
 }
 
 /// <summary>The outcome of a non-throwing operating-settings read: the settings, or why not.</summary>
-public sealed record ConfigFileReadResult(OperatingSettings Settings, ConfigFileProblem? Problem)
+/// <param name="MaxConcurrentAgentSessionsIsFabricatedZero">
+/// Whether <see cref="OperatingSettings.MaxConcurrentAgentSessions"/>'s <c>0</c> on
+/// <paramref name="Settings"/> is <c>PlatformConfigFile.ApplyMaxConcurrentAgentSessionsBinderQuirk</c>'s
+/// own simulation of what <c>ConfigurationBinder</c> would have bound a JSON <c>null</c> or
+/// <c>{}</c> leaf to, rather than a real configured <c>0</c> read from the file. That simulation
+/// exists only for <c>h9k config show</c>'s own accuracy about the retired key's JSON shape;
+/// <see cref="OperatingSettingsResolver.ResolveMaxConcurrentTaskRuns"/>'s legacy-conversion walk
+/// reads this flag separately so it can treat the leaf as genuinely absent at this level — falling
+/// through rather than converting a fabricated <c>0</c> into a run ceiling of one and reporting
+/// that as a real config-file-driven conversion (independent pre-PR review, cycle 1, adversarial
+/// lens: a key holding no number at all was reported as a configured <c>0</c> that got converted).
+/// </param>
+public sealed record ConfigFileReadResult(
+    OperatingSettings Settings, ConfigFileProblem? Problem, bool MaxConcurrentAgentSessionsIsFabricatedZero)
 {
-    public static ConfigFileReadResult Ok(OperatingSettings settings) => new(settings, null);
+    public static ConfigFileReadResult Ok(OperatingSettings settings, bool maxConcurrentAgentSessionsIsFabricatedZero) =>
+        new(settings, null, maxConcurrentAgentSessionsIsFabricatedZero);
 
     /// <summary>
     /// A document-level failure: nothing in the file can be trusted, so every setting falls back
     /// to the environment variable or built-in default.
     /// </summary>
     public static ConfigFileReadResult Failed(string message) =>
-        new(new OperatingSettings(), new ConfigFileProblem(message, ConfigFileProblemConsequence.DaemonSkipsFile));
+        new(new OperatingSettings(), new ConfigFileProblem(message, ConfigFileProblemConsequence.DaemonSkipsFile), false);
 
     /// <summary>
     /// A value-shape failure on any leaf: <paramref name="settings"/> is the partial
     /// recovery with the malformed leaf left at its default, mirroring what
     /// <c>ConfigurationBinder</c> actually binds for every sibling key.
     /// </summary>
-    public static ConfigFileReadResult SettingIgnored(OperatingSettings settings, string message) =>
-        new(settings, new ConfigFileProblem(message, ConfigFileProblemConsequence.SettingIsIgnored));
+    public static ConfigFileReadResult SettingIgnored(
+        OperatingSettings settings, string message, bool maxConcurrentAgentSessionsIsFabricatedZero) =>
+        new(settings, new ConfigFileProblem(message, ConfigFileProblemConsequence.SettingIsIgnored),
+            maxConcurrentAgentSessionsIsFabricatedZero);
 }
 
 /// <summary>
