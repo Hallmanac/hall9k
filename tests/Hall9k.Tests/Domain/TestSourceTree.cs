@@ -3,13 +3,16 @@ using System.Text;
 namespace Hall9k.Tests.Domain;
 
 /// <summary>
-/// Shared by every source-scanning guard test (<see cref="Hall9k.Tests.Domain.ContainerRoutingGuardTests"/>,
-/// <see cref="Hall9k.Tests.Domain.HomeEnvironmentIsolationTests"/>, and
-/// <see cref="Hall9k.Tests.Domain.ProcessTerminationGuardTests"/>): each walks a whole tree from
-/// its own file's location — the first two the test tree, the third both <c>src/</c> and the test
-/// tree, since decision #110 widened its scan to close a gap the narrower scan left open — each
-/// needs to tell a real source file from build output, and each strips comments and string
-/// literals before matching so quoted prose cannot be mistaken for real code.
+/// Shared by every source-scanning guard test — <see cref="Hall9k.Tests.Domain.ContainerRoutingGuardTests"/>,
+/// <see cref="Hall9k.Tests.Domain.HomeEnvironmentIsolationTests"/>,
+/// <see cref="Hall9k.Tests.Domain.ProcessTerminationGuardTests"/> and
+/// <see cref="Hall9k.Tests.Domain.NodeBootstrapConventionGuardTests"/>, which is the full list
+/// today and is meant to be kept one — each walks a whole tree from its own file's location: the
+/// first two this test project, the third both <c>src/</c> and the whole <c>tests/</c> directory
+/// (decision #110 widened its scan to close a gap the narrower scan left open), the fourth
+/// <c>tests/</c> for the same reason. Each needs to tell a real source file from build output,
+/// and each strips comments and string literals before matching so quoted prose cannot be
+/// mistaken for real code.
 /// </summary>
 internal static class TestSourceTree
 {
@@ -71,9 +74,10 @@ internal static class TestSourceTree
     /// (<c>*.GlobalUsings.g.cs</c>, <c>*.AssemblyInfo.cs</c>, and the like) would make a scan's
     /// file and hit counts depend on which configurations happen to be built locally.
     /// </summary>
-    /// <param name="rootDirectory">The tree being scanned — the test tree for
-    /// <see cref="ContainerRoutingGuardTests"/> and <see cref="HomeEnvironmentIsolationTests"/>, or
-    /// <c>src/</c> and (separately) the test tree for <see cref="ProcessTerminationGuardTests"/>,
+    /// <param name="rootDirectory">The tree being scanned — this test project for
+    /// <see cref="ContainerRoutingGuardTests"/> and <see cref="HomeEnvironmentIsolationTests"/>,
+    /// the whole <c>tests/</c> directory for <see cref="NodeBootstrapConventionGuardTests"/>, or
+    /// <c>src/</c> and (separately) <c>tests/</c> for <see cref="ProcessTerminationGuardTests"/>,
     /// which since decision #110 scans both, one call each.</param>
     /// <param name="file">A file found under <paramref name="rootDirectory"/>.</param>
     public static bool IsBuildOutput(string rootDirectory, string file)

@@ -24,16 +24,37 @@ namespace Hall9k.Tests.Domain;
 /// pattern — this file's own included — is never mistaken for a real construction.
 /// </para>
 /// <para>
-/// Two files are exempt, by relative path exactly like <see cref="ContainerRoutingGuardTests"/>'s
-/// single exemption: <see cref="Hall9k.Tests.Fakes.NodeBootstrapSeed"/> itself, which is where the
-/// one legitimate direct construction lives, and
-/// <c>Integration/CardPublicationEngineTests.cs</c>, whose
+/// The scan covers the whole <c>tests/</c> directory rather than this project alone, the same
+/// scope <see cref="ProcessTerminationGuardTests"/> settled on: a fixture in a second test project
+/// added later reaches <c>NodeBootstrap.EnsureAsync</c> exactly as this project's do, so a scan
+/// bounded to <c>tests/Hall9k.Tests</c> would claim a coverage its own test name does not qualify.
+/// </para>
+/// <para>
+/// Two files are exempt, by repository-relative path exactly like
+/// <see cref="ContainerRoutingGuardTests"/>'s single exemption:
+/// <see cref="Hall9k.Tests.Fakes.NodeBootstrapSeed"/> itself, which is where the one legitimate
+/// direct construction lives, and
+/// <c>tests/Hall9k.Tests/Integration/CardPublicationEngineTests.cs</c>, whose
 /// <c>The_loop_waits_for_this_node_to_have_an_identity_before_its_first_sweep</c> case deliberately
 /// keeps its own direct construction and a deferred <c>InitializeAsync</c> call — the test exists
 /// to exercise the loop's pre-bootstrap window, so the initialization has to happen on its own
 /// schedule rather than bundled inside <c>NewNodeAsync</c> — made gh-safe instead by calling
 /// <see cref="Hall9k.Tests.Fakes.NodeBootstrapSeed.SeedGitHubConnectionAsync"/> explicitly,
-/// immediately before it (PLAN.md §16 #110).
+/// immediately before it (PLAN.md §16 #110). Both exemptions are file-wide rather than
+/// case-specific: a second direct construction added anywhere else in
+/// <c>CardPublicationEngineTests.cs</c> is not caught.
+/// </para>
+/// <para>
+/// Its own blind spot, stated the way both sibling guards state theirs: the marker names two
+/// spellings of a direct construction, <c>new NodeContext()</c> and
+/// <c>NodeContext name = new()</c>, so a nullable-annotated declaration
+/// (<c>NodeContext? node = new();</c>, whose <c>?</c> defeats the second alternative) and a
+/// return-position construction (<c>private static NodeContext Node() =&gt; new();</c>, which
+/// names no variable at all) both escape it. Neither shape appears in the tree today, and both
+/// would still have to call <c>InitializeAsync</c> against an unseeded database to reopen the
+/// gap, but the guard does not catch them, so it is recorded here rather than left to be
+/// discovered as coverage that was assumed and never held (PLAN.md §16 #110 scarred on exactly
+/// that: a guard doc claiming a reach the marker did not have).
 /// </para>
 /// </summary>
 public sealed class NodeBootstrapConventionGuardTests
@@ -45,21 +66,28 @@ public sealed class NodeBootstrapConventionGuardTests
     [Fact]
     public void No_test_outside_the_seed_helper_constructs_a_node_context_directly()
     {
-        string testsDirectory = TestSourceTree.RootDirectory();
+        // The whole tests/ directory, not just tests/Hall9k.Tests: TestSourceTree.RootDirectory()
+        // resolves to this project's own root, which would leave a second test project's own
+        // fixtures outside a guard whose name claims every test. repositoryRoot is
+        // SourceDirectory()'s own parent ("<repositoryRoot>/src"), the same resolution
+        // ProcessTerminationGuardTests uses to reach the same two trees.
+        string repositoryRoot = Path.GetDirectoryName(TestSourceTree.SourceDirectory())
+            ?? throw new InvalidOperationException("the resolved src directory has no parent directory");
+        string testsDirectory = Path.Combine(repositoryRoot, "tests");
 
-        // Relative to the tests root rather than a bare filename, so a differently-located file
-        // that merely happens to share one of these names is not silently exempted along with the
-        // real ones.
+        // Relative to the repository root rather than a bare filename, so a differently-located
+        // file that merely happens to share one of these names is not silently exempted along with
+        // the real ones.
         string[] exemptRelativePaths =
         [
-            Path.Combine("Fakes", "NodeBootstrapSeed.cs"),
-            Path.Combine("Integration", "CardPublicationEngineTests.cs"),
+            Path.Combine("tests", "Hall9k.Tests", "Fakes", "NodeBootstrapSeed.cs"),
+            Path.Combine("tests", "Hall9k.Tests", "Integration", "CardPublicationEngineTests.cs"),
         ];
 
         string[] files =
         [
             .. Directory.EnumerateFiles(testsDirectory, "*.cs", SearchOption.AllDirectories)
-               .Where(file => !exemptRelativePaths.Contains(Path.GetRelativePath(testsDirectory, file)))
+               .Where(file => !exemptRelativePaths.Contains(Path.GetRelativePath(repositoryRoot, file)))
                .Where(file => !TestSourceTree.IsBuildOutput(testsDirectory, file)),
         ];
 
@@ -68,7 +96,7 @@ public sealed class NodeBootstrapConventionGuardTests
         foreach (string file in files)
         {
             (string code, _, bool balanced) = TestSourceTree.StripCommentsAndStrings(File.ReadAllText(file));
-            string relativePath = Path.GetRelativePath(testsDirectory, file);
+            string relativePath = Path.GetRelativePath(repositoryRoot, file);
 
             if (!balanced)
             {
@@ -97,8 +125,9 @@ public sealed class NodeBootstrapConventionGuardTests
 
         files.Length.Should().BeGreaterThan(
             100,
-            "this is far fewer .cs files than the test tree actually holds — TestSourceTree.RootDirectory() is " +
-            "probably no longer resolving to tests/Hall9k.Tests");
+            "this is far fewer .cs files than the test tree actually holds — " +
+            "Path.Combine(repositoryRoot, \"tests\"), resolved from TestSourceTree.SourceDirectory(), " +
+            "is probably no longer resolving to the repository's tests/ directory");
 
         // A positive control on the scan itself, the same reason ContainerRoutingGuardTests keeps
         // one: NodeBootstrapSeed.cs's own NewNodeAsync does construct a NodeContext directly, so a
@@ -106,9 +135,9 @@ public sealed class NodeBootstrapConventionGuardTests
         // stale against a reformatted call site, or StripCommentsAndStrings regressed into
         // over-stripping — and the offenders assertion above would be green because it can no
         // longer see a construction anywhere, not because none exists outside the exempt files.
-        string seedRelativePath = Path.Combine("Fakes", "NodeBootstrapSeed.cs");
+        string seedRelativePath = Path.Combine("tests", "Hall9k.Tests", "Fakes", "NodeBootstrapSeed.cs");
         (string seedCode, _, _) = TestSourceTree.StripCommentsAndStrings(
-            File.ReadAllText(Path.Combine(testsDirectory, seedRelativePath)));
+            File.ReadAllText(Path.Combine(repositoryRoot, seedRelativePath)));
 
         DirectConstructionMarker.IsMatch(seedCode).Should().BeTrue(
             $"{seedRelativePath} does construct a NodeContext directly, so this scan must be able " +

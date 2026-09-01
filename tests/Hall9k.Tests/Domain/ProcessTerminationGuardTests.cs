@@ -194,8 +194,9 @@ public sealed class ProcessTerminationGuardTests
         files.Length.Should().BeGreaterThan(
             500,
             "this is far fewer .cs files than src/ and tests/ together actually hold — " +
-            "TestSourceTree.SourceDirectory()/RootDirectory() are probably no longer resolving to " +
-            "the repository's src/ and tests/Hall9k.Tests directories");
+            "TestSourceTree.SourceDirectory(), or the Path.Combine(repositoryRoot, \"tests\") that " +
+            "resolves the second tree from it, is probably no longer resolving to the " +
+            "repository's src/ and tests/ directories");
 
         // A positive control on the scan itself, the same reason ContainerRoutingGuardTests keeps
         // one: with no real offending call left in src/ or tests/ for the marker list to find
