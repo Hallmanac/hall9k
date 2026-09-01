@@ -14,8 +14,9 @@ namespace Hall9k.Tests.Fakes;
 /// (PLAN.md §16 #110, correcting #109's audit of this same path). A fresh
 /// <see cref="PostgresFixture"/> database carries no connection at all, so every integration test
 /// that bootstraps a node goes through here rather than calling
-/// <see cref="NodeContext.InitializeAsync"/> directly, or it is the one dispatching the real
-/// process this file exists to prevent.
+/// <see cref="NodeContext.InitializeAsync"/> directly, or it seeds through
+/// <see cref="SeedGitHubConnectionAsync"/> and initializes deliberately, or it is the one
+/// dispatching the real process this file exists to prevent.
 /// </summary>
 internal static class NodeBootstrapSeed
 {
