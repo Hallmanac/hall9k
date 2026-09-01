@@ -94,5 +94,24 @@ public sealed class ContainerRoutingGuardTests
             100,
             "this is far fewer .cs files than the test tree actually holds — TestSourceTree.RootDirectory() is " +
             "probably no longer resolving to tests/Hall9k.Tests");
+
+        // A positive control on the scan itself, the counterpart to the hit-count floor
+        // HomeEnvironmentIsolationTests keeps for the same reason: the one file excluded above is
+        // a real container construction, so a stripped copy of it that matches no marker means the
+        // scan has gone dark — the marker list gone stale against a renamed Testcontainers API, or
+        // TestSourceTree.StripCommentsAndStrings regressed into over-stripping — and the offenders
+        // assertion above is green because it can no longer see a container anywhere, not because
+        // none exists outside the fixture.
+        (string allowedCode, _, _) = TestSourceTree.StripCommentsAndStrings(
+            File.ReadAllText(Path.Combine(testsDirectory, allowedRelativePath)));
+
+        bool scanStillSeesTheAllowedConstruction = ContainerConstructionMarkers.Any(
+            marker => allowedCode.Contains(marker, StringComparison.Ordinal));
+
+        scanStillSeesTheAllowedConstruction.Should().BeTrue(
+            $"{allowedRelativePath} does construct a Testcontainers Postgres instance, so this " +
+            "scan must be able to detect one there — matching nothing means the marker list no " +
+            "longer names the API the fixture actually uses, or comment/string stripping is " +
+            "eating real code, and this guard is protecting nothing while reporting success");
     }
 }
