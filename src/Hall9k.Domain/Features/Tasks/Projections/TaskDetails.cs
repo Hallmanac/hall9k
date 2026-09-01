@@ -118,6 +118,14 @@ public sealed class TaskDetails
     public AgentModel Model { get; set; } = AgentModel.Unknown;
     /// <summary>This task's own session-cap override; null means the node's global default decides (Decisions Log #111).</summary>
     public int? SessionCap { get; set; }
+    /// <summary>This task's own override of the conformance review track's cycle cap; null defers to the project or node (task: review cycle caps become settable).</summary>
+    public int? MaxComplianceReviewCycles { get; set; }
+    /// <summary>This task's own override of the adversarial review track's cycle cap; null defers to the project or node.</summary>
+    public int? MaxAdversarialReviewCycles { get; set; }
+    /// <summary>This task's own override of the mandatory final-full-pass round cap; null defers to the project or node.</summary>
+    public int? MaxFinalFullPassRounds { get; set; }
+    /// <summary>This task's own override of the task-lifetime review-cycle budget; null defers to the project or node.</summary>
+    public int? LifetimeReviewCycleBudget { get; set; }
     public int LeaseGeneration { get; set; }
     public Guid? ClaimedByNodeId { get; set; }
     /// <summary>See <see cref="TaskAggregate.IsInteractiveClaim"/>: same discriminator, read off this projection.</summary>
@@ -271,6 +279,31 @@ public sealed class TaskDetailsProjection : SingleStreamProjection<TaskDetails, 
     }
 
     public void Apply(IEvent<TaskSessionCapOverridden> @event, TaskDetails view) => view.SessionCap = @event.Data.SessionCap;
+
+    // State-agnostic, unlike Apply(IEvent<TaskRevised>): each cap is independent, so a call
+    // naming only one leaves the other three untouched (absent means "leave alone").
+    public void Apply(IEvent<TaskReviewCapsOverridden> @event, TaskDetails view)
+    {
+        if (@event.Data.MaxComplianceReviewCycles.HasValue)
+        {
+            view.MaxComplianceReviewCycles = @event.Data.MaxComplianceReviewCycles.Value;
+        }
+
+        if (@event.Data.MaxAdversarialReviewCycles.HasValue)
+        {
+            view.MaxAdversarialReviewCycles = @event.Data.MaxAdversarialReviewCycles.Value;
+        }
+
+        if (@event.Data.MaxFinalFullPassRounds.HasValue)
+        {
+            view.MaxFinalFullPassRounds = @event.Data.MaxFinalFullPassRounds.Value;
+        }
+
+        if (@event.Data.LifetimeReviewCycleBudget.HasValue)
+        {
+            view.LifetimeReviewCycleBudget = @event.Data.LifetimeReviewCycleBudget.Value;
+        }
+    }
 
     public void Apply(IEvent<TaskReturnedToDraft> @event, TaskDetails view) => view.State = TaskState.Draft;
 

@@ -57,6 +57,29 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
             header.AddRow("Session cap", $"{sessionCap} [dim](task override — h9k task set-session-cap)[/]");
         }
 
+        // One row per cap actually overridden (task: the review cycle caps become settable at
+        // three levels) — an operator glancing at a task can see a one-off limit without having
+        // to resolve the whole task > project > node > default chain by hand.
+        if (details.MaxComplianceReviewCycles is { } maxComplianceReviewCycles)
+        {
+            header.AddRow("Max compliance review cycles", $"{maxComplianceReviewCycles} [dim](task override)[/]");
+        }
+
+        if (details.MaxAdversarialReviewCycles is { } maxAdversarialReviewCycles)
+        {
+            header.AddRow("Max adversarial review cycles", $"{maxAdversarialReviewCycles} [dim](task override)[/]");
+        }
+
+        if (details.MaxFinalFullPassRounds is { } maxFinalFullPassRounds)
+        {
+            header.AddRow("Max final-full-pass rounds", $"{maxFinalFullPassRounds} [dim](task override)[/]");
+        }
+
+        if (details.LifetimeReviewCycleBudget is { } lifetimeReviewCycleBudget)
+        {
+            header.AddRow("Lifetime review-cycle budget", $"{lifetimeReviewCycleBudget} [dim](task override)[/]");
+        }
+
         if (details.SourceIdeaId is { } sourceIdeaId)
         {
             // The other half of promotion's two-way provenance (Decisions Log #35): the idea's

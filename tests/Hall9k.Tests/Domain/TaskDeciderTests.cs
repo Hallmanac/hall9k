@@ -80,6 +80,61 @@ public sealed class TaskDeciderTests
         act.Should().Throw<DomainValidationException>().WithMessage("*not a usable model name*");
     }
 
+    [Fact]
+    public void OverrideReviewCaps_with_nothing_set_refuses()
+    {
+        TaskAggregate task = ClaimedTask();
+
+        Action act = () => TaskDecider.OverrideReviewCaps(
+            task, Optional<int?>.None, Optional<int?>.None, Optional<int?>.None, Optional<int?>.None, Now, Owner);
+
+        act.Should().Throw<DomainValidationException>().WithMessage("*Nothing to change*");
+    }
+
+    [Fact]
+    public void OverrideReviewCaps_rejects_a_cap_below_one()
+    {
+        TaskAggregate task = ClaimedTask();
+
+        Action act = () => TaskDecider.OverrideReviewCaps(
+            task, Optional<int?>.Of(0), Optional<int?>.None, Optional<int?>.None, Optional<int?>.None, Now, Owner);
+
+        act.Should().Throw<DomainValidationException>().WithMessage("*MaxComplianceReviewCycles*");
+    }
+
+    /// <summary>
+    /// Deliberately state-agnostic, unlike Revise (Decisions Log #34): the takeover lever needs
+    /// to reach a task whose run is live right now, which is Claimed, not Draft. Each of the four
+    /// caps is independent, so setting only one leaves the other three untouched.
+    /// </summary>
+    [Fact]
+    public void OverrideReviewCaps_applies_on_a_claimed_task_and_leaves_the_other_three_caps_alone()
+    {
+        TaskAggregate task = ClaimedTask();
+
+        task.Apply(TaskDecider.OverrideReviewCaps(
+            task, Optional<int?>.Of(1), Optional<int?>.None, Optional<int?>.None, Optional<int?>.None, Now, Owner));
+
+        task.MaxComplianceReviewCycles.Should().Be(1, "the takeover lever: at or below the track's current cycle count");
+        task.MaxAdversarialReviewCycles.Should().BeNull("absent means left alone");
+        task.MaxFinalFullPassRounds.Should().BeNull("absent means left alone");
+        task.LifetimeReviewCycleBudget.Should().BeNull("absent means left alone");
+    }
+
+    [Fact]
+    public void OverrideReviewCaps_clears_an_override_with_a_present_null()
+    {
+        TaskAggregate task = ClaimedTask();
+        task.Apply(TaskDecider.OverrideReviewCaps(
+            task, Optional<int?>.None, Optional<int?>.None, Optional<int?>.None, Optional<int?>.Of(40), Now, Owner));
+        task.LifetimeReviewCycleBudget.Should().Be(40);
+
+        task.Apply(TaskDecider.OverrideReviewCaps(
+            task, Optional<int?>.None, Optional<int?>.None, Optional<int?>.None, Optional<int?>.Of(null), Now, Owner));
+
+        task.LifetimeReviewCycleBudget.Should().BeNull("present-with-null clears the override back to the project or node");
+    }
+
     /// <summary>
     /// Creation is identity, not readiness (Decisions Log #34): a draft exists in order to
     /// gather criteria, so demanding them at Add would put the gate in the wrong place. The
