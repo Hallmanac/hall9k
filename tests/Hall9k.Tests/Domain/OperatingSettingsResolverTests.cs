@@ -185,11 +185,14 @@ public sealed class OperatingSettingsResolverTests : IDisposable
 
     /// <summary>
     /// A value with the wrong shape is not the same failure as a syntax error: the document
-    /// parses fine, so PlatformConfigFileSource's own guard lets it through, and the daemon's
-    /// ConfigurationBinder then throws at options-resolution time instead of falling back — a
-    /// fatal startup crash rather than the graceful "defaults still apply" a syntax error gets.
-    /// Origin: the cycle-3 pre-PR review found both CLI surfaces reporting this shape as "not
-    /// valid JSON ... defaults still apply", which is wrong on both the cause and the consequence.
+    /// parses fine, so PlatformConfigFileSource's own guard lets it through. No leaf in this
+    /// section crashes the daemon's ConfigurationBinder any more (<c>DaemonOptionsBinding
+    /// .ResolverOwnedKeys</c> excludes every concurrency setting from the daemon's own bind call,
+    /// Decisions Log #108's follow-up), so the wrong-shape leaf is ignored and its siblings
+    /// recovered instead — never the "not valid JSON ... defaults still apply" syntax-error
+    /// diagnosis either. Origin: the cycle-3 pre-PR review found both CLI surfaces conflating the
+    /// two failures; independent pre-PR review, cycle 1 of the concurrency-in-runs branch, found
+    /// this test's own "crashes the daemon" expectation gone stale in turn.
     /// </summary>
     [Fact]
     public async Task A_value_with_the_wrong_shape_is_distinguished_from_a_syntax_error()
@@ -201,8 +204,8 @@ public sealed class OperatingSettingsResolverTests : IDisposable
 
         report.ConfigFileProblem.Should().NotBeNull();
         report.ConfigFileProblem!.Message.Should().Contain("wrong shape");
-        report.ConfigFileProblem.Consequence.Should().Be(ConfigFileProblemConsequence.DaemonFailsToStart,
-            "ConfigurationBinder has no guard for a value-shape problem, so the daemon crashes on it rather than falling back");
+        report.ConfigFileProblem.Consequence.Should().Be(ConfigFileProblemConsequence.SettingIsIgnored,
+            "this leaf is excluded from the daemon's own ConfigurationBinder call entirely, so nothing crashes on it");
         report.MaxConcurrentAgentSessions.Origin.Should().Be(SettingOrigin.Default);
     }
 
@@ -228,6 +231,49 @@ public sealed class OperatingSettingsResolverTests : IDisposable
         report.MaxConcurrentAgentSessions.Value.Should().Be(6,
             "the daemon's ConfigurationBinder binds this sibling key fine even though modelByRole fails to convert");
         report.MaxConcurrentAgentSessions.Origin.Should().Be(SettingOrigin.PlatformConfigFile);
+    }
+
+    /// <summary>
+    /// The exact scenario the independent pre-PR review named (cycle 1, both lenses): a malformed
+    /// retired <c>maxConcurrentAgentSessions</c> sitting beside a healthy
+    /// <c>maxConcurrentTaskRuns</c> in the same file must not discard the healthy value. Before
+    /// this fix, <c>PlatformConfigFile.DaemonFailsToStartOn</c> classified the malformed leaf as a
+    /// startup crash, which wiped the whole section (<c>ConfigFileReadResult.DaemonCrashes</c>
+    /// returned a brand-new, empty <c>OperatingSettings</c>) — so the node silently ran at the
+    /// default ceiling of 1 instead of the configured 4, with no indication anything was wrong
+    /// beyond a stale "it will crash outright at startup" message.
+    /// </summary>
+    [Fact]
+    public async Task A_malformed_retired_setting_does_not_discard_a_healthy_sibling_ceiling()
+    {
+        await File.WriteAllTextAsync(
+            Hall9kDatabase.ConfigFile,
+            """{"hall9k": {"maxConcurrentTaskRuns": 4, "maxConcurrentAgentSessions": "three"}}""");
+
+        OperatingSettingsReport report = await OperatingSettingsResolver.ResolveAsync(CancellationToken.None);
+
+        report.ConfigFileProblem.Should().NotBeNull();
+        report.ConfigFileProblem!.Consequence.Should().Be(ConfigFileProblemConsequence.SettingIsIgnored);
+        report.MaxConcurrentTaskRuns.Value.Should().Be(4,
+            "the healthy sibling must survive a malformed retired-setting leaf in the same file");
+        report.MaxConcurrentTaskRuns.Origin.Should().Be(SettingOrigin.PlatformConfigFile);
+        report.MaxConcurrentTaskRunsConvertedFromLegacy.Should().BeFalse();
+    }
+
+    /// <summary>
+    /// The ordinary case the shadow flag must not false-positive on: nothing sets the new key at a
+    /// lower level, so "set max-concurrent-task-runs directly" is a real, effective remedy.
+    /// </summary>
+    [Fact]
+    public async Task Converting_from_an_environment_level_legacy_key_with_no_config_file_value_is_not_shadowed()
+    {
+        Environment.SetEnvironmentVariable("Hall9k__MaxConcurrentAgentSessions", "6");
+
+        OperatingSettingsReport report = await OperatingSettingsResolver.ResolveAsync(CancellationToken.None);
+
+        report.MaxConcurrentTaskRunsConvertedFromLegacy.Should().BeTrue();
+        report.MaxConcurrentTaskRunsShadowsConfigFileValue.Should().BeFalse(
+            "nothing sets max-concurrent-task-runs at a lower level, so there is nothing being shadowed");
     }
 
     /// <summary>
@@ -578,7 +624,11 @@ public sealed class OperatingSettingsResolverTests : IDisposable
         // The conversion applies at each precedence level independently (the acceptance
         // criterion): the environment level's own answer is "no new key, but the legacy key
         // converts", and that still beats the config file's own new-key answer, the same way an
-        // environment variable always outranks the config file.
+        // environment variable always outranks the config file. This is also the one shape that
+        // makes a naive "set max-concurrent-task-runs to stop relying on the conversion" remedy a
+        // no-op: the config file already sets it, and the environment variable still wins anyway
+        // (independent pre-PR review, cycle 1, adversarial lens) — ShadowsConfigFileValue is what
+        // lets a caller tell this shape apart from the ordinary "nothing set it anywhere" case.
         await PlatformConfigFile.WriteOperatingSettingsAsync(s => s.MaxConcurrentTaskRuns = 5, CancellationToken.None);
         Environment.SetEnvironmentVariable("Hall9k__MaxConcurrentAgentSessions", "6");
 
@@ -587,6 +637,9 @@ public sealed class OperatingSettingsResolverTests : IDisposable
         report.MaxConcurrentTaskRuns.Value.Should().Be(3, "floor(6/2) — the environment level's own converted answer");
         report.MaxConcurrentTaskRuns.Origin.Should().Be(SettingOrigin.EnvironmentVariable);
         report.MaxConcurrentTaskRunsConvertedFromLegacy.Should().BeTrue();
+        report.MaxConcurrentTaskRunsShadowsConfigFileValue.Should().BeTrue(
+            "the config file already sets max-concurrent-task-runs, but the environment-level legacy "
+            + "conversion outranks it regardless");
     }
 
     [Fact]

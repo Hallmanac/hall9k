@@ -63,16 +63,16 @@ public static class PlatformConfigFile
     /// <summary>
     /// Same read as <see cref="ReadOperatingSettingsAsync"/>, but for a caller that only wants to
     /// describe the file to an operator rather than merge a write into it (<c>h9k config show</c>,
-    /// <c>h9k daemon status</c>): a failure is reported rather than thrown, and which of the two
-    /// underlying problems it was stays distinguishable. A document-level failure (syntax error,
-    /// or valid JSON whose top level is not an object) is exactly what
+    /// <c>h9k daemon status</c>): a failure is reported rather than thrown. A document-level
+    /// failure (syntax error, or valid JSON whose top level is not an object) is exactly what
     /// <see cref="PlatformConfigFileSource"/>-shaped daemon startup code already guards and skips
     /// gracefully, running on environment variables and built-in defaults; a value-shape failure
-    /// inside an otherwise well-formed document is not guarded anywhere, because the daemon reads
-    /// this section through <c>ConfigurationBinder</c>, which has no such skip and throws at
-    /// options-resolution time — a fatal startup crash, not a graceful fallback. Reporting both as
-    /// the same "not valid JSON, defaults still apply" diagnosis (the shape it shipped in) tells an
-    /// operator the wrong cause and the wrong consequence for the second case.
+    /// inside an otherwise well-formed document never crashes the daemon either
+    /// (<c>Hall9k.Daemon.DaemonOptionsBinding.ResolverOwnedKeys</c> excludes every concurrency
+    /// setting this section carries from the daemon's own <c>ConfigurationBinder</c> call,
+    /// Decisions Log #108's follow-up), so the diagnosis recovers the same siblings rather than
+    /// discarding the whole section — a healthy <c>maxConcurrentTaskRuns</c> sitting next to a
+    /// malformed <c>maxConcurrentAgentSessions</c> must not be reported as skipped too.
     /// </summary>
     public static async Task<ConfigFileReadResult> TryReadOperatingSettingsAsync(CancellationToken cancellationToken)
     {
@@ -92,17 +92,8 @@ public static class PlatformConfigFile
             ApplyMaxConcurrentAgentSessionsBinderQuirk(document, settings);
             return ConfigFileReadResult.Ok(settings);
         }
-        catch (JsonException exception) when (DaemonFailsToStartOn(document, exception))
-        {
-            return ConfigFileReadResult.DaemonCrashes(ShapeErrorMessage(exception));
-        }
         catch (JsonException exception)
         {
-            // ConfigurationBinder does not crash on this shape: it has no conversion for the
-            // affected leaf, so it silently leaves that one property at its default while
-            // binding every sibling key normally. The diagnosis has to recover the same siblings
-            // rather than discarding the whole section, or a healthy maxConcurrentAgentSessions
-            // sitting next to a malformed modelByRole would be reported as skipped too.
             return RecoverSectionIgnoring(document, exception);
         }
     }
@@ -135,23 +126,12 @@ public static class PlatformConfigFile
             ApplyMaxConcurrentAgentSessionsBinderQuirk(document, settings);
             return ConfigFileReadResult.SettingIgnored(settings, ShapeErrorMessage(exception));
         }
-        catch (JsonException retryException) when (DaemonFailsToStartOn(document, retryException))
-        {
-            // A second malformed leaf beyond the one already being ignored, and this one is the
-            // one leaf ConfigurationBinder itself throws on: the classification has to revisit
-            // against this new exception rather than keep the first exception's "just ignored"
-            // verdict, or a file that genuinely crashes the daemon at startup is reported as
-            // merely having one setting fall back to its default. Origin: the cycle-6 pre-PR
-            // review found this exact silent-downgrade — swapping the two malformed keys' order
-            // in the same file flipped the report from DaemonFailsToStart to SettingIsIgnored
-            // even though the daemon crashes on both orderings.
-            return ConfigFileReadResult.DaemonCrashes(ShapeErrorMessage(retryException));
-        }
         catch (JsonException)
         {
-            // A second malformed leaf beyond the one already being ignored, and — like the
-            // first — not one ConfigurationBinder crashes on either: fall back to nothing
+            // A second malformed leaf beyond the one already being ignored: fall back to nothing
             // recovered rather than looping, the same conservative outcome as before this fix.
+            // Neither leaf crashes ConfigurationBinder (see TryReadOperatingSettingsAsync's own
+            // doc), so both malformed key orders converge on this same SettingIgnored verdict.
             return ConfigFileReadResult.SettingIgnored(new(), ShapeErrorMessage(exception));
         }
     }
@@ -199,51 +179,6 @@ public static class PlatformConfigFile
             .FirstOrDefault(key => string.Equals(key, name, StringComparison.OrdinalIgnoreCase));
 
     /// <summary>
-    /// Whether <paramref name="exception"/>'s shape mismatch is one <c>ConfigurationBinder</c>
-    /// actually throws on too, rather than one this type's stricter POCO deserialize rejects but
-    /// the binder quietly ignores. The binder only has a registered conversion for the scalar
-    /// leaves in this shape (<see cref="OperatingSettings.MaxConcurrentAgentSessions"/>); a
-    /// mismatch anywhere else — a string given for the whole <c>modelByRole</c> object, say — has
-    /// no such conversion, so the binder falls back to binding the object's (nonexistent)
-    /// children and leaves the property at its default rather than throwing. Keyed off
-    /// <see cref="JsonException.Path"/> rather than re-implementing that resolution here, so the
-    /// one property this can go wrong for stays a single name rather than two copies of the same
-    /// list drifting apart. Compared case-insensitively: <see cref="JsonException.Path"/> carries
-    /// whatever casing the document itself used (this type deserializes with
-    /// <c>PropertyNameCaseInsensitive</c>), and a hand-edited PascalCase key — the casing this
-    /// project's own docs print — must still be recognised as the property
-    /// <c>ConfigurationBinder</c> binds case-insensitively too.
-    /// <para>
-    /// The path match alone is not enough: <c>JsonConfigurationFileParser</c> flattens a JSON
-    /// object or a non-empty array into nested keys rather than a value at this leaf's own key,
-    /// so the binder finds nothing to convert and leaves the property at its default — it does
-    /// not throw, even though this type's stricter deserialize does. Only a genuinely scalar
-    /// value that still fails to convert (a non-numeric string), or an <em>empty</em> array,
-    /// crashes the binder for real: unlike an empty object, an empty array still gets a direct
-    /// entry at this leaf's own key (its value the empty string), so the binder does find
-    /// something to convert and fails on it. Origin: the cycle-4 pre-PR review found
-    /// <c>{"maxConcurrentAgentSessions": {}}</c> reported as a startup crash when the daemon in
-    /// fact starts normally on the built-in default; the cycle-7 review found the reverse for
-    /// <c>{"maxConcurrentAgentSessions": []}</c> — reported as merely ignored when the daemon in
-    /// fact crashes on it. Both were confirmed against the pinned binder version directly.
-    /// </para>
-    /// </summary>
-    private static bool DaemonFailsToStartOn(JsonObject document, JsonException exception)
-    {
-        if (!string.Equals(exception.Path, "$.maxConcurrentAgentSessions", StringComparison.OrdinalIgnoreCase))
-        {
-            return false;
-        }
-
-        return NodeAtPath(document, exception.Path) switch
-        {
-            JsonObject => false,
-            JsonArray array => array.Count == 0,
-            _ => true,
-        };
-    }
-
-    /// <summary>
     /// <c>ConfigurationBinder</c> does not merely skip an explicit JSON <c>null</c> or an empty
     /// object <c>{}</c> at this one leaf the way it skips every other shape mismatch here: because
     /// <see cref="OperatingSettings.MaxConcurrentAgentSessions"/> mirrors a non-nullable
@@ -256,7 +191,11 @@ public static class PlatformConfigFile
     /// the value at zero rather than null, so it fires instead of staying silent). Every other
     /// object or array shape here — a non-empty object, a non-empty array — genuinely is left
     /// alone by the binder and must not be zeroed. Confirmed against the pinned binder version
-    /// directly rather than inferred. Origin: cycle-7 pre-PR review.
+    /// directly rather than inferred. Origin: cycle-7 pre-PR review. This is a description of what
+    /// <c>ConfigurationBinder</c> would have done, kept for the sake of <c>h9k config show</c>'s
+    /// own accuracy about the JSON shape, even though nothing binds this leaf through
+    /// <c>ConfigurationBinder</c> any more — see <see cref="TryReadOperatingSettingsAsync"/>'s
+    /// own doc.
     /// </summary>
     private static void ApplyMaxConcurrentAgentSessionsBinderQuirk(JsonObject document, OperatingSettings settings)
     {
@@ -277,36 +216,6 @@ public static class PlatformConfigFile
         {
             settings.MaxConcurrentAgentSessions = 0;
         }
-    }
-
-    /// <summary>
-    /// Walks <paramref name="path"/> (a <see cref="JsonException.Path"/> like
-    /// <c>$.modelByRole.build</c>) into the "hall9k" section and returns the node found there, so
-    /// <see cref="DaemonFailsToStartOn"/> can tell a JSON container (routed by
-    /// <c>JsonConfigurationFileParser</c> into nested keys, never a crash) from a scalar that
-    /// simply fails to convert (a real binder crash) — the same case-insensitive walk
-    /// <see cref="RemoveFailingLeaf"/> uses to find the leaf to discard.
-    /// </summary>
-    private static JsonNode? NodeAtPath(JsonObject document, string? path)
-    {
-        if (Section(document) is not { } section)
-        {
-            return null;
-        }
-
-        string[] segments = path?.Split('.') is { Length: > 1 } parts ? parts[1..] : [];
-        JsonNode? current = section;
-        foreach (string segment in segments)
-        {
-            if (current is not JsonObject obj || FindKeyIgnoringCase(obj, segment) is not { } key)
-            {
-                return null;
-            }
-
-            current = obj[key];
-        }
-
-        return current;
     }
 
     /// <summary>

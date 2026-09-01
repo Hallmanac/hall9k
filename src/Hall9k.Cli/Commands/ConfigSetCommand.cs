@@ -40,11 +40,13 @@ public sealed class ConfigSetCommand : Hall9kAsyncCommand<ConfigSetCommand.Setti
         [Description(
             "The global default for how many agent sessions one run may hold simultaneously "
             + "(DaemonOptions.SessionCapPerRun, Decisions Log #108, default 3) — overridable per task at any time, "
-            + "even mid-run, with h9k task set-session-cap. A cap of 1 serializes the run's two review lenses "
-            + "instead of dispatching them together, for maximum throttle; today's routine peak is 2, so anything "
-            + "above 2 is inert headroom until a future coded activity actually overlaps a third session. A change "
-            + "here takes effect at each affected run's next session dispatch — it never terminates a session "
-            + "already running.")]
+            + "even mid-run, with h9k task set-session-cap, which is the one that takes effect at the run's next "
+            + "session dispatch without a restart. This flag only changes the global default a running daemon "
+            + "reads once at its own startup, so it takes effect on the daemon's next start like every other "
+            + "setting here — see the note this command prints after writing. A cap of 1 serializes the run's two "
+            + "review lenses instead of dispatching them together, for maximum throttle; today's routine peak is "
+            + "2, so anything above 2 is inert headroom until a future coded activity actually overlaps a third "
+            + "session.")]
         public int? SessionCapPerRun { get; init; }
 
         [CommandOption("--default-model <MODEL>")]

@@ -313,13 +313,17 @@ public sealed class PlatformConfigFileTests : IDisposable
     /// <summary>
     /// <see cref="JsonException.Path"/> carries the document's own casing, not the POCO's, so a
     /// hand-edit using the PascalCase names this project's own docs print for the property (not
-    /// just the section key the sibling tests above cover) must still be recognised as the one
-    /// property <c>ConfigurationBinder</c> actually crashes the daemon on. Origin: the cycle-1
-    /// pre-PR review found the ordinal comparison in <c>DaemonFailsToStartOn</c> missing this case,
-    /// reporting "defaults still apply" for a value that in fact kills the daemon at startup.
+    /// just the section key the sibling tests above cover) must still be recognised as the same
+    /// leaf, whichever casing named it. No leaf in this section crashes the daemon any more
+    /// (<c>DaemonOptionsBinding.ResolverOwnedKeys</c> excludes every concurrency setting from the
+    /// daemon's own <c>ConfigurationBinder</c> call, Decisions Log #108's follow-up), so a malformed
+    /// value here is recovered like any other shape mismatch instead. Origin: the cycle-1 pre-PR
+    /// review found the ordinal comparison here missing this case; independent pre-PR review,
+    /// cycle 1 of the concurrency-in-runs branch, found this test's own expectation stale once
+    /// <c>maxConcurrentAgentSessions</c> stopped being bound at all.
     /// </summary>
     [Fact]
-    public async Task A_pascal_cased_property_name_still_reports_that_the_daemon_fails_to_start()
+    public async Task A_pascal_cased_property_name_is_still_recognised_and_treated_as_ignored()
     {
         await File.WriteAllTextAsync(
             Hall9kDatabase.ConfigFile, """{"hall9k": {"MaxConcurrentAgentSessions": "four"}}""");
@@ -327,9 +331,11 @@ public sealed class PlatformConfigFileTests : IDisposable
         ConfigFileReadResult result = await PlatformConfigFile.TryReadOperatingSettingsAsync(CancellationToken.None);
 
         result.Problem.Should().NotBeNull();
-        result.Problem!.Consequence.Should().Be(ConfigFileProblemConsequence.DaemonFailsToStart,
-            "ConfigurationBinder's own key comparison is case-insensitive too, so this value crashes the daemon "
-            + "exactly like the lowercase-keyed shape does");
+        result.Problem!.Consequence.Should().Be(ConfigFileProblemConsequence.SettingIsIgnored,
+            "ConfigurationBinder's own key comparison is case-insensitive too, so this value is recognised as "
+            + "the same leaf whichever casing the file used, and never bound through ConfigurationBinder either way");
+        result.Settings.MaxConcurrentAgentSessions.Should().BeNull(
+            "the malformed leaf is removed and every sibling recovered, the same as the lowercase-keyed shape");
     }
 
     /// <summary>
@@ -425,14 +431,17 @@ public sealed class PlatformConfigFileTests : IDisposable
 
     /// <summary>
     /// Unlike an empty object, an empty JSON array still gets a direct entry at
-    /// <c>maxConcurrentAgentSessions</c>'s own key (the empty string), so <c>ConfigurationBinder</c>
-    /// does find something to convert there and fails on it exactly like an unparseable string
-    /// does — the daemon crashes at startup. Origin: the cycle-7 pre-PR review found this shape
-    /// reported as merely ignored (falling back to a healthy default) when the daemon in fact
-    /// never starts. Confirmed against the pinned binder version directly.
+    /// <c>maxConcurrentAgentSessions</c>'s own key (the empty string) — historically, back when
+    /// this leaf was still bound through <c>ConfigurationBinder</c>, that shape crashed the daemon
+    /// exactly like an unparseable string did. It no longer can: this leaf is now excluded from
+    /// the daemon's own <c>ConfigurationBinder</c> call entirely (<c>DaemonOptionsBinding
+    /// .ResolverOwnedKeys</c>, Decisions Log #108's follow-up), so it is recovered like any other
+    /// shape mismatch instead. Origin: the cycle-7 pre-PR review found this shape reported as
+    /// merely ignored when the daemon at the time in fact never started; independent pre-PR
+    /// review, cycle 1 of the concurrency-in-runs branch, found that verdict itself gone stale.
     /// </summary>
     [Fact]
-    public async Task An_empty_array_for_the_concurrency_ceiling_is_reported_as_a_daemon_crash()
+    public async Task An_empty_array_for_the_concurrency_ceiling_is_reported_as_ignored()
     {
         await File.WriteAllTextAsync(
             Hall9kDatabase.ConfigFile, """{"hall9k": {"maxConcurrentAgentSessions": []}}""");
@@ -440,9 +449,11 @@ public sealed class PlatformConfigFileTests : IDisposable
         ConfigFileReadResult result = await PlatformConfigFile.TryReadOperatingSettingsAsync(CancellationToken.None);
 
         result.Problem.Should().NotBeNull();
-        result.Problem!.Consequence.Should().Be(ConfigFileProblemConsequence.DaemonFailsToStart,
-            "an empty array still gets a direct leaf value (the empty string), which fails to convert to int "
-            + "exactly like an unparseable string does");
+        result.Problem!.Consequence.Should().Be(ConfigFileProblemConsequence.SettingIsIgnored,
+            "this leaf is excluded from the daemon's own ConfigurationBinder call entirely, so nothing crashes on it");
+        result.Settings.MaxConcurrentAgentSessions.Should().BeNull(
+            "an empty array is not the null/empty-object shape ApplyMaxConcurrentAgentSessionsBinderQuirk zeroes, "
+            + "so the removed leaf is left genuinely unset");
     }
 
     /// <summary>
@@ -493,20 +504,20 @@ public sealed class PlatformConfigFileTests : IDisposable
     }
 
     /// <summary>
-    /// Two malformed leaves, where the first one <see cref="JsonException"/> reports is a leaf
-    /// <c>ConfigurationBinder</c> tolerates (<c>defaultModel</c>) but the second — found only once
-    /// recovery retries the deserialize with the first removed — is the one leaf the binder
-    /// actually crashes on (<c>maxConcurrentAgentSessions</c> holding a non-numeric string). The
-    /// overall read has to be reported as <c>DaemonFailsToStart</c>, not <c>SettingIsIgnored</c>,
-    /// because the daemon dies at startup on the second leaf regardless of what the first one did.
-    /// Origin: the cycle-6 pre-PR review found the retry's own failure silently discarded, so this
-    /// exact file was reported as "just one setting ignored" while the daemon in fact crashes.
-    /// The sibling test below covers the same two leaves in the opposite key order, where the
-    /// crashing leaf is the *first* exception found and no recovery retry ever runs — both orders
-    /// must land on the same verdict.
+    /// Two malformed leaves, where the first one <see cref="JsonException"/> reports is
+    /// <c>defaultModel</c> and the second — found only once recovery retries the deserialize with
+    /// the first removed — is <c>maxConcurrentAgentSessions</c> holding a non-numeric string.
+    /// Historically the second leaf crashed <c>ConfigurationBinder</c>, so the overall read had to
+    /// be reported as a crash regardless of what the first leaf did (origin: the cycle-6 pre-PR
+    /// review found the retry's own failure silently discarded). Neither leaf can crash the daemon
+    /// any more (<c>DaemonOptionsBinding.ResolverOwnedKeys</c> excludes every concurrency setting
+    /// from the daemon's own <c>ConfigurationBinder</c> call, Decisions Log #108's follow-up), so
+    /// two malformed leaves now fall back to nothing recovered, the same conservative outcome as
+    /// before that fix — the sibling test below covers the same two leaves in the opposite key
+    /// order, and both orders must land on the identical verdict.
     /// </summary>
     [Fact]
-    public async Task A_second_malformed_leaf_found_only_on_retry_still_reports_a_daemon_crash()
+    public async Task A_second_malformed_leaf_found_only_on_retry_is_reported_as_ignored_with_nothing_recovered()
     {
         await File.WriteAllTextAsync(
             Hall9kDatabase.ConfigFile,
@@ -515,21 +526,22 @@ public sealed class PlatformConfigFileTests : IDisposable
         ConfigFileReadResult result = await PlatformConfigFile.TryReadOperatingSettingsAsync(CancellationToken.None);
 
         result.Problem.Should().NotBeNull();
-        result.Problem!.Consequence.Should().Be(ConfigFileProblemConsequence.DaemonFailsToStart,
-            "ConfigurationBinder throws converting \"four\" to an int, even though the sibling "
-            + "defaultModel mismatch alone would only be ignored");
+        result.Problem!.Consequence.Should().Be(ConfigFileProblemConsequence.SettingIsIgnored,
+            "neither leaf is bound through ConfigurationBinder any more, so nothing crashes the daemon here");
+        result.Settings.Should().BeEquivalentTo(new OperatingSettings(),
+            "a second malformed leaf beyond the one already being ignored falls back to nothing recovered "
+            + "rather than looping, the same conservative outcome the single-malformed-leaf tests above do not need");
     }
 
     /// <summary>
-    /// The same two malformed leaves as the test above, with the crashing one
-    /// (<c>maxConcurrentAgentSessions</c>) written first: <see cref="JsonException"/> reports it as
-    /// the very first mismatch, so <c>DaemonFailsToStartOn</c> classifies the read as a crash
-    /// immediately and <c>RecoverSectionIgnoring</c>'s retry path never runs at all. Both key
-    /// orders have to land on the identical verdict, since the daemon crashes on this file either
-    /// way — only the code path that discovers it differs.
+    /// The same two malformed leaves as the test above, with <c>maxConcurrentAgentSessions</c>
+    /// written first: <see cref="JsonException"/> reports it as the very first mismatch, so
+    /// recovery removes it and retries immediately, discovering <c>defaultModel</c>'s own mismatch
+    /// on the retry instead of the other way around. Both key orders have to land on the identical
+    /// verdict — only the code path that discovers the second mismatch differs.
     /// </summary>
     [Fact]
-    public async Task A_second_malformed_leaf_found_first_also_reports_a_daemon_crash()
+    public async Task A_second_malformed_leaf_found_first_is_also_reported_as_ignored_with_nothing_recovered()
     {
         await File.WriteAllTextAsync(
             Hall9kDatabase.ConfigFile,
@@ -538,8 +550,10 @@ public sealed class PlatformConfigFileTests : IDisposable
         ConfigFileReadResult result = await PlatformConfigFile.TryReadOperatingSettingsAsync(CancellationToken.None);
 
         result.Problem.Should().NotBeNull();
-        result.Problem!.Consequence.Should().Be(ConfigFileProblemConsequence.DaemonFailsToStart,
-            "ConfigurationBinder throws converting \"four\" to an int, whichever key order this is found in");
+        result.Problem!.Consequence.Should().Be(ConfigFileProblemConsequence.SettingIsIgnored,
+            "neither leaf is bound through ConfigurationBinder any more, so nothing crashes the daemon here");
+        result.Settings.Should().BeEquivalentTo(new OperatingSettings(),
+            "whichever key order this is found in, a second malformed leaf falls back to nothing recovered");
     }
 
     /// <summary>

@@ -48,7 +48,24 @@ public sealed class DispatchLoop(
             + "h9k task set-session-cap",
             _options.MaxConcurrentTaskRuns, DaemonOptions.SectionName, nameof(DaemonOptions.MaxConcurrentTaskRuns),
             _options.SessionCapPerRun);
-        if (concurrencySettings.MaxConcurrentTaskRunsConvertedFromLegacy)
+        if (concurrencySettings.MaxConcurrentTaskRunsShadowsConfigFileValue)
+        {
+            // The env-resolved legacy conversion won ahead of a max-concurrent-task-runs value
+            // that is already set in the config file — "set it directly" would be a no-op here,
+            // since the environment variable still outranks the file regardless of which key it
+            // names (independent pre-PR review, cycle 1, adversarial lens).
+            string legacyOrigin = concurrencySettings.MaxConcurrentTaskRuns.DescribeOrigin();
+            logger.LogInformation(
+                "This node's ceiling of {MaxConcurrentTaskRuns} run(s) was converted (floor(sessions/2), minimum "
+                + "1) from the retired {LegacySetting}, resolved from {LegacyOrigin} — which outranks the "
+                + "{MaxConcurrentTaskRunsSetting} value already set in the platform config file, since an "
+                + "environment variable naming only the legacy key still outranks a config-file value for the "
+                + "new one. Unset {LegacyOrigin}, or export {MaxConcurrentTaskRunsSetting} directly, to use the "
+                + "config file's value instead of the conversion",
+                _options.MaxConcurrentTaskRuns, nameof(DaemonOptions.MaxConcurrentAgentSessions), legacyOrigin,
+                nameof(DaemonOptions.MaxConcurrentTaskRuns), legacyOrigin, nameof(DaemonOptions.MaxConcurrentTaskRuns));
+        }
+        else if (concurrencySettings.MaxConcurrentTaskRunsConvertedFromLegacy)
         {
             logger.LogInformation(
                 "{MaxConcurrentTaskRunsSetting} is not set — this node's ceiling of {MaxConcurrentTaskRuns} run(s) "
@@ -61,6 +78,7 @@ public sealed class DispatchLoop(
         }
 
         WarnAboutRetiredCeilingSetting();
+        WarnAboutUnusableConcurrencySettings();
 
         // Before anything reads the task projections: bring documents written by an older
         // projection shape up to date, or the claim filter cannot see them (log #34).
@@ -181,6 +199,28 @@ public sealed class DispatchLoop(
             + "until you set the new one",
             $"{DaemonOptions.SectionName}:{retired}",
             DaemonOptions.SectionName, nameof(DaemonOptions.MaxConcurrentTaskRuns));
+    }
+
+    /// <summary>
+    /// Every mistake <see cref="OperatingSettingsReport"/> caught while resolving the ceiling and
+    /// session cap logged above, now, so this node's own log carries the same diagnosis
+    /// <c>h9k config show</c> and <c>h9k daemon status</c> already print — without this, a
+    /// malformed config-file value or an unparseable environment variable is silently floored or
+    /// defaulted with nothing in the daemon's own output naming the mistake (independent pre-PR
+    /// review, cycle 1, adversarial lens: none of this was logged before, where every one of these
+    /// used to be a loud <c>ConfigurationBinder</c> startup crash instead).
+    /// </summary>
+    private void WarnAboutUnusableConcurrencySettings()
+    {
+        if (concurrencySettings.ConfigFileProblem is { } problem)
+        {
+            logger.LogWarning("{Message} ({Consequence})", problem.Message, problem.Consequence);
+        }
+
+        foreach (string unusable in concurrencySettings.UnusableEnvironmentVariables)
+        {
+            logger.LogWarning("{Message}", unusable);
+        }
     }
 
     private async Task WaitForPostgresAsync(CancellationToken cancellationToken)

@@ -61,10 +61,12 @@ the hinge to a draft task and is the only step that requires a project.
 
 ### Tasks: development and dispatch
 
-`h9k task add | revise | publish | assign | unassign | draft | list | show`
+`h9k task add | revise | publish | assign | unassign | draft | list | show | set-session-cap`
 
 `add` creates a Draft. `revise` is Draft-only. `publish` is the readiness gate. `assign` is the
 dispatch trigger. The path back for an edit is `unassign → draft → revise → publish → assign`.
+`set-session-cap <id> <cap>` overrides how many agent sessions this task's own run may hold
+simultaneously — settable any time, even mid-run — in place of the node's global default.
 
 `h9k task add` also adopts existing external work: `--from-issue 42` (or `owner/repo#42`, or a
 URL), `--from-jira PROJ-1` (or a URL), and `--from-pr` (a pull request number, `owner/repo#42`, or
@@ -277,11 +279,13 @@ Covered in [operations.md](operations.md#the-daemon-lifecycle) and [INSTALL.md](
 
 `h9k config show` · `h9k config set`
 
-The concurrency ceiling, the per-role model overrides, and the interactive-claim staleness
-threshold, durable in the platform config file so a fresh machine or an autostarted daemon runs
-with the operator's settings without an environment variable ritual. `show` resolves and names
-each setting's origin (environment variable, config file, or built-in default); `set` merges a
-change into the file. See [operations.md](operations.md#daemon-operating-settings).
+The node ceiling (`--max-concurrent-task-runs`, counted directly in task runs), the per-run
+session cap's global default (`--session-cap-per-run`, overridable per task with
+`h9k task set-session-cap` even mid-run), the per-role model overrides, and the interactive-claim
+staleness threshold, durable in the platform config file so a fresh machine or an autostarted
+daemon runs with the operator's settings without an environment variable ritual. `show` resolves
+and names each setting's origin (environment variable, config file, or built-in default); `set`
+merges a change into the file. See [operations.md](operations.md#daemon-operating-settings).
 
 ## Identifiers
 

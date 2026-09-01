@@ -191,9 +191,10 @@ Three things are worth reading off that:
   from something the platform recorded.
 
 The "1 of 1 running" on that last row is the shipped default, not a stalled node: the ceiling is
-configured in agent sessions and spent in runs, and a run is charged the two review sessions a
-cycle dispatches together, so the default of 3 sessions buys one run at a time.
-[docs/operations.md](docs/operations.md#configuration) has the conversion.
+configured directly in task runs (`h9k config set --max-concurrent-task-runs <n>`), and the
+shipped default of 1 is what a fresh install has always dispatched at, no session arithmetic
+needed to read it. [docs/operations.md](docs/operations.md#configuration) has the full picture,
+including the retired session-denominated setting's own conversion for a machine still carrying it.
 
 `h9k task show <id>` is the second command of any investigation, and `h9k logs <id>` renders the
 session transcript when the first two have already named the task worth digging into.
