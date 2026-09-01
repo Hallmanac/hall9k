@@ -188,7 +188,7 @@ public sealed class OperatingSettingsResolverTests : IDisposable
     /// parses fine, so PlatformConfigFileSource's own guard lets it through. No leaf in this
     /// section crashes the daemon's ConfigurationBinder any more (<c>DaemonOptionsBinding
     /// .ResolverOwnedKeys</c> excludes every concurrency setting from the daemon's own bind call,
-    /// Decisions Log #108's follow-up), so the wrong-shape leaf is ignored and its siblings
+    /// Decisions Log #109's follow-up), so the wrong-shape leaf is ignored and its siblings
     /// recovered instead — never the "not valid JSON ... defaults still apply" syntax-error
     /// diagnosis either. Origin: the cycle-3 pre-PR review found both CLI surfaces conflating the
     /// two failures; independent pre-PR review, cycle 1 of the concurrency-in-runs branch, found
@@ -546,7 +546,7 @@ public sealed class OperatingSettingsResolverTests : IDisposable
         review.Model.Origin.Should().Be(SettingOrigin.EnvironmentVariable);
     }
 
-    // Decisions Log #108: max-concurrent-task-runs replaces max-concurrent-agent-sessions as the
+    // Decisions Log #109: max-concurrent-task-runs replaces max-concurrent-agent-sessions as the
     // node's own admission unit; the retired key still converts (floor(sessions/2), minimum 1)
     // when the new key is absent, independently at each precedence level.
 

@@ -68,7 +68,7 @@ public sealed class TaskAggregate
 
     /// <summary>
     /// This task's own override of how many agent sessions its run may hold simultaneously; null
-    /// means the node's global <c>SessionCapPerRun</c> default decides (Decisions Log #108).
+    /// means the node's global <c>SessionCapPerRun</c> default decides (Decisions Log #109).
     /// Unlike <see cref="Model"/>, settable at any time — including mid-run — via
     /// <see cref="TaskSessionCapOverridden"/> rather than <see cref="TaskRevised"/>.
     /// </summary>

@@ -608,7 +608,7 @@ public sealed class ReviewEngine(
             return MissingPassDispatch.NothingMissing;
         }
 
-        // The session cap (Decisions Log #108) throttles this top-up exactly as it throttles the
+        // The session cap (Decisions Log #109) throttles this top-up exactly as it throttles the
         // opening dispatch below: dispatching every missing lens regardless of what this cycle
         // already has in flight is exactly what a cap of 1 exists to prevent — it is what turns
         // "spawned together" into "one lens completes before the other spawns" without a second
@@ -677,7 +677,7 @@ public sealed class ReviewEngine(
                 context, cycle, lenses, headSha, sinceSha, priorCycleMode, cancellationToken);
         }
 
-        // The per-run session cap (Decisions Log #108, Brian's ruling 2026-08-30) bounds how many
+        // The per-run session cap (Decisions Log #109, Brian's ruling 2026-08-30) bounds how many
         // of this cycle's lenses spawn together here: a cap of 1 dispatches only the first and
         // leaves the rest for DispatchMissingPassesAsync's own cap-aware top-up to pick up once a
         // slot frees — the same "one lens completes before the other spawns" outcome the
@@ -2441,7 +2441,7 @@ public sealed class ReviewEngine(
     }
 
     /// <summary>
-    /// This run's effective per-run session cap (Decisions Log #108): the task's own override
+    /// This run's effective per-run session cap (Decisions Log #109): the task's own override
     /// (<c>h9k task set-session-cap</c>, settable even mid-run) when it carries one, else the
     /// node's global default. Read fresh — a small extra document load, not folded into
     /// <see cref="ReviewContext"/> at <see cref="LoadContextAsync"/> time — at every point that

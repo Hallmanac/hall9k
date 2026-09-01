@@ -70,7 +70,7 @@ public static class PlatformConfigFile
     /// inside an otherwise well-formed document never crashes the daemon either
     /// (<c>Hall9k.Daemon.DaemonOptionsBinding.ResolverOwnedKeys</c> excludes every concurrency
     /// setting this section carries from the daemon's own <c>ConfigurationBinder</c> call,
-    /// Decisions Log #108's follow-up), so the diagnosis recovers the same siblings rather than
+    /// Decisions Log #109's follow-up), so the diagnosis recovers the same siblings rather than
     /// discarding the whole section — a healthy <c>maxConcurrentTaskRuns</c> sitting next to a
     /// malformed <c>maxConcurrentAgentSessions</c> must not be reported as skipped too.
     /// </summary>
