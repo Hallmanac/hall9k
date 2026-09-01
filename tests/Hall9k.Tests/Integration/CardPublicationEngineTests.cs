@@ -1277,7 +1277,6 @@ public sealed class CardPublicationEngineTests(PostgresFixture postgres) : IClas
         opts.ConfigureHall9k(AutoCreate.All);
     });
 
-
     private static CardPublicationEngine NewEngine(
         DocumentStore store,
         NodeContext node,
