@@ -5,7 +5,7 @@ namespace Hall9k.Cli.Infrastructure;
 
 /// <summary>
 /// The clearing idiom every review-cap option shares (<c>h9k project set</c>, <c>h9k task
-/// set-review-caps</c>, Decisions Log #108): absent means left alone, 'default' clears the
+/// set-review-caps</c>, Decisions Log #112): absent means left alone, 'default' clears the
 /// override so the level above decides again, and anything else must parse as a whole number —
 /// the decider itself refuses anything lower than its own floor (<c>ReviewCapValidation</c>:
 /// 1 everywhere except the task-level per-run caps, which take 0 as the documented takeover lever).

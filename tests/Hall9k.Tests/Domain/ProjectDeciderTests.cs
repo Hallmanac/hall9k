@@ -77,7 +77,7 @@ public sealed class ProjectDeciderTests
             changedAt: Now, changedByOwnerId: DomainId.New(),
             maxAdversarialReviewCycles: Optional<int?>.Of(0));
 
-        act.Should().Throw<DomainValidationException>().WithMessage("*MaxAdversarialReviewCycles*");
+        act.Should().Throw<DomainValidationException>().WithMessage("*--max-adversarial-review-cycles*");
     }
 
     [Fact]
