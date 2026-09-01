@@ -138,8 +138,8 @@ lets a daemon started by autostart (no operator shell to export anything into) s
 operator's own settings instead of silently falling back to defaults.
 
 ```bash
-h9k config show                                   # every setting, and where it came from
-h9k config set --max-concurrent-agent-sessions 4  # the concurrency ceiling
+h9k config show                              # every setting, and where it came from
+h9k config set --max-concurrent-task-runs 2  # the node's run ceiling (Decisions Log #108)
 ```
 
 Hand-editing the file works just as well as `h9k config set`; a missing file is created (with only
