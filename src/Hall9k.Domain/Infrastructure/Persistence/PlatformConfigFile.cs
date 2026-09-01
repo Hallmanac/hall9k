@@ -186,9 +186,11 @@ public static class PlatformConfigFile
     /// binder's explicit-value handling resolves it to <see langword="default"/> — zero — rather
     /// than leaving the property untouched at its built-in default of three. Reporting "ignored,
     /// default (3) still applies" for either shape would tell an operator the daemon dispatches
-    /// at full concurrency when it has in fact floored itself to exactly one running session
-    /// (<see cref="OperatingSettingsResolver"/>'s own sub-1 warning depends on this method leaving
-    /// the value at zero rather than null, so it fires instead of staying silent). Every other
+    /// at full concurrency when it has in fact floored itself to exactly one running session —
+    /// except <see cref="OperatingSettingsResolver.ResolveMaxConcurrentTaskRuns"/> reads this
+    /// method's own return value separately and treats a fabricated zero as absent rather than
+    /// converting it into a run ceiling of one, so the sub-1 warning does not fire for this shape;
+    /// it fires only for a leaf that genuinely holds a configured zero. Every other
     /// object or array shape here — a non-empty object, a non-empty array — genuinely is left
     /// alone by the binder and must not be zeroed. Confirmed against the pinned binder version
     /// directly rather than inferred. Origin: cycle-7 pre-PR review. This is a description of what
@@ -197,7 +199,7 @@ public static class PlatformConfigFile
     /// <c>ConfigurationBinder</c> any more — see <see cref="TryReadOperatingSettingsAsync"/>'s
     /// own doc.
     /// </summary>
-    /// <summary>Returns whether the quirk fired — see <see cref="ConfigFileReadResult.MaxConcurrentAgentSessionsIsFabricatedZero"/>.</summary>
+    /// <returns>Whether the quirk fired — see <see cref="ConfigFileReadResult.MaxConcurrentAgentSessionsIsFabricatedZero"/>.</returns>
     private static bool ApplyMaxConcurrentAgentSessionsBinderQuirk(JsonObject document, OperatingSettings settings)
     {
         if (Section(document) is not { } section
