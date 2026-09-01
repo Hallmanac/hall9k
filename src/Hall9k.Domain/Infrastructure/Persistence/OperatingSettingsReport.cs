@@ -26,7 +26,26 @@ public enum ConfigFileProblemConsequence
 /// section (or one setting inside it) cleanly, and the true consequence to state alongside the
 /// accurate <paramref name="Message"/> domain layer already built.
 /// </summary>
-public sealed record ConfigFileProblem(string Message, ConfigFileProblemConsequence Consequence);
+public sealed record ConfigFileProblem(string Message, ConfigFileProblemConsequence Consequence)
+{
+    /// <summary>
+    /// The consequence sentence both <c>h9k config show</c>/<c>h9k daemon status</c>
+    /// (<c>Hall9k.Cli.Infrastructure.OperatingSettingsRendering</c>) and the daemon's own startup
+    /// log (<c>Hall9k.Daemon.Dispatch.DispatchLoop</c>) print alongside <see cref="Message"/> — kept
+    /// here, in Domain, because the reference graph lets both of those projects reach it while
+    /// neither can reach the other, and a sentence two callers would otherwise hand-copy is a
+    /// sentence that drifts (independent pre-PR review, cycle 2, adversarial lens: the daemon log
+    /// used to interpolate the raw <see cref="ConfigFileProblemConsequence"/> member instead).
+    /// </summary>
+    public string DescribeConsequence() => Consequence switch
+    {
+        ConfigFileProblemConsequence.SettingIsIgnored =>
+            "The daemon's own ConfigurationBinder has no conversion for this value, so this setting does not "
+            + "take its value from the file — every other setting in the file, and environment variables and "
+            + "built-in defaults, still apply.",
+        _ => "The daemon skips the file for this run — environment variables and built-in defaults still apply.",
+    };
+}
 
 /// <summary>The outcome of a non-throwing operating-settings read: the settings, or why not.</summary>
 public sealed record ConfigFileReadResult(OperatingSettings Settings, ConfigFileProblem? Problem)
