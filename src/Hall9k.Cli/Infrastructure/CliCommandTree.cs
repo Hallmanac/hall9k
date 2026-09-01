@@ -341,7 +341,8 @@ public static class CliCommandTree
                     + "--interactive-claim-stale-after-days is the exception: h9k status reads it fresh from "
                     + "the file on every render, so a new value is in force immediately, with no daemon restart "
                     + "and no environment variable to outrank it.")
-                .WithExample("config", "set", "--max-concurrent-agent-sessions", "4")
+                .WithExample("config", "set", "--max-concurrent-task-runs", "2")
+                .WithExample("config", "set", "--session-cap-per-run", "1")
                 .WithExample("config", "set", "--model-review", "sonnet", "--model-fix", "haiku")
                 .WithExample("config", "set", "--model-review-verify", "sonnet")
                 .WithExample("config", "set", "--interactive-claim-stale-after-days", "5");
@@ -512,6 +513,17 @@ public static class CliCommandTree
                     + "Only that owner's nodes may claim it.")
                 .WithExample("task", "assign", "28b19893")
                 .WithExample("task", "assign", "28b19893", "brian");
+            task.AddCommand<TaskSetSessionCapCommand>("set-session-cap")
+                .WithDescription(
+                    "Override how many agent sessions this task's own run may hold simultaneously (Decisions Log "
+                    + "#108) — the global default is 3, and this overrides it for this task alone, at any time, "
+                    + "including while the task's run is live. A cap of 1 serializes the run's two review lenses "
+                    + "instead of dispatching them together, for maximum throttle. Takes effect at the run's next "
+                    + "session dispatch: raising it lets the next phase fan out wider, lowering it never "
+                    + "terminates a session already running. An interactive claim (h9k task work) occupies zero "
+                    + "runs and ignores this cap entirely.")
+                .WithExample("task", "set-session-cap", "28b19893", "1")
+                .WithExample("task", "set-session-cap", "28b19893", "3");
             task.AddCommand<TaskUnassignCommand>("unassign")
                 .WithDescription(
                     "Take a queued or blocked task back to Published, so no node claims it. Refused while a "

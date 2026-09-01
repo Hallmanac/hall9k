@@ -52,6 +52,11 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
             header.AddRow("Model", $"{details.Model.Value.EscapeMarkup()} [dim](task override)[/]");
         }
 
+        if (details.SessionCap is { } sessionCap)
+        {
+            header.AddRow("Session cap", $"{sessionCap} [dim](task override — h9k task set-session-cap)[/]");
+        }
+
         if (details.SourceIdeaId is { } sourceIdeaId)
         {
             // The other half of promotion's two-way provenance (Decisions Log #35): the idea's
