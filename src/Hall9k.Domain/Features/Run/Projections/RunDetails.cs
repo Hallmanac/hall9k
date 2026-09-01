@@ -187,6 +187,14 @@ public sealed class RunDetails
     /// <summary>Why closeout was handed to the human — parked is a waiting state, not a failure.</summary>
     public string? ParkedReason { get; set; }
     /// <summary>
+    /// Whether the review park just recorded in <see cref="ParkedReason"/> is one where granting
+    /// <c>--needs-fixes</c> cannot buy the work any progress (a cap-0 takeover park, or the
+    /// lifetime-budget park) — mirrors <see cref="ReviewParked.NeedsFixesOffersNoProgress"/>
+    /// so <c>h9k status</c>'s lever agrees with the park text instead of offering a verdict the
+    /// run's own reason already says is useless here.
+    /// </summary>
+    public bool ParkedNeedsFixesOffersNoProgress { get; set; }
+    /// <summary>
     /// Whether this run handed anything down at true closeout, and when not, why (Decisions Log
     /// #36). Unknown on every run that has not closed out yet, and on streams written before
     /// handoffs existed — those replay as Unknown rather than as a reconstruction.
@@ -442,6 +450,7 @@ public sealed class RunDetailsProjection : SingleStreamProjection<RunDetails, Gu
     public void Apply(IEvent<ReviewParked> @event, RunDetails view)
     {
         view.ParkedReason = @event.Data.Reason;
+        view.ParkedNeedsFixesOffersNoProgress = @event.Data.NeedsFixesOffersNoProgress;
         EndSessions(view);
         view.State = RunState.ReviewParked;
     }
@@ -472,6 +481,7 @@ public sealed class RunDetailsProjection : SingleStreamProjection<RunDetails, Gu
         }
 
         view.ParkedReason = null;
+        view.ParkedNeedsFixesOffersNoProgress = false;
         // The resume sweep re-dispatches; until it does, nothing is running.
         EndSessions(view);
         view.State = RunState.UnderReview;

@@ -361,9 +361,11 @@ public sealed class ReviewEngine(
                         // scoped-then-full-then-fix iteration, never a human-ended run.
                         if (FinalFullPassCapReached(run, caps))
                         {
+                            (string finalPassReason, bool finalPassNoProgress) =
+                                FinalFullPassCapParkReason(run, caps.MaxFinalFullPassRounds);
                             await ParkAsync(
-                                context.RunId, context.TaskId,
-                                FinalFullPassCapParkReason(run, caps.MaxFinalFullPassRounds), cancellationToken);
+                                context.RunId, context.TaskId, finalPassReason, cancellationToken,
+                                finalPassNoProgress);
                             return false;
                         }
 
@@ -426,8 +428,9 @@ public sealed class ReviewEngine(
                 case ReviewPhase.FixNeeded:
                     if (CappedTrack(run, caps) is { } capped)
                     {
+                        (string capReason, bool capNoProgress) = CapParkReason(run, capped, caps);
                         await ParkAsync(
-                            context.RunId, context.TaskId, CapParkReason(run, capped, caps), cancellationToken);
+                            context.RunId, context.TaskId, capReason, cancellationToken, capNoProgress);
                         return false;
                     }
 
@@ -516,9 +519,11 @@ public sealed class ReviewEngine(
                     // caps still cannot catch a track the final pass itself keeps reawakening.
                     if (reverifyMode == ReviewMode.FinalFullPass && FinalFullPassCapReached(run, caps))
                     {
+                        (string reverifyFinalPassReason, bool reverifyFinalPassNoProgress) =
+                            FinalFullPassCapParkReason(run, caps.MaxFinalFullPassRounds);
                         await ParkAsync(
-                            context.RunId, context.TaskId,
-                            FinalFullPassCapParkReason(run, caps.MaxFinalFullPassRounds), cancellationToken);
+                            context.RunId, context.TaskId, reverifyFinalPassReason, cancellationToken,
+                            reverifyFinalPassNoProgress);
                         return false;
                     }
 
@@ -2343,7 +2348,9 @@ public sealed class ReviewEngine(
     /// stale generation it must react to is a narrow in-process race with DriveAsync's own
     /// loop-top check, not one a test can land reliably through the public entry point).
     /// </summary>
-    internal async Task ParkAsync(Guid runId, Guid taskId, string reason, CancellationToken cancellationToken)
+    internal async Task ParkAsync(
+        Guid runId, Guid taskId, string reason, CancellationToken cancellationToken,
+        bool needsFixesOffersNoProgress = false)
     {
         await using IDocumentSession session = store.LightweightSession();
         RunAggregate run = await LoadRunAsync(runId, cancellationToken);
@@ -2372,7 +2379,8 @@ public sealed class ReviewEngine(
 
         // The task stays Claimed and the lease is retained: the worktree is the human's
         // workspace for resolving the park (the CloseoutParked pattern, pre-PR).
-        session.Events.Append(runId, new ReviewParked(runId, reason, DateTimeOffset.UtcNow));
+        session.Events.Append(
+            runId, new ReviewParked(runId, reason, DateTimeOffset.UtcNow, needsFixesOffersNoProgress));
         await session.SaveChangesAsync(cancellationToken);
         logger.LogWarning("Run {RunId}: review parked for the human — {Reason}", runId, reason);
     }
@@ -2863,15 +2871,17 @@ public sealed class ReviewEngine(
     /// fixed for the two per-track caps), so this cap gets the identical takeover branch first.
     /// </para>
     /// </summary>
-    private static string FinalFullPassCapParkReason(RunAggregate run, ResolvedReviewCap cap)
+    private static (string Reason, bool NeedsFixesOffersNoProgress) FinalFullPassCapParkReason(
+        RunAggregate run, ResolvedReviewCap cap)
     {
         string findings = RunPaths.ReviewFindingsFile(ParkedRunDirectory(run), run.ReviewCycle);
 
         if (cap.Value <= 0)
         {
-            return TakeoverCapParkReason(
+            return (TakeoverCapParkReason(
                 "mandatory final full review pass", "--max-final-full-pass-rounds", cap, findings,
-                "the run would just park again with this same reason before the mandatory pass ever ran");
+                "the run would just park again with this same reason before the mandatory pass ever ran"),
+                true);
         }
 
         string why = run.ReviewTrackReactivations > 0
@@ -2879,12 +2889,13 @@ public sealed class ReviewEngine(
               "means the fixes keep introducing new issues or the loop is oscillating"
             : "The mandatory pass keeps having to run again, whatever is keeping a track active this " +
               "many times in a row";
-        return $"This run has dispatched the mandatory final full review pass — every lens, fresh " +
+        return ($"This run has dispatched the mandatory final full review pass — every lens, fresh " +
             $"context, immediately before the run may settle — {run.FinalFullPassRounds} consecutive " +
             $"time(s) without ever reaching a clean settle: its cap of {cap.Value}, from {cap.Describe()}. " +
             $"{why}; either way it is worth a human's look rather than another automatic round. " +
             $"Unresolved findings: {findings}. Fix in the worktree and resolve with " +
-            "h9k review resolve --merge-ready, grant a fresh round with --needs-fixes, or abandon the task.";
+            "h9k review resolve --merge-ready, grant a fresh round with --needs-fixes, or abandon the task.",
+            false);
     }
 
     /// <summary>
@@ -2910,7 +2921,8 @@ public sealed class ReviewEngine(
     /// assuming the task level regardless.
     /// </para>
     /// </summary>
-    private static string CapParkReason(RunAggregate run, ReviewLens capped, ResolvedReviewCaps caps)
+    private static (string Reason, bool NeedsFixesOffersNoProgress) CapParkReason(
+        RunAggregate run, ReviewLens capped, ResolvedReviewCaps caps)
     {
         ResolvedReviewCap cap = caps.CapFor(capped);
         string findings = RunPaths.ReviewFindingsFile(ParkedRunDirectory(run), run.ReviewCycle);
@@ -2920,9 +2932,10 @@ public sealed class ReviewEngine(
             (string name, string flag) = capped == ReviewLens.Adversarial
                 ? ("adversarial review", "--max-adversarial-review-cycles")
                 : ("conformance review", "--max-compliance-review-cycles");
-            return TakeoverCapParkReason(
+            return (TakeoverCapParkReason(
                 name, flag, cap, findings,
-                "the run would just park again with this same reason before a fix session ever ran");
+                "the run would just park again with this same reason before a fix session ever ran"),
+                true);
         }
 
         string levers =
@@ -2930,11 +2943,12 @@ public sealed class ReviewEngine(
             "h9k review resolve --merge-ready, grant a fresh round with --needs-fixes, or abandon the task.";
         int cycles = run.ReviewCycle - run.TrackBudgetBaseCycle(capped);
 
-        return capped == ReviewLens.Adversarial
+        return (capped == ReviewLens.Adversarial
             ? $"{AdversarialCapReason(run, cycles, cap)} {levers}"
             : $"The conformance review is still returning findings after {cycles} cycles, its cap of " +
               $"{cap.Value} (from {cap.Describe()}) — the work has been told the same thing {cycles} times, " +
-              "so nothing automated is left to try. " + levers;
+              "so nothing automated is left to try. " + levers,
+            false);
     }
 
     /// <summary>
@@ -3072,7 +3086,7 @@ public sealed class ReviewEngine(
         await ParkAsync(
             context.RunId, context.TaskId,
             LifetimeBudgetParkReason(run, totalCycles, caps.LifetimeReviewCycleBudget),
-            cancellationToken);
+            cancellationToken, needsFixesOffersNoProgress: true);
         return true;
     }
 

@@ -356,6 +356,47 @@ public sealed class TaskLifecycleSurfaceTests
     }
 
     /// <summary>
+    /// Independent pre-PR review, cycle 5, adversarial finding: a cap-0 takeover park or the
+    /// lifetime-budget park accepts <c>--needs-fixes</c> rather than refusing it outright, but
+    /// granting one there just re-parks the run identically before a fix session ever runs — the
+    /// park's own reason already says so. The row's lever must agree with that reason instead of
+    /// offering the command its own park text says buys no progress.
+    /// </summary>
+    [Fact]
+    public void A_park_where_needs_fixes_buys_no_progress_offers_only_merge_ready()
+    {
+        Guid runId = DomainId.New();
+        RunDetails parked = StatusFixtures.Run(runId, RunState.ReviewParked);
+        parked.ParkedReason = "The conformance review's cap is 0, from a task override — a cap that low " +
+            "parks every cycle immediately, so granting a fresh round with --needs-fixes cannot buy the " +
+            "work any progress here.";
+        parked.ParkedNeedsFixesOffersNoProgress = true;
+        TaskListItem task = StatusFixtures.Task(TaskState.Claimed, runId);
+
+        TaskStatusRow row = StatusFixtures.Compose(task, parked);
+
+        row.Attention.Lever.Should().Contain("--merge-ready")
+            .And.NotContain("--needs-fixes \"…\"", "the ordinary needs-fixes offer contradicts this park's own reason");
+    }
+
+    /// <summary>
+    /// The companion case: an ordinary review park still offers both verdicts exactly as before —
+    /// the new no-progress lever only applies when the run actually recorded it.
+    /// </summary>
+    [Fact]
+    public void An_ordinary_review_park_still_offers_needs_fixes()
+    {
+        Guid runId = DomainId.New();
+        RunDetails parked = StatusFixtures.Run(runId, RunState.ReviewParked);
+        parked.ParkedReason = "a finding could not be settled";
+        TaskListItem task = StatusFixtures.Task(TaskState.Claimed, runId);
+
+        TaskStatusRow row = StatusFixtures.Compose(task, parked);
+
+        row.Attention.Lever.Should().Contain("--needs-fixes");
+    }
+
+    /// <summary>
     /// With nothing else amiss, the stuck write is still the reason the row wants a human — the
     /// fallback the reordering has to preserve.
     /// </summary>
