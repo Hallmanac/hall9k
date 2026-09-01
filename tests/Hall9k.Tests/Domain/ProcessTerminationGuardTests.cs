@@ -4,10 +4,16 @@ using Xunit;
 namespace Hall9k.Tests.Domain;
 
 /// <summary>
-/// Process exit is owned exclusively by the two entry points, <c>Hall9k.Cli/Program.cs</c> and
-/// <c>Hall9k.Daemon/Program.cs</c> — every other line of production code reports an outcome
+/// Process exit is owned exclusively by the two exempted entry points, <c>Hall9k.Cli/Program.cs</c>
+/// and <c>Hall9k.Daemon/Program.cs</c> — every other line of production code reports an outcome
 /// through a return value and lets its caller decide what happens next, all the way up to
-/// whichever <c>Program.cs</c> is actually running. A command internal, a connector, or a domain
+/// whichever <c>Program.cs</c> is actually running. <c>src/</c> holds a third top-level-statement
+/// entry point, <c>Hall9k.AppHost/AppHost.cs</c>, and it is deliberately not exempted: it
+/// orchestrates the local Aspire dev loop only, is never the process a dispatched agent or a
+/// production install runs, and has no call reachable from a test today (this guard's scan
+/// confirms it, the same as everywhere else under <c>src/</c>). If AppHost ever needs a real exit
+/// call, add its path to <see cref="ExemptRelativePaths"/> explicitly rather than assuming it is
+/// already covered by "the two" above. A command internal, a connector, or a domain
 /// handler that instead called <see cref="Environment.Exit(int)"/> or
 /// <see cref="Environment.FailFast(string?)"/> directly would tear down the whole process it
 /// happens to be hosted in — including, for any such call reachable from a test (this project has
