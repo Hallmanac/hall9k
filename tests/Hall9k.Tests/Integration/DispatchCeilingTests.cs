@@ -91,7 +91,7 @@ public sealed class DispatchCeilingTests(PostgresFixture postgres) : IClassFixtu
             load.LiveRuns.Should().Be(2,
                 "the sweep that fills the node is the one whose deferrals need explaining, so it "
                 + "publishes what it is carrying when it leaves, not what it found on arrival");
-            load.MaxConcurrentRuns.Should().Be(2, "the ceiling is configured directly in runs (Decisions Log #109)");
+            load.MaxConcurrentRuns.Should().Be(2, "the ceiling is configured directly in runs (Decisions Log #111)");
             load.MachineName.Should().Be(Environment.MachineName);
         }
 
@@ -381,7 +381,7 @@ public sealed class DispatchCeilingTests(PostgresFixture postgres) : IClassFixtu
         return node;
     }
 
-    /// <summary>An engine whose ceiling is stated directly in runs (Decisions Log #109).</summary>
+    /// <summary>An engine whose ceiling is stated directly in runs (Decisions Log #111).</summary>
     private DispatchEngine Engine(IDocumentStore store, NodeContext node, int maxConcurrentRuns) => new(
         store, node, new DaemonConnection(postgres.ConnectionString), new FakeProcessManager(),
         Options.Create(new DaemonOptions

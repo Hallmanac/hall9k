@@ -35,7 +35,7 @@ public sealed class DispatchEngineTests(PostgresFixture postgres) : IClassFixtur
 
         NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
 
-        // A cap of three runs, stated directly (Decisions Log #109).
+        // A cap of three runs, stated directly (Decisions Log #111).
         DaemonOptions options = new()
         {
             MaxConcurrentTaskRuns = 3,

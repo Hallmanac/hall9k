@@ -991,7 +991,7 @@ public sealed class TaskDeciderTests
         act.Should().Throw<DomainConflictException>("Abandoned stays a dead end by design");
     }
 
-    // Decisions Log #109, Brian's ruling 2026-08-30: h9k task set-session-cap is deliberately
+    // Decisions Log #111, Brian's ruling 2026-08-30: h9k task set-session-cap is deliberately
     // state-agnostic, unlike Revise — it has to apply "even mid-run".
 
     [Fact]

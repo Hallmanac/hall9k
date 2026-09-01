@@ -370,7 +370,7 @@ ones worth knowing:
 
 | Option | Default | What it governs |
 |---|---|---|
-| `Hall9k__MaxConcurrentTaskRuns` | 1 | The node's ceiling, counted directly in **task runs** (Decisions Log #109) — every value is meaningful. Retires `Hall9k__MaxConcurrentAgentSessions`, still read as a fallback (see below). |
+| `Hall9k__MaxConcurrentTaskRuns` | 1 | The node's ceiling, counted directly in **task runs** (Decisions Log #111) — every value is meaningful. Retires `Hall9k__MaxConcurrentAgentSessions`, still read as a fallback (see below). |
 | `Hall9k__SessionCapPerRun` | 3 | How many agent sessions one run may hold simultaneously — a global default, overridable per task at any time with `h9k task set-session-cap`, even mid-run. A cap of 1 serializes the two review lenses instead of dispatching them together. |
 | `Hall9k__LeaseTimeout` | 60s | How long a lease survives without a heartbeat before the sweep requeues it |
 | `Hall9k__VerifyGateTimeout` | 15m | Per gate |
@@ -385,7 +385,7 @@ ones worth knowing:
 | `Hall9k__DefaultReviewRerequest` | disabled | Whether closeout asks reviewers for another pass after fixes push |
 | `Hall9k__DefaultModel`, `Hall9k__ModelByRole__*` | | The node's model policy, per role (build, review, fix, synthesis, refinement, publication), plus `Hall9k__ModelByRole__ReviewVerify` — not a seventh role, but a narrower override for a Verify-shape review pass specifically, blank falling through to whatever review resolves |
 
-Before Decisions Log #109, the ceiling was set in agent sessions and spent in runs, so there was a
+Before Decisions Log #111, the ceiling was set in agent sessions and spent in runs, so there was a
 conversion between the number you configured and the number of tasks in flight. That conversion is
 gone from admission itself: `Hall9k__MaxConcurrentTaskRuns` claims directly in runs, so every value
 is meaningful — 1, 2, and 3 each admit one more run than the last, unlike the old setting, where 2

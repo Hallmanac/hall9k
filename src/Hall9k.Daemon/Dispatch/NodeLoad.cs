@@ -13,12 +13,12 @@ namespace Hall9k.Daemon.Dispatch;
 public sealed record LiveSlot(Guid TaskId, Guid? RunId);
 
 /// <summary>
-/// What this node is carrying right now against what it may carry (Decisions Log #64, #109).
+/// What this node is carrying right now against what it may carry (Decisions Log #64, #111).
 /// The ceiling exists because the machine, not the platform, was enforcing one: the origin
 /// incident (2026-08-21) was an OOM that killed three of four concurrently dispatched agent
 /// sessions the first time the queue went four wide.
 /// <para>
-/// The configured ceiling is denominated directly in <em>task runs</em> as of Decisions Log #109
+/// The configured ceiling is denominated directly in <em>task runs</em> as of Decisions Log #111
 /// (<c>DaemonOptions.MaxConcurrentTaskRuns</c>) — the thing an operator actually reasons about,
 /// and the only thing the dispatcher can decline to start. The whole-life reservation this record
 /// used to compute by dividing a session budget by a run's peak session cost dissolves along with

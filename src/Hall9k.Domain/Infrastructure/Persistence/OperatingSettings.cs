@@ -21,7 +21,7 @@ public sealed class OperatingSettings
 {
     /// <summary>
     /// Mirrors <c>DaemonOptions.MaxConcurrentAgentSessions</c>'s shipped default, so the two never
-    /// drift apart. Retired as the node's own admission unit (Decisions Log #109) — the key is
+    /// drift apart. Retired as the node's own admission unit (Decisions Log #111) — the key is
     /// still read, converted, when <see cref="MaxConcurrentTaskRuns"/> is absent — but this
     /// default is no longer what a fresh install actually dispatches on:
     /// <see cref="DefaultMaxConcurrentTaskRuns"/> is <see cref="ConvertLegacyMaxConcurrentAgentSessions"/>
@@ -30,7 +30,7 @@ public sealed class OperatingSettings
     public const int DefaultMaxConcurrentAgentSessions = 3;
 
     /// <summary>
-    /// The node ceiling's own unit as of Decisions Log #109: how many task runs may be live on
+    /// The node ceiling's own unit as of Decisions Log #111: how many task runs may be live on
     /// this node at once, replacing the session-denominated <see cref="MaxConcurrentAgentSessions"/>
     /// as the thing an operator actually configures. Every value is meaningful — 1, 2, 3 each
     /// admit one more run than the last — unlike the retired setting, where 3 sessions and 2
@@ -43,7 +43,7 @@ public sealed class OperatingSettings
         ConvertLegacyMaxConcurrentAgentSessions(DefaultMaxConcurrentAgentSessions);
 
     /// <summary>
-    /// The per-run session cap's shipped default (Decisions Log #109, Brian's ruling 2026-08-30):
+    /// The per-run session cap's shipped default (Decisions Log #111, Brian's ruling 2026-08-30):
     /// deliberate headroom above today's routine peak of 2 (the two review lenses) — nothing today
     /// spawns a third concurrent session within one run, so this default changes no dispatch
     /// behavior until a future coded activity actually overlaps a third session. A cap of 1
@@ -53,7 +53,7 @@ public sealed class OperatingSettings
 
     /// <summary>
     /// The floor(n/2)-shaped conversion applied, at each precedence level independently, when only
-    /// the retired <see cref="MaxConcurrentAgentSessions"/> key is present (Decisions Log #109): 2
+    /// the retired <see cref="MaxConcurrentAgentSessions"/> key is present (Decisions Log #111): 2
     /// is <see cref="ReviewLens.CycleLenses"/>'s count, the peak sessions one run tree could hold
     /// under the old whole-life reservation — the same derivation
     /// <c>Hall9k.Daemon.Dispatch.NodeLoad</c> used before this decision, computed independently
@@ -65,7 +65,7 @@ public sealed class OperatingSettings
         Math.Max(1, sessions / Math.Max(1, ReviewLens.CycleLenses.Count));
 
     /// <summary>
-    /// How many agent sessions one run may hold simultaneously (Decisions Log #109, Brian's ruling
+    /// How many agent sessions one run may hold simultaneously (Decisions Log #111, Brian's ruling
     /// 2026-08-30): a global default, overridable per task from the CLI at any time — including
     /// while the task's run is live (<c>h9k task set-session-cap</c>) — because a change only ever
     /// takes effect at the run's next session dispatch: raising it lets the next phase fan out

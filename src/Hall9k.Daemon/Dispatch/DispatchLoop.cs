@@ -39,7 +39,7 @@ public sealed class DispatchLoop(
         logger.LogInformation("Node {NodeId} (owner {OwnerId}) starting", node.NodeId, node.OwnerId);
 
         // The ceiling is stated up front because it is the answer to "why is my queue not
-        // moving" (Decisions Log #64, #109), and because it is per-machine configuration: the
+        // moving" (Decisions Log #64, #111), and because it is per-machine configuration: the
         // number this node carries is not the number the next one carries.
         logger.LogInformation(
             "Concurrency ceiling: at most {MaxConcurrentTaskRuns} task run(s) live on this node at once "
@@ -194,7 +194,7 @@ public sealed class DispatchLoop(
     /// (Decisions Log #64) the ceiling moved from this run-denominated key to the session-
     /// denominated <c>MaxConcurrentAgentSessions</c>, so the old number could not be carried over
     /// as an alias without silently meaning something else — a tower told to run four would get
-    /// four sessions, which is one or two runs. Decisions Log #109 has since moved the ceiling back
+    /// four sessions, which is one or two runs. Decisions Log #111 has since moved the ceiling back
     /// to a run-denominated key, <see cref="DaemonOptions.MaxConcurrentTaskRuns"/>, which this
     /// retired key's own value would in fact carry over unchanged — but binding it quietly would
     /// still be a guess about intent (AGENTS.md: never guess at unobserved facts): the two

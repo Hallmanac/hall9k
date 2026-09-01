@@ -316,7 +316,7 @@ public sealed class PlatformConfigFileTests : IDisposable
     /// just the section key the sibling tests above cover) must still be recognised as the same
     /// leaf, whichever casing named it. No leaf in this section crashes the daemon any more
     /// (<c>DaemonOptionsBinding.ResolverOwnedKeys</c> excludes every concurrency setting from the
-    /// daemon's own <c>ConfigurationBinder</c> call, Decisions Log #109's follow-up), so a malformed
+    /// daemon's own <c>ConfigurationBinder</c> call, Decisions Log #111's follow-up), so a malformed
     /// value here is recovered like any other shape mismatch instead. Origin: the cycle-1 pre-PR
     /// review found the ordinal comparison here missing this case; independent pre-PR review,
     /// cycle 1 of the concurrency-in-runs branch, found this test's own expectation stale once
@@ -435,7 +435,7 @@ public sealed class PlatformConfigFileTests : IDisposable
     /// this leaf was still bound through <c>ConfigurationBinder</c>, that shape crashed the daemon
     /// exactly like an unparseable string did. It no longer can: this leaf is now excluded from
     /// the daemon's own <c>ConfigurationBinder</c> call entirely (<c>DaemonOptionsBinding
-    /// .ResolverOwnedKeys</c>, Decisions Log #109's follow-up), so it is recovered like any other
+    /// .ResolverOwnedKeys</c>, Decisions Log #111's follow-up), so it is recovered like any other
     /// shape mismatch instead. Origin: the cycle-7 pre-PR review found this shape reported as
     /// merely ignored when the daemon at the time in fact never started; independent pre-PR
     /// review, cycle 1 of the concurrency-in-runs branch, found that verdict itself gone stale.
@@ -511,7 +511,7 @@ public sealed class PlatformConfigFileTests : IDisposable
     /// be reported as a crash regardless of what the first leaf did (origin: the cycle-6 pre-PR
     /// review found the retry's own failure silently discarded). Neither leaf can crash the daemon
     /// any more (<c>DaemonOptionsBinding.ResolverOwnedKeys</c> excludes every concurrency setting
-    /// from the daemon's own <c>ConfigurationBinder</c> call, Decisions Log #109's follow-up), so
+    /// from the daemon's own <c>ConfigurationBinder</c> call, Decisions Log #111's follow-up), so
     /// two malformed leaves now fall back to nothing recovered, the same conservative outcome as
     /// before that fix — the sibling test below covers the same two leaves in the opposite key
     /// order, and both orders must land on the identical verdict.

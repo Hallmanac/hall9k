@@ -1353,7 +1353,7 @@ public sealed class AgentPromptBuilderTests : IDisposable
 
     /// <summary>
     /// A cycle's two lenses read one worktree, concurrently at the default session cap
-    /// (Decisions Log #59) or one after another at a lower one (Decisions Log #109), so neither
+    /// (Decisions Log #59) or one after another at a lower one (Decisions Log #111), so neither
     /// may build or test: two builds sharing one obj/bin fail each other, and the resulting
     /// file-in-use error reads like a defect in the diff. Because a pass cannot tell from inside
     /// the sandbox whether its sibling is running at that instant, the prompt never asserts a

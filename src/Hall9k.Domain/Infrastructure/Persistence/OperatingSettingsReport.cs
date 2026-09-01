@@ -12,7 +12,7 @@ public sealed record RoleModelSetting(string Role, ResolvedSetting<string?> Mode
 /// silently leaves at its default while binding every sibling key normally — so the file is
 /// still in force, just not for that one setting. The three concurrency keys can no longer crash
 /// the daemon outright: <c>Hall9k.Daemon.DaemonOptionsBinding.ResolverOwnedKeys</c> excludes them
-/// from the daemon's own <c>ConfigurationBinder</c> call (Decisions Log #109's follow-up), which
+/// from the daemon's own <c>ConfigurationBinder</c> call (Decisions Log #111's follow-up), which
 /// retired the one leaf (<c>maxConcurrentAgentSessions</c>) that used to; every other
 /// <c>DaemonOptions</c> leaf in this section is still bound through <c>ConfigurationBinder</c> and
 /// can still crash startup on a bad value (independent pre-PR review, cycle 4, adversarial lens).
@@ -31,7 +31,7 @@ public enum ConfigFileProblemConsequence
 /// <param name="AffectsResolverOwnedKey">
 /// Whether the malformed leaf named by <paramref name="Message"/> is one of the three concurrency
 /// keys <c>Hall9k.Daemon.DaemonOptionsBinding.ResolverOwnedKeys</c> excludes from the daemon's own
-/// <c>ConfigurationBinder</c> call (Decisions Log #109's follow-up): <c>maxConcurrentTaskRuns</c>,
+/// <c>ConfigurationBinder</c> call (Decisions Log #111's follow-up): <c>maxConcurrentTaskRuns</c>,
 /// <c>sessionCapPerRun</c>, <c>maxConcurrentAgentSessions</c>. <see cref="DescribeConsequence"/>
 /// names the mechanism that actually ignored the leaf, and for these three it is
 /// <see cref="OperatingSettingsResolver"/> treating a malformed value as absent, not
@@ -120,7 +120,7 @@ public sealed record ConfigFileReadResult(
 /// <see cref="MaxConcurrentTaskRunsConvertedFromLegacy"/> is true when
 /// <see cref="MaxConcurrentTaskRuns"/>'s effective value came from converting the retired
 /// <see cref="OperatingSettings.MaxConcurrentAgentSessions"/> key rather than from a
-/// <c>max-concurrent-task-runs</c> key read directly (Decisions Log #109) — what lets
+/// <c>max-concurrent-task-runs</c> key read directly (Decisions Log #111) — what lets
 /// <c>h9k daemon status</c> and <c>h9k config show</c> name the conversion rather than present a
 /// converted number as though it were configured in runs all along.
 /// <see cref="MaxConcurrentTaskRunsShadowsConfigFileValue"/> is true only for the one shape that
