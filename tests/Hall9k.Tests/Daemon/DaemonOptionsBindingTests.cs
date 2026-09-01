@@ -119,12 +119,34 @@ public sealed class DaemonOptionsBindingTests
         messages.Should().BeEmpty("there is nothing set outside the resolver's own sources to name as ignored");
     }
 
-    private static OperatingSettingsReport ReportWithCeiling(int maxConcurrentTaskRuns) =>
+    /// <summary>
+    /// The shadow case: an environment-level legacy conversion outranks a
+    /// <c>maxConcurrentTaskRuns</c> value the config file sets directly, so the merged
+    /// configuration's raw value for that key reads back as the file's own value even though the
+    /// daemon runs on the converted one — a source the resolver does read, just outranked at this
+    /// level, not "another configuration source" this check should name (independent pre-PR
+    /// review, cycle 1, both lenses).
+    /// </summary>
+    [Fact]
+    public void A_config_file_value_shadowed_by_an_environment_level_legacy_conversion_is_silent()
+    {
+        IConfigurationSection section = Section(("MaxConcurrentTaskRuns", "4"));
+        OperatingSettingsReport report = ReportWithCeiling(maxConcurrentTaskRuns: 3, shadowsConfigFileValue: true);
+
+        IReadOnlyList<string> messages = DaemonOptionsBinding.DescribeConfigurationSourcesTheResolverIgnores(section, report);
+
+        messages.Should().BeEmpty(
+            "the config file's own value is already explained by the daemon's own shadow-case log line; "
+            + "naming it again here as an unread source would contradict that explanation");
+    }
+
+    private static OperatingSettingsReport ReportWithCeiling(int maxConcurrentTaskRuns, bool shadowsConfigFileValue = false) =>
         new(
             new ResolvedSetting<int>(OperatingSettings.DefaultMaxConcurrentAgentSessions, SettingOrigin.Default, null),
+            false,
             new ResolvedSetting<int>(maxConcurrentTaskRuns, SettingOrigin.Default, null),
             false,
-            false,
+            shadowsConfigFileValue,
             new ResolvedSetting<int>(OperatingSettings.DefaultSessionCapPerRun, SettingOrigin.Default, null),
             new ResolvedSetting<string>(AgentModel.PlatformFallback, SettingOrigin.Default, null),
             [],
