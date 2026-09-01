@@ -21,17 +21,28 @@ internal static class NodeBootstrapSeed
 {
     public static async Task<NodeContext> NewNodeAsync(IDocumentStore store, CancellationToken cancellationToken)
     {
-        await using (IDocumentSession session = store.LightweightSession())
-        {
-            ConnectionRegistered registered = ConnectionDecider.Register(
-                DomainId.New(), DomainId.New(), WorkItemProvider.GitHub,
-                "test-user", CredentialReference.GhCli, DateTimeOffset.UtcNow);
-            session.Events.StartStream<ConnectionAggregate>(registered.Id, registered);
-            await session.SaveChangesAsync(cancellationToken);
-        }
+        await SeedGitHubConnectionAsync(store, cancellationToken);
 
         NodeContext node = new();
         await node.InitializeAsync(store, cancellationToken);
         return node;
+    }
+
+    /// <summary>
+    /// The half of <see cref="NewNodeAsync"/> that matters for gh-safety, split out for a test
+    /// that needs to call <see cref="NodeContext.InitializeAsync"/> directly (deferred, to
+    /// exercise the loop's pre-bootstrap window) rather than through <see cref="NewNodeAsync"/>
+    /// itself — so that call sees a connection already on file too, explicitly rather than by
+    /// way of an unrelated earlier <see cref="NewNodeAsync"/> call in the same test happening to
+    /// share its store.
+    /// </summary>
+    public static async Task SeedGitHubConnectionAsync(IDocumentStore store, CancellationToken cancellationToken)
+    {
+        await using IDocumentSession session = store.LightweightSession();
+        ConnectionRegistered registered = ConnectionDecider.Register(
+            DomainId.New(), DomainId.New(), WorkItemProvider.GitHub,
+            "test-user", CredentialReference.GhCli, DateTimeOffset.UtcNow);
+        session.Events.StartStream<ConnectionAggregate>(registered.Id, registered);
+        await session.SaveChangesAsync(cancellationToken);
     }
 }
