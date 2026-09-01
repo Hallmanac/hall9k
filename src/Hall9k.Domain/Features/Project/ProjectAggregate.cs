@@ -35,6 +35,14 @@ public sealed class ProjectAggregate
     public BacklogPolicy BacklogPolicy { get; private set; } = BacklogPolicy.None;
     /// <summary>Free-text routing guidance handed verbatim to the Jira agent; a label list for github-issues.</summary>
     public string? BacklogRoutingGuidance { get; private set; }
+    /// <summary>This project's override of the conformance review track's cycle cap; null defers to the node (Decisions Log #63).</summary>
+    public int? MaxComplianceReviewCycles { get; private set; }
+    /// <summary>This project's override of the adversarial review track's cycle cap; null defers to the node.</summary>
+    public int? MaxAdversarialReviewCycles { get; private set; }
+    /// <summary>This project's override of the mandatory final-full-pass round cap; null defers to the node.</summary>
+    public int? MaxFinalFullPassRounds { get; private set; }
+    /// <summary>This project's override of the task-lifetime review-cycle budget; null defers to the node.</summary>
+    public int? LifetimeReviewCycleBudget { get; private set; }
     public DateTimeOffset RegisteredAt { get; private set; }
 
     private readonly List<VerifyCommand> _verifyCommands = [];
@@ -118,6 +126,26 @@ public sealed class ProjectAggregate
         if (@event.BacklogRoutingGuidance.HasValue)
         {
             BacklogRoutingGuidance = @event.BacklogRoutingGuidance.Value.IsBlank() ? null : @event.BacklogRoutingGuidance.Value;
+        }
+
+        if (@event.MaxComplianceReviewCycles.HasValue)
+        {
+            MaxComplianceReviewCycles = @event.MaxComplianceReviewCycles.Value;
+        }
+
+        if (@event.MaxAdversarialReviewCycles.HasValue)
+        {
+            MaxAdversarialReviewCycles = @event.MaxAdversarialReviewCycles.Value;
+        }
+
+        if (@event.MaxFinalFullPassRounds.HasValue)
+        {
+            MaxFinalFullPassRounds = @event.MaxFinalFullPassRounds.Value;
+        }
+
+        if (@event.LifetimeReviewCycleBudget.HasValue)
+        {
+            LifetimeReviewCycleBudget = @event.LifetimeReviewCycleBudget.Value;
         }
     }
 }

@@ -38,4 +38,22 @@ public sealed record ProjectSettingsChanged(
     Optional<ProjectHome> HomeDirectory = default,
     Optional<string> RepositoryPath = default,
     Optional<BacklogPolicy> BacklogPolicy = default,
-    Optional<string> BacklogRoutingGuidance = default);
+    Optional<string> BacklogRoutingGuidance = default,
+    /// <summary>
+    /// This project's override of the conformance review track's cycle cap (Decisions Log #63,
+    /// task: review cycle caps become settable): present-with-null clears the override, so the
+    /// node's own setting (or the compiled default) decides again — the same idiom
+    /// <see cref="Tasks.Events.TaskRevised.EpicId"/> already uses for a clearable value. Task
+    /// overrides this project value; this project value overrides the node.
+    /// </summary>
+    Optional<int?> MaxComplianceReviewCycles = default,
+    /// <summary>This project's override of the adversarial review track's cycle cap; present-with-null clears it.</summary>
+    Optional<int?> MaxAdversarialReviewCycles = default,
+    /// <summary>This project's override of the mandatory final-full-pass round cap; present-with-null clears it.</summary>
+    Optional<int?> MaxFinalFullPassRounds = default,
+    /// <summary>
+    /// This project's override of the task-lifetime review-cycle budget (cycles summed across
+    /// every run and follow-up a task has had, immune to per-run resets); present-with-null
+    /// clears it.
+    /// </summary>
+    Optional<int?> LifetimeReviewCycleBudget = default);

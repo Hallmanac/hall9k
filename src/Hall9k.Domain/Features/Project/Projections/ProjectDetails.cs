@@ -30,6 +30,14 @@ public sealed class ProjectDetails
     public BacklogPolicy BacklogPolicy { get; set; } = BacklogPolicy.None;
     /// <summary>Free-text routing guidance handed verbatim to the Jira agent; a label list for github-issues.</summary>
     public string? BacklogRoutingGuidance { get; set; }
+    /// <summary>This project's override of the conformance review track's cycle cap; null defers to the node (Decisions Log #63).</summary>
+    public int? MaxComplianceReviewCycles { get; set; }
+    /// <summary>This project's override of the adversarial review track's cycle cap; null defers to the node.</summary>
+    public int? MaxAdversarialReviewCycles { get; set; }
+    /// <summary>This project's override of the mandatory final-full-pass round cap; null defers to the node.</summary>
+    public int? MaxFinalFullPassRounds { get; set; }
+    /// <summary>This project's override of the task-lifetime review-cycle budget; null defers to the node.</summary>
+    public int? LifetimeReviewCycleBudget { get; set; }
     /// <summary>
     /// Where this project lives on disk (backlog 47). None for a project registered before homes
     /// existed, or one whose home has not been created on this machine.
@@ -118,6 +126,26 @@ public sealed class ProjectDetailsProjection : SingleStreamProjection<ProjectDet
             view.BacklogRoutingGuidance = @event.Data.BacklogRoutingGuidance.Value.IsBlank()
                 ? null
                 : @event.Data.BacklogRoutingGuidance.Value;
+        }
+
+        if (@event.Data.MaxComplianceReviewCycles.HasValue)
+        {
+            view.MaxComplianceReviewCycles = @event.Data.MaxComplianceReviewCycles.Value;
+        }
+
+        if (@event.Data.MaxAdversarialReviewCycles.HasValue)
+        {
+            view.MaxAdversarialReviewCycles = @event.Data.MaxAdversarialReviewCycles.Value;
+        }
+
+        if (@event.Data.MaxFinalFullPassRounds.HasValue)
+        {
+            view.MaxFinalFullPassRounds = @event.Data.MaxFinalFullPassRounds.Value;
+        }
+
+        if (@event.Data.LifetimeReviewCycleBudget.HasValue)
+        {
+            view.LifetimeReviewCycleBudget = @event.Data.LifetimeReviewCycleBudget.Value;
         }
 
         view.SettingsChangedAt = @event.Data.ChangedAt;

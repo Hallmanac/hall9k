@@ -108,6 +108,10 @@ public sealed class ProjectShowCommand : Hall9kAsyncCommand<ProjectShowCommand.S
             ? $"[dim]none — add one: h9k project set {project.Name.EscapeMarkup()} --link \"jira=https://…\"[/]"
             : string.Join("\n", project.ContextLinks.Select(link =>
                 $"{link.Name.EscapeMarkup()} [dim]→[/] {link.Url.ToString().EscapeMarkup()}")));
+        table.AddRow("Max compliance review cycles", ReviewCapRow(project, project.MaxComplianceReviewCycles, "max-compliance-review-cycles"));
+        table.AddRow("Max adversarial review cycles", ReviewCapRow(project, project.MaxAdversarialReviewCycles, "max-adversarial-review-cycles"));
+        table.AddRow("Max final-full-pass rounds", ReviewCapRow(project, project.MaxFinalFullPassRounds, "max-final-full-pass-rounds"));
+        table.AddRow("Lifetime review-cycle budget", ReviewCapRow(project, project.LifetimeReviewCycleBudget, "lifetime-review-cycle-budget"));
         table.AddRow("Settings changed", project.SettingsChangedAt is { } changedAt
             ? $"[dim]{changedAt.ToLocalTime():g}[/]"
             : "[dim]never — still the registration defaults[/]");
@@ -140,6 +144,16 @@ public sealed class ProjectShowCommand : Hall9kAsyncCommand<ProjectShowCommand.S
         return $"[dim]none — publishing tracks nothing externally; set one: h9k project set "
             + $"{project.Name.EscapeMarkup()} --backlog github-issues|jira[/]{routing}";
     }
+
+    /// <summary>
+    /// One of the four review-cycle caps (task: the review cycle caps become settable at three
+    /// levels): this project's own override when set, else the resolution chain underneath it —
+    /// this project outranks the node, and a task override outranks this project in turn.
+    /// </summary>
+    private static string ReviewCapRow(ProjectDetails project, int? projectOverride, string optionName) => projectOverride is { } value
+        ? value.ToString()
+        : $"[dim]not set — the node decides (h9k config show), unless a task overrides it. Set one: "
+          + $"h9k project set {project.Name.EscapeMarkup()} --{optionName} <N>[/]";
 
     private static void WriteTasks(ProjectDetails project, IReadOnlyList<TaskStatusRow> rows)
     {
