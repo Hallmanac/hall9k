@@ -364,8 +364,8 @@ public sealed class ReviewEngine(
                             (string finalPassReason, bool finalPassNoProgress) =
                                 FinalFullPassCapParkReason(run, caps.MaxFinalFullPassRounds);
                             await ParkAsync(
-                                context.RunId, context.TaskId, finalPassReason, cancellationToken,
-                                finalPassNoProgress);
+                                context.RunId, context.TaskId, finalPassReason, finalPassNoProgress,
+                                cancellationToken);
                             return false;
                         }
 
@@ -412,7 +412,7 @@ public sealed class ReviewEngine(
                         $"Review cycle {run.ReviewCycle}: {await VerdictMissingCauseAsync(run, cancellationToken)}. " +
                         $"Its output: {RunPaths.ReviewFindingsFile(ParkedRunDirectory(run), run.ReviewCycle)}. " +
                         "Judge the diff yourself, then resolve with h9k review resolve or abandon the task.",
-                        cancellationToken);
+                        cancellationToken: cancellationToken);
                     return false;
 
                 case ReviewPhase.VerdictMissing:
@@ -430,7 +430,7 @@ public sealed class ReviewEngine(
                     {
                         (string capReason, bool capNoProgress) = CapParkReason(run, capped, caps);
                         await ParkAsync(
-                            context.RunId, context.TaskId, capReason, cancellationToken, capNoProgress);
+                            context.RunId, context.TaskId, capReason, capNoProgress, cancellationToken);
                         return false;
                     }
 
@@ -442,7 +442,9 @@ public sealed class ReviewEngine(
                     break;
 
                 case ReviewPhase.Disputed:
-                    await ParkAsync(context.RunId, context.TaskId, DisputedParkReason(context, run), cancellationToken);
+                    await ParkAsync(
+                        context.RunId, context.TaskId, DisputedParkReason(context, run),
+                        cancellationToken: cancellationToken);
                     return false;
 
                 case ReviewPhase.Reverify:
@@ -522,8 +524,8 @@ public sealed class ReviewEngine(
                         (string reverifyFinalPassReason, bool reverifyFinalPassNoProgress) =
                             FinalFullPassCapParkReason(run, caps.MaxFinalFullPassRounds);
                         await ParkAsync(
-                            context.RunId, context.TaskId, reverifyFinalPassReason, cancellationToken,
-                            reverifyFinalPassNoProgress);
+                            context.RunId, context.TaskId, reverifyFinalPassReason, reverifyFinalPassNoProgress,
+                            cancellationToken);
                         return false;
                     }
 
@@ -2349,8 +2351,8 @@ public sealed class ReviewEngine(
     /// loop-top check, not one a test can land reliably through the public entry point).
     /// </summary>
     internal async Task ParkAsync(
-        Guid runId, Guid taskId, string reason, CancellationToken cancellationToken,
-        bool needsFixesOffersNoProgress = false)
+        Guid runId, Guid taskId, string reason, bool needsFixesOffersNoProgress = false,
+        CancellationToken cancellationToken = default)
     {
         await using IDocumentSession session = store.LightweightSession();
         RunAggregate run = await LoadRunAsync(runId, cancellationToken);
@@ -2988,8 +2990,10 @@ public sealed class ReviewEngine(
     {
         string lever = cap.Level switch
         {
-            ReviewCapLevel.Task => $"raise it or clear it with h9k task set-review-caps <id> {flag} default",
-            ReviewCapLevel.Project => $"raise it or clear it with h9k project set <name> {flag} default",
+            ReviewCapLevel.Task =>
+                $"raise it with h9k task set-review-caps <id> {flag} <N>, or clear it with {flag} default",
+            ReviewCapLevel.Project =>
+                $"raise it with h9k project set <name> {flag} <N>, or clear it with {flag} default",
             ReviewCapLevel.Node => $"override it for this task with h9k task set-review-caps <id> {flag} <N>",
             _ => $"raise it with h9k config set {flag} <N>",
         };
@@ -3086,7 +3090,7 @@ public sealed class ReviewEngine(
         await ParkAsync(
             context.RunId, context.TaskId,
             LifetimeBudgetParkReason(run, totalCycles, caps.LifetimeReviewCycleBudget),
-            cancellationToken, needsFixesOffersNoProgress: true);
+            needsFixesOffersNoProgress: true, cancellationToken: cancellationToken);
         return true;
     }
 

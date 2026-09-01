@@ -33,11 +33,12 @@ public sealed class TaskSetReviewCapsCommand : Hall9kAsyncCommand<TaskSetReviewC
         [Description(
             "This task's cycle cap for the conformance review track (Decisions Log #63): outranks the "
             + "project's and the node's own settings. Setting it at or below the cycles that track has "
-            + "run since its last human takeover grant (0, if it has never had one — not the same as the "
-            + "absolute review cycle h9k status/h9k task show print, which never resets) parks the run at "
-            + "the next settle point or cap check — the takeover lever for a task observed grinding; 0 "
-            + "always parks immediately, since that count can never be negative. 'default' clears the task "
-            + "override so the project (or the node) decides.")]
+            + "run since its last human takeover grant (0, if it has never had one, which is also when "
+            + "this count matches the absolute review cycle h9k status/h9k task show print — a grant or "
+            + "a track reactivation moves this count's own base forward, and only from there do the two "
+            + "numbers diverge) parks the run at the next settle point or cap check — the takeover lever "
+            + "for a task observed grinding; 0 always parks immediately, since that count can never be "
+            + "negative. 'default' clears the task override so the project (or the node) decides.")]
         public string? MaxComplianceReviewCycles { get; init; }
 
         [CommandOption("--max-adversarial-review-cycles <N|default>")]

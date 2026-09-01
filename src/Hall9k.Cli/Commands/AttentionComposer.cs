@@ -485,10 +485,14 @@ internal static class AttentionComposer
     /// own park (<c>ResolvePrReviewAsync</c>) is the opposite refusal: there is no diff of its own
     /// to fix, so only --merge-ready applies. A cap-0 takeover park or the lifetime-budget park
     /// (<see cref="RunDetails.ParkedNeedsFixesOffersNoProgress"/>) accepts --needs-fixes rather
-    /// than refusing it, but the park's own reason already says granting one buys no progress
-    /// here, so the lever does not advertise the command whose only effect is an identical
-    /// re-park (independent pre-PR review, cycle 5, adversarial lens: offering it anyway
-    /// contradicted the reason printed directly above it).
+    /// than refusing it, but a grant never clears this particular park — a per-track cap-0 never
+    /// even dispatches a fix session, while a final-full-pass cap-0 or the lifetime-budget park
+    /// dispatch one but re-park right behind it, since neither the cap nor the budget resets — so
+    /// the lever does not claim more than "will not clear this park" and does not advertise the
+    /// command as though it settled anything (independent pre-PR review, cycle 5, adversarial
+    /// lens: offering it anyway contradicted the reason printed directly above it; cycle 1,
+    /// adversarial lens: the original wording overclaimed "no progress at all", which is false
+    /// wherever a fix session genuinely dispatches before the identical re-park).
     /// </summary>
     private static string ReviewParkLever(TaskListItem task, RunDetails run, string id) =>
         task.Type == TaskType.PrReview
@@ -496,7 +500,7 @@ internal static class AttentionComposer
             : task.FollowUpKind == FollowUpKind.Rebase && run.ReviewCycle == 0
                 ? $"h9k review resolve {id} --needs-fixes \"<how to resolve the conflict>\""
                 : run.ParkedNeedsFixesOffersNoProgress
-                    ? $"h9k review resolve {id} --merge-ready (--needs-fixes cannot buy this park any progress — raise the cap or budget first, per the reason above)"
+                    ? $"h9k review resolve {id} --merge-ready (--needs-fixes will not clear this park — raise the cap or budget first, per the reason above)"
                     : $"h9k review resolve {id} --merge-ready (or --needs-fixes \"…\")";
 
     private static string Reason(string? recorded, string absent) =>
