@@ -104,8 +104,12 @@ public static class PlatformConfigFile
         try
         {
             OperatingSettings settings = DeserializeSectionCore(document);
-            bool maxConcurrentAgentSessionsIsFabricatedZero = ApplyMaxConcurrentAgentSessionsBinderQuirk(document, settings);
+            bool maxConcurrentAgentSessionsIsFabricatedZero = ApplyIntBinderQuirks(document, settings);
             return ConfigFileReadResult.Ok(settings, maxConcurrentAgentSessionsIsFabricatedZero);
+        }
+        catch (JsonException exception) when (DaemonFailsToStartOn(document, exception))
+        {
+            return ConfigFileReadResult.DaemonCrashes(ShapeErrorMessage(exception));
         }
         catch (JsonException exception)
         {
@@ -140,16 +144,27 @@ public static class PlatformConfigFile
         {
             OperatingSettings settings = recovery.Deserialize<OperatingSettings>(SerializerOptions) ?? new();
             settings.ModelByRole ??= new();
-            bool maxConcurrentAgentSessionsIsFabricatedZero = ApplyMaxConcurrentAgentSessionsBinderQuirk(document, settings);
+            bool maxConcurrentAgentSessionsIsFabricatedZero = ApplyIntBinderQuirks(document, settings);
             return ConfigFileReadResult.SettingIgnored(
                 settings, ShapeErrorMessage(exception), maxConcurrentAgentSessionsIsFabricatedZero, affectsResolverOwnedKey);
         }
+        catch (JsonException retryException) when (DaemonFailsToStartOn(document, retryException))
+        {
+            // A second malformed leaf beyond the one already being ignored, and this one is the
+            // one leaf ConfigurationBinder itself throws on: the classification has to revisit
+            // against this new exception rather than keep the first exception's "just ignored"
+            // verdict, or a file that genuinely crashes the daemon at startup is reported as
+            // merely having one setting fall back to its default. Origin: the cycle-6 pre-PR
+            // review found this exact silent-downgrade — swapping the two malformed keys' order
+            // in the same file flipped the report from DaemonFailsToStart to SettingIsIgnored
+            // even though the daemon crashes on both orderings.
+            return ConfigFileReadResult.DaemonCrashes(ShapeErrorMessage(retryException));
+        }
         catch (JsonException)
         {
-            // A second malformed leaf beyond the one already being ignored: fall back to nothing
-            // recovered rather than looping, the same conservative outcome as before this fix.
-            // Neither leaf crashes ConfigurationBinder (see TryReadOperatingSettingsAsync's own
-            // doc), so both malformed key orders converge on this same SettingIgnored verdict.
+            // A second malformed leaf beyond the one already being ignored, and — like the first —
+            // not one ConfigurationBinder crashes on either: fall back to nothing recovered rather
+            // than looping, the same conservative outcome as before this fix.
             return ConfigFileReadResult.SettingIgnored(new(), ShapeErrorMessage(exception), false);
         }
     }
@@ -197,31 +212,140 @@ public static class PlatformConfigFile
             .FirstOrDefault(key => string.Equals(key, name, StringComparison.OrdinalIgnoreCase));
 
     /// <summary>
-    /// <c>ConfigurationBinder</c> does not merely skip an explicit JSON <c>null</c> or an empty
-    /// object <c>{}</c> at this one leaf the way it skips every other shape mismatch here: because
-    /// <see cref="OperatingSettings.MaxConcurrentAgentSessions"/> mirrors a non-nullable
-    /// <c>int</c> on the daemon's own <c>DaemonOptions</c>, there is no null to assign, so the
-    /// binder's explicit-value handling resolves it to <see langword="default"/> — zero — rather
-    /// than leaving the property untouched at its built-in default of three. Reporting "ignored,
-    /// default (3) still applies" for either shape would tell an operator the daemon dispatches
-    /// at full concurrency when it has in fact floored itself to exactly one running session —
-    /// except <see cref="OperatingSettingsResolver.ResolveMaxConcurrentTaskRuns"/> reads this
-    /// method's own return value separately and treats a fabricated zero as absent rather than
-    /// converting it into a run ceiling of one, so the sub-1 warning does not fire for this shape;
-    /// it fires only for a leaf that genuinely holds a configured zero. Every other
-    /// object or array shape here — a non-empty object, a non-empty array — genuinely is left
-    /// alone by the binder and must not be zeroed. Confirmed against the pinned binder version
-    /// directly rather than inferred. Origin: cycle-7 pre-PR review. This is a description of what
-    /// <c>ConfigurationBinder</c> would have done, kept for the sake of <c>h9k config show</c>'s
-    /// own accuracy about the JSON shape, even though nothing binds this leaf through
-    /// <c>ConfigurationBinder</c> any more — see <see cref="TryReadOperatingSettingsAsync"/>'s
-    /// own doc.
+    /// Whether <paramref name="exception"/>'s shape mismatch is one <c>ConfigurationBinder</c>
+    /// actually throws on too, rather than one this type's stricter POCO deserialize rejects but
+    /// the binder quietly ignores. The binder only has a registered conversion for the scalar
+    /// leaves named in <see cref="ConfigurationBinderBoundIntKeys"/> — the four review-cycle
+    /// caps, each a non-nullable <c>int</c> that <c>Hall9k.Daemon.DaemonOptionsBinding.ResolverOwnedKeys</c>
+    /// does NOT exclude from Program.cs's own <c>Bind()</c> call, unlike the three concurrency
+    /// keys. <see cref="OperatingSettings.MaxConcurrentAgentSessions"/> is deliberately not one of
+    /// these any more: it is retired and excluded from that same <c>Bind()</c> call (Decisions Log
+    /// #111's follow-up), so a malformed value for it can never reach <c>ConfigurationBinder</c>
+    /// at all, and classifying it as a startup crash here would misreport a file the daemon
+    /// actually starts on fine (independent pre-PR review, cycle 4, adversarial lens — this method
+    /// used to check that key too, before the exclusion landed). A mismatch anywhere else — a
+    /// string given for the whole <c>modelByRole</c> object, say — has no registered conversion,
+    /// so the binder falls back to binding the object's (nonexistent) children and leaves the
+    /// property at its default rather than throwing. Keyed off <see cref="JsonException.Path"/>
+    /// rather than re-implementing that resolution here, so the properties this can go wrong for
+    /// stay the single <see cref="ConfigurationBinderBoundIntKeys"/> list rather than a second
+    /// copy of the same key names drifting apart. Compared case-insensitively: <see
+    /// cref="JsonException.Path"/> carries whatever casing the document itself used (this type
+    /// deserializes with <c>PropertyNameCaseInsensitive</c>), and a hand-edited PascalCase key —
+    /// the casing this project's own docs print — must still be recognised as the property
+    /// <c>ConfigurationBinder</c> binds case-insensitively too.
+    /// <para>
+    /// The path match alone is not enough: <c>JsonConfigurationFileParser</c> flattens a JSON
+    /// object or a non-empty array into nested keys rather than a value at this leaf's own key,
+    /// so the binder finds nothing to convert and leaves the property at its default — it does
+    /// not throw, even though this type's stricter deserialize does. Only a genuinely scalar
+    /// value that still fails to convert (a non-numeric string), or an <em>empty</em> array,
+    /// crashes the binder for real: unlike an empty object, an empty array still gets a direct
+    /// entry at this leaf's own key (its value the empty string), so the binder does find
+    /// something to convert and fails on it. Origin: the cycle-4 pre-PR review found
+    /// <c>{"maxComplianceReviewCycles": {}}</c> reported as a startup crash when the daemon in
+    /// fact starts normally on the built-in default; the cycle-7 review found the reverse for
+    /// <c>{"maxComplianceReviewCycles": []}</c> — reported as merely ignored when the daemon in
+    /// fact crashes on it. Both were confirmed against the pinned binder version directly.
+    /// </para>
     /// </summary>
-    /// <returns>Whether the quirk fired — see <see cref="ConfigFileReadResult.MaxConcurrentAgentSessionsIsFabricatedZero"/>.</returns>
-    private static bool ApplyMaxConcurrentAgentSessionsBinderQuirk(JsonObject document, OperatingSettings settings)
+    private static bool DaemonFailsToStartOn(JsonObject document, JsonException exception)
     {
-        if (Section(document) is not { } section
-            || FindKeyIgnoringCase(section, "maxConcurrentAgentSessions") is not { } key)
+        if (!ConfigurationBinderBoundIntKeys.Any(key =>
+            string.Equals(exception.Path, $"$.{key}", StringComparison.OrdinalIgnoreCase)))
+        {
+            return false;
+        }
+
+        return NodeAtPath(document, exception.Path) switch
+        {
+            JsonObject => false,
+            JsonArray array => array.Count == 0,
+            _ => true,
+        };
+    }
+
+    /// <summary>
+    /// The subset of <see cref="IntBinderQuirkKeys"/> the daemon's own <c>ConfigurationBinder</c>
+    /// still binds directly — every leaf <c>Hall9k.Daemon.DaemonOptionsBinding.ResolverOwnedKeys</c>
+    /// does not exclude from Program.cs's <c>Bind()</c> call. <see
+    /// cref="OperatingSettings.MaxConcurrentAgentSessions"/> is the one <see
+    /// cref="IntBinderQuirkKeys"/> leaf missing here: it is retired and excluded from that call, so
+    /// a malformed value for it can never crash the daemon — it can only ever bind to a simulated
+    /// zero for display purposes (see <see cref="ApplyIntBinderQuirk"/>'s own doc).
+    /// </summary>
+    private static readonly string[] ConfigurationBinderBoundIntKeys =
+    [
+        "maxComplianceReviewCycles",
+        "maxAdversarialReviewCycles",
+        "maxFinalFullPassRounds",
+        "lifetimeReviewCycleBudget",
+    ];
+
+    /// <summary>
+    /// Every leaf that mirrors a non-nullable <c>int</c> on <c>DaemonOptions</c> and so shares
+    /// <c>maxConcurrentAgentSessions</c>'s own <c>ConfigurationBinder</c> quirk (<see
+    /// cref="ApplyIntBinderQuirk"/>'s own doc says what that quirk is). One list so a future int
+    /// setting shaped the same way inherits the guard rather than silently exempting itself.
+    /// </summary>
+    private static readonly string[] IntBinderQuirkKeys =
+    [
+        "maxConcurrentAgentSessions",
+        "maxComplianceReviewCycles",
+        "maxAdversarialReviewCycles",
+        "maxFinalFullPassRounds",
+        "lifetimeReviewCycleBudget",
+    ];
+
+    /// <summary>
+    /// Applies <see cref="ApplyIntBinderQuirk"/> — whose own doc explains the quirk — to every key
+    /// in <see cref="IntBinderQuirkKeys"/>, and separately reports whether it fired for
+    /// <see cref="OperatingSettings.MaxConcurrentAgentSessions"/> specifically: that is the only
+    /// one anything downstream still reads (<see
+    /// cref="ConfigFileReadResult.MaxConcurrentAgentSessionsIsFabricatedZero"/>, consulted by
+    /// <see cref="OperatingSettingsResolver.ResolveMaxConcurrentTaskRuns"/> so it does not convert
+    /// a fabricated zero into a run ceiling of one); the four review-cycle caps have no such
+    /// downstream legacy-conversion concern, so their own zeroing is applied but not separately
+    /// reported.
+    /// </summary>
+    /// <returns>Whether the quirk fired for maxConcurrentAgentSessions — see <see cref="ConfigFileReadResult.MaxConcurrentAgentSessionsIsFabricatedZero"/>.</returns>
+    private static bool ApplyIntBinderQuirks(JsonObject document, OperatingSettings settings)
+    {
+        if (Section(document) is not { } section)
+        {
+            return false;
+        }
+
+        bool maxConcurrentAgentSessionsIsFabricatedZero =
+            ApplyIntBinderQuirk(section, "maxConcurrentAgentSessions", value => settings.MaxConcurrentAgentSessions = value);
+        ApplyIntBinderQuirk(section, "maxComplianceReviewCycles", value => settings.MaxComplianceReviewCycles = value);
+        ApplyIntBinderQuirk(section, "maxAdversarialReviewCycles", value => settings.MaxAdversarialReviewCycles = value);
+        ApplyIntBinderQuirk(section, "maxFinalFullPassRounds", value => settings.MaxFinalFullPassRounds = value);
+        ApplyIntBinderQuirk(section, "lifetimeReviewCycleBudget", value => settings.LifetimeReviewCycleBudget = value);
+
+        return maxConcurrentAgentSessionsIsFabricatedZero;
+    }
+
+    /// <summary>
+    /// <c>ConfigurationBinder</c> does not merely skip an explicit JSON <c>null</c> or an empty
+    /// object <c>{}</c> at one of <see cref="IntBinderQuirkKeys"/> the way it skips every other
+    /// shape mismatch here: because each one mirrors a non-nullable <c>int</c> on the daemon's own
+    /// <c>DaemonOptions</c>, there is no null to assign, so the binder's explicit-value handling
+    /// resolves it to <see langword="default"/> — zero — rather than leaving the property untouched
+    /// at its built-in default. Reporting "ignored, default still applies" for either shape would
+    /// tell an operator the daemon runs at its healthy default when it has in fact zeroed the
+    /// setting — for a review cap, zero trips it on the very next cycle; for the retired
+    /// <c>maxConcurrentAgentSessions</c>, nothing actually binds through <c>ConfigurationBinder</c>
+    /// any more, so this is a simulation kept only for <c>h9k config show</c>'s own accuracy about
+    /// the JSON shape. Every other object or array shape here — a non-empty object, a non-empty
+    /// array — genuinely is left alone by the binder and must not be zeroed. Confirmed against the
+    /// pinned binder version directly rather than inferred (origin: cycle-7 pre-PR review of the
+    /// concurrency-setting original).
+    /// </summary>
+    /// <returns>Whether the quirk fired.</returns>
+    private static bool ApplyIntBinderQuirk(JsonObject section, string keyName, Action<int> assign)
+    {
+        if (FindKeyIgnoringCase(section, keyName) is not { } key)
         {
             return false;
         }
@@ -235,10 +359,40 @@ public static class PlatformConfigFile
 
         if (bindsToZero)
         {
-            settings.MaxConcurrentAgentSessions = 0;
+            assign(0);
         }
 
         return bindsToZero;
+    }
+
+    /// <summary>
+    /// Walks <paramref name="path"/> (a <see cref="JsonException.Path"/> like
+    /// <c>$.modelByRole.build</c>) into the "hall9k" section and returns the node found there, so
+    /// <see cref="DaemonFailsToStartOn"/> can tell a JSON container (routed by
+    /// <c>JsonConfigurationFileParser</c> into nested keys, never a crash) from a scalar that
+    /// simply fails to convert (a real binder crash) — the same case-insensitive walk
+    /// <see cref="RemoveFailingLeaf"/> uses to find the leaf to discard.
+    /// </summary>
+    private static JsonNode? NodeAtPath(JsonObject document, string? path)
+    {
+        if (Section(document) is not { } section)
+        {
+            return null;
+        }
+
+        string[] segments = path?.Split('.') is { Length: > 1 } parts ? parts[1..] : [];
+        JsonNode? current = section;
+        foreach (string segment in segments)
+        {
+            if (current is not JsonObject obj || FindKeyIgnoringCase(obj, segment) is not { } key)
+            {
+                return null;
+            }
+
+            current = obj[key];
+        }
+
+        return current;
     }
 
     /// <summary>

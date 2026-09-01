@@ -27,7 +27,11 @@ public sealed class OperatingSettingsRenderingTests
             new ResolvedSetting<string>(AgentModel.PlatformFallback, SettingOrigin.Default, null),
             [new RoleModelSetting(role, new ResolvedSetting<string?>(model, SettingOrigin.Default, null))],
             null,
-            []);
+            [],
+            new ResolvedSetting<int>(OperatingSettings.DefaultMaxComplianceReviewCycles, SettingOrigin.Default, null),
+            new ResolvedSetting<int>(OperatingSettings.DefaultMaxAdversarialReviewCycles, SettingOrigin.Default, null),
+            new ResolvedSetting<int>(OperatingSettings.DefaultMaxFinalFullPassRounds, SettingOrigin.Default, null),
+            new ResolvedSetting<int>(OperatingSettings.DefaultLifetimeReviewCycleBudget, SettingOrigin.Default, null));
 
     [Fact]
     public void An_unset_review_verify_role_falls_through_to_review_rather_than_the_generic_default()

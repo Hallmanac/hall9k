@@ -36,8 +36,8 @@ public static class OperatingSettingsResolver
             $"{EnvironmentPrefix}MaxConcurrentAgentSessions",
             configured.MaxConcurrentAgentSessions,
             OperatingSettings.DefaultMaxConcurrentAgentSessions,
-            convertedFromLegacy,
-            unusableEnvironmentVariables);
+            unusableEnvironmentVariables,
+            convertedFromLegacy ? WarnIfBelowCeilingFloor : null);
 
         ResolvedSetting<int> sessionCapPerRun =
             ResolveSessionCapPerRun(configured.SessionCapPerRun, unusableEnvironmentVariables);
@@ -54,9 +54,38 @@ public static class OperatingSettingsResolver
                 ResolveOptionalString(
                     $"{EnvironmentPrefix}ModelByRole__{pair.Role}", pair.Model, pair.Role, unusableEnvironmentVariables)))];
 
+        ResolvedSetting<int> maxComplianceReviewCycles = ResolveInt(
+            $"{EnvironmentPrefix}MaxComplianceReviewCycles",
+            configured.MaxComplianceReviewCycles,
+            OperatingSettings.DefaultMaxComplianceReviewCycles,
+            unusableEnvironmentVariables,
+            (source, value, unusable) => WarnIfBelowReviewCapFloor(source, value, "max-compliance-review-cycles", unusable));
+
+        ResolvedSetting<int> maxAdversarialReviewCycles = ResolveInt(
+            $"{EnvironmentPrefix}MaxAdversarialReviewCycles",
+            configured.MaxAdversarialReviewCycles,
+            OperatingSettings.DefaultMaxAdversarialReviewCycles,
+            unusableEnvironmentVariables,
+            (source, value, unusable) => WarnIfBelowReviewCapFloor(source, value, "max-adversarial-review-cycles", unusable));
+
+        ResolvedSetting<int> maxFinalFullPassRounds = ResolveInt(
+            $"{EnvironmentPrefix}MaxFinalFullPassRounds",
+            configured.MaxFinalFullPassRounds,
+            OperatingSettings.DefaultMaxFinalFullPassRounds,
+            unusableEnvironmentVariables,
+            (source, value, unusable) => WarnIfBelowReviewCapFloor(source, value, "max-final-full-pass-rounds", unusable));
+
+        ResolvedSetting<int> lifetimeReviewCycleBudget = ResolveInt(
+            $"{EnvironmentPrefix}LifetimeReviewCycleBudget",
+            configured.LifetimeReviewCycleBudget,
+            OperatingSettings.DefaultLifetimeReviewCycleBudget,
+            unusableEnvironmentVariables,
+            (source, value, unusable) => WarnIfBelowReviewCapFloor(source, value, "lifetime-review-cycle-budget", unusable));
+
         return new OperatingSettingsReport(
             concurrency, read.MaxConcurrentAgentSessionsIsFabricatedZero, maxConcurrentTaskRuns, convertedFromLegacy,
-            shadowsConfigFileValue, sessionCapPerRun, defaultModel, roles, read.Problem, unusableEnvironmentVariables);
+            shadowsConfigFileValue, sessionCapPerRun, defaultModel, roles, read.Problem, unusableEnvironmentVariables,
+            maxComplianceReviewCycles, maxAdversarialReviewCycles, maxFinalFullPassRounds, lifetimeReviewCycleBudget);
     }
 
     /// <summary>
@@ -224,8 +253,8 @@ public static class OperatingSettingsResolver
     /// run when it has not (independent pre-PR review, cycle 4, adversarial lens).
     /// </summary>
     private static ResolvedSetting<int> ResolveInt(
-        string environmentVariable, int? configured, int fallback, bool legacyKeyDecidesCeiling,
-        List<string> unusable)
+        string environmentVariable, int? configured, int fallback, List<string> unusable,
+        Action<string, int, List<string>>? warnIfOutOfRange = null)
     {
         // Unlike ResolveString, an empty value is not treated as unset here: a shell that expands
         // an unset variable into "" (Hall9k__MaxConcurrentAgentSessions= with nothing after it —
@@ -235,11 +264,7 @@ public static class OperatingSettingsResolver
         {
             if (int.TryParse(fromEnvironment, out int parsed))
             {
-                if (legacyKeyDecidesCeiling)
-                {
-                    WarnIfBelowCeilingFloor(environmentVariable, parsed, unusable);
-                }
-
+                warnIfOutOfRange?.Invoke(environmentVariable, parsed, unusable);
                 return new ResolvedSetting<int>(parsed, SettingOrigin.EnvironmentVariable, environmentVariable);
             }
 
@@ -251,11 +276,7 @@ public static class OperatingSettingsResolver
 
         if (configured is { } value)
         {
-            if (legacyKeyDecidesCeiling)
-            {
-                WarnIfBelowCeilingFloor(Hall9kDatabase.ConfigFile, value, unusable);
-            }
-
+            warnIfOutOfRange?.Invoke(Hall9kDatabase.ConfigFile, value, unusable);
             return new ResolvedSetting<int>(value, SettingOrigin.PlatformConfigFile, Hall9kDatabase.ConfigFile);
         }
 
@@ -277,6 +298,28 @@ public static class OperatingSettingsResolver
             unusable.Add(
                 $"{source} sets max-concurrent-agent-sessions to {value}, which is below 1 — the daemon floors "
                 + "this to exactly one concurrent run rather than dispatching nothing.");
+        }
+    }
+
+    /// <summary>
+    /// A review-cycle cap below 1 is not refused the way <c>h9k config set</c> refuses it on the
+    /// write path (a hand-edited file or an environment variable skips that gate entirely, the same
+    /// bypass <see cref="WarnIfBelowCeilingFloor"/> already guards for concurrency) — unlike the
+    /// concurrency ceiling, though, nothing floors a cap back up to something usable:
+    /// <c>ReviewTrackPolicy</c>/<c>ReviewEngine.FinalFullPassCapReached</c> park the run the moment
+    /// the cycle count reaches it, so zero or a negative value parks the very first cycle it is
+    /// consulted on, and a lifetime budget of zero or less parks at the first settle point
+    /// regardless of how cleanly the run converged. Reporting the raw value as a healthy in-force
+    /// setting with no line naming that gap would leave an operator wondering why every run on this
+    /// node parks immediately.
+    /// </summary>
+    private static void WarnIfBelowReviewCapFloor(string source, int value, string optionName, List<string> unusable)
+    {
+        if (value < 1)
+        {
+            unusable.Add(
+                $"{source} sets {optionName} to {value}, which is below 1 — every review cycle it is "
+                + "consulted on parks for a human immediately rather than running.");
         }
     }
 

@@ -27,6 +27,10 @@ public sealed class PlatformConfigFileSourceTests : IDisposable
         "Hall9k__ModelByRole__Review",
         "Hall9k__ModelByRole__ReviewVerify",
         "Hall9k__ModelByRole__Fix",
+        "Hall9k__MaxComplianceReviewCycles",
+        "Hall9k__MaxAdversarialReviewCycles",
+        "Hall9k__MaxFinalFullPassRounds",
+        "Hall9k__LifetimeReviewCycleBudget",
     ];
 
     private readonly string home = Path.Combine(Path.GetTempPath(), $"h9k-cfgsrc-{Path.GetRandomFileName()}");

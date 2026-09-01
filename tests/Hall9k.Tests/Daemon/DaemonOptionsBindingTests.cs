@@ -151,5 +151,9 @@ public sealed class DaemonOptionsBindingTests
             new ResolvedSetting<string>(AgentModel.PlatformFallback, SettingOrigin.Default, null),
             [],
             null,
-            []);
+            [],
+            new ResolvedSetting<int>(OperatingSettings.DefaultMaxComplianceReviewCycles, SettingOrigin.Default, null),
+            new ResolvedSetting<int>(OperatingSettings.DefaultMaxAdversarialReviewCycles, SettingOrigin.Default, null),
+            new ResolvedSetting<int>(OperatingSettings.DefaultMaxFinalFullPassRounds, SettingOrigin.Default, null),
+            new ResolvedSetting<int>(OperatingSettings.DefaultLifetimeReviewCycleBudget, SettingOrigin.Default, null));
 }
