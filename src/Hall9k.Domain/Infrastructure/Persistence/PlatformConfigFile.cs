@@ -20,6 +20,21 @@ public static class PlatformConfigFile
     private const string SectionName = "hall9k";
 
     /// <summary>
+    /// The three concurrency leaves <c>Hall9k.Daemon.DaemonOptionsBinding.ResolverOwnedKeys</c>
+    /// excludes from the daemon's own <c>ConfigurationBinder</c> call (Decisions Log #109's
+    /// follow-up), named here independently by <see cref="OperatingSettings"/>'s own property
+    /// names — Domain cannot reference the Daemon project, so this list and the daemon's own
+    /// cannot share a single source, but a rename of either would fail to compile rather than
+    /// silently drift apart.
+    /// </summary>
+    private static readonly string[] ResolverOwnedLeaves =
+    [
+        nameof(OperatingSettings.MaxConcurrentTaskRuns),
+        nameof(OperatingSettings.SessionCapPerRun),
+        nameof(OperatingSettings.MaxConcurrentAgentSessions),
+    ];
+
+    /// <summary>
     /// The exact leniency <c>Microsoft.Extensions.Configuration.Json</c>'s own
     /// <c>JsonConfigurationFileParser</c> parses this file with (comments skipped, trailing
     /// commas allowed) — shared with <see cref="Hall9k.Daemon.PlatformConfigFileSource"/>'s
@@ -118,13 +133,16 @@ public static class PlatformConfigFile
         JsonObject recovery = (JsonObject)section.DeepClone();
         string[] segments = exception.Path?.Split('.') is { Length: > 1 } parts ? parts[1..] : [];
         RemoveFailingLeaf(recovery, segments);
+        bool affectsResolverOwnedKey = segments.Length > 0
+            && ResolverOwnedLeaves.Contains(segments[0], StringComparer.OrdinalIgnoreCase);
 
         try
         {
             OperatingSettings settings = recovery.Deserialize<OperatingSettings>(SerializerOptions) ?? new();
             settings.ModelByRole ??= new();
             bool maxConcurrentAgentSessionsIsFabricatedZero = ApplyMaxConcurrentAgentSessionsBinderQuirk(document, settings);
-            return ConfigFileReadResult.SettingIgnored(settings, ShapeErrorMessage(exception), maxConcurrentAgentSessionsIsFabricatedZero);
+            return ConfigFileReadResult.SettingIgnored(
+                settings, ShapeErrorMessage(exception), maxConcurrentAgentSessionsIsFabricatedZero, affectsResolverOwnedKey);
         }
         catch (JsonException)
         {

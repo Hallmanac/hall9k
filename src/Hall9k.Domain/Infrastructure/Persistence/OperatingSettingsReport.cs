@@ -28,7 +28,20 @@ public enum ConfigFileProblemConsequence
 /// section (or one setting inside it) cleanly, and the true consequence to state alongside the
 /// accurate <paramref name="Message"/> domain layer already built.
 /// </summary>
-public sealed record ConfigFileProblem(string Message, ConfigFileProblemConsequence Consequence)
+/// <param name="AffectsResolverOwnedKey">
+/// Whether the malformed leaf named by <paramref name="Message"/> is one of the three concurrency
+/// keys <c>Hall9k.Daemon.DaemonOptionsBinding.ResolverOwnedKeys</c> excludes from the daemon's own
+/// <c>ConfigurationBinder</c> call (Decisions Log #109's follow-up): <c>maxConcurrentTaskRuns</c>,
+/// <c>sessionCapPerRun</c>, <c>maxConcurrentAgentSessions</c>. <see cref="DescribeConsequence"/>
+/// names the mechanism that actually ignored the leaf, and for these three it is
+/// <see cref="OperatingSettingsResolver"/> treating a malformed value as absent, not
+/// <c>ConfigurationBinder</c> declining a conversion — the binder never sees these leaves at all
+/// (independent pre-PR review, cycle 3, adversarial lens). False for every other leaf
+/// (<c>defaultModel</c>, <c>modelByRole</c>), where the binder is still the accurate mechanism, and
+/// for the whole-section recovery paths that could not identify which leaf failed.
+/// </param>
+public sealed record ConfigFileProblem(
+    string Message, ConfigFileProblemConsequence Consequence, bool AffectsResolverOwnedKey = false)
 {
     /// <summary>
     /// The consequence sentence both <c>h9k config show</c>/<c>h9k daemon status</c>
@@ -41,6 +54,11 @@ public sealed record ConfigFileProblem(string Message, ConfigFileProblemConseque
     /// </summary>
     public string DescribeConsequence() => Consequence switch
     {
+        ConfigFileProblemConsequence.SettingIsIgnored when AffectsResolverOwnedKey =>
+            "This setting no longer binds through the daemon's ConfigurationBinder at all — it is one of the "
+            + "three concurrency keys OperatingSettingsResolver reads directly, and a malformed value there is "
+            + "treated as absent rather than converted — so this setting does not take its value from the file, "
+            + "and every other setting in the file, and environment variables and built-in defaults, still apply.",
         ConfigFileProblemConsequence.SettingIsIgnored =>
             "The daemon's own ConfigurationBinder has no conversion for this value, so this setting does not "
             + "take its value from the file — every other setting in the file, and environment variables and "
@@ -81,8 +99,10 @@ public sealed record ConfigFileReadResult(
     /// <c>ConfigurationBinder</c> actually binds for every sibling key.
     /// </summary>
     public static ConfigFileReadResult SettingIgnored(
-        OperatingSettings settings, string message, bool maxConcurrentAgentSessionsIsFabricatedZero) =>
-        new(settings, new ConfigFileProblem(message, ConfigFileProblemConsequence.SettingIsIgnored),
+        OperatingSettings settings, string message, bool maxConcurrentAgentSessionsIsFabricatedZero,
+        bool affectsResolverOwnedKey = false) =>
+        new(settings,
+            new ConfigFileProblem(message, ConfigFileProblemConsequence.SettingIsIgnored, affectsResolverOwnedKey),
             maxConcurrentAgentSessionsIsFabricatedZero);
 }
 

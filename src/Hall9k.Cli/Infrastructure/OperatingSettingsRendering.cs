@@ -121,7 +121,10 @@ public static class OperatingSettingsRendering
         string value = $"{report.MaxConcurrentAgentSessions.Value} ({report.MaxConcurrentAgentSessions.DescribeOrigin()})";
         if (report.MaxConcurrentAgentSessions.Origin == SettingOrigin.Default)
         {
-            return $"{value} — not set anywhere, so there is nothing here for max-concurrent-task-runs to fall back to";
+            return MaxConcurrentAgentSessionsWasDiscarded(report)
+                ? $"{value} — the value above was discarded rather than read, so there is nothing usable here for "
+                    + "max-concurrent-task-runs to fall back to"
+                : $"{value} — not set anywhere, so there is nothing here for max-concurrent-task-runs to fall back to";
         }
 
         return report.MaxConcurrentAgentSessions.Origin == SettingOrigin.PlatformConfigFile
@@ -130,6 +133,22 @@ public static class OperatingSettingsRendering
                 + "treats it as absent rather than falling back to it"
             : $"{value} — read only as a fallback when max-concurrent-task-runs is absent";
     }
+
+    /// <summary>
+    /// <see cref="SettingOrigin.Default"/> on <see cref="OperatingSettingsReport.MaxConcurrentAgentSessions"/>
+    /// means either of two different things: nothing ever set the retired key, or something did and
+    /// <see cref="OperatingSettingsResolver.ResolveAsync"/> discarded it as unusable (an environment
+    /// variable that failed to parse, or a config-file leaf recovered by
+    /// <c>PlatformConfigFile.RecoverSectionIgnoring</c>) and fell through to the same built-in
+    /// default either way. The row above already prints that mistake as a problem line
+    /// (<see cref="ProblemLines"/>); this only decides which sentence this row pairs it with
+    /// (independent pre-PR review, cycle 3, adversarial lens).
+    /// </summary>
+    private static bool MaxConcurrentAgentSessionsWasDiscarded(OperatingSettingsReport report) =>
+        report.UnusableEnvironmentVariables.Any(message => message.StartsWith(
+            $"{OperatingSettingsResolver.EnvironmentPrefix}MaxConcurrentAgentSessions ", StringComparison.Ordinal))
+        || (report.ConfigFileProblem is { Consequence: ConfigFileProblemConsequence.SettingIsIgnored } problem
+            && problem.Message.Contains("maxConcurrentAgentSessions", StringComparison.OrdinalIgnoreCase));
 
     /// <summary>
     /// Every ordinary role falls through to the project or platform default, but

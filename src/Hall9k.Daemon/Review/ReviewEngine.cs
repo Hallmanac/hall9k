@@ -40,8 +40,11 @@ namespace Hall9k.Daemon.Review;
 /// stream, so a restarted daemon resumes it exactly where the events left off.
 /// <para>
 /// A cycle runs one pass per still-active <b>track</b> (Decisions Log #59, #63) — conformance
-/// and adversarial — dispatched together and awaited one at a time, so the wall clock is the
-/// slower pass rather than their sum. Each track converges on its own terms
+/// and adversarial — dispatched up to the per-run session cap (Decisions Log #109) and topped
+/// up as slots free, then awaited one at a time: at the default cap both dispatch together and
+/// the wall clock is the slower pass rather than their sum, while a cap of 1 holds the second
+/// back until the first completes and the wall clock is their sum instead. Each track converges
+/// on its own terms
 /// (<see cref="ReviewTrackPolicy"/>) and drops out of the loop when it does: a clean track goes
 /// dormant while the other continues alone, and a dormant track is deliberately never
 /// reawakened by the other's fix sessions. Conformance parks the run if it is still finding
@@ -489,8 +492,11 @@ public sealed class ReviewEngine(
     /// <summary>
     /// Waits for the next in-flight pass of the current cycle and records what it found.
     /// False means the run was failed (a pass died, or the stream cannot name what it is
-    /// waiting for). The passes were spawned together, so waiting them in order costs the
-    /// slowest one, not the sum.
+    /// waiting for). At the default session cap the cycle's passes were spawned together, so
+    /// waiting them in order costs the slowest one, not the sum; at a lower cap (Decisions Log
+    /// #109) the next pass was held back rather than spawned, and
+    /// <see cref="DispatchMissingPassesAsync"/> tops it up here once this one has been awaited,
+    /// so the cost becomes the sum instead.
     /// </summary>
     private async Task<bool> AwaitReviewPassAsync(
         ReviewContext context, RunAggregate run, CancellationToken cancellationToken)

@@ -1352,11 +1352,15 @@ public static class AgentPromptBuilder
     /// <summary>
     /// The mechanics every review pass shares: which diff, verified findings only, read-only,
     /// and the one rule the second lens made necessary — no builds and no test runs.
-    /// The cycle's passes are dispatched together and read the same worktree at the same time
-    /// (log #59), so two concurrent builds would share one `obj/`/`bin/` and fail each other
-    /// with file-in-use errors. A pass that reports a collision like that as a verified
-    /// finding spends the cycle's one fix run on a platform failure, so the prompt says
-    /// plainly that the gates already answered the question and are not to be re-run.
+    /// A cycle's passes read the same worktree; at the default session cap they run
+    /// concurrently (log #59), and even at a lower cap (Decisions Log #109) that instead
+    /// serializes them within the cycle, no individual pass can tell from inside the sandbox
+    /// whether another is sharing the worktree at that instant. Two builds that do overlap
+    /// would share one `obj/`/`bin/` and fail each other with file-in-use errors, so the rule
+    /// holds unconditionally rather than leaving a pass to guess. A pass that reports a
+    /// collision like that as a verified finding spends the cycle's one fix run on a platform
+    /// failure, so the prompt also says plainly that the gates already answered the build
+    /// question and are not to be re-run.
     /// </summary>
     private static void AppendReviewMechanics(
         StringBuilder prompt, ProjectDetails project, string branch, ReviewMechanicsOverride? mechanicsOverride = null)
@@ -1384,11 +1388,11 @@ public static class AgentPromptBuilder
         }
         else
         {
-            prompt.AppendLine("- **Do NOT build, test, or run anything that writes into this worktree.** A second");
-            prompt.AppendLine("  review pass is reading this same directory right now, with its own attention on");
-            prompt.AppendLine("  the same diff. Two builds sharing one `obj/` and `bin/` fail each other with");
-            prompt.AppendLine("  file-in-use errors, and a platform collision reported as a finding costs the");
-            prompt.AppendLine("  cycle a fix run it needed for a real defect.");
+            prompt.AppendLine("- **Do NOT build, test, or run anything that writes into this worktree.** Another");
+            prompt.AppendLine("  review pass reads this same directory during this cycle — at today's session");
+            prompt.AppendLine("  cap, possibly at the same time as you. Two builds sharing one `obj/` and `bin/`");
+            prompt.AppendLine("  fail each other with file-in-use errors, and a platform collision reported as a");
+            prompt.AppendLine("  finding costs the cycle a fix run it needed for a real defect.");
             prompt.AppendLine("  Reading, searching, and read-only git are what this pass is made of.");
         }
 
