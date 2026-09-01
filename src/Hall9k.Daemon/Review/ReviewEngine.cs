@@ -48,8 +48,10 @@ namespace Hall9k.Daemon.Review;
 /// (<see cref="ReviewTrackPolicy"/>) and drops out of the loop when it does: a clean track goes
 /// dormant while the other continues alone, and a dormant track is deliberately never
 /// reawakened by the other's fix sessions. Conformance parks the run if it is still finding
-/// things at <see cref="DaemonOptions.MaxComplianceReviewCycles"/>; adversarial runs under the
-/// severity gate up to <see cref="DaemonOptions.MaxAdversarialReviewCycles"/>.
+/// things at its resolved compliance cap (<see cref="DaemonOptions.MaxComplianceReviewCycles"/> is
+/// the compiled default, overridable per project and per task — task: the review cycle caps
+/// become settable at three levels); adversarial runs under the severity gate up to its own
+/// resolved cap (<see cref="DaemonOptions.MaxAdversarialReviewCycles"/>, the same override chain).
 /// </para>
 /// <para>
 /// What stays per cycle rather than per track: one fix session over every live track's
@@ -71,8 +73,10 @@ namespace Hall9k.Daemon.Review;
 /// mode a cycle ran under is a deterministic engine decision, recorded on <see cref="Events.ReviewDispatched"/>
 /// and <see cref="Events.ReviewPassCompleted"/> — only the review content itself is agent judgment.
 /// A reactivation resets that track's own cap (<see cref="RunAggregate.TrackBudgetBaseCycle"/>), so
-/// the mandatory final pass has its own independent bound (<see cref="DaemonOptions.MaxFinalFullPassRounds"/>,
-/// <see cref="FinalFullPassCapReached"/>) rather than relying on a per-track cap it can keep resetting.
+/// the mandatory final pass has its own independent bound — its resolved final-full-pass cap
+/// (<see cref="DaemonOptions.MaxFinalFullPassRounds"/> is the compiled default, the same
+/// task &gt; project &gt; node &gt; default chain as the other caps), checked by
+/// <see cref="FinalFullPassCapReached"/> — rather than relying on a per-track cap it can keep resetting.
 /// </para>
 /// </summary>
 public sealed class ReviewEngine(
@@ -288,12 +292,25 @@ public sealed class ReviewEngine(
                         // merges on scoped green alone, and, when the loop is concluding on its own,
                         // the reviewers about to read this tip are reading a tree already proven to
                         // build and pass its whole suite.
-                        if (!gateAlreadyRanFullOverCurrentHead
-                            && !await verification.VerifyAsync(
+                        if (!gateAlreadyRanFullOverCurrentHead)
+                        {
+                            if (!await verification.VerifyAsync(
                                 context.RunId, context.TaskId, scopeSinceSha: null,
                                 "mandatory final full pass: nothing merges on scoped green alone", cancellationToken))
-                        {
-                            return false;
+                            {
+                                return false;
+                            }
+
+                            // The gate above can itself run for real wall-clock minutes to hours
+                            // (a full dotnet build && dotnet test), so `caps` — resolved before it
+                            // started, at the top of this iteration — is exactly the kind of stale
+                            // snapshot ResolveReviewCapsAsync's own doc warns against reusing
+                            // (independent pre-PR review, cycle 1, conformance lens). Re-resolved
+                            // here, the same as RecordReviewPassAsync already does after its own
+                            // wait, so a takeover lever set while the gate was running is seen by
+                            // the lifetime-budget and final-full-pass checks immediately below
+                            // rather than only on the next DriveAsync iteration.
+                            caps = await ResolveReviewCapsAsync(context, cancellationToken);
                         }
 
                         // needsFullGateBeforeSettling is the only reason left standing that means a
@@ -465,6 +482,15 @@ public sealed class ReviewEngine(
                         // VerificationRunner already failed the run and task honestly.
                         return false;
                     }
+
+                    // The gate above can itself run for real wall-clock minutes to hours, so
+                    // `caps` — resolved before it started, at the top of this iteration — is
+                    // exactly the kind of stale snapshot ResolveReviewCapsAsync's own doc warns
+                    // against reusing (independent pre-PR review, cycle 1, conformance lens), and
+                    // this branch runs unconditionally after every fix session. Re-resolved here so
+                    // a takeover lever set while the gate was running is seen by the checks
+                    // immediately below rather than only on the next DriveAsync iteration.
+                    caps = await ResolveReviewCapsAsync(context, cancellationToken);
 
                     if (run.ActiveReviewLenses.Count == 0 && MaySettleReason(run) is { } reverifySettleReason)
                     {
@@ -1291,8 +1317,9 @@ public sealed class ReviewEngine(
             // review, adversarial finding): ReviewTrackPolicy.Decide grades severity and the gate,
             // never the cap, so a track can carry Continues: true and a real Fix finding while
             // already at CappedTrack's own cap — the next DriveAsync iteration then hits
-            // `ReviewPhase.FixNeeded when CappedTrack(run) is { } capped` and parks instead of
-            // reaching DispatchFixSessionAsync. Recording FixedUnreviewed for this cycle's
+            // `case ReviewPhase.FixNeeded:` and its `if (CappedTrack(run, caps) is { } capped)`
+            // guard, and parks instead of reaching DispatchFixSessionAsync. Recording
+            // FixedUnreviewed for this cycle's
             // ride-alongs in that case would assert a fix session read them when none is ever
             // dispatched, so that disposition is additionally gated on no continuing track already
             // being capped — the lens whose Fix finding survives park-or-dispatch is always one
