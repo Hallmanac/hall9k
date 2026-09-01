@@ -390,10 +390,10 @@ public static class TaskDecider
                 + "--lifetime-review-cycle-budget.");
         }
 
-        ReviewCapValidation.RefuseNegativeCap(maxComplianceReviewCycles, "MaxComplianceReviewCycles");
-        ReviewCapValidation.RefuseNegativeCap(maxAdversarialReviewCycles, "MaxAdversarialReviewCycles");
-        ReviewCapValidation.RefuseNegativeCap(maxFinalFullPassRounds, "MaxFinalFullPassRounds");
-        ReviewCapValidation.RefuseNonPositiveCap(lifetimeReviewCycleBudget, "LifetimeReviewCycleBudget");
+        ReviewCapValidation.RefuseNegativeCap(maxComplianceReviewCycles, "--max-compliance-review-cycles");
+        ReviewCapValidation.RefuseNegativeCap(maxAdversarialReviewCycles, "--max-adversarial-review-cycles");
+        ReviewCapValidation.RefuseNegativeCap(maxFinalFullPassRounds, "--max-final-full-pass-rounds");
+        ReviewCapValidation.RefuseNonPositiveCap(lifetimeReviewCycleBudget, "--lifetime-review-cycle-budget");
 
         return new TaskReviewCapsOverridden(
             task.Id, maxComplianceReviewCycles, maxAdversarialReviewCycles, maxFinalFullPassRounds,

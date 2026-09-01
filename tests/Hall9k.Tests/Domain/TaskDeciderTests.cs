@@ -110,7 +110,7 @@ public sealed class TaskDeciderTests
         Action act = () => TaskDecider.OverrideReviewCaps(
             task, Optional<int?>.Of(-1), Optional<int?>.None, Optional<int?>.None, Optional<int?>.None, Now, Owner);
 
-        act.Should().Throw<DomainValidationException>().WithMessage("*MaxComplianceReviewCycles*");
+        act.Should().Throw<DomainValidationException>().WithMessage("*--max-compliance-review-cycles*");
     }
 
     [Fact]
@@ -121,7 +121,7 @@ public sealed class TaskDeciderTests
         Action act = () => TaskDecider.OverrideReviewCaps(
             task, Optional<int?>.None, Optional<int?>.None, Optional<int?>.None, Optional<int?>.Of(0), Now, Owner);
 
-        act.Should().Throw<DomainValidationException>().WithMessage("*LifetimeReviewCycleBudget*");
+        act.Should().Throw<DomainValidationException>().WithMessage("*--lifetime-review-cycle-budget*");
     }
 
     /// <summary>

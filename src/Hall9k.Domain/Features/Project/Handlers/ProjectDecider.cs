@@ -142,10 +142,10 @@ public static class ProjectDecider
                 + $"or {BacklogPolicy.Jira} (where a published task's work becomes visible outside Hall9k).");
         }
 
-        ReviewCapValidation.RefuseNonPositiveCap(maxComplianceReviewCycles, "MaxComplianceReviewCycles");
-        ReviewCapValidation.RefuseNonPositiveCap(maxAdversarialReviewCycles, "MaxAdversarialReviewCycles");
-        ReviewCapValidation.RefuseNonPositiveCap(maxFinalFullPassRounds, "MaxFinalFullPassRounds");
-        ReviewCapValidation.RefuseNonPositiveCap(lifetimeReviewCycleBudget, "LifetimeReviewCycleBudget");
+        ReviewCapValidation.RefuseNonPositiveCap(maxComplianceReviewCycles, "--max-compliance-review-cycles");
+        ReviewCapValidation.RefuseNonPositiveCap(maxAdversarialReviewCycles, "--max-adversarial-review-cycles");
+        ReviewCapValidation.RefuseNonPositiveCap(maxFinalFullPassRounds, "--max-final-full-pass-rounds");
+        ReviewCapValidation.RefuseNonPositiveCap(lifetimeReviewCycleBudget, "--lifetime-review-cycle-budget");
 
         return new ProjectSettingsChanged(
             project.Id,

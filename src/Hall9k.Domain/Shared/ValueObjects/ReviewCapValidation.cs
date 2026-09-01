@@ -4,7 +4,7 @@ namespace Hall9k.Domain.Shared.ValueObjects;
 
 /// <summary>
 /// Shared by every review-cap setter — <c>ProjectDecider.ChangeSettings</c> and
-/// <c>TaskDecider.OverrideReviewCaps</c> (Decisions Log #108) — since a present-with-null value
+/// <c>TaskDecider.OverrideReviewCaps</c> (Decisions Log #112) — since a present-with-null value
 /// always clears the override, so only a genuinely present, non-null value is ever checked.
 /// <see cref="RefuseNonPositiveCap"/> is the general floor of 1, used everywhere a cap has no
 /// takeover role: the node and project levels (neither can target a specific live run) and the

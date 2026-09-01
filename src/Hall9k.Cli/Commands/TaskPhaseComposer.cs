@@ -134,7 +134,7 @@ internal static class TaskPhaseComposer
 
     /// <summary>
     /// Which round of review, and which leg of it. The cycle cap now resolves task &gt; project &gt;
-    /// node &gt; compiled default (Decisions Log #108, <c>ReviewCapResolver</c>) rather than being a
+    /// node &gt; compiled default (Decisions Log #112, <c>ReviewCapResolver</c>) rather than being a
     /// single daemon-wide constant, and this line stops short of resolving that chain itself
     /// (a task and project read, plus the node's own config) just to print "of N" — it says which
     /// cycle the run is on and leaves the cap to <c>h9k task show</c>'s own override row and
