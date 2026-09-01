@@ -1352,11 +1352,15 @@ public sealed class AgentPromptBuilderTests : IDisposable
     }
 
     /// <summary>
-    /// The cycle's two lenses read one worktree at the same time (Decisions Log #59), so
-    /// neither may build or test: two builds sharing one obj/bin fail each other, and the
-    /// resulting file-in-use error reads like a defect in the diff. The gates already ran on
-    /// this exact commit, and naming them is what makes the instruction self-evidently safe
-    /// to follow rather than a rule the reviewer has to take on faith.
+    /// A cycle's two lenses read one worktree, concurrently at the default session cap
+    /// (Decisions Log #59) or one after another at a lower one (Decisions Log #109), so neither
+    /// may build or test: two builds sharing one obj/bin fail each other, and the resulting
+    /// file-in-use error reads like a defect in the diff. Because a pass cannot tell from inside
+    /// the sandbox whether its sibling is running at that instant, the prompt never asserts a
+    /// second pass is reading the worktree "right now" (cycle-3 conformance finding) — only that
+    /// another pass reads it during this cycle. The gates already ran on this exact commit, and
+    /// naming them is what makes the instruction self-evidently safe to follow rather than a rule
+    /// the reviewer has to take on faith.
     /// </summary>
     [Theory]
     [InlineData("Conformance")]
@@ -1369,7 +1373,10 @@ public sealed class AgentPromptBuilderTests : IDisposable
         string prompt = AgentPromptBuilder.BuildReview(SomeTask(), project, "task/1-slug", cycle: 1, lens);
 
         prompt.Should().Contain("Do NOT build, test, or run anything that writes into this worktree");
-        prompt.Should().Contain("A second", "the reviewer is told why: it is not alone in this directory");
+        prompt.Should().Contain("Another", "the reviewer is told why: it is not alone in this directory");
+        prompt.Should().NotContain(
+            "is reading this same directory right now",
+            "a pass cannot observe whether a sibling is running at that instant, so the prompt must not assert it as fact");
         prompt.Should().Contain("already ran and passed against this exact commit");
         prompt.Should().Contain("- `dotnet build`");
         prompt.Should().Contain("- `dotnet test`");
