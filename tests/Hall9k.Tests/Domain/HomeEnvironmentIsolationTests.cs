@@ -435,5 +435,4 @@ public sealed class HomeEnvironmentIsolationTests
 
         return frames;
     }
-
 }
