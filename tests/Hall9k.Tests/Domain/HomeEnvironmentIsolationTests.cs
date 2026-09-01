@@ -1,7 +1,5 @@
-using System.Text;
 using System.Text.RegularExpressions;
 using FluentAssertions;
-using Hall9k.Tests.Integration;
 using Xunit;
 
 namespace Hall9k.Tests.Domain;
@@ -49,7 +47,7 @@ namespace Hall9k.Tests.Domain;
 /// </para>
 /// <para>
 /// The scan strips comments and string literals before matching (see
-/// <see cref="StripCommentsAndStrings"/>) — <c>ReviewVerdictValidationTests</c> is dense with
+/// <see cref="TestSourceTree.StripCommentsAndStrings"/>) — <c>ReviewVerdictValidationTests</c> is dense with
 /// <c>InlineData</c> fixtures whose prose literally quotes <c>PlatformPaths.Home</c> and
 /// <c>RunPaths.Root</c> as example finding text, without either ever being called from that
 /// file. A naive substring search over the raw source would falsely conscript it into this
@@ -197,8 +195,8 @@ public sealed class HomeEnvironmentIsolationTests
             "the offending class (see RunPathsTests or UpdateCommandTests) rather than special-casing it here");
 
         // A floor on what the scan actually saw, so this test can pass green while checking
-        // nothing — TestsDirectory() no longer resolving to tests/Hall9k.Tests, or the whole scan
-        // going dark some other way — turns into a failing assertion here instead of a guard that
+        // nothing — TestSourceTree.RootDirectory() no longer resolving to tests/Hall9k.Tests, or
+        // the whole scan going dark some other way — turns into a failing assertion here instead of a guard that
         // reports success while protecting nothing. This is a wholesale-breakage check, not a
         // per-entry one: renaming any single RiskyMembers entry (or the production member it
         // names) still leaves the aggregate count comfortably clear of the floor, since it is the
@@ -207,13 +205,13 @@ public sealed class HomeEnvironmentIsolationTests
         // test-tree growth or shrinkage never brushes them.
         files.Length.Should().BeGreaterThan(
             100,
-            "this is far fewer .cs files than the test tree actually holds — TestsDirectory() is " +
+            "this is far fewer .cs files than the test tree actually holds — TestSourceTree.RootDirectory() is " +
             "probably no longer resolving to tests/Hall9k.Tests");
 
         riskyMemberHits.Should().BeGreaterThan(
             100,
             "this is far fewer risky-member hits than the test tree actually contains — the scan " +
-            "itself is probably broken (TestsDirectory() misresolving, or the whole RiskyMembers " +
+            "itself is probably broken (TestSourceTree.RootDirectory() misresolving, or the whole RiskyMembers " +
             "list gone stale at once) rather than working as intended; a single renamed entry can " +
             "still leave this floor comfortably clear, so this only catches wholesale breakage");
     }
@@ -275,16 +273,17 @@ public sealed class HomeEnvironmentIsolationTests
     /// alongside the comment/string-stripped code the scan searched — the caller's own risky-member
     /// floor counts hits over this same stripped text, since counting the raw source instead would
     /// leave the floor comfortably clear even if the scan itself had gone dark.
-    /// <see cref="StripCommentsAndStrings"/> is a heuristic, not a parser, and a source shape it
-    /// desyncs on drops coverage silently unless something notices — so a risky-member hit that
-    /// lands inside no class frame at all, or a file whose stripped brace depth never returns to
-    /// zero, is itself reported as an offender (a synthetic one, not a real class name) rather
-    /// than dropped: the origin cycle-2 review found exactly this gap in a multi-line
-    /// interpolation-hole file whose desync silently excused it from the guard entirely.
+    /// <see cref="TestSourceTree.StripCommentsAndStrings"/> is a heuristic, not a parser, and a
+    /// source shape it desyncs on drops coverage silently unless something notices — so a
+    /// risky-member hit that lands inside no class frame at all, or a file whose stripped brace
+    /// depth never returns to zero, is itself reported as an offender (a synthetic one, not a
+    /// real class name) rather than dropped: the origin cycle-2 review found exactly this gap in
+    /// a multi-line interpolation-hole file whose desync silently excused it from the guard
+    /// entirely.
     /// </summary>
     private static (IEnumerable<string> Offenders, string Code) ClassesUsingRiskyMembersWithoutTheCollection(string source)
     {
-        (string code, int[] originalIndex, bool balanced) = StripCommentsAndStrings(source);
+        (string code, int[] originalIndex, bool balanced) = TestSourceTree.StripCommentsAndStrings(source);
         List<ClassFrame> frames = FindClassFrames(code, originalIndex, source);
 
         HashSet<string> offenders = [];
@@ -437,259 +436,4 @@ public sealed class HomeEnvironmentIsolationTests
         return frames;
     }
 
-    /// <summary>
-    /// Blanks out comment and string-literal content so a source-text scan for API usage cannot
-    /// be fooled by prose that merely quotes the API's name, and returns alongside it a map from
-    /// each surviving character's index in the returned text back to its index in
-    /// <paramref name="source"/> (comments and string bodies contribute no output characters, so
-    /// the two texts are not the same length), plus whether the stripped text's own brace count
-    /// balanced back to zero — a signal the caller checks, since an unbalanced result means every
-    /// class boundary <see cref="FindClassFrames"/> would read from it downstream is unreliable.
-    /// Handles block comments, line and doc comments, regular string literals (closed on the same
-    /// physical line, which C# guarantees), verbatim string literals (which, unlike regular
-    /// string literals, may span multiple lines), character literals, triple-quote-or-wider raw
-    /// string literals (which may span several lines), and interpolated string literals
-    /// (<c>$"..."</c>): an interpolation hole (<c>{Expr}</c>) is real code, not
-    /// text, so <see cref="ScanCode"/> scans it exactly as it does the rest of the file — nested
-    /// braces, nested string/char literals and a nested interpolated string all included — rather
-    /// than treating it as inert. That is what closed the origin cycle-2 gap: a hole whose
-    /// argument list ran onto a second physical line desynced the old text-only handling of
-    /// <c>$"</c>, which read that second line as bare code and lost a brace, silently dropping
-    /// guard coverage for the rest of the file with no signal. This is still a heuristic tuned to
-    /// this project's actual source, not a C# parser: a verbatim-interpolated literal opened as
-    /// <c>$@"</c> is handled imprecisely but silently — it falls through to the plain
-    /// verbatim-string path (<see cref="SkipVerbatimString"/>), so the whole literal is skipped
-    /// as one atomic unit, no interpolation hole inside it is ever scanned as code, and no
-    /// partial brace ever reaches the stripped output, so the stripped brace count still balances
-    /// to zero and the miss stays silent. The other spelling, <c>@$"</c>, is not atomic the same
-    /// way: the leading <c>@</c> falls through as an ordinary code character and the <c>$"</c>
-    /// that follows sends the rest of the literal through <see cref="ScanInterpolatedString"/>,
-    /// which does scan its interpolation holes as real code but assumes backslash escaping
-    /// (verbatim's own doubled-quote escaping confuses it) and bails at the literal's first
-    /// newline — so a single-line <c>@$"</c> usage closes correctly, while a multi-line one
-    /// desyncs the scan for the rest of the file, which the balance check above can catch when
-    /// the desync leaves a brace unmatched, and cannot when it does not. A raw interpolated
-    /// literal (<c>$"""..."""</c>) is treated as an inert raw string, holes included. None of
-    /// these shapes currently combines with any risky member, so none causes a false result
-    /// today, but a future file that does would need this taught the combined form.
-    /// </summary>
-    private static (string Code, int[] OriginalIndex, bool Balanced) StripCommentsAndStrings(string source)
-    {
-        StringBuilder result = new(source.Length);
-        List<int> originalIndex = new(source.Length);
-
-        ScanCode(source, 0, result, originalIndex, isHole: false);
-
-        string code = result.ToString();
-        int braceBalance = 0;
-        foreach (char c in code)
-        {
-            braceBalance += c switch { '{' => 1, '}' => -1, _ => 0 };
-        }
-
-        return (code, [.. originalIndex], braceBalance == 0);
-    }
-
-    /// <summary>
-    /// Scans real code starting at <paramref name="start"/>, appending every surviving character
-    /// (with its original-source index) to <paramref name="result"/>/<paramref name="originalIndex"/>
-    /// and skipping comments and string/char literal content exactly as the top-level scan does.
-    /// Doubles as the interpolation-hole scanner: when <paramref name="isHole"/> is <c>true</c>,
-    /// <paramref name="start"/> must point just past the hole's opening <c>{</c> (already
-    /// appended by <see cref="ScanInterpolatedString"/>), brace depth starts at 1 to account for
-    /// it, and this returns the index just past the hole's matching <c>}</c> the moment depth
-    /// returns to 0 rather than running to the end of <paramref name="source"/> — which is how a
-    /// hole containing its own nested braces, strings, or interpolated strings still closes at
-    /// the right place instead of over- or under-consuming the file.
-    /// </summary>
-    private static int ScanCode(string source, int start, StringBuilder result, List<int> originalIndex, bool isHole)
-    {
-        int i = start;
-        int holeDepth = isHole ? 1 : 0;
-
-        while (i < source.Length)
-        {
-            char c = source[i];
-
-            if (c == '/' && i + 1 < source.Length && source[i + 1] == '*')
-            {
-                int end = source.IndexOf("*/", i + 2, StringComparison.Ordinal);
-                i = end < 0 ? source.Length : end + 2;
-                continue;
-            }
-
-            if (c == '/' && i + 1 < source.Length && source[i + 1] == '/')
-            {
-                int end = source.IndexOf('\n', i);
-                i = end < 0 ? source.Length : end;
-                continue;
-            }
-
-            if (c == '"' && i + 2 < source.Length && source[i + 1] == '"' && source[i + 2] == '"')
-            {
-                i = SkipRawString(source, i);
-                continue;
-            }
-
-            if (c == '$' && i + 1 < source.Length && source[i + 1] == '"'
-                && !(i + 3 < source.Length && source[i + 2] == '"' && source[i + 3] == '"'))
-            {
-                i = ScanInterpolatedString(source, i + 1, result, originalIndex);
-                continue;
-            }
-
-            if (c == '@' && i + 1 < source.Length && source[i + 1] == '"')
-            {
-                i = SkipVerbatimString(source, i);
-                continue;
-            }
-
-            if (c == '\'')
-            {
-                i = SkipCharLiteral(source, i);
-                continue;
-            }
-
-            if (c == '"')
-            {
-                i = SkipRegularString(source, i);
-                continue;
-            }
-
-            if (isHole && c == '{')
-            {
-                holeDepth++;
-            }
-            else if (isHole && c == '}')
-            {
-                holeDepth--;
-            }
-
-            result.Append(c);
-            originalIndex.Add(i);
-            i++;
-
-            if (isHole && holeDepth == 0)
-            {
-                return i;
-            }
-        }
-
-        return i;
-    }
-
-    /// <summary>
-    /// Scans a non-raw interpolated string body starting at its opening quote
-    /// (<paramref name="quoteIndex"/>): literal text is discarded exactly like a regular string's
-    /// body, an escaped brace (<c>{{</c>/<c>}}</c>) stays literal text, and an unescaped
-    /// <c>{</c> hands off to <see cref="ScanCode"/> as real code — which is what lets a hole's
-    /// argument list run onto a second physical line, as the origin cycle-2 file's did, without
-    /// desyncing the scan. Returns the index just past the closing quote.
-    /// </summary>
-    private static int ScanInterpolatedString(string source, int quoteIndex, StringBuilder result, List<int> originalIndex)
-    {
-        int i = quoteIndex + 1;
-
-        while (i < source.Length)
-        {
-            char c = source[i];
-
-            if (c == '\\' && i + 1 < source.Length)
-            {
-                i += 2;
-                continue;
-            }
-
-            if (c == '"')
-            {
-                return i + 1;
-            }
-
-            if (c == '\n')
-            {
-                return i;
-            }
-
-            if (c == '{' && i + 1 < source.Length && source[i + 1] == '{')
-            {
-                i += 2;
-                continue;
-            }
-
-            if (c == '}' && i + 1 < source.Length && source[i + 1] == '}')
-            {
-                i += 2;
-                continue;
-            }
-
-            if (c == '{')
-            {
-                result.Append('{');
-                originalIndex.Add(i);
-                i = ScanCode(source, i + 1, result, originalIndex, isHole: true);
-                continue;
-            }
-
-            i++;
-        }
-
-        return i;
-    }
-
-    private static int SkipRawString(string source, int i)
-    {
-        int quoteRun = 0;
-        while (i + quoteRun < source.Length && source[i + quoteRun] == '"')
-        {
-            quoteRun++;
-        }
-
-        string delimiter = new('"', quoteRun);
-        int end = source.IndexOf(delimiter, i + quoteRun, StringComparison.Ordinal);
-        return end < 0 ? source.Length : end + quoteRun;
-    }
-
-    private static int SkipVerbatimString(string source, int i)
-    {
-        int j = i + 2;
-        while (j < source.Length)
-        {
-            if (source[j] == '"')
-            {
-                if (j + 1 < source.Length && source[j + 1] == '"')
-                {
-                    j += 2;
-                    continue;
-                }
-
-                return j + 1;
-            }
-
-            j++;
-        }
-
-        return j;
-    }
-
-    private static int SkipCharLiteral(string source, int i)
-    {
-        int j = i + 1;
-        while (j < source.Length && source[j] != '\'' && source[j] != '\n')
-        {
-            j += source[j] == '\\' && j + 1 < source.Length ? 2 : 1;
-        }
-
-        return j < source.Length && source[j] == '\'' ? j + 1 : j;
-    }
-
-    private static int SkipRegularString(string source, int i)
-    {
-        int j = i + 1;
-        while (j < source.Length && source[j] != '"' && source[j] != '\n')
-        {
-            j += source[j] == '\\' && j + 1 < source.Length ? 2 : 1;
-        }
-
-        return j < source.Length && source[j] == '"' ? j + 1 : j;
-    }
 }
