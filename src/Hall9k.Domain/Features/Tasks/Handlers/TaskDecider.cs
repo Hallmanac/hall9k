@@ -364,6 +364,43 @@ public static class TaskDecider
     }
 
     /// <summary>
+    /// Sets this task's own override of one or more of its four review-cycle caps (task: the
+    /// review cycle caps become settable at three levels) — deliberately state-agnostic, unlike
+    /// <see cref="Revise"/>: it is meant to be set "at any time", including against a task whose
+    /// run is live right now, so the daemon can pick it up at the very next cap check. Each of the
+    /// four caps is independent: a call naming only one leaves the other three exactly as they
+    /// were (absent means "leave alone"), and present-with-null clears that one back to the
+    /// project or node level.
+    /// </summary>
+    public static TaskReviewCapsOverridden OverrideReviewCaps(
+        TaskAggregate task,
+        Optional<int?> maxComplianceReviewCycles,
+        Optional<int?> maxAdversarialReviewCycles,
+        Optional<int?> maxFinalFullPassRounds,
+        Optional<int?> lifetimeReviewCycleBudget,
+        DateTimeOffset overriddenAt,
+        Guid overriddenByOwnerId)
+    {
+        if (!maxComplianceReviewCycles.HasValue && !maxAdversarialReviewCycles.HasValue
+            && !maxFinalFullPassRounds.HasValue && !lifetimeReviewCycleBudget.HasValue)
+        {
+            throw new DomainValidationException(
+                "Nothing to change — pass at least one of --max-compliance-review-cycles, "
+                + "--max-adversarial-review-cycles, --max-final-full-pass-rounds, or "
+                + "--lifetime-review-cycle-budget.");
+        }
+
+        ReviewCapValidation.RefuseNonPositiveCap(maxComplianceReviewCycles, "MaxComplianceReviewCycles");
+        ReviewCapValidation.RefuseNonPositiveCap(maxAdversarialReviewCycles, "MaxAdversarialReviewCycles");
+        ReviewCapValidation.RefuseNonPositiveCap(maxFinalFullPassRounds, "MaxFinalFullPassRounds");
+        ReviewCapValidation.RefuseNonPositiveCap(lifetimeReviewCycleBudget, "LifetimeReviewCycleBudget");
+
+        return new TaskReviewCapsOverridden(
+            task.Id, maxComplianceReviewCycles, maxAdversarialReviewCycles, maxFinalFullPassRounds,
+            lifetimeReviewCycleBudget, overriddenAt, overriddenByOwnerId);
+    }
+
+    /// <summary>
     /// Published -> Draft: the explicit revert that reopens a task for revision. Refused from
     /// Queued and Blocked onward — unassign first, so returning a task the dispatcher can see
     /// to an editable state is never one accidental keystroke (Decisions Log #34).

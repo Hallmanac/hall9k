@@ -73,6 +73,15 @@ public sealed class TaskAggregate
     /// <see cref="TaskSessionCapOverridden"/> rather than <see cref="TaskRevised"/>.
     /// </summary>
     public int? SessionCap { get; private set; }
+
+    /// <summary>This task's own override of the conformance review track's cycle cap; null defers to the project or node (task: review cycle caps become settable).</summary>
+    public int? MaxComplianceReviewCycles { get; private set; }
+    /// <summary>This task's own override of the adversarial review track's cycle cap; null defers to the project or node.</summary>
+    public int? MaxAdversarialReviewCycles { get; private set; }
+    /// <summary>This task's own override of the mandatory final-full-pass round cap; null defers to the project or node.</summary>
+    public int? MaxFinalFullPassRounds { get; private set; }
+    /// <summary>This task's own override of the task-lifetime review-cycle budget; null defers to the project or node.</summary>
+    public int? LifetimeReviewCycleBudget { get; private set; }
     public int LeaseGeneration { get; private set; }
     public Guid? ClaimedByNodeId { get; private set; }
 
@@ -293,6 +302,31 @@ public sealed class TaskAggregate
     }
 
     public void Apply(TaskSessionCapOverridden @event) => SessionCap = @event.SessionCap;
+
+    // State-agnostic, unlike Apply(TaskRevised): each cap is independent, so a call naming only
+    // one leaves the other three untouched (absent means "leave alone").
+    public void Apply(TaskReviewCapsOverridden @event)
+    {
+        if (@event.MaxComplianceReviewCycles.HasValue)
+        {
+            MaxComplianceReviewCycles = @event.MaxComplianceReviewCycles.Value;
+        }
+
+        if (@event.MaxAdversarialReviewCycles.HasValue)
+        {
+            MaxAdversarialReviewCycles = @event.MaxAdversarialReviewCycles.Value;
+        }
+
+        if (@event.MaxFinalFullPassRounds.HasValue)
+        {
+            MaxFinalFullPassRounds = @event.MaxFinalFullPassRounds.Value;
+        }
+
+        if (@event.LifetimeReviewCycleBudget.HasValue)
+        {
+            LifetimeReviewCycleBudget = @event.LifetimeReviewCycleBudget.Value;
+        }
+    }
 
     public void Apply(TaskReturnedToDraft @event) => State = TaskState.Draft;
 

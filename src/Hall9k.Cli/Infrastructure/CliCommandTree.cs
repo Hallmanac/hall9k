@@ -486,6 +486,20 @@ public static class CliCommandTree
                 .WithExample("task", "revise", "28b19893", "--clear-dependencies")
                 .WithExample("task", "revise", "28b19893", "--epic", "3f2a91b2")
                 .WithExample("task", "revise", "28b19893", "--clear-epic");
+            task.AddCommand<TaskSetReviewCapsCommand>("set-review-caps")
+                .WithDescription(
+                    "Override one or more of this task's four review-cycle caps — the conformance and "
+                    + "adversarial track cycle caps, the mandatory final-full-pass round cap, and the "
+                    + "task-lifetime review-cycle budget (task: the review cycle caps become settable at "
+                    + "three levels). Each resolves task > project > node > compiled default, "
+                    + "independently of the other three. Deliberately state-agnostic, unlike h9k task "
+                    + "revise: settable at any time, including while the task's run is live — the daemon "
+                    + "picks it up at the next cap check. Setting a cap at or below the track's current "
+                    + "cycle count parks the run there: the documented takeover lever for a task observed "
+                    + "grinding. 'default' clears an override back to the level above.")
+                .WithExample("task", "set-review-caps", "28b19893", "--max-compliance-review-cycles", "1")
+                .WithExample("task", "set-review-caps", "28b19893", "--lifetime-review-cycle-budget", "40")
+                .WithExample("task", "set-review-caps", "28b19893", "--max-adversarial-review-cycles", "default");
             task.AddCommand<TaskPublishCommand>("publish")
                 .WithDescription(
                     "Publish a draft: the readiness gate. Enforces the full contract (an outcome-phrased "
