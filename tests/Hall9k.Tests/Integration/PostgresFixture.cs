@@ -80,18 +80,38 @@ public sealed class PostgresFixture : IAsyncLifetime
             using CancellationTokenSource startTimeout = new(ContainerStartTimeout);
             await _container.StartAsync(startTimeout.Token);
         }
-        catch
+        catch (Exception startFailure)
         {
             // Docker may have created and partially started the container before the failure, so
             // dispose it before releasing the permit — otherwise a container the gate no longer
             // knows about can briefly outlive the bound it exists to enforce.
+            Exception? cleanupFailure = null;
+
             try
             {
                 await _container.DisposeAsync();
             }
+            catch (Exception exception)
+            {
+                // Removing a half-started container routinely fails against the same broken Docker
+                // daemon that failed the start, or answers a 409 because removal is already in
+                // progress. Letting that out of this block would report it *instead of* the start
+                // failure, so the blown ContainerStartTimeout the split timeouts above exist to
+                // make visible would vanish from what xUnit shows; both are reported together
+                // below instead, the start failure first.
+                cleanupFailure = exception;
+            }
             finally
             {
                 ReleaseGate();
+            }
+
+            if (cleanupFailure is not null)
+            {
+                throw new AggregateException(
+                    "the Postgres container failed to start, and disposing the half-started container then failed too",
+                    startFailure,
+                    cleanupFailure);
             }
 
             throw;
