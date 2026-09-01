@@ -5,6 +5,7 @@ using Hall9k.Connectors.WorkItems;
 using Hall9k.Domain.Features.Connection;
 using Hall9k.Domain.Features.Tasks;
 using Hall9k.Domain.Shared.ValueObjects;
+using Hall9k.Tests.Fakes;
 using Xunit;
 
 namespace Hall9k.Tests.Cli;
@@ -17,8 +18,12 @@ namespace Hall9k.Tests.Cli;
 /// </summary>
 public sealed class TaskExternalReferenceTests
 {
-    /// <summary>The importer an install with no Jira connection registered has.</summary>
-    private static readonly WorkItemImporter GitHubOnly = new(new GitHubWorkItemProvider());
+    /// <summary>The importer an install with no Jira connection registered has. No test in this
+    /// file reaches a member of <see cref="GitHubWorkItemProvider"/> that shells out — the ones
+    /// that use this importer only call <c>ExternalMarkup</c>, which reads <c>WebUrl</c> and never
+    /// touches the injected runner — a runner that throws if it is ever actually invoked both
+    /// documents that and enforces it (see RecordingProcessRunner.NeverInvoked's own doc comment).</summary>
+    private static readonly WorkItemImporter GitHubOnly = new(new GitHubWorkItemProvider(RecordingProcessRunner.NeverInvoked()));
 
     /// <summary>
     /// The importer an install with a Jira connection has. Constructing it needs a site, which is
@@ -26,11 +31,13 @@ public sealed class TaskExternalReferenceTests
     /// what a connection recorded (PLAN.md §10).
     /// </summary>
     private static readonly WorkItemImporter WithJira = new(
-        new GitHubWorkItemProvider(),
-        new JiraWorkItemProvider(new JiraAccount(
-            new Uri("https://hall9k.atlassian.net"),
-            "brian@example.com",
-            CredentialReference.EnvironmentVariable("JIRA_TOKEN"))));
+        new GitHubWorkItemProvider(RecordingProcessRunner.NeverInvoked()),
+        new JiraWorkItemProvider(
+            new JiraAccount(
+                new Uri("https://hall9k.atlassian.net"),
+                "brian@example.com",
+                CredentialReference.EnvironmentVariable("JIRA_TOKEN")),
+            FakeJiraRequester.NeverInvoked()));
 
     [Fact]
     public void An_adopted_github_issue_renders_as_a_link_to_the_issue()
