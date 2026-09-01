@@ -71,12 +71,12 @@ public sealed class StatusCommand : Hall9kAsyncCommand<StatusCommand.Settings>
             // it is one setting for the node, not a per-task action. h9k config set writes the
             // daemon's durable operating settings (~/.hall9k/config.json), read by absolute path
             // regardless of the daemon's working directory; options bind at startup, hence the
-            // restart.
+            // restart. Run-denominated end to end (Decisions Log #108) — no operator-facing
+            // surface needs to know how many sessions a run tree is worth to interpret this.
             listed += Section(rows, AttentionBucket.Queued, "queued",
                 "[blue]Queued[/] [dim]— the node is at its concurrency ceiling; each of these starts as a "
-                + "run finishes. Run[/] h9k config set --max-concurrent-agent-sessions <n> [dim]and restart the "
-                + "daemon to run more at once — it is counted in agent sessions: a run's discovery and final "
-                + "review cycles hold one per review lens, and the verify cycles between them hold one total[/]",
+                + "run finishes. Run[/] h9k config set --max-concurrent-task-runs <n> [dim]and restart the "
+                + "daemon to run more at once[/]",
                 now, inServiceOrder: true);
         }
 

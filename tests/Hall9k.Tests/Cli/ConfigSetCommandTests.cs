@@ -68,6 +68,62 @@ public sealed class ConfigSetCommandTests
     }
 
     [Fact]
+    public void A_max_concurrent_task_runs_of_zero_is_refused()
+    {
+        ConfigSetCommand.Settings settings = new() { MaxConcurrentTaskRuns = 0 };
+
+        Action act = () => ConfigSetCommand.Validate(settings);
+
+        act.Should().Throw<DomainValidationException>().WithMessage("*at least 1*");
+    }
+
+    [Fact]
+    public void A_positive_max_concurrent_task_runs_alone_validates()
+    {
+        ConfigSetCommand.Settings settings = new() { MaxConcurrentTaskRuns = 2 };
+
+        Action act = () => ConfigSetCommand.Validate(settings);
+
+        act.Should().NotThrow();
+    }
+
+    [Fact]
+    public void Applying_max_concurrent_task_runs_sets_it_and_records_the_change()
+    {
+        ConfigSetCommand.Settings settings = new() { MaxConcurrentTaskRuns = 2 };
+        OperatingSettings operating = new();
+        List<string> changed = [];
+
+        ConfigSetCommand.Apply(settings, operating, changed);
+
+        operating.MaxConcurrentTaskRuns.Should().Be(2);
+        changed.Should().ContainSingle().Which.Should().Contain("2");
+    }
+
+    [Fact]
+    public void A_session_cap_per_run_of_zero_is_refused()
+    {
+        ConfigSetCommand.Settings settings = new() { SessionCapPerRun = 0 };
+
+        Action act = () => ConfigSetCommand.Validate(settings);
+
+        act.Should().Throw<DomainValidationException>().WithMessage("*at least 1*");
+    }
+
+    [Fact]
+    public void Applying_session_cap_per_run_sets_it_and_records_the_change()
+    {
+        ConfigSetCommand.Settings settings = new() { SessionCapPerRun = 1 };
+        OperatingSettings operating = new();
+        List<string> changed = [];
+
+        ConfigSetCommand.Apply(settings, operating, changed);
+
+        operating.SessionCapPerRun.Should().Be(1);
+        changed.Should().ContainSingle().Which.Should().Contain("1");
+    }
+
+    [Fact]
     public void Applying_a_role_model_sets_only_that_role()
     {
         ConfigSetCommand.Settings settings = new() { ModelReview = "sonnet" };

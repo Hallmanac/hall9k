@@ -39,10 +39,19 @@ public static class OperatingSettingsRendering
 
     public static IReadOnlyList<(string Label, string Value)> Rows(OperatingSettingsReport report)
     {
+        string maxConcurrentTaskRunsValue = report.MaxConcurrentTaskRunsConvertedFromLegacy
+            ? $"{report.MaxConcurrentTaskRuns.Value} (converted from the retired max-concurrent-agent-sessions, "
+              + $"{report.MaxConcurrentTaskRuns.DescribeOrigin()} — set max-concurrent-task-runs directly to stop "
+              + "relying on the conversion)"
+            : $"{report.MaxConcurrentTaskRuns.Value} ({report.MaxConcurrentTaskRuns.DescribeOrigin()})";
+
         List<(string Label, string Value)> rows =
         [
-            ("max-concurrent-agent-sessions",
-                $"{report.MaxConcurrentAgentSessions.Value} ({report.MaxConcurrentAgentSessions.DescribeOrigin()})"),
+            ("max-concurrent-task-runs", maxConcurrentTaskRunsValue),
+            ("session-cap-per-run", $"{report.SessionCapPerRun.Value} ({report.SessionCapPerRun.DescribeOrigin()})"),
+            ("max-concurrent-agent-sessions (retired)",
+                $"{report.MaxConcurrentAgentSessions.Value} ({report.MaxConcurrentAgentSessions.DescribeOrigin()}) "
+                + "— read only as a fallback when max-concurrent-task-runs is absent"),
             ("default-model", $"{report.DefaultModel.Value} ({report.DefaultModel.DescribeOrigin()})"),
         ];
 

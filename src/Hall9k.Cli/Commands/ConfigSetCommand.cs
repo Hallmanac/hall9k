@@ -21,11 +21,31 @@ public sealed class ConfigSetCommand : Hall9kAsyncCommand<ConfigSetCommand.Setti
     {
         [CommandOption("--max-concurrent-agent-sessions <N>")]
         [Description(
-            "How many agent sessions this node may have resident at once (DaemonOptions.MaxConcurrentAgentSessions, "
-            + "Decisions Log #64) — sessions, not runs; a two-lens review cycle means a ceiling of 3 dispatches one "
-            + "run at a time. Durable here, so an autostart-launched daemon (no shell to export it into) still runs "
-            + "at the ceiling this machine can actually hold.")]
+            "Retired as the node's own admission unit by Decisions Log #108 — use --max-concurrent-task-runs "
+            + "instead. Still writable and still read as a fallback: when max-concurrent-task-runs is absent at a "
+            + "given level (environment variable or config file), this converts (floor(n/2), minimum 1 run).")]
         public int? MaxConcurrentAgentSessions { get; init; }
+
+        [CommandOption("--max-concurrent-task-runs <N>")]
+        [Description(
+            "How many task runs may be live on this node at once (DaemonOptions.MaxConcurrentTaskRuns, Decisions "
+            + "Log #108) — every value is meaningful, unlike the retired --max-concurrent-agent-sessions, where a "
+            + "run's two-lens review cycle meant 3 sessions and 2 sessions both admitted exactly one run. Durable "
+            + "here, so an autostart-launched daemon (no shell to export it into) still runs at the ceiling this "
+            + "machine can actually hold. An interactive claim (h9k task work) occupies zero runs and is never "
+            + "counted against this ceiling.")]
+        public int? MaxConcurrentTaskRuns { get; init; }
+
+        [CommandOption("--session-cap-per-run <N>")]
+        [Description(
+            "The global default for how many agent sessions one run may hold simultaneously "
+            + "(DaemonOptions.SessionCapPerRun, Decisions Log #108, default 3) — overridable per task at any time, "
+            + "even mid-run, with h9k task set-session-cap. A cap of 1 serializes the run's two review lenses "
+            + "instead of dispatching them together, for maximum throttle; today's routine peak is 2, so anything "
+            + "above 2 is inert headroom until a future coded activity actually overlaps a third session. A change "
+            + "here takes effect at each affected run's next session dispatch — it never terminates a session "
+            + "already running.")]
+        public int? SessionCapPerRun { get; init; }
 
         [CommandOption("--default-model <MODEL>")]
         [Description(
@@ -96,7 +116,8 @@ public sealed class ConfigSetCommand : Hall9kAsyncCommand<ConfigSetCommand.Setti
 
         bool onlyInteractiveClaimStaleAfterDaysChanged =
             settings.InteractiveClaimStaleAfterDays is not null
-            && settings.MaxConcurrentAgentSessions is null && settings.DefaultModel is null
+            && settings.MaxConcurrentAgentSessions is null && settings.MaxConcurrentTaskRuns is null
+            && settings.SessionCapPerRun is null && settings.DefaultModel is null
             && settings.ModelBuild is null && settings.ModelReview is null && settings.ModelReviewVerify is null
             && settings.ModelFix is null && settings.ModelSynthesis is null && settings.ModelRefinement is null
             && settings.ModelPublication is null;
@@ -118,13 +139,14 @@ public sealed class ConfigSetCommand : Hall9kAsyncCommand<ConfigSetCommand.Setti
     /// <summary>Refuses a no-op call, and a ceiling that would dispatch nothing.</summary>
     internal static void Validate(Settings settings)
     {
-        if (settings.MaxConcurrentAgentSessions is null && settings.DefaultModel is null
+        if (settings.MaxConcurrentAgentSessions is null && settings.MaxConcurrentTaskRuns is null
+            && settings.SessionCapPerRun is null && settings.DefaultModel is null
             && settings.ModelBuild is null && settings.ModelReview is null && settings.ModelReviewVerify is null
             && settings.ModelFix is null && settings.ModelSynthesis is null && settings.ModelRefinement is null
             && settings.ModelPublication is null && settings.InteractiveClaimStaleAfterDays is null)
         {
             throw new DomainValidationException(
-                "Nothing to change — pass at least one setting, e.g. --max-concurrent-agent-sessions 4. "
+                "Nothing to change — pass at least one setting, e.g. --max-concurrent-task-runs 2. "
                 + "h9k config show prints the current effective settings and where each came from.");
         }
 
@@ -132,6 +154,19 @@ public sealed class ConfigSetCommand : Hall9kAsyncCommand<ConfigSetCommand.Setti
         {
             throw new DomainValidationException(
                 "--max-concurrent-agent-sessions must be at least 1 — a ceiling of zero would dispatch nothing.");
+        }
+
+        if (settings.MaxConcurrentTaskRuns is { } maxConcurrentTaskRuns && maxConcurrentTaskRuns < 1)
+        {
+            throw new DomainValidationException(
+                "--max-concurrent-task-runs must be at least 1 — a ceiling of zero would dispatch nothing.");
+        }
+
+        if (settings.SessionCapPerRun is { } sessionCapPerRun && sessionCapPerRun < 1)
+        {
+            throw new DomainValidationException(
+                "--session-cap-per-run must be at least 1 — a cap of zero would dispatch nothing for a run's "
+                + "next session.");
         }
 
         if (settings.InteractiveClaimStaleAfterDays is { } staleAfterDays && staleAfterDays < 1)
@@ -157,7 +192,19 @@ public sealed class ConfigSetCommand : Hall9kAsyncCommand<ConfigSetCommand.Setti
         if (settings.MaxConcurrentAgentSessions is { } sessions)
         {
             operating.MaxConcurrentAgentSessions = sessions;
-            changed.Add($"max-concurrent-agent-sessions = {sessions}");
+            changed.Add($"max-concurrent-agent-sessions = {sessions} (retired — max-concurrent-task-runs decides whenever it is set)");
+        }
+
+        if (settings.MaxConcurrentTaskRuns is { } maxConcurrentTaskRuns)
+        {
+            operating.MaxConcurrentTaskRuns = maxConcurrentTaskRuns;
+            changed.Add($"max-concurrent-task-runs = {maxConcurrentTaskRuns}");
+        }
+
+        if (settings.SessionCapPerRun is { } sessionCapPerRun)
+        {
+            operating.SessionCapPerRun = sessionCapPerRun;
+            changed.Add($"session-cap-per-run = {sessionCapPerRun}");
         }
 
         ApplyModel("default-model", settings.DefaultModel, value => operating.DefaultModel = value, changed);

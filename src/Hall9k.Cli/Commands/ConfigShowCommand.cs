@@ -73,7 +73,7 @@ public sealed class ConfigShowCommand : Hall9kAsyncCommand<ConfigShowCommand.Set
 
         AnsiConsole.Write(table);
         AnsiConsole.MarkupLine(
-            "\n[dim]Change a setting:[/] h9k config set --max-concurrent-agent-sessions 4");
+            "\n[dim]Change a setting:[/] h9k config set --max-concurrent-task-runs 2");
         return ExitCodes.Ok;
     }
 
@@ -84,6 +84,8 @@ public sealed class ConfigShowCommand : Hall9kAsyncCommand<ConfigShowCommand.Set
     /// </summary>
     private static bool AnyFromEnvironment(OperatingSettingsReport report) =>
         report.MaxConcurrentAgentSessions.Origin == SettingOrigin.EnvironmentVariable
+        || report.MaxConcurrentTaskRuns.Origin == SettingOrigin.EnvironmentVariable
+        || report.SessionCapPerRun.Origin == SettingOrigin.EnvironmentVariable
         || report.DefaultModel.Origin == SettingOrigin.EnvironmentVariable
         || report.ModelByRole.Any(role => role.Model.Origin == SettingOrigin.EnvironmentVariable);
 }
