@@ -1,6 +1,7 @@
 using System.Text;
 using System.Text.RegularExpressions;
 using FluentAssertions;
+using Hall9k.Tests.Integration;
 using Xunit;
 
 namespace Hall9k.Tests.Domain;
@@ -154,13 +155,13 @@ public sealed class HomeEnvironmentIsolationTests
     [Fact]
     public void Every_test_class_touching_the_platform_home_environment_shares_the_serialized_collection()
     {
-        string testsDirectory = TestsDirectory();
+        string testsDirectory = TestSourceTree.RootDirectory();
 
         string[] files =
         [
             .. Directory.EnumerateFiles(testsDirectory, "*.cs", SearchOption.AllDirectories)
                .Where(file => !string.Equals(Path.GetFileName(file), SelfFileName, StringComparison.Ordinal))
-               .Where(file => !IsBuildOutput(testsDirectory, file)),
+               .Where(file => !TestSourceTree.IsBuildOutput(testsDirectory, file)),
         ];
 
         List<string> offenders = [];
@@ -215,25 +216,6 @@ public sealed class HomeEnvironmentIsolationTests
             "itself is probably broken (TestsDirectory() misresolving, or the whole RiskyMembers " +
             "list gone stale at once) rather than working as intended; a single renamed entry can " +
             "still leave this floor comfortably clear, so this only catches wholesale breakage");
-    }
-
-    /// <summary>
-    /// True for a file under a <c>bin</c> or <c>obj</c> build-output directory, which
-    /// <see cref="Directory.EnumerateFiles"/>'s recursive search otherwise walks right along with
-    /// the real sources — generated files there (<c>*.GlobalUsings.g.cs</c>,
-    /// <c>*.AssemblyInfo.cs</c>, and the like) would make the scan's file and hit counts depend on
-    /// which configurations happen to be built locally, and a future source generator emitting a
-    /// type that touches a risky member into <c>obj</c> would fail the build with an offender no
-    /// one can fix by adding an attribute to a generated file.
-    /// </summary>
-    private static bool IsBuildOutput(string testsDirectory, string file)
-    {
-        string relative = Path.GetRelativePath(testsDirectory, file);
-        string[] segments = relative.Split(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
-
-        return segments.Any(segment =>
-            string.Equals(segment, "bin", StringComparison.Ordinal) ||
-            string.Equals(segment, "obj", StringComparison.Ordinal));
     }
 
     private static int CountOccurrences(string source, string member)
@@ -454,10 +436,6 @@ public sealed class HomeEnvironmentIsolationTests
 
         return frames;
     }
-
-    private static string TestsDirectory([System.Runtime.CompilerServices.CallerFilePath] string here = "") =>
-        // .../tests/Hall9k.Tests/Domain/HomeEnvironmentIsolationTests.cs -> .../tests/Hall9k.Tests
-        Path.GetDirectoryName(Path.GetDirectoryName(here))!;
 
     /// <summary>
     /// Blanks out comment and string-literal content so a source-text scan for API usage cannot
