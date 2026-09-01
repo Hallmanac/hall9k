@@ -324,6 +324,148 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
     }
 
     /// <summary>
+    /// The one behavior-bearing change a per-run session cap makes (Decisions Log #108, Brian's
+    /// ruling 2026-08-30): at a cap of 1, the second lens is not spawned until the first lens's
+    /// own result has already been recorded on the stream — proven here by the literal order
+    /// <see cref="ReviewDispatched"/> and <see cref="ReviewPassCompleted"/> land in, which is
+    /// interleaved at a cap of 1 and back-to-back-then-back-to-back at today's default.
+    /// </summary>
+    [Fact]
+    public async Task A_session_cap_of_one_serializes_the_two_lenses_one_completes_before_the_other_spawns()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        using DocumentStore store = NewStore();
+        (Guid taskId, Guid runId, _) = await SeedVerifiedRunAsync(store, cts.Token);
+
+        ScriptedExecutor executor = new(
+            "Every acceptance criterion is met.\n\nVERDICT: merge-ready",
+            "Hunted the trust boundaries and the lifetimes; nothing survived verification.\n\nVERDICT: merge-ready");
+        bool mergeReady = await NewEngine(store, executor, new DaemonOptions { SessionCapPerRun = 1 })
+            .ReviewAsync(runId, taskId, cts.Token);
+
+        mergeReady.Should().BeTrue("the cap throttles the burn RATE, never whether the run converges");
+        executor.Spawns.Should().HaveCount(2, "the same two lenses run either way — the cap spreads them over more wall clock, it does not skip one");
+
+        await using IQuerySession query = store.QuerySession();
+        List<object> events = [.. (await query.Events.FetchStreamAsync(runId, token: cts.Token)).Select(e => e.Data)];
+        List<string> shape = [.. events
+            .Select(e => e switch
+            {
+                ReviewDispatched dispatched => $"Dispatched:{dispatched.Lens?.Slug}",
+                ReviewPassCompleted completed => $"Completed:{completed.Lens?.Slug}",
+                _ => null,
+            })
+            .OfType<string>()];
+
+        shape.Should().Equal(
+            [
+                $"Dispatched:{ReviewLens.Conformance.Slug}",
+                $"Completed:{ReviewLens.Conformance.Slug}",
+                $"Dispatched:{ReviewLens.Adversarial.Slug}",
+                $"Completed:{ReviewLens.Adversarial.Slug}",
+            ],
+            "a cap of 1 dispatches the second lens only once the first lens's own result is recorded — "
+            + "one lens completes before the other spawns, rather than both spawning together the way "
+            + "a cap of 2 or higher does");
+    }
+
+    /// <summary>
+    /// A task's own <c>h9k task set-session-cap</c> override wins over the node's global default
+    /// (Decisions Log #108) — proven the same way as the node-default test above, but with the
+    /// node left at a default that would NOT serialize and only the task overridden to 1.
+    /// </summary>
+    [Fact]
+    public async Task A_tasks_own_session_cap_override_serializes_the_lenses_even_when_the_nodes_default_would_not()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        using DocumentStore store = NewStore();
+        (Guid taskId, Guid runId, _) = await SeedVerifiedRunAsync(store, cts.Token);
+
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            TaskAggregate task = (await session.Events.AggregateStreamAsync<TaskAggregate>(taskId, token: cts.Token))!;
+            session.Events.Append(taskId, TaskDecider.OverrideSessionCap(task, 1, Now, DomainId.New()));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        ScriptedExecutor executor = new(
+            "Every acceptance criterion is met.\n\nVERDICT: merge-ready",
+            "Hunted the trust boundaries and the lifetimes; nothing survived verification.\n\nVERDICT: merge-ready");
+        // The node's own default is left at today's default (3) — only the task's own override is 1.
+        bool mergeReady = await NewEngine(store, executor, new DaemonOptions())
+            .ReviewAsync(runId, taskId, cts.Token);
+
+        mergeReady.Should().BeTrue();
+
+        await using IQuerySession query = store.QuerySession();
+        List<object> events = [.. (await query.Events.FetchStreamAsync(runId, token: cts.Token)).Select(e => e.Data)];
+        List<string> shape = [.. events
+            .Select(e => e switch
+            {
+                ReviewDispatched dispatched => $"Dispatched:{dispatched.Lens?.Slug}",
+                ReviewPassCompleted completed => $"Completed:{completed.Lens?.Slug}",
+                _ => null,
+            })
+            .OfType<string>()];
+
+        shape.Should().Equal(
+            [
+                $"Dispatched:{ReviewLens.Conformance.Slug}",
+                $"Completed:{ReviewLens.Conformance.Slug}",
+                $"Dispatched:{ReviewLens.Adversarial.Slug}",
+                $"Completed:{ReviewLens.Adversarial.Slug}",
+            ],
+            "the task's own override wins over the node's global default, exactly like a task's model override");
+    }
+
+    /// <summary>
+    /// Findings merge, severity disposition, the fix session, and the cycle progression all read
+    /// identically to <see cref="Either_lens_finding_defects_produces_one_verdict_and_one_fix_session_over_the_merged_findings"/>
+    /// under a cap of 1 — the acceptance bar for the serialization path (task: the serialization
+    /// path is the only behavior-bearing change and deserves focused tests on this exact shape).
+    /// </summary>
+    [Fact]
+    public async Task A_session_cap_of_one_still_merges_findings_and_dispositions_exactly_as_a_parallel_pass_does()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        using DocumentStore store = NewStore();
+        (Guid taskId, Guid runId, _) = await SeedVerifiedRunAsync(store, cts.Token);
+
+        const string conformanceFinding = "1. `Auth.cs:42` — the limiter never resets. Scenario: the second request always 429s.";
+        const string adversarialFinding = "1. `WorkItemContext.cs:18` — task text reaches the prompt unfenced. Scenario: a crafted objective redirects the agent.";
+        ScriptedExecutor executor = new(
+            $"{conformanceFinding}\n\nVERDICT: needs-fixes",
+            $"{adversarialFinding}\n\nVERDICT: needs-fixes",
+            "Reset the limiter window and fenced the task text.\n\nRESOLUTION: fixed",
+            // Cycle 2: both tracks are still active, so this is one Verify pass — Verify dispatches
+            // a single stand-in session regardless of the session cap, exactly as it does at any cap.
+            "Verified both fixes; nothing new stands.\n\nVERDICT: merge-ready",
+            // Cycle 3: the mandatory FinalFullPass, both lenses again — serialized by the cap the
+            // same way cycle 1 was.
+            "Criteria met.\n\nVERDICT: merge-ready",
+            "Hunted again; the boundary holds.\n\nVERDICT: merge-ready");
+        bool mergeReady = await NewEngine(store, executor, new DaemonOptions { SessionCapPerRun = 1 })
+            .ReviewAsync(runId, taskId, cts.Token);
+
+        mergeReady.Should().BeTrue();
+        executor.Spawns.Should().HaveCount(
+            6, "two passes → one fix → one verify pass → the mandatory final full pass (two lenses) — "
+                + "identical to the parallel pass, since the cap changes when a lens spawns, never how many spawn");
+        executor.Spawns[2].Prompt.Should().Contain(conformanceFinding).And.Contain(adversarialFinding,
+            "one fix session still addresses both lenses' findings, identical to a parallel pass");
+
+        await using IQuerySession query = store.QuerySession();
+        RunDetails run = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
+        run.ReviewCycle.Should().Be(3, "the verify cycle and the mandatory final full pass each advance it, exactly as under a parallel pass");
+        run.LastReviewVerdict.Should().Be(ReviewVerdict.MergeReady);
+
+        List<object> events = [.. (await query.Events.FetchStreamAsync(runId, token: cts.Token)).Select(e => e.Data)];
+        events.OfType<ReviewCompleted>().Should().HaveCount(3, "one merged verdict per cycle, not one per lens — cap counting is unaffected");
+        events.OfType<ReviewFixDispatched>().Should().HaveCount(1, "one fix session per cycle, however many lenses spoke");
+        events.OfType<VerificationPassed>().Should().HaveCount(3, "the gate re-runs are unaffected by how the lenses were spread out");
+    }
+
+    /// <summary>
     /// The Settling branch's own mandatory full gate is skipped when the immediately preceding
     /// gate already ran full over the identical tip (task: a fix cycle's verification gate,
     /// cycle-3 finding). The common trigger is a nominally-scoped Verify reverify whose own gate

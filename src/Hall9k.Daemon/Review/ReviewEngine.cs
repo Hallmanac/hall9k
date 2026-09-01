@@ -608,16 +608,48 @@ public sealed class ReviewEngine(
             return MissingPassDispatch.NothingMissing;
         }
 
-        logger.LogWarning(
-            "Run {RunId}: review cycle {Cycle} was missing the {Lenses} pass(es) — dispatching now",
-            context.RunId, run.ReviewCycle, string.Join(", ", missing.Select(lens => lens.Slug)));
+        // The session cap (Decisions Log #108) throttles this top-up exactly as it throttles the
+        // opening dispatch below: dispatching every missing lens regardless of what this cycle
+        // already has in flight is exactly what a cap of 1 exists to prevent — it is what turns
+        // "spawned together" into "one lens completes before the other spawns" without a second
+        // dispatch path to keep in sync with the opening one. At today's default (3) and today's
+        // routine peak (2 lenses), budget is never smaller than every genuinely missing lens, so a
+        // crash-recovery top-up dispatches everything it always did — this is inert until an
+        // operator lowers the cap.
+        int sessionCap = await ResolveEffectiveSessionCapAsync(context.TaskId, cancellationToken);
+        int budget = sessionCap - run.InFlightReviewPasses.Count;
+        if (budget <= 0)
+        {
+            return MissingPassDispatch.NothingMissing;
+        }
+
+        IReadOnlyList<ReviewLens> toDispatch = [.. missing.Take(budget)];
+        // A session cap smaller than this cycle's own lens count is exactly what makes the
+        // opening dispatch hold lenses back on purpose (DispatchReviewPassesAsync's own comment),
+        // so finding one "missing" here is the routine top-up a cap-1 install produces every
+        // cycle — not a crash-recovery signal. Logging that at Warning (independent pre-PR review,
+        // cycle 1, conformance lens) made the ordinary, intended serialization report itself as a
+        // fault on every single cycle of a throttled install.
+        if (sessionCap < run.CurrentCycleLenses.Count)
+        {
+            logger.LogInformation(
+                "Run {RunId}: review cycle {Cycle}'s session cap ({SessionCap}) is spreading the "
+                + "{Lenses} pass(es) out — dispatching now that a slot is free",
+                context.RunId, run.ReviewCycle, sessionCap, string.Join(", ", toDispatch.Select(lens => lens.Slug)));
+        }
+        else
+        {
+            logger.LogWarning(
+                "Run {RunId}: review cycle {Cycle} was missing the {Lenses} pass(es) — dispatching now",
+                context.RunId, run.ReviewCycle, string.Join(", ", toDispatch.Select(lens => lens.Slug)));
+        }
         // This tops up the CURRENT cycle, so run.CycleHeadSha already holds that cycle's own head
         // (recorded by whichever pass of it dispatched first) — the same value re-recorded here.
         // The "since" boundary a Verify top-up's prompt needs is one cycle further back, which is
         // exactly what run.PriorCycleHeadSha still holds: StartCycleIfNew only moves it when a
         // genuinely NEW cycle starts, and this dispatch is not one.
         bool dispatched = await DispatchReviewPassesAsync(
-            context, run.ReviewCycle, missing, run.CurrentCycleMode, run.CycleHeadSha,
+            context, run.ReviewCycle, toDispatch, run.CurrentCycleMode, run.CycleHeadSha,
             sinceSha: run.PriorCycleHeadSha, run.PriorCycleMode, cancellationToken);
         return dispatched ? MissingPassDispatch.Dispatched : MissingPassDispatch.Stale;
     }
@@ -645,7 +677,15 @@ public sealed class ReviewEngine(
                 context, cycle, lenses, headSha, sinceSha, priorCycleMode, cancellationToken);
         }
 
-        foreach (ReviewLens lens in lenses)
+        // The per-run session cap (Decisions Log #108, Brian's ruling 2026-08-30) bounds how many
+        // of this cycle's lenses spawn together here: a cap of 1 dispatches only the first and
+        // leaves the rest for DispatchMissingPassesAsync's own cap-aware top-up to pick up once a
+        // slot frees — the same "one lens completes before the other spawns" outcome the
+        // acceptance criteria ask for, reached by dispatching fewer lenses up front rather than by
+        // a second, parallel serialization path. At today's default (3) and today's routine peak
+        // (2 lenses), this dispatches every lens exactly as before.
+        int sessionCap = await ResolveEffectiveSessionCapAsync(context.TaskId, cancellationToken);
+        foreach (ReviewLens lens in lenses.Take(sessionCap))
         {
             if (!await DispatchReviewPassAsync(context, cycle, lens, mode, headSha, cancellationToken))
             {
@@ -2398,6 +2438,30 @@ public sealed class ReviewEngine(
 
         IReadOnlyList<ReviewParkResolution> priorRulings = await LoadPriorRulingsAsync(query, taskId, cancellationToken);
         return new ReviewContext(runId, taskId, run, task, project, priorRulings);
+    }
+
+    /// <summary>
+    /// This run's effective per-run session cap (Decisions Log #108): the task's own override
+    /// (<c>h9k task set-session-cap</c>, settable even mid-run) when it carries one, else the
+    /// node's global default. Read fresh — a small extra document load, not folded into
+    /// <see cref="ReviewContext"/> at <see cref="LoadContextAsync"/> time — at every point that
+    /// decides how many lenses to dispatch together, which is what makes a mid-run cap change take
+    /// effect at this run's very next session dispatch rather than only its next full
+    /// <see cref="ReviewAsync"/> entry: <see cref="DriveAsync"/>'s own loop runs for as long as the
+    /// review phase does, holding <see cref="ReviewContext"/> fixed the whole time the same way it
+    /// already holds <c>context.Task.Model</c> fixed (safe there only because a model override
+    /// cannot change mid-run in the first place). Never below 1, the same floor
+    /// <see cref="Hall9k.Domain.Features.Tasks.Handlers.TaskDecider.OverrideSessionCap"/> enforces
+    /// on the write side, applied defensively here too since the node default itself is only ever
+    /// floored by <see cref="Hall9k.Domain.Infrastructure.Persistence.OperatingSettingsResolver"/>'s
+    /// own warning, not refused outright, so a hand-edited config file or environment variable can
+    /// still reach this code with a sub-1 value.
+    /// </summary>
+    private async Task<int> ResolveEffectiveSessionCapAsync(Guid taskId, CancellationToken cancellationToken)
+    {
+        await using IQuerySession query = store.QuerySession();
+        TaskDetails? task = await query.LoadAsync<TaskDetails>(taskId, cancellationToken);
+        return Math.Max(1, task?.SessionCap ?? _options.SessionCapPerRun);
     }
 
     /// <summary>
