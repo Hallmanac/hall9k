@@ -406,6 +406,39 @@ public sealed class OperatingSettingsResolverTests : IDisposable
     }
 
     /// <summary>
+    /// Unlike the concurrency ceiling, nothing floors a review-cycle cap back up to something
+    /// usable: a cap of zero or less parks the very first cycle it is consulted on
+    /// (<c>ReviewTrackPolicy</c>/<c>ReviewEngine.FinalFullPassCapReached</c>), and a lifetime
+    /// budget of zero or less parks at the first settle point regardless of how cleanly the run
+    /// converged. `h9k config set` refuses this on the write path, but a hand-edited config file
+    /// or a raw environment variable skips that gate — the same bypass the concurrency floor test
+    /// above covers. Origin: independent pre-PR review, cycle 1, adversarial lens.
+    /// </summary>
+    [Fact]
+    public async Task A_zero_review_cap_environment_variable_is_reported_rather_than_presented_as_healthy()
+    {
+        Environment.SetEnvironmentVariable("Hall9k__MaxComplianceReviewCycles", "0");
+        Environment.SetEnvironmentVariable("Hall9k__MaxAdversarialReviewCycles", "0");
+        Environment.SetEnvironmentVariable("Hall9k__MaxFinalFullPassRounds", "0");
+        Environment.SetEnvironmentVariable("Hall9k__LifetimeReviewCycleBudget", "0");
+
+        OperatingSettingsReport report = await OperatingSettingsResolver.ResolveAsync(CancellationToken.None);
+
+        report.MaxComplianceReviewCycles.Value.Should().Be(0);
+        report.MaxAdversarialReviewCycles.Value.Should().Be(0);
+        report.MaxFinalFullPassRounds.Value.Should().Be(0);
+        report.LifetimeReviewCycleBudget.Value.Should().Be(0);
+        report.UnusableEnvironmentVariables.Should().Contain(
+            warning => warning.Contains("Hall9k__MaxComplianceReviewCycles") && warning.Contains("max-compliance-review-cycles"));
+        report.UnusableEnvironmentVariables.Should().Contain(
+            warning => warning.Contains("Hall9k__MaxAdversarialReviewCycles") && warning.Contains("max-adversarial-review-cycles"));
+        report.UnusableEnvironmentVariables.Should().Contain(
+            warning => warning.Contains("Hall9k__MaxFinalFullPassRounds") && warning.Contains("max-final-full-pass-rounds"));
+        report.UnusableEnvironmentVariables.Should().Contain(
+            warning => warning.Contains("Hall9k__LifetimeReviewCycleBudget") && warning.Contains("lifetime-review-cycle-budget"));
+    }
+
+    /// <summary>
     /// <c>ResolveOptionalString</c> is the same bottom-of-the-chain resolution as
     /// <c>ResolveString</c>, so a per-role model a hand edit or a raw environment variable never
     /// ran through <c>ConfigSetCommand.ApplyModel</c>'s gate must be caught here too. Origin: the

@@ -15,8 +15,10 @@ namespace Hall9k.Daemon.Review;
 /// ends on "nothing that meets the fix bar" whether that means it came back clean or came back
 /// with polish alone. <see cref="Decide"/> itself never gates conformance on severity: a
 /// needs-fixes verdict that survives that reclassification always sets <c>Continues: true</c>
-/// below, so the track otherwise runs until <see cref="DaemonOptions.MaxComplianceReviewCycles"/>,
-/// where the run parks because nothing automated is left to try.
+/// below, so the track otherwise runs until its resolved compliance cap (<c>ResolvedReviewCaps</c>,
+/// walked task &gt; project &gt; node &gt; <see cref="DaemonOptions.MaxComplianceReviewCycles"/> as
+/// the compiled default — task: the review cycle caps become settable at three levels), where the
+/// run parks because nothing automated is left to try.
 /// </para>
 /// <para>
 /// <b>Adversarial</b> disposes every finding against the same fix bar at every cycle, gate or no
@@ -32,8 +34,10 @@ namespace Hall9k.Daemon.Review;
 /// while the code is still converging. From that cycle onward only a High still forces the next
 /// one, and a Medium is fixed this cycle without forcing another — the ride-along a Low or
 /// ungraded finding already was simply continues, which is the nit-churn tail the gate exists to
-/// stop paying an extra cycle for. Its cap is <see cref="DaemonOptions.MaxAdversarialReviewCycles"/>,
-/// and reaching it is not a budget quietly running out: it means the machine kept finding real
+/// stop paying an extra cycle for. Its cap is the resolved adversarial cap (<c>ResolvedReviewCaps</c>,
+/// walked task &gt; project &gt; node &gt; <see cref="DaemonOptions.MaxAdversarialReviewCycles"/> as
+/// the compiled default — task: the review cycle caps become settable at three levels), and
+/// reaching it is not a budget quietly running out: it means the machine kept finding real
 /// high-severity problems, and the park says so.
 /// </para>
 /// <para>

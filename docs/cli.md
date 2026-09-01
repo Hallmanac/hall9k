@@ -61,12 +61,15 @@ the hinge to a draft task and is the only step that requires a project.
 
 ### Tasks: development and dispatch
 
-`h9k task add | revise | publish | assign | unassign | draft | list | show | set-session-cap`
+`h9k task add | revise | set-session-cap | set-review-caps | publish | assign | unassign | draft | list | show`
 
 `add` creates a Draft. `revise` is Draft-only. `publish` is the readiness gate. `assign` is the
 dispatch trigger. The path back for an edit is `unassign → draft → revise → publish → assign`.
 `set-session-cap <id> <cap>` overrides how many agent sessions this task's own run may hold
 simultaneously — settable any time, even mid-run — in place of the node's global default.
+`set-review-caps` overrides the node's compiled review-cycle-cap defaults for one task —
+settable at any time, even while the task's run is live, so it doubles as the takeover lever
+for a grinding run. See [operations.md](operations.md#daemon-operating-settings).
 
 `h9k task add` also adopts existing external work: `--from-issue 42` (or `owner/repo#42`, or a
 URL), `--from-jira PROJ-1` (or a URL), and `--from-pr` (a pull request number, `owner/repo#42`, or
@@ -141,8 +144,8 @@ recipe for a project that has none yet, and the repair path for one that is inco
 
 `project set` is where the verification gates, the agent model, parallelism, commit style,
 context links, skip-permissions, the Jira board binding, the backlog policy (`--backlog
-none|github-issues|jira`) and its routing guidance, the review re-request policy, and the
-home's location live.
+none|github-issues|jira`) and its routing guidance, the review re-request policy, the
+project-level review-cycle-cap overrides, and the home's location live.
 Settings resolve most-specific-wins, and the exact chain differs per setting;
 [operations.md](operations.md#per-project-and-per-owner) has the two that matter.
 
@@ -281,11 +284,14 @@ Covered in [operations.md](operations.md#the-daemon-lifecycle) and [INSTALL.md](
 
 The node ceiling (`--max-concurrent-task-runs`, counted directly in task runs), the per-run
 session cap's global default (`--session-cap-per-run`, overridable per task with
-`h9k task set-session-cap` even mid-run), the per-role model overrides, and the interactive-claim
-staleness threshold, durable in the platform config file so a fresh machine or an autostarted
-daemon runs with the operator's settings without an environment variable ritual. `show` resolves
-and names each setting's origin (environment variable, config file, or built-in default); `set`
-merges a change into the file. See [operations.md](operations.md#daemon-operating-settings).
+`h9k task set-session-cap` even mid-run), the per-role model overrides, the interactive-claim
+staleness threshold, and the node-level review-cycle caps (compliance, adversarial, final-full-pass,
+and the task-lifetime budget — each overridable per project, and per task too via
+`h9k task set-review-caps`), durable in the platform config file so a fresh machine or an
+autostarted daemon runs with the operator's settings without an environment variable ritual.
+`show` resolves and names each setting's origin (environment variable, config file, or built-in
+default); `set` merges a change into the file. See
+[operations.md](operations.md#daemon-operating-settings).
 
 ## Identifiers
 

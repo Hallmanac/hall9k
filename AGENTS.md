@@ -380,7 +380,7 @@ of the pane, and today a row lands there for one of six reasons:
 
 | Row says | What happened | The lever |
 |---|---|---|
-| `NeedsHuman`, review parked | The pre-PR review loop spent its automatic fixes or hit a disputed finding (#24, #63) | `h9k review resolve` |
+| `NeedsHuman`, review parked | The pre-PR review loop spent its automatic fixes, hit a disputed finding (#24, #63), or the task's lifetime review-cycle budget is spent (#108) — that last one can fire on a run that just converged cleanly, since the budget counts every run and follow-up the task has ever had and nothing resets it; a `--needs-fixes` grant there earns one more cycle but re-parks at the next settle point unless the budget itself is raised with `h9k task set-review-caps` | `h9k review resolve` |
 | `NeedsHuman`, closeout parked | The same obstruction survived its automatic-lap cap without clearing, or the pull request's lifetime automatic-closeout budget is spent (#22, #80) | `h9k pr resolve` |
 | `NeedsHuman`, dependency failed | A blocker died, so the dependent stays Blocked rather than silently unblocking (#34, #61) | recover the blocker |
 | needs-you, Jira write pending, Status unchanged | A Jira write (an operator's own `write-jira`, or a daemon-dispatched one such as closeout's own merge comment) is stuck on an expired or missing twg login (#102) — the write carries no lifecycle state of its own, so the row's Status stays whatever it already was (Working, Delivered, or Done) | `twg login` |

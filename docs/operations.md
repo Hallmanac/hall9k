@@ -535,7 +535,7 @@ it:
 
 | The cause line says | What happened | The lever |
 |---|---|---|
-| the pre-PR review loop's own park reason | The loop spent its automatic fixes, or a fix session disputed a finding | `h9k review resolve` |
+| the pre-PR review loop's own park reason | The loop spent its automatic fixes, a fix session disputed a finding, or the task's lifetime review-cycle budget is spent (a park that can fire on a run that converged cleanly, spending no fix budget at all) | `h9k review resolve` |
 | closeout's own park reason | The same obstruction survived its automatic-lap cap without clearing, or the pull request's lifetime automatic-closeout budget is spent | `h9k pr resolve` |
 | the recorded dependency failure | A blocker died, so the dependent stays `Blocked` rather than silently unblocking | recover the blocker, as the recorded reason names |
 | the agent asked a question and stopped | A run recorded a question and exited. `h9k ask` and `h9k answer` are Slice 2, so no command answers it | `h9k task show`, then decide it by hand |
