@@ -2957,6 +2957,17 @@ public sealed class ReviewEngine(
     /// but both levels still get an honest lever rather than a task-only assumption, since neither
     /// invariant is enforced at this call site.
     /// </para>
+    /// <para>
+    /// The node lever does not assert which of the two ungated sources — a hand-edited config file
+    /// or an environment variable — actually supplied the value (independent pre-PR review, cycle
+    /// 4): this call site never observed that, and asserting the config file specifically was itself
+    /// a defect, since an environment variable outranks the config file
+    /// (<see cref="PlatformConfigFileSource"/>) and makes <c>h9k config set</c> a silent no-op in
+    /// that case. The message instead points at <c>h9k config show</c>, which does know the source,
+    /// and offers a task-level override as the lever — it outranks the node value regardless of
+    /// which ungated source supplied it, and is picked up at the very next cap check with no daemon
+    /// restart.
+    /// </para>
     /// </summary>
     private static string TakeoverCapParkReason(
         string name, string flag, ResolvedReviewCap cap, string findings, string neverRanClause)
@@ -2965,17 +2976,20 @@ public sealed class ReviewEngine(
         {
             ReviewCapLevel.Task => $"raise it or clear it with h9k task set-review-caps <id> {flag} default",
             ReviewCapLevel.Project => $"raise it or clear it with h9k project set <name> {flag} default",
-            ReviewCapLevel.Node =>
-                $"raise it with h9k config set {flag} <N> — h9k config set itself refuses a value below 1, " +
-                "so a cap this low can only have reached the config file through a hand edit or an " +
-                "environment variable; writing any valid value through h9k config set overwrites it",
+            ReviewCapLevel.Node => $"override it for this task with h9k task set-review-caps <id> {flag} <N>",
             _ => $"raise it with h9k config set {flag} <N>",
         };
+        string nodeNote = cap.Level == ReviewCapLevel.Node
+            ? " h9k config show names whether a config file or an environment variable actually supplied " +
+              $"this node value — an environment variable outranks the config file, so h9k config set " +
+              $"{flag} <N> only takes effect when the value came from the file; the task override above " +
+              "works either way and is picked up at the very next cap check with no daemon restart."
+            : string.Empty;
         return $"The {name}'s cap is {cap.Value}, from {cap.Describe()} — a cap that low parks every cycle " +
             "immediately, so granting a fresh round with --needs-fixes cannot buy the work any progress " +
             $"here the way it does at a real cap: {neverRanClause}. Unresolved findings: {findings}. Resolve " +
             $"with h9k review resolve --merge-ready, or {lever} before granting another round, or abandon " +
-            "the task.";
+            $"the task.{nodeNote}";
     }
 
     /// <summary>

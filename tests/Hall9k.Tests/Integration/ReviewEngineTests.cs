@@ -1999,12 +1999,20 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
     /// hand-edited config file or an environment variable from binding <see
     /// cref="DaemonOptions.MaxComplianceReviewCycles"/> straight to 0, and <see
     /// cref="ReviewCapResolver.Resolve"/> then resolves it as a Node-level cap exactly like any
-    /// other node value. The park text must say the level it actually resolved and offer that
-    /// level's own lever (h9k config set) rather than the hard-coded task-level wording and
-    /// h9k task set-review-caps, which the operator here has no override to clear.
+    /// other node value. The park text must say the level it actually resolved and offer a lever
+    /// that actually clears it.
+    /// <para>
+    /// Cycle 4, adversarial finding: the node lever originally asserted the low value reached "the
+    /// config file" specifically and that <c>h9k config set</c> always overwrites it — an unobserved
+    /// provenance claim that is also provably wrong when an environment variable supplied the value,
+    /// since the env source outranks the config file (<see cref="PlatformConfigFileSource"/>) and
+    /// the identical park would recur after the operator followed that exact advice. The fixed text
+    /// no longer guesses the source; it points at <c>h9k config show</c> (which does know it) and
+    /// offers the task-level override as the lever that clears the park either way.
+    /// </para>
     /// </summary>
     [Fact]
-    public async Task A_node_level_cap_of_zero_names_the_node_level_and_its_own_lever()
+    public async Task A_node_level_cap_of_zero_names_the_node_level_and_a_lever_that_always_works()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
         using DocumentStore store = NewStore();
@@ -2026,10 +2034,10 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
         run.ParkedReason.Should()
             .Contain("cap is 0")
             .And.Contain("this node's configured value")
-            .And.Contain("h9k config set")
-            .And.NotContain("task override", "a node value parked this, not a task override")
-            .And.NotContain("h9k task set-review-caps",
-                "there is no task override here for that command to clear")
+            .And.Contain("h9k config show")
+            .And.Contain("h9k task set-review-caps",
+                "the task override always clears a node-level park, whether an environment variable or a hand-edited config file supplied the low value")
+            .And.NotContain("hand edit", "the message no longer guesses which ungated source supplied the value")
             .And.NotContain("grant a fresh round with --needs-fixes",
                 "a cap this low parks every cycle before a granted round's fix session could ever run");
     }
