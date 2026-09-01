@@ -10,10 +10,12 @@ public sealed record RoleModelSetting(string Role, ResolvedSetting<string?> Mode
 /// not an object — environment variables and built-in defaults still apply, none of the file's
 /// settings take effect); and a value-shape failure on any leaf, which <c>ConfigurationBinder</c>
 /// silently leaves at its default while binding every sibling key normally — so the file is
-/// still in force, just not for that one setting. No leaf in this section can crash the daemon
-/// outright any more: <c>Hall9k.Daemon.DaemonOptionsBinding.ResolverOwnedKeys</c> excludes every
-/// concurrency setting from the daemon's own <c>ConfigurationBinder</c> call (Decisions Log
-/// #108's follow-up), which retired the one leaf (<c>maxConcurrentAgentSessions</c>) that used to.
+/// still in force, just not for that one setting. The three concurrency keys can no longer crash
+/// the daemon outright: <c>Hall9k.Daemon.DaemonOptionsBinding.ResolverOwnedKeys</c> excludes them
+/// from the daemon's own <c>ConfigurationBinder</c> call (Decisions Log #108's follow-up), which
+/// retired the one leaf (<c>maxConcurrentAgentSessions</c>) that used to; every other
+/// <c>DaemonOptions</c> leaf in this section is still bound through <c>ConfigurationBinder</c> and
+/// can still crash startup on a bad value (independent pre-PR review, cycle 4, adversarial lens).
 /// </summary>
 public enum ConfigFileProblemConsequence
 {
