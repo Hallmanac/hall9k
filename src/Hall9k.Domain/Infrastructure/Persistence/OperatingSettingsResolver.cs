@@ -315,9 +315,11 @@ public static class OperatingSettingsResolver
     {
         if (value < 1)
         {
-            unusable.Add(
-                $"{source} sets {optionName} to {value}, which is below 1 — every review cycle it is "
-                + "consulted on parks for a human immediately rather than running.");
+            string consequence = optionName == "lifetime-review-cycle-budget"
+                ? "review cycles still run normally, but the task parks for a human at its very first settle "
+                  + "point regardless of how cleanly it converged."
+                : "every review cycle it is consulted on parks for a human immediately rather than running.";
+            unusable.Add($"{source} sets {optionName} to {value}, which is below 1 — {consequence}");
         }
     }
 

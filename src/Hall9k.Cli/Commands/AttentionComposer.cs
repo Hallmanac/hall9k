@@ -477,20 +477,27 @@ internal static class AttentionComposer
     }
 
     /// <summary>
-    /// The review-parked row's lever, honest about the two parks where one of the two verdicts
-    /// is refused (<c>ReviewResolveCommand</c>'s own guards, never advertised past their refusal).
-    /// A disputed rebase conflict raised before any review pass ran
+    /// The review-parked row's lever, honest about the parks where one of the two verdicts
+    /// is refused (<c>ReviewResolveCommand</c>'s own guards, never advertised past their refusal)
+    /// or accepted but useless. A disputed rebase conflict raised before any review pass ran
     /// (<c>task.FollowUpKind == Rebase &amp;&amp; run.ReviewCycle == 0</c>) has nothing to call
     /// "ready" — nothing has been rebased yet — so only --needs-fixes applies. A pr-review task's
     /// own park (<c>ResolvePrReviewAsync</c>) is the opposite refusal: there is no diff of its own
-    /// to fix, so only --merge-ready applies.
+    /// to fix, so only --merge-ready applies. A cap-0 takeover park or the lifetime-budget park
+    /// (<see cref="RunDetails.ParkedNeedsFixesOffersNoProgress"/>) accepts --needs-fixes rather
+    /// than refusing it, but the park's own reason already says granting one buys no progress
+    /// here, so the lever does not advertise the command whose only effect is an identical
+    /// re-park (independent pre-PR review, cycle 5, adversarial lens: offering it anyway
+    /// contradicted the reason printed directly above it).
     /// </summary>
     private static string ReviewParkLever(TaskListItem task, RunDetails run, string id) =>
         task.Type == TaskType.PrReview
             ? $"h9k review resolve {id} --merge-ready (a pr-review task has no diff of its own for a fix session; direct the findings report by hand first)"
             : task.FollowUpKind == FollowUpKind.Rebase && run.ReviewCycle == 0
                 ? $"h9k review resolve {id} --needs-fixes \"<how to resolve the conflict>\""
-                : $"h9k review resolve {id} --merge-ready (or --needs-fixes \"…\")";
+                : run.ParkedNeedsFixesOffersNoProgress
+                    ? $"h9k review resolve {id} --merge-ready (--needs-fixes cannot buy this park any progress — raise the cap or budget first, per the reason above)"
+                    : $"h9k review resolve {id} --merge-ready (or --needs-fixes \"…\")";
 
     private static string Reason(string? recorded, string absent) =>
         recorded.IsNotBlank() ? recorded : absent;

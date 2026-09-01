@@ -7,8 +7,8 @@ namespace Hall9k.Daemon.Review;
 
 /// <summary>
 /// Which level actually supplied a resolved review cap's value (task: the review cycle caps
-/// become settable at three levels) — an unpersisted, in-process outcome (AGENTS.md §8), never a
-/// value object. <see cref="Node"/> and <see cref="Default"/> are distinguished by whether the
+/// become settable at three levels) — an unpersisted, in-process outcome (TASK-MODEL.md §8), never
+/// a value object. <see cref="Node"/> and <see cref="Default"/> are distinguished by whether the
 /// node's own resolved value differs from the compiled default; a node config explicitly set to
 /// the same number as the compiled default is indistinguishable from unset and reads as
 /// <see cref="Default"/> — a cosmetic gap in the park message's wording only, never in which
@@ -56,7 +56,7 @@ public sealed record ResolvedReviewCaps(
 
 /// <summary>
 /// Resolves each of the four review-cycle caps independently, strictly task &gt; project &gt; node
-/// &gt; compiled default (Brian's ruling, 2026-08-29) — the first no-op hierarchy walker for an
+/// &gt; compiled default (Brian's ruling, 2026-08-29) — the first strict hierarchy walker for an
 /// int setting in this codebase (<c>ReviewRerequestPolicy.Resolve</c> and
 /// <c>DaemonOptions.ResolveModel</c> are the nearest precedents, but neither resolves this
 /// strictly: the model chain puts the node's per-role default above the project, Decisions Log

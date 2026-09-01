@@ -435,7 +435,13 @@ public sealed class OperatingSettingsResolverTests : IDisposable
         report.UnusableEnvironmentVariables.Should().Contain(
             warning => warning.Contains("Hall9k__MaxFinalFullPassRounds") && warning.Contains("max-final-full-pass-rounds"));
         report.UnusableEnvironmentVariables.Should().Contain(
-            warning => warning.Contains("Hall9k__LifetimeReviewCycleBudget") && warning.Contains("lifetime-review-cycle-budget"));
+            warning => warning.Contains("Hall9k__MaxComplianceReviewCycles")
+                && warning.Contains("parks for a human immediately rather than running"),
+            "a per-run cap this low parks every cycle it is consulted on, not just at a settle point");
+        report.UnusableEnvironmentVariables.Should().Contain(
+            warning => warning.Contains("Hall9k__LifetimeReviewCycleBudget") && warning.Contains("lifetime-review-cycle-budget")
+                && warning.Contains("parks for a human at its very first settle point"),
+            "the lifetime budget is only ever consulted at a settle point — review cycles themselves still run");
     }
 
     /// <summary>

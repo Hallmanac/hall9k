@@ -118,6 +118,34 @@ public sealed class RunReviewProjectionTests
     }
 
     /// <summary>
+    /// The takeover lever's own source of truth (independent pre-PR review, cycle 5, adversarial
+    /// finding): a cap-0 takeover park or the lifetime-budget park records that granting
+    /// --needs-fixes here buys no progress, so <c>h9k status</c> can agree with the park's own
+    /// reason instead of offering a lever the run would just re-park on. An ordinary park leaves
+    /// the flag false, and a resolved park clears it so a later, ordinary park never inherits it.
+    /// </summary>
+    [Fact]
+    public void Run_details_records_when_needs_fixes_offers_no_progress_and_clears_it_on_resolve()
+    {
+        RunDetailsProjection projection = new();
+        Guid id = DomainId.New();
+        RunDetails view = VerifiedRun(projection, id);
+
+        projection.Apply(new FakeEvent<ReviewDispatched>(
+            new ReviewDispatched(id, DomainId.New(), 1, 5001, Now, Now)), view);
+        projection.Apply(new FakeEvent<ReviewParked>(
+            new ReviewParked(id, "The conformance review's cap is 0, from a task override.", Now, true)), view);
+
+        view.ParkedNeedsFixesOffersNoProgress.Should().BeTrue();
+
+        projection.Apply(new FakeEvent<ReviewParkResolved>(
+            new ReviewParkResolved(id, ReviewVerdict.MergeReady, null, Now, DomainId.New())), view);
+
+        view.ParkedNeedsFixesOffersNoProgress.Should().BeFalse(
+            "the park is answered, so a later park must not inherit a stale claim about this one");
+    }
+
+    /// <summary>
     /// Merge-ready is one word for two different claims (Decisions Log #63), so the row carries
     /// the settlement beside the verdict: a settled ending reports the residuals it shipped
     /// without a second read, and a run whose review predates settlements reports neither
