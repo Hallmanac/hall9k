@@ -344,12 +344,16 @@ public static class TaskDecider
     /// <see cref="Revise"/>: it is meant to be set "even mid-run", including against a task whose
     /// run is Claimed and UnderReview right now, so the daemon can pick it up at the run's very
     /// next session dispatch. Lowering it never terminates a session already spawned; raising it
-    /// only widens what the <em>next</em> phase may fan out to.
+    /// only widens what the <em>next</em> phase may fan out to. <paramref name="sessionCap"/> is
+    /// <see langword="null"/> to clear this task's own override, returning it to the node's global
+    /// default — the recovery <c>TaskDetails.SessionCap</c>'s own doc already promises but that,
+    /// before this, no command could actually reach (independent pre-PR review, cycle 1,
+    /// adversarial lens).
     /// </summary>
     public static TaskSessionCapOverridden OverrideSessionCap(
-        TaskAggregate task, int sessionCap, DateTimeOffset overriddenAt, Guid overriddenByOwnerId)
+        TaskAggregate task, int? sessionCap, DateTimeOffset overriddenAt, Guid overriddenByOwnerId)
     {
-        if (sessionCap < 1)
+        if (sessionCap is { } value && value < 1)
         {
             throw new DomainValidationException(
                 $"The session cap must be at least 1 (task {task.Id}) — a cap of zero would dispatch nothing for "

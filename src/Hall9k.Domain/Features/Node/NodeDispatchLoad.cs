@@ -25,10 +25,12 @@ public sealed class NodeDispatchLoad
     public int LiveRuns { get; set; }
 
     /// <summary>
-    /// The configured ceiling the count was measured against — <c>DaemonOptions.MaxConcurrentTaskRuns</c>,
-    /// admission's own unit as of Decisions Log #109. Published rather than re-derived, so a reader
-    /// never has to know how many sessions a run tree is worth, or that the setting behind this
-    /// number was ever denominated any other way.
+    /// The ceiling the count was actually measured against — <c>Hall9k.Daemon.Dispatch.NodeLoad
+    /// .MaxConcurrentRuns</c>, the floored value (never below 1) rather than the raw configured
+    /// <c>DaemonOptions.MaxConcurrentTaskRuns</c> a sub-1 setting would otherwise show here
+    /// (independent pre-PR review, cycle 1, conformance lens). Published rather than re-derived,
+    /// so a reader never has to know how many sessions a run tree is worth, or that the setting
+    /// behind this number was ever denominated any other way.
     /// </summary>
     public int MaxConcurrentRuns { get; set; }
 

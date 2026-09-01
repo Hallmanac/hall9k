@@ -521,9 +521,11 @@ public static class CliCommandTree
                     + "instead of dispatching them together, for maximum throttle. Takes effect at the run's next "
                     + "session dispatch: raising it lets the next phase fan out wider, lowering it never "
                     + "terminates a session already running. An interactive claim (h9k task work) occupies zero "
-                    + "runs and ignores this cap entirely.")
+                    + "runs and ignores this cap entirely. Pass 'default' to clear this task's own override and "
+                    + "let the node's global session-cap-per-run decide again.")
                 .WithExample("task", "set-session-cap", "28b19893", "1")
-                .WithExample("task", "set-session-cap", "28b19893", "3");
+                .WithExample("task", "set-session-cap", "28b19893", "3")
+                .WithExample("task", "set-session-cap", "28b19893", "default");
             task.AddCommand<TaskUnassignCommand>("unassign")
                 .WithDescription(
                     "Take a queued or blocked task back to Published, so no node claims it. Refused while a "

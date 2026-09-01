@@ -354,24 +354,38 @@ public sealed class OperatingSettingsResolverTests : IDisposable
     /// to zero on the daemon's own <c>ConfigurationBinder</c> (its explicit-value handling has no
     /// null to assign a non-nullable <c>int</c>, so it resolves to <see langword="default"/>
     /// instead) rather than leaving the setting at its built-in default of three the way every
-    /// other shape mismatch does. Reporting "3 (default)" with no warning here would be exactly the
-    /// gap the sibling test above closes for a hand-written zero, just reached through a shape that
-    /// never throws an exception to classify. Origin: cycle-7 pre-PR review.
+    /// other shape mismatch does — <see cref="OperatingSettingsReport.MaxConcurrentAgentSessions"/>
+    /// still reports that simulated <c>0</c>, since that field's whole job is describing what
+    /// <c>ConfigurationBinder</c> would have bound. But unlike a hand-written <c>0</c> (the sibling
+    /// test above), this leaf holds no real number at all, so it must not be treated as a legacy
+    /// value the run ceiling actually converted: <c>max-concurrent-task-runs</c> falls straight
+    /// through to the built-in default, and the "floors this to exactly one concurrent run" warning
+    /// — which would otherwise claim the file forced that flooring — stays silent, because nothing
+    /// in the file actually decided the ceiling here. Before this fix, the fabricated <c>0</c> was
+    /// read as a real legacy value: the daemon status/config show output claimed a conversion that
+    /// never had a number to convert, and warned that the file floors dispatch when the ceiling in
+    /// fact comes from the unrelated built-in default (independent pre-PR review, cycle 1,
+    /// adversarial lens). Origin: cycle-7 pre-PR review (the original binder-quirk fix).
     /// </summary>
     [Theory]
     [InlineData("null")]
     [InlineData("{}")]
-    public async Task A_null_or_empty_object_ceiling_in_the_config_file_is_reported_as_floored_rather_than_healthy(string shape)
+    public async Task A_null_or_empty_object_ceiling_in_the_config_file_does_not_masquerade_as_a_legacy_conversion(string shape)
     {
         await File.WriteAllTextAsync(
             Hall9kDatabase.ConfigFile, "{\"hall9k\": {\"maxConcurrentAgentSessions\": " + shape + "}}");
 
         OperatingSettingsReport report = await OperatingSettingsResolver.ResolveAsync(CancellationToken.None);
 
-        report.MaxConcurrentAgentSessions.Value.Should().Be(0);
+        report.MaxConcurrentAgentSessions.Value.Should().Be(0,
+            "this field still simulates what ConfigurationBinder would have bound, unrelated to the ceiling conversion");
         report.MaxConcurrentAgentSessions.Origin.Should().Be(SettingOrigin.PlatformConfigFile);
-        report.UnusableEnvironmentVariables.Should().ContainSingle(
-            warning => warning.Contains(Hall9kDatabase.ConfigFile) && warning.Contains("floors"));
+        report.MaxConcurrentTaskRunsConvertedFromLegacy.Should().BeFalse(
+            "a fabricated zero holds no real number to convert, so the run ceiling must fall through to the default");
+        report.MaxConcurrentTaskRuns.Origin.Should().Be(SettingOrigin.Default);
+        report.UnusableEnvironmentVariables.Should().NotContain(
+            warning => warning.Contains("floors"),
+            "the file did not actually decide the ceiling here, so claiming it floors dispatch would be untrue");
     }
 
     [Fact]

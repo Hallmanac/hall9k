@@ -1,5 +1,7 @@
 using FluentAssertions;
 using Hall9k.Daemon;
+using Hall9k.Domain.Infrastructure.Persistence;
+using Hall9k.Domain.Shared.ValueObjects;
 using Microsoft.Extensions.Configuration;
 using Xunit;
 
@@ -70,4 +72,62 @@ public sealed class DaemonOptionsBindingTests
                 new KeyValuePair<string, string?>($"Hall9k:{pair.Key}", pair.Value))])
             .Build()
             .GetSection("Hall9k");
+
+    /// <summary>
+    /// The regression itself: before Decisions Log #109 excluded these keys from the daemon's own
+    /// <c>Bind()</c> call, a value here — appsettings.json, appsettings.Development.json, a
+    /// command-line argument, user secrets — bound normally and the daemon ran on it.
+    /// <c>PostConfigure</c> now overwrites it with the resolver's own answer unconditionally, with
+    /// nothing logged, unless this check names the mismatch (independent pre-PR review, cycle 1,
+    /// adversarial lens).
+    /// </summary>
+    [Fact]
+    public void A_value_from_outside_the_resolvers_own_sources_is_named_as_ignored()
+    {
+        IConfigurationSection section = Section(("MaxConcurrentTaskRuns", "5"));
+        OperatingSettingsReport report = ReportWithCeiling(maxConcurrentTaskRuns: 1);
+
+        IReadOnlyList<string> messages = DaemonOptionsBinding.DescribeConfigurationSourcesTheResolverIgnores(section, report);
+
+        messages.Should().ContainSingle(message =>
+            message.Contains("MaxConcurrentTaskRuns") && message.Contains("5") && message.Contains("1"),
+            "the daemon dispatches at the resolver's answer (1), not the merged configuration's own value (5), "
+            + "and nothing said so before this check existed");
+    }
+
+    [Fact]
+    public void A_value_that_agrees_with_the_resolvers_answer_is_silent()
+    {
+        IConfigurationSection section = Section(("MaxConcurrentTaskRuns", "1"));
+        OperatingSettingsReport report = ReportWithCeiling(maxConcurrentTaskRuns: 1);
+
+        IReadOnlyList<string> messages = DaemonOptionsBinding.DescribeConfigurationSourcesTheResolverIgnores(section, report);
+
+        messages.Should().BeEmpty(
+            "the value an operator would see either way is the one the daemon runs on, so nothing is actually "
+            + "being overridden out from under them");
+    }
+
+    [Fact]
+    public void A_key_absent_from_the_merged_configuration_is_silent()
+    {
+        IConfigurationSection section = Section(("MaxAdversarialReviewCycles", "7"));
+        OperatingSettingsReport report = ReportWithCeiling(maxConcurrentTaskRuns: 1);
+
+        IReadOnlyList<string> messages = DaemonOptionsBinding.DescribeConfigurationSourcesTheResolverIgnores(section, report);
+
+        messages.Should().BeEmpty("there is nothing set outside the resolver's own sources to name as ignored");
+    }
+
+    private static OperatingSettingsReport ReportWithCeiling(int maxConcurrentTaskRuns) =>
+        new(
+            new ResolvedSetting<int>(OperatingSettings.DefaultMaxConcurrentAgentSessions, SettingOrigin.Default, null),
+            new ResolvedSetting<int>(maxConcurrentTaskRuns, SettingOrigin.Default, null),
+            false,
+            false,
+            new ResolvedSetting<int>(OperatingSettings.DefaultSessionCapPerRun, SettingOrigin.Default, null),
+            new ResolvedSetting<string>(AgentModel.PlatformFallback, SettingOrigin.Default, null),
+            [],
+            null,
+            []);
 }
