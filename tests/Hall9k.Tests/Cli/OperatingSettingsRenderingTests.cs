@@ -21,6 +21,7 @@ public sealed class OperatingSettingsRenderingTests
             new ResolvedSetting<int>(OperatingSettings.DefaultMaxConcurrentAgentSessions, SettingOrigin.Default, null),
             new ResolvedSetting<int>(OperatingSettings.DefaultMaxConcurrentTaskRuns, SettingOrigin.Default, null),
             false,
+            false,
             new ResolvedSetting<int>(OperatingSettings.DefaultSessionCapPerRun, SettingOrigin.Default, null),
             new ResolvedSetting<string>(AgentModel.PlatformFallback, SettingOrigin.Default, null),
             [new RoleModelSetting(role, new ResolvedSetting<string?>(model, SettingOrigin.Default, null))],

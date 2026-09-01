@@ -8,15 +8,16 @@ public sealed record RoleModelSetting(string Role, ResolvedSetting<string?> Mode
 /// unpersisted in-process outcome rather than a value object: a document-level failure the
 /// daemon already skips gracefully at startup (a syntax error, or valid JSON whose top level is
 /// not an object — environment variables and built-in defaults still apply, none of the file's
-/// settings take effect); a value-shape failure on the one leaf <c>ConfigurationBinder</c> has no
-/// guard for, which crashes the daemon outright; and a value-shape failure on any other leaf,
-/// which <c>ConfigurationBinder</c> silently leaves at its default while binding every sibling
-/// key normally — so the file is still in force, just not for that one setting.
+/// settings take effect); and a value-shape failure on any leaf, which <c>ConfigurationBinder</c>
+/// silently leaves at its default while binding every sibling key normally — so the file is
+/// still in force, just not for that one setting. No leaf in this section can crash the daemon
+/// outright any more: <c>Hall9k.Daemon.DaemonOptionsBinding.ResolverOwnedKeys</c> excludes every
+/// concurrency setting from the daemon's own <c>ConfigurationBinder</c> call (Decisions Log
+/// #108's follow-up), which retired the one leaf (<c>maxConcurrentAgentSessions</c>) that used to.
 /// </summary>
 public enum ConfigFileProblemConsequence
 {
     DaemonSkipsFile,
-    DaemonFailsToStart,
     SettingIsIgnored,
 }
 
@@ -40,15 +41,7 @@ public sealed record ConfigFileReadResult(OperatingSettings Settings, ConfigFile
         new(new OperatingSettings(), new ConfigFileProblem(message, ConfigFileProblemConsequence.DaemonSkipsFile));
 
     /// <summary>
-    /// A value-shape failure on the one leaf <c>ConfigurationBinder</c> crashes the daemon on —
-    /// the document parsed, but nothing in it can be trusted to be what the daemon will actually
-    /// run with, because the daemon will not run at all.
-    /// </summary>
-    public static ConfigFileReadResult DaemonCrashes(string message) =>
-        new(new OperatingSettings(), new ConfigFileProblem(message, ConfigFileProblemConsequence.DaemonFailsToStart));
-
-    /// <summary>
-    /// A value-shape failure on any other leaf: <paramref name="settings"/> is the partial
+    /// A value-shape failure on any leaf: <paramref name="settings"/> is the partial
     /// recovery with the malformed leaf left at its default, mirroring what
     /// <c>ConfigurationBinder</c> actually binds for every sibling key.
     /// </summary>
@@ -73,11 +66,18 @@ public sealed record ConfigFileReadResult(OperatingSettings Settings, ConfigFile
 /// <c>max-concurrent-task-runs</c> key read directly (Decisions Log #108) — what lets
 /// <c>h9k daemon status</c> and <c>h9k config show</c> name the conversion rather than present a
 /// converted number as though it were configured in runs all along.
+/// <see cref="MaxConcurrentTaskRunsShadowsConfigFileValue"/> is true only for the one shape that
+/// conversion flag alone cannot distinguish: an environment-level legacy conversion winning while
+/// the config file already carries its own <c>max-concurrent-task-runs</c> value, which a plain
+/// "set max-concurrent-task-runs" remedy would not actually apply, since the environment variable
+/// still outranks the file regardless of which key it names (independent pre-PR review, cycle 1,
+/// adversarial lens).
 /// </summary>
 public sealed record OperatingSettingsReport(
     ResolvedSetting<int> MaxConcurrentAgentSessions,
     ResolvedSetting<int> MaxConcurrentTaskRuns,
     bool MaxConcurrentTaskRunsConvertedFromLegacy,
+    bool MaxConcurrentTaskRunsShadowsConfigFileValue,
     ResolvedSetting<int> SessionCapPerRun,
     ResolvedSetting<string> DefaultModel,
     IReadOnlyList<RoleModelSetting> ModelByRole,

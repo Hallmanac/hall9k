@@ -28,7 +28,7 @@ public static class OperatingSettingsResolver
             OperatingSettings.DefaultMaxConcurrentAgentSessions,
             unusableEnvironmentVariables);
 
-        (ResolvedSetting<int> maxConcurrentTaskRuns, bool convertedFromLegacy) =
+        (ResolvedSetting<int> maxConcurrentTaskRuns, bool convertedFromLegacy, bool shadowsConfigFileValue) =
             ResolveMaxConcurrentTaskRuns(configured, unusableEnvironmentVariables);
 
         ResolvedSetting<int> sessionCapPerRun =
@@ -47,7 +47,7 @@ public static class OperatingSettingsResolver
                     $"{EnvironmentPrefix}ModelByRole__{pair.Role}", pair.Model, pair.Role, unusableEnvironmentVariables)))];
 
         return new OperatingSettingsReport(
-            concurrency, maxConcurrentTaskRuns, convertedFromLegacy, sessionCapPerRun,
+            concurrency, maxConcurrentTaskRuns, convertedFromLegacy, shadowsConfigFileValue, sessionCapPerRun,
             defaultModel, roles, read.Problem, unusableEnvironmentVariables);
     }
 
@@ -60,10 +60,15 @@ public static class OperatingSettingsResolver
     /// different levels: an environment variable naming only the legacy key must still outrank a
     /// config-file value for the new key, the same way the legacy key itself would have outranked
     /// it before this decision — "the new key wins when both exist" is a same-level statement, not
-    /// a global one.
+    /// a global one. <c>ShadowsConfigFileValue</c> names the one case that statement leaves
+    /// dangerous to a naive "set max-concurrent-task-runs to stop relying on the conversion"
+    /// remedy: an environment-level legacy conversion winning while the config file already carries
+    /// its own <c>max-concurrent-task-runs</c> value, which that remedy would not change at all,
+    /// since the environment variable still outranks the file regardless (independent pre-PR
+    /// review, cycle 1, adversarial lens).
     /// </summary>
-    private static (ResolvedSetting<int> Setting, bool ConvertedFromLegacy) ResolveMaxConcurrentTaskRuns(
-        OperatingSettings configured, List<string> unusable)
+    private static (ResolvedSetting<int> Setting, bool ConvertedFromLegacy, bool ShadowsConfigFileValue)
+        ResolveMaxConcurrentTaskRuns(OperatingSettings configured, List<string> unusable)
     {
         if (ResolveRunsAtLevel(
                 GetEnvironmentVariable($"{EnvironmentPrefix}MaxConcurrentTaskRuns"),
@@ -71,7 +76,8 @@ public static class OperatingSettingsResolver
                 $"{EnvironmentPrefix}MaxConcurrentTaskRuns", $"{EnvironmentPrefix}MaxConcurrentAgentSessions",
                 SettingOrigin.EnvironmentVariable, unusable) is { } fromEnvironment)
         {
-            return fromEnvironment;
+            bool shadowsConfigFileValue = fromEnvironment.ConvertedFromLegacy && configured.MaxConcurrentTaskRuns is not null;
+            return (fromEnvironment.Setting, fromEnvironment.ConvertedFromLegacy, shadowsConfigFileValue);
         }
 
         if (ResolveRunsAtLevel(
@@ -79,10 +85,10 @@ public static class OperatingSettingsResolver
                 Hall9kDatabase.ConfigFile, Hall9kDatabase.ConfigFile,
                 SettingOrigin.PlatformConfigFile, unusable) is { } fromFile)
         {
-            return fromFile;
+            return (fromFile.Setting, fromFile.ConvertedFromLegacy, false);
         }
 
-        return (new ResolvedSetting<int>(OperatingSettings.DefaultMaxConcurrentTaskRuns, SettingOrigin.Default, null), false);
+        return (new ResolvedSetting<int>(OperatingSettings.DefaultMaxConcurrentTaskRuns, SettingOrigin.Default, null), false, false);
     }
 
     /// <summary>
@@ -176,20 +182,28 @@ public static class OperatingSettingsResolver
     }
 
     /// <summary>
+    /// This resolves <c>MaxConcurrentAgentSessions</c> only — the one retired concurrency setting
+    /// that carries no per-precedence-level conversion of its own (unlike
+    /// <see cref="ResolveMaxConcurrentTaskRuns"/> and <see cref="ResolveSessionCapPerRun"/>).
     /// Unlike <see cref="ResolveString"/>, a set-but-unparseable value cannot just ride through as
-    /// itself: <see cref="DaemonOptions"/> binds this key through <c>ConfigurationBinder</c>, which
-    /// throws at options-resolution time rather than keeping the config-file/default value, so
-    /// silently falling through here would report an origin and a value the daemon will never
-    /// actually run with. The variable's raw value is recorded in <paramref name="unusable"/>
-    /// instead, so a caller can name the mistake rather than the resolver quietly outranking it.
+    /// itself, or a caller would report an origin and a value nothing actually runs with. Unlike
+    /// <see cref="ResolveMaxConcurrentTaskRuns"/> and <see cref="ResolveSessionCapPerRun"/>'s own
+    /// int resolution, an unparseable value here does not crash the daemon: this key is excluded
+    /// from the section <c>Hall9k.Daemon.DaemonOptionsBinding</c> hands its <c>ConfigurationBinder</c>
+    /// call (Decisions Log #108's follow-up), and nothing else reads the bound
+    /// <see cref="DaemonOptions.MaxConcurrentAgentSessions"/> property at dispatch time — the
+    /// retired-key conversion itself reads the raw environment variable and config file directly,
+    /// never this method's result. The variable's raw value is recorded in
+    /// <paramref name="unusable"/> instead, so a caller can name the mistake rather than the
+    /// resolver quietly outranking it.
     /// </summary>
     private static ResolvedSetting<int> ResolveInt(
         string environmentVariable, int? configured, int fallback, List<string> unusable)
     {
         // Unlike ResolveString, an empty value is not treated as unset here: a shell that expands
         // an unset variable into "" (Hall9k__MaxConcurrentAgentSessions= with nothing after it —
-        // the origin incident's own failure shape) still sets the variable, and the daemon's
-        // ConfigurationBinder fails to parse "" as an int exactly the way it fails on "four".
+        // the origin incident's own failure shape) still sets the variable, and this value would
+        // otherwise misreport as though nothing were set at all.
         if (GetEnvironmentVariable(environmentVariable) is { } fromEnvironment)
         {
             if (int.TryParse(fromEnvironment, out int parsed))
@@ -199,8 +213,9 @@ public static class OperatingSettingsResolver
             }
 
             unusable.Add(
-                $"{environmentVariable} is set to \"{fromEnvironment}\", which is not a whole number — the "
-                + "daemon will fail to start on this value rather than fall back to the config file or default.");
+                $"{environmentVariable} is set to \"{fromEnvironment}\", which is not a whole number — it is "
+                + "treated as absent, and max-concurrent-agent-sessions falls back to the config file or default "
+                + "instead (this retired setting no longer crashes the daemon on a bad value).");
         }
 
         if (configured is { } value)
@@ -232,14 +247,14 @@ public static class OperatingSettingsResolver
 
     /// <summary>
     /// The per-run session cap's own resolution (Decisions Log #108) — deliberately not
-    /// <see cref="ResolveInt"/>, whose unparseable-value and below-floor messages are both hardcoded
-    /// to describe <c>max-concurrent-agent-sessions</c> specifically and, for the crash claim, only
-    /// true of that one setting: <c>DaemonOptions.SessionCapPerRun</c>, the same as
-    /// <c>DaemonOptions.MaxConcurrentTaskRuns</c>, is excluded from the section Program.cs's own
-    /// <c>Bind()</c> call sees (its <see langword="internal"/> setter alone would not be enough —
-    /// see <c>Hall9k.Daemon.DaemonOptionsBinding</c>'s own doc), so it is never bound through
+    /// <see cref="ResolveInt"/>, whose unparseable-value and below-floor messages are both
+    /// hardcoded to describe <c>max-concurrent-agent-sessions</c> specifically:
+    /// <c>DaemonOptions.SessionCapPerRun</c>, the same as <c>DaemonOptions.MaxConcurrentTaskRuns</c>,
+    /// is excluded from the section Program.cs's own <c>Bind()</c> call sees (its
+    /// <see langword="internal"/> setter alone would not be enough — see
+    /// <c>Hall9k.Daemon.DaemonOptionsBinding</c>'s own doc), so it is never bound through
     /// <c>ConfigurationBinder</c> and an unparseable value here is treated as absent rather than
-    /// crashing the daemon.
+    /// crashing the daemon — the same as every other concurrency setting this section carries.
     /// </summary>
     private static ResolvedSetting<int> ResolveSessionCapPerRun(int? configured, List<string> unusable)
     {
