@@ -77,4 +77,31 @@ public sealed class RecordingProcessRunner(Func<IReadOnlyList<string>, ProcessRe
         Calls.Add((fileName, arguments, workingDirectory));
         return Task.FromResult(respond(arguments));
     };
+
+    /// <summary>
+    /// A <see cref="ProcessRunner"/> for a test that constructs a real connector (e.g.
+    /// <c>GitHubWorkItemProvider</c>) but only ever exercises a synchronous, no-process member of
+    /// it — <c>WebUrl</c>, chiefly. Passing this explicitly rather than leaving the constructor's
+    /// <c>ProcessRunner? runner = null</c> default to resolve to <see cref="ExternalProcess.Runner"/>
+    /// turns "this test never happens to call anything that shells out" from an unstated fact
+    /// about which methods are exercised into an enforced one: if a later edit calls a method that
+    /// does shell out, this throws immediately instead of the test silently reaching the real
+    /// <c>gh</c> and the real network (origin incident, 2026-08-29 — see
+    /// <c>ProcessTerminationGuardTests</c>' own doc comment for the crash this class of gap can
+    /// produce). "Loud" is not guaranteed everywhere: a caller that wraps its runner call in a
+    /// broad best-effort <c>catch</c> — <c>GitHubWorkItemProvider.TryObserveRepositoryHostAsync</c>
+    /// is one — swallows this exception the same as any other and degrades silently instead of
+    /// failing the test; the guarantee this fake gives is that the real process is never spawned,
+    /// not that every caller surfaces the throw.
+    /// <para>
+    /// The refusal quotes only the tool name and the argument count, never the arguments
+    /// themselves, the same reason <see cref="FakeJiraRequester.NeverInvoked"/> quotes only a
+    /// request's method and URL: a test that trips this guard reports what it asked for without
+    /// risking a credential passed on the command line spilling into the test log.
+    /// </para>
+    /// </summary>
+    public static ProcessRunner NeverInvoked() => (fileName, arguments, _, _) => throw new InvalidOperationException(
+        $"this test's ProcessRunner was not expected to be called, but was invoked with '{fileName}' " +
+        $"and {arguments.Count} argument(s) — this test only exercises members that must never shell " +
+        "out; if that changed, give it a real fake instead of this guard");
 }

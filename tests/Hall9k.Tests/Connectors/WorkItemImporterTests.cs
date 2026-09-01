@@ -4,6 +4,7 @@ using Hall9k.Connectors.WorkItems;
 using Hall9k.Domain.Features.Tasks;
 using Hall9k.Domain.Shared.Exceptions;
 using Hall9k.Domain.Shared.ValueObjects;
+using Hall9k.Tests.Fakes;
 using Xunit;
 
 namespace Hall9k.Tests.Connectors;
@@ -180,7 +181,11 @@ public sealed class WorkItemImporterTests
     [Fact]
     public void The_default_importer_places_a_github_reference()
     {
-        new WorkItemImporter(new GitHubWorkItemProvider()).WebUrl("github:Hallmanac/hall9k#42")
+        // WebUrl builds the link from the reference text alone and never shells out, so a runner
+        // that throws if it is ever actually invoked both documents that and enforces it — see
+        // RecordingProcessRunner.NeverInvoked's own doc comment.
+        new WorkItemImporter(new GitHubWorkItemProvider(RecordingProcessRunner.NeverInvoked()))
+            .WebUrl("github:Hallmanac/hall9k#42")
             .Should().Be(new Uri("https://github.com/Hallmanac/hall9k/issues/42"));
     }
 

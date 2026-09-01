@@ -5,6 +5,7 @@ using Hall9k.Domain.Infrastructure.Ids;
 using Hall9k.Domain.Infrastructure.Persistence;
 using Hall9k.Domain.Shared.Exceptions;
 using Hall9k.Domain.Shared.ValueObjects;
+using Hall9k.Tests.Fakes;
 using JasperFx;
 using Marten;
 using Xunit;
@@ -45,7 +46,7 @@ public sealed class WorkItemConnectionsTests(PostgresFixture postgres) : IClassF
         await RegisterAsync(store, "bob@corp.com", Site, cts.Token);
 
         await using IQuerySession session = store.QuerySession();
-        WorkItemImporter importer = await WorkItemConnections.ImporterAsync(session, cts.Token);
+        WorkItemImporter importer = await ImporterAsync(session, cts.Token);
 
         importer.WebUrl(GitHubIssue).Should().Be(
             new Uri("https://github.com/Hallmanac/hall9k/issues/42"),
@@ -76,7 +77,7 @@ public sealed class WorkItemConnectionsTests(PostgresFixture postgres) : IClassF
         await RegisterAsync(store, "alice@corp.com", site: null, cts.Token);
 
         await using IQuerySession session = store.QuerySession();
-        WorkItemImporter importer = await WorkItemConnections.ImporterAsync(session, cts.Token);
+        WorkItemImporter importer = await ImporterAsync(session, cts.Token);
 
         importer.WebUrl(GitHubIssue).Should().NotBeNull();
 
@@ -95,7 +96,7 @@ public sealed class WorkItemConnectionsTests(PostgresFixture postgres) : IClassF
         await ClearConnectionsAsync(store, cts.Token);
 
         await using IQuerySession session = store.QuerySession();
-        WorkItemImporter importer = await WorkItemConnections.ImporterAsync(session, cts.Token);
+        WorkItemImporter importer = await ImporterAsync(session, cts.Token);
 
         importer.WebUrl(GitHubIssue).Should().NotBeNull();
 
@@ -105,6 +106,25 @@ public sealed class WorkItemConnectionsTests(PostgresFixture postgres) : IClassF
             .Should().Contain("No Jira connection is registered")
             .And.Contain("h9k connection add jira --site");
     }
+
+    /// <summary>
+    /// The importer this install would build, with the Jira half's request seam pinned to a
+    /// requester that throws if it is ever actually invoked. Every test here reaches Jira only
+    /// down a path that refuses before a request is built, so nothing should ever call it — going
+    /// through this helper rather than <see cref="WorkItemConnections.ImporterAsync"/> directly is
+    /// what turns that from an unstated fact about which cases happen to be registered into an
+    /// enforced one, and what makes a case added later (a single valid connection, imported for
+    /// real) fail loudly here instead of issuing a live HTTPS call to Atlassian.
+    /// <para>
+    /// The GitHub half has no equivalent seam through this entry point — <c>ImporterAsync</c>
+    /// constructs <c>GitHubWorkItemProvider</c> and <c>GitHubPullRequestProvider</c> on
+    /// <c>ExternalProcess.Runner</c>'s real-process default with no runner parameter to override —
+    /// which is the gap PLAN.md decision #109 records as still open.
+    /// </para>
+    /// </summary>
+    private static Task<WorkItemImporter> ImporterAsync(
+        IQuerySession session, CancellationToken cancellationToken) =>
+        WorkItemConnections.ImporterAsync(session, cancellationToken, FakeJiraRequester.NeverInvoked());
 
     private static Task<ImportedWorkItem> ImportAsync(
         WorkItemImporter importer, WorkItemProvider provider, CancellationToken cancellationToken) =>

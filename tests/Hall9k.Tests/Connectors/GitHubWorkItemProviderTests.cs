@@ -541,10 +541,18 @@ public sealed class GitHubWorkItemProviderTests
         RecordingProcessRunner.NeverAnswering(),
     };
 
+    /// <summary>
+    /// <c>WebUrl</c> builds the link from the reference text alone and never shells out, so the
+    /// provider is given a runner that throws if it is ever actually invoked rather than left to
+    /// fall through to the real <c>gh</c> — the same hardening every other real-provider
+    /// construction in the tree carries, and the one an <c>ImportAsync</c> assertion added to this
+    /// test later would otherwise silently escape (see
+    /// <see cref="RecordingProcessRunner.NeverInvoked"/>'s own doc comment).
+    /// </summary>
     [Fact]
     public void A_github_reference_places_itself_on_the_web()
     {
-        GitHubWorkItemProvider provider = new();
+        GitHubWorkItemProvider provider = new(RecordingProcessRunner.NeverInvoked());
 
         provider.WebUrl(ExternalReference.Parse("github:Hallmanac/hall9k#42"))
             .Should().Be(new Uri("https://github.com/Hallmanac/hall9k/issues/42"));
@@ -556,7 +564,7 @@ public sealed class GitHubWorkItemProviderTests
     [InlineData("github:owner/repo#not-a-number")]
     public void A_reference_this_provider_cannot_place_yields_nothing_rather_than_a_guess(string reference)
     {
-        GitHubWorkItemProvider provider = new();
+        GitHubWorkItemProvider provider = new(RecordingProcessRunner.NeverInvoked());
 
         provider.WebUrl(ExternalReference.Parse(reference)).Should().BeNull();
     }
