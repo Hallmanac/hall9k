@@ -35,7 +35,7 @@ public sealed class LeaseLivenessTests(PostgresFixture postgres) : IClassFixture
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
         using DocumentStore store = NewStore();
-        NodeContext node = await NewNodeAsync(store, cts.Token);
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
         FakeProcessManager processes = new();
         DispatchEngine engine = NewEngine(store, node, processes);
 
@@ -60,7 +60,7 @@ public sealed class LeaseLivenessTests(PostgresFixture postgres) : IClassFixture
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
         using DocumentStore store = NewStore();
-        NodeContext node = await NewNodeAsync(store, cts.Token);
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
         FakeProcessManager processes = new();
         DispatchEngine engine = NewEngine(store, node, processes);
 
@@ -81,7 +81,7 @@ public sealed class LeaseLivenessTests(PostgresFixture postgres) : IClassFixture
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
         using DocumentStore store = NewStore();
-        NodeContext node = await NewNodeAsync(store, cts.Token);
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
         FakeProcessManager processes = new();
         DispatchEngine engine = NewEngine(store, node, processes);
 
@@ -105,7 +105,7 @@ public sealed class LeaseLivenessTests(PostgresFixture postgres) : IClassFixture
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
         using DocumentStore store = NewStore();
-        NodeContext node = await NewNodeAsync(store, cts.Token);
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
         DispatchEngine engine = NewEngine(store, node, new FakeProcessManager());
 
         // Neither task records a pid, so the wake refresh is the only thing that can
@@ -135,7 +135,7 @@ public sealed class LeaseLivenessTests(PostgresFixture postgres) : IClassFixture
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
         using DocumentStore store = NewStore();
-        NodeContext node = await NewNodeAsync(store, cts.Token);
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
         FakeProcessManager processes = new();
         DispatchEngine engine = NewEngine(store, node, processes);
 
@@ -183,12 +183,6 @@ public sealed class LeaseLivenessTests(PostgresFixture postgres) : IClassFixture
         opts.Connection(postgres.ConnectionString);
         opts.ConfigureHall9k(AutoCreate.All);
     });
-
-    private static async Task<NodeContext> NewNodeAsync(DocumentStore store, CancellationToken cancellationToken)
-    {
-        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cancellationToken);
-        return node;
-    }
 
     private DispatchEngine NewEngine(DocumentStore store, NodeContext node, FakeProcessManager processes) =>
         new(store, node, new DaemonConnection(postgres.ConnectionString), processes,

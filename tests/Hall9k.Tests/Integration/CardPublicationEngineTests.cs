@@ -183,7 +183,7 @@ public sealed class CardPublicationEngineTests(PostgresFixture postgres) : IClas
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
         using DocumentStore store = NewStore();
-        NodeContext node = await NewNodeAsync(store, cts.Token);
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
         Guid taskId = await SeedAsync(store, node, cts.Token);
 
         FakeProcessManager processes = new();
@@ -216,7 +216,7 @@ public sealed class CardPublicationEngineTests(PostgresFixture postgres) : IClas
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
         using DocumentStore store = NewStore();
-        NodeContext node = await NewNodeAsync(store, cts.Token);
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
         Guid taskId = await SeedAsync(store, node, cts.Token);
 
         FakeProcessManager processes = new();
@@ -249,7 +249,7 @@ public sealed class CardPublicationEngineTests(PostgresFixture postgres) : IClas
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
         using DocumentStore store = NewStore();
-        NodeContext node = await NewNodeAsync(store, cts.Token);
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
         Guid taskId = await SeedAsync(store, node, cts.Token);
 
         FakeProcessManager processes = new();
@@ -278,7 +278,7 @@ public sealed class CardPublicationEngineTests(PostgresFixture postgres) : IClas
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
         using DocumentStore store = NewStore();
-        NodeContext node = await NewNodeAsync(store, cts.Token);
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
         Guid taskId = await SeedAsync(store, node, cts.Token);
 
         Guid writeId = DomainId.New();
@@ -338,7 +338,7 @@ public sealed class CardPublicationEngineTests(PostgresFixture postgres) : IClas
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
         using DocumentStore store = NewStore();
-        NodeContext node = await NewNodeAsync(store, cts.Token);
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
         Guid taskId = await SeedAsync(store, node, cts.Token);
 
         FakeProcessManager processes = new();
@@ -372,7 +372,7 @@ public sealed class CardPublicationEngineTests(PostgresFixture postgres) : IClas
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
         using DocumentStore store = NewStore();
-        NodeContext node = await NewNodeAsync(store, cts.Token);
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
         Guid taskId = await SeedAsync(store, node, cts.Token);
 
         FakeProcessManager processes = new();
@@ -395,7 +395,7 @@ public sealed class CardPublicationEngineTests(PostgresFixture postgres) : IClas
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
         using DocumentStore store = NewStore();
-        NodeContext node = await NewNodeAsync(store, cts.Token);
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
         await SeedAsync(store, node, cts.Token, requestedBy: DomainId.New());
 
         FakeProcessManager processes = new();
@@ -421,7 +421,7 @@ public sealed class CardPublicationEngineTests(PostgresFixture postgres) : IClas
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
         using DocumentStore store = NewStore();
-        NodeContext node = await NewNodeAsync(store, cts.Token);
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
 
         string home = Path.Combine(_repository, "home");
         string bare = ProjectHomePaths.BareRepository(home, "publication");
@@ -458,7 +458,7 @@ public sealed class CardPublicationEngineTests(PostgresFixture postgres) : IClas
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
         using DocumentStore store = NewStore();
-        NodeContext node = await NewNodeAsync(store, cts.Token);
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
 
         Guid taskId = await SeedAsync(store, node, cts.Token);
 
@@ -482,7 +482,7 @@ public sealed class CardPublicationEngineTests(PostgresFixture postgres) : IClas
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
         using DocumentStore store = NewStore();
-        NodeContext node = await NewNodeAsync(store, cts.Token);
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
 
         string home = Path.Combine(_repository, "home");
         string bare = ProjectHomePaths.BareRepository(home, "publication");
@@ -510,7 +510,7 @@ public sealed class CardPublicationEngineTests(PostgresFixture postgres) : IClas
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
         using DocumentStore store = NewStore();
-        NodeContext node = await NewNodeAsync(store, cts.Token);
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
         Guid taskId = await SeedAsync(store, node, cts.Token, repositoryPath: "/no/such/repository");
 
         FakeProcessManager processes = new();
@@ -540,7 +540,7 @@ public sealed class CardPublicationEngineTests(PostgresFixture postgres) : IClas
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
         using DocumentStore store = NewStore();
-        NodeContext node = await NewNodeAsync(store, cts.Token);
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
         Guid taskId = await SeedAsync(store, node, cts.Token);
         await DispatchedAsync(store, node, taskId, processId: 4242, cts.Token);
 
@@ -580,7 +580,7 @@ public sealed class CardPublicationEngineTests(PostgresFixture postgres) : IClas
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
         using DocumentStore store = NewStore();
-        NodeContext node = await NewNodeAsync(store, cts.Token);
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
         Guid taskId = await SeedAsync(store, node, cts.Token);
         Guid gone = await ForeignNodeAsync(store, node, "the-old-machine-name", cts.Token);
         await DispatchedAsync(
@@ -626,7 +626,7 @@ public sealed class CardPublicationEngineTests(PostgresFixture postgres) : IClas
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
         using DocumentStore store = NewStore();
-        NodeContext node = await NewNodeAsync(store, cts.Token);
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
         Guid taskId = await SeedAsync(store, node, cts.Token);
         Guid other = await ForeignNodeAsync(store, node, "the-other-machine", cts.Token);
         await DispatchedAsync(
@@ -658,7 +658,7 @@ public sealed class CardPublicationEngineTests(PostgresFixture postgres) : IClas
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
         using DocumentStore store = NewStore();
-        NodeContext node = await NewNodeAsync(store, cts.Token);
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
         Guid taskId = await SeedAsync(store, node, cts.Token);
         await DispatchedAsync(store, node, taskId, processId: 4242, cts.Token);
 
@@ -684,7 +684,7 @@ public sealed class CardPublicationEngineTests(PostgresFixture postgres) : IClas
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
         using DocumentStore store = NewStore();
-        NodeContext node = await NewNodeAsync(store, cts.Token);
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
         Guid taskId = await SeedAsync(store, node, cts.Token);
 
         Guid sessionId = await DispatchedAsync(store, node, taskId, processId: 4242, cts.Token);
@@ -729,7 +729,7 @@ public sealed class CardPublicationEngineTests(PostgresFixture postgres) : IClas
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
         using DocumentStore store = NewStore();
-        NodeContext bootstrapped = await NewNodeAsync(store, cts.Token);
+        NodeContext bootstrapped = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
         await SeedAsync(store, bootstrapped, cts.Token);
 
         // The loop gets a node nothing has initialized, the way the host hands it one. It still
@@ -783,7 +783,7 @@ public sealed class CardPublicationEngineTests(PostgresFixture postgres) : IClas
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
         using DocumentStore store = NewStore();
-        NodeContext node = await NewNodeAsync(store, cts.Token);
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
         Guid taskId = await SeedAsync(store, node, cts.Token);
 
         FakeProcessManager processes = new();
@@ -837,7 +837,7 @@ public sealed class CardPublicationEngineTests(PostgresFixture postgres) : IClas
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
         using DocumentStore store = NewStore();
-        NodeContext node = await NewNodeAsync(store, cts.Token);
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
         Guid taskId = await SeedAsync(store, node, cts.Token);
 
         FakeProcessManager processes = new();
@@ -871,7 +871,7 @@ public sealed class CardPublicationEngineTests(PostgresFixture postgres) : IClas
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
         using DocumentStore store = NewStore();
-        NodeContext node = await NewNodeAsync(store, cts.Token);
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
         Guid taskId = await SeedAsync(store, node, cts.Token);
         await DispatchedAsync(store, node, taskId, processId: null, cts.Token);
 
@@ -908,7 +908,7 @@ public sealed class CardPublicationEngineTests(PostgresFixture postgres) : IClas
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
         using DocumentStore store = NewStore();
-        NodeContext node = await NewNodeAsync(store, cts.Token);
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
         Guid taskId = await SeedAsync(store, node, cts.Token);
         await LinkAsync(store, taskId, cts.Token);
         await RequestedBehindTheLinkAsync(store, node, taskId, cts.Token);
@@ -947,7 +947,7 @@ public sealed class CardPublicationEngineTests(PostgresFixture postgres) : IClas
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
         using DocumentStore store = NewStore();
-        NodeContext node = await NewNodeAsync(store, cts.Token);
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
         Guid taskId = await SeedAsync(store, node, cts.Token);
         await LinkAsync(store, taskId, cts.Token);
         await RequestedBehindTheLinkAsync(store, node, taskId, cts.Token);
@@ -992,7 +992,7 @@ public sealed class CardPublicationEngineTests(PostgresFixture postgres) : IClas
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
         using DocumentStore store = NewStore();
-        NodeContext node = await NewNodeAsync(store, cts.Token);
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
         Guid taskId = await SeedAsync(store, node, cts.Token);
         await AbandonAsync(store, taskId, cts.Token);
 
@@ -1021,7 +1021,7 @@ public sealed class CardPublicationEngineTests(PostgresFixture postgres) : IClas
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
         using DocumentStore store = NewStore();
-        NodeContext node = await NewNodeAsync(store, cts.Token);
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
         Guid taskId = await SeedAsync(store, node, cts.Token);
         await AbandonAsync(store, taskId, cts.Token);
         await RequestedBehindTheLinkAsync(store, node, taskId, cts.Token);
@@ -1061,7 +1061,7 @@ public sealed class CardPublicationEngineTests(PostgresFixture postgres) : IClas
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
         using DocumentStore store = NewStore();
-        NodeContext node = await NewNodeAsync(store, cts.Token);
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
         Guid first = await SeedAsync(store, node, cts.Token);
         Guid second = await SeedAsync(store, node, cts.Token, requestedAt: Now.AddMinutes(1));
 
@@ -1277,11 +1277,6 @@ public sealed class CardPublicationEngineTests(PostgresFixture postgres) : IClas
         opts.ConfigureHall9k(AutoCreate.All);
     });
 
-    private static async Task<NodeContext> NewNodeAsync(DocumentStore store, CancellationToken cancellationToken)
-    {
-        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cancellationToken);
-        return node;
-    }
 
     private static CardPublicationEngine NewEngine(
         DocumentStore store,

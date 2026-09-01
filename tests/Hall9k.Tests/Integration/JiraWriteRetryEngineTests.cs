@@ -66,7 +66,7 @@ public sealed class JiraWriteRetryEngineTests(PostgresFixture postgres) : IClass
         // A second node's twg, freshly logged in — the identical comment goes through this time.
         RecordingProcessRunner reauthenticatedTwg = RecordingProcessRunner.RespondingTo(
             _ => new ProcessResult(0, """{"key":"PROJ-123"}""", string.Empty));
-        NodeContext node = await NewNodeAsync(store, cts.Token);
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
         JiraWriteRetryEngine engine = new(store, node, reauthenticatedTwg.Runner, DefaultOptions(), NullLogger<JiraWriteRetryEngine>.Instance);
 
         JiraWriteRetrySweepResult sweep = await engine.PollOnceAsync(cts.Token);
@@ -104,7 +104,7 @@ public sealed class JiraWriteRetryEngineTests(PostgresFixture postgres) : IClass
             submitted.Outcome.Should().Be(JiraWriteOutcome.PendingAuthentication);
         }
 
-        NodeContext node = await NewNodeAsync(store, cts.Token);
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
         JiraWriteRetryEngine engine = new(store, node, refusingTwg.Runner, DefaultOptions(), NullLogger<JiraWriteRetryEngine>.Instance);
 
         JiraWriteRetrySweepResult second = await engine.PollOnceAsync(cts.Token);
@@ -156,7 +156,7 @@ public sealed class JiraWriteRetryEngineTests(PostgresFixture postgres) : IClass
 
         RecordingProcessRunner mustNotRun = RecordingProcessRunner.RespondingTo(
             _ => throw new InvalidOperationException("a non-auth failure must not be retried by the sweep"));
-        NodeContext node = await NewNodeAsync(store, cts.Token);
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
         JiraWriteRetryEngine engine = new(store, node, mustNotRun.Runner, DefaultOptions(), NullLogger<JiraWriteRetryEngine>.Instance);
 
         JiraWriteRetrySweepResult sweep = await engine.PollOnceAsync(cts.Token);
@@ -190,7 +190,7 @@ public sealed class JiraWriteRetryEngineTests(PostgresFixture postgres) : IClass
 
         RecordingProcessRunner reauthenticatedTwg = RecordingProcessRunner.RespondingTo(
             _ => new ProcessResult(0, """{"key":"PROJ-789"}""", string.Empty));
-        NodeContext node = await NewNodeAsync(store, cts.Token);
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
         JiraWriteRetryEngine engine = new(store, node, reauthenticatedTwg.Runner, DefaultOptions(), NullLogger<JiraWriteRetryEngine>.Instance);
 
         // First sweep: the outstanding write clears, but the queued notice was read as still
@@ -247,7 +247,7 @@ public sealed class JiraWriteRetryEngineTests(PostgresFixture postgres) : IClass
         RecordingProcessRunner mustNotRun = RecordingProcessRunner.RespondingTo(
             _ => throw new InvalidOperationException(
                 "the notice's own submit must be refused before it ever reaches twg"));
-        NodeContext node = await NewNodeAsync(store, cts.Token);
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
         JiraWriteRetryEngine engine = new(store, node, mustNotRun.Runner, DefaultOptions(), NullLogger<JiraWriteRetryEngine>.Instance)
         {
             // Fires in the exact window DrainMergeNoticeAsync's own guard cannot see: it already
@@ -341,7 +341,7 @@ public sealed class JiraWriteRetryEngineTests(PostgresFixture postgres) : IClass
             return new ProcessResult(0, "{}", string.Empty);
         });
 
-        NodeContext node = await NewNodeAsync(store, cts.Token);
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
         JiraWriteRetryEngine engine = new(store, node, twg.Runner, DefaultOptions(), NullLogger<JiraWriteRetryEngine>.Instance);
 
         JiraWriteRetrySweepResult sweep = await engine.PollOnceAsync(cts.Token);
@@ -402,7 +402,7 @@ public sealed class JiraWriteRetryEngineTests(PostgresFixture postgres) : IClass
             return new ProcessResult(0, "{}", string.Empty);
         });
 
-        NodeContext node = await NewNodeAsync(store, cts.Token);
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
         JiraWriteRetryEngine engine = new(store, node, twg.Runner, DefaultOptions(), NullLogger<JiraWriteRetryEngine>.Instance);
 
         JiraWriteRetrySweepResult sweep = await engine.PollOnceAsync(cts.Token);
@@ -456,7 +456,7 @@ public sealed class JiraWriteRetryEngineTests(PostgresFixture postgres) : IClass
             return new ProcessResult(0, "{}", string.Empty);
         });
 
-        NodeContext node = await NewNodeAsync(store, cts.Token);
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
         JiraWriteRetryEngine engine = new(store, node, twg.Runner, DefaultOptions(), NullLogger<JiraWriteRetryEngine>.Instance);
 
         JiraWriteRetrySweepResult sweep = await engine.PollOnceAsync(cts.Token);
@@ -523,7 +523,7 @@ public sealed class JiraWriteRetryEngineTests(PostgresFixture postgres) : IClass
             return new ProcessResult(0, "{}", string.Empty);
         });
 
-        NodeContext node = await NewNodeAsync(store, cts.Token);
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
         JiraWriteRetryEngine engine = new(store, node, twg.Runner, DefaultOptions(), NullLogger<JiraWriteRetryEngine>.Instance);
 
         JiraWriteRetrySweepResult sweep = await engine.PollOnceAsync(cts.Token);
@@ -633,7 +633,7 @@ public sealed class JiraWriteRetryEngineTests(PostgresFixture postgres) : IClass
 
         RecordingProcessRunner mustNotRun = RecordingProcessRunner.RespondingTo(
             _ => throw new InvalidOperationException("the ceiling sweep must never call twg — it only ends a stale write"));
-        NodeContext node = await NewNodeAsync(store, cts.Token);
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
         JiraWriteRetryEngine engine = new(
             store, node, mustNotRun.Runner, Options.Create(new DaemonOptions { PendingJiraWriteCeiling = TimeSpan.Zero }),
             NullLogger<JiraWriteRetryEngine>.Instance);
@@ -653,12 +653,6 @@ public sealed class JiraWriteRetryEngineTests(PostgresFixture postgres) : IClass
         opts.Connection(postgres.ConnectionString);
         opts.ConfigureHall9k(AutoCreate.All);
     });
-
-    private static async Task<NodeContext> NewNodeAsync(DocumentStore store, CancellationToken cancellationToken)
-    {
-        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cancellationToken);
-        return node;
-    }
 
     private static async Task<TaskAggregate?> LoadAsync(IDocumentStore store, Guid taskId, CancellationToken cancellationToken)
     {

@@ -1,8 +1,10 @@
 using Hall9k.Daemon;
 using Hall9k.Domain.Features.Connection;
+using Hall9k.Domain.Infrastructure.Bootstrap;
 using Hall9k.Domain.Infrastructure.Ids;
 using Hall9k.Domain.Shared.ValueObjects;
 using Marten;
+using Marten.Linq.MatchesSql;
 
 namespace Hall9k.Tests.Fakes;
 
@@ -35,13 +37,33 @@ internal static class NodeBootstrapSeed
     /// exercise the loop's pre-bootstrap window) rather than through <see cref="NewNodeAsync"/>
     /// itself — so that call sees a connection already on file too, explicitly rather than by
     /// way of an unrelated earlier <see cref="NewNodeAsync"/> call in the same test happening to
-    /// share its store.
+    /// share its store. Idempotent against a store this has already seeded (the same
+    /// GitHub-provider filter <see cref="NodeBootstrap.EnsureAsync"/> itself queries with), so a
+    /// class calling this — or <see cref="NewNodeAsync"/> — more than once against one shared
+    /// database does not accumulate a fresh connection per call.
+    /// <para>
+    /// Registered with <see cref="Guid.Empty"/> as its owner rather than a fresh random id: no
+    /// <c>OwnerDetails</c> row exists yet at this point (<see cref="NodeBootstrap.EnsureAsync"/>
+    /// creates the real owner one step later, inside <see cref="NodeContext.InitializeAsync"/>),
+    /// so a random id would name an owner that was never observed and never will be. Nothing
+    /// reads <see cref="ConnectionDetails.OwnerId"/> today, but a random id would read as a real
+    /// observation rather than the honest "not yet known" it actually is.
+    /// </para>
     /// </summary>
     public static async Task SeedGitHubConnectionAsync(IDocumentStore store, CancellationToken cancellationToken)
     {
         await using IDocumentSession session = store.LightweightSession();
+
+        ConnectionDetails? existing = (await session.Query<ConnectionDetails>()
+            .Where(c => c.MatchesSql("d.data ->> 'provider' = ?", WorkItemProvider.GitHub.Value))
+            .Take(1).ToListAsync(cancellationToken)).FirstOrDefault();
+        if (existing is not null)
+        {
+            return;
+        }
+
         ConnectionRegistered registered = ConnectionDecider.Register(
-            DomainId.New(), DomainId.New(), WorkItemProvider.GitHub,
+            DomainId.New(), Guid.Empty, WorkItemProvider.GitHub,
             "test-user", CredentialReference.GhCli, DateTimeOffset.UtcNow);
         session.Events.StartStream<ConnectionAggregate>(registered.Id, registered);
         await session.SaveChangesAsync(cancellationToken);

@@ -127,16 +127,20 @@ public sealed class ProcessTerminationGuardTests
     public void No_production_code_outside_program_cs_terminates_the_process()
     {
         string sourceDirectory = TestSourceTree.SourceDirectory();
-        string testsDirectory = TestSourceTree.RootDirectory();
 
         // repositoryRoot is sourceDirectory's own parent (SourceDirectory() resolves to
-        // "<repositoryRoot>/src"), which testsDirectory also sits under
-        // ("<repositoryRoot>/tests/Hall9k.Tests") — a single common base lets every offender and
-        // every exemption below be reported by one repository-relative path regardless of which
-        // of the two trees it came from, rather than a src/-relative path that reads wrong for a
-        // tests/ file.
+        // "<repositoryRoot>/src") — a single common base lets every offender and every exemption
+        // below be reported by one repository-relative path regardless of which of the two trees
+        // it came from, rather than a src/-relative path that reads wrong for a tests/ file.
         string repositoryRoot = Path.GetDirectoryName(sourceDirectory)
             ?? throw new InvalidOperationException($"'{sourceDirectory}' has no parent directory");
+
+        // The whole tests/ directory, not just tests/Hall9k.Tests: TestSourceTree.RootDirectory()
+        // resolves to this project's own root, which would leave a second test project's own
+        // source outside this scan's reach. Decision #110 says the scan "now covers tests/ too",
+        // and this is what makes that literally true rather than true only of the one project
+        // that exists in it today.
+        string testsDirectory = Path.Combine(repositoryRoot, "tests");
 
         // Decision #110: a process-terminating call added directly inside the test tree — a fake,
         // a fixture, a helper — is exactly as reachable from a test as one added to production
