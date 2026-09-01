@@ -962,8 +962,11 @@ All three numbers above are compiled defaults only when nothing overrides them (
 #108): each is settable durably at the node (`h9k config set`), overridden per project (`h9k
 project set`), and overridden again per task (`h9k task set-review-caps`, settable at any time —
 even against a task whose run is live, which is the documented takeover lever for a task
-observed grinding: a cap set at or below the track's current cycle count parks it at the very
-next check), strictly `task > project > node > compiled default`, resolved per cap
+observed grinding: a cap set at or below the cycles that track has run since its last human
+takeover grant (0, if it has never had one — not the same as the absolute review cycle number
+`h9k status`/`h9k task show` print, which never resets) parks it at the very next check, and 0
+always parks immediately since that count can never be negative), strictly
+`task > project > node > compiled default`, resolved per cap
 independently. A fourth setting, the task-lifetime review-cycle budget (default 25), sums
 `ReviewCycle` across every run and follow-up a task has had — immune to the resets a stranding,
 retry, or follow-up round gives the three per-run caps above — and follows the same hierarchy

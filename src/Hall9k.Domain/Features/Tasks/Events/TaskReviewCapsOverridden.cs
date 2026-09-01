@@ -16,8 +16,11 @@ namespace Hall9k.Domain.Features.Tasks.Events;
 /// running agent — it is meant to be set "at any time, including while the task's run is live"
 /// (the takeover lever for a task observed grinding), and the daemon resolves the effective caps
 /// fresh at every cap check, so a change here never disturbs a session already spawned. Setting a
-/// cap at or below the track's current cycle count is exactly how a human hands a stuck run back:
-/// the very next cap check parks it, with no new state or command beyond this one.
+/// cap at or below the cycles that track has run since its last human takeover grant (0, if it has
+/// never had one — not the same as the absolute review cycle number the CLI prints, which never
+/// resets) is exactly how a human hands a stuck run back: the very next cap check parks it, with no
+/// new state or command beyond this one; 0 always parks immediately, since that count can never be
+/// negative.
 /// </para>
 /// </summary>
 public sealed record TaskReviewCapsOverridden(

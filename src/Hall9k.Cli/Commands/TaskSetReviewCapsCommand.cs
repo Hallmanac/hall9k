@@ -17,8 +17,9 @@ namespace Hall9k.Cli.Commands;
 /// settable at three levels) — deliberately state-agnostic, unlike h9k task revise: it is meant
 /// to be set at any time, including while the task's run is live, so the daemon picks it up at
 /// the next cap check. This is the documented takeover path for a task observed grinding: set a
-/// cap at or below the track's current cycle count and the run parks at the next settle point or
-/// cap check, no new state or command beyond this one.
+/// cap at or below the cycles that track has run since its last human takeover grant (0, if it has
+/// never had one) and the run parks at the next settle point or cap check, no new state or command
+/// beyond this one — 0 always parks immediately, since that count can never be negative.
 /// </summary>
 public sealed class TaskSetReviewCapsCommand : Hall9kAsyncCommand<TaskSetReviewCapsCommand.Settings>
 {
@@ -31,9 +32,12 @@ public sealed class TaskSetReviewCapsCommand : Hall9kAsyncCommand<TaskSetReviewC
         [CommandOption("--max-compliance-review-cycles <N|default>")]
         [Description(
             "This task's cycle cap for the conformance review track (Decisions Log #63): outranks the "
-            + "project's and the node's own settings. Setting it at or below the track's current cycle "
-            + "count parks the run at the next settle point or cap check — the takeover lever for a task "
-            + "observed grinding. 'default' clears the task override so the project (or the node) decides.")]
+            + "project's and the node's own settings. Setting it at or below the cycles that track has "
+            + "run since its last human takeover grant (0, if it has never had one — not the same as the "
+            + "absolute review cycle h9k status/h9k task show print, which never resets) parks the run at "
+            + "the next settle point or cap check — the takeover lever for a task observed grinding; 0 "
+            + "always parks immediately, since that count can never be negative. 'default' clears the task "
+            + "override so the project (or the node) decides.")]
         public string? MaxComplianceReviewCycles { get; init; }
 
         [CommandOption("--max-adversarial-review-cycles <N|default>")]

@@ -160,8 +160,10 @@ public static class ReviewTrackPolicy
     /// grant it is meant to be (log #22) rather than one cycle before an immediate re-park.
     /// <paramref name="caps"/> is resolved task &gt; project &gt; node &gt; compiled default
     /// (<see cref="ReviewCapResolver"/>, task: the review cycle caps become settable), so a
-    /// task-level takeover — a cap set at or below the track's current cycle count — is exactly
-    /// what tips this true at the very next check.
+    /// task-level takeover — a cap set at or below <paramref name="cycle"/> minus
+    /// <paramref name="budgetBaseCycle"/>, i.e. the cycles this track has run since its last human
+    /// grant or reactivation, NOT the absolute <paramref name="cycle"/> number <c>h9k status</c>/
+    /// <c>h9k task show</c> print — is exactly what tips this true at the very next check.
     /// </summary>
     public static bool CapReached(ReviewLens lens, int cycle, int budgetBaseCycle, ResolvedReviewCaps caps) =>
         cycle - budgetBaseCycle >= CapFor(lens, caps);

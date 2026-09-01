@@ -94,22 +94,26 @@ public sealed class ConfigSetCommand : Hall9kAsyncCommand<ConfigSetCommand.Setti
             "This node's cycle cap for the conformance review track (DaemonOptions.MaxComplianceReviewCycles, "
             + "default 3, Decisions Log #63) — how many times the conformance reviewer may be told the same "
             + "thing before the run parks for a human. Resolves task override > project override (h9k project "
-            + "set) > this node value > the compiled default (task: the review cycle caps become settable).")]
+            + "set) > this node value > the compiled default (task: the review cycle caps become settable). "
+            + "Unlike the project and task levels, there is no 'default' clearing word here — once set, the "
+            + "only ways back are re-setting it to the compiled default's own number (3) or hand-editing the "
+            + "config file (h9k config show prints its path), the same as --max-concurrent-agent-sessions.")]
         public int? MaxComplianceReviewCycles { get; init; }
 
         [CommandOption("--max-adversarial-review-cycles <N>")]
         [Description(
             "This node's cycle cap for the adversarial review track (DaemonOptions.MaxAdversarialReviewCycles, "
             + "default 10, Decisions Log #63) — deliberately far larger than the conformance cap, since the "
-            + "severity gate, not this counter, is what ends the track in practice. Same resolution order as "
-            + "--max-compliance-review-cycles.")]
+            + "severity gate, not this counter, is what ends the track in practice. Same resolution order, and "
+            + "same lack of a 'default' clearing word, as --max-compliance-review-cycles.")]
         public int? MaxAdversarialReviewCycles { get; init; }
 
         [CommandOption("--max-final-full-pass-rounds <N>")]
         [Description(
             "This node's cap on consecutive mandatory final-full-pass rounds (DaemonOptions.MaxFinalFullPassRounds, "
             + "default 3, Decisions Log #93) — the independent bound for a track the final pass keeps "
-            + "reawakening. Same resolution order as --max-compliance-review-cycles.")]
+            + "reawakening. Same resolution order, and same lack of a 'default' clearing word, as "
+            + "--max-compliance-review-cycles.")]
         public int? MaxFinalFullPassRounds { get; init; }
 
         [CommandOption("--lifetime-review-cycle-budget <N>")]
@@ -118,7 +122,8 @@ public sealed class ConfigSetCommand : Hall9kAsyncCommand<ConfigSetCommand.Setti
             + "— cycles counted across every run and follow-up a task has had, immune to the per-run resets a "
             + "stranding, retry, or follow-up round otherwise gives the three caps above. Generous by design: it "
             + "only catches genuine pathology. Once exceeded, every subsequent settle point parks for a human "
-            + "until a human resolution. Same resolution order as --max-compliance-review-cycles.")]
+            + "until a human resolution. Same resolution order, and same lack of a 'default' clearing word, as "
+            + "--max-compliance-review-cycles.")]
         public int? LifetimeReviewCycleBudget { get; init; }
 
         [CommandOption("--interactive-claim-stale-after-days <DAYS>")]
