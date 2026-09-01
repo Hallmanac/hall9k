@@ -61,14 +61,28 @@ internal static class DaemonOptionsBinding
     /// A key absent from <paramref name="section"/>, or whose raw value already equals what the
     /// resolver decided, is silent by design: the value an operator would see either way is the one
     /// the daemon runs on, so nothing is actually being overridden out from under them.
+    /// <c>MaxConcurrentTaskRuns</c> is skipped outright when
+    /// <see cref="OperatingSettingsReport.MaxConcurrentTaskRunsShadowsConfigFileValue"/> is set: the
+    /// platform config file is itself one of <paramref name="section"/>'s own providers
+    /// (<c>PlatformConfigFileSource.Insert</c> sits right ahead of the environment-variable source),
+    /// so whenever an environment-level legacy conversion outranks a <c>maxConcurrentTaskRuns</c>
+    /// value the file sets directly, <paramref name="section"/>'s raw indexer reads that same
+    /// file value back — a source the resolver does read, just outranked at this precedence level —
+    /// and this method would otherwise misreport it as coming from "another configuration source
+    /// the resolver does not read" while contradicting the daemon's own shadow-case log line for
+    /// the identical situation (independent pre-PR review, cycle 1, both lenses).
     /// </summary>
     internal static IReadOnlyList<string> DescribeConfigurationSourcesTheResolverIgnores(
         IConfigurationSection section, OperatingSettingsReport report)
     {
         List<string> messages = [];
-        AddIfIgnored(
-            section, nameof(DaemonOptions.MaxConcurrentTaskRuns), "max-concurrent-task-runs",
-            "--max-concurrent-task-runs", report.MaxConcurrentTaskRuns.Value, messages);
+        if (!report.MaxConcurrentTaskRunsShadowsConfigFileValue)
+        {
+            AddIfIgnored(
+                section, nameof(DaemonOptions.MaxConcurrentTaskRuns), "max-concurrent-task-runs",
+                "--max-concurrent-task-runs", report.MaxConcurrentTaskRuns.Value, messages);
+        }
+
         AddIfIgnored(
             section, nameof(DaemonOptions.SessionCapPerRun), "session-cap-per-run",
             "--session-cap-per-run", report.SessionCapPerRun.Value, messages);
