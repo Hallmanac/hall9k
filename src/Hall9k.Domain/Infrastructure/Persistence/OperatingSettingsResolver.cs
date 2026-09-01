@@ -28,6 +28,12 @@ public static class OperatingSettingsResolver
             OperatingSettings.DefaultMaxConcurrentAgentSessions,
             unusableEnvironmentVariables);
 
+        (ResolvedSetting<int> maxConcurrentTaskRuns, bool convertedFromLegacy) =
+            ResolveMaxConcurrentTaskRuns(configured, unusableEnvironmentVariables);
+
+        ResolvedSetting<int> sessionCapPerRun =
+            ResolveSessionCapPerRun(configured.SessionCapPerRun, unusableEnvironmentVariables);
+
         ResolvedSetting<string> defaultModel = ResolveString(
             $"{EnvironmentPrefix}DefaultModel",
             configured.DefaultModel,
@@ -40,7 +46,102 @@ public static class OperatingSettingsResolver
                 ResolveOptionalString(
                     $"{EnvironmentPrefix}ModelByRole__{pair.Role}", pair.Model, pair.Role, unusableEnvironmentVariables)))];
 
-        return new OperatingSettingsReport(concurrency, defaultModel, roles, read.Problem, unusableEnvironmentVariables);
+        return new OperatingSettingsReport(
+            concurrency, maxConcurrentTaskRuns, convertedFromLegacy, sessionCapPerRun,
+            defaultModel, roles, read.Problem, unusableEnvironmentVariables);
+    }
+
+    /// <summary>
+    /// The node ceiling, resolved in its own unit (Decisions Log #108): a
+    /// <c>max-concurrent-task-runs</c> key wins wherever it is set, and only where it is absent
+    /// does the retired <c>max-concurrent-agent-sessions</c> key convert — checked at each
+    /// precedence level independently, exactly as the acceptance criteria demand, rather than as
+    /// two globally-merged signals. That distinction matters when the two keys are set at
+    /// different levels: an environment variable naming only the legacy key must still outrank a
+    /// config-file value for the new key, the same way the legacy key itself would have outranked
+    /// it before this decision — "the new key wins when both exist" is a same-level statement, not
+    /// a global one.
+    /// </summary>
+    private static (ResolvedSetting<int> Setting, bool ConvertedFromLegacy) ResolveMaxConcurrentTaskRuns(
+        OperatingSettings configured, List<string> unusable)
+    {
+        if (ResolveRunsAtLevel(
+                GetEnvironmentVariable($"{EnvironmentPrefix}MaxConcurrentTaskRuns"),
+                GetEnvironmentVariable($"{EnvironmentPrefix}MaxConcurrentAgentSessions"),
+                $"{EnvironmentPrefix}MaxConcurrentTaskRuns", $"{EnvironmentPrefix}MaxConcurrentAgentSessions",
+                SettingOrigin.EnvironmentVariable, unusable) is { } fromEnvironment)
+        {
+            return fromEnvironment;
+        }
+
+        if (ResolveRunsAtLevel(
+                configured.MaxConcurrentTaskRuns?.ToString(), configured.MaxConcurrentAgentSessions?.ToString(),
+                Hall9kDatabase.ConfigFile, Hall9kDatabase.ConfigFile,
+                SettingOrigin.PlatformConfigFile, unusable) is { } fromFile)
+        {
+            return fromFile;
+        }
+
+        return (new ResolvedSetting<int>(OperatingSettings.DefaultMaxConcurrentTaskRuns, SettingOrigin.Default, null), false);
+    }
+
+    /// <summary>
+    /// One precedence level's own answer to "how many runs": the new key if it parses, else the
+    /// legacy key converted, else nothing — <see langword="null"/> here means "this level says
+    /// nothing", which is what lets the caller fall through to the next level rather than treating
+    /// an unset level as a run ceiling of zero.
+    /// </summary>
+    private static (ResolvedSetting<int> Setting, bool ConvertedFromLegacy)? ResolveRunsAtLevel(
+        string? rawNewKey, string? rawLegacyKey, string newKeySource, string legacySource,
+        SettingOrigin origin, List<string> unusable)
+    {
+        if (rawNewKey is { } newValue)
+        {
+            if (int.TryParse(newValue, out int runs))
+            {
+                WarnIfBelowRunFloor(newKeySource, runs, unusable);
+                return (new ResolvedSetting<int>(runs, origin, newKeySource), false);
+            }
+
+            // Unlike the legacy max-concurrent-agent-sessions key, this one is never bound through
+            // ConfigurationBinder: Program.cs excludes it from the section its own Bind() call
+            // sees, because the internal setter alone does not stop the binder from attempting the
+            // conversion (BindProperty converts before it ever checks whether the property has a
+            // public setter to assign through — confirmed directly against ConfigurationBinder).
+            // So an unparseable value here does not crash the daemon; it is treated as absent at
+            // this level and resolution falls through, same as an unset key would.
+            unusable.Add(
+                $"{newKeySource} is set to \"{newValue}\", which is not a whole number — it is treated as absent, "
+                + "and max-concurrent-task-runs falls back to a lower precedence level, the retired "
+                + "max-concurrent-agent-sessions key, or the default instead.");
+        }
+
+        // An unparseable legacy value is not reported again here: ResolveInt's own resolution of
+        // MaxConcurrentAgentSessions (ResolveAsync, above) already adds the identical unusable-
+        // variable message for this exact source, and reporting it a second time under a
+        // different wording would read as two mistakes rather than one.
+        if (rawLegacyKey is { } legacyValue && int.TryParse(legacyValue, out int sessions))
+        {
+            int runs = OperatingSettings.ConvertLegacyMaxConcurrentAgentSessions(sessions);
+            return (new ResolvedSetting<int>(runs, origin, legacySource), true);
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// The run-denominated mirror of <see cref="WarnIfBelowCeilingFloor"/>: <see
+    /// cref="Hall9k.Daemon.Dispatch.NodeLoad.Capacity"/> floors a sub-1 configured ceiling to
+    /// exactly one concurrent run rather than dispatching nothing.
+    /// </summary>
+    private static void WarnIfBelowRunFloor(string source, int value, List<string> unusable)
+    {
+        if (value < 1)
+        {
+            unusable.Add(
+                $"{source} sets max-concurrent-task-runs to {value}, which is below 1 — the daemon floors this "
+                + "to exactly one concurrent run rather than dispatching nothing.");
+        }
     }
 
     /// <summary>
@@ -126,6 +227,58 @@ public static class OperatingSettingsResolver
             unusable.Add(
                 $"{source} sets max-concurrent-agent-sessions to {value}, which is below 1 — the daemon floors "
                 + "this to exactly one concurrent run rather than dispatching nothing.");
+        }
+    }
+
+    /// <summary>
+    /// The per-run session cap's own resolution (Decisions Log #108) — deliberately not
+    /// <see cref="ResolveInt"/>, whose unparseable-value and below-floor messages are both hardcoded
+    /// to describe <c>max-concurrent-agent-sessions</c> specifically and, for the crash claim, only
+    /// true of that one setting: <c>DaemonOptions.SessionCapPerRun</c>, the same as
+    /// <c>DaemonOptions.MaxConcurrentTaskRuns</c>, is excluded from the section Program.cs's own
+    /// <c>Bind()</c> call sees (its <see langword="internal"/> setter alone would not be enough —
+    /// see <c>Hall9k.Daemon.DaemonOptionsBinding</c>'s own doc), so it is never bound through
+    /// <c>ConfigurationBinder</c> and an unparseable value here is treated as absent rather than
+    /// crashing the daemon.
+    /// </summary>
+    private static ResolvedSetting<int> ResolveSessionCapPerRun(int? configured, List<string> unusable)
+    {
+        string environmentVariable = $"{EnvironmentPrefix}SessionCapPerRun";
+        if (GetEnvironmentVariable(environmentVariable) is { } fromEnvironment)
+        {
+            if (int.TryParse(fromEnvironment, out int parsed))
+            {
+                WarnIfBelowSessionCapFloor(environmentVariable, parsed, unusable);
+                return new ResolvedSetting<int>(parsed, SettingOrigin.EnvironmentVariable, environmentVariable);
+            }
+
+            unusable.Add(
+                $"{environmentVariable} is set to \"{fromEnvironment}\", which is not a whole number — it is "
+                + "treated as absent, and session-cap-per-run falls back to the config file or default instead.");
+        }
+
+        if (configured is { } value)
+        {
+            WarnIfBelowSessionCapFloor(Hall9kDatabase.ConfigFile, value, unusable);
+            return new ResolvedSetting<int>(value, SettingOrigin.PlatformConfigFile, Hall9kDatabase.ConfigFile);
+        }
+
+        return new ResolvedSetting<int>(OperatingSettings.DefaultSessionCapPerRun, SettingOrigin.Default, null);
+    }
+
+    /// <summary>
+    /// A cap below 1 is not refused the way <c>h9k config set</c> refuses it on the write path (a
+    /// hand-edited file or an environment variable skips that gate entirely) — instead
+    /// <see cref="Hall9k.Daemon.Review.ReviewEngine"/>'s own effective-cap read floors it to exactly
+    /// one session per run rather than dispatching nothing.
+    /// </summary>
+    private static void WarnIfBelowSessionCapFloor(string source, int value, List<string> unusable)
+    {
+        if (value < 1)
+        {
+            unusable.Add(
+                $"{source} sets session-cap-per-run to {value}, which is below 1 — a run's next session dispatch "
+                + "floors this to exactly one session rather than dispatching nothing.");
         }
     }
 
