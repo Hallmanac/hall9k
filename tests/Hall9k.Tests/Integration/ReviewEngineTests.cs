@@ -1986,11 +1986,115 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
         run.State.Should().Be(RunState.ReviewParked);
         run.ReviewCycle.Should().Be(1);
         run.ParkedReason.Should()
-            .Contain("task-level cap is 0")
+            .Contain("cap is 0")
             .And.Contain("a task override")
             .And.Contain("h9k task set-review-caps")
             .And.NotContain("grant a fresh round with --needs-fixes",
                 "a cap this low parks every cycle before a granted round's fix session could ever run");
+    }
+
+    /// <summary>
+    /// Independent pre-PR review, cycle 3, adversarial finding: the cap-0 takeover park is not a
+    /// task-only case. <c>h9k config set</c> refuses a value below 1, but nothing stops a
+    /// hand-edited config file or an environment variable from binding <see
+    /// cref="DaemonOptions.MaxComplianceReviewCycles"/> straight to 0, and <see
+    /// cref="ReviewCapResolver.Resolve"/> then resolves it as a Node-level cap exactly like any
+    /// other node value. The park text must say the level it actually resolved and offer that
+    /// level's own lever (h9k config set) rather than the hard-coded task-level wording and
+    /// h9k task set-review-caps, which the operator here has no override to clear.
+    /// </summary>
+    [Fact]
+    public async Task A_node_level_cap_of_zero_names_the_node_level_and_its_own_lever()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        using DocumentStore store = NewStore();
+        (Guid taskId, Guid runId, _) = await SeedVerifiedRunAsync(store, cts.Token);
+
+        ScriptedExecutor executor = new(
+            "FINDING: severity=medium; scope=in-scope; at=A.cs:1\nDefect: the criterion is not met.\n\n"
+            + "VERDICT: needs-fixes",
+            "Nothing of my own.\n\nVERDICT: merge-ready");
+        bool mergeReady = await NewEngine(store, executor, new DaemonOptions { MaxComplianceReviewCycles = 0 })
+            .ReviewAsync(runId, taskId, cts.Token);
+
+        mergeReady.Should().BeFalse("a node-level cap of 0 parks the very first cycle exactly like a task override does");
+        executor.Spawns.Should().HaveCount(2, "the run parks before ever dispatching a fix session");
+
+        await using IQuerySession query = store.QuerySession();
+        RunDetails run = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
+        run.State.Should().Be(RunState.ReviewParked);
+        run.ParkedReason.Should()
+            .Contain("cap is 0")
+            .And.Contain("this node's configured value")
+            .And.Contain("h9k config set")
+            .And.NotContain("task override", "a node value parked this, not a task override")
+            .And.NotContain("h9k task set-review-caps",
+                "there is no task override here for that command to clear")
+            .And.NotContain("grant a fresh round with --needs-fixes",
+                "a cap this low parks every cycle before a granted round's fix session could ever run");
+    }
+
+    /// <summary>
+    /// Independent pre-PR review, cycle 3, adversarial finding: <c>MaxFinalFullPassRounds</c> is
+    /// the third task-level per-run cap <c>RefuseNegativeCap</c> lets floor at 0, exactly like the
+    /// two per-track caps above, but <c>FinalFullPassCapParkReason</c>'s ordinary wording asserts
+    /// <c>run.FinalFullPassRounds</c> repetitions of a pass that never actually ran when the cap
+    /// itself is what stopped it from ever dispatching. This reaches the FinalFullPassCapReached
+    /// check with the mandatory pass never having run — a Verify-mode cycle 2 (which forces
+    /// <c>NeedsFullGateBeforeSettling</c> without ever entering <c>ReviewMode.FinalFullPass</c>) —
+    /// and asserts the park text does not claim the mandatory pass ran zero times "without ever
+    /// reaching a clean settle", and instead gets the same takeover wording and lever the two
+    /// per-track caps already got.
+    /// </summary>
+    [Fact]
+    public async Task A_task_level_final_full_pass_cap_of_zero_parks_before_the_mandatory_pass_ever_runs()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        using DocumentStore store = NewStore();
+        (Guid taskId, Guid runId, _) = await SeedVerifiedRunAsync(store, cts.Token);
+
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            TaskAggregate task = (await session.Events.AggregateStreamAsync<TaskAggregate>(taskId, token: cts.Token))!;
+            var overridden = TaskDecider.OverrideReviewCaps(
+                task, Optional<int?>.None, Optional<int?>.None, Optional<int?>.Of(0), Optional<int?>.None,
+                Now, DomainId.New());
+            session.Events.Append(taskId, overridden);
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        ScriptedExecutor executor = new(
+            // Cycle 1: conformance clean and dormant; adversarial needs a fix.
+            "Criteria met.\n\nVERDICT: merge-ready",
+            "FINDING: severity=medium; scope=in-scope; at=Retry.cs:12\nDefect: the retry loop never backs off.\n\n"
+            + "VERDICT: needs-fixes",
+            "Added the backoff.\n\nRESOLUTION: fixed",
+            // Cycle 2: only adversarial is active, so a Verify pass stands in — Verify mode alone
+            // forces NeedsFullGateBeforeSettling, reaching FinalFullPassCapReached without this
+            // run ever having dispatched a ReviewMode.FinalFullPass cycle.
+            "Nothing else survives.\n\nVERDICT: merge-ready");
+        bool mergeReady = await NewEngine(store, executor).ReviewAsync(runId, taskId, cts.Token);
+
+        mergeReady.Should().BeFalse("a task-level final-full-pass cap of 0 parks before the mandatory pass ever runs");
+        executor.Spawns.Should().HaveCount(4, "the run parks right after the Verify cycle, before a mandatory final full pass ever dispatches");
+
+        await using IQuerySession query = store.QuerySession();
+        RunDetails run = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
+        run.State.Should().Be(RunState.ReviewParked);
+        run.ParkedReason.Should()
+            .Contain("cap is 0")
+            .And.Contain("a task override")
+            .And.Contain("h9k task set-review-caps")
+            .And.Contain("mandatory pass ever ran")
+            .And.NotContain("consecutive time(s) without ever reaching a clean settle",
+                "the mandatory pass never ran even once, so the ordinary repetition-count wording would assert something that never happened")
+            .And.NotContain("grant a fresh round with --needs-fixes",
+                "a cap this low parks every cycle before the mandatory pass could ever run");
+
+        List<object> events = [.. (await query.Events.FetchStreamAsync(runId, token: cts.Token)).Select(e => e.Data)];
+        events.OfType<ReviewDispatched>().Should().NotContain(
+            e => e.Mode == ReviewMode.FinalFullPass,
+            "the cap must stop the loop before the mandatory pass ever dispatches, not after");
     }
 
     /// <summary>
