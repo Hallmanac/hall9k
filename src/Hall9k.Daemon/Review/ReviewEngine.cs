@@ -2878,11 +2878,28 @@ public sealed class ReviewEngine(
     /// <paramref name="caps"/>'s own resolved cap for <paramref name="capped"/> names its value and
     /// level, so the park message says whether a tight task or project override or the node ended
     /// the loop (task: the review cycle caps become settable at three levels).
+    /// <para>
+    /// A task-level override can legally floor at 0 (only the task level does; project, node, and
+    /// the compiled default all floor at 1), and 0 parks every single cycle immediately — before a
+    /// granted round's fix session ever gets to dispatch — so a grant here never buys the one real
+    /// cycle it buys at any other cap (independent pre-PR review, cycle 2, adversarial lens: the
+    /// same "stop offering a lever this park can't use" defect commit 53bd0998 already fixed for the
+    /// lifetime-budget park). That case gets its own message instead of the ordinary cycles-and-cap
+    /// phrasing below, which would otherwise read as "after 0 cycles" on the very grant meant to buy
+    /// one — and it points at raising or clearing the override with <c>h9k task set-review-caps</c>
+    /// rather than at <c>--needs-fixes</c>.
+    /// </para>
     /// </summary>
     private static string CapParkReason(RunAggregate run, ReviewLens capped, ResolvedReviewCaps caps)
     {
         ResolvedReviewCap cap = caps.CapFor(capped);
         string findings = RunPaths.ReviewFindingsFile(ParkedRunDirectory(run), run.ReviewCycle);
+
+        if (cap.Value <= 0)
+        {
+            return TakeoverCapParkReason(capped, cap, findings);
+        }
+
         string levers =
             $"Unresolved findings: {findings}. Fix in the worktree and resolve with " +
             "h9k review resolve --merge-ready, grant a fresh round with --needs-fixes, or abandon the task.";
@@ -2893,6 +2910,25 @@ public sealed class ReviewEngine(
             : $"The conformance review is still returning findings after {cycles} cycles, its cap of " +
               $"{cap.Value} (from {cap.Describe()}) — the work has been told the same thing {cycles} times, " +
               "so nothing automated is left to try. " + levers;
+    }
+
+    /// <summary>
+    /// The cap-0-or-below park text for <see cref="CapParkReason"/>: a task-level takeover cap
+    /// that low parks the run before any fix session it grants can dispatch, so
+    /// <c>--needs-fixes</c> is not offered here the way it is at every real cap — granting it would
+    /// just re-park identically, forever, with nothing ever actually fixed in between.
+    /// </summary>
+    private static string TakeoverCapParkReason(ReviewLens capped, ResolvedReviewCap cap, string findings)
+    {
+        (string name, string flag) = capped == ReviewLens.Adversarial
+            ? ("adversarial", "--max-adversarial-review-cycles")
+            : ("conformance", "--max-compliance-review-cycles");
+        return $"The {name} review's task-level cap is {cap.Value}, from {cap.Describe()} — a cap that low " +
+            "parks every cycle immediately, so granting a fresh round with --needs-fixes cannot buy the work " +
+            "any progress here the way it does at a real cap: the run would just park again with this same " +
+            $"reason before a fix session ever ran. Unresolved findings: {findings}. Resolve with h9k review " +
+            $"resolve --merge-ready, or raise the cap (or clear it with h9k task set-review-caps <id> {flag} " +
+            "default) before granting another round, or abandon the task.";
     }
 
     /// <summary>

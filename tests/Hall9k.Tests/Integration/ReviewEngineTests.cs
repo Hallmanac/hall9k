@@ -1945,6 +1945,55 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
     }
 
     /// <summary>
+    /// Independent pre-PR review, cycle 2, adversarial finding: a task-level takeover cap can
+    /// legally floor at 0 (only the task level does), and 0 parks every single cycle immediately —
+    /// before a granted round's fix session ever gets to dispatch. Unlike a real cap, a human's
+    /// <c>--needs-fixes</c> grant here buys no progress at all: <c>TrackBudgetBaseCycle</c> resets
+    /// to the current cycle, the very next check reads 0 &gt;= 0, and the run re-parks with the
+    /// identical reason before a fix session runs — the same defect commit 53bd0998 already fixed
+    /// for the lifetime-budget park. The park text must not offer that lever here, and must point
+    /// at raising or clearing the override instead.
+    /// </summary>
+    [Fact]
+    public async Task A_task_level_cap_of_zero_parks_immediately_without_offering_needs_fixes_as_a_lever()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        using DocumentStore store = NewStore();
+        (Guid taskId, Guid runId, _) = await SeedVerifiedRunAsync(store, cts.Token);
+
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            TaskAggregate task = (await session.Events.AggregateStreamAsync<TaskAggregate>(taskId, token: cts.Token))!;
+            var overridden = TaskDecider.OverrideReviewCaps(
+                task, Optional<int?>.Of(0), Optional<int?>.None, Optional<int?>.None, Optional<int?>.None,
+                Now, DomainId.New());
+            session.Events.Append(taskId, overridden);
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        ScriptedExecutor executor = new(
+            "FINDING: severity=medium; scope=in-scope; at=A.cs:1\nDefect: the criterion is not met.\n\n"
+            + "VERDICT: needs-fixes",
+            "Nothing of my own.\n\nVERDICT: merge-ready");
+        bool mergeReady = await NewEngine(store, executor, new DaemonOptions { MaxComplianceReviewCycles = 3 })
+            .ReviewAsync(runId, taskId, cts.Token);
+
+        mergeReady.Should().BeFalse("a task-level cap of 0 parks the very first cycle");
+        executor.Spawns.Should().HaveCount(2, "the run parks before ever dispatching a fix session");
+
+        await using IQuerySession query = store.QuerySession();
+        RunDetails run = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
+        run.State.Should().Be(RunState.ReviewParked);
+        run.ReviewCycle.Should().Be(1);
+        run.ParkedReason.Should()
+            .Contain("task-level cap is 0")
+            .And.Contain("a task override")
+            .And.Contain("h9k task set-review-caps")
+            .And.NotContain("grant a fresh round with --needs-fixes",
+                "a cap this low parks every cycle before a granted round's fix session could ever run");
+    }
+
+    /// <summary>
     /// The fourth setting, the task-lifetime review-cycle budget (task: the review cycle caps
     /// become settable at three levels): it parks the run at a settle point even when this
     /// particular run would otherwise settle cleanly — the pathology it exists to catch already
