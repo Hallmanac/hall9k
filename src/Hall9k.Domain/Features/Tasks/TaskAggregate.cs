@@ -65,6 +65,14 @@ public sealed class TaskAggregate
 
     /// <summary>The task's model override, the most specific link in the resolution chain (Decisions Log #33).</summary>
     public AgentModel Model { get; private set; } = AgentModel.Unknown;
+
+    /// <summary>
+    /// This task's own override of how many agent sessions its run may hold simultaneously; null
+    /// means the node's global <c>SessionCapPerRun</c> default decides (Decisions Log #108).
+    /// Unlike <see cref="Model"/>, settable at any time — including mid-run — via
+    /// <see cref="TaskSessionCapOverridden"/> rather than <see cref="TaskRevised"/>.
+    /// </summary>
+    public int? SessionCap { get; private set; }
     public int LeaseGeneration { get; private set; }
     public Guid? ClaimedByNodeId { get; private set; }
 
@@ -283,6 +291,8 @@ public sealed class TaskAggregate
             EpicId = @event.EpicId.Value;
         }
     }
+
+    public void Apply(TaskSessionCapOverridden @event) => SessionCap = @event.SessionCap;
 
     public void Apply(TaskReturnedToDraft @event) => State = TaskState.Draft;
 

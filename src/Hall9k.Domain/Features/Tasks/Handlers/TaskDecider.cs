@@ -339,6 +339,27 @@ public static class TaskDecider
     }
 
     /// <summary>
+    /// Sets this task's own override of how many agent sessions its run may hold simultaneously
+    /// (Decisions Log #108, Brian's ruling 2026-08-30) — deliberately state-agnostic, unlike
+    /// <see cref="Revise"/>: it is meant to be set "even mid-run", including against a task whose
+    /// run is Claimed and UnderReview right now, so the daemon can pick it up at the run's very
+    /// next session dispatch. Lowering it never terminates a session already spawned; raising it
+    /// only widens what the <em>next</em> phase may fan out to.
+    /// </summary>
+    public static TaskSessionCapOverridden OverrideSessionCap(
+        TaskAggregate task, int sessionCap, DateTimeOffset overriddenAt, Guid overriddenByOwnerId)
+    {
+        if (sessionCap < 1)
+        {
+            throw new DomainValidationException(
+                $"The session cap must be at least 1 (task {task.Id}) — a cap of zero would dispatch nothing for "
+                + "this run's next session.");
+        }
+
+        return new TaskSessionCapOverridden(task.Id, sessionCap, overriddenAt, overriddenByOwnerId);
+    }
+
+    /// <summary>
     /// Published -> Draft: the explicit revert that reopens a task for revision. Refused from
     /// Queued and Blocked onward — unassign first, so returning a task the dispatcher can see
     /// to an editable state is never one accidental keystroke (Decisions Log #34).

@@ -991,6 +991,55 @@ public sealed class TaskDeciderTests
         act.Should().Throw<DomainConflictException>("Abandoned stays a dead end by design");
     }
 
+    // Decisions Log #108, Brian's ruling 2026-08-30: h9k task set-session-cap is deliberately
+    // state-agnostic, unlike Revise — it has to apply "even mid-run".
+
+    [Fact]
+    public void OverrideSessionCap_sets_the_cap_on_a_draft()
+    {
+        TaskAggregate task = DraftTask();
+
+        TaskSessionCapOverridden overridden = TaskDecider.OverrideSessionCap(task, 1, Now, Owner);
+        task.Apply(overridden);
+
+        overridden.SessionCap.Should().Be(1);
+        task.SessionCap.Should().Be(1);
+    }
+
+    [Fact]
+    public void OverrideSessionCap_applies_while_the_tasks_run_is_live_unlike_revise()
+    {
+        TaskAggregate task = ClaimedTask();
+
+        TaskSessionCapOverridden overridden = TaskDecider.OverrideSessionCap(task, 1, Now, Owner);
+        task.Apply(overridden);
+
+        task.SessionCap.Should().Be(1, "the cap can be set even while a run is live — a Draft-only "
+            + "gate like Revise's would make h9k task set-session-cap useless for the case it exists for");
+    }
+
+    [Fact]
+    public void OverrideSessionCap_refuses_a_cap_below_one()
+    {
+        TaskAggregate task = ClaimedTask();
+
+        Action act = () => TaskDecider.OverrideSessionCap(task, 0, Now, Owner);
+
+        act.Should().Throw<DomainValidationException>()
+            .WithMessage("*at least 1*", "a cap of zero would dispatch nothing for the run's next session");
+    }
+
+    [Fact]
+    public void OverrideSessionCap_can_be_lowered_then_raised_and_the_latest_value_wins()
+    {
+        TaskAggregate task = ClaimedTask();
+
+        task.Apply(TaskDecider.OverrideSessionCap(task, 1, Now, Owner));
+        task.Apply(TaskDecider.OverrideSessionCap(task, 3, Now, Owner));
+
+        task.SessionCap.Should().Be(3, "each override replaces the last, the same as a task's model override");
+    }
+
     private static TaskAggregate FailedTask()
     {
         TaskAggregate task = ClaimedTask();
