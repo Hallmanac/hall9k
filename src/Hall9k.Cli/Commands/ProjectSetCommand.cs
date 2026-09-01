@@ -126,6 +126,33 @@ public sealed class ProjectSetCommand : Hall9kAsyncCommand<ProjectSetCommand.Set
             + "(h9k project init points it at <home>/repo/<name>.git); set it by hand when a "
             + "relocation moved the clone and the recorded path has to catch up.")]
         public string? RepositoryPath { get; init; }
+
+        [CommandOption("--max-compliance-review-cycles <N|default>")]
+        [Description(
+            "This project's cycle cap for the conformance review track (Decisions Log #63): outranks the "
+            + "node's own setting, and is itself outranked by a task override (h9k task set-review-caps). "
+            + "'default' clears the project override so the node value (or the compiled default, 3) decides.")]
+        public string? MaxComplianceReviewCycles { get; init; }
+
+        [CommandOption("--max-adversarial-review-cycles <N|default>")]
+        [Description(
+            "This project's cycle cap for the adversarial review track (Decisions Log #63). Same "
+            + "resolution order and clearing idiom as --max-compliance-review-cycles; the compiled default is 10.")]
+        public string? MaxAdversarialReviewCycles { get; init; }
+
+        [CommandOption("--max-final-full-pass-rounds <N|default>")]
+        [Description(
+            "This project's cap on consecutive mandatory final-full-pass rounds (Decisions Log #93). Same "
+            + "resolution order and clearing idiom as --max-compliance-review-cycles; the compiled default is 3.")]
+        public string? MaxFinalFullPassRounds { get; init; }
+
+        [CommandOption("--lifetime-review-cycle-budget <N|default>")]
+        [Description(
+            "This project's task-lifetime review-cycle budget — cycles counted across every run and "
+            + "follow-up a task has had, immune to the per-run resets a stranding, retry, or follow-up round "
+            + "otherwise gives the three caps above. Same resolution order and clearing idiom as "
+            + "--max-compliance-review-cycles; the compiled default is 25.")]
+        public string? LifetimeReviewCycleBudget { get; init; }
     }
 
     protected override async Task<int> ExecuteAsync(Settings settings, CancellationToken cancellationToken)
@@ -212,7 +239,11 @@ public sealed class ProjectSetCommand : Hall9kAsyncCommand<ProjectSetCommand.Set
             // human removes guidance without touching the policy that reads it.
             backlogRoutingGuidance: settings.BacklogRouting is { } routing
                 ? Optional<string>.Of(routing.Trim())
-                : Optional<string>.None);
+                : Optional<string>.None,
+            maxComplianceReviewCycles: ClearableCapOption.Parse(settings.MaxComplianceReviewCycles, "--max-compliance-review-cycles"),
+            maxAdversarialReviewCycles: ClearableCapOption.Parse(settings.MaxAdversarialReviewCycles, "--max-adversarial-review-cycles"),
+            maxFinalFullPassRounds: ClearableCapOption.Parse(settings.MaxFinalFullPassRounds, "--max-final-full-pass-rounds"),
+            lifetimeReviewCycleBudget: ClearableCapOption.Parse(settings.LifetimeReviewCycleBudget, "--lifetime-review-cycle-budget"));
 
         session.Events.Append(details.Id, changed);
         await session.SaveChangesAsync(cancellationToken);

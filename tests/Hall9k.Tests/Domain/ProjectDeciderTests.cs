@@ -64,6 +64,49 @@ public sealed class ProjectDeciderTests
     }
 
     [Fact]
+    public void ChangeSettings_rejects_a_review_cap_below_one()
+    {
+        ProjectAggregate project = RegisteredProject();
+
+        Action act = () => ProjectDecider.ChangeSettings(
+            project,
+            verifyCommands: Optional<IReadOnlyList<VerifyCommand>>.None,
+            skipPermissions: Optional<bool>.None,
+            maxParallelAgents: Optional<int>.None,
+            contextLinks: Optional<IReadOnlyList<ContextLink>>.None,
+            changedAt: Now, changedByOwnerId: DomainId.New(),
+            maxAdversarialReviewCycles: Optional<int?>.Of(0));
+
+        act.Should().Throw<DomainValidationException>().WithMessage("*MaxAdversarialReviewCycles*");
+    }
+
+    [Fact]
+    public void ChangeSettings_clears_a_review_cap_back_to_the_node_with_a_present_null()
+    {
+        ProjectAggregate project = RegisteredProject();
+        project.Apply(ProjectDecider.ChangeSettings(
+            project,
+            verifyCommands: Optional<IReadOnlyList<VerifyCommand>>.None,
+            skipPermissions: Optional<bool>.None,
+            maxParallelAgents: Optional<int>.None,
+            contextLinks: Optional<IReadOnlyList<ContextLink>>.None,
+            changedAt: Now, changedByOwnerId: DomainId.New(),
+            maxComplianceReviewCycles: Optional<int?>.Of(1)));
+        project.MaxComplianceReviewCycles.Should().Be(1);
+
+        project.Apply(ProjectDecider.ChangeSettings(
+            project,
+            verifyCommands: Optional<IReadOnlyList<VerifyCommand>>.None,
+            skipPermissions: Optional<bool>.None,
+            maxParallelAgents: Optional<int>.None,
+            contextLinks: Optional<IReadOnlyList<ContextLink>>.None,
+            changedAt: Now, changedByOwnerId: DomainId.New(),
+            maxComplianceReviewCycles: Optional<int?>.Of(null)));
+
+        project.MaxComplianceReviewCycles.Should().BeNull("present-with-null clears the override back to the node");
+    }
+
+    [Fact]
     public void ChangeSettings_rejects_a_commit_style_outside_the_vocabulary()
     {
         ProjectAggregate project = RegisteredProject();

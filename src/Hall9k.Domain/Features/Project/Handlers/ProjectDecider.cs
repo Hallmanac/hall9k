@@ -61,7 +61,11 @@ public static class ProjectDecider
         Optional<ProjectHome> homeDirectory = default,
         Optional<string> repositoryPath = default,
         Optional<BacklogPolicy> backlogPolicy = default,
-        Optional<string> backlogRoutingGuidance = default)
+        Optional<string> backlogRoutingGuidance = default,
+        Optional<int?> maxComplianceReviewCycles = default,
+        Optional<int?> maxAdversarialReviewCycles = default,
+        Optional<int?> maxFinalFullPassRounds = default,
+        Optional<int?> lifetimeReviewCycleBudget = default)
     {
         if (repositoryPath.HasValue)
         {
@@ -138,6 +142,11 @@ public static class ProjectDecider
                 + $"or {BacklogPolicy.Jira} (where a published task's work becomes visible outside Hall9k).");
         }
 
+        ReviewCapValidation.RefuseNonPositiveCap(maxComplianceReviewCycles, "MaxComplianceReviewCycles");
+        ReviewCapValidation.RefuseNonPositiveCap(maxAdversarialReviewCycles, "MaxAdversarialReviewCycles");
+        ReviewCapValidation.RefuseNonPositiveCap(maxFinalFullPassRounds, "MaxFinalFullPassRounds");
+        ReviewCapValidation.RefuseNonPositiveCap(lifetimeReviewCycleBudget, "LifetimeReviewCycleBudget");
+
         return new ProjectSettingsChanged(
             project.Id,
             verifyCommands,
@@ -153,7 +162,11 @@ public static class ProjectDecider
             homeDirectory,
             repositoryPath,
             backlogPolicy,
-            backlogRoutingGuidance);
+            backlogRoutingGuidance,
+            maxComplianceReviewCycles,
+            maxAdversarialReviewCycles,
+            maxFinalFullPassRounds,
+            lifetimeReviewCycleBudget);
     }
 
     /// <summary>
