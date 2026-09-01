@@ -92,14 +92,36 @@ public sealed class TaskDeciderTests
     }
 
     [Fact]
-    public void OverrideReviewCaps_rejects_a_cap_below_one()
+    public void OverrideReviewCaps_accepts_zero_on_a_per_run_cap_as_the_takeover_lever()
+    {
+        TaskAggregate task = ClaimedTask();
+
+        task.Apply(TaskDecider.OverrideReviewCaps(
+            task, Optional<int?>.Of(0), Optional<int?>.None, Optional<int?>.None, Optional<int?>.None, Now, Owner));
+
+        task.MaxComplianceReviewCycles.Should().Be(0, "0 always parks immediately, since cycles-since-grant can never be negative");
+    }
+
+    [Fact]
+    public void OverrideReviewCaps_rejects_a_negative_per_run_cap()
     {
         TaskAggregate task = ClaimedTask();
 
         Action act = () => TaskDecider.OverrideReviewCaps(
-            task, Optional<int?>.Of(0), Optional<int?>.None, Optional<int?>.None, Optional<int?>.None, Now, Owner);
+            task, Optional<int?>.Of(-1), Optional<int?>.None, Optional<int?>.None, Optional<int?>.None, Now, Owner);
 
         act.Should().Throw<DomainValidationException>().WithMessage("*MaxComplianceReviewCycles*");
+    }
+
+    [Fact]
+    public void OverrideReviewCaps_rejects_a_lifetime_budget_below_one()
+    {
+        TaskAggregate task = ClaimedTask();
+
+        Action act = () => TaskDecider.OverrideReviewCaps(
+            task, Optional<int?>.None, Optional<int?>.None, Optional<int?>.None, Optional<int?>.Of(0), Now, Owner);
+
+        act.Should().Throw<DomainValidationException>().WithMessage("*LifetimeReviewCycleBudget*");
     }
 
     /// <summary>
