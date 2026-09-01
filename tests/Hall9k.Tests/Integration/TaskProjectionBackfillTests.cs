@@ -40,8 +40,7 @@ public sealed class TaskProjectionBackfillTests(PostgresFixture postgres) : ICla
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
         using DocumentStore store = NewStore();
-        NodeContext node = new();
-        await node.InitializeAsync(store, cts.Token);
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
         DispatchEngine engine = NewEngine(store, node);
 
         Guid taskId = DomainId.New();

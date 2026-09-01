@@ -381,8 +381,7 @@ public sealed class DispatchCeilingTests(PostgresFixture postgres) : IClassFixtu
     private static async Task<NodeContext> FreshNodeAsync(IDocumentStore store, CancellationToken cancellationToken)
     {
         await store.Advanced.ResetAllData(cancellationToken);
-        NodeContext node = new();
-        await node.InitializeAsync(store, cancellationToken);
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cancellationToken);
         return node;
     }
 

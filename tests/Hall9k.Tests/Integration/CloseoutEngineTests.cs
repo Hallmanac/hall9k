@@ -2500,8 +2500,7 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
             opts.Connection(postgres.ConnectionString);
             opts.ConfigureHall9k(AutoCreate.All);
         });
-        NodeContext node = new();
-        await node.InitializeAsync(store, cancellationToken);
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cancellationToken);
 
         Directory.CreateDirectory(_root);
         string originPath = Path.Combine(_root, $"origin-{Guid.NewGuid():N}.git");
