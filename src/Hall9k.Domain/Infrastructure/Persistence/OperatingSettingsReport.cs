@@ -67,9 +67,18 @@ public sealed record ConfigFileReadResult(OperatingSettings Settings, ConfigFile
 /// fails to parse: the resolver falls through to a lower tier for the *value* it reports, but the
 /// mistake itself has to survive into the report or an operator is told a healthy default is in
 /// effect while the daemon dies at startup on the very variable that was silently discarded.
+/// <see cref="MaxConcurrentTaskRunsConvertedFromLegacy"/> is true when
+/// <see cref="MaxConcurrentTaskRuns"/>'s effective value came from converting the retired
+/// <see cref="OperatingSettings.MaxConcurrentAgentSessions"/> key rather than from a
+/// <c>max-concurrent-task-runs</c> key read directly (Decisions Log #108) — what lets
+/// <c>h9k daemon status</c> and <c>h9k config show</c> name the conversion rather than present a
+/// converted number as though it were configured in runs all along.
 /// </summary>
 public sealed record OperatingSettingsReport(
     ResolvedSetting<int> MaxConcurrentAgentSessions,
+    ResolvedSetting<int> MaxConcurrentTaskRuns,
+    bool MaxConcurrentTaskRunsConvertedFromLegacy,
+    ResolvedSetting<int> SessionCapPerRun,
     ResolvedSetting<string> DefaultModel,
     IReadOnlyList<RoleModelSetting> ModelByRole,
     ConfigFileProblem? ConfigFileProblem,

@@ -20,6 +20,8 @@ public sealed class OperatingSettingsResolverTests : IDisposable
     private static readonly string[] EnvironmentVariables =
     [
         "Hall9k__MaxConcurrentAgentSessions",
+        "Hall9k__MaxConcurrentTaskRuns",
+        "Hall9k__SessionCapPerRun",
         "Hall9k__DefaultModel",
         "Hall9k__ModelByRole__Build",
         "Hall9k__ModelByRole__Review",
@@ -63,6 +65,11 @@ public sealed class OperatingSettingsResolverTests : IDisposable
 
         report.MaxConcurrentAgentSessions.Value.Should().Be(OperatingSettings.DefaultMaxConcurrentAgentSessions);
         report.MaxConcurrentAgentSessions.Origin.Should().Be(SettingOrigin.Default);
+        report.MaxConcurrentTaskRuns.Value.Should().Be(OperatingSettings.DefaultMaxConcurrentTaskRuns);
+        report.MaxConcurrentTaskRuns.Origin.Should().Be(SettingOrigin.Default);
+        report.MaxConcurrentTaskRunsConvertedFromLegacy.Should().BeFalse();
+        report.SessionCapPerRun.Value.Should().Be(OperatingSettings.DefaultSessionCapPerRun);
+        report.SessionCapPerRun.Origin.Should().Be(SettingOrigin.Default);
         report.DefaultModel.Value.Should().Be(AgentModel.PlatformFallback);
         report.DefaultModel.Origin.Should().Be(SettingOrigin.Default);
         report.ModelByRole.Should().OnlyContain(role => role.Model.Origin == SettingOrigin.Default && role.Model.Value == null);
@@ -491,5 +498,169 @@ public sealed class OperatingSettingsResolverTests : IDisposable
         RoleModelSetting review = report.ModelByRole.Single(role => role.Role == nameof(RoleModelSettings.Review));
         review.Model.Value.Should().Be(string.Empty);
         review.Model.Origin.Should().Be(SettingOrigin.EnvironmentVariable);
+    }
+
+    // Decisions Log #108: max-concurrent-task-runs replaces max-concurrent-agent-sessions as the
+    // node's own admission unit; the retired key still converts (floor(sessions/2), minimum 1)
+    // when the new key is absent, independently at each precedence level.
+
+    [Fact]
+    public async Task A_config_file_max_concurrent_task_runs_wins_outright()
+    {
+        await PlatformConfigFile.WriteOperatingSettingsAsync(s => s.MaxConcurrentTaskRuns = 5, CancellationToken.None);
+
+        OperatingSettingsReport report = await OperatingSettingsResolver.ResolveAsync(CancellationToken.None);
+
+        report.MaxConcurrentTaskRuns.Value.Should().Be(5);
+        report.MaxConcurrentTaskRuns.Origin.Should().Be(SettingOrigin.PlatformConfigFile);
+        report.MaxConcurrentTaskRunsConvertedFromLegacy.Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task A_config_file_legacy_session_ceiling_converts_when_the_new_key_is_absent()
+    {
+        await PlatformConfigFile.WriteOperatingSettingsAsync(s => s.MaxConcurrentAgentSessions = 6, CancellationToken.None);
+
+        OperatingSettingsReport report = await OperatingSettingsResolver.ResolveAsync(CancellationToken.None);
+
+        report.MaxConcurrentTaskRuns.Value.Should().Be(3, "floor(6/2) with a two-lens review cycle's peak");
+        report.MaxConcurrentTaskRuns.Origin.Should().Be(SettingOrigin.PlatformConfigFile);
+        report.MaxConcurrentTaskRunsConvertedFromLegacy.Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task A_config_file_legacy_session_ceiling_below_the_lens_count_still_converts_to_one_run()
+    {
+        await PlatformConfigFile.WriteOperatingSettingsAsync(s => s.MaxConcurrentAgentSessions = 1, CancellationToken.None);
+
+        OperatingSettingsReport report = await OperatingSettingsResolver.ResolveAsync(CancellationToken.None);
+
+        report.MaxConcurrentTaskRuns.Value.Should().Be(1, "the floor never drops to zero — a node that dispatches nothing is worse");
+        report.MaxConcurrentTaskRunsConvertedFromLegacy.Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task An_environment_variable_max_concurrent_task_runs_outranks_the_config_files_legacy_key()
+    {
+        await PlatformConfigFile.WriteOperatingSettingsAsync(s => s.MaxConcurrentAgentSessions = 6, CancellationToken.None);
+        Environment.SetEnvironmentVariable("Hall9k__MaxConcurrentTaskRuns", "4");
+
+        OperatingSettingsReport report = await OperatingSettingsResolver.ResolveAsync(CancellationToken.None);
+
+        report.MaxConcurrentTaskRuns.Value.Should().Be(4);
+        report.MaxConcurrentTaskRuns.Origin.Should().Be(SettingOrigin.EnvironmentVariable);
+        report.MaxConcurrentTaskRunsConvertedFromLegacy.Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task A_new_key_at_one_level_wins_over_the_new_key_at_a_lower_level_even_when_the_lower_level_also_sets_the_legacy_key()
+    {
+        // The precedence chain compares each level's own answer (new key, else converted legacy),
+        // never a flattened merge of every key across every level: an environment variable naming
+        // only the new key must still outrank a config file that sets both, exactly as it would if
+        // the config file set only the legacy key.
+        await PlatformConfigFile.WriteOperatingSettingsAsync(s =>
+        {
+            s.MaxConcurrentTaskRuns = 5;
+            s.MaxConcurrentAgentSessions = 6;
+        }, CancellationToken.None);
+        Environment.SetEnvironmentVariable("Hall9k__MaxConcurrentTaskRuns", "2");
+
+        OperatingSettingsReport report = await OperatingSettingsResolver.ResolveAsync(CancellationToken.None);
+
+        report.MaxConcurrentTaskRuns.Value.Should().Be(2);
+        report.MaxConcurrentTaskRuns.Origin.Should().Be(SettingOrigin.EnvironmentVariable);
+    }
+
+    [Fact]
+    public async Task An_environment_variable_naming_only_the_legacy_key_still_outranks_a_config_file_new_key()
+    {
+        // The conversion applies at each precedence level independently (the acceptance
+        // criterion): the environment level's own answer is "no new key, but the legacy key
+        // converts", and that still beats the config file's own new-key answer, the same way an
+        // environment variable always outranks the config file.
+        await PlatformConfigFile.WriteOperatingSettingsAsync(s => s.MaxConcurrentTaskRuns = 5, CancellationToken.None);
+        Environment.SetEnvironmentVariable("Hall9k__MaxConcurrentAgentSessions", "6");
+
+        OperatingSettingsReport report = await OperatingSettingsResolver.ResolveAsync(CancellationToken.None);
+
+        report.MaxConcurrentTaskRuns.Value.Should().Be(3, "floor(6/2) — the environment level's own converted answer");
+        report.MaxConcurrentTaskRuns.Origin.Should().Be(SettingOrigin.EnvironmentVariable);
+        report.MaxConcurrentTaskRunsConvertedFromLegacy.Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task A_config_file_session_cap_per_run_outranks_the_default()
+    {
+        await PlatformConfigFile.WriteOperatingSettingsAsync(s => s.SessionCapPerRun = 1, CancellationToken.None);
+
+        OperatingSettingsReport report = await OperatingSettingsResolver.ResolveAsync(CancellationToken.None);
+
+        report.SessionCapPerRun.Value.Should().Be(1);
+        report.SessionCapPerRun.Origin.Should().Be(SettingOrigin.PlatformConfigFile);
+    }
+
+    [Fact]
+    public async Task An_environment_variable_session_cap_per_run_outranks_the_config_file()
+    {
+        await PlatformConfigFile.WriteOperatingSettingsAsync(s => s.SessionCapPerRun = 1, CancellationToken.None);
+        Environment.SetEnvironmentVariable("Hall9k__SessionCapPerRun", "2");
+
+        OperatingSettingsReport report = await OperatingSettingsResolver.ResolveAsync(CancellationToken.None);
+
+        report.SessionCapPerRun.Value.Should().Be(2);
+        report.SessionCapPerRun.Origin.Should().Be(SettingOrigin.EnvironmentVariable);
+    }
+
+    // Both new settings are excluded from Program.cs's own Bind() call (DaemonOptionsBinding's own
+    // doc: an internal DaemonOptions setter alone would not be enough, since ConfigurationBinder
+    // converts a section's raw value before it ever checks whether it can assign it), so
+    // ConfigurationBinder never binds them and an unparseable value cannot crash the daemon the way
+    // the legacy max-concurrent-agent-sessions key still can — the unusable-variable message has to
+    // say so accurately rather than reuse ResolveInt's crash-claiming wording, and it has to fall
+    // through to a lower level rather than reading as though the level were unset.
+
+    [Fact]
+    public async Task An_unparseable_max_concurrent_task_runs_env_var_falls_through_rather_than_reporting_a_crash()
+    {
+        Environment.SetEnvironmentVariable("Hall9k__MaxConcurrentTaskRuns", "four");
+
+        OperatingSettingsReport report = await OperatingSettingsResolver.ResolveAsync(CancellationToken.None);
+
+        report.MaxConcurrentTaskRuns.Value.Should().Be(OperatingSettings.DefaultMaxConcurrentTaskRuns,
+            "the daemon never binds this key through ConfigurationBinder, so it does not crash — it falls "
+            + "through to a lower precedence level or the default instead");
+        report.MaxConcurrentTaskRuns.Origin.Should().Be(SettingOrigin.Default);
+        report.UnusableEnvironmentVariables.Should().ContainSingle(warning =>
+            warning.Contains("Hall9k__MaxConcurrentTaskRuns") && warning.Contains("treated as absent")
+            && !warning.Contains("fail to start"),
+            "the message must not claim a crash that cannot happen for this key");
+    }
+
+    [Fact]
+    public async Task An_unparseable_session_cap_per_run_env_var_falls_through_rather_than_reporting_a_crash()
+    {
+        Environment.SetEnvironmentVariable("Hall9k__SessionCapPerRun", "four");
+
+        OperatingSettingsReport report = await OperatingSettingsResolver.ResolveAsync(CancellationToken.None);
+
+        report.SessionCapPerRun.Value.Should().Be(OperatingSettings.DefaultSessionCapPerRun);
+        report.SessionCapPerRun.Origin.Should().Be(SettingOrigin.Default);
+        report.UnusableEnvironmentVariables.Should().ContainSingle(warning =>
+            warning.Contains("Hall9k__SessionCapPerRun") && warning.Contains("treated as absent")
+            && !warning.Contains("fail to start"));
+    }
+
+    [Fact]
+    public async Task A_zero_session_cap_per_run_in_the_config_file_is_reported_by_its_own_name_rather_than_the_ceilings()
+    {
+        await PlatformConfigFile.WriteOperatingSettingsAsync(s => s.SessionCapPerRun = 0, CancellationToken.None);
+
+        OperatingSettingsReport report = await OperatingSettingsResolver.ResolveAsync(CancellationToken.None);
+
+        report.SessionCapPerRun.Value.Should().Be(0);
+        report.UnusableEnvironmentVariables.Should().ContainSingle(warning =>
+            warning.Contains("session-cap-per-run") && !warning.Contains("max-concurrent-agent-sessions"),
+            "reusing the ceiling's own floor-warning wording here would name the wrong setting");
     }
 }

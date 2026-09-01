@@ -1,5 +1,6 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using Hall9k.Domain.Features.Run;
 
 namespace Hall9k.Domain.Infrastructure.Persistence;
 
@@ -18,8 +19,65 @@ namespace Hall9k.Domain.Infrastructure.Persistence;
 /// </summary>
 public sealed class OperatingSettings
 {
-    /// <summary>Mirrors <c>DaemonOptions.MaxConcurrentAgentSessions</c>'s shipped default, so the two never drift apart.</summary>
+    /// <summary>
+    /// Mirrors <c>DaemonOptions.MaxConcurrentAgentSessions</c>'s shipped default, so the two never
+    /// drift apart. Retired as the node's own admission unit (Decisions Log #108) — the key is
+    /// still read, converted, when <see cref="MaxConcurrentTaskRuns"/> is absent — but this
+    /// default is no longer what a fresh install actually dispatches on:
+    /// <see cref="DefaultMaxConcurrentTaskRuns"/> is <see cref="ConvertLegacyMaxConcurrentAgentSessions"/>
+    /// of this same number, kept in sync by the conversion itself rather than by a second literal.
+    /// </summary>
     public const int DefaultMaxConcurrentAgentSessions = 3;
+
+    /// <summary>
+    /// The node ceiling's own unit as of Decisions Log #108: how many task runs may be live on
+    /// this node at once, replacing the session-denominated <see cref="MaxConcurrentAgentSessions"/>
+    /// as the thing an operator actually configures. Every value is meaningful — 1, 2, 3 each
+    /// admit one more run than the last — unlike the retired setting, where 3 sessions and 2
+    /// sessions both admitted exactly one run once a run's peak session cost was 2. The shipped
+    /// default is <see cref="ConvertLegacyMaxConcurrentAgentSessions"/> of
+    /// <see cref="DefaultMaxConcurrentAgentSessions"/>, so a fresh install dispatches exactly as
+    /// many runs at once as it always did.
+    /// </summary>
+    public static readonly int DefaultMaxConcurrentTaskRuns =
+        ConvertLegacyMaxConcurrentAgentSessions(DefaultMaxConcurrentAgentSessions);
+
+    /// <summary>
+    /// The per-run session cap's shipped default (Decisions Log #108, Brian's ruling 2026-08-30):
+    /// deliberate headroom above today's routine peak of 2 (the two review lenses) — nothing today
+    /// spawns a third concurrent session within one run, so this default changes no dispatch
+    /// behavior until a future coded activity actually overlaps a third session. A cap of 1
+    /// serializes the two review lenses instead of running them together, for maximum throttle.
+    /// </summary>
+    public const int DefaultSessionCapPerRun = 3;
+
+    /// <summary>
+    /// The floor(n/2)-shaped conversion applied, at each precedence level independently, when only
+    /// the retired <see cref="MaxConcurrentAgentSessions"/> key is present (Decisions Log #108): 2
+    /// is <see cref="ReviewLens.CycleLenses"/>'s count, the peak sessions one run tree could hold
+    /// under the old whole-life reservation — the same derivation
+    /// <c>Hall9k.Daemon.Dispatch.NodeLoad</c> used before this decision, computed independently
+    /// here because Domain cannot reference the Daemon type that owned that admission math. Never
+    /// zero: a session budget smaller than one run's old peak still converts to exactly one run,
+    /// the same floor the retired arithmetic already applied.
+    /// </summary>
+    public static int ConvertLegacyMaxConcurrentAgentSessions(int sessions) =>
+        Math.Max(1, sessions / Math.Max(1, ReviewLens.CycleLenses.Count));
+
+    /// <summary>
+    /// How many agent sessions one run may hold simultaneously (Decisions Log #108, Brian's ruling
+    /// 2026-08-30): a global default, overridable per task from the CLI at any time — including
+    /// while the task's run is live (<c>h9k task set-session-cap</c>) — because a change only ever
+    /// takes effect at the run's next session dispatch: raising it lets the next phase fan out
+    /// wider, and lowering it never terminates a session already running. Effective concurrency
+    /// within a run is bounded by coded capability, not by this number alone — today the daemon
+    /// knows exactly one overlappable activity, the two review lenses, so a cap above 2 is inert
+    /// until a future coded activity actually overlaps a third session.
+    /// </summary>
+    public int? SessionCapPerRun { get; set; }
+
+    /// <summary>See <see cref="DefaultMaxConcurrentTaskRuns"/>'s own doc for what this replaces.</summary>
+    public int? MaxConcurrentTaskRuns { get; set; }
 
     /// <summary>
     /// How many days an interactive claim (h9k task work) can sit untouched before h9k status

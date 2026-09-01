@@ -19,6 +19,9 @@ public sealed class OperatingSettingsRenderingTests
     private static OperatingSettingsReport ReportWithOneRole(string role, string? model) =>
         new(
             new ResolvedSetting<int>(OperatingSettings.DefaultMaxConcurrentAgentSessions, SettingOrigin.Default, null),
+            new ResolvedSetting<int>(OperatingSettings.DefaultMaxConcurrentTaskRuns, SettingOrigin.Default, null),
+            false,
+            new ResolvedSetting<int>(OperatingSettings.DefaultSessionCapPerRun, SettingOrigin.Default, null),
             new ResolvedSetting<string>(AgentModel.PlatformFallback, SettingOrigin.Default, null),
             [new RoleModelSetting(role, new ResolvedSetting<string?>(model, SettingOrigin.Default, null))],
             null,
