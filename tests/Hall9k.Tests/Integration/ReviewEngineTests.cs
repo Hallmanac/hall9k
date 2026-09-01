@@ -1999,6 +1999,57 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
     }
 
     /// <summary>
+    /// Independent pre-PR review, cycle 3, adversarial finding #2: the lifetime-budget park text
+    /// must not claim a clean convergence when the settling cycle actually recorded findings —
+    /// only demoted to ride-alongs by the severity bar, not absent. Before this, the "converged
+    /// cleanly" wording keyed off <c>SettleReason.Bar</c> alone, which only ever fires for a
+    /// <c>FinalFullPass</c> cycle; a plain <c>Discovery</c> cycle settling <c>NothingOwed</c> with
+    /// a low-only ride-along on the books (the same shape as
+    /// <see cref="A_pass_whose_only_finding_is_graded_low_is_demoted_to_merge_ready_with_a_ride_along_and_no_fix_session"/>)
+    /// hit that same "converged cleanly" wording even though a real finding sits right there in
+    /// the findings file the very next sentence points to.
+    /// </summary>
+    [Fact]
+    public async Task A_lifetime_budget_park_after_a_discovery_cycle_with_a_ride_along_names_the_finding_not_a_clean_convergence()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        using DocumentStore store = NewStore();
+        (Guid taskId, Guid runId, _) = await SeedVerifiedRunAsync(store, cts.Token);
+
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            TaskAggregate task = (await session.Events.AggregateStreamAsync<TaskAggregate>(taskId, token: cts.Token))!;
+            var overridden = TaskDecider.OverrideReviewCaps(
+                task, Optional<int?>.None, Optional<int?>.None, Optional<int?>.None, Optional<int?>.Of(1),
+                Now, DomainId.New());
+            session.Events.Append(taskId, overridden);
+            // An earlier generation of this same task (a stranding salvage, a retry — the exact
+            // history the lifetime budget exists to remember) already spent one review cycle of
+            // its own. Seeded as a plain document, the same way TaskLease is seeded above, since
+            // LifetimeReviewCycleCountAsync reads RunDetails.ReviewCycle straight from the store
+            // rather than replaying that earlier run's events.
+            session.Store(new RunDetails { Id = Guid.NewGuid(), TaskId = taskId, ReviewCycle = 1 });
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        ScriptedExecutor executor = new(
+            "FINDING: severity=low; scope=in-scope; at=Docs.md:3\nDefect: the comment is stale.\n\n"
+            + "VERDICT: needs-fixes",
+            "Criteria met.\n\nVERDICT: merge-ready");
+        bool mergeReady = await NewEngine(store, executor).ReviewAsync(runId, taskId, cts.Token);
+
+        mergeReady.Should().BeFalse(
+            "this run's own cycle 1 plus the earlier generation's already puts the task at 2, past a budget of 1");
+
+        await using IQuerySession query = store.QuerySession();
+        RunDetails run = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
+        run.State.Should().Be(RunState.ReviewParked);
+        run.ParkedReason.Should()
+            .Contain("recorded below the fix bar")
+            .And.NotContain("converged cleanly");
+    }
+
+    /// <summary>
     /// Independent pre-PR review, cycle 2, conformance finding #1: the mandatory FinalFullPass
     /// can reawaken a track that went dormant cycles ago, and the earliest that pass can possibly
     /// land is cycle 3 — already <c>MaxComplianceReviewCycles</c>' own absolute count measured

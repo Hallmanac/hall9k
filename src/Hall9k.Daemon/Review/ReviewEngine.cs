@@ -2974,7 +2974,7 @@ public sealed class ReviewEngine(
 
         await ParkAsync(
             context.RunId, context.TaskId,
-            LifetimeBudgetParkReason(run, totalCycles, caps.LifetimeReviewCycleBudget, settlingReason),
+            LifetimeBudgetParkReason(run, totalCycles, caps.LifetimeReviewCycleBudget),
             cancellationToken);
         return true;
     }
@@ -2986,22 +2986,27 @@ public sealed class ReviewEngine(
     /// review cycle caps become settable at three levels). <paramref name="budget"/> names its own
     /// resolved value and level, so an operator reading the park knows whether a tight task or
     /// project override or the generous node default is what the task finally exceeded.
-    /// <paramref name="settlingReason"/> decides how the "worth a human's look" clause reads: only
-    /// <see cref="SettleReason.NothingOwed"/> is a reviewer reading the tip and finding nothing at
-    /// all, while <see cref="SettleReason.Bar"/> means this cycle's own findings were recorded, just
-    /// below the fix bar — this message must not assert a clean convergence nobody observed
-    /// (independent pre-PR review, cycle 1, conformance lens). This park's levers deliberately
-    /// exclude <c>--needs-fixes</c>: unlike every cap park above it, granting a fresh round here
-    /// does not reset the lifetime sum, so the identical park would simply reappear one cycle later
-    /// after spending a real fix-and-re-review dispatch (independent pre-PR review, cycle 1,
-    /// adversarial lens) — raising the budget with <c>h9k task set-review-caps</c> is the lever that
-    /// actually clears it.
+    /// The "worth a human's look" clause reads <see cref="RunAggregate.CompletedReviewPasses"/>
+    /// directly (cleared at the start of every cycle, so "any findings" means this cycle's own)
+    /// rather than the settle clause that reached this park (independent pre-PR review, cycle 3,
+    /// adversarial lens): <see cref="SettleReason.NothingOwed"/> covers a plain
+    /// <see cref="ReviewMode.Discovery"/> cycle just as much as it covers <see cref="SettleReason.Bar"/>'s
+    /// <see cref="ReviewMode.FinalFullPass"/> case, and a Discovery cycle can settle
+    /// <c>NothingOwed</c> with real ride-along findings on the books — below the fix bar, but not
+    /// nothing. Reading the passes directly means this message never asserts a clean convergence
+    /// nobody observed (independent pre-PR review, cycle 1, conformance lens) regardless of which
+    /// settle clause or review mode reached it. This park's levers deliberately exclude
+    /// <c>--needs-fixes</c>: unlike every cap park above it, granting a fresh round here does not
+    /// reset the lifetime sum, so the identical park would simply reappear one cycle later after
+    /// spending a real fix-and-re-review dispatch (independent pre-PR review, cycle 1, adversarial
+    /// lens) — raising the budget with <c>h9k task set-review-caps</c> is the lever that actually
+    /// clears it.
     /// </summary>
     private static string LifetimeBudgetParkReason(
-        RunAggregate run, int totalCycles, ResolvedReviewCap budget, SettleReason settlingReason)
+        RunAggregate run, int totalCycles, ResolvedReviewCap budget)
     {
         string findings = RunPaths.ReviewFindingsFile(ParkedRunDirectory(run), run.ReviewCycle);
-        string convergence = settlingReason == SettleReason.Bar
+        string convergence = run.CompletedReviewPasses.Any(pass => pass.Findings.Count > 0)
             ? "even though this cycle's own findings were all recorded below the fix bar"
             : "even though this cycle converged cleanly";
         return $"This task has spent {totalCycles} review cycle(s) across every run and follow-up it has had — " +

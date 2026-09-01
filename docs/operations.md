@@ -467,9 +467,12 @@ is the node level; `h9k project set` carries the identical four options (`'defau
 project override back to the node); `h9k task set-review-caps <ID>` is the task level, and is
 deliberately different from every other task setting — it is settable at any time, including while
 the task's run is live, so the daemon picks it up at the very next cap check. That is also the
-documented takeover lever for a task observed grinding: setting a cap at or below the track's
-current cycle count parks the run there, no new state or command beyond the setting itself. `h9k
-task show` prints any per-task override; `h9k project show` prints the project's own.
+documented takeover lever for a task observed grinding: setting a cap at or below the cycles that
+track has run since its last human takeover grant (0, if it has never had one — not the same as
+the absolute review cycle number `h9k status`/`h9k task show` print, which never resets) parks the
+run there, no new state or command beyond the setting itself — 0 always parks immediately, since
+that count can never be negative. `h9k task show` prints any per-task override; `h9k project show`
+prints the project's own.
 
 `h9k config set` writes to the config file; `h9k config show` resolves a setting the same way
 `DaemonOptions` binds it at daemon startup — env, then config file, then default — and names the
