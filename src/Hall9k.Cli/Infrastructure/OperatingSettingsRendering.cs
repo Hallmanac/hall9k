@@ -102,18 +102,32 @@ public static class OperatingSettingsRendering
     /// <summary>
     /// The retired key's own row: "read only as a fallback" is true whenever this value came from
     /// somewhere real (an environment variable or the config file — it is consulted at that same
-    /// level whenever max-concurrent-task-runs is absent there), but it overclaims on a fresh
-    /// install where nothing sets either key anywhere: the resolver never actually reads this
-    /// setting for anything in that case, it just falls straight through to
+    /// level whenever max-concurrent-task-runs is absent there), but it overclaims in two shapes:
+    /// a fresh install where nothing sets either key anywhere, where the resolver never actually
+    /// reads this setting for anything and just falls straight through to
     /// <c>DefaultMaxConcurrentTaskRuns</c>, so the value shown here is this key's own unused
     /// built-in default, not a fallback in force (independent pre-PR review, cycle 1, adversarial
-    /// lens).
+    /// lens); and a config-file leaf that binds to
+    /// <see cref="OperatingSettingsReport.MaxConcurrentAgentSessionsIsFabricatedZero"/>'s simulated
+    /// zero, which <see cref="OperatingSettingsResolver.ResolveMaxConcurrentTaskRuns"/> treats as
+    /// absent at the config-file level rather than converting into a run ceiling, so this value is
+    /// never actually consulted there either (independent pre-PR review, cycle 1, both lenses).
+    /// The fabricated-zero check only applies when this row's own value actually came from the
+    /// config file — an environment variable can still win over a fabricated-zero file leaf with a
+    /// real value of its own, and that value genuinely is consulted as a fallback at its own level.
     /// </summary>
     private static string DescribeMaxConcurrentAgentSessions(OperatingSettingsReport report)
     {
         string value = $"{report.MaxConcurrentAgentSessions.Value} ({report.MaxConcurrentAgentSessions.DescribeOrigin()})";
-        return report.MaxConcurrentAgentSessions.Origin == SettingOrigin.Default
-            ? $"{value} — not set anywhere, so there is nothing here for max-concurrent-task-runs to fall back to"
+        if (report.MaxConcurrentAgentSessions.Origin == SettingOrigin.Default)
+        {
+            return $"{value} — not set anywhere, so there is nothing here for max-concurrent-task-runs to fall back to";
+        }
+
+        return report.MaxConcurrentAgentSessions.Origin == SettingOrigin.PlatformConfigFile
+            && report.MaxConcurrentAgentSessionsIsFabricatedZero
+            ? $"{value} — a null or empty {{}} leaf binds to this fabricated zero, but max-concurrent-task-runs "
+                + "treats it as absent rather than falling back to it"
             : $"{value} — read only as a fallback when max-concurrent-task-runs is absent";
     }
 

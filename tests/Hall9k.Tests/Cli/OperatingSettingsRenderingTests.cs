@@ -19,6 +19,7 @@ public sealed class OperatingSettingsRenderingTests
     private static OperatingSettingsReport ReportWithOneRole(string role, string? model) =>
         new(
             new ResolvedSetting<int>(OperatingSettings.DefaultMaxConcurrentAgentSessions, SettingOrigin.Default, null),
+            false,
             new ResolvedSetting<int>(OperatingSettings.DefaultMaxConcurrentTaskRuns, SettingOrigin.Default, null),
             false,
             false,
@@ -76,6 +77,49 @@ public sealed class OperatingSettingsRenderingTests
         OperatingSettingsReport report = template with
         {
             MaxConcurrentAgentSessions = new ResolvedSetting<int>(6, SettingOrigin.PlatformConfigFile, "config.json"),
+        };
+
+        (string Label, string Value) row = OperatingSettingsRendering.Rows(report)
+            .Single(r => r.Label == "max-concurrent-agent-sessions (retired)");
+
+        row.Value.Should().Contain("read only as a fallback when max-concurrent-task-runs is absent");
+    }
+
+    /// <summary>
+    /// A null or empty <c>{}</c> leaf binds to a fabricated zero the resolver treats as absent
+    /// rather than a fallback in force (independent pre-PR review, cycle 1, both lenses) — this
+    /// must read differently from a genuinely configured zero, which the previous test covers.
+    /// </summary>
+    [Fact]
+    public void A_retired_key_bound_to_a_fabricated_zero_is_not_described_as_a_fallback()
+    {
+        OperatingSettingsReport template = ReportWithOneRole(nameof(RoleModelSettings.Build), null);
+        OperatingSettingsReport report = template with
+        {
+            MaxConcurrentAgentSessions = new ResolvedSetting<int>(0, SettingOrigin.PlatformConfigFile, "config.json"),
+            MaxConcurrentAgentSessionsIsFabricatedZero = true,
+        };
+
+        (string Label, string Value) row = OperatingSettingsRendering.Rows(report)
+            .Single(r => r.Label == "max-concurrent-agent-sessions (retired)");
+
+        row.Value.Should().NotContain("read only as a fallback");
+        row.Value.Should().Contain("treats it as absent");
+    }
+
+    /// <summary>
+    /// An environment variable can still win over a fabricated-zero file leaf with a real value of
+    /// its own — that value genuinely is consulted as a fallback, so the fabricated-zero wording
+    /// must not leak into a row whose displayed origin is not the config file.
+    /// </summary>
+    [Fact]
+    public void A_fabricated_zero_at_the_file_level_does_not_suppress_the_fallback_wording_for_an_environment_value()
+    {
+        OperatingSettingsReport template = ReportWithOneRole(nameof(RoleModelSettings.Build), null);
+        OperatingSettingsReport report = template with
+        {
+            MaxConcurrentAgentSessions = new ResolvedSetting<int>(5, SettingOrigin.EnvironmentVariable, "Hall9k__MaxConcurrentAgentSessions"),
+            MaxConcurrentAgentSessionsIsFabricatedZero = true,
         };
 
         (string Label, string Value) row = OperatingSettingsRendering.Rows(report)
