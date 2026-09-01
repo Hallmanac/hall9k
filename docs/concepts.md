@@ -292,6 +292,21 @@ finding the fix session **disputes** (not a defect, human territory, wrongly gra
 run immediately with both positions written to disk, rather than looping on judgment. That park
 is what `h9k review resolve` answers.
 
+A per-track cap and the mandatory pass's own round cap are not the only way a run reaches
+`h9k review resolve`. A task also carries a **lifetime review-cycle budget**
+(`LifetimeReviewCycleBudget`, default 25) that counts every review cycle the task has ever spent,
+across every run and every follow-up it has had — a stranding, a `task retry`, and a `pr resolve`
+follow-up all spend from the same odometer, and nothing resets it, unlike the per-track caps a
+`ReviewParkResolved` verdict does reset. Checked at every settle point, so it can park a run that
+just converged cleanly with nothing left to fix. Because the settle point is the only place it is
+checked, `h9k review resolve --needs-fixes` on that park earns exactly one more cycle before the
+run re-parks there again, not a reprieve from the budget itself; raising the budget for this task
+alone is `h9k task set-review-caps`. The per-track caps and this lifetime budget are each
+settable at three levels with the same override order — task, then project, then node, then the
+compiled default — so a node operator can lower the defaults platform-wide, a project can loosen
+or tighten them for its own review culture, and a task can override either, live, even while its
+run is already in progress.
+
 Scope routes findings rather than ranking them. An out-of-scope high (a pre-existing defect on
 the base branch) is fixed here in its own commit; an out-of-scope non-high becomes a **draft bug
 task** that is inert until a human publishes it — a medium mints one of its own exactly as

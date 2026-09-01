@@ -147,6 +147,13 @@ re-request policy. The node has a ceiling the dispatcher respects, counted direc
 absent, and a per-run session cap (global default, overridable per task even mid-run) governs how
 many agent sessions one run may hold simultaneously.
 
+The review loop's four cycle caps — the conformance and adversarial per-track caps, the mandatory
+final-full-pass round cap, and the task-lifetime review-cycle budget that survives run resets — are
+settable the same way, at three levels apiece with the same task-then-project-then-node-then-
+compiled-default order: `h9k config set` for the node default, `h9k project set` for a per-project
+override, and `h9k task set-review-caps` for a per-task override that can be changed even while
+the task's run is already in progress.
+
 ### Installation and release delivery
 
 A tagged commit on `main` becomes a GitHub release carrying self-contained `h9k` and `h9kd`
