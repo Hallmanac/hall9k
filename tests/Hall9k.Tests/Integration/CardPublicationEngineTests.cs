@@ -733,8 +733,9 @@ public sealed class CardPublicationEngineTests(PostgresFixture postgres) : IClas
         await SeedAsync(store, bootstrapped, cts.Token);
 
         // The loop gets a node nothing has initialized, the way the host hands it one. It still
-        // needs a GitHub connection already on file before line below's InitializeAsync runs, or
-        // NodeBootstrap.EnsureAsync falls through to GhLogin() and shells to the real gh — seeded
+        // needs a GitHub connection already on file before the deferred InitializeAsync call
+        // further down this test (inside the try, after StartAsync and the first assertion) runs,
+        // or NodeBootstrap.EnsureAsync falls through to GhLogin() and shells to the real gh — seeded
         // explicitly here rather than relying on the earlier NewNodeAsync call above having done
         // it as a side effect of seeding an unrelated task (PLAN.md §16 #110's own correction of
         // #109 found exactly this kind of incidental ordering dependency).
