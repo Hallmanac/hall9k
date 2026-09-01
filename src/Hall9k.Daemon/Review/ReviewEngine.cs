@@ -2889,7 +2889,7 @@ public sealed class ReviewEngine(
         int cycles = run.ReviewCycle - run.TrackBudgetBaseCycle(capped);
 
         return capped == ReviewLens.Adversarial
-            ? $"{AdversarialCapReason(run, cycles)} Its cap is {cap.Value}, from {cap.Describe()}. {levers}"
+            ? $"{AdversarialCapReason(run, cycles, cap)} {levers}"
             : $"The conformance review is still returning findings after {cycles} cycles, its cap of " +
               $"{cap.Value} (from {cap.Describe()}) — the work has been told the same thing {cycles} times, " +
               "so nothing automated is left to try. " + levers;
@@ -2974,7 +2974,8 @@ public sealed class ReviewEngine(
 
         await ParkAsync(
             context.RunId, context.TaskId,
-            LifetimeBudgetParkReason(run, totalCycles, caps.LifetimeReviewCycleBudget), cancellationToken);
+            LifetimeBudgetParkReason(run, totalCycles, caps.LifetimeReviewCycleBudget, settlingReason),
+            cancellationToken);
         return true;
     }
 
@@ -2985,17 +2986,32 @@ public sealed class ReviewEngine(
     /// review cycle caps become settable at three levels). <paramref name="budget"/> names its own
     /// resolved value and level, so an operator reading the park knows whether a tight task or
     /// project override or the generous node default is what the task finally exceeded.
+    /// <paramref name="settlingReason"/> decides how the "worth a human's look" clause reads: only
+    /// <see cref="SettleReason.NothingOwed"/> is a reviewer reading the tip and finding nothing at
+    /// all, while <see cref="SettleReason.Bar"/> means this cycle's own findings were recorded, just
+    /// below the fix bar — this message must not assert a clean convergence nobody observed
+    /// (independent pre-PR review, cycle 1, conformance lens). This park's levers deliberately
+    /// exclude <c>--needs-fixes</c>: unlike every cap park above it, granting a fresh round here
+    /// does not reset the lifetime sum, so the identical park would simply reappear one cycle later
+    /// after spending a real fix-and-re-review dispatch (independent pre-PR review, cycle 1,
+    /// adversarial lens) — raising the budget with <c>h9k task set-review-caps</c> is the lever that
+    /// actually clears it.
     /// </summary>
-    private static string LifetimeBudgetParkReason(RunAggregate run, int totalCycles, ResolvedReviewCap budget)
+    private static string LifetimeBudgetParkReason(
+        RunAggregate run, int totalCycles, ResolvedReviewCap budget, SettleReason settlingReason)
     {
         string findings = RunPaths.ReviewFindingsFile(ParkedRunDirectory(run), run.ReviewCycle);
+        string convergence = settlingReason == SettleReason.Bar
+            ? "even though this cycle's own findings were all recorded below the fix bar"
+            : "even though this cycle converged cleanly";
         return $"This task has spent {totalCycles} review cycle(s) across every run and follow-up it has had — " +
             $"past its lifetime review-cycle budget of {budget.Value}, from {budget.Describe()}. A stranding, a " +
             "retry, or a follow-up round each start with a clean per-run cap, so none of them ever saw this " +
-            "task's true history; this budget does, and does not reset the way those do. Worth a human's look " +
-            $"even though this cycle converged cleanly. Unresolved findings: {findings}. Fix in the worktree and " +
-            "resolve with h9k review resolve --merge-ready, grant a fresh round with --needs-fixes, or abandon " +
-            "the task.";
+            $"task's true history; this budget does, and does not reset the way those do. Worth a human's look " +
+            $"{convergence}. Unresolved findings: {findings}. Resolve with h9k review resolve --merge-ready, or " +
+            "raise the budget with h9k task set-review-caps before granting another round — a bare " +
+            "--needs-fixes does not reset this count, so it only buys one more cycle before the identical park " +
+            "reappears — or abandon the task.";
     }
 
     /// <summary>
@@ -3018,7 +3034,7 @@ public sealed class ReviewEngine(
     /// a Verify pass's conformance-tagged findings to the adversarial track's cap-park reason).
     /// </para>
     /// </summary>
-    private static string AdversarialCapReason(RunAggregate run, int cycles)
+    private static string AdversarialCapReason(RunAggregate run, int cycles, ResolvedReviewCap cap)
     {
         List<ReviewFindingRecord> owed = [.. run.CompletedReviewPasses
             .Where(pass => pass.Lens.Covers(ReviewLens.Adversarial))
@@ -3030,29 +3046,30 @@ public sealed class ReviewEngine(
                 || !run.ActiveReviewLenses.Contains(finding.Track))];
         int high = owed.Count(finding => finding.Severity == ReviewSeverity.High);
         int ungraded = owed.Count(finding => finding.Severity == ReviewSeverity.Unknown);
+        string capDescription = $"its cap of {cap.Value} (from {cap.Describe()})";
 
         if (high > 0)
         {
             return $"The adversarial review is still returning high-severity findings after {cycles} cycles, " +
-                $"its cap — {high} of cycle {run.ReviewCycle}'s findings are graded high. That is not a spent " +
-                "budget: the machine kept finding real problems in this diff, and a human should look at why " +
-                "rather than let the loop keep grinding. Restarting the work with a fresh agent is one way to " +
-                "resolve it.";
+                $"{capDescription} — {high} of cycle {run.ReviewCycle}'s findings are graded high. That is not " +
+                "a spent budget: the machine kept finding real problems in this diff, and a human should look " +
+                "at why rather than let the loop keep grinding. Restarting the work with a fresh agent is one " +
+                "way to resolve it.";
         }
 
         if (ungraded > 0)
         {
-            return $"The adversarial review is still returning findings after {cycles} cycles, its cap, and " +
-                $"{ungraded} of cycle {run.ReviewCycle}'s findings carry no grade the platform could read — " +
+            return $"The adversarial review is still returning findings after {cycles} cycles, {capDescription}, " +
+                $"and {ungraded} of cycle {run.ReviewCycle}'s findings carry no grade the platform could read — " +
                 "none is graded high. An ungraded finding forces another cycle deliberately, so the loop may " +
                 "have been kept alive by a reviewer whose grades did not parse rather than by defects that " +
                 "matter. Read the findings before deciding whether it is the diff or the grading that needs " +
                 "your attention.";
         }
 
-        return $"The adversarial review is still returning findings after {cycles} cycles, its cap, and none " +
-            $"of cycle {run.ReviewCycle}'s findings is graded high. A human should look at what the loop has " +
-            "been spending its cycles on.";
+        return $"The adversarial review is still returning findings after {cycles} cycles, {capDescription}, " +
+            $"and none of cycle {run.ReviewCycle}'s findings is graded high. A human should look at what the " +
+            "loop has been spending its cycles on.";
     }
 
     /// <summary>
