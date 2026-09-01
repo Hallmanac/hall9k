@@ -370,7 +370,8 @@ ones worth knowing:
 
 | Option | Default | What it governs |
 |---|---|---|
-| `Hall9k__MaxConcurrentAgentSessions` | 3 | The node's session ceiling, counted in **agent sessions**, not runs. See the conversion below: at the default of 3, one run dispatches at a time. |
+| `Hall9k__MaxConcurrentTaskRuns` | 1 | The node's ceiling, counted directly in **task runs** (Decisions Log #108) — every value is meaningful. Retires `Hall9k__MaxConcurrentAgentSessions`, still read as a fallback (see below). |
+| `Hall9k__SessionCapPerRun` | 3 | How many agent sessions one run may hold simultaneously — a global default, overridable per task at any time with `h9k task set-session-cap`, even mid-run. A cap of 1 serializes the two review lenses instead of dispatching them together. |
 | `Hall9k__LeaseTimeout` | 60s | How long a lease survives without a heartbeat before the sweep requeues it |
 | `Hall9k__VerifyGateTimeout` | 15m | Per gate |
 | `Hall9k__PullRequestPollInterval` | 3m | How often the closeout monitor polls an open pull request |
@@ -384,24 +385,36 @@ ones worth knowing:
 | `Hall9k__DefaultReviewRerequest` | disabled | Whether closeout asks reviewers for another pass after fixes push |
 | `Hall9k__DefaultModel`, `Hall9k__ModelByRole__*` | | The node's model policy, per role (build, review, fix, synthesis, refinement, publication), plus `Hall9k__ModelByRole__ReviewVerify` — not a seventh role, but a narrower override for a Verify-shape review pass specifically, blank falling through to whatever review resolves |
 
-The ceiling is set in sessions and spent in runs, so there is a conversion between the number you
-configure and the number of tasks in flight. A run tree's peak is however many review lenses a
-cycle dispatches together, which is two today (conformance and adversarial), and every live run is
-charged that peak the whole time rather than what it happens to be holding this second, because a
-run that is building today reaches its review cycle on this same machine. So the runs that may
-start at once are the session ceiling divided by two, floored at one:
+Before Decisions Log #108, the ceiling was set in agent sessions and spent in runs, so there was a
+conversion between the number you configured and the number of tasks in flight. That conversion is
+gone from admission itself: `Hall9k__MaxConcurrentTaskRuns` claims directly in runs, so every value
+is meaningful — 1, 2, and 3 each admit one more run than the last, unlike the old setting, where 2
+and 3 sessions both admitted exactly one run under a two-lens review cycle's peak.
 
-| `Hall9k__MaxConcurrentAgentSessions` | Runs in flight |
+The old `Hall9k__MaxConcurrentAgentSessions` key still works when the new one is absent — converted
+`floor(sessions / 2)`, minimum 1, the "2" being the two review lenses a cycle dispatches together —
+independently at each precedence level (an environment variable naming only the old key still
+outranks a config-file value for the new one, the same way an environment variable always outranks
+the config file). `h9k config show` and `h9k daemon status` both name the conversion when it
+applies, and point at setting `--max-concurrent-task-runs` directly to stop relying on it:
+
+| `Hall9k__MaxConcurrentAgentSessions` (legacy) | `Hall9k__MaxConcurrentTaskRuns` (converted) |
 |---|---|
-| 3 (the default) | 1 |
+| 3 (the old default) | 1 |
 | 4 | 2 |
 | 6 | 3 |
 
-That is why a board with the shipped default says `waiting for a slot — 1 of 1 running`, and why
-raising the ceiling from 3 to 4 buys a second run rather than a fourth. The floor of one is
-deliberate: a budget smaller than one run's peak would dispatch nothing at all, and a node that
-silently does no work is the worse answer. Appending a third review lens would tighten this on its
-own, because the divisor is read off the lens list rather than written down.
+That is why a fresh-from-the-old-key board says `waiting for a slot — 1 of 1 running` until you set
+the new key directly. A second, independent knob, `Hall9k__SessionCapPerRun` (default 3), caps how
+many agent sessions one run may hold simultaneously — the daemon knows exactly one activity that
+can overlap within a run today (the two review lenses), so effective concurrency there is 2 by
+construction and anything above 2 is inert headroom until a future coded activity actually overlaps
+a third session. A cap of 1 serializes those two lenses — dispatching the second only once the
+first's own result is recorded — which throttles the burn RATE, not the total tokens the identical
+two passes spend. It is overridable per task at any time, including while the task's run is live,
+with `h9k task set-session-cap <id> <cap>`; a change takes effect at the run's next session
+dispatch — raising it lets the next phase fan out wider, lowering it never terminates a session
+already running.
 
 A queued row names the concurrency ceiling as its reason only when the dispatcher recorded a
 current measurement saying this node is full. With none, it says it is ready and stops, because a
@@ -435,7 +448,9 @@ once.
 
 ```bash
 h9k config show                                             # every setting, and where it came from
-h9k config set --max-concurrent-agent-sessions 4            # the concurrency ceiling
+h9k config set --max-concurrent-task-runs 2                 # the node's run ceiling
+h9k config set --session-cap-per-run 1                      # the per-run session cap's global default
+h9k task set-session-cap 28b19893 1                          # override the cap for one task, even mid-run
 h9k config set --model-review sonnet --model-fix haiku      # per-role model overrides
 h9k config set --model-review-verify sonnet                 # Verify-shape passes only; defaults to --model-review
 h9k config set --interactive-claim-stale-after-days 5       # the interactive-claim nudge threshold
