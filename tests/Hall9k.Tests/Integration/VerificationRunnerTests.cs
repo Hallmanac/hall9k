@@ -60,6 +60,20 @@ public sealed class VerificationRunnerTests(PostgresFixture postgres) : IClassFi
 
         File.ReadAllText(Path.Combine(RunPaths.GlobalDirectory(runId), "verify-hello.log"))
             .Should().Contain("hello-from-gate");
+
+        var events = await query.Events.FetchStreamAsync(runId, token: cts.Token);
+        VerificationPassed passed = events.Select(e => e.Data).OfType<VerificationPassed>().Single();
+        passed.GateDurations.Should().NotBeNull("task: gate wall-clock duration is recorded and surfaced")
+            .And.HaveCount(2, "both configured gates ran and each carries its own duration");
+        passed.GateDurations!.Select(gate => gate.Gate).Should().Equal("hello", "truth");
+        passed.GateDurations!.Should().AllSatisfy(gate =>
+        {
+            gate.Passed.Should().BeTrue();
+            gate.Duration.Should().BeGreaterThanOrEqualTo(TimeSpan.Zero);
+        });
+
+        RunListItem listItem = (await query.LoadAsync<RunListItem>(runId, cts.Token))!;
+        listItem.GateDurations.Should().NotBeNull().And.HaveCount(2, "h9k task show reads the lean row's own copy");
     }
 
     [Fact]
@@ -84,6 +98,14 @@ public sealed class VerificationRunnerTests(PostgresFixture postgres) : IClassFi
 
         File.Exists(Path.Combine(RunPaths.GlobalDirectory(runId), "verify-never.log"))
             .Should().BeFalse("gates after the failure never run");
+
+        var events = await query.Events.FetchStreamAsync(runId, token: cts.Token);
+        VerificationFailed failed = events.Select(e => e.Data).OfType<VerificationFailed>().Single();
+        failed.GateDurations.Should().NotBeNull()
+            .And.HaveCount(2, "the passing gate before the failure and the failed gate itself, never the gate after it");
+        failed.GateDurations!.Select(gate => gate.Gate).Should().Equal("ok", "boom");
+        failed.GateDurations![0].Passed.Should().BeTrue();
+        failed.GateDurations![1].Passed.Should().BeFalse("boom is the gate that stopped the line");
     }
 
     /// <summary>
@@ -119,6 +141,12 @@ public sealed class VerificationRunnerTests(PostgresFixture postgres) : IClassFi
 
         TaskListItem task = (await query.LoadAsync<TaskListItem>(taskId, cts.Token))!;
         task.State.Value.Should().NotBe("Failed", "a flake the retry absorbed spends no budget on the task");
+
+        VerificationPassed recordedPass = events.Select(e => e.Data).OfType<VerificationPassed>().Single();
+        recordedPass.GateDurations.Should().NotBeNull().And.ContainSingle(
+            "a retried gate that eventually passes is one entry, its own two attempts summed, not two");
+        recordedPass.GateDurations![0].Gate.Should().Be("flaky");
+        recordedPass.GateDurations![0].Passed.Should().BeTrue();
     }
 
     /// <summary>
@@ -258,6 +286,8 @@ public sealed class VerificationRunnerTests(PostgresFixture postgres) : IClassFi
         var events = await query.Events.FetchStreamAsync(runId, token: cts.Token);
         VerificationPassed passed = events.Select(e => e.Data).OfType<VerificationPassed>().Single();
         passed.Note.Should().Contain("No verification gates configured");
+        passed.GateDurations.Should().NotBeNull().And.BeEmpty(
+            "zero gates genuinely ran — an observed empty list, not the unknown a missing field would mean");
     }
 
     [Fact]
