@@ -5,6 +5,7 @@ using Hall9k.Domain.Features.Epic;
 using Hall9k.Domain.Features.Owner;
 using Hall9k.Domain.Features.Run;
 using Hall9k.Domain.Features.Run.Projections;
+using Hall9k.Domain.Features.Run.Queries;
 using Hall9k.Domain.Features.Tasks;
 using Hall9k.Domain.Features.Tasks.Projections;
 using Hall9k.Domain.Features.Tasks.Queries;
@@ -259,7 +260,7 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
         {
             AnsiConsole.MarkupLine("\n[bold]Runs[/]");
             Table runsTable = new Table().Border(TableBorder.Rounded);
-            runsTable.AddColumns("Run", "Gen", "State", "Model", "Dispatched", "PR");
+            runsTable.AddColumns("Run", "Gen", "State", "Model", "Dispatched", "PR", "Gates");
             foreach (RunListItem run in runs)
             {
                 // A run dispatched before the model chain existed recorded none; "-" says
@@ -270,13 +271,15 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
                     run.State.Value.EscapeMarkup(),
                     (run.Model == AgentModel.Unknown ? "-" : run.Model.Value).EscapeMarkup(),
                     run.DispatchedAt.ToLocalTime().ToString("g").EscapeMarkup(),
-                    (run.PullRequestUrl ?? "-").EscapeMarkup());
+                    (run.PullRequestUrl ?? "-").EscapeMarkup(),
+                    FormatGateDurations(run.GateDurations));
             }
 
             AnsiConsole.Write(runsTable);
             RunDetails? newestRun = await session.LoadAsync<RunDetails>(runs[^1].Id, cancellationToken);
             WriteReviewOutcome(newestRun);
             WriteFixEscalation(newestRun);
+            await WriteGateDurationAnomaliesAsync(session, details.ProjectId, runs[^1], cancellationToken);
         }
 
         await WriteHandoffAsync(session, details, runs, cancellationToken);
@@ -402,6 +405,71 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
         AnsiConsole.MarkupLine(
             $"\n[bold]Fix escalation[/]  [yellow]cycle {run.LastFixSessionEscalationCycle} dispatched on the review role's model[/] "
             + $"[dim]— {ExternalText.OneLineMarkup(run.LastFixSessionEscalationReason ?? "reason not recorded")}[/]");
+    }
+
+    /// <summary>
+    /// The Runs table's own Gates cell (task: gate wall-clock duration is recorded and
+    /// surfaced): each gate this run's most recently recorded verification pass or failure
+    /// carried, name and duration beside its own outcome. "-" for a run recorded before this
+    /// field existed, or one that has not verified yet — an unobserved duration, never a
+    /// claimed zero.
+    /// </summary>
+    private static string FormatGateDurations(List<GateDuration>? gateDurations) =>
+        gateDurations is not { Count: > 0 } durations
+            ? "-"
+            : string.Join(", ", durations.Select(gate =>
+                $"{gate.Gate.EscapeMarkup()} {FormatDuration(gate.Duration)}{(gate.Passed ? string.Empty : " [red]✗[/]")}"));
+
+    private static string FormatDuration(TimeSpan duration) => duration.TotalHours >= 1
+        ? $"{(int)duration.TotalHours}h{duration.Minutes:00}m"
+        : duration.TotalMinutes >= 1
+            ? $"{(int)duration.TotalMinutes}m{duration.Seconds:00}s"
+            : $"{duration.TotalSeconds:0.#}s";
+
+    /// <summary>
+    /// The plain flag for a gate whose newest recorded duration materially exceeds this
+    /// project's own recent recorded average for that gate (task: gate wall-clock duration is
+    /// recorded and surfaced — origin incident 2026-09-01, a suite that roughly doubled in a
+    /// week going unnoticed for three days). Read live from <see cref="GateDurationHistoryQuery"/>
+    /// every time, never precomputed: the comparison is against whatever recent runs actually
+    /// recorded, and stays honest as more of them land. Says nothing at all for a gate with too
+    /// few recorded runs to compare against, rather than inventing a norm.
+    /// </summary>
+    private static async Task WriteGateDurationAnomaliesAsync(
+        IQuerySession session, Guid projectId, RunListItem newestRun, CancellationToken cancellationToken)
+    {
+        if (newestRun.GateDurations is not { Count: > 0 } durations)
+        {
+            return;
+        }
+
+        List<string> lines = [];
+        foreach (GateDuration gate in durations)
+        {
+            GateDurationComparison? comparison = await GateDurationHistoryQuery.CompareAsync(
+                session, projectId, gate.Gate, gate.Duration, newestRun.Id, cancellationToken);
+            if (comparison is null)
+            {
+                continue;
+            }
+
+            lines.Add(
+                $"[yellow]{comparison.Gate.EscapeMarkup()}[/] took {FormatDuration(comparison.Observed)} — "
+                + $"well above this project's recent average of {FormatDuration(comparison.RecentAverage)} "
+                + $"over the last {comparison.SampleCount} recorded run(s) [dim](comparison against recently "
+                + "recorded runs, not a fixed baseline)[/]");
+        }
+
+        if (lines.Count == 0)
+        {
+            return;
+        }
+
+        AnsiConsole.MarkupLine("\n[bold]Gate duration flag[/]");
+        foreach (string line in lines)
+        {
+            AnsiConsole.MarkupLine($"  {line}");
+        }
     }
 
     /// <summary>

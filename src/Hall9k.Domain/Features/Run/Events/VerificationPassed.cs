@@ -18,6 +18,10 @@ namespace Hall9k.Domain.Features.Run.Events;
 /// and <paramref name="HeadSha"/> already decide, rather than an unobserved field masquerading as an
 /// observed change and forcing a redundant gate — or, worse, a whole redundant review round — on a
 /// stream that predates this field.
+/// <paramref name="GateDurations"/> (task: gate wall-clock duration is recorded and surfaced) is
+/// every gate's own <see cref="GateDuration"/> from this pass, in the order the gates ran. Null on
+/// any stream written before this field existed — an unobserved duration, never a claimed zero,
+/// the same convention every additive field on this event already follows.
 /// </summary>
 public sealed record VerificationPassed(
     Guid Id,
@@ -25,4 +29,5 @@ public sealed record VerificationPassed(
     string? Note = null,
     bool RanFullScope = false,
     string? HeadSha = null,
-    string? VerifyCommandsFingerprint = null);
+    string? VerifyCommandsFingerprint = null,
+    IReadOnlyList<GateDuration>? GateDurations = null);

@@ -4,6 +4,7 @@ using System.Text.RegularExpressions;
 using Hall9k.Connectors.Worktrees;
 using Hall9k.Domain.Features.Project;
 using Hall9k.Domain.Features.Project.Projections;
+using Hall9k.Domain.Features.Run;
 using Hall9k.Domain.Features.Run.Events;
 using Hall9k.Domain.Features.Run.Projections;
 using Hall9k.Domain.Features.Tasks;
@@ -200,7 +201,7 @@ public sealed partial class VerificationRunner(
             string? noGatesHeadSha = await GetHeadShaAsync(run.WorktreePath, cancellationToken);
             await RecordPassAsync(
                 runId, "No verification gates configured for this project.", ranFullScope: true, noGatesHeadSha,
-                gatesFingerprint, cancellationToken);
+                gatesFingerprint, gateDurations: [], cancellationToken);
             logger.LogInformation("Run {RunId} verification passed: no gates configured", runId);
             return true;
         }
@@ -238,6 +239,11 @@ public sealed partial class VerificationRunner(
         int dotnetTestGateCount = 0;
         int dotnetTestGateFellBackCount = 0;
 
+        // Every gate's own wall-clock duration this pass (task: gate wall-clock duration is
+        // recorded and surfaced), in the order the gates ran — GateDuration.cs's own doc comment
+        // covers why a retried gate sums both attempts into one entry rather than recording two.
+        List<GateDuration> gateDurations = [];
+
         foreach (VerifyCommand gate in gates)
         {
             bool gateIsDotnetTest = IsDotnetTestGate(gate.Command);
@@ -246,8 +252,10 @@ public sealed partial class VerificationRunner(
                 dotnetTestGateCount++;
             }
 
+            Stopwatch gateStopwatch = Stopwatch.StartNew();
             (bool passed, string summary, bool isInfrastructureFailure, string? excerpt, bool fellBackToFull) =
                 await RunGateAsync(runDirectory, run.WorktreePath, gate, scope, cancellationToken);
+            TimeSpan gateElapsed = gateStopwatch.Elapsed;
             bool gateFellBackToFull = fellBackToFull;
             if (passed)
             {
@@ -256,6 +264,7 @@ public sealed partial class VerificationRunner(
                     dotnetTestGateFellBackCount++;
                 }
 
+                gateDurations.Add(new GateDuration(gate.Name, gateElapsed, Passed: true));
                 logger.LogInformation("Run {RunId} gate '{Gate}' passed", runId, gate.Name);
                 continue;
             }
@@ -271,7 +280,8 @@ public sealed partial class VerificationRunner(
                 string adoptedReason =
                     $"Gate '{gate.Name}' failed again with an infrastructure-classified signature " +
                     $"after already spending its one retry before an earlier daemon restart. {summary}";
-                await RecordFailureAsync(runId, taskId, gate.Name, adoptedReason, cancellationToken);
+                gateDurations.Add(new GateDuration(gate.Name, gateElapsed, Passed: false));
+                await RecordFailureAsync(runId, taskId, gate.Name, adoptedReason, gateDurations, cancellationToken);
                 logger.LogWarning(
                     "Run {RunId} verification failed at gate '{Gate}': its one retry was already spent before adoption",
                     runId, gate.Name);
@@ -280,7 +290,8 @@ public sealed partial class VerificationRunner(
 
             if (!isInfrastructureFailure)
             {
-                await RecordFailureAsync(runId, taskId, gate.Name, summary, cancellationToken);
+                gateDurations.Add(new GateDuration(gate.Name, gateElapsed, Passed: false));
+                await RecordFailureAsync(runId, taskId, gate.Name, summary, gateDurations, cancellationToken);
                 logger.LogWarning("Run {RunId} verification failed at gate '{Gate}': {Summary}", runId, gate.Name, summary);
                 return false;
             }
@@ -297,8 +308,10 @@ public sealed partial class VerificationRunner(
                 "Run {RunId} gate '{Gate}' failed with an infrastructure-classified signature; retrying once: {Summary}",
                 runId, gate.Name, summary);
 
+            Stopwatch retryStopwatch = Stopwatch.StartNew();
             (bool retryPassed, string retrySummary, bool retryIsInfrastructureFailure, _, bool retryFellBackToFull) =
                 await RunGateAsync(runDirectory, run.WorktreePath, gate, scope, cancellationToken);
+            TimeSpan totalGateElapsed = gateElapsed + retryStopwatch.Elapsed;
 
             // The retry's own outcome replaces the first attempt's, not OR's with it (adversarial
             // review): only the attempt that actually passed is what the recorded RanFullScope fact
@@ -312,6 +325,7 @@ public sealed partial class VerificationRunner(
                     dotnetTestGateFellBackCount++;
                 }
 
+                gateDurations.Add(new GateDuration(gate.Name, totalGateElapsed, Passed: true));
                 logger.LogInformation("Run {RunId} gate '{Gate}' passed on retry", runId, gate.Name);
                 continue;
             }
@@ -326,7 +340,8 @@ public sealed partial class VerificationRunner(
                   $"{summary} Retry attempt: {retrySummary}"
                 : retrySummary;
 
-            await RecordFailureAsync(runId, taskId, gate.Name, reason, cancellationToken);
+            gateDurations.Add(new GateDuration(gate.Name, totalGateElapsed, Passed: false));
+            await RecordFailureAsync(runId, taskId, gate.Name, reason, gateDurations, cancellationToken);
             logger.LogWarning("Run {RunId} verification failed at gate '{Gate}' after retry: {Summary}", runId, gate.Name, reason);
             return false;
         }
@@ -364,7 +379,7 @@ public sealed partial class VerificationRunner(
                     : "scoped";
 
         string? passHeadSha = await GetHeadShaAsync(run.WorktreePath, cancellationToken);
-        await RecordPassAsync(runId, note, ranFullScope, passHeadSha, gatesFingerprint, cancellationToken);
+        await RecordPassAsync(runId, note, ranFullScope, passHeadSha, gatesFingerprint, gateDurations, cancellationToken);
         logger.LogInformation(
             "Run {RunId} verification passed ({Count} gate(s)){TestGateSummary}",
             runId, gates.Count,
@@ -644,12 +659,13 @@ public sealed partial class VerificationRunner(
 
     private async Task RecordPassAsync(
         Guid runId, string? note, bool ranFullScope, string? headSha, string verifyCommandsFingerprint,
-        CancellationToken cancellationToken)
+        IReadOnlyList<GateDuration> gateDurations, CancellationToken cancellationToken)
     {
         await using IDocumentSession session = store.LightweightSession();
         session.Events.Append(
             runId,
-            new VerificationPassed(runId, DateTimeOffset.UtcNow, note, ranFullScope, headSha, verifyCommandsFingerprint));
+            new VerificationPassed(
+                runId, DateTimeOffset.UtcNow, note, ranFullScope, headSha, verifyCommandsFingerprint, gateDurations));
         await session.SaveChangesAsync(cancellationToken);
     }
 
@@ -673,11 +689,12 @@ public sealed partial class VerificationRunner(
     }
 
     private async Task RecordFailureAsync(
-        Guid runId, Guid taskId, string failedGate, string reason, CancellationToken cancellationToken)
+        Guid runId, Guid taskId, string failedGate, string reason, IReadOnlyList<GateDuration> gateDurations,
+        CancellationToken cancellationToken)
     {
         DateTimeOffset now = DateTimeOffset.UtcNow;
         await using IDocumentSession session = store.LightweightSession();
-        session.Events.Append(runId, new VerificationFailed(runId, [failedGate], now));
+        session.Events.Append(runId, new VerificationFailed(runId, [failedGate], now, gateDurations));
         session.Events.Append(runId, new Domain.Features.Run.Events.RunFailed(runId, reason, now));
 
         // LoadFencedAsync's read must happen before the AllowsAsync identity check below —

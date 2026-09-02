@@ -29,6 +29,15 @@ public sealed class RunListItem
     /// been.
     /// </summary>
     public string RunDirectory { get; set; } = string.Empty;
+    /// <summary>
+    /// Each gate's own wall-clock duration from this run's most recently recorded verification
+    /// pass or failure (task: gate wall-clock duration is recorded and surfaced), replaced whole
+    /// on each new <see cref="VerificationPassed"/>/<see cref="VerificationFailed"/> rather than
+    /// accumulated — the same "last recorded" shape <c>RunDetails.FailedGates</c> already takes.
+    /// Null on a stream written before this field existed, or on one that has not verified yet —
+    /// an unobserved duration, never a claimed zero.
+    /// </summary>
+    public List<GateDuration>? GateDurations { get; set; }
 }
 
 public sealed class RunListItemProjection : SingleStreamProjection<RunListItem, Guid>
@@ -74,6 +83,22 @@ public sealed class RunListItemProjection : SingleStreamProjection<RunListItem, 
         if (@event.Data.DeliveredByNodeId is { } deliveredByNodeId)
         {
             view.NodeId = deliveredByNodeId;
+        }
+    }
+
+    public void Apply(IEvent<VerificationFailed> @event, RunListItem view)
+    {
+        if (@event.Data.GateDurations is { } durations)
+        {
+            view.GateDurations = [.. durations];
+        }
+    }
+
+    public void Apply(IEvent<VerificationPassed> @event, RunListItem view)
+    {
+        if (@event.Data.GateDurations is { } durations)
+        {
+            view.GateDurations = [.. durations];
         }
     }
 
