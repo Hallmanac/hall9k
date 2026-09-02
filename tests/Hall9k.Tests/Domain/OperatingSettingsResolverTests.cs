@@ -445,6 +445,31 @@ public sealed class OperatingSettingsResolverTests : IDisposable
     }
 
     /// <summary>
+    /// Unlike <c>max-concurrent-agent-sessions</c>, the four review-cycle caps are not excluded
+    /// from Program.cs's own <c>Bind()</c> call, so an unparseable value here makes
+    /// <c>ConfigurationBinder</c> throw at daemon startup rather than fall back to the config file
+    /// or default — the message must say so rather than reusing the retired setting's
+    /// falls-back-gracefully wording. Origin: independent pre-PR review, cycle 8, adversarial lens.
+    /// </summary>
+    [Fact]
+    public async Task An_unparseable_review_cap_environment_variable_reports_a_daemon_crash_not_a_fallback()
+    {
+        Environment.SetEnvironmentVariable("Hall9k__MaxComplianceReviewCycles", "four");
+
+        OperatingSettingsReport report = await OperatingSettingsResolver.ResolveAsync(CancellationToken.None);
+
+        report.MaxComplianceReviewCycles.Origin.Should().Be(SettingOrigin.Default);
+        report.UnusableEnvironmentVariables.Should().ContainSingle(
+            warning => warning.Contains("Hall9k__MaxComplianceReviewCycles")
+                && warning.Contains("four")
+                && warning.Contains("max-compliance-review-cycles")
+                && warning.Contains("fails to start")
+                && !warning.Contains("max-concurrent-agent-sessions"),
+            "the daemon crashes converting this value through ConfigurationBinder rather than falling back, "
+            + "unlike the retired max-concurrent-agent-sessions setting this message must not name instead");
+    }
+
+    /// <summary>
     /// <c>ResolveOptionalString</c> is the same bottom-of-the-chain resolution as
     /// <c>ResolveString</c>, so a per-role model a hand edit or a raw environment variable never
     /// ran through <c>ConfigSetCommand.ApplyModel</c>'s gate must be caught here too. Origin: the
