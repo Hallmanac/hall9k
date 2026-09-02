@@ -1349,9 +1349,11 @@ public static class AgentPromptBuilder
             prompt.AppendLine("grade you could not confidently make, return merge-ready and attach the finding anyway");
             prompt.AppendLine("rather than manufacturing a needs-fixes verdict to make sure it gets read. The platform");
             prompt.AppendLine("still records it and decides on its own whether it is worth a session; on this mandatory");
-            prompt.AppendLine("final pass, a needs-fixes verdict is reserved for at least one `high` finding (Decisions");
-            prompt.AppendLine("Log #113) — a `medium` or `low` finding here is recorded and carried onto the pull");
-            prompt.AppendLine("request as a residual instead of earning a fix-and-re-review cycle.");
+            prompt.AppendLine("final pass, a needs-fixes verdict is reserved for at least one `high` in-scope finding");
+            prompt.AppendLine("(Decisions Log #113) — an in-scope `medium` or `low` finding here is recorded and");
+            prompt.AppendLine("carried onto the pull request as a residual instead of earning a fix-and-re-review");
+            prompt.AppendLine("cycle. An out-of-scope finding still routes to its own draft task exactly as it would");
+            prompt.AppendLine("on any other cycle.");
         }
         else
         {
