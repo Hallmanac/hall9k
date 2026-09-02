@@ -91,7 +91,7 @@ public sealed class AgentPromptBuilderTests : IDisposable
                 SomeTask(), SomeProject(), "task/1-slug", "https://github.com/x/y/pull/7", CommitStyle.Append),
             AgentPromptBuilder.BuildRebase(
                 SomeTask(), SomeProject(), "task/1-slug", "https://github.com/x/y/pull/7", CommitStyle.Append),
-            AgentPromptBuilder.BuildReviewFix(SomeTask(), "task/1-slug", "findings go here", cycle: 1),
+            AgentPromptBuilder.BuildReviewFix(SomeTask(), SomeProject(), "task/1-slug", "findings go here", cycle: 1),
         ];
 
         foreach (string prompt in prompts)
@@ -600,7 +600,7 @@ public sealed class AgentPromptBuilderTests : IDisposable
         }
 
         string reviewFixPrompt = AgentPromptBuilder.BuildReviewFix(
-            SomeTask(), "task/1-slug", "findings go here", cycle: 1);
+            SomeTask(), SomeProject(), "task/1-slug", "findings go here", cycle: 1);
         reviewFixPrompt.Should().NotContain("Commit as you go, one logical unit at a time");
         reviewFixPrompt.Should().NotContain("git reset --mixed");
         reviewFixPrompt.Should().NotContain("**Self-review phase.**", "the hunt belongs to the initial build session only");
@@ -1676,7 +1676,8 @@ public sealed class AgentPromptBuilderTests : IDisposable
     {
         string findings = "1. `Auth.cs:42` — limiter never resets. Scenario: second request always 429s.";
 
-        string prompt = AgentPromptBuilder.BuildReviewFix(SomeTask(), "task/1-slug", findings, cycle: 1);
+        string prompt = AgentPromptBuilder.BuildReviewFix(
+            SomeTask(), SomeProject(), "task/1-slug", findings, cycle: 1);
 
         prompt.Should().Contain(findings);
         prompt.Should().Contain("branch `task/1-slug`");
@@ -1697,7 +1698,7 @@ public sealed class AgentPromptBuilderTests : IDisposable
     public void Review_fix_prompt_binds_the_agent_to_the_disposition_and_lets_it_dispute_a_grade()
     {
         string prompt = AgentPromptBuilder.BuildReviewFix(
-            SomeTask(), "task/1-slug", "findings go here", cycle: 4);
+            SomeTask(), SomeProject(), "task/1-slug", "findings go here", cycle: 4);
 
         prompt.Should().Contain(ReviewFindingDispositions.Heading,
             "the instruction names the section the engine actually writes, so the two cannot drift apart");
@@ -1724,7 +1725,7 @@ public sealed class AgentPromptBuilderTests : IDisposable
     public void Review_fix_prompt_carries_a_self_check_phase_ordered_before_resolution()
     {
         string prompt = AgentPromptBuilder.BuildReviewFix(
-            SomeTask(), "task/1-slug", "findings go here", cycle: 1);
+            SomeTask(), SomeProject(), "task/1-slug", "findings go here", cycle: 1);
 
         prompt.Should().Contain("**Self-check phase.**");
 
@@ -1751,13 +1752,34 @@ public sealed class AgentPromptBuilderTests : IDisposable
     public void Self_check_phase_makes_the_class_sweep_mandatory_and_named_in_the_summary()
     {
         string prompt = AgentPromptBuilder.BuildReviewFix(
-            SomeTask(), "task/1-slug", "findings go here", cycle: 1);
+            SomeTask(), SomeProject(), "task/1-slug", "findings go here", cycle: 1);
 
         prompt.Should().Contain("Class sweep, mandatory per finding");
         prompt.Should().Contain("not the boundary of it");
         prompt.Should().Contain("enumerate every other");
         prompt.Should().Contain("Name every site you swept");
         prompt.Should().Contain("so the verify pass can check your enumeration");
+    }
+
+    /// <summary>
+    /// The class sweep is bounded to findings this session actually fixed and to sites its own
+    /// fix reaches — never a repo-wide grep for the same shape, and never a finding routed away
+    /// under <see cref="ReviewFindingDispositions.DoNotFixHere"/>. An unbounded reading would have
+    /// the sweep fix pre-existing, out-of-scope sites the disposition rule two paragraphs earlier
+    /// in this same prompt already says are not this session's to touch (#63, #99).
+    /// </summary>
+    [Fact]
+    public void Self_check_phase_bounds_the_class_sweep_to_this_sessions_own_fixes()
+    {
+        string prompt = AgentPromptBuilder.BuildReviewFix(
+            SomeTask(), SomeProject(), "task/1-slug", "findings go here", cycle: 1);
+
+        prompt.Should().Contain(
+            "For every finding you actually fixed",
+            "the sweep is bounded to this session's own fixes, not a repo-wide grep for the same shape");
+        prompt.Should().Contain(
+            "This is not license to go hunting a pre-existing instance",
+            "a pre-existing site outside this branch's own diff stays out-of-scope routing's, per #63/#99");
     }
 
     /// <summary>
@@ -1770,11 +1792,11 @@ public sealed class AgentPromptBuilderTests : IDisposable
     public void Self_check_phase_makes_the_regression_comparison_mandatory_per_replaced_behavior()
     {
         string prompt = AgentPromptBuilder.BuildReviewFix(
-            SomeTask(), "task/1-slug", "findings go here", cycle: 1);
+            SomeTask(), SomeProject(), "task/1-slug", "findings go here", cycle: 1);
 
         prompt.Should().Contain("Regression comparison, mandatory per replaced behavior");
         prompt.Should().Contain("what the old code did that the new code no longer does");
-        prompt.Should().Contain("confirm");
+        prompt.Should().Contain("and confirm", "the wrapped fragment alone, not the unrelated 'confirmed' in the intro paragraph");
         prompt.Should().Contain("is a finding against your own fix");
     }
 
@@ -1787,13 +1809,36 @@ public sealed class AgentPromptBuilderTests : IDisposable
     [Fact]
     public void Self_check_phase_runs_the_touched_tests_in_the_foreground_with_a_near_maximum_timeout()
     {
+        ProjectDetails project = SomeProject();
+        project.VerifyCommands = [new VerifyCommand("test", "dotnet test")];
+
         string prompt = AgentPromptBuilder.BuildReviewFix(
-            SomeTask(), "task/1-slug", "findings go here", cycle: 1);
+            SomeTask(), project, "task/1-slug", "findings go here", cycle: 1);
 
         prompt.Should().Contain("Run the touched tests, in the foreground");
         prompt.Should().Contain("do not");
-        prompt.Should().Contain("background them");
+        prompt.Should().Contain("background them", "the unique fragment, not the ambient 'do not' this prompt uses elsewhere");
         prompt.Should().Contain("590-600 seconds");
+    }
+
+    /// <summary>
+    /// A project configuring no verification gates has no suite for the self-check phase's own
+    /// test-run sub-rule to run — it skips the sub-rule instead of ordering the session to invent
+    /// a command that satisfies it (mirrors <see cref="WorkPromptBuilder.AppendSelfReviewPhaseRules"/>'s
+    /// own empty-gates branch).
+    /// </summary>
+    [Fact]
+    public void Self_check_phase_skips_the_test_run_when_the_project_configures_no_gates()
+    {
+        string prompt = AgentPromptBuilder.BuildReviewFix(
+            SomeTask(), SomeProject(), "task/1-slug", "findings go here", cycle: 1);
+
+        prompt.Should().Contain("Run the touched tests, in the foreground");
+        prompt.Should().Contain(
+            "This project configures no",
+            "the sub-rule states its own precondition rather than ordering a run over a suite that does not exist");
+        prompt.Should().NotContain("background them");
+        prompt.Should().NotContain("590-600 seconds");
     }
 
     /// <summary>
@@ -1805,7 +1850,7 @@ public sealed class AgentPromptBuilderTests : IDisposable
     public void Self_check_phase_is_a_single_pass_not_a_loop()
     {
         string prompt = AgentPromptBuilder.BuildReviewFix(
-            SomeTask(), "task/1-slug", "findings go here", cycle: 1);
+            SomeTask(), SomeProject(), "task/1-slug", "findings go here", cycle: 1);
 
         prompt.Should().Contain("one pass — not a loop");
         prompt.Should().Contain("This phase is one pass, not a loop");
@@ -1813,20 +1858,25 @@ public sealed class AgentPromptBuilderTests : IDisposable
     }
 
     /// <summary>
-    /// The fix prompt gets the same clean-tree closing contract the build prompt carries
-    /// (strandings #8 and #9, 2026-08-31: two fix sessions in one morning each completed a
-    /// coherent cycle fix and ended without committing it, caught only by the platform's
-    /// pre-gate check at the cost of an operator salvage-and-retry lap).
+    /// The self-check phase repeats the clean-tree closing contract at a more specific point —
+    /// immediately after its own hunt, which can itself leave new work uncommitted — rather than
+    /// introducing a contract the fix prompt lacked: <see cref="AppendSessionEndsAtFinalMessageRule"/>
+    /// already states it earlier in this same prompt (backlog 57, landed 2026-08-27). Strandings #8
+    /// and #9 (2026-08-31: two fix sessions in one morning each completed a coherent cycle fix and
+    /// ended without committing it, caught only by the platform's pre-gate check at the cost of an
+    /// operator salvage-and-retry lap) happened despite that earlier instruction, which is why this
+    /// phase repeats it rather than trusting it to still be in view by the time the phase concludes.
     /// </summary>
     [Fact]
     public void Review_fix_prompt_ends_with_the_clean_tree_final_contract()
     {
         string prompt = AgentPromptBuilder.BuildReviewFix(
-            SomeTask(), "task/1-slug", "findings go here", cycle: 1);
+            SomeTask(), SomeProject(), "task/1-slug", "findings go here", cycle: 1);
 
         prompt.Should().Contain(
-            "The session is not done while `git status` shows anything modified or",
-            "the fix prompt never carried this closing contract before, unlike the build prompt");
+            "The session is not done while `git status` shows anything modified, staged,",
+            "the closing line names every stranding state — modified, staged, and untracked — matching " +
+            "the earlier, more precise statement of the same contract rather than a narrower restatement");
         prompt.Should().Contain("including whatever");
         prompt.Should().Contain("this phase's own hunt just fixed");
     }

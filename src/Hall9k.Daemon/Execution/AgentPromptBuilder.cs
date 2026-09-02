@@ -1584,7 +1584,8 @@ public static class AgentPromptBuilder
     /// Low would be deciding its own way past the convergence rule.
     /// </para>
     /// </summary>
-    public static string BuildReviewFix(TaskDetails task, string branch, string findings, int cycle)
+    public static string BuildReviewFix(
+        TaskDetails task, ProjectDetails project, string branch, string findings, int cycle)
     {
         StringBuilder prompt = new();
         prompt.AppendLine("# Fix the verified findings from an independent pre-PR review");
@@ -1634,7 +1635,7 @@ public static class AgentPromptBuilder
         prompt.AppendLine("  The severity decides how the review loop converges, so re-grading one yourself");
         prompt.AppendLine("  would be deciding your own way past that. The platform hands disputes to a human");
         prompt.AppendLine("  with both positions on record.");
-        AppendReviewFixSelfCheckPhaseRules(prompt);
+        AppendReviewFixSelfCheckPhaseRules(prompt, project);
         prompt.AppendLine();
         prompt.AppendLine("## Resolution (required)");
         prompt.AppendLine();
@@ -1679,10 +1680,14 @@ public static class AgentPromptBuilder
     /// separate from the self-check phase itself: strandings #8 (a94dcd35) and #9 (70d5e8de),
     /// both 2026-08-31 and both review-fix sessions, each completed a coherent cycle fix and
     /// ended without committing it — caught only by <c>VerificationRunner</c>'s pre-gate check,
-    /// at the cost of an operator salvage-and-retry lap; the build prompt got this same closing
-    /// contract from cea5ae6e's commit discipline, and the fix prompt never had. And 2026-09-01
-    /// transcript mining across 399 fix sessions found the command tool's 2-minute default
-    /// killing obedient foreground test runs of an 8-minute suite — sessions adapted by
+    /// at the cost of an operator salvage-and-retry lap. The fix prompt already carried this
+    /// contract by then, via <see cref="AppendSessionEndsAtFinalMessageRule"/> (backlog 57,
+    /// landed 2026-08-27 in d30c3162, four days before both strandings): the gap the strandings
+    /// expose is an instruction ignored, not one missing, so the line below repeats it at a
+    /// more specific point — immediately after this phase's own hunt, which can itself leave
+    /// new work uncommitted — rather than introducing a contract the prompt never had. And
+    /// 2026-09-01 transcript mining across 399 fix sessions found the command tool's 2-minute
+    /// default killing obedient foreground test runs of an 8-minute suite — sessions adapted by
     /// detaching the run and then dying waiting on it — while every clean full-suite survivor
     /// had passed an explicit 590-600 second timeout.
     /// </para>
@@ -1693,7 +1698,7 @@ public static class AgentPromptBuilder
     /// prompt and the review lens prompts are untouched.
     /// </para>
     /// </summary>
-    private static void AppendReviewFixSelfCheckPhaseRules(StringBuilder prompt)
+    private static void AppendReviewFixSelfCheckPhaseRules(StringBuilder prompt, ProjectDetails project)
     {
         prompt.AppendLine("- **Self-check phase.** Once every finding above is fixed or disputed, and before");
         prompt.AppendLine("  you conclude, run one pass — not a loop — over your own fix: assume you left");
@@ -1708,12 +1713,18 @@ public static class AgentPromptBuilder
         prompt.AppendLine("  ends belongs in your final summary for the verify pass to look at next, not a");
         prompt.AppendLine("  second pass here — the verify pass is the next station regardless of what you");
         prompt.AppendLine("  find in this one.");
-        prompt.AppendLine("  1. **Class sweep, mandatory per finding.** Treat every finding's stated line as");
-        prompt.AppendLine("     one instance of its defect, not the boundary of it: enumerate every other");
-        prompt.AppendLine("     site sharing the same shape and fix or explicitly clear each one — a site you");
-        prompt.AppendLine("     looked at and judged fine counts as cleared, one you never looked at does");
-        prompt.AppendLine("     not. Name every site you swept, including the ones you cleared and why, in");
-        prompt.AppendLine("     your final summary, so the verify pass can check your enumeration instead of");
+        prompt.AppendLine("  1. **Class sweep, mandatory per finding.** For every finding you actually fixed");
+        prompt.AppendLine($"     this session — never one under \"{ReviewFindingDispositions.DoNotFixHere}\",");
+        prompt.AppendLine("     which stays someone else's to fix — treat its stated line as one instance of");
+        prompt.AppendLine("     its defect, not the boundary of it: enumerate every other site your own fix");
+        prompt.AppendLine("     reaches that shares the same shape, and fix or explicitly clear each one — a");
+        prompt.AppendLine("     site you looked at and judged fine counts as cleared, one you never looked at");
+        prompt.AppendLine("     does not. This is not license to go hunting a pre-existing instance of the");
+        prompt.AppendLine("     same shape elsewhere on the branch's base — that is exactly what out-of-scope");
+        prompt.AppendLine("     routing already sends elsewhere, and fixing it here grows this pull request");
+        prompt.AppendLine("     with unrelated changes the same way the disposition rule above forbids.");
+        prompt.AppendLine("     Name every site you swept, including the ones you cleared and why, in your");
+        prompt.AppendLine("     final summary, so the verify pass can check your enumeration instead of");
         prompt.AppendLine("     rediscovering it from a blank slate.");
         prompt.AppendLine("  2. **Regression comparison, mandatory per replaced behavior.** For every finding");
         prompt.AppendLine("     whose fix replaced, removed, narrowed, or widened existing behavior, state in");
@@ -1721,17 +1732,26 @@ public static class AgentPromptBuilder
         prompt.AppendLine("     that difference is intended. A narrowing or widening you cannot justify that");
         prompt.AppendLine("     way is a finding against your own fix, not a note for later — fix it before");
         prompt.AppendLine("     you conclude, the same as any other real finding this phase surfaces.");
-        prompt.AppendLine("  3. **Run the touched tests, in the foreground.** Run the tests that touch the");
-        prompt.AppendLine("     code you changed and wait for them to finish before you conclude; do not");
-        prompt.AppendLine("     background them, and do not skip this because the platform re-verifies after");
-        prompt.AppendLine("     you finish — this phase exists so an escape is caught here instead of costing");
-        prompt.AppendLine("     that separate lap. Request an explicit near-maximum timeout on the command,");
-        prompt.AppendLine("     590-600 seconds: a foreground run left on a tool's short default timeout does");
-        prompt.AppendLine("     not fail loudly, it dies mid-suite, and a session that notices tends to");
-        prompt.AppendLine("     background the run instead and then end the session still waiting on a result");
-        prompt.AppendLine("     nothing will ever deliver.");
-        prompt.AppendLine("- **The session is not done while `git status` shows anything modified or");
-        prompt.AppendLine("  untracked.** Commit everything before your final message, including whatever");
+        if (project.VerifyCommands.Count == 0)
+        {
+            prompt.AppendLine("  3. **Run the touched tests, in the foreground.** This project configures no");
+            prompt.AppendLine("     verification gates, so there is no suite to run here — skip this");
+            prompt.AppendLine("     sub-rule rather than inventing a command to satisfy it.");
+        }
+        else
+        {
+            prompt.AppendLine("  3. **Run the touched tests, in the foreground.** Run the tests that touch the");
+            prompt.AppendLine("     code you changed and wait for them to finish before you conclude; do not");
+            prompt.AppendLine("     background them, and do not skip this because the platform re-verifies after");
+            prompt.AppendLine("     you finish — this phase exists so an escape is caught here instead of costing");
+            prompt.AppendLine("     that separate lap. Request an explicit near-maximum timeout on the command,");
+            prompt.AppendLine("     590-600 seconds: a foreground run left on a tool's short default timeout does");
+            prompt.AppendLine("     not fail loudly, it dies mid-suite, and a session that notices tends to");
+            prompt.AppendLine("     background the run instead and then end the session still waiting on a result");
+            prompt.AppendLine("     nothing will ever deliver.");
+        }
+        prompt.AppendLine("- **The session is not done while `git status` shows anything modified, staged,");
+        prompt.AppendLine("  or untracked.** Commit everything before your final message, including whatever");
         prompt.AppendLine("  this phase's own hunt just fixed — a completed fix left uncommitted is not a");
         prompt.AppendLine("  finished fix.");
     }
