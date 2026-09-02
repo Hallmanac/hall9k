@@ -551,7 +551,14 @@ The checkpoints, in the order the window sees them:
    run may settle, one mandatory **FinalFullPass** runs both lenses fresh, whether or not a track
    had already gone dormant, so nothing reaches the remote on delta-green alone; a track it
    reawakens with a real finding is recorded reactivated rather than left stuck at an old
-   conclusion, and a run that converges clean at cycle 1 pays no extra pass at all. That mandatory
+   conclusion, and a run that converges clean at cycle 1 pays no extra pass at all. "Fresh" is
+   about context, not diff range: a FinalFullPass whose run already paid for an earlier full-scope
+   read (this cycle's own opening Discovery, or an earlier FinalFullPass) reads only the commits
+   since that read's own head, not the whole branch again (Decisions Log #115) — falling back to
+   the full diff whenever no such boundary is on record or it no longer resolves against HEAD
+   (a history rewrite between cycles), never a guessed one. Every full-scope read still starts
+   exactly where the previous one left off, so #92's own rule still holds: no commit reaches the
+   remote unread at full scope by a fresh context, only reread by fewer of them. That mandatory
    pass also tightens its own in-scope fix bar to High alone (Decisions Log #113, origin: 3 High
    findings in 172 final passes, 101 of 104 needs-fixes final passes carrying no High at all): an
    in-scope Medium there rides along exactly as a Low already did, rather than earning a
