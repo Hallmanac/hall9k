@@ -589,15 +589,25 @@ public static class AgentPromptBuilder
     /// criteria, but a settled park ruling is not that withheld information — it exists solely so
     /// neither lens re-raises a question a human already answered.
     /// </param>
+    /// <param name="sinceSha">
+    /// Read only when <paramref name="mode"/> is <see cref="ReviewMode.FinalFullPass"/> (task: the
+    /// mandatory FinalFullPass rereads only the commits no full-scope pass has already read): the
+    /// worktree HEAD of the last full-scope cycle that read this branch, or null when none is on
+    /// record or it could not be resolved — in which case the prompt falls back to the full
+    /// base-branch diff instruction rather than guessing at a boundary. Ignored for every other
+    /// mode, which always reads the full diff.
+    /// </param>
     public static string BuildReview(
         TaskDetails task, ProjectDetails project, string branch, int cycle, ReviewLens lens,
         ReviewMode? mode = null,
         IReadOnlyList<ReviewParkResolution>? priorRulings = null,
-        ReviewMechanicsOverride? mechanicsOverride = null) =>
+        ReviewMechanicsOverride? mechanicsOverride = null,
+        string? sinceSha = null) =>
         lens == ReviewLens.Adversarial
-            ? BuildAdversarialReview(project, branch, cycle, mode ?? ReviewMode.Discovery, priorRulings, mechanicsOverride)
+            ? BuildAdversarialReview(
+                project, branch, cycle, mode ?? ReviewMode.Discovery, priorRulings, mechanicsOverride, sinceSha)
             : BuildConformanceReview(
-                task, project, branch, cycle, mode ?? ReviewMode.Discovery, priorRulings, mechanicsOverride);
+                task, project, branch, cycle, mode ?? ReviewMode.Discovery, priorRulings, mechanicsOverride, sinceSha);
 
     /// <summary>
     /// A pr-review task's one-shot lens (PrReviewEngine): delegates to <see cref="BuildReview"/>
@@ -870,7 +880,7 @@ public static class AgentPromptBuilder
     private static string BuildConformanceReview(
         TaskDetails task, ProjectDetails project, string branch, int cycle, ReviewMode mode,
         IReadOnlyList<ReviewParkResolution>? priorRulings,
-        ReviewMechanicsOverride? mechanicsOverride = null)
+        ReviewMechanicsOverride? mechanicsOverride = null, string? sinceSha = null)
     {
         StringBuilder prompt = new();
         if (mechanicsOverride is { DiffIsForeignPullRequest: true })
@@ -997,7 +1007,7 @@ public static class AgentPromptBuilder
             prompt.AppendLine("  criteria only a reader can judge.");
         }
 
-        AppendReviewMechanics(prompt, project, branch, mechanicsOverride);
+        AppendReviewMechanics(prompt, project, branch, mode, sinceSha, mechanicsOverride);
         AppendFindingContract(prompt, project, mode, mechanicsOverride);
         AppendVerdictContract(prompt, cycle, mode, mechanicsOverride);
         prompt.AppendLine();
@@ -1033,7 +1043,8 @@ public static class AgentPromptBuilder
     /// </summary>
     private static string BuildAdversarialReview(
         ProjectDetails project, string branch, int cycle, ReviewMode mode,
-        IReadOnlyList<ReviewParkResolution>? priorRulings, ReviewMechanicsOverride? mechanicsOverride = null)
+        IReadOnlyList<ReviewParkResolution>? priorRulings, ReviewMechanicsOverride? mechanicsOverride = null,
+        string? sinceSha = null)
     {
         StringBuilder prompt = new();
         if (mechanicsOverride is { DiffIsForeignPullRequest: true })
@@ -1096,7 +1107,7 @@ public static class AgentPromptBuilder
         prompt.AppendLine();
         prompt.AppendLine("- Read the changed code in its surroundings, not as isolated hunks: a defect is often");
         prompt.AppendLine("  the interaction between what changed and what did not.");
-        AppendReviewMechanics(prompt, project, branch, mechanicsOverride);
+        AppendReviewMechanics(prompt, project, branch, mode, sinceSha, mechanicsOverride);
         AppendFindingContract(prompt, project, mode, mechanicsOverride);
         AppendVerdictContract(prompt, cycle, mode, mechanicsOverride);
         prompt.AppendLine();
@@ -1403,18 +1414,42 @@ public static class AgentPromptBuilder
     /// collision like that as a verified finding spends the cycle's one fix run on a platform
     /// failure, so the prompt also says plainly that the gates already answered the build
     /// question and are not to be re-run.
+    /// <para>
+    /// The diff instruction itself narrows only for a <see cref="ReviewMode.FinalFullPass"/> pass
+    /// with a resolved <paramref name="sinceSha"/> (task: the mandatory FinalFullPass rereads only
+    /// the commits no full-scope pass has already read, Decisions Log #114): every other
+    /// combination — <see cref="ReviewMode.Discovery"/> always, or a FinalFullPass with no prior
+    /// full-scope read on record — reads the same full base-branch three-dot diff this method has
+    /// always instructed. <see cref="ReviewMode.Verify"/> never reaches this method with its own
+    /// scoped instruction at all; that mode has its own prompt builder entirely
+    /// (<see cref="BuildReviewVerify"/>).
+    /// </para>
     /// </summary>
     private static void AppendReviewMechanics(
-        StringBuilder prompt, ProjectDetails project, string branch, ReviewMechanicsOverride? mechanicsOverride = null)
+        StringBuilder prompt, ProjectDetails project, string branch, ReviewMode mode, string? sinceSha,
+        ReviewMechanicsOverride? mechanicsOverride = null)
     {
         string baseBranch = mechanicsOverride?.BaseBranch ?? project.BaseBranch;
         prompt.AppendLine(mechanicsOverride?.CheckoutDescription
             ?? $"- You are in the implementation's git worktree on branch `{branch}`.");
-        prompt.AppendLine($"  The diff under review: `git diff origin/{baseBranch}...HEAD` (commits:");
-        prompt.AppendLine($"  `git log origin/{baseBranch}..HEAD`). Fall back to the local `{baseBranch}` ref only");
-        prompt.AppendLine($"  when this worktree carries no `origin/{baseBranch}` at all: a task worktree's local");
-        prompt.AppendLine("  base-branch ref, when one exists, is shared with the project home's `dev/` worktree and");
-        prompt.AppendLine("  is routinely stale relative to this task's actual base.");
+        if (mode == ReviewMode.FinalFullPass && sinceSha is { } fullScopeSha)
+        {
+            prompt.AppendLine("  This is the mandatory full-rigor pass immediately before the pull request opens");
+            prompt.AppendLine("  (Decisions Log #92). An earlier full-scope pass on this run already read every");
+            prompt.AppendLine($"  commit up to `{fullScopeSha}` fresh — its findings and dispositions stand for");
+            prompt.AppendLine("  that range, and you are not re-litigating them. Read only what has not yet had a");
+            prompt.AppendLine($"  fresh full-scope look: `git diff {fullScopeSha}..HEAD` (commits:");
+            prompt.AppendLine($"  `git log {fullScopeSha}..HEAD`).");
+        }
+        else
+        {
+            prompt.AppendLine($"  The diff under review: `git diff origin/{baseBranch}...HEAD` (commits:");
+            prompt.AppendLine($"  `git log origin/{baseBranch}..HEAD`). Fall back to the local `{baseBranch}` ref only");
+            prompt.AppendLine($"  when this worktree carries no `origin/{baseBranch}` at all: a task worktree's local");
+            prompt.AppendLine("  base-branch ref, when one exists, is shared with the project home's `dev/` worktree and");
+            prompt.AppendLine("  is routinely stale relative to this task's actual base.");
+        }
+
         prompt.AppendLine("- Report verified findings only. For every suspected defect, read the surrounding");
         prompt.AppendLine("  code until you can confirm it is real; discard anything you cannot confirm.");
         prompt.AppendLine("- Each finding must carry: the file and line (`path/to/file.cs:123`), a one-sentence");

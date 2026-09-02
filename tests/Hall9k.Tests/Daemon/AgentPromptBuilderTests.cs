@@ -1127,6 +1127,64 @@ public sealed class AgentPromptBuilderTests : IDisposable
     }
 
     /// <summary>
+    /// Task: the mandatory FinalFullPass rereads only the commits no full-scope pass has already
+    /// read (Decisions Log #114). A resolved sinceSha narrows FinalFullPass's own diff instruction
+    /// to the commits since that boundary rather than the whole branch, for both lenses.
+    /// </summary>
+    [Theory]
+    [InlineData("Conformance")]
+    [InlineData("Adversarial")]
+    public void Final_full_pass_with_a_resolved_since_sha_scopes_its_diff_instruction_to_it(string lens)
+    {
+        string prompt = AgentPromptBuilder.BuildReview(
+            SomeTask(), SomeProject(), "task/1-slug", cycle: 4, lens, ReviewMode.FinalFullPass,
+            sinceSha: "abc1234");
+
+        prompt.Should().Contain("git diff abc1234..HEAD");
+        prompt.Should().Contain("git log abc1234..HEAD");
+        prompt.Should().NotContain(
+            "The diff under review: `git diff origin/main...HEAD`",
+            "a resolved boundary replaces the mechanics section's own full-range instruction — the "
+                + "separate out-of-scope/in-scope check still reads the whole branch against base "
+                + "regardless, so the bare command text alone is not proof enough");
+    }
+
+    /// <summary>
+    /// The degrade-rather-than-guess fallback (task: the mandatory FinalFullPass rereads only the
+    /// commits no full-scope pass has already read): a null sinceSha — no prior full-scope read on
+    /// record, or the daemon could not resolve one against the current worktree HEAD — reads the
+    /// full base-branch diff exactly as an ordinary Discovery cycle does, never a guessed boundary.
+    /// </summary>
+    [Fact]
+    public void Final_full_pass_with_no_resolved_since_sha_falls_back_to_the_full_diff_instruction()
+    {
+        string prompt = AgentPromptBuilder.BuildReview(
+            SomeTask(), SomeProject(), "task/1-slug", cycle: 4, ReviewLens.Conformance, ReviewMode.FinalFullPass,
+            sinceSha: null);
+
+        prompt.Should().Contain("git diff origin/main...HEAD");
+        prompt.Should().Contain("git log origin/main..HEAD");
+    }
+
+    /// <summary>
+    /// sinceSha is only ever meaningful for a FinalFullPass dispatch (task: the mandatory
+    /// FinalFullPass rereads only the commits no full-scope pass has already read) — a Discovery
+    /// cycle always reads the full diff, so a sinceSha handed to it anyway (never happens in
+    /// practice, since every ReviewEngine call site only computes one for FinalFullPass) must still
+    /// be ignored rather than silently narrowing a cycle that is supposed to discover everything.
+    /// </summary>
+    [Fact]
+    public void Discovery_ignores_a_since_sha_and_still_reads_the_full_diff()
+    {
+        string prompt = AgentPromptBuilder.BuildReview(
+            SomeTask(), SomeProject(), "task/1-slug", cycle: 1, ReviewLens.Conformance, ReviewMode.Discovery,
+            sinceSha: "abc1234");
+
+        prompt.Should().Contain("git diff origin/main...HEAD");
+        prompt.Should().NotContain("git diff abc1234..HEAD");
+    }
+
+    /// <summary>
     /// The project's own repo doctrine is named unconditionally, whether or not this particular
     /// task has ever parked (task: review prompts carry prior rulings) — a reviewer needs to know
     /// to check it before it reports its first finding, not only after a human has already had to
