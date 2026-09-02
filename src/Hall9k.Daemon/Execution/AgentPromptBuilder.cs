@@ -1843,7 +1843,13 @@ public static class AgentPromptBuilder
             prompt.AppendLine("     code you changed and wait for them to finish before you conclude; do not");
             prompt.AppendLine("     background them, and do not skip this because the platform re-verifies after");
             prompt.AppendLine("     you finish — this phase exists so an escape is caught here instead of costing");
-            prompt.AppendLine("     that separate lap. Request an explicit near-maximum timeout on the command,");
+            prompt.AppendLine("     that separate lap. This project's own verification gates are:");
+            foreach (VerifyCommand gate in project.VerifyCommands)
+            {
+                prompt.AppendLine($"     - `{gate.Command}`");
+            }
+
+            prompt.AppendLine("     Request an explicit near-maximum timeout on the command,");
             prompt.AppendLine("     590-600 seconds: a foreground run left on a tool's short default timeout does");
             prompt.AppendLine("     not fail loudly, it dies mid-suite, and a session that notices tends to");
             prompt.AppendLine("     background the run instead and then end the session still waiting on a result");

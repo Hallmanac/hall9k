@@ -490,11 +490,13 @@ The checkpoints, in the order the window sees them:
    actually is (one pass, not a loop): for every finding it fixed, it enumerates every other site
    sharing that defect's shape — inside this branch's own changes or pre-existing on the base —
    and fixes or clears each one inside the branch's own changes, naming rather than fixing a
-   pre-existing sibling outside them unless that sibling itself carries a "fix in its own commit"
-   disposition — an explicit disposition on the sibling always wins, including a sibling
-   separately marked "do not fix here" — or, when the sibling carries no disposition of its own,
-   the finding whose sweep surfaced it does; either one fixes the sibling in that same separate
-   commit rather than merely naming it; it states what the replaced code did that
+   pre-existing sibling outside them — unless that sibling itself carries a "fix in its own
+   commit" disposition, in which case it is fixed in that same separate commit instead of merely
+   named; an explicit disposition on the sibling always wins, so a sibling separately marked "do
+   not fix here" stays routed away rather than being pulled into that commit. When the sibling
+   carries no disposition of its own, the finding whose sweep surfaced it decides instead: a sweep
+   surfaced by a "fix in its own commit" finding fixes that undispositioned sibling in that same
+   separate commit too, rather than merely naming it; it states what the replaced code did that
    the new code no longer does and confirms the difference is intended; and it runs the touched
    tests in the foreground and waits for them to finish, rather than backgrounding them and
    trusting the platform's own re-verify to catch what it left behind. An out-of-scope finding
