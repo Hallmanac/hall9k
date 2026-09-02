@@ -19,9 +19,11 @@ namespace Hall9k.Domain.Features.Tasks.Events;
 /// cap at or below the cycles that track has run since its last human takeover grant (0, if it has
 /// never had one, which is also when this count matches the absolute review cycle number the CLI
 /// prints — a grant or a track reactivation moves this count's own base forward, and only from
-/// there do the two numbers diverge) is exactly how a human hands a stuck run back: the very next
-/// cap check parks it, with no new state or command beyond this one; 0 always parks immediately,
-/// since that count can never be negative.
+/// there do the two numbers diverge) is exactly how a human hands a stuck run back: the next time
+/// that cap is actually checked — a per-track cap at its next fix-session dispatch, the
+/// final-full-pass cap at its next mandatory round — parks it, with no new state or command beyond
+/// this one. It does not stop a run that settles clean before reaching that check; the lifetime
+/// budget is the one exception, checked at every settle point.
 /// </para>
 /// </summary>
 public sealed record TaskReviewCapsOverridden(

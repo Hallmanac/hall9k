@@ -965,13 +965,16 @@ even against a task whose run is live, which is the documented takeover lever fo
 observed grinding: a cap set at or below the cycles that track has run since its last human
 takeover grant (0, if it has never had one, which is also when this count matches the absolute
 review cycle number `h9k status`/`h9k task show` print — a grant or a track reactivation moves
-this count's own base forward, and only from there do the two numbers diverge) parks it at the
-very next check, and 0 always parks immediately since that count can never be negative), strictly
+this count's own base forward, and only from there do the two numbers diverge) parks it the next
+time that cap is actually consulted — a per-track cap at its next fix-session dispatch, the
+final-full-pass cap at its next mandatory round — though it never stops a run that converges
+clean before reaching one of those checks), strictly
 `task > project > node > compiled default`, resolved per cap
 independently. A fourth setting, the task-lifetime review-cycle budget (default 25), sums
 `ReviewCycle` across every run and follow-up a task has had — immune to the resets a stranding,
 retry, or follow-up round gives the three per-run caps above — and follows the same hierarchy
-and visibility surfaces.
+and visibility surfaces; unlike the three per-run caps, it is checked at every settle point, so
+setting it low parks a converging run too.
 
 - **merge-ready** → that track concludes Clean and goes dormant; when the last track does,
   `ReviewSettled` records how the loop ended and `PullRequestOpener` proceeds (§2.2 follows).
