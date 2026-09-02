@@ -1,5 +1,6 @@
 using Hall9k.Cli.DaemonControl;
 using Hall9k.Cli.Infrastructure;
+using Hall9k.Domain.Infrastructure.Persistence;
 using Marten;
 using Spectre.Console;
 using Spectre.Console.Cli;
@@ -50,6 +51,24 @@ public sealed class StatusCommand : Hall9kAsyncCommand<StatusCommand.Settings>
         AnsiConsole.MarkupLine($"[bold]h9k status[/] · {TaskRollup.From(rows).Summary()}");
 
         DateTimeOffset now = DateTimeOffset.UtcNow;
+
+        // Observability precedes enforcement (backlog: spend-governor step three): shown whether
+        // or not a budget is set, so the calibration loop (run, observe a week's real burn, set
+        // the budget under it, adjust) starts the day this merges rather than the day a number is
+        // chosen. Degraded rather than fatal on a DB hiccup — the daemon-not-running banner above
+        // already covers the "nothing is reachable" case, and this pane's whole job is to still
+        // say something useful when part of the picture is missing.
+        SpendPressure? spend = null;
+        try
+        {
+            OperatingSettingsReport spendReport = await OperatingSettingsResolver.ResolveAsync(cancellationToken);
+            spend = await SpendPressure.ReadAsync(session, spendReport, now, cancellationToken);
+            AnsiConsole.MarkupLineInterpolated($"[dim]{spend.SummaryLine}[/]");
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            AnsiConsole.MarkupLineInterpolated($"[dim]spend this period: unavailable ({exception.Message})[/]");
+        }
         int listed = 0;
         listed += Section(rows, AttentionBucket.NeedsYou, "needs-you", "[red bold]Needs you[/]", now);
         listed += Section(rows, AttentionBucket.Stalled, "stalled",
@@ -61,11 +80,14 @@ public sealed class StatusCommand : Hall9kAsyncCommand<StatusCommand.Settings>
         // pull request or the merge is the only thing left (origin incident, 2026-08-22, PR 24).
         listed += Section(rows, AttentionBucket.Delivered, "attention-delivered",
             "[magenta]Delivered[/] [dim]— pushed; the merge has not been observed[/]", now);
-        // The queue is normally a count in the header — it needs nothing from anyone. It earns
-        // a section only when the node is at its concurrency ceiling (Decisions Log #64),
-        // because that is the one case where a board with nothing dispatching is working
-        // exactly as designed, and a human who cannot see that goes looking for the fault.
-        if (rows.Any(row => row.WaitingForSlot))
+        // The queue is normally a count in the header — it needs nothing from anyone. It earns a
+        // section when the node is at its concurrency ceiling (Decisions Log #64) or its spend
+        // budget for the period is spent (backlog: spend-governor step three), because those are
+        // the cases where a board with nothing dispatching is working exactly as designed, and a
+        // human who cannot see that goes looking for the fault.
+        bool atCeiling = rows.Any(row => row.WaitingForSlot);
+        bool atSpendBudget = spend is { AtBudget: true };
+        if (atCeiling || atSpendBudget)
         {
             // The lever is named once for the whole section rather than repeated on every row:
             // it is one setting for the node, not a per-task action. h9k config set writes the
@@ -73,11 +95,19 @@ public sealed class StatusCommand : Hall9kAsyncCommand<StatusCommand.Settings>
             // regardless of the daemon's working directory; options bind at startup, hence the
             // restart. Run-denominated end to end (Decisions Log #111) — no operator-facing
             // surface needs to know how many sessions a run tree is worth to interpret this.
-            listed += Section(rows, AttentionBucket.Queued, "queued",
-                "[blue]Queued[/] [dim]— the node is at its concurrency ceiling; each of these starts as a "
-                + "run finishes. Run[/] h9k config set --max-concurrent-task-runs <n> [dim]and restart the "
-                + "daemon to run more at once[/]",
-                now, inServiceOrder: true);
+            string heading = (atCeiling, atSpendBudget) switch
+            {
+                (true, true) => "[blue]Queued[/] [dim]— the node is at its concurrency ceiling and its spend "
+                    + "budget for this period is spent; each of these starts once both clear. Run[/] "
+                    + "h9k config set --max-concurrent-task-runs <n> [dim]or[/] --spend-budget <n> "
+                    + $"[dim]as the cause warrants ({spend!.ReasonLine})[/]",
+                (false, true) => $"[blue]Queued[/] [dim]— this node's {spend!.ReasonLine}. Run[/] "
+                    + "h9k config set --spend-budget <n> [dim]to raise it, or wait for the period to roll[/]",
+                _ => "[blue]Queued[/] [dim]— the node is at its concurrency ceiling; each of these starts as a "
+                    + "run finishes. Run[/] h9k config set --max-concurrent-task-runs <n> [dim]and restart the "
+                    + "daemon to run more at once[/]",
+            };
+            listed += Section(rows, AttentionBucket.Queued, "queued", heading, now, inServiceOrder: true);
         }
 
         // Blocked work is neither running nor waiting on you, but the wait has a cause worth
