@@ -81,13 +81,19 @@ public static class PlatformConfigFile
     /// <c>h9k daemon status</c>): a failure is reported rather than thrown. A document-level
     /// failure (syntax error, or valid JSON whose top level is not an object) is exactly what
     /// <see cref="PlatformConfigFileSource"/>-shaped daemon startup code already guards and skips
-    /// gracefully, running on environment variables and built-in defaults; a value-shape failure
-    /// inside an otherwise well-formed document never crashes the daemon either
-    /// (<c>Hall9k.Daemon.DaemonOptionsBinding.ResolverOwnedKeys</c> excludes every concurrency
-    /// setting this section carries from the daemon's own <c>ConfigurationBinder</c> call,
-    /// Decisions Log #111's follow-up), so the diagnosis recovers the same siblings rather than
-    /// discarding the whole section — a healthy <c>maxConcurrentTaskRuns</c> sitting next to a
-    /// malformed <c>maxConcurrentAgentSessions</c> must not be reported as skipped too.
+    /// gracefully, running on environment variables and built-in defaults. A value-shape failure
+    /// among the three concurrency leaves in <see cref="ResolverOwnedLeaves"/> never crashes the
+    /// daemon either (<c>Hall9k.Daemon.DaemonOptionsBinding.ResolverOwnedKeys</c> excludes them
+    /// from the daemon's own <c>ConfigurationBinder</c> call, Decisions Log #111's follow-up), so
+    /// the diagnosis recovers the same siblings rather than discarding the whole section — a
+    /// healthy <c>maxConcurrentTaskRuns</c> sitting next to a malformed
+    /// <c>maxConcurrentAgentSessions</c> must not be reported as skipped too. The four
+    /// review-cycle caps in <see cref="ConfigurationBinderBoundIntKeys"/> are the opposite case:
+    /// <c>ResolverOwnedKeys</c> does not exclude them, so a value-shape failure among them can be
+    /// one <c>ConfigurationBinder</c> itself throws on at daemon startup, and <see
+    /// cref="DaemonFailsToStartOn"/> is what tells that case apart from a merely-ignored one so it
+    /// is reported as <see cref="ConfigFileReadResult.DaemonCrashes"/> rather than misreported as
+    /// a recovered section.
     /// </summary>
     public static async Task<ConfigFileReadResult> TryReadOperatingSettingsAsync(CancellationToken cancellationToken)
     {
