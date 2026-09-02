@@ -1,6 +1,8 @@
 using Hall9k.Cli.DaemonControl;
 using Hall9k.Cli.Infrastructure;
+using Hall9k.Domain.Features.Run;
 using Hall9k.Domain.Infrastructure.Persistence;
+using Hall9k.Domain.Shared.ValueObjects;
 using Marten;
 using Spectre.Console;
 using Spectre.Console.Cli;
@@ -64,6 +66,11 @@ public sealed class StatusCommand : Hall9kAsyncCommand<StatusCommand.Settings>
             OperatingSettingsReport spendReport = await OperatingSettingsResolver.ResolveAsync(cancellationToken);
             spend = await SpendPressure.ReadAsync(session, spendReport, now, cancellationToken);
             AnsiConsole.MarkupLineInterpolated($"[dim]{spend.SummaryLine}[/]");
+            foreach (PeriodSpendByModel entry in spend.ByModel)
+            {
+                string modelLabel = entry.Model == AgentModel.Unknown ? "(unknown model)" : entry.Model.Value;
+                AnsiConsole.MarkupLineInterpolated($"[dim]  {modelLabel}: {entry.TotalInputTokens:N0} tokens[/]");
+            }
         }
         catch (Exception exception) when (exception is not OperationCanceledException)
         {

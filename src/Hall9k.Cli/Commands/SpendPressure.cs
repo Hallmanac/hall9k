@@ -30,7 +30,8 @@ internal sealed record SpendPressure(
     DateTimeOffset PeriodStart,
     DateTimeOffset NextRollover,
     string Period,
-    bool BudgetIsEnforced)
+    bool BudgetIsEnforced,
+    long? ConfiguredBudgetTokens)
 {
     /// <summary>
     /// Whether this period's recorded spend has reached a budget a daemon has confirmed it is
@@ -48,12 +49,27 @@ internal sealed record SpendPressure(
     /// <summary>The observability line shown regardless of whether a budget is set, confirmed, or neither.</summary>
     public string SummaryLine => (BudgetTokens, BudgetIsEnforced) switch
     {
-        ({ } budget, true) => $"spend this {Period}: {SpentTokens:N0} of {budget:N0} tokens (rolls {NextRollover:u})",
+        ({ } budget, true) => $"spend this {Period}: {SpentTokens:N0} of {budget:N0} tokens (rolls {NextRollover:u})"
+            + PendingChangeNote(budget),
         ({ } budget, false) => $"spend this {Period}: {SpentTokens:N0} tokens ({budget:N0}-token budget set but not "
             + $"yet confirmed by a running daemon — h9k daemon start, or restart it, to put it in force; rolls "
             + $"{NextRollover:u})",
         (null, _) => $"spend this {Period}: {SpentTokens:N0} tokens (no budget set; rolls {NextRollover:u})",
     };
+
+    /// <summary>
+    /// A change to an already-enforced budget is a second transition <see cref="SummaryLine"/>'s
+    /// own set-but-not-yet-confirmed branch does not cover, because that branch only fires when
+    /// <see cref="BudgetIsEnforced"/> is false — here it is still true, on the daemon's old value,
+    /// while the config file already holds a different one nothing has restarted onto yet. Without
+    /// this note the two figures sit side by side on <c>h9k config show</c> (this line, and
+    /// <c>OperatingSettingsRendering.DescribeSpendBudgetTokens</c>'s row) with nothing saying which
+    /// one is actually in force.
+    /// </summary>
+    private string PendingChangeNote(long enforcedBudget) =>
+        ConfiguredBudgetTokens is { } configured && configured != enforcedBudget
+            ? $" — config now says {configured:N0}; not yet in force, restart the daemon to apply it"
+            : string.Empty;
 
     public static async Task<SpendPressure> ReadAsync(
         IQuerySession session, OperatingSettingsReport report, DateTimeOffset now, CancellationToken cancellationToken)
@@ -69,6 +85,6 @@ internal sealed record SpendPressure(
         PeriodSpend spend = await PeriodSpend.ReadAsync(session, periodStart, cancellationToken);
         return new SpendPressure(
             spend.TotalInputTokens, budgetTokens, spend.ByModel, periodStart,
-            period.NextRolloverAfter(now), period.Value, budgetIsEnforced);
+            period.NextRolloverAfter(now), period.Value, budgetIsEnforced, report.SpendBudgetTokens.Value);
     }
 }
