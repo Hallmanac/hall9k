@@ -1191,8 +1191,9 @@ public sealed class RunAggregateTests
     /// full-scope pass has already read) must survive unchanged across however many Verify cycles
     /// sit between two full-scope reads — CycleHeadSha/PriorCycleHeadSha alone cannot answer this,
     /// since they move on every cycle regardless of mode, and the cycle immediately before any
-    /// FinalFullPass dispatch is never itself full-scope (a full-scope cycle is always followed by
-    /// Verify, never by another full-scope one directly).
+    /// FinalFullPass dispatch is not guaranteed to be full-scope itself — usually one or more
+    /// Verify cycles sit in between, though the empty-terminal case can reach a FinalFullPass
+    /// straight from a prior one with no Verify between them.
     /// </summary>
     [Fact]
     public void Last_full_scope_review_head_sha_survives_verify_cycles_and_ignores_them()

@@ -549,11 +549,13 @@ public sealed class ReviewEngine(
                     // own ReviewDispatched, for whichever cycle comes after this one. A FinalFullPass
                     // reverify needs a different boundary again (task: the mandatory FinalFullPass
                     // rereads only the commits no full-scope pass has already read): the cycle
-                    // immediately before it is never itself full-scope (Discovery/FinalFullPass is
-                    // always followed by Verify, never by another FinalFullPass directly), so
-                    // run.CycleHeadSha would point at a delta-scoped Verify read rather than the last
-                    // genuinely full-scope one — run.LastFullScopeReviewHeadSha is what still holds
-                    // that, as it stood before this dispatch.
+                    // immediately before it is not guaranteed to be full-scope — usually one or more
+                    // Verify cycles sit in between, and even the empty-terminal case (every track
+                    // already concluded, a fix session dispatches anyway for an owed finding) can
+                    // land here straight from a prior FinalFullPass with no Verify between them — so
+                    // run.CycleHeadSha would point at whatever that cycle's own scope was rather than
+                    // the last genuinely full-scope one — run.LastFullScopeReviewHeadSha is what still
+                    // holds that, as it stood before this dispatch.
                     string? reverifySinceSha = reverifyMode == ReviewMode.FinalFullPass
                         ? await ResolveFinalFullPassSinceShaAsync(
                             context.Run.WorktreePath, run.LastFullScopeReviewHeadSha, cancellationToken)
@@ -744,11 +746,16 @@ public sealed class ReviewEngine(
         // cycle's own opening dispatch started it, held constant since — using
         // run.LastFullScopeReviewHeadSha here instead would already read this cycle's own tip
         // (StartCycleIfNew moved it the moment the first pass dispatched), scoping the topped-up
-        // lens to nothing new to read.
+        // lens to nothing new to read. A Discovery top-up gets neither: ReviewDispatched.SinceSha is
+        // documented null there (always a full base-branch read), so this branches on Verify
+        // specifically rather than "not FinalFullPass" — the latter would also catch Discovery and
+        // record a boundary its prompt was never scoped to.
         string? topUpSinceSha = run.CurrentCycleMode == ReviewMode.FinalFullPass
             ? await ResolveFinalFullPassSinceShaAsync(
                 context.Run.WorktreePath, run.PriorFullScopeReviewHeadSha, cancellationToken)
-            : run.PriorCycleHeadSha;
+            : run.CurrentCycleMode == ReviewMode.Verify
+                ? run.PriorCycleHeadSha
+                : null;
         bool dispatched = await DispatchReviewPassesAsync(
             context, run.ReviewCycle, toDispatch, run.CurrentCycleMode, run.CycleHeadSha,
             sinceSha: topUpSinceSha, run.PriorCycleMode, run.PriorCycleSinceSha, cancellationToken);
