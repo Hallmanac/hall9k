@@ -199,7 +199,8 @@ that session makes no Jira call itself. It composes a payload and submits it thr
 validates the payload (a transition or a close is refused regardless of who composed it — that is
 a team's workflow, done in Jira directly, never a write hall9k performs), records the intent with
 the full payload before anything is sent, executes it against the Jira Cloud v2 REST API — the
-same authenticated client the read side already uses — and records the outcome including the
+same authenticated client the read side already uses — verifies the outcome by reading the item
+back rather than trusting Jira's own success response alone, and records the outcome including the
 returned key. A retried or replayed create narrows the window for a duplicate rather than closing
 it outright: `write-jira` searches for a marker an earlier attempt's card would carry before
 creating anything new, but Jira's search index updates asynchronously, so a retry inside that
