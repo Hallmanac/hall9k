@@ -100,6 +100,31 @@ public sealed class JiraMarkupTextTests
     }
 
     [Fact]
+    public void A_fenced_code_block_with_a_hyphenated_language_tag_still_matches_its_own_fence()
+    {
+        // \w* could not consume "objective-c" past its hyphen, so the opening fence never matched
+        // at all and the engine paired the block's own closing fence with the next unrelated
+        // block's opening fence instead, wrapping prose in {code} and leaving the real code
+        // markdown-converted (independent pre-PR review, adversarial lens, cycle 10).
+        JiraMarkupText.FromMarkdown("```objective-c\nint a = *b*;\n```\nSome prose here.\n```json\n{\"x\": 1}\n```")
+            .Should().Be("{code:objective-c}\nint a = *b*;\n{code}\nSome prose here.\n{code:json}\n{\"x\": 1}\n{code}");
+    }
+
+    [Fact]
+    public void A_fenced_code_block_with_a_hash_language_tag_still_matches_its_own_fence()
+    {
+        JiraMarkupText.FromMarkdown("```c#\nvar x = 1;\n```")
+            .Should().Be("{code:c#}\nvar x = 1;\n{code}");
+    }
+
+    [Fact]
+    public void A_fenced_code_block_with_trailing_whitespace_after_the_language_tag_still_matches()
+    {
+        JiraMarkupText.FromMarkdown("```bash \necho hi\n```")
+            .Should().Be("{code:bash}\necho hi\n{code}");
+    }
+
+    [Fact]
     public void A_given_when_then_block_converts_headings_and_bullets_together()
     {
         JiraMarkupText.FromMarkdown("## Acceptance criteria\n- **Given** a task\n- **When** it merges")
@@ -208,6 +233,23 @@ public sealed class JiraMarkupTextTests
         // +underline+/^superscript^/~subscript~ (paired, word-flanked marks) still has to trigger
         // the box too, now that none of those five marks trusts a bare occurrence alone (cycle 5).
         JiraMarkupText.ToPlainLiteral(text).Should().Be($"{{noformat}}\n{text}\n{{noformat}}");
+    }
+
+    [Fact]
+    public void ToPlainLiteral_passes_a_bare_issue_number_through_unwrapped()
+    {
+        // A bare "#" is only Jira's numbered-list marker at line start; anywhere else it is an
+        // ordinary character an issue number or a hashtag needs, so a plain-composed comment
+        // naming one was boxed in {noformat} for no real construct — the same over-triggering
+        // cycle 3 carved the hyphen out for (independent pre-PR review, adversarial lens, cycle 10).
+        string text = "Deployed behind the flag; see PR #38 for the rollback path.";
+        JiraMarkupText.ToPlainLiteral(text).Should().Be(text);
+    }
+
+    [Fact]
+    public void ToPlainLiteral_still_wraps_a_line_start_numbered_list_marker()
+    {
+        JiraMarkupText.ToPlainLiteral("# not a list").Should().Be("{noformat}\n# not a list\n{noformat}");
     }
 
     [Fact]
