@@ -2,6 +2,7 @@ using FluentAssertions;
 using Hall9k.Connectors.WorkItems;
 using Hall9k.Domain.Features.Connection;
 using Hall9k.Domain.Features.Tasks;
+using Hall9k.Domain.Shared.Exceptions;
 using Hall9k.Domain.Shared.ValueObjects;
 using Hall9k.Tests.Fakes;
 using Xunit;
@@ -334,6 +335,20 @@ public sealed class JiraWriteExecutorTests
         JiraAuthProbeResult probe = await Executor(requester).ProbeAuthenticationAsync(CancellationToken.None);
 
         probe.Should().Be(JiraAuthProbeResult.Unknown);
+    }
+
+    [Fact]
+    public async Task ProbeAuthenticationAsync_lets_an_unresolvable_credential_propagate_unwrapped()
+    {
+        RecordingJiraRequester requester = RecordingJiraRequester.Succeeding(200, """{"issues":[]}""");
+
+        Func<Task> act = () => ExecutorWithUnresolvableCredential(requester).ProbeAuthenticationAsync(CancellationToken.None);
+
+        await act.Should().ThrowAsync<DomainValidationException>(
+            "a credential the vault cannot resolve is not a credential Jira rejected, and JiraDoctor's own "
+            + "catch reports the vault's exact reason only if this propagates unwrapped rather than folding "
+            + "into JiraAuthProbeResult.AuthFailure");
+        requester.Requests.Should().BeEmpty("nothing reaches Jira before the credential is even resolved");
     }
 
     // ---- Ordinary 4xx / timeout on a read-only call is not ambiguous --------------------------

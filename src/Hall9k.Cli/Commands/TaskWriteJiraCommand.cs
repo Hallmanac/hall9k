@@ -56,7 +56,7 @@ public sealed class TaskWriteJiraCommand : Hall9kAsyncCommand<TaskWriteJiraComma
             + "(an object of field name to value — use the customfield_* id Jira's own field metadata "
             + "reports, not a display name), comment, projectKey (only for --op create, when the project's own routing "
             + "rules say a different board than the one bound with h9k project set --jira), and format "
-            + "(\"markdown\", \"plain\", or \"html\" for how the description or comment text is "
+            + "(\"markdown\" or \"plain\" for how the description or comment text is "
             + "written; defaults to markdown, since that is what most card-authoring skills produce)")]
         public string File { get; init; } = string.Empty;
 

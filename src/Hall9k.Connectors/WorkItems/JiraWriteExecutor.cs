@@ -410,12 +410,23 @@ public sealed class JiraWriteExecutor(JiraAccount account, JiraRequester? reques
     /// A read-only probe for <c>h9k doctor</c>: does an authenticated Jira search go through right
     /// now, with no card touched either way. Distinguishes a rejected credential from anything else
     /// so the fix taught is the right one.
+    /// <para>
+    /// Resolves the credential through <see cref="JiraAccount.AuthorizationAsync"/> directly,
+    /// deliberately not through <see cref="AuthorizeAsync"/>'s shared wrapper: a
+    /// <see cref="DomainException"/> here (an unset environment variable, a deleted credential
+    /// file) is left to propagate to <c>JiraDoctor</c>'s own catch, which reports the vault's exact
+    /// reason, rather than being folded into <see cref="JiraAuthProbeResult.AuthFailure"/> — a state
+    /// this probe reserves for a credential Jira itself examined and rejected (independent pre-PR
+    /// review, verify pass, cycle 2: folding both into one enum value made the doctor tell an
+    /// operator "Jira rejected the registered credentials" and point at token rotation for a
+    /// credential Jira was never even asked about).
+    /// </para>
     /// </summary>
     public async Task<JiraAuthProbeResult> ProbeAuthenticationAsync(CancellationToken cancellationToken)
     {
+        string authorization = await account.AuthorizationAsync($"sign in to {account.Site}", cancellationToken);
         try
         {
-            string authorization = await AuthorizeAsync($"sign in to {account.Site}", cancellationToken);
             await SendAsync(
                 new JiraRequest(HttpMethod.Post, account.Endpoint("/rest/api/3/search/jql"), authorization,
                     new JsonObject { ["jql"] = ProbeJql, ["maxResults"] = 1, ["fields"] = new JsonArray("key") }.ToJsonString()),
@@ -479,10 +490,11 @@ public sealed class JiraWriteExecutor(JiraAccount account, JiraRequester? reques
     /// v2's plain-string field actually renders. Only "markdown" — the default
     /// <see cref="JiraWritePayload.EffectiveFormat"/> assumes, and what this repo's own
     /// card-authoring skills produce — is converted, via <see cref="JiraMarkupText"/>: "plain" is
-    /// already what it claims to be, and "html" is carried through unconverted rather than guessed
-    /// at, since there is no way to verify an HTML-to-Jira-wiki-markup mapping against a live
-    /// tenant from this build environment (the same "never guess at unobserved facts" reasoning
-    /// this class already applies to the JQL search endpoint's own shape).
+    /// already what it claims to be. <see cref="JiraWritePayload.Validate"/> refuses any other
+    /// format before a payload is ever recorded, so this never sees one — there is no verified
+    /// HTML-to-Jira-wiki-markup mapping to convert an "html" payload with, and this class does not
+    /// guess at one (the same "never guess at unobserved facts" reasoning it already applies to the
+    /// JQL search endpoint's own shape).
     /// </summary>
     private static string? ApplyFormat(string? text, string format) =>
         text.IsBlank() || !string.Equals(format, "markdown", StringComparison.OrdinalIgnoreCase)
