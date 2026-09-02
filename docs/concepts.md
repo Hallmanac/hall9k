@@ -280,7 +280,10 @@ being fixed on its own at every cycle, gate or no gate — what the severity gat
 is whether the track is forced into another cycle regardless of severity: early cycles re-trigger
 on any finding, including a routed one that never itself meets the fix bar, while later cycles
 re-trigger only on a high, and a medium is still fixed there but stops keeping the loop alive on
-its own. A track that
+its own. The mandatory FinalFullPass immediately before the pull request opens tightens that same
+in-scope bar to High alone: a medium there rides along exactly as a low already does elsewhere,
+carried onto the pull request as a residual rather than earning a fix-and-reverify cycle of its
+own. A track that
 concludes goes dormant and is never reawakened by the other track's fix sessions. **Differing
 cycle counts on one run are the design, not a fault** (a clean conformance track can be dormant
 at cycle 2 while adversarial is still working at cycle 5).

@@ -452,9 +452,11 @@ The checkpoints, in the order the window sees them:
    a missing verdict, not accepted as a real answer (Decisions Log #86): it gets the cycle's one
    same-session re-prompt before parking, exactly like a pass that ended with no `VERDICT:` line
    at all. A needs-fixes verdict earns a fix-and-re-review cycle only when a finding is graded
-   medium or high (Decisions Log #87): both lenses now grade every finding, and a pass whose
-   findings are all low or ungraded is recorded merge-ready instead, with its findings carried
-   along as **ride-alongs** rather than dropped or spent on a cycle of their own. A verdict is
+   medium or high (Decisions Log #87) — narrower still on the mandatory FinalFullPass immediately
+   before the pull request opens, where only a High earns one (Decisions Log #113, described
+   below): both lenses now grade every finding, and a pass whose findings are all below that
+   cycle's own bar is recorded merge-ready instead, with its findings carried along as
+   **ride-alongs** rather than dropped or spent on a cycle of their own. A verdict is
    only ever recorded merge-ready when *every* stated finding is a ride-along — not a lens's
    literal `VERDICT:` line, and not a Route finding either: a pass that says merge-ready but still
    attaches a finding graded medium or high is not taken at its word, and neither is a needs-fixes
@@ -525,7 +527,12 @@ The checkpoints, in the order the window sees them:
    run may settle, one mandatory **FinalFullPass** runs both lenses fresh, whether or not a track
    had already gone dormant, so nothing reaches the remote on delta-green alone; a track it
    reawakens with a real finding is recorded reactivated rather than left stuck at an old
-   conclusion, and a run that converges clean at cycle 1 pays no extra pass at all. Which shape a
+   conclusion, and a run that converges clean at cycle 1 pays no extra pass at all. That mandatory
+   pass also tightens its own in-scope fix bar to High alone (Decisions Log #113, origin: 3 High
+   findings in 172 final passes, 101 of 104 needs-fixes final passes carrying no High at all): an
+   in-scope Medium there rides along exactly as a Low already did, rather than earning a
+   fix-and-reverify cycle of its own, and every ride-along the pass carries is named on the pull
+   request body and counted on `h9k task show` rather than dropped silently. Which shape a
    cycle ran under — Discovery, Verify, or FinalFullPass — is a deterministic engine decision
    recorded on the run stream, so `h9k task show` and the daemon log say which one dispatched;
    only the review content itself is agent judgment.
