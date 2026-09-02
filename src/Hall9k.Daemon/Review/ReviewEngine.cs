@@ -783,11 +783,13 @@ public sealed class ReviewEngine(
         }
 
         Guid sessionId = DomainId.New();
-        // Discovery and FinalFullPass both want the identical full-diff, fresh-context prompt
+        // Discovery and FinalFullPass both want the identical full-diff, fresh-context read
         // (task: review cycles after the first) — the mandatory final pass is discovery-grade
-        // rigor at a later cycle number, not a different prompt.
+        // rigor at a later cycle number, not a different diff-reading prompt. mode only changes
+        // the finding contract's own fix-bar wording (Decisions Log #113, AppendFindingContract),
+        // so the reviewer is told the true bar rather than the ordinary cycle's.
         string prompt = AgentPromptBuilder.BuildReview(
-            context.Task, context.Project, context.Run.Branch, cycle, lens, context.PriorRulings);
+            context.Task, context.Project, context.Run.Branch, cycle, lens, mode, context.PriorRulings);
         ExecutorMode executorMode = context.Run.ExecutorMode;
         // Every lens is review work, so they resolve the same role in the chain (log #33) —
         // and each dispatch records the model it actually got, per pass.
@@ -899,8 +901,9 @@ public sealed class ReviewEngine(
         // untagged and get attributed to every active track by SplitForTrack's own conservative
         // default, rather than the one it actually belongs to.
         string prompt = verdictless.Mode == ReviewMode.Verify
-            ? AgentPromptBuilder.BuildReviewVerdictReprompt(context.Project, run.ReviewCycle, run.ActiveReviewLenses)
-            : AgentPromptBuilder.BuildReviewVerdictReprompt(context.Project, run.ReviewCycle);
+            ? AgentPromptBuilder.BuildReviewVerdictReprompt(
+                context.Project, run.ReviewCycle, verdictless.Mode, run.ActiveReviewLenses)
+            : AgentPromptBuilder.BuildReviewVerdictReprompt(context.Project, run.ReviewCycle, verdictless.Mode);
         // The resumed session keeps the model it was dispatched on: the chain is NOT
         // re-resolved here, or the milestone would record a model the session never ran on
         // (log #33). An older stream that recorded no model stays honestly Unknown.

@@ -591,11 +591,13 @@ public static class AgentPromptBuilder
     /// </param>
     public static string BuildReview(
         TaskDetails task, ProjectDetails project, string branch, int cycle, ReviewLens lens,
+        ReviewMode? mode = null,
         IReadOnlyList<ReviewParkResolution>? priorRulings = null,
         ReviewMechanicsOverride? mechanicsOverride = null) =>
         lens == ReviewLens.Adversarial
-            ? BuildAdversarialReview(project, branch, cycle, priorRulings, mechanicsOverride)
-            : BuildConformanceReview(task, project, branch, cycle, priorRulings, mechanicsOverride);
+            ? BuildAdversarialReview(project, branch, cycle, mode ?? ReviewMode.Discovery, priorRulings, mechanicsOverride)
+            : BuildConformanceReview(
+                task, project, branch, cycle, mode ?? ReviewMode.Discovery, priorRulings, mechanicsOverride);
 
     /// <summary>
     /// A pr-review task's one-shot lens (PrReviewEngine): delegates to <see cref="BuildReview"/>
@@ -793,7 +795,7 @@ public static class AgentPromptBuilder
         prompt.AppendLine("- Do NOT modify files, commit, push, or open pull requests. You are read-only.");
         prompt.AppendLine("- **Do NOT build, test, or run anything that writes into this worktree.**");
         AppendReviewGateStatus(prompt, project);
-        AppendFindingContract(prompt, project);
+        AppendFindingContract(prompt, project, ReviewMode.Verify);
         AppendVerifyTrackTagContract(prompt, tracks);
         AppendVerdictContract(prompt, cycle);
         prompt.AppendLine();
@@ -866,7 +868,7 @@ public static class AgentPromptBuilder
     /// </para>
     /// </summary>
     private static string BuildConformanceReview(
-        TaskDetails task, ProjectDetails project, string branch, int cycle,
+        TaskDetails task, ProjectDetails project, string branch, int cycle, ReviewMode mode,
         IReadOnlyList<ReviewParkResolution>? priorRulings,
         ReviewMechanicsOverride? mechanicsOverride = null)
     {
@@ -996,7 +998,7 @@ public static class AgentPromptBuilder
         }
 
         AppendReviewMechanics(prompt, project, branch, mechanicsOverride);
-        AppendFindingContract(prompt, project, mechanicsOverride);
+        AppendFindingContract(prompt, project, mode, mechanicsOverride);
         AppendVerdictContract(prompt, cycle, mechanicsOverride);
         prompt.AppendLine();
         if (mechanicsOverride is { DiffIsForeignPullRequest: true })
@@ -1030,7 +1032,7 @@ public static class AgentPromptBuilder
     /// </para>
     /// </summary>
     private static string BuildAdversarialReview(
-        ProjectDetails project, string branch, int cycle,
+        ProjectDetails project, string branch, int cycle, ReviewMode mode,
         IReadOnlyList<ReviewParkResolution>? priorRulings, ReviewMechanicsOverride? mechanicsOverride = null)
     {
         StringBuilder prompt = new();
@@ -1095,7 +1097,7 @@ public static class AgentPromptBuilder
         prompt.AppendLine("- Read the changed code in its surroundings, not as isolated hunks: a defect is often");
         prompt.AppendLine("  the interaction between what changed and what did not.");
         AppendReviewMechanics(prompt, project, branch, mechanicsOverride);
-        AppendFindingContract(prompt, project, mechanicsOverride);
+        AppendFindingContract(prompt, project, mode, mechanicsOverride);
         AppendVerdictContract(prompt, cycle, mechanicsOverride);
         prompt.AppendLine();
         if (mechanicsOverride is { DiffIsForeignPullRequest: true })
@@ -1265,9 +1267,21 @@ public static class AgentPromptBuilder
     /// mechanical for the same reason: "the defective line lives in code this branch added or
     /// changed" is checkable against the diff, where "is this really our problem" is not.
     /// </para>
+    /// <para>
+    /// <paramref name="mode"/> only changes the acceptance-criterion and needs-fixes-bar
+    /// paragraphs below, and only on <see cref="ReviewMode.FinalFullPass"/> (Decisions Log
+    /// #113): everywhere else, "an unmet acceptance criterion always meets the fix bar" is
+    /// still literally true, since <see cref="ReviewFinding.Disposition"/> only narrows that
+    /// bar to High alone on a mandatory final pass. Stating that promise unconditionally on a
+    /// FinalFullPass dispatch would tell the reviewer something the disposition machinery does
+    /// not honor — a Medium-graded acceptance-criterion finding there rides along exactly like
+    /// any other in-scope Medium — so this pass gets the true rule instead: grade honestly
+    /// against the anchors, and know that only a High blocks a merge-ready verdict here.
+    /// </para>
     /// </summary>
     private static void AppendFindingContract(
-        StringBuilder prompt, ProjectDetails project, ReviewMechanicsOverride? mechanicsOverride = null)
+        StringBuilder prompt, ProjectDetails project, ReviewMode mode,
+        ReviewMechanicsOverride? mechanicsOverride = null)
     {
         string baseBranch = mechanicsOverride?.BaseBranch ?? project.BaseBranch;
         prompt.AppendLine();
@@ -1297,6 +1311,17 @@ public static class AgentPromptBuilder
             prompt.AppendLine("a different problem than the pull request's own title and description state is never");
             prompt.AppendLine("`low` and never left ungraded: grade it `medium` at minimum.");
         }
+        else if (mode == ReviewMode.FinalFullPass)
+        {
+            prompt.AppendLine("An unmet acceptance criterion, or work that solves a different problem than the one");
+            prompt.AppendLine("stated, is never `low` and never left ungraded: grade it `medium` at minimum, same");
+            prompt.AppendLine("as any other cycle. This is the mandatory final pass immediately before the pull");
+            prompt.AppendLine("request opens, though, and its own bar for earning a fix cycle is narrower than an");
+            prompt.AppendLine("earlier cycle's (Decisions Log #113): only a `high` finding blocks a merge-ready");
+            prompt.AppendLine("verdict here. A `medium` you grade is still recorded and named on the pull request");
+            prompt.AppendLine("as a residual for the owner to see — grade against the anchors above, never to");
+            prompt.AppendLine("force an outcome.");
+        }
         else
         {
             prompt.AppendLine("An unmet acceptance criterion, or work that solves a different problem than the one");
@@ -1317,6 +1342,13 @@ public static class AgentPromptBuilder
             prompt.AppendLine("it either way — there is no fix-and-re-review cycle here for a needs-fixes verdict");
             prompt.AppendLine("to cost, only the same findings report either verdict produces — so grade honestly");
             prompt.AppendLine("rather than picking whichever word you think matters more.");
+        }
+        else if (mode == ReviewMode.FinalFullPass)
+        {
+            prompt.AppendLine("it and decides on its own whether it is worth a session; on this mandatory final");
+            prompt.AppendLine("pass, a needs-fixes verdict is reserved for at least one `high` finding (Decisions");
+            prompt.AppendLine("Log #113) — a `medium` or `low` finding here is recorded and carried onto the pull");
+            prompt.AppendLine("request as a residual instead of earning a fix-and-re-review cycle.");
         }
         else
         {
@@ -1516,7 +1548,8 @@ public static class AgentPromptBuilder
     /// </para>
     /// </summary>
     public static string BuildReviewVerdictReprompt(
-        ProjectDetails project, int cycle, IReadOnlyList<ReviewLens>? verifyTracks = null)
+        ProjectDetails project, int cycle, ReviewMode? mode = null,
+        IReadOnlyList<ReviewLens>? verifyTracks = null)
     {
         StringBuilder prompt = new();
         prompt.AppendLine("Your review session ended without the required VERDICT line, or with a");
@@ -1539,7 +1572,7 @@ public static class AgentPromptBuilder
         prompt.AppendLine("  merge-ready verdict rather than a needs-fixes one.");
         prompt.AppendLine("- End your final message with exactly one verdict line, nothing after it:");
         prompt.AppendLine("  `VERDICT: merge-ready` or `VERDICT: needs-fixes`.");
-        AppendFindingContract(prompt, project);
+        AppendFindingContract(prompt, project, mode ?? ReviewMode.Discovery);
         if (verifyTracks is { Count: > 0 })
         {
             AppendVerifyTrackTagContract(prompt, verifyTracks);
