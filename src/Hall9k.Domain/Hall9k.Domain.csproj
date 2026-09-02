@@ -11,4 +11,8 @@
     <Using Include="Hall9k.Domain.Infrastructure.Extensions" />
   </ItemGroup>
 
+  <ItemGroup>
+    <InternalsVisibleTo Include="Hall9k.Tests" />
+  </ItemGroup>
+
 </Project>
