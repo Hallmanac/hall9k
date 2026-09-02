@@ -1,6 +1,6 @@
 using Hall9k.Domain.Features.Run.Projections;
-using Hall9k.Domain.Features.Tasks.Projections;
 using Marten;
+using Marten.Linq.MatchesSql;
 
 namespace Hall9k.Domain.Features.Run.Queries;
 
@@ -95,24 +95,21 @@ public static class GateDurationHistoryQuery
     /// <summary>
     /// Every gate duration recorded on this project's <see cref="RecentRunWindow"/> most recently
     /// dispatched runs, excluding <paramref name="excludingRunId"/> so a run's own pass never
-    /// counts toward its own baseline.
+    /// counts toward its own baseline. Project membership is checked with a correlated <c>EXISTS</c>
+    /// against the task document itself, rather than first materializing every task id the project
+    /// has ever had into an in-memory list and shipping it back as an <c>IN</c> parameter
+    /// (independent pre-PR review, cycle 2): the run list is already ordered and capped by
+    /// <see cref="RunListItem.DispatchedAt"/>, so project membership only needs to be a per-row
+    /// filter, not a full enumeration of the project's tasks.
     /// </summary>
     public static async Task<GateDurationHistory> LoadRecentHistoryAsync(
         IQuerySession session, Guid projectId, Guid excludingRunId, CancellationToken cancellationToken)
     {
-        IReadOnlyList<Guid> taskIds = await session.Query<TaskListItem>()
-            .Where(task => task.ProjectId == projectId)
-            .Select(task => task.Id)
-            .ToListAsync(cancellationToken);
-
-        if (taskIds.Count == 0)
-        {
-            return new GateDurationHistory([]);
-        }
-
-        Guid[] wanted = [.. taskIds];
         IReadOnlyList<RunListItem> runs = await session.Query<RunListItem>()
-            .Where(run => run.TaskId.IsOneOf(wanted) && run.Id != excludingRunId)
+            .Where(run => run.Id != excludingRunId)
+            .Where(run => run.MatchesSql(
+                "exists (select 1 from mt_doc_tasklistitem t where t.id = (d.data ->> 'taskId')::uuid and t.data ->> 'projectId' = ?)",
+                projectId.ToString()))
             .OrderByDescending(run => run.DispatchedAt)
             .Take(RecentRunWindow)
             .ToListAsync(cancellationToken);

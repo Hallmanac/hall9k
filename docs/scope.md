@@ -41,8 +41,12 @@ Every gate's own wall-clock duration is recorded on the run's verification pass 
 shown on `h9k task show` beside the run it belongs to. The same command flags a gate whose newest
 duration materially (1.5x) exceeds the project's own recent recorded average for that same gate —
 compared only against other runs' passing samples at the same full/scoped classification, never a
-fixed baseline — so a suite that quietly grows is caught the week it happens rather than
-reconstructed later from file timestamps (origin incident 2026-09-01).
+fixed baseline — so a single run's step-change spike is caught the week it happens rather than
+reconstructed later from file timestamps (origin incident 2026-09-01). The baseline is itself a
+trailing average of the same series, so it climbs right along with a suite that grows a few
+percent per run: that smooth multi-day drift, the origin incident's own shape, stays under this
+threshold on every run of the climb and is not what this flag catches. Seeing that shape still
+needs a human reading the Gates column's own raw numbers over time.
 
 ### Interactive claims
 
