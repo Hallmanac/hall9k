@@ -108,6 +108,39 @@ public sealed class TaskResolveCommandIntegrationTests(PostgresFixture postgres)
         run.PullRequestNumber.Should().BeNull();
     }
 
+    /// <summary>
+    /// A pr-review task's PullRequestUrl names the pull request it reviewed, not one of its own
+    /// (adversarial review, cycle 3, high): recording it here would enroll a foreign pull request
+    /// as this run's merge signal, letting that pull request's own unrelated merge complete this
+    /// task's closeout and run the remote branch-delete cleanup TaskDecider.Reopen already refuses
+    /// the type to prevent. This must hold even when the URL names the project's own repository,
+    /// which is the ordinary case for a pr-review task (it reviews a pull request in its own
+    /// project) — the guard cannot rely on the repository check to catch it.
+    /// </summary>
+    [Fact]
+    public async Task A_pr_review_tasks_failed_run_records_nothing_even_when_the_pull_request_names_the_projects_own_repository()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        using DocumentStore store = NewStore();
+        Guid ownerId = DomainId.New();
+        Guid runId = DomainId.New();
+
+        TaskAggregate task = await SeedFailedDispatchedRunAsync(store, ownerId, runId, cts.Token, TaskType.PrReview);
+
+        await using IDocumentSession session = store.LightweightSession();
+        TaskResolveCommand.RunStreamPullRequestOutcome outcome =
+            await TaskResolveCommand.RecordPullRequestOnRunStreamAsync(
+                session, task, "https://github.com/x/y/pull/24", Now, cts.Token);
+        await session.SaveChangesAsync(cts.Token);
+
+        outcome.Should().Be(TaskResolveCommand.RunStreamPullRequestOutcome.NotRecorded,
+            "a pr-review task's --pr names the pull request it reviewed, never one of its own");
+
+        await using IQuerySession query = store.QuerySession();
+        RunDetails run = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
+        run.PullRequestNumber.Should().BeNull();
+    }
+
     private DocumentStore NewStore() => DocumentStore.For(opts =>
     {
         opts.Connection(postgres.ConnectionString);
@@ -149,9 +182,11 @@ public sealed class TaskResolveCommandIntegrationTests(PostgresFixture postgres)
     /// RecordPullRequestOnRunStreamAsync's guard must still append onto.
     /// </summary>
     private static async Task<TaskAggregate> SeedFailedDispatchedRunAsync(
-        DocumentStore store, Guid ownerId, Guid runId, CancellationToken cancellationToken)
+        DocumentStore store, Guid ownerId, Guid runId, CancellationToken cancellationToken,
+        TaskType? type = null)
     {
-        (Guid taskId, TaskAggregate task, List<object> taskEvents, Guid projectId) = SeedQueuedTask(ownerId);
+        (Guid taskId, TaskAggregate task, List<object> taskEvents, Guid projectId) =
+            SeedQueuedTask(ownerId, type ?? TaskType.Chore);
         Guid nodeId = DomainId.New();
 
         Hall9k.Domain.Features.Tasks.Events.TaskClaimed claimed =
@@ -177,14 +212,15 @@ public sealed class TaskResolveCommandIntegrationTests(PostgresFixture postgres)
         return task;
     }
 
-    private static (Guid TaskId, TaskAggregate Task, List<object> Events, Guid ProjectId) SeedQueuedTask(Guid ownerId)
+    private static (Guid TaskId, TaskAggregate Task, List<object> Events, Guid ProjectId) SeedQueuedTask(
+        Guid ownerId, TaskType? type = null)
     {
         Guid taskId = DomainId.New();
         Guid projectId = DomainId.New();
 
         (TaskAggregate task, object[] lifecycle) = TaskSeed.Start(
             TaskDecider.Add(
-                taskId, projectId, "Close me out", ["merged"], TaskType.Chore, null, null,
+                taskId, projectId, "Close me out", ["merged"], type ?? TaskType.Chore, null, null,
                 null, Now, ownerId),
             ownerId, Now);
 
