@@ -1,4 +1,5 @@
 using System.ComponentModel;
+using System.Globalization;
 using Hall9k.Cli.Infrastructure;
 using Hall9k.Domain.Infrastructure.Persistence;
 using Hall9k.Domain.Shared.Exceptions;
@@ -17,6 +18,14 @@ namespace Hall9k.Cli.Commands;
 /// </summary>
 public sealed class ConfigSetCommand : Hall9kAsyncCommand<ConfigSetCommand.Settings>
 {
+    /// <summary>
+    /// --spend-budget's clearing word (the way --default-model and every --model-<role> option use
+    /// 'default'): unlike those, 'none' rather than 'default', since there is no compiled default
+    /// token count to fall back to — the resolver's own fallback for this setting is "no budget"
+    /// itself.
+    /// </summary>
+    private const string SpendBudgetNoneWord = "none";
+
     public sealed class Settings : CommandSettings
     {
         [CommandOption("--max-concurrent-agent-sessions <N>")]
@@ -126,7 +135,7 @@ public sealed class ConfigSetCommand : Hall9kAsyncCommand<ConfigSetCommand.Setti
             + "--max-compliance-review-cycles.")]
         public int? LifetimeReviewCycleBudget { get; init; }
 
-        [CommandOption("--spend-budget <TOKENS>")]
+        [CommandOption("--spend-budget <TOKENS|none>")]
         [Description(
             "This node's periodic token-spend budget (DaemonOptions.SpendBudgetTokens, backlog: spend-governor "
             + "step three) — once the current period's recorded spend reaches this many input tokens (fresh, "
@@ -140,8 +149,11 @@ public sealed class ConfigSetCommand : Hall9kAsyncCommand<ConfigSetCommand.Setti
             + "is deliberately not attempted, since it would smuggle in the price list #30 forbids; h9k config "
             + "show's per-model breakdown is what makes a later informed choice possible. Never kills or parks "
             + "running work, and never declines a review or fix session inside a run already claimed — this gates "
-            + "claiming a new task only. Pair with --spend-period; omit both to leave dispatch unbudgeted.")]
-        public long? SpendBudget { get; init; }
+            + "claiming a new task only. Pair with --spend-period; omit both to leave dispatch unbudgeted. Unlike "
+            + "the four review-cycle caps above, this one has a real way back once set: pass 'none' to clear it "
+            + "and restore unbudgeted dispatch — there is no compiled default token count to fall back to the "
+            + "way those caps fall back to their own number.")]
+        public string? SpendBudget { get; init; }
 
         [CommandOption("--spend-period <day|week>")]
         [Description(
@@ -257,11 +269,16 @@ public sealed class ConfigSetCommand : Hall9kAsyncCommand<ConfigSetCommand.Setti
             throw new DomainValidationException("--lifetime-review-cycle-budget must be at least 1.");
         }
 
-        if (settings.SpendBudget is { } spendBudget && spendBudget < 0)
+        if (settings.SpendBudget is { } spendBudgetRaw
+            && !string.Equals(spendBudgetRaw, SpendBudgetNoneWord, StringComparison.OrdinalIgnoreCase)
+            && (!long.TryParse(spendBudgetRaw, out long spendBudget) || spendBudget < 0))
         {
             throw new DomainValidationException(
-                "--spend-budget must be at least 0 tokens — a budget of 0 is a legitimate (if extreme) throttle "
-                + "that pauses dispatch for the whole period, but a negative one is not a token count.");
+                "--spend-budget must be a non-negative whole number of tokens, or 'none' to clear it back to "
+                + "unbudgeted dispatch. A budget of 0 is a legitimate (if extreme) throttle: it pauses dispatch "
+                + "for the whole period, and stays paused every period after that — it does not lift itself when "
+                + "the period rolls, so change it by hand (or clear it with 'none') when you are done throttling. "
+                + "A negative value is not a token count at all.");
         }
 
         if (settings.SpendPeriod is { } spendPeriod
@@ -348,10 +365,19 @@ public sealed class ConfigSetCommand : Hall9kAsyncCommand<ConfigSetCommand.Setti
             changed.Add($"lifetime-review-cycle-budget = {lifetimeBudget}");
         }
 
-        if (settings.SpendBudget is { } spendBudget)
+        if (settings.SpendBudget is { } spendBudgetRaw)
         {
-            operating.SpendBudgetTokens = spendBudget;
-            changed.Add($"spend-budget = {spendBudget} tokens");
+            if (string.Equals(spendBudgetRaw, SpendBudgetNoneWord, StringComparison.OrdinalIgnoreCase))
+            {
+                operating.SpendBudgetTokens = null;
+                changed.Add("spend-budget = (cleared — dispatch is unbudgeted)");
+            }
+            else
+            {
+                long spendBudget = long.Parse(spendBudgetRaw, CultureInfo.InvariantCulture);
+                operating.SpendBudgetTokens = spendBudget;
+                changed.Add($"spend-budget = {spendBudget} tokens");
+            }
         }
 
         if (settings.SpendPeriod is { } spendPeriod)

@@ -339,7 +339,6 @@ public sealed class DispatchEngine(
         await using IDocumentSession session = store.LightweightSession();
 
         NodeLoad load = await MeasureLoadAsync(session, cancellationToken);
-        bool spendExhausted = await SpendBudgetExhaustedAsync(session, cancellationToken);
 
         Guid ownerId = node.OwnerId;
 
@@ -369,6 +368,14 @@ public sealed class DispatchEngine(
             .ThenBy(t => t.AddedAt)
             .Select(t => t.Id)
             .ToListAsync(cancellationToken);
+
+        // Worth the scan only when something could actually be claimed: an idle sweep with
+        // nothing queued, or a node already at its concurrency ceiling, would otherwise
+        // materialize a full period's worth of TokensRecorded events for a decision that changes
+        // nothing about this sweep's outcome — paid every PollInterval regardless (independent
+        // pre-PR review, cycle 1, adversarial lens).
+        bool spendExhausted = queued.Count > 0 && load.Capacity > 0
+            && await SpendBudgetExhaustedAsync(session, cancellationToken);
 
         List<ClaimedWork> claimed = [];
         List<Guid> deferredByCeiling = [];
@@ -559,6 +566,8 @@ public sealed class DispatchEngine(
             LiveRuns = load.LiveRuns,
             MaxConcurrentRuns = load.MaxConcurrentRuns,
             ObservedAt = now,
+            SpendBudgetTokens = _options.SpendBudgetTokens,
+            SpendPeriod = _options.SpendPeriod,
         });
         await session.SaveChangesAsync(cancellationToken);
     }

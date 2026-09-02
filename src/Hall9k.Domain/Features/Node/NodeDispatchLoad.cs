@@ -40,4 +40,20 @@ public sealed class NodeDispatchLoad
     /// stopped (AGENTS.md: never guess at unobserved facts).
     /// </summary>
     public DateTimeOffset ObservedAt { get; set; }
+
+    /// <summary>
+    /// This node's periodic token-spend budget exactly as the sweep's own <c>DaemonOptions</c>
+    /// carries it (Decisions Log #113) — null when this node's daemon is unbudgeted. Frozen at
+    /// daemon startup, the same as every value <c>DaemonOptionsBinding.ResolverOwnedKeys</c>
+    /// excludes from <c>ConfigurationBinder</c>, so a config-file edit an operator makes without
+    /// restarting the daemon shows up here as exactly what the dispatcher is still enforcing —
+    /// never what the file now says. <c>h9k status</c> reads this rather than re-resolving the
+    /// config file fresh, for the identical reason <see cref="MaxConcurrentRuns"/> is published
+    /// rather than re-derived: the board and the dispatcher must not disagree about whether a
+    /// budget is even in force (independent pre-PR review, cycle 1, both lenses).
+    /// </summary>
+    public long? SpendBudgetTokens { get; set; }
+
+    /// <summary>The window <see cref="SpendBudgetTokens"/> resets on ("day" or "week"), carried alongside it for the same reason.</summary>
+    public string SpendPeriod { get; set; } = string.Empty;
 }

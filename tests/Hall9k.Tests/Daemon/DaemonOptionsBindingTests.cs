@@ -140,7 +140,64 @@ public sealed class DaemonOptionsBindingTests
             + "naming it again here as an unread source would contradict that explanation");
     }
 
-    private static OperatingSettingsReport ReportWithCeiling(int maxConcurrentTaskRuns, bool shadowsConfigFileValue = false) =>
+    /// <summary>
+    /// Named after the daemon's own <c>ConfigurationBinder</c> having no conversion for a nullable
+    /// <c>long?</c>, unlike every other resolver-owned setting here: null means "the resolver
+    /// answered no budget", which is itself a value <see cref="AddIfIgnored"/>-equivalent checks
+    /// must compare against, not an "unset, skip this assertion" sentinel the way it is for the
+    /// review-cycle caps below.
+    /// </summary>
+    [Fact]
+    public void A_spend_budget_value_from_outside_the_resolvers_own_sources_is_named_as_ignored()
+    {
+        IConfigurationSection section = Section(("SpendBudgetTokens", "5000000"));
+        OperatingSettingsReport report = ReportWithCeiling(maxConcurrentTaskRuns: 1, spendBudgetTokens: 1000);
+
+        IReadOnlyList<string> messages = DaemonOptionsBinding.DescribeConfigurationSourcesTheResolverIgnores(section, report);
+
+        messages.Should().ContainSingle(message =>
+            message.Contains("SpendBudgetTokens") && message.Contains("5000000") && message.Contains("1000"),
+            "the daemon dispatches at the resolver's answer (1000), not the merged configuration's own value "
+            + "(5000000), and nothing said so before this check existed");
+    }
+
+    [Fact]
+    public void A_spend_budget_value_that_agrees_with_the_resolvers_answer_is_silent()
+    {
+        IConfigurationSection section = Section(("SpendBudgetTokens", "1000"));
+        OperatingSettingsReport report = ReportWithCeiling(maxConcurrentTaskRuns: 1, spendBudgetTokens: 1000);
+
+        IReadOnlyList<string> messages = DaemonOptionsBinding.DescribeConfigurationSourcesTheResolverIgnores(section, report);
+
+        messages.Should().BeEmpty();
+    }
+
+    [Fact]
+    public void A_spend_period_value_from_outside_the_resolvers_own_sources_is_named_as_ignored()
+    {
+        IConfigurationSection section = Section(("SpendPeriod", "day"));
+        OperatingSettingsReport report = ReportWithCeiling(maxConcurrentTaskRuns: 1, spendPeriod: "week");
+
+        IReadOnlyList<string> messages = DaemonOptionsBinding.DescribeConfigurationSourcesTheResolverIgnores(section, report);
+
+        messages.Should().ContainSingle(message =>
+            message.Contains("SpendPeriod") && message.Contains("day") && message.Contains("week"));
+    }
+
+    [Fact]
+    public void A_spend_period_value_that_agrees_with_the_resolvers_answer_is_silent_case_insensitively()
+    {
+        IConfigurationSection section = Section(("SpendPeriod", "WEEK"));
+        OperatingSettingsReport report = ReportWithCeiling(maxConcurrentTaskRuns: 1, spendPeriod: "week");
+
+        IReadOnlyList<string> messages = DaemonOptionsBinding.DescribeConfigurationSourcesTheResolverIgnores(section, report);
+
+        messages.Should().BeEmpty();
+    }
+
+    private static OperatingSettingsReport ReportWithCeiling(
+        int maxConcurrentTaskRuns, bool shadowsConfigFileValue = false, long? spendBudgetTokens = null,
+        string spendPeriod = OperatingSettings.DefaultSpendPeriod) =>
         new(
             new ResolvedSetting<int>(OperatingSettings.DefaultMaxConcurrentAgentSessions, SettingOrigin.Default, null),
             false,
@@ -156,6 +213,6 @@ public sealed class DaemonOptionsBindingTests
             new ResolvedSetting<int>(OperatingSettings.DefaultMaxAdversarialReviewCycles, SettingOrigin.Default, null),
             new ResolvedSetting<int>(OperatingSettings.DefaultMaxFinalFullPassRounds, SettingOrigin.Default, null),
             new ResolvedSetting<int>(OperatingSettings.DefaultLifetimeReviewCycleBudget, SettingOrigin.Default, null),
-            new ResolvedSetting<long?>(null, SettingOrigin.Default, null),
-            new ResolvedSetting<string>(OperatingSettings.DefaultSpendPeriod, SettingOrigin.Default, null));
+            new ResolvedSetting<long?>(spendBudgetTokens, SettingOrigin.Default, null),
+            new ResolvedSetting<string>(spendPeriod, SettingOrigin.Default, null));
 }

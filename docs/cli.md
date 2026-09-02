@@ -285,12 +285,21 @@ Covered in [operations.md](operations.md#the-daemon-lifecycle) and [INSTALL.md](
 The node ceiling (`--max-concurrent-task-runs`, counted directly in task runs), the per-run
 session cap's global default (`--session-cap-per-run`, overridable per task with
 `h9k task set-session-cap` even mid-run), the per-role model overrides, the interactive-claim
-staleness threshold, and the node-level review-cycle caps (compliance, adversarial, final-full-pass,
+staleness threshold, the node-level review-cycle caps (compliance, adversarial, final-full-pass,
 and the task-lifetime budget — each overridable per project, and per task too via
-`h9k task set-review-caps`), durable in the platform config file so a fresh machine or an
-autostarted daemon runs with the operator's settings without an environment variable ritual.
-`show` resolves and names each setting's origin (environment variable, config file, or built-in
-default); `set` merges a change into the file. See
+`h9k task set-review-caps`), and a periodic token-spend budget (`--spend-budget <tokens|none>`
+paired with `--spend-period <day|week>`, backlog: spend-governor step three, Decisions Log #113) —
+once the current period's recorded spend reaches the budget, the dispatcher declines to claim
+further queued work until the period rolls, gating claims only and never touching work already
+claimed; `--spend-budget none` clears it back to unbudgeted, the only one of these settings with a
+real way back once set, since "no budget" has no compiled default number the way the review caps
+do. Every one of these is durable in the platform config file so a fresh machine or an autostarted
+daemon runs with the operator's settings without an environment variable ritual, and every one
+except the interactive-claim staleness threshold takes effect only on the daemon's next start —
+`h9k status`'s own Queued section names a stopped concurrency or spend gate honestly, but only for
+whatever a running daemon last confirmed, so raising a spent budget still needs a restart before
+the queue moves again. `show` resolves and names each setting's origin (environment variable,
+config file, or built-in default); `set` merges a change into the file. See
 [operations.md](operations.md#daemon-operating-settings).
 
 ## Identifiers

@@ -299,17 +299,49 @@ public sealed class ConfigSetCommandTests
     [Fact]
     public void A_negative_spend_budget_is_refused()
     {
-        ConfigSetCommand.Settings settings = new() { SpendBudget = -1 };
+        ConfigSetCommand.Settings settings = new() { SpendBudget = "-1" };
 
         Action act = () => ConfigSetCommand.Validate(settings);
 
-        act.Should().Throw<DomainValidationException>().WithMessage("*at least 0*");
+        act.Should().Throw<DomainValidationException>().WithMessage("*non-negative*");
+    }
+
+    [Fact]
+    public void A_non_numeric_non_none_spend_budget_is_refused()
+    {
+        ConfigSetCommand.Settings settings = new() { SpendBudget = "unlimited" };
+
+        Action act = () => ConfigSetCommand.Validate(settings);
+
+        act.Should().Throw<DomainValidationException>().WithMessage("*non-negative*");
     }
 
     [Fact]
     public void A_spend_budget_of_zero_validates_as_a_legitimate_extreme_throttle()
     {
-        ConfigSetCommand.Settings settings = new() { SpendBudget = 0 };
+        ConfigSetCommand.Settings settings = new() { SpendBudget = "0" };
+
+        Action act = () => ConfigSetCommand.Validate(settings);
+
+        act.Should().NotThrow();
+    }
+
+    [Fact]
+    public void The_zero_spend_budget_message_does_not_claim_it_clears_itself()
+    {
+        ConfigSetCommand.Settings settings = new() { SpendBudget = "-1" };
+
+        Action act = () => ConfigSetCommand.Validate(settings);
+
+        act.Should().Throw<DomainValidationException>()
+            .WithMessage("*does not lift itself when the period rolls*")
+            .WithMessage("*'none'*");
+    }
+
+    [Fact]
+    public void A_spend_budget_of_none_validates_as_the_clearing_word()
+    {
+        ConfigSetCommand.Settings settings = new() { SpendBudget = "none" };
 
         Action act = () => ConfigSetCommand.Validate(settings);
 
@@ -329,7 +361,7 @@ public sealed class ConfigSetCommandTests
     [Fact]
     public void Applying_the_spend_budget_sets_it_and_records_the_change()
     {
-        ConfigSetCommand.Settings settings = new() { SpendBudget = 5_000_000 };
+        ConfigSetCommand.Settings settings = new() { SpendBudget = "5000000" };
         OperatingSettings operating = new();
         List<string> changed = [];
 
@@ -337,6 +369,31 @@ public sealed class ConfigSetCommandTests
 
         operating.SpendBudgetTokens.Should().Be(5_000_000);
         changed.Should().ContainSingle().Which.Should().Contain("5000000");
+    }
+
+    [Fact]
+    public void Applying_none_clears_the_spend_budget_back_to_unbudgeted()
+    {
+        ConfigSetCommand.Settings settings = new() { SpendBudget = "none" };
+        OperatingSettings operating = new() { SpendBudgetTokens = 5_000_000 };
+        List<string> changed = [];
+
+        ConfigSetCommand.Apply(settings, operating, changed);
+
+        operating.SpendBudgetTokens.Should().BeNull();
+        changed.Should().ContainSingle().Which.Should().Contain("cleared");
+    }
+
+    [Fact]
+    public void Applying_none_case_insensitively_clears_the_spend_budget()
+    {
+        ConfigSetCommand.Settings settings = new() { SpendBudget = "NONE" };
+        OperatingSettings operating = new() { SpendBudgetTokens = 5_000_000 };
+        List<string> changed = [];
+
+        ConfigSetCommand.Apply(settings, operating, changed);
+
+        operating.SpendBudgetTokens.Should().BeNull();
     }
 
     [Fact]

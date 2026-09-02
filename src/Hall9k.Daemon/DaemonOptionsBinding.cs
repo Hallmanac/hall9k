@@ -52,8 +52,9 @@ internal static class DaemonOptionsBinding
     /// <summary>
     /// Names every configuration source outside <c>OperatingSettingsResolver</c>'s own env-then-
     /// config-file-then-default walk (<c>appsettings.json</c>, <c>appsettings.{Environment}.json</c>,
-    /// a command-line argument, user secrets) that sets <see cref="DaemonOptions.MaxConcurrentTaskRuns"/>
-    /// or <see cref="DaemonOptions.SessionCapPerRun"/> to a value the daemon does not actually run
+    /// a command-line argument, user secrets) that sets <see cref="DaemonOptions.MaxConcurrentTaskRuns"/>,
+    /// <see cref="DaemonOptions.SessionCapPerRun"/>, <see cref="DaemonOptions.SpendBudgetTokens"/> or
+    /// <see cref="DaemonOptions.SpendPeriod"/> to a value the daemon does not actually run
     /// on. Before Decisions Log #111 excluded these keys from Program.cs's own <c>Bind()</c> call,
     /// they bound off the whole merged <see cref="IConfiguration"/> like any other
     /// <see cref="DaemonOptions"/> member, so a value in <c>appsettings.Development.json</c> or on
@@ -90,6 +91,14 @@ internal static class DaemonOptionsBinding
         AddIfIgnored(
             section, nameof(DaemonOptions.SessionCapPerRun), "session-cap-per-run",
             "--session-cap-per-run", report.SessionCapPerRun.Value, messages);
+
+        AddIfIgnored(
+            section, nameof(DaemonOptions.SpendBudgetTokens), "spend-budget-tokens",
+            "--spend-budget", report.SpendBudgetTokens.Value, messages);
+
+        AddIfIgnored(
+            section, nameof(DaemonOptions.SpendPeriod), "spend-period",
+            "--spend-period", report.SpendPeriod.Value, messages);
         return messages;
     }
 
@@ -110,5 +119,58 @@ internal static class DaemonOptionsBinding
             + $"resolved only from the {OperatingSettingsResolver.EnvironmentPrefix}{key} environment variable and "
             + $"the platform config file (Decisions Log #111). Set it through one of those instead: "
             + $"h9k config set {flag} <n>, or export {OperatingSettingsResolver.EnvironmentPrefix}{key}=<n>.");
+    }
+
+    /// <summary>
+    /// <see cref="AddIfIgnored(IConfigurationSection, string, string, string, int, List{string})"/>'s
+    /// own check, widened for <see cref="DaemonOptions.SpendBudgetTokens"/> (Decisions Log #113):
+    /// nullable, since "no budget" is itself a meaningful resolved value here rather than a
+    /// ceiling nothing ever resolves to.
+    /// </summary>
+    private static void AddIfIgnored(
+        IConfigurationSection section, string key, string flagLabel, string flag, long? effectiveValue,
+        List<string> messages)
+    {
+        string? raw = section[key];
+        if (raw is null || !long.TryParse(raw, out long rawValue) || rawValue == effectiveValue)
+        {
+            return;
+        }
+
+        string effectiveDescription = effectiveValue is { } value
+            ? $"a budget of {value.ToString(CultureInfo.InvariantCulture)} tokens"
+            : "unbudgeted";
+        messages.Add(
+            $"{section.Path}:{key} resolves to {rawValue} through appsettings.json, a command-line argument, or "
+            + "another configuration source the daemon's operating-settings resolver does not read — the daemon "
+            + $"dispatches {effectiveDescription} instead, since {flagLabel} is "
+            + $"resolved only from the {OperatingSettingsResolver.EnvironmentPrefix}{key} environment variable and "
+            + $"the platform config file (Decisions Log #113). Set it through one of those instead: "
+            + $"h9k config set {flag} <n>, or export {OperatingSettingsResolver.EnvironmentPrefix}{key}=<n>.");
+    }
+
+    /// <summary>
+    /// <see cref="AddIfIgnored(IConfigurationSection, string, string, string, int, List{string})"/>'s
+    /// own check, widened for <see cref="DaemonOptions.SpendPeriod"/> (Decisions Log #113): a
+    /// string setting rather than a number, compared the same case-insensitive way
+    /// <c>SpendPeriod.FromInput</c> itself normalizes it.
+    /// </summary>
+    private static void AddIfIgnored(
+        IConfigurationSection section, string key, string flagLabel, string flag, string effectiveValue,
+        List<string> messages)
+    {
+        string? raw = section[key];
+        if (raw is null || string.Equals(raw, effectiveValue, StringComparison.OrdinalIgnoreCase))
+        {
+            return;
+        }
+
+        messages.Add(
+            $"{section.Path}:{key} resolves to \"{raw}\" through appsettings.json, a command-line argument, or "
+            + "another configuration source the daemon's operating-settings resolver does not read — the daemon "
+            + $"dispatches on \"{effectiveValue}\" instead, since {flagLabel} is "
+            + $"resolved only from the {OperatingSettingsResolver.EnvironmentPrefix}{key} environment variable and "
+            + $"the platform config file (Decisions Log #113). Set it through one of those instead: "
+            + $"h9k config set {flag} <value>, or export {OperatingSettingsResolver.EnvironmentPrefix}{key}=<value>.");
     }
 }
