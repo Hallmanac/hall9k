@@ -650,6 +650,104 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
                 + "fingerprint that was simply never observed");
     }
 
+    /// <summary>
+    /// Task: the mandatory FinalFullPass rereads only the commits no full-scope pass has already
+    /// read (Decisions Log #115). The Discovery cycle's own real HEAD, captured before any fix
+    /// lands, is what the mandatory final pass must scope its own diff instruction to — not the
+    /// whole branch again — once a fix has moved HEAD in between.
+    /// </summary>
+    [Fact]
+    public async Task Final_full_pass_scopes_its_diff_instruction_to_the_discovery_cycles_own_head()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        using DocumentStore store = NewStore();
+        (Guid taskId, Guid runId, string worktreePath, _) = await SeedVerifiedRunWithTestGateAsync(store, cts.Token);
+        string discoveryHeadSha = GitOutput(worktreePath, "rev-parse HEAD");
+
+        ScriptedExecutor executor = new(
+            "1. `Auth.cs:42` — the limiter never resets.\n\nVERDICT: needs-fixes",
+            "Nothing survived verification.\n\nVERDICT: merge-ready",
+            "Reset the limiter window.\n\nRESOLUTION: fixed",
+            // Cycle 2: only conformance is still active, so it gets one Verify pass.
+            "Criteria met.\n\nVERDICT: merge-ready",
+            // Cycle 3: the mandatory final full pass, both lenses fresh.
+            "Confirmed clean.\n\nVERDICT: merge-ready",
+            "Confirmed clean too.\n\nVERDICT: merge-ready");
+        executor.OnSpawnByIndex[2] = () => CommitDocOnlyChange(worktreePath);
+
+        bool mergeReady = await NewEngine(store, executor).ReviewAsync(runId, taskId, cts.Token);
+
+        mergeReady.Should().BeTrue();
+        executor.Spawns.Should().HaveCount(6);
+        executor.Spawns[4].Prompt.Should().Contain(
+            $"git diff {discoveryHeadSha}..HEAD",
+            "the final pass's own conformance lens must read only the commits since the Discovery "
+                + "cycle's own full-scope read, not the whole branch again");
+        executor.Spawns[5].Prompt.Should().Contain(
+            $"git diff {discoveryHeadSha}..HEAD",
+            "the final pass's own adversarial lens gets the identical scoped boundary");
+    }
+
+    /// <summary>
+    /// The degrade-rather-than-guess fallback (task: the mandatory FinalFullPass rereads only the
+    /// commits no full-scope pass has already read, Decisions Log #115): a recorded full-scope
+    /// boundary is verified against the worktree's current HEAD before it is trusted, not merely
+    /// checked for null. Simulates the gap that verification exists for — a history rewrite between
+    /// cycles (a fix session's own commit-plan autosquash, or a rebase-onto-main follow-up) that
+    /// strands the Discovery cycle's own recorded head outside HEAD's ancestry entirely — and
+    /// confirms the mandatory final pass falls back to the full base-branch diff rather than handing
+    /// the reviewer a boundary that no longer resolves.
+    /// </summary>
+    [Fact]
+    public async Task Final_full_pass_falls_back_to_the_full_diff_when_the_recorded_boundary_no_longer_resolves()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        using DocumentStore store = NewStore();
+        (Guid taskId, Guid runId, string worktreePath, _) = await SeedVerifiedRunWithTestGateAsync(store, cts.Token);
+        string discoveryHeadSha = GitOutput(worktreePath, "rev-parse HEAD");
+
+        ScriptedExecutor executor = new(
+            "1. `Auth.cs:42` — the limiter never resets.\n\nVERDICT: needs-fixes",
+            "Nothing survived verification.\n\nVERDICT: merge-ready",
+            "Reset the limiter window.\n\nRESOLUTION: fixed",
+            "Criteria met.\n\nVERDICT: merge-ready",
+            "Confirmed clean.\n\nVERDICT: merge-ready",
+            "Confirmed clean too.\n\nVERDICT: merge-ready");
+        executor.OnSpawnByIndex[2] = () => CommitDocOnlyChange(worktreePath);
+        // Fires as the cycle-2 Verify pass spawns — after that cycle's own reverify gate already
+        // ran, so only the boundary resolution ahead of the mandatory final pass sees the rewrite.
+        executor.OnSpawnByIndex[3] = () => RewriteHistoryDroppingAncestor(worktreePath, "task/review-me");
+
+        bool mergeReady = await NewEngine(store, executor).ReviewAsync(runId, taskId, cts.Token);
+
+        mergeReady.Should().BeTrue();
+        executor.Spawns.Should().HaveCount(6);
+        executor.Spawns[4].Prompt.Should().Contain(
+            "git diff origin/main...HEAD",
+            "the recorded boundary no longer resolves against HEAD after the rewrite, so the mandatory "
+                + "final pass must fall back to the full diff instruction rather than trust a stale sha");
+        executor.Spawns[4].Prompt.Should().NotContain($"git diff {discoveryHeadSha}..HEAD");
+    }
+
+    /// <summary>
+    /// Rewrites this worktree's history so <paramref name="branch"/>'s tip no longer descends from
+    /// whatever it did before — a fresh, unrelated root commit over the identical working-tree
+    /// contents, standing in for a fix session's own commit-plan autosquash or a rebase-onto-main
+    /// follow-up. The original commits still exist as unreferenced objects (git does not garbage
+    /// collect them synchronously), so this exercises "no longer an ancestor of HEAD," not "the
+    /// object is gone."
+    /// </summary>
+    private static void RewriteHistoryDroppingAncestor(string worktreePath, string branch)
+    {
+        Git(worktreePath, "checkout -q --orphan history-rewrite-tmp");
+        Git(worktreePath, "add -A");
+        Git(worktreePath, "-c user.name=Test -c user.email=test@test commit -q -m rewritten-history");
+        string newTip = GitOutput(worktreePath, "rev-parse HEAD");
+        Git(worktreePath, $"branch -q -f {branch} {newTip}");
+        Git(worktreePath, $"checkout -q {branch}");
+        Git(worktreePath, "branch -q -D history-rewrite-tmp");
+    }
+
     private async Task ChangeVerifyCommandsAsync(DocumentStore store, Guid projectId, CancellationToken cancellationToken)
     {
         await using IDocumentSession session = store.LightweightSession();

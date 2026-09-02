@@ -371,9 +371,17 @@ public sealed class ReviewEngine(
 
                         string? settlingHeadSha =
                             await GetWorktreeHeadShaAsync(context.Run.WorktreePath, cancellationToken);
+                        // The boundary this new FinalFullPass cycle's own diff instruction scopes
+                        // to (task: the mandatory FinalFullPass rereads only the commits no
+                        // full-scope pass has already read): run.LastFullScopeReviewHeadSha still
+                        // holds the value as it stood before this cycle starts, since
+                        // StartCycleIfNew only moves it once this dispatch's own ReviewDispatched
+                        // lands.
+                        string? settlingSinceSha = await ResolveFinalFullPassSinceShaAsync(
+                            context.Run.WorktreePath, run.LastFullScopeReviewHeadSha, cancellationToken);
                         if (!await DispatchReviewPassesAsync(
                             context, run.ReviewCycle + 1, ReviewLens.CycleLenses, ReviewMode.FinalFullPass,
-                            settlingHeadSha, sinceSha: null, run.CurrentCycleMode, cancellationToken))
+                            settlingHeadSha, sinceSha: settlingSinceSha, run.CurrentCycleMode, cancellationToken))
                         {
                             return false;
                         }
@@ -537,10 +545,21 @@ public sealed class ReviewEngine(
                     // holds the cycle THIS reverify is following — exactly the boundary a Verify
                     // pass's "commits since the prior cycle" instruction needs (task: review cycles
                     // after the first). reverifyHeadSha, by contrast, is recorded on the new cycle's
-                    // own ReviewDispatched, for whichever cycle comes after this one.
+                    // own ReviewDispatched, for whichever cycle comes after this one. A FinalFullPass
+                    // reverify needs a different boundary again (task: the mandatory FinalFullPass
+                    // rereads only the commits no full-scope pass has already read): the cycle
+                    // immediately before it is never itself full-scope (Discovery/FinalFullPass is
+                    // always followed by Verify, never by another FinalFullPass directly), so
+                    // run.CycleHeadSha would point at a delta-scoped Verify read rather than the last
+                    // genuinely full-scope one — run.LastFullScopeReviewHeadSha is what still holds
+                    // that, as it stood before this dispatch.
+                    string? reverifySinceSha = reverifyMode == ReviewMode.FinalFullPass
+                        ? await ResolveFinalFullPassSinceShaAsync(
+                            context.Run.WorktreePath, run.LastFullScopeReviewHeadSha, cancellationToken)
+                        : run.CycleHeadSha;
                     if (!await DispatchReviewPassesAsync(
                         context, run.ReviewCycle + 1, reverifyLenses, reverifyMode, reverifyHeadSha,
-                        sinceSha: run.CycleHeadSha, run.CurrentCycleMode, cancellationToken))
+                        sinceSha: reverifySinceSha, run.CurrentCycleMode, cancellationToken))
                     {
                         return false;
                     }
@@ -718,10 +737,20 @@ public sealed class ReviewEngine(
         // (recorded by whichever pass of it dispatched first) — the same value re-recorded here.
         // The "since" boundary a Verify top-up's prompt needs is one cycle further back, which is
         // exactly what run.PriorCycleHeadSha still holds: StartCycleIfNew only moves it when a
-        // genuinely NEW cycle starts, and this dispatch is not one.
+        // genuinely NEW cycle starts, and this dispatch is not one. A FinalFullPass top-up needs the
+        // same "one cycle further back" boundary, only for the full-scope chain rather than the
+        // per-cycle one: run.PriorFullScopeReviewHeadSha is what StartCycleIfNew captured when THIS
+        // cycle's own opening dispatch started it, held constant since — using
+        // run.LastFullScopeReviewHeadSha here instead would already read this cycle's own tip
+        // (StartCycleIfNew moved it the moment the first pass dispatched), scoping the topped-up
+        // lens to nothing new to read.
+        string? topUpSinceSha = run.CurrentCycleMode == ReviewMode.FinalFullPass
+            ? await ResolveFinalFullPassSinceShaAsync(
+                context.Run.WorktreePath, run.PriorFullScopeReviewHeadSha, cancellationToken)
+            : run.PriorCycleHeadSha;
         bool dispatched = await DispatchReviewPassesAsync(
             context, run.ReviewCycle, toDispatch, run.CurrentCycleMode, run.CycleHeadSha,
-            sinceSha: run.PriorCycleHeadSha, run.PriorCycleMode, cancellationToken);
+            sinceSha: topUpSinceSha, run.PriorCycleMode, cancellationToken);
         return dispatched ? MissingPassDispatch.Dispatched : MissingPassDispatch.Stale;
     }
 
@@ -729,14 +758,17 @@ public sealed class ReviewEngine(
     /// Reports false the moment a spawn is rejected as stale, without dispatching the rest. A
     /// <see cref="ReviewMode.Verify"/> cycle dispatches exactly one session standing in for every
     /// lens in <paramref name="lenses"/> (task: review cycles after the first); every other mode
-    /// dispatches one session per lens, as review always has. <paramref name="sinceSha"/> is only
-    /// ever read for a Verify dispatch — it is the boundary that mode's prompt reads the diff
-    /// since, distinct from <paramref name="headSha"/>, which every mode records on its own
-    /// <see cref="ReviewDispatched"/> for whichever cycle comes after it. <paramref name="priorCycleMode"/>
-    /// is the same kind of value, only read for a Verify dispatch too (cycle-4 conformance finding):
-    /// whether the cycle whose findings this pass is quoting was itself a full two-lens read or
-    /// another delta-scoped Verify pass, so that pass's prompt can say so honestly instead of always
-    /// claiming a full read happened.
+    /// dispatches one session per lens, as review always has. <paramref name="sinceSha"/> is read
+    /// by both a Verify dispatch and a <see cref="ReviewMode.FinalFullPass"/> one (task: the
+    /// mandatory FinalFullPass rereads only the commits no full-scope pass has already read) — each
+    /// against its own chain (the prior cycle for Verify, the last full-scope cycle for
+    /// FinalFullPass) — but never a <see cref="ReviewMode.Discovery"/> one, which always reads the
+    /// full base-branch diff. It is distinct from <paramref name="headSha"/>, which every mode
+    /// records on its own <see cref="ReviewDispatched"/> for whichever cycle comes after it.
+    /// <paramref name="priorCycleMode"/> is the same kind of value, only read for a Verify dispatch
+    /// too (cycle-4 conformance finding): whether the cycle whose findings this pass is quoting was
+    /// itself a full two-lens read or another delta-scoped Verify pass, so that pass's prompt can
+    /// say so honestly instead of always claiming a full read happened.
     /// </summary>
     private async Task<bool> DispatchReviewPassesAsync(
         ReviewContext context, int cycle, IReadOnlyList<ReviewLens> lenses, ReviewMode mode, string? headSha,
@@ -758,7 +790,7 @@ public sealed class ReviewEngine(
         int sessionCap = await ResolveEffectiveSessionCapAsync(context.TaskId, cancellationToken);
         foreach (ReviewLens lens in lenses.Take(sessionCap))
         {
-            if (!await DispatchReviewPassAsync(context, cycle, lens, mode, headSha, cancellationToken))
+            if (!await DispatchReviewPassAsync(context, cycle, lens, mode, headSha, sinceSha, cancellationToken))
             {
                 return false;
             }
@@ -775,7 +807,7 @@ public sealed class ReviewEngine(
     /// once-per-iteration check, which this same cycle can outlive across several lenses.
     /// </summary>
     private async Task<bool> DispatchReviewPassAsync(
-        ReviewContext context, int cycle, ReviewLens lens, ReviewMode mode, string? headSha,
+        ReviewContext context, int cycle, ReviewLens lens, ReviewMode mode, string? headSha, string? sinceSha,
         CancellationToken cancellationToken)
     {
         if (!await EnsureCurrentGenerationAsync(context, cancellationToken))
@@ -784,13 +816,18 @@ public sealed class ReviewEngine(
         }
 
         Guid sessionId = DomainId.New();
-        // Discovery and FinalFullPass both want the identical full-diff, fresh-context read
-        // (task: review cycles after the first) — the mandatory final pass is discovery-grade
-        // rigor at a later cycle number, not a different diff-reading prompt. mode only changes
-        // the fix-bar wording (Decisions Log #113, AppendFindingContract and AppendVerdictContract),
-        // so the reviewer is told the true bar rather than the ordinary cycle's.
+        // Discovery always wants the full-diff, fresh-context read (task: review cycles after the
+        // first). FinalFullPass is discovery-grade rigor at a later cycle number, but no longer the
+        // identical diff-reading prompt (task: the mandatory FinalFullPass rereads only the commits
+        // no full-scope pass has already read): sinceSha, when resolved, scopes it to the commits no
+        // earlier full-scope cycle has already read — AppendReviewMechanics decides that only for
+        // ReviewMode.FinalFullPass, so passing sinceSha here for a Discovery dispatch (always null,
+        // per every DispatchReviewPassesAsync caller) is inert. mode still changes the fix-bar
+        // wording too (Decisions Log #113, AppendFindingContract and AppendVerdictContract), so the
+        // reviewer is told the true bar rather than the ordinary cycle's.
         string prompt = AgentPromptBuilder.BuildReview(
-            context.Task, context.Project, context.Run.Branch, cycle, lens, mode, context.PriorRulings);
+            context.Task, context.Project, context.Run.Branch, cycle, lens, mode, context.PriorRulings,
+            sinceSha: sinceSha);
         ExecutorMode executorMode = context.Run.ExecutorMode;
         // Every lens is review work, so they resolve the same role in the chain (log #33) —
         // and each dispatch records the model it actually got, per pass.
@@ -2828,6 +2865,76 @@ public sealed class ReviewEngine(
 
         string? currentHeadSha = await GetWorktreeHeadShaAsync(context.Run.WorktreePath, cancellationToken);
         return currentHeadSha is not null && currentHeadSha == run.LastGateHeadSha;
+    }
+
+    /// <summary>
+    /// Resolves the boundary a <see cref="ReviewMode.FinalFullPass"/> dispatch's diff instruction
+    /// scopes to (task: the mandatory FinalFullPass rereads only the commits no full-scope pass has
+    /// already read): <paramref name="lastFullScopeHeadSha"/> when it names a commit still reachable
+    /// from this worktree's current HEAD, null otherwise. Null falls back to the full base-branch
+    /// diff instruction rather than guessing at a boundary — the same degrade-rather-than-guess rule
+    /// <see cref="TestScopeResolver"/> already follows. A recorded sha can go stale between cycles
+    /// without ever having been wrong at the time it was recorded: a fix session's own commit-plan
+    /// rebase (`absorb-review-fixes`) or a `rebase-onto-main` follow-up rewrites history, and a sha
+    /// an earlier full-scope cycle genuinely read is not the same claim as it still being an
+    /// ancestor of today's HEAD, so this is verified fresh rather than trusted at face value.
+    /// </summary>
+    private static async Task<string?> ResolveFinalFullPassSinceShaAsync(
+        string worktreePath, string? lastFullScopeHeadSha, CancellationToken cancellationToken)
+    {
+        if (lastFullScopeHeadSha is null)
+        {
+            return null;
+        }
+
+        return await HeadShaResolvesInWorktreeAsync(worktreePath, lastFullScopeHeadSha, cancellationToken)
+            ? lastFullScopeHeadSha
+            : null;
+    }
+
+    /// <summary>
+    /// Whether <paramref name="sha"/> still names a commit reachable from this worktree's current
+    /// HEAD — `git merge-base --is-ancestor` fails both when the commit no longer exists at all (a
+    /// history rewrite dropped it) and when it exists but sits outside HEAD's own ancestry (a
+    /// rebase replayed the branch onto different history), either of which makes a `sha..HEAD`
+    /// range meaningless. False on any failure, mirroring <see cref="GetWorktreeHeadShaAsync"/>'s
+    /// own never-guess posture.
+    /// </summary>
+    private static async Task<bool> HeadShaResolvesInWorktreeAsync(
+        string worktreePath, string sha, CancellationToken cancellationToken)
+    {
+        try
+        {
+            using Process process = new()
+            {
+                StartInfo = new ProcessStartInfo
+                {
+                    FileName = "git",
+                    WorkingDirectory = worktreePath,
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true,
+                    UseShellExecute = false,
+                },
+            };
+            process.StartInfo.ArgumentList.Add("merge-base");
+            process.StartInfo.ArgumentList.Add("--is-ancestor");
+            process.StartInfo.ArgumentList.Add(sha);
+            process.StartInfo.ArgumentList.Add("HEAD");
+            process.Start();
+            // Both streams started before the wait (GetWorktreeHeadShaAsync's own pattern):
+            // stderr is never read below, but leaving it undrained lets git block on a full pipe
+            // with WaitForExitAsync never returning.
+            Task<string> standardOutput = process.StandardOutput.ReadToEndAsync(cancellationToken);
+            Task<string> standardError = process.StandardError.ReadToEndAsync(cancellationToken);
+            await process.WaitForExitAsync(cancellationToken);
+            await standardOutput;
+            await standardError;
+            return process.ExitCode == 0;
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            return false;
+        }
     }
 
     /// <summary>
