@@ -565,6 +565,117 @@ public sealed class PlatformConfigFileTests : IDisposable
     /// <c>File.ReadAllTextAsync</c>, so an unreadable file crashed both diagnostic commands with a
     /// raw stack trace instead of the reported failure this method promises.
     /// </summary>
+    /// <summary>
+    /// Unlike the three concurrency settings, the four review-cycle caps are still bound through
+    /// the daemon's own <c>ConfigurationBinder</c> (<c>DaemonOptionsBinding.ResolverOwnedKeys</c>
+    /// does not exclude them), so a genuinely unparseable scalar for one of them really does crash
+    /// daemon startup and must be reported as <see cref="ConfigFileProblemConsequence.DaemonFailsToStart"/>,
+    /// not merely ignored. Origin: independent pre-PR review, cycle 1, adversarial lens — this
+    /// classification (<see cref="PlatformConfigFile"/>'s <c>DaemonFailsToStartOn</c>) had no test
+    /// coverage at all despite citing this exact scenario in its own doc comment.
+    /// </summary>
+    [Fact]
+    public async Task A_non_numeric_string_for_a_review_cycle_cap_crashes_the_daemon()
+    {
+        await File.WriteAllTextAsync(
+            Hall9kDatabase.ConfigFile, """{"hall9k": {"maxComplianceReviewCycles": "four"}}""");
+
+        ConfigFileReadResult result = await PlatformConfigFile.TryReadOperatingSettingsAsync(CancellationToken.None);
+
+        result.Problem.Should().NotBeNull();
+        result.Problem!.Consequence.Should().Be(ConfigFileProblemConsequence.DaemonFailsToStart,
+            "ConfigurationBinder still binds this leaf directly and throws converting a non-numeric string");
+    }
+
+    /// <summary>
+    /// The reverse shape from the test above: an empty JSON object is flattened by
+    /// <c>JsonConfigurationFileParser</c> into nested keys rather than a leaf value, so
+    /// <c>ConfigurationBinder</c> finds nothing to convert here and does not crash — but the same
+    /// non-nullable-<c>int</c> explicit-value handling that zeroes <c>maxConcurrentAgentSessions</c>
+    /// for this shape (covered above) applies here too, since <c>maxComplianceReviewCycles</c> is
+    /// one of <see cref="PlatformConfigFile"/>'s own <c>IntBinderQuirkKeys</c>.
+    /// </summary>
+    [Fact]
+    public async Task An_empty_object_for_a_review_cycle_cap_is_reported_as_ignored_but_binds_to_zero()
+    {
+        await File.WriteAllTextAsync(
+            Hall9kDatabase.ConfigFile, """{"hall9k": {"maxComplianceReviewCycles": {}}}""");
+
+        ConfigFileReadResult result = await PlatformConfigFile.TryReadOperatingSettingsAsync(CancellationToken.None);
+
+        result.Problem.Should().NotBeNull();
+        result.Problem!.Consequence.Should().Be(ConfigFileProblemConsequence.SettingIsIgnored,
+            "the daemon starts normally on this shape rather than crashing");
+        result.Settings.MaxComplianceReviewCycles.Should().Be(0,
+            "ConfigurationBinder's explicit-value handling resolves a childless object to zero for a "
+            + "non-nullable int property, not to the type's declared default of three");
+    }
+
+    /// <summary>
+    /// Unlike an empty object, an empty JSON array still gets a direct entry at this leaf's own key
+    /// (the empty string), so <c>ConfigurationBinder</c> does find something to convert and fails
+    /// on it — the same reversal <c>maxConcurrentAgentSessions</c> used to exhibit before Decisions
+    /// Log #111's follow-up excluded it from the binder call entirely. That exclusion does not
+    /// apply to the review-cycle caps, so this shape genuinely crashes the daemon for them.
+    /// </summary>
+    [Fact]
+    public async Task An_empty_array_for_a_review_cycle_cap_crashes_the_daemon()
+    {
+        await File.WriteAllTextAsync(
+            Hall9kDatabase.ConfigFile, """{"hall9k": {"maxComplianceReviewCycles": []}}""");
+
+        ConfigFileReadResult result = await PlatformConfigFile.TryReadOperatingSettingsAsync(CancellationToken.None);
+
+        result.Problem.Should().NotBeNull();
+        result.Problem!.Consequence.Should().Be(ConfigFileProblemConsequence.DaemonFailsToStart,
+            "an empty array gets a direct leaf entry ConfigurationBinder tries and fails to convert, unlike an "
+            + "empty object");
+    }
+
+    /// <summary>
+    /// A non-empty object or array routes into nested keys rather than a leaf value, so
+    /// <c>ConfigurationBinder</c> leaves the property genuinely untouched at its built-in default —
+    /// the same non-crashing, non-zeroing outcome the concurrency-ceiling sibling test above
+    /// documents, exercised here for a leaf that remains bound through the daemon's
+    /// <c>ConfigurationBinder</c> call.
+    /// </summary>
+    [Fact]
+    public async Task A_non_empty_container_for_a_review_cycle_cap_is_reported_as_ignored_and_left_unset()
+    {
+        await File.WriteAllTextAsync(
+            Hall9kDatabase.ConfigFile, """{"hall9k": {"maxComplianceReviewCycles": {"anything": "goes"}}}""");
+
+        ConfigFileReadResult result = await PlatformConfigFile.TryReadOperatingSettingsAsync(CancellationToken.None);
+
+        result.Problem.Should().NotBeNull();
+        result.Problem!.Consequence.Should().Be(ConfigFileProblemConsequence.SettingIsIgnored,
+            "ConfigurationBinder finds children under this key rather than a leaf value, so it does not crash");
+        result.Settings.MaxComplianceReviewCycles.Should().BeNull(
+            "a non-empty container leaves the property genuinely unset rather than zeroed");
+    }
+
+    /// <summary>
+    /// The retry-reclassification <c>RecoverSectionIgnoring</c> applies (a second malformed leaf,
+    /// found only once recovery retries with the first removed) crashing the daemon on the *second*
+    /// leaf rather than the first — the same scenario the concurrency-ceiling tests above cover,
+    /// but for a pair where the crashing leaf is a review-cycle cap rather than a now-excluded
+    /// concurrency setting.
+    /// </summary>
+    [Fact]
+    public async Task A_second_malformed_leaf_that_is_a_review_cycle_cap_is_reported_as_a_daemon_crash()
+    {
+        await File.WriteAllTextAsync(
+            Hall9kDatabase.ConfigFile,
+            """{"hall9k": {"defaultModel": {}, "maxComplianceReviewCycles": "four"}}""");
+
+        ConfigFileReadResult result = await PlatformConfigFile.TryReadOperatingSettingsAsync(CancellationToken.None);
+
+        result.Problem.Should().NotBeNull();
+        result.Problem!.Consequence.Should().Be(ConfigFileProblemConsequence.DaemonFailsToStart,
+            "the second malformed leaf, found only on retry, is one ConfigurationBinder itself throws on, so "
+            + "the verdict must revisit rather than keep the first exception's merely-ignored classification");
+    }
+
     [Fact]
     public async Task An_unreadable_config_file_is_a_diagnosable_exception_rather_than_a_raw_crash()
     {
