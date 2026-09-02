@@ -46,6 +46,15 @@ internal sealed record SpendPressure(
         $"waiting for the spend budget to roll — {SpentTokens:N0} of {BudgetTokens ?? 0:N0} tokens spent this "
         + $"{Period}, rolls {NextRollover:u}";
 
+    /// <summary>
+    /// One line per model with recorded spend this period, in the shared format <c>h9k status</c>
+    /// and <c>h9k config show</c> both print beneath <see cref="SummaryLine"/> — kept here so the
+    /// two surfaces cannot drift into two different renderings of the same figure.
+    /// </summary>
+    public IReadOnlyList<string> ByModelLines =>
+        [.. ByModel.Select(entry =>
+            $"  {(entry.Model == AgentModel.Unknown ? "(unknown model)" : entry.Model.Value)}: {entry.TotalInputTokens:N0} tokens")];
+
     /// <summary>The observability line shown regardless of whether a budget is set, confirmed, or neither.</summary>
     public string SummaryLine => (BudgetTokens, BudgetIsEnforced) switch
     {
@@ -61,14 +70,21 @@ internal sealed record SpendPressure(
     /// A change to an already-enforced budget is a second transition <see cref="SummaryLine"/>'s
     /// own set-but-not-yet-confirmed branch does not cover, because that branch only fires when
     /// <see cref="BudgetIsEnforced"/> is false — here it is still true, on the daemon's old value,
-    /// while the config file already holds a different one nothing has restarted onto yet. Without
-    /// this note the two figures sit side by side on <c>h9k config show</c> (this line, and
+    /// while this shell resolves a different one. Without this note the two figures sit side by
+    /// side on <c>h9k config show</c> (this line, and
     /// <c>OperatingSettingsRendering.DescribeSpendBudgetTokens</c>'s row) with nothing saying which
-    /// one is actually in force.
+    /// one is actually in force. Fires on a resolved <c>null</c> too — clearing an already-enforced
+    /// budget (<c>h9k config set --spend-budget none</c>) is the same disagreement, not a case the
+    /// prior non-null-only check should have let through. The wording does not assume a pending
+    /// file edit is the cause: the daemon's own environment can carry
+    /// <c>Hall9k__SpendBudgetTokens</c> while this shell's does not, in which case "restart the
+    /// daemon" is the wrong remedy, so the note names the disagreement rather than a diagnosis.
     /// </summary>
     private string PendingChangeNote(long enforcedBudget) =>
-        ConfiguredBudgetTokens is { } configured && configured != enforcedBudget
-            ? $" — config now says {configured:N0}; not yet in force, restart the daemon to apply it"
+        ConfiguredBudgetTokens != enforcedBudget
+            ? $" — this shell resolves {(ConfiguredBudgetTokens is { } configured ? $"{configured:N0}" : "no budget")}, "
+                + "which differs from what the daemon is enforcing; restart the daemon if a config change should "
+                + "take effect, or check whether it sees a different environment"
             : string.Empty;
 
     public static async Task<SpendPressure> ReadAsync(
