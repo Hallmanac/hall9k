@@ -196,6 +196,27 @@ public sealed class DaemonOptionsBindingTests
     }
 
     /// <summary>
+    /// The self-contradiction the independent pre-PR review caught (cycle 3, conformance lens):
+    /// <c>SpendPeriod.FromInput</c> trims before normalizing, so a whitespace-padded value it
+    /// accepts as-is (an operator's copy-pasted "week " with a trailing space) resolves without
+    /// being explained as unusable — this check's own comparison must trim the same way, or it
+    /// reports a value the daemon is actually running on as arriving from a source the resolver
+    /// never reads.
+    /// </summary>
+    [Fact]
+    public void A_whitespace_padded_spend_period_value_that_the_resolver_accepts_after_trimming_is_silent()
+    {
+        IConfigurationSection section = Section(("SpendPeriod", "week "));
+        OperatingSettingsReport report = ReportWithCeiling(maxConcurrentTaskRuns: 1, spendPeriod: "week");
+
+        IReadOnlyList<string> messages = DaemonOptionsBinding.DescribeConfigurationSourcesTheResolverIgnores(section, report);
+
+        messages.Should().BeEmpty(
+            "SpendPeriod.FromInput trims before comparing, so the daemon is genuinely running on the "
+            + "resolver's answer and there is nothing to report as ignored");
+    }
+
+    /// <summary>
     /// The self-contradiction the independent pre-PR review caught (cycle 2, adversarial lens): a
     /// parseable-but-unrecognized <c>Hall9k__SpendPeriod</c> value is rejected by
     /// <c>OperatingSettingsResolver.ResolveSpendPeriod</c> and explained in

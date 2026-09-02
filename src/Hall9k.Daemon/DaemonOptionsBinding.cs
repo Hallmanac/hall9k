@@ -204,7 +204,10 @@ internal static class DaemonOptionsBinding
     /// <see cref="AddIfIgnored(IConfigurationSection, string, string, string, int, List{string})"/>'s
     /// own check, widened for <see cref="DaemonOptions.SpendPeriod"/> (Decisions Log #113): a
     /// string setting rather than a number, compared the same case-insensitive way
-    /// <c>SpendPeriod.FromInput</c> itself normalizes it.
+    /// <c>SpendPeriod.FromInput</c> itself normalizes it — trimmed the same way too, so a
+    /// whitespace-padded value <c>SpendPeriod.FromInput</c> accepts as-is is not reported as
+    /// coming from a source the resolver never reads (independent pre-PR review, cycle 3,
+    /// conformance lens).
     /// </summary>
     private static void AddIfIgnored(
         IConfigurationSection section, string key, string flagLabel, string flag, string effectiveValue,
@@ -212,7 +215,7 @@ internal static class DaemonOptionsBinding
         List<string> messages)
     {
         string? raw = section[key];
-        if (raw is null || string.Equals(raw, effectiveValue, StringComparison.OrdinalIgnoreCase))
+        if (raw is null || string.Equals(raw.Trim(), effectiveValue, StringComparison.OrdinalIgnoreCase))
         {
             return;
         }

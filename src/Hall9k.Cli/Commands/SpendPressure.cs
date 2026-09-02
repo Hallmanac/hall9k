@@ -27,7 +27,6 @@ internal sealed record SpendPressure(
     long SpentTokens,
     long? BudgetTokens,
     IReadOnlyList<PeriodSpendByModel> ByModel,
-    DateTimeOffset PeriodStart,
     DateTimeOffset NextRollover,
     string Period,
     bool BudgetIsEnforced,
@@ -107,7 +106,7 @@ internal sealed record SpendPressure(
         DateTimeOffset periodStart = period.StartOf(now);
         PeriodSpend spend = await PeriodSpend.ReadAsync(session, periodStart, cancellationToken);
         return new SpendPressure(
-            spend.TotalInputTokens, budgetTokens, spend.ByModel, periodStart,
+            spend.TotalInputTokens, budgetTokens, spend.ByModel,
             period.NextRolloverAfter(now), period.Value, budgetIsEnforced, report.SpendBudgetTokens.Value,
             report.SpendPeriod.Value);
     }
