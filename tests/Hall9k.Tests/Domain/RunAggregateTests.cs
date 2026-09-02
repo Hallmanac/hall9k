@@ -1193,7 +1193,9 @@ public sealed class RunAggregateTests
     /// since they move on every cycle regardless of mode, and the cycle immediately before any
     /// FinalFullPass dispatch is not guaranteed to be full-scope itself — usually one or more
     /// Verify cycles sit in between, though the empty-terminal case can reach a FinalFullPass
-    /// straight from a prior one with no Verify between them.
+    /// straight from a prior one with no Verify between them. It also must not move until the
+    /// cycle actually DELIVERS a readable verdict from every lens it dispatched (independent
+    /// pre-PR review, cycle 1 adversarial finding) — dispatch alone is not enough.
     /// </summary>
     [Fact]
     public void Last_full_scope_review_head_sha_survives_verify_cycles_and_ignores_them()
@@ -1201,42 +1203,74 @@ public sealed class RunAggregateTests
         RunAggregate run = new();
         Guid id = DomainId.New();
 
-        // Cycle 1: Discovery — a full-scope read.
+        // Cycle 1: Discovery — a full-scope read, but the boundary must not move on dispatch
+        // alone, and not until BOTH lenses have answered readably.
         run.Apply(new ReviewDispatched(
-            id, DomainId.New(), Cycle: 1, ProcessId: 5001, Now, Now, Mode: ReviewMode.Discovery, HeadSha: "sha-discovery"));
-        run.LastFullScopeReviewHeadSha.Should().Be("sha-discovery");
+            id, DomainId.New(), Cycle: 1, ProcessId: 5001, Now, Now, Mode: ReviewMode.Discovery,
+            Lens: ReviewLens.Conformance, HeadSha: "sha-discovery"));
+        run.Apply(new ReviewDispatched(
+            id, DomainId.New(), Cycle: 1, ProcessId: 5011, Now, Now, Mode: ReviewMode.Discovery,
+            Lens: ReviewLens.Adversarial, HeadSha: "sha-discovery"));
+        run.LastFullScopeReviewHeadSha.Should().BeNull("dispatch alone confirms nothing was actually read yet");
+        run.Apply(new ReviewPassCompleted(id, 1, ReviewLens.Conformance, ReviewVerdict.MergeReady, Now));
+        run.LastFullScopeReviewHeadSha.Should().BeNull("the adversarial lens has not answered yet");
+        run.Apply(new ReviewPassCompleted(id, 1, ReviewLens.Adversarial, ReviewVerdict.MergeReady, Now));
+        run.LastFullScopeReviewHeadSha.Should().Be(
+            "sha-discovery", "both lenses answered readably, so this cycle's full-scope read is now confirmed");
 
-        // Cycle 2: Verify — a delta-scoped read, must not move the full-scope boundary.
+        // Cycle 2: Verify — a delta-scoped read, must not move the full-scope boundary even once
+        // its own pass concludes.
         run.Apply(new ReviewDispatched(
-            id, DomainId.New(), Cycle: 2, ProcessId: 5002, Now, Now, Mode: ReviewMode.Verify, HeadSha: "sha-verify-1"));
+            id, DomainId.New(), Cycle: 2, ProcessId: 5002, Now, Now, Mode: ReviewMode.Verify,
+            Lens: ReviewLens.Verify, HeadSha: "sha-verify-1"));
+        run.Apply(new ReviewPassCompleted(id, 2, ReviewLens.Verify, ReviewVerdict.MergeReady, Now));
         run.LastFullScopeReviewHeadSha.Should().Be(
             "sha-discovery", "a Verify cycle never counts as a full-scope read");
 
         // Cycle 3: another Verify — still must not move it.
         run.Apply(new ReviewDispatched(
-            id, DomainId.New(), Cycle: 3, ProcessId: 5003, Now, Now, Mode: ReviewMode.Verify, HeadSha: "sha-verify-2"));
+            id, DomainId.New(), Cycle: 3, ProcessId: 5003, Now, Now, Mode: ReviewMode.Verify,
+            Lens: ReviewLens.Verify, HeadSha: "sha-verify-2"));
+        run.Apply(new ReviewPassCompleted(id, 3, ReviewLens.Verify, ReviewVerdict.MergeReady, Now));
         run.LastFullScopeReviewHeadSha.Should().Be(
             "sha-discovery", "a second consecutive Verify cycle still never counts as full-scope");
 
         // Cycle 4: the mandatory FinalFullPass — its own boundary is the last full-scope read
-        // (cycle 1's Discovery), not cycle 3's Verify head.
+        // (cycle 1's Discovery), not cycle 3's Verify head, and it moves only once both lenses answer.
         run.Apply(new ReviewDispatched(
-            id, DomainId.New(), Cycle: 4, ProcessId: 5004, Now, Now, Mode: ReviewMode.FinalFullPass, HeadSha: "sha-ffp-1"));
+            id, DomainId.New(), Cycle: 4, ProcessId: 5004, Now, Now, Mode: ReviewMode.FinalFullPass,
+            Lens: ReviewLens.Conformance, HeadSha: "sha-ffp-1"));
+        run.Apply(new ReviewDispatched(
+            id, DomainId.New(), Cycle: 4, ProcessId: 5014, Now, Now, Mode: ReviewMode.FinalFullPass,
+            Lens: ReviewLens.Adversarial, HeadSha: "sha-ffp-1"));
+        run.LastFullScopeReviewHeadSha.Should().Be(
+            "sha-discovery", "cycle 4 has not delivered a verdict yet");
+        run.Apply(new ReviewPassCompleted(id, 4, ReviewLens.Conformance, ReviewVerdict.MergeReady, Now));
+        run.Apply(new ReviewPassCompleted(id, 4, ReviewLens.Adversarial, ReviewVerdict.MergeReady, Now));
         run.LastFullScopeReviewHeadSha.Should().Be(
             "sha-ffp-1", "FinalFullPass is itself a full-scope read, so it becomes the new boundary for whatever reads next");
 
         // A same-cycle top-up (ReviewEngine.DispatchMissingPassesAsync) re-dispatches into the SAME
         // cycle — it must not move the full-scope boundary again.
         run.Apply(new ReviewDispatched(
-            id, DomainId.New(), Cycle: 4, ProcessId: 5005, Now, Now, Mode: ReviewMode.FinalFullPass, HeadSha: "sha-ffp-1"));
+            id, DomainId.New(), Cycle: 4, ProcessId: 5005, Now, Now, Mode: ReviewMode.FinalFullPass,
+            Lens: ReviewLens.Adversarial, HeadSha: "sha-ffp-1"));
         run.LastFullScopeReviewHeadSha.Should().Be("sha-ffp-1");
 
         // Cycle 5: Verify again (a track the final pass reawakened), cycle 6: a second FinalFullPass
         // — its own boundary is the FIRST FinalFullPass's head, not the Discovery cycle's.
         run.Apply(new ReviewDispatched(
-            id, DomainId.New(), Cycle: 5, ProcessId: 5006, Now, Now, Mode: ReviewMode.Verify, HeadSha: "sha-verify-3"));
+            id, DomainId.New(), Cycle: 5, ProcessId: 5006, Now, Now, Mode: ReviewMode.Verify,
+            Lens: ReviewLens.Verify, HeadSha: "sha-verify-3"));
+        run.Apply(new ReviewPassCompleted(id, 5, ReviewLens.Verify, ReviewVerdict.MergeReady, Now));
         run.Apply(new ReviewDispatched(
-            id, DomainId.New(), Cycle: 6, ProcessId: 5007, Now, Now, Mode: ReviewMode.FinalFullPass, HeadSha: "sha-ffp-2"));
+            id, DomainId.New(), Cycle: 6, ProcessId: 5007, Now, Now, Mode: ReviewMode.FinalFullPass,
+            Lens: ReviewLens.Conformance, HeadSha: "sha-ffp-2"));
+        run.Apply(new ReviewDispatched(
+            id, DomainId.New(), Cycle: 6, ProcessId: 5017, Now, Now, Mode: ReviewMode.FinalFullPass,
+            Lens: ReviewLens.Adversarial, HeadSha: "sha-ffp-2"));
+        run.Apply(new ReviewPassCompleted(id, 6, ReviewLens.Conformance, ReviewVerdict.MergeReady, Now));
+        run.Apply(new ReviewPassCompleted(id, 6, ReviewLens.Adversarial, ReviewVerdict.MergeReady, Now));
         run.LastFullScopeReviewHeadSha.Should().Be("sha-ffp-2");
     }
 
@@ -1245,7 +1279,9 @@ public sealed class RunAggregateTests
     /// <see cref="ReviewDispatched"/>'s own doc) must clear the full-scope boundary rather
     /// than leave a stale one standing: the daemon never guesses at an unobserved fact, and a
     /// FinalFullPass cycle recorded with no HeadSha did not provably read up to any particular
-    /// commit, so nothing later may trust it as one.
+    /// commit, so nothing later may trust it as one. The clear itself only lands once that
+    /// cycle actually concludes with a readable verdict from every lens — same rule as the
+    /// advance itself.
     /// </summary>
     [Fact]
     public void An_unresolved_head_sha_on_a_full_scope_cycle_clears_the_full_scope_boundary()
@@ -1254,17 +1290,79 @@ public sealed class RunAggregateTests
         Guid id = DomainId.New();
 
         run.Apply(new ReviewDispatched(
-            id, DomainId.New(), Cycle: 1, ProcessId: 5001, Now, Now, Mode: ReviewMode.Discovery, HeadSha: "sha-discovery"));
+            id, DomainId.New(), Cycle: 1, ProcessId: 5001, Now, Now, Mode: ReviewMode.Discovery,
+            Lens: ReviewLens.Conformance, HeadSha: "sha-discovery"));
+        run.Apply(new ReviewDispatched(
+            id, DomainId.New(), Cycle: 1, ProcessId: 5011, Now, Now, Mode: ReviewMode.Discovery,
+            Lens: ReviewLens.Adversarial, HeadSha: "sha-discovery"));
+        run.Apply(new ReviewPassCompleted(id, 1, ReviewLens.Conformance, ReviewVerdict.MergeReady, Now));
+        run.Apply(new ReviewPassCompleted(id, 1, ReviewLens.Adversarial, ReviewVerdict.MergeReady, Now));
         run.LastFullScopeReviewHeadSha.Should().Be("sha-discovery");
 
         run.Apply(new ReviewDispatched(
-            id, DomainId.New(), Cycle: 2, ProcessId: 5002, Now, Now, Mode: ReviewMode.Verify, HeadSha: "sha-verify-1"));
+            id, DomainId.New(), Cycle: 2, ProcessId: 5002, Now, Now, Mode: ReviewMode.Verify,
+            Lens: ReviewLens.Verify, HeadSha: "sha-verify-1"));
+        run.Apply(new ReviewPassCompleted(id, 2, ReviewLens.Verify, ReviewVerdict.MergeReady, Now));
+
         run.Apply(new ReviewDispatched(
-            id, DomainId.New(), Cycle: 3, ProcessId: 5003, Now, Now, Mode: ReviewMode.FinalFullPass, HeadSha: null));
+            id, DomainId.New(), Cycle: 3, ProcessId: 5003, Now, Now, Mode: ReviewMode.FinalFullPass,
+            Lens: ReviewLens.Conformance, HeadSha: null));
+        run.Apply(new ReviewDispatched(
+            id, DomainId.New(), Cycle: 3, ProcessId: 5013, Now, Now, Mode: ReviewMode.FinalFullPass,
+            Lens: ReviewLens.Adversarial, HeadSha: null));
+        run.Apply(new ReviewPassCompleted(id, 3, ReviewLens.Conformance, ReviewVerdict.MergeReady, Now));
+        run.LastFullScopeReviewHeadSha.Should().Be(
+            "sha-discovery", "the adversarial lens has not answered yet, so cycle 3 has not concluded");
+        run.Apply(new ReviewPassCompleted(id, 3, ReviewLens.Adversarial, ReviewVerdict.MergeReady, Now));
 
         run.LastFullScopeReviewHeadSha.Should().BeNull(
             "the worktree HEAD could not be read at this FinalFullPass cycle's own dispatch, so nothing "
                 + "confirms it actually read up to a known commit — a later cycle must fall back to the "
                 + "full diff instruction rather than trust a boundary this cycle never observed");
+    }
+
+    /// <summary>
+    /// Reproduces the independent pre-PR review's medium finding directly (RunAggregate.cs:862):
+    /// a Discovery cycle whose verdict never resolves — parked on VerdictMissing past its one
+    /// re-prompt — must never advance LastFullScopeReviewHeadSha, even once a human resolves the
+    /// park with needs-fixes. The pre-fix behavior advanced the boundary the moment the cycle
+    /// DISPATCHED, so a track that never actually delivered a readable verdict still narrowed
+    /// every later full-scope read past commits no reviewer was ever observed to have read.
+    /// </summary>
+    [Fact]
+    public void Last_full_scope_review_head_sha_never_advances_for_a_cycle_parked_on_a_missing_verdict()
+    {
+        RunAggregate run = new();
+        Guid id = DomainId.New();
+
+        Guid conformanceSession = DomainId.New();
+        Guid adversarialSession = DomainId.New();
+        run.Apply(new ReviewDispatched(
+            id, conformanceSession, Cycle: 1, ProcessId: 5001, Now, Now, Mode: ReviewMode.Discovery,
+            Lens: ReviewLens.Conformance, HeadSha: "sha-h1"));
+        run.Apply(new ReviewDispatched(
+            id, adversarialSession, Cycle: 1, ProcessId: 5011, Now, Now, Mode: ReviewMode.Discovery,
+            Lens: ReviewLens.Adversarial, HeadSha: "sha-h1"));
+        run.Apply(new ReviewPassCompleted(id, 1, ReviewLens.Conformance, ReviewVerdict.NeedsFixes, Now));
+        run.Apply(new ReviewPassCompleted(id, 1, ReviewLens.Adversarial, ReviewVerdict.Unknown, Now));
+        run.ReviewPhase.Should().Be(ReviewPhase.VerdictMissing);
+        run.LastFullScopeReviewHeadSha.Should().BeNull(
+            "the adversarial lens never answered readably — this cycle's own read is unconfirmed");
+
+        Guid artifactId = DomainId.New();
+        run.Apply(new ReviewVerdictReprompted(
+            id, artifactId, adversarialSession, Cycle: 1, ProcessId: 5002, Now, Now, Lens: ReviewLens.Adversarial));
+        run.Apply(new ReviewPassCompleted(id, 1, ReviewLens.Adversarial, ReviewVerdict.Unknown, Now));
+        run.ReviewPhase.Should().Be(ReviewPhase.VerdictMissing, "the one re-prompt is spent and still unreadable");
+        run.LastFullScopeReviewHeadSha.Should().BeNull("still no confirmed full-scope read");
+
+        run.Apply(new ReviewParked(id, "No parseable verdict, even after a re-prompt.", Now));
+        run.Apply(new ReviewParkResolved(
+            id, ReviewVerdict.NeedsFixes, "Judged the diff myself.", Now, DomainId.New()));
+        run.ReviewPhase.Should().Be(ReviewPhase.FixNeeded);
+        run.LastFullScopeReviewHeadSha.Should().BeNull(
+            "a human resolving the park with needs-fixes is not a reviewer confirming this cycle's own "
+                + "full-scope read — the boundary must stay unadvanced so a later full-scope pass still "
+                + "reads these commits");
     }
 }
