@@ -305,6 +305,59 @@ public sealed class JiraWriteExecutorTests
             .WithMessage("*full page*");
     }
 
+    [Fact]
+    public async Task FindByMarkerAsync_refuses_rather_than_creating_when_the_search_answer_is_unreadable()
+    {
+        // A 2xx answer that is not the expected {"issues": [...]} shape (an HTML interstitial from
+        // a corporate proxy, a blank body, a differently-shaped response) must not be read the same
+        // way as a genuine {"issues": []} — collapsing the two would let a task that already has a
+        // card get a second one filed on an unconfirmed dedup check (independent pre-PR review,
+        // both lenses, cycle 1).
+        RecordingJiraRequester requester = RecordingJiraRequester.RespondingTo(request =>
+            request.Method == HttpMethod.Post
+                ? Ok("<html>not what this endpoint should answer with</html>")
+                : throw new InvalidOperationException("must not confirm any candidate when the search itself could not be read"));
+
+        Func<Task> act = () => Executor(requester).FindByMarkerAsync(TaskId, CancellationToken.None);
+
+        (await act.Should().ThrowAsync<JiraWriteExecutionException>())
+            .WithMessage("*could not be confirmed readable*");
+    }
+
+    [Fact]
+    public async Task FindByMarkerAsync_refuses_rather_than_creating_when_a_candidates_own_readback_is_unreadable()
+    {
+        // The search itself answered readably and named a real candidate, but that candidate's own
+        // description read-back came back unreadable — this must not be read as "this candidate
+        // does not carry the marker" (which would let the search move past it, and possibly file a
+        // duplicate), the same doctrine the search's own full-page and unreadable cases already get.
+        RecordingJiraRequester requester = RecordingJiraRequester.RespondingTo(request =>
+            request.Method == HttpMethod.Post
+                ? Ok("""{"issues":[{"key":"PROJ-13"}]}""")
+                : Ok("not json at all"));
+
+        Func<Task> act = () => Executor(requester).FindByMarkerAsync(TaskId, CancellationToken.None);
+
+        (await act.Should().ThrowAsync<JiraWriteExecutionException>())
+            .WithMessage("*could not be read back to confirm*");
+    }
+
+    [Fact]
+    public async Task FindByMarkerAsync_treats_a_candidate_with_no_description_field_as_readable_and_not_carrying_the_marker()
+    {
+        // A card genuinely having no description (the field absent, or JSON null) is a real,
+        // observed fact, not an unconfirmable read — it must not be refused the same way a
+        // malformed body is.
+        RecordingJiraRequester requester = RecordingJiraRequester.RespondingTo(request =>
+            request.Method == HttpMethod.Post
+                ? Ok("""{"issues":[{"key":"PROJ-14"}]}""")
+                : Ok("""{"fields":{"description":null}}"""));
+
+        string? found = await Executor(requester).FindByMarkerAsync(TaskId, CancellationToken.None);
+
+        found.Should().BeNull();
+    }
+
     // ---- Auth probe ----------------------------------------------------------------------------
 
     [Fact]
@@ -467,8 +520,12 @@ public sealed class JiraWriteExecutorTests
     }
 
     [Fact]
-    public async Task Comment_composed_as_plain_is_posted_verbatim_with_no_conversion()
+    public async Task Comment_composed_as_plain_is_wrapped_in_a_noformat_block_so_it_renders_literally()
     {
+        // Nothing tells Jira the format anymore once the transport moved off twg's own
+        // --body-format flag, so "plain" text reaching Jira unconverted would have its own
+        // wiki-markup-shaped characters (the "##" here) interpreted rather than shown literally
+        // (independent pre-PR review, adversarial lens, cycle 1).
         RecordingJiraRequester requester = RecordingJiraRequester.RespondingTo(request =>
             request.Url.ToString().EndsWith("/comment", StringComparison.Ordinal)
                 ? Created("""{"id":"1"}""")
@@ -476,7 +533,7 @@ public sealed class JiraWriteExecutorTests
 
         await Executor(requester).CommentAsync("PROJ-22", "## still literal", "plain", CancellationToken.None);
 
-        requester.Requests.Single(r => r.Url.ToString().EndsWith("/comment", StringComparison.Ordinal))
-            .JsonBody.Should().Contain("## still literal");
+        string? body = requester.Requests.Single(r => r.Url.ToString().EndsWith("/comment", StringComparison.Ordinal)).JsonBody;
+        body.Should().Contain("{noformat}").And.Contain("## still literal");
     }
 }

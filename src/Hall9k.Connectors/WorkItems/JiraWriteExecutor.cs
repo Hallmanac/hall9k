@@ -147,7 +147,18 @@ public sealed class JiraWriteExecutor(JiraAccount account, JiraRequester? reques
             $"search for {Marker(taskId)}",
             cancellationToken);
 
-        IReadOnlyList<string> candidates = ExtractKeys(response.Body);
+        IReadOnlyList<string> candidates = ExtractKeys(response.Body, out bool readable);
+        if (!readable)
+        {
+            throw new JiraWriteExecutionException(
+                JiraWriteFailureKind.Other,
+                $"The marker search for {Marker(taskId)} could not be confirmed readable — Jira's "
+                + "answer came back as something other than the expected {\"issues\": [...]} shape "
+                + "(not JSON, not an object, or missing the issues array). Refusing to create on an "
+                + $"unconfirmed dedup check; check the board by hand for {Marker(taskId)} and, if it is "
+                + "not there, run the write again.");
+        }
+
         foreach (string candidate in candidates.Take(MaxMarkerSearchCandidates))
         {
             if (await CandidateCarriesMarkerAsync(candidate, taskId, cancellationToken))
@@ -190,8 +201,19 @@ public sealed class JiraWriteExecutor(JiraAccount account, JiraRequester? reques
             $"read {candidateKey} back",
             cancellationToken);
 
-        string description = ExtractDescription(response.Body) ?? string.Empty;
-        return description.Contains(Marker(taskId), StringComparison.Ordinal);
+        string? description = ExtractDescription(response.Body, out bool readable);
+        if (!readable)
+        {
+            throw new JiraWriteExecutionException(
+                JiraWriteFailureKind.Other,
+                $"Jira found a card ({candidateKey}) that may already carry this task's marker, but its "
+                + "description could not be read back to confirm it — the response body was not the "
+                + "expected shape (not JSON, not an object, or missing the fields object). Refusing to "
+                + $"create a second card on an unconfirmed dedup check; check the board by hand for "
+                + $"{Marker(taskId)} and, if it is not there, run the write again.");
+        }
+
+        return (description ?? string.Empty).Contains(Marker(taskId), StringComparison.Ordinal);
     }
 
     /// <summary>
@@ -487,19 +509,25 @@ public sealed class JiraWriteExecutor(JiraAccount account, JiraRequester? reques
 
     /// <summary>
     /// A description or a comment body, converted from the format it was composed in to what Jira
-    /// v2's plain-string field actually renders. Only "markdown" — the default
+    /// v2's plain-string field actually renders — every field Jira v2 accepts is a single wiki-markup
+    /// string regardless of the format a payload named, so both formats this class ever sees
+    /// (<see cref="JiraWritePayload.Validate"/> refuses any other before a payload is ever recorded)
+    /// need a real conversion, not just "markdown". "markdown" — the default
     /// <see cref="JiraWritePayload.EffectiveFormat"/> assumes, and what this repo's own
-    /// card-authoring skills produce — is converted, via <see cref="JiraMarkupText"/>: "plain" is
-    /// already what it claims to be. <see cref="JiraWritePayload.Validate"/> refuses any other
-    /// format before a payload is ever recorded, so this never sees one — there is no verified
-    /// HTML-to-Jira-wiki-markup mapping to convert an "html" payload with, and this class does not
-    /// guess at one (the same "never guess at unobserved facts" reasoning it already applies to the
-    /// JQL search endpoint's own shape).
+    /// card-authoring skills produce — goes through <see cref="JiraMarkupText.FromMarkdown"/>.
+    /// "plain" goes through <see cref="JiraMarkupText.ToPlainLiteral"/> rather than passing through
+    /// unconverted: under the retired twg transport, <c>--description-format plain</c> told
+    /// Atlassian's own CLI to carry that text past its wiki-markup parser untouched, and nothing on
+    /// this side of the REST swap does that anymore, so unconverted "plain" text would have Jira's
+    /// own renderer interpret any wiki-markup-shaped characters it happens to contain (independent
+    /// pre-PR review, adversarial lens, cycle 1).
     /// </summary>
     private static string? ApplyFormat(string? text, string format) =>
-        text.IsBlank() || !string.Equals(format, "markdown", StringComparison.OrdinalIgnoreCase)
+        text.IsBlank()
             ? text
-            : JiraMarkupText.FromMarkdown(text);
+            : string.Equals(format, "markdown", StringComparison.OrdinalIgnoreCase)
+                ? JiraMarkupText.FromMarkdown(text)
+                : JiraMarkupText.ToPlainLiteral(text);
 
     private static void AppendFields(JsonObject fieldsNode, IReadOnlyDictionary<string, string> fields)
     {
@@ -754,8 +782,15 @@ public sealed class JiraWriteExecutor(JiraAccount account, JiraRequester? reques
         }
     }
 
-    /// <summary>Every candidate key a search's answer carries, in the order Jira returned them.</summary>
-    private static IReadOnlyList<string> ExtractKeys(string body)
+    /// <summary>
+    /// Every candidate key a search's answer carries, in the order Jira returned them.
+    /// <paramref name="readable"/> is false for a body that could not be confirmed as the expected
+    /// <c>{"issues": [...]}</c> shape — not JSON, not an object, or missing the <c>issues</c> array
+    /// — which <see cref="FindByMarkerAsync"/> must not read the same way as a genuine
+    /// <c>{"issues": []}</c> answer: the two look identical as an empty list, but only the second
+    /// actually proves no card carries the marker (independent pre-PR review, both lenses, cycle 1).
+    /// </summary>
+    private static IReadOnlyList<string> ExtractKeys(string body, out bool readable)
     {
         try
         {
@@ -764,6 +799,7 @@ public sealed class JiraWriteExecutor(JiraAccount account, JiraRequester? reques
                 || !document.RootElement.TryGetProperty("issues", out JsonElement issues)
                 || issues.ValueKind != JsonValueKind.Array)
             {
+                readable = false;
                 return [];
             }
 
@@ -778,10 +814,12 @@ public sealed class JiraWriteExecutor(JiraAccount account, JiraRequester? reques
                 }
             }
 
+            readable = true;
             return keys;
         }
         catch (JsonException)
         {
+            readable = false;
             return [];
         }
     }
@@ -792,22 +830,36 @@ public sealed class JiraWriteExecutor(JiraAccount account, JiraRequester? reques
     /// <see cref="CandidateCarriesMarkerAsync"/>'s own dedup check needs: a marker match has to come
     /// from the card's actual content, not from wherever the marker's characters happen to appear
     /// in the JSON envelope around it.
+    /// <para>
+    /// <paramref name="readable"/> is false only when the body itself could not be confirmed as the
+    /// expected shape — not JSON, not an object, or missing the <c>fields</c> object — never merely
+    /// because a card genuinely has no description: a missing or JSON-null <c>description</c> inside
+    /// an otherwise-readable <c>fields</c> object is a real, observed fact (the card has no
+    /// description) rather than an unconfirmable read, so it returns null and readable stays true.
+    /// </para>
     /// </summary>
-    private static string? ExtractDescription(string body)
+    private static string? ExtractDescription(string body, out bool readable)
     {
         try
         {
             using JsonDocument document = JsonDocument.Parse(body);
-            return document.RootElement.ValueKind == JsonValueKind.Object
-                && document.RootElement.TryGetProperty("fields", out JsonElement fields)
-                && fields.ValueKind == JsonValueKind.Object
-                && fields.TryGetProperty("description", out JsonElement description)
+            if (document.RootElement.ValueKind != JsonValueKind.Object
+                || !document.RootElement.TryGetProperty("fields", out JsonElement fields)
+                || fields.ValueKind != JsonValueKind.Object)
+            {
+                readable = false;
+                return null;
+            }
+
+            readable = true;
+            return fields.TryGetProperty("description", out JsonElement description)
                 && description.ValueKind == JsonValueKind.String
                 ? description.GetString()
                 : null;
         }
         catch (JsonException)
         {
+            readable = false;
             return null;
         }
     }

@@ -83,4 +83,31 @@ public sealed class JiraMarkupTextTests
     {
         JiraMarkupText.FromMarkdown(string.Empty).Should().Be(string.Empty);
     }
+
+    [Fact]
+    public void Markdown_written_literally_inside_inline_code_survives_unconverted()
+    {
+        // Bold conversion used to run before inline-code conversion, so markdown syntax written
+        // literally inside a backtick span got rewritten before the code span ever wrapped it
+        // (independent pre-PR review, adversarial lens, cycle 1 — a ride-along).
+        JiraMarkupText.FromMarkdown("Use `**bold**` for emphasis").Should().Be("Use {{**bold**}} for emphasis");
+    }
+
+    [Fact]
+    public void A_link_shaped_pattern_written_literally_inside_inline_code_survives_unconverted()
+    {
+        JiraMarkupText.FromMarkdown("Use `[text](url)` for a link").Should().Be("Use {{[text](url)}} for a link");
+    }
+
+    [Fact]
+    public void ToPlainLiteral_wraps_text_in_a_noformat_block()
+    {
+        JiraMarkupText.ToPlainLiteral("## not a heading here").Should().Be("{noformat}\n## not a heading here\n{noformat}");
+    }
+
+    [Fact]
+    public void ToPlainLiteral_returns_blank_text_unchanged()
+    {
+        JiraMarkupText.ToPlainLiteral(string.Empty).Should().Be(string.Empty);
+    }
 }

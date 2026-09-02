@@ -536,9 +536,14 @@ public sealed class JiraWriteRetryEngine(
                     taskId, reference, result.IssueKey);
                 return true;
             case JiraWriteOutcome.PendingAuthentication:
+                // result.Message is the recorded reason, not a fixed "Jira rejected the credential"
+                // claim: it may equally be a credential the vault could not even resolve, which
+                // Jira was never asked about (independent pre-PR review, adversarial lens, cycle 1)
+                // — and it already says whether and how this retries, so nothing generic is
+                // appended after it.
                 logger.LogWarning(
-                    "Task {TaskId}: the queued merge notice for {Reference} is pending — Jira rejected the "
-                    + "registered credential. It retries automatically once the connection is fixed", taskId, reference);
+                    "Task {TaskId}: the queued merge notice for {Reference} is pending — {Reason}",
+                    taskId, reference, result.Message);
                 return true;
             default:
                 logger.LogWarning(

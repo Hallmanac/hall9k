@@ -769,11 +769,15 @@ public sealed class CardPublicationEngine(
         // stranded card that was never filed and sends the operator to push-to-jira again instead
         // of to the retry that is already queued (independent pre-PR review, conformance lens,
         // cycle 1).
-        string tail = await IsPendingAuthFailureAsync(taskId, cancellationToken)
-            ? "Jira rejected the registered credential when the session submitted its write, so the "
-              + "write is recorded pending on the task rather than lost: it will retry automatically "
-              + "once you refresh the connection's API token (h9k connection add jira), and there is "
-              + "no card to check the board for yet."
+        //
+        // The recorded reason itself, not a fixed "Jira rejected the credential" claim: the pending
+        // write may equally be a credential the vault could not even resolve, which Jira was never
+        // asked about (independent pre-PR review, adversarial lens, cycle 1).
+        string? authFailureReason = await PendingAuthFailureReasonAsync(taskId, cancellationToken);
+        string tail = authFailureReason is not null
+            ? $"{authFailureReason} The write is recorded pending on the task rather than lost: it "
+              + "will retry automatically once the connection is fixed, and there is no card to check "
+              + "the board for yet."
             : CheckTheBoard;
 
         return (false, $"{what} {tail}");
@@ -792,16 +796,21 @@ public sealed class CardPublicationEngine(
     }
 
     /// <summary>
-    /// Whether the task's own write-jira submission is sitting on a rejected credential —
-    /// distinguishes "no card was ever filed" from "a card write is queued for the retry sweep"
-    /// for <see cref="WaitAsync"/>'s no-link outcome, the same fact <c>h9k task show</c> and the
-    /// attention pane's own needs-you row already read off this field.
+    /// The task's own recorded reason when its write-jira submission is sitting on a rejected
+    /// credential, or null otherwise — distinguishes "no card was ever filed" from "a card write is
+    /// queued for the retry sweep" for <see cref="WaitAsync"/>'s no-link outcome, the same fact
+    /// <c>h9k task show</c> and the attention pane's own needs-you row already read off this field.
+    /// The reason itself, rather than just the bool this used to return, so the caller can report
+    /// what was actually recorded instead of guessing that Jira rejected a credential it may never
+    /// have been asked to check.
     /// </summary>
-    private async Task<bool> IsPendingAuthFailureAsync(Guid taskId, CancellationToken cancellationToken)
+    private async Task<string?> PendingAuthFailureReasonAsync(Guid taskId, CancellationToken cancellationToken)
     {
         await using IQuerySession session = store.QuerySession();
         TaskDetails? task = await session.LoadAsync<TaskDetails>(taskId, cancellationToken);
-        return task?.PendingJiraWriteIsAuthFailure is true;
+        return task?.PendingJiraWriteIsAuthFailure is true
+            ? task.PendingJiraWriteFailureReason ?? "The write is pending on a rejected credential."
+            : null;
     }
 
     /// <summary>
