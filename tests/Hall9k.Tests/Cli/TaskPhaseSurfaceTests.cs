@@ -818,6 +818,29 @@ public sealed class TaskPhaseSurfaceTests
             watchedRunId, RunState.Failed, sessionProcessId: null, pullRequestNumber: 24);
         StatusFixtures.Compose(
                 StatusFixtures.Task(TaskState.Done, watchedRunId, "https://github.com/x/y/pull/24"), watched)
-            .Phase.Detail.Should().Be("closeout still watches it for a merge");
+            .Phase.Detail.Should().Be("still eligible for closeout's merge observation");
+    }
+
+    /// <summary>
+    /// The "Failed" arm above previously had no "Killed" counterpart, so a Killed run fell to the
+    /// generic "watching" default while the attention line printed directly under it already gave
+    /// Killed the same rich treatment as Failed (independent pre-PR review, cycle 3, low). Killed
+    /// gets the identical two readings Failed does, for the identical reason.
+    /// </summary>
+    [Fact]
+    public void A_killed_run_with_no_recorded_pull_request_is_unwatched_but_a_recorded_one_is_still_watched()
+    {
+        Guid unwatchedRunId = DomainId.New();
+        RunDetails unwatched = StatusFixtures.Run(unwatchedRunId, RunState.Killed, sessionProcessId: null);
+        StatusFixtures.Compose(
+                StatusFixtures.Task(TaskState.Done, unwatchedRunId, "https://github.com/x/y/pull/24"), unwatched)
+            .Phase.Detail.Should().Be("nothing is watching it any more");
+
+        Guid watchedRunId = DomainId.New();
+        RunDetails watched = StatusFixtures.Run(
+            watchedRunId, RunState.Killed, sessionProcessId: null, pullRequestNumber: 24);
+        StatusFixtures.Compose(
+                StatusFixtures.Task(TaskState.Done, watchedRunId, "https://github.com/x/y/pull/24"), watched)
+            .Phase.Detail.Should().Be("still eligible for closeout's merge observation");
     }
 }
