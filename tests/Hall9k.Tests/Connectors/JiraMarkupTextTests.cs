@@ -145,6 +145,20 @@ public sealed class JiraMarkupTextTests
         JiraMarkupText.ToPlainLiteral(text).Should().Be(text);
     }
 
+    [Fact]
+    public void ToPlainLiteral_passes_an_underscored_repository_name_through_unwrapped()
+    {
+        // Cycle 5's conformance finding: the cycle-3 fix carved the hyphen alone out of the bare
+        // character rule, but underscore, plus, caret, and tilde are the same paired-flanking-
+        // emphasis shape and were left trusting bare membership, so a merge comment naming a
+        // GitHub repo with an underscore in it (common on GitHub) was still boxed, turning its
+        // pull request URL from an auto-link into dead preformatted text.
+        string text =
+            "The pull request for this work has merged: "
+            + "https://github.com/my_org/my_repo/pull/12 in project sample_project.";
+        JiraMarkupText.ToPlainLiteral(text).Should().Be(text);
+    }
+
     [Theory]
     [InlineData("h1. Rollback plan")]
     [InlineData("bq. per the incident channel")]
@@ -153,14 +167,18 @@ public sealed class JiraMarkupTextTests
     [InlineData("??attributed??")]
     [InlineData("Screenshot: !file.png!")]
     [InlineData("This is -deleted- text")]
+    [InlineData("This is _emphasised_ text")]
+    [InlineData("This is +underlined+ text")]
+    [InlineData("This is ^raised^ text")]
+    [InlineData("This is ~lowered~ text")]
     public void ToPlainLiteral_wraps_text_carrying_a_construct_the_old_character_class_missed(string text)
     {
         // Headings, blockquotes, emoticons, citations, and image embeds use no character the
         // cycle-2 class even listed, so "plain" text containing one of them passed through
         // unwrapped and Jira rendered the construct instead of the literal text (independent
-        // pre-PR review, adversarial lens, cycle 3). A genuine -strikethrough- (paired, word-
-        // flanked hyphens) still has to trigger the box too, now that a bare hyphen alone no
-        // longer does.
+        // pre-PR review, adversarial lens, cycle 3). A genuine -strikethrough-/_italic_/
+        // +underline+/^superscript^/~subscript~ (paired, word-flanked marks) still has to trigger
+        // the box too, now that none of those five marks trusts a bare occurrence alone (cycle 5).
         JiraMarkupText.ToPlainLiteral(text).Should().Be($"{{noformat}}\n{text}\n{{noformat}}");
     }
 
