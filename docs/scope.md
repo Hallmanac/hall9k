@@ -150,6 +150,8 @@ of them is automatic.
 
 ### Configuration and policy
 
+Per-project and per-owner settings resolving most-specific-wins over a node default: verification
+gates, agent model per role, parallelism, commit style, context links, skip-permissions, the Jira
 board binding, the backlog policy and its free-text routing guidance, the branch-name template a
 project's task branches are cut under, and the post-fix review re-request policy. The node has a
 ceiling the dispatcher respects, counted directly in task runs (Decisions Log #111) — the retired

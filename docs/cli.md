@@ -249,8 +249,9 @@ dispatch has already rendered and recorded the branch name, so a task published 
 one breath essentially always cuts `no-key-<slug>` rather than `ARX-14-<slug>`. A `github-issues`
 project fares better but is not exempt — `TaskPublishCommand` creates the issue inline, but the
 `gh issue create` round trip can still lose the race against the dispatch loop's five-second poll.
-A `{key}` template earns a resolved key reliably only on a task adopted with `--from-issue` or
-`--from-jira`, which already carries its reference before dispatch ever runs.
+A `{key}` template earns a resolved key reliably only on a task that already carries its reference
+before dispatch ever runs — adopted with `--from-issue` or `--from-jira`, or linked by hand with
+`h9k task link-jira` / `h9k task link-issue` while the task is still a Draft.
 
 ### Backlog tracking
 
