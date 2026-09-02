@@ -2530,6 +2530,72 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
     }
 
     /// <summary>
+    /// Task: a mandatory FinalFullPass records merge-ready when every finding it attaches is below
+    /// High (Decisions Log #113). The sibling test above scripts a Low; this scripts the case the
+    /// narrowing actually exists for — an in-scope Medium, which an ordinary cycle would fix but a
+    /// FinalFullPass rides along instead. Exercises the full path end to end: mode threaded into
+    /// <c>RecordReviewPassAsync</c>'s reclassification, the empty-terminal conclusion of every
+    /// active track, <see cref="RunDetails.ReviewResidualsRideAlong"/>, and the
+    /// <c>SettleReason.Bar</c> log line — not just the disposition split a unit test can already
+    /// cover alone.
+    /// </summary>
+    [Fact]
+    public async Task A_final_pass_that_concludes_merge_ready_with_an_in_scope_medium_finding_settles_by_the_bar()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        using DocumentStore store = NewStore();
+        (Guid taskId, Guid runId, _) = await SeedVerifiedRunAsync(store, cts.Token);
+
+        ScriptedExecutor executor = new(
+            // Cycle 1: conformance clean and goes dormant; adversarial finds something real.
+            "Criteria met at cycle 1.\n\nVERDICT: merge-ready",
+            "FINDING: severity=high; scope=in-scope; at=Spawner.cs:60\nDefect: the child process is never reaped.\n\n"
+            + "VERDICT: needs-fixes",
+            "Reaped the child.\n\nRESOLUTION: fixed",
+            // Cycle 2: only adversarial is still active — one Verify pass, and it concludes.
+            "The lifetime holds now.\n\nVERDICT: merge-ready",
+            // Cycle 3: the mandatory final full pass, both lenses fresh. Conformance — dormant
+            // since cycle 1 — reports one Medium, in-scope finding this time: an ordinary cycle
+            // would fix it, but the FinalFullPass bar is High alone, so it rides along and the
+            // pass's own verdict reclassifies to merge-ready rather than needs-fixes.
+            "FINDING: severity=medium; scope=in-scope; at=Auth.cs:9\nDefect: an error message swallows the cause.\n\n"
+            + "VERDICT: merge-ready",
+            "The lifetime still holds.\n\nVERDICT: merge-ready");
+
+        ListLogger<ReviewEngine> logger = new();
+        ReviewEngine engine = new(store, executor, executor.Processes,
+            new VerificationRunner(store, Options.Create(new DaemonOptions()), NullLogger<VerificationRunner>.Instance),
+            Options.Create(new DaemonOptions { MaxComplianceReviewCycles = 3 }), logger);
+
+        bool mergeReady = await engine.ReviewAsync(runId, taskId, cts.Token);
+
+        mergeReady.Should().BeTrue(
+            "a final pass that comes back merge-ready with only below-High findings is done");
+        executor.Spawns.Should().HaveCount(
+            6, "the mandatory final pass settles on the spot — no reactivation, no extra fix-and-reverify cycle");
+
+        await using IQuerySession query = store.QuerySession();
+        RunDetails run = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
+        run.State.Should().Be(RunState.UnderReview);
+        run.ReviewCycle.Should().Be(3, "nothing after the mandatory final pass owed another cycle");
+        run.ReviewSettlement.Should().Be(
+            ReviewSettlement.Settled, "the Medium finding is a real residual, not a reviewer who found nothing");
+        run.ReviewResidualsRideAlong.Should().Be(
+            1, "the below-High finding is recorded as a ride-along, never fixed, never re-read");
+
+        List<object> events = [.. (await query.Events.FetchStreamAsync(runId, token: cts.Token)).Select(e => e.Data)];
+        events.OfType<ReviewTrackReactivated>().Should().BeEmpty(
+            "a below-High finding never sets Continues: true off the merge-ready branch, so nothing here reactivates");
+
+        logger.Lines.Should().Contain(line =>
+            line.Contains("settling at cycle 3")
+            && line.Contains("bar settle")
+            && line.Contains("Decisions Log #87")
+            && line.Contains("#113"),
+            "the settle log must say the FinalFullPass bar concluded it, not just that the run settled");
+    }
+
+    /// <summary>
     /// Cycle-4 finding (both lenses): once a run parks on <c>MaxFinalFullPassRounds</c>, a human's
     /// <c>h9k review resolve --needs-fixes</c> must be a genuine fresh grant, the same way it
     /// already is for the per-track cycle caps (<see cref="RunAggregate.ReviewBudgetBaseCycle"/>).
