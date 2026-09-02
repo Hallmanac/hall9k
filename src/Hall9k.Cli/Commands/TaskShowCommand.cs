@@ -410,9 +410,13 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
     /// <summary>
     /// The Runs table's own Gates cell (task: gate wall-clock duration is recorded and
     /// surfaced): each gate this run's most recently recorded verification pass or failure
-    /// carried, name and duration beside its own outcome. "-" for a run recorded before this
-    /// field existed, or one that has not verified yet — an unobserved duration, never a
-    /// claimed zero.
+    /// carried, name and duration beside its own outcome. "-" covers two different observed
+    /// facts alike: a run recorded before this field existed or one that has not verified yet
+    /// (an unobserved duration, never a claimed zero), and a project with no verify commands
+    /// configured, which deliberately records an empty list (<c>VerificationRunner</c>'s own
+    /// "no gates configured" pass) rather than leaving the field unset. Both read as "-" here
+    /// because there is nothing to show either way; <see cref="GateDuration"/>'s own null-vs-empty
+    /// distinction is preserved on the read model for anything that needs to tell them apart.
     /// </summary>
     private static string FormatGateDurations(List<GateDuration>? gateDurations) =>
         gateDurations is not { Count: > 0 } durations
@@ -433,7 +437,14 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
     /// week going unnoticed for three days). Read live from <see cref="GateDurationHistoryQuery"/>
     /// every time, never precomputed: the comparison is against whatever recent runs actually
     /// recorded, and stays honest as more of them land. Says nothing at all for a gate with too
-    /// few recorded runs to compare against, rather than inventing a norm.
+    /// few recorded runs to compare against, rather than inventing a norm. History is loaded
+    /// once for the whole run, not once per gate (independent pre-PR review, cycle 1), and only
+    /// a gate this pass actually passed is compared — a failed gate's own truncated duration is
+    /// already flagged by the ✗ beside it, and comparing it for "too long" on top of that would
+    /// be a second, less honest signal about the same failure. Each comparison is scoped to
+    /// samples that ran under the same full/scoped classification as this pass's own gate
+    /// (<see cref="GateDuration.RanFullScope"/>), so a fix cycle's narrowed reverify never gets
+    /// averaged in against a full suite run of the same gate.
     /// </summary>
     private static async Task WriteGateDurationAnomaliesAsync(
         IQuerySession session, Guid projectId, RunListItem newestRun, CancellationToken cancellationToken)
@@ -443,11 +454,18 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
             return;
         }
 
+        GateDurationHistory history = await GateDurationHistoryQuery.LoadRecentHistoryAsync(
+            session, projectId, newestRun.Id, cancellationToken);
+
         List<string> lines = [];
         foreach (GateDuration gate in durations)
         {
-            GateDurationComparison? comparison = await GateDurationHistoryQuery.CompareAsync(
-                session, projectId, gate.Gate, gate.Duration, newestRun.Id, cancellationToken);
+            if (!gate.Passed)
+            {
+                continue;
+            }
+
+            GateDurationComparison? comparison = history.Compare(gate.Gate, gate.Duration, gate.RanFullScope);
             if (comparison is null)
             {
                 continue;

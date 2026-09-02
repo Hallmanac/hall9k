@@ -264,7 +264,8 @@ public sealed partial class VerificationRunner(
                     dotnetTestGateFellBackCount++;
                 }
 
-                gateDurations.Add(new GateDuration(gate.Name, gateElapsed, Passed: true));
+                gateDurations.Add(new GateDuration(
+                    gate.Name, gateElapsed, Passed: true, RanFullScope: GateRanFullScope(gateIsDotnetTest, scope, gateFellBackToFull)));
                 logger.LogInformation("Run {RunId} gate '{Gate}' passed", runId, gate.Name);
                 continue;
             }
@@ -280,7 +281,8 @@ public sealed partial class VerificationRunner(
                 string adoptedReason =
                     $"Gate '{gate.Name}' failed again with an infrastructure-classified signature " +
                     $"after already spending its one retry before an earlier daemon restart. {summary}";
-                gateDurations.Add(new GateDuration(gate.Name, gateElapsed, Passed: false));
+                gateDurations.Add(new GateDuration(
+                    gate.Name, gateElapsed, Passed: false, RanFullScope: GateRanFullScope(gateIsDotnetTest, scope, gateFellBackToFull)));
                 await RecordFailureAsync(runId, taskId, gate.Name, adoptedReason, gateDurations, cancellationToken);
                 logger.LogWarning(
                     "Run {RunId} verification failed at gate '{Gate}': its one retry was already spent before adoption",
@@ -290,7 +292,8 @@ public sealed partial class VerificationRunner(
 
             if (!isInfrastructureFailure)
             {
-                gateDurations.Add(new GateDuration(gate.Name, gateElapsed, Passed: false));
+                gateDurations.Add(new GateDuration(
+                    gate.Name, gateElapsed, Passed: false, RanFullScope: GateRanFullScope(gateIsDotnetTest, scope, gateFellBackToFull)));
                 await RecordFailureAsync(runId, taskId, gate.Name, summary, gateDurations, cancellationToken);
                 logger.LogWarning("Run {RunId} verification failed at gate '{Gate}': {Summary}", runId, gate.Name, summary);
                 return false;
@@ -325,7 +328,8 @@ public sealed partial class VerificationRunner(
                     dotnetTestGateFellBackCount++;
                 }
 
-                gateDurations.Add(new GateDuration(gate.Name, totalGateElapsed, Passed: true));
+                gateDurations.Add(new GateDuration(
+                    gate.Name, totalGateElapsed, Passed: true, RanFullScope: GateRanFullScope(gateIsDotnetTest, scope, gateFellBackToFull)));
                 logger.LogInformation("Run {RunId} gate '{Gate}' passed on retry", runId, gate.Name);
                 continue;
             }
@@ -340,7 +344,8 @@ public sealed partial class VerificationRunner(
                   $"{summary} Retry attempt: {retrySummary}"
                 : retrySummary;
 
-            gateDurations.Add(new GateDuration(gate.Name, totalGateElapsed, Passed: false));
+            gateDurations.Add(new GateDuration(
+                gate.Name, totalGateElapsed, Passed: false, RanFullScope: GateRanFullScope(gateIsDotnetTest, scope, gateFellBackToFull)));
             await RecordFailureAsync(runId, taskId, gate.Name, reason, gateDurations, cancellationToken);
             logger.LogWarning("Run {RunId} verification failed at gate '{Gate}' after retry: {Summary}", runId, gate.Name, reason);
             return false;
@@ -750,6 +755,19 @@ public sealed partial class VerificationRunner(
     private static partial Regex DotnetTestGatePattern();
 
     internal static bool IsDotnetTestGate(string command) => DotnetTestGatePattern().IsMatch(command);
+
+    /// <summary>
+    /// Whether THIS gate's own attempt ran at full scope (task: gate wall-clock duration is
+    /// recorded and surfaced) — per gate, not per pass: the pass-level <c>ranFullScope</c>
+    /// computed after the gate loop answers that question for the whole pass, but a project can
+    /// configure more than one `dotnet test`-shaped gate and only one of them fall back to full
+    /// while a sibling ran genuinely scoped (independent pre-PR review, cycle 1 — the same
+    /// per-gate accounting <paramref name="fellBackToFull"/> already exists for). A non-test gate
+    /// is always "full": scope never touches it, so its duration is comparable to every other run
+    /// of the same gate regardless of what the pass's test gate did.
+    /// </summary>
+    private static bool GateRanFullScope(bool gateIsDotnetTest, TestGateScope? scope, bool fellBackToFull) =>
+        !gateIsDotnetTest || scope is null || !scope.IsScoped || fellBackToFull;
 
     /// <summary>
     /// Whether a scoped `dotnet test` gate's own output shows VSTest ran zero tests rather than
