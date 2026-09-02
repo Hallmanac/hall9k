@@ -2701,11 +2701,25 @@ public sealed class ReviewEngine(
     /// separately from <see cref="SettleAsync"/>'s own log line, which reports what the settlement
     /// tally found, not which of <see cref="MaySettleReason"/>'s clauses is what let the loop stop
     /// looking. <see cref="SettleReason.Bar"/>'s own text names the below-High case by that phrase
-    /// specifically — never just "below the fix bar" — so a query over this log can tell a
-    /// below-High final-pass settle (findings existed, none met High) apart from
-    /// <see cref="SettleReason.NothingOwed"/>'s genuinely empty one (no findings at all) without
-    /// having to also read the residual tally: the two reasons' own text already differs, and
-    /// "bar settle, not a reviewer confirming a fully clean tip" is the sentence that says so.
+    /// specifically — never just "below the fix bar" — so a query over this log can pick a
+    /// below-High final-pass settle (a mandatory <see cref="ReviewMode.FinalFullPass"/> that came
+    /// back merge-ready with findings on it, none of them High) out of every other automatic
+    /// settle without having to also read the residual tally.
+    /// <para>
+    /// What the other reason means is narrower than its name suggests, and the log line has to be
+    /// read that way (independent pre-PR review, cycle 5, conformance lens):
+    /// <see cref="SettleReason.NothingOwed"/> says only that no finding this cycle earned a fix
+    /// session, never that the cycle found nothing. A <see cref="ReviewMode.Discovery"/> cycle
+    /// that concludes merge-ready carrying a Low ride-along settles under it, because
+    /// <c>Bar</c>'s own <c>FinalFullPass</c> conjunct excludes a Discovery tip; so does a
+    /// <c>FinalFullPass</c> whose only finding is an out-of-scope one that routed to a draft bug
+    /// task, because that routing leaves the merged cycle verdict at
+    /// <see cref="ReviewVerdict.NeedsFixes"/> and <c>Bar</c>'s merge-ready conjunct fails. Reading
+    /// either of those as a fully clean tip is the same inference
+    /// <see cref="LifetimeBudgetParkReason"/> refuses to make a few hundred lines below, and for
+    /// the same reason: whether findings existed at all is what the residual tally and the
+    /// cycle's own passes answer, never this reason alone.
+    /// </para>
     /// </summary>
     private void LogSettleReason(RunAggregate run, SettleReason reason)
     {
