@@ -492,7 +492,7 @@ The checkpoints, in the order the window sees them:
    and fixes or clears each one inside the branch's own changes, naming rather than fixing a
    pre-existing sibling outside them — unless that sibling itself carries a "fix in its own
    commit" disposition, in which case it is fixed in that same separate commit instead of merely
-   named; an explicit disposition on the sibling always wins, so a sibling separately marked "do
+   named. An explicit disposition on the sibling always wins, so a sibling separately marked "do
    not fix here" stays routed away rather than being pulled into that commit. When the sibling
    carries no disposition of its own, the finding whose sweep surfaced it decides instead: a sweep
    surfaced by a "fix in its own commit" finding fixes that undispositioned sibling in that same

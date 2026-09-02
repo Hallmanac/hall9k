@@ -989,8 +989,11 @@ public sealed class AgentPromptBuilderTests : IDisposable
         {
             prompt.Should().NotContain("No pull request exists yet",
                 "this pull request is already open; nothing about this review opens one");
-            prompt.Should().NotContain("a diff that is about to become a pull request",
-                "the diff under review already is a pull request, someone else's");
+            prompt.Should().NotContain(
+                "a diff that is about to" + Environment.NewLine + "become a pull request",
+                "the diff under review already is a pull request, someone else's — the phrase wraps across "
+                + "a line break, so a single-line NotContain here would never match the rendered text "
+                + "regardless of which framing the prompt actually uses, and would guard nothing");
             prompt.Should().Contain("already opened and authored", "the opening paragraph itself states the foreign-PR truth");
             prompt.Should().Contain(
                 "your verdict opens" + Environment.NewLine + "nothing",
