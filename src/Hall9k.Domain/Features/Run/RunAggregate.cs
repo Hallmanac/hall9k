@@ -262,18 +262,6 @@ public sealed class RunAggregate
     /// </summary>
     public string? LastFullScopeReviewHeadSha { get; private set; }
 
-    /// <summary>
-    /// <see cref="LastFullScopeReviewHeadSha"/> as it stood immediately before the current cycle
-    /// started. Captured once, when the current cycle's first <see cref="ReviewDispatched"/>
-    /// lands, and held constant for the rest of that cycle's lifetime — including a
-    /// crash-recovery top-up dispatch into the same <see cref="ReviewMode.FinalFullPass"/> cycle
-    /// (<c>ReviewEngine.DispatchMissingPassesAsync</c>), which must still point at the boundary
-    /// this cycle's own opening dispatch used rather than at <see cref="LastFullScopeReviewHeadSha"/>,
-    /// which by then already holds this cycle's own tip. Mirrors <see cref="PriorCycleHeadSha"/>'s
-    /// own capture-once-per-cycle bookkeeping.
-    /// </summary>
-    public string? PriorFullScopeReviewHeadSha { get; private set; }
-
     private readonly List<ReviewResidual> _reviewResiduals = [];
     /// <summary>Every finding the tracks ended on without a reviewer confirming it resolved (log #63).</summary>
     public IReadOnlyList<ReviewResidual> ReviewResiduals => _reviewResiduals;
@@ -869,7 +857,6 @@ public sealed class RunAggregate
         CycleHeadSha = headSha;
         PriorCycleSinceSha = CycleSinceSha;
         CycleSinceSha = sinceSha;
-        PriorFullScopeReviewHeadSha = LastFullScopeReviewHeadSha;
         if (mode == ReviewMode.Discovery || mode == ReviewMode.FinalFullPass)
         {
             LastFullScopeReviewHeadSha = headSha;
