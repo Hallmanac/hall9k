@@ -53,4 +53,41 @@ public sealed class TaskResolveCommandTests
         // real pull request number must not fabricate one, so nothing is appended.
         TaskResolveCommand.BuildFailedRunPullRequestEvent(DomainId.New(), "not a url", Now).Should().BeNull();
     }
+
+    [Fact]
+    public void Builds_the_run_event_when_the_pull_request_names_the_projects_own_repository()
+    {
+        Guid runId = DomainId.New();
+
+        PullRequestRecordedOnFailedRun? recorded = TaskResolveCommand.BuildFailedRunPullRequestEvent(
+            runId, "https://github.com/x/y/pull/24", Now, new Uri("https://github.com/x/y"));
+
+        recorded.Should().NotBeNull();
+        recorded!.PullRequestNumber.Should().Be(24);
+    }
+
+    [Fact]
+    public void Builds_the_run_event_when_the_project_repository_is_unknown()
+    {
+        // A best-effort courtesy check, not a hard requirement (the same shape
+        // RunLauncher.LaunchAsync's pr-review repository check is): a project with no
+        // repository URL recorded must not block a resolve over information this command does
+        // not have.
+        TaskResolveCommand.BuildFailedRunPullRequestEvent(
+            DomainId.New(), "https://github.com/x/y/pull/24", Now, projectRepositoryUrl: null).Should().NotBeNull();
+    }
+
+    [Fact]
+    public void Builds_nothing_for_a_pull_request_naming_a_different_repository_than_the_project()
+    {
+        // A --pr URL from a repository other than the project's own must never become this run's
+        // merge signal: CloseoutEngine inspects strictly by number against the project's own
+        // repository, so a false match would let an unrelated pull request's merge complete this
+        // task's closeout and delete this run's own branch out from under it (adversarial
+        // review, cycle 1).
+        TaskResolveCommand.BuildFailedRunPullRequestEvent(
+                DomainId.New(), "https://github.com/other-org/other-repo/pull/24", Now,
+                new Uri("https://github.com/x/y"))
+            .Should().BeNull();
+    }
 }

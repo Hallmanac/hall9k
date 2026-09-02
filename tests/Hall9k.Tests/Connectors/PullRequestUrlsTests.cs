@@ -20,6 +20,11 @@ public sealed class PullRequestUrlsTests
     [InlineData("not a url")]
     [InlineData("https://github.com/Hallmanac/hall9k/pulls")]
     [InlineData("https://github.com/")]
+    // A GitHub issue is not a pull request: even though its URL ends in a number, the segment
+    // right before it is "issues", not "pull", so this must not be read as a pull request number
+    // (adversarial review, cycle 1 — a mistyped --pr naming an issue must not silently become a
+    // run's merge signal).
+    [InlineData("https://github.com/Hallmanac/hall9k/issues/24")]
     public void Anything_without_a_number_yields_zero_never_a_guess(string url) =>
         PullRequestUrls.ParseNumber(url).Should().Be(0);
 }
