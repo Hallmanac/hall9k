@@ -271,7 +271,9 @@ public static class PlatformConfigFile
     /// entry at this leaf's own key (its value the empty string), so the binder does find
     /// something to convert and fails on it. Origin: the cycle-4 pre-PR review found
     /// <c>{"maxComplianceReviewCycles": {}}</c> reported as a startup crash when the daemon in
-    /// fact starts normally on the built-in default; the cycle-7 review found the reverse for
+    /// fact starts normally on this shape — it does not crash, though <see
+    /// cref="ApplyIntBinderQuirk"/>'s own doc explains that the property still zeros rather than
+    /// staying at its built-in default of three; the cycle-7 review found the reverse for
     /// <c>{"maxComplianceReviewCycles": []}</c> — reported as merely ignored when the daemon in
     /// fact crashes on it. Both were confirmed against the pinned binder version directly.
     /// </para>
