@@ -92,10 +92,92 @@ public static class OperatingSettingsResolver
             "lifetime-review-cycle-budget",
             unparseableValueFallsBackRatherThanCrashing: false);
 
+        ResolvedSetting<long?> spendBudgetTokens =
+            ResolveSpendBudgetTokens(configured.SpendBudgetTokens, unusableEnvironmentVariables);
+        ResolvedSetting<string> spendPeriod = ResolveSpendPeriod(configured.SpendPeriod, unusableEnvironmentVariables);
+
         return new OperatingSettingsReport(
             concurrency, read.MaxConcurrentAgentSessionsIsFabricatedZero, maxConcurrentTaskRuns, convertedFromLegacy,
             shadowsConfigFileValue, sessionCapPerRun, defaultModel, roles, read.Problem, unusableEnvironmentVariables,
-            maxComplianceReviewCycles, maxAdversarialReviewCycles, maxFinalFullPassRounds, lifetimeReviewCycleBudget);
+            maxComplianceReviewCycles, maxAdversarialReviewCycles, maxFinalFullPassRounds, lifetimeReviewCycleBudget,
+            spendBudgetTokens, spendPeriod);
+    }
+
+    /// <summary>
+    /// This node's periodic token-spend budget: nullable end to end, because "no budget" is
+    /// itself the fallback rather than a compiled ceiling (unlike every other numeric setting
+    /// this resolver reads) — a config-file or environment value must be a non-negative whole
+    /// number of tokens, and anything else is treated as absent rather than crashing, the same
+    /// shape <see cref="ResolveSessionCapPerRun"/> already gives the other settings
+    /// <c>DaemonOptionsBinding.ResolverOwnedKeys</c> excludes from <c>ConfigurationBinder</c>.
+    /// </summary>
+    private static ResolvedSetting<long?> ResolveSpendBudgetTokens(long? configured, List<string> unusable)
+    {
+        string environmentVariable = $"{EnvironmentPrefix}SpendBudgetTokens";
+        if (GetEnvironmentVariable(environmentVariable) is { } fromEnvironment)
+        {
+            if (long.TryParse(fromEnvironment, out long parsed) && parsed >= 0)
+            {
+                return new ResolvedSetting<long?>(parsed, SettingOrigin.EnvironmentVariable, environmentVariable);
+            }
+
+            unusable.Add(
+                $"{environmentVariable} is set to \"{fromEnvironment}\", which is not a non-negative whole number "
+                + "of tokens — it is treated as absent, and spend-budget-tokens falls back to the config file or "
+                + "no budget instead.");
+        }
+
+        if (configured is { } value)
+        {
+            if (value >= 0)
+            {
+                return new ResolvedSetting<long?>(value, SettingOrigin.PlatformConfigFile, Hall9kDatabase.ConfigFile);
+            }
+
+            unusable.Add(
+                $"{Hall9kDatabase.ConfigFile} sets spend-budget-tokens to {value}, which is negative — it is "
+                + "treated as absent, and no budget applies.");
+        }
+
+        return new ResolvedSetting<long?>(null, SettingOrigin.Default, null);
+    }
+
+    /// <summary>
+    /// The window <see cref="OperatingSettings.SpendBudgetTokens"/> resets on — "day" or "week"
+    /// only, unlike every other string setting this resolver reads, so an unrecognized value is
+    /// treated as absent rather than ridden through as itself the way <see cref="ResolveString"/>
+    /// would for a model name.
+    /// </summary>
+    private static ResolvedSetting<string> ResolveSpendPeriod(string? configured, List<string> unusable)
+    {
+        string environmentVariable = $"{EnvironmentPrefix}SpendPeriod";
+        if (GetEnvironmentVariable(environmentVariable) is { } fromEnvironment)
+        {
+            SpendPeriod period = SpendPeriod.FromInput(fromEnvironment);
+            if (period.IsWellFormed)
+            {
+                return new ResolvedSetting<string>(period.Value, SettingOrigin.EnvironmentVariable, environmentVariable);
+            }
+
+            unusable.Add(
+                $"{environmentVariable} is set to \"{fromEnvironment}\", which is neither \"day\" nor \"week\" — "
+                + "it is treated as absent, and spend-period falls back to the config file or default instead.");
+        }
+
+        if (configured is { Length: > 0 } value)
+        {
+            SpendPeriod period = SpendPeriod.FromInput(value);
+            if (period.IsWellFormed)
+            {
+                return new ResolvedSetting<string>(period.Value, SettingOrigin.PlatformConfigFile, Hall9kDatabase.ConfigFile);
+            }
+
+            unusable.Add(
+                $"{Hall9kDatabase.ConfigFile} sets spend-period to \"{value}\", which is neither \"day\" nor "
+                + "\"week\" — it is treated as absent, and spend-period falls back to the default instead.");
+        }
+
+        return new ResolvedSetting<string>(OperatingSettings.DefaultSpendPeriod, SettingOrigin.Default, null);
     }
 
     /// <summary>
@@ -248,8 +330,9 @@ public static class OperatingSettingsResolver
     /// dispatch time — the retired-key conversion itself reads the raw environment variable and
     /// config file directly, never this method's result — so an unparseable value there merely
     /// falls back rather than crashing. The four review-cycle caps carry no such exclusion
-    /// (<c>DaemonOptionsBinding.ResolverOwnedKeys</c> names only the three concurrency settings),
-    /// so <see cref="DaemonOptions"/> binds their equivalent key through <c>ConfigurationBinder</c>,
+    /// (<c>DaemonOptionsBinding.ResolverOwnedKeys</c> names only the concurrency settings and the
+    /// periodic spend budget, never the review caps), so <see cref="DaemonOptions"/> binds their
+    /// equivalent key through <c>ConfigurationBinder</c>,
     /// which throws at options-resolution time on the identical unparseable value instead of
     /// keeping the config-file/default value — reporting that as a graceful fallback would tell an
     /// operator the daemon is fine when it will not start (independent pre-PR review, cycle 8,

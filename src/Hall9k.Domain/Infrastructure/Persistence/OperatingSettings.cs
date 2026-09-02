@@ -136,6 +136,48 @@ public sealed class OperatingSettings
     /// </summary>
     public int? LifetimeReviewCycleBudget { get; set; }
 
+    /// <summary>
+    /// This node's periodic token-spend budget (backlog: spend-governor step three, the
+    /// 2026-09-01 architecture review's token-economics findings): once the current period's
+    /// recorded spend — every input token <c>TokensRecorded</c> already prices, fresh, cache-read
+    /// and cache-creation combined, summed across every model — meets or exceeds this many
+    /// tokens, <c>DispatchEngine</c> declines to claim any further queued task until the period
+    /// rolls. Null means no budget: dispatch is unbudgeted and behavior is byte-for-byte
+    /// unchanged. Denominated in tokens, never dollars — Decisions Log #30 rules the platform
+    /// holds no price list, and on a subscription a cost figure is a shadow price, not a bill —
+    /// and calibrated from observation (h9k config show's own current-period spend line), not
+    /// derived from a subscription's published hour limits, which Anthropic shifts over time and
+    /// does not publish as token counts.
+    /// <para>
+    /// Never kills or parks running work (Decisions Log #11), and never declines a review or fix
+    /// session inside a run this node already claimed — this gates claiming a NEW task only.
+    /// </para>
+    /// <para>
+    /// Known v1 limitation: the budget gates on the single total across every model, so an Opus
+    /// token and a Sonnet token are counted identically even though the subscription meters them
+    /// separately. Per-model weighting is deliberately not attempted — it would smuggle in the
+    /// price list Decisions Log #30 forbids the platform from holding — and the per-model spend
+    /// breakdown (<c>h9k config show</c>, <c>h9k status</c>) is what makes a later, informed
+    /// choice about that trade-off possible, if one is ever made.
+    /// </para>
+    /// </summary>
+    public long? SpendBudgetTokens { get; set; }
+
+    /// <summary>
+    /// The window <see cref="SpendBudgetTokens"/> resets on: "day" or "week" (UTC, week starting
+    /// Monday). Null defers to <see cref="DefaultSpendPeriod"/>. Meaningless on its own until a
+    /// budget is actually set.
+    /// </summary>
+    public string? SpendPeriod { get; set; }
+
+    /// <summary>
+    /// The shipped default for <see cref="SpendPeriod"/>: a week, matching "the weekly allotment"
+    /// this setting exists to pace (task objective). Applied whenever a budget is set but no
+    /// period is, so <c>h9k config set --spend-budget &lt;n&gt;</c> alone is enough to turn the
+    /// throttle on.
+    /// </summary>
+    public const string DefaultSpendPeriod = "week";
+
     [JsonExtensionData]
     public Dictionary<string, JsonElement>? Extra { get; set; }
 }

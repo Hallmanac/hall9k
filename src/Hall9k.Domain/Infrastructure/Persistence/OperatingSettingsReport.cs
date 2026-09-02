@@ -12,12 +12,13 @@ public sealed record RoleModelSetting(string Role, ResolvedSetting<string?> Mode
 /// <c>ConfigurationBinder</c> has no guard for, which crashes the daemon outright; and a
 /// value-shape failure on any other leaf, which <c>ConfigurationBinder</c> silently leaves at its
 /// default while binding every sibling key normally — so the file is still in force, just not for
-/// that one setting. The three concurrency keys can no longer crash the daemon this second way:
-/// <c>Hall9k.Daemon.DaemonOptionsBinding.ResolverOwnedKeys</c> excludes them from the daemon's own
-/// <c>ConfigurationBinder</c> call (Decisions Log #111's follow-up), which retired the one leaf
-/// (<c>maxConcurrentAgentSessions</c>) that used to; every other <c>DaemonOptions</c> leaf in this
-/// section — the four review-cycle caps included — is still bound through <c>ConfigurationBinder</c>
-/// and can still crash startup on a bad value (independent pre-PR review, cycle 4, adversarial lens).
+/// that one setting. The resolver-owned keys — the three concurrency settings (Decisions Log
+/// #111's follow-up) plus the periodic spend budget and its period (Decisions Log #113) — can no
+/// longer crash the daemon this second way: <c>Hall9k.Daemon.DaemonOptionsBinding.ResolverOwnedKeys</c>
+/// excludes them from the daemon's own <c>ConfigurationBinder</c> call; every other
+/// <c>DaemonOptions</c> leaf in this section — the four review-cycle caps included — is still
+/// bound through <c>ConfigurationBinder</c> and can still crash startup on a bad value
+/// (independent pre-PR review, cycle 4, adversarial lens).
 /// </summary>
 public enum ConfigFileProblemConsequence
 {
@@ -32,16 +33,18 @@ public enum ConfigFileProblemConsequence
 /// accurate <paramref name="Message"/> domain layer already built.
 /// </summary>
 /// <param name="AffectsResolverOwnedKey">
-/// Whether the malformed leaf named by <paramref name="Message"/> is one of the three concurrency
-/// keys <c>Hall9k.Daemon.DaemonOptionsBinding.ResolverOwnedKeys</c> excludes from the daemon's own
-/// <c>ConfigurationBinder</c> call (Decisions Log #111's follow-up): <c>maxConcurrentTaskRuns</c>,
-/// <c>sessionCapPerRun</c>, <c>maxConcurrentAgentSessions</c>. <see cref="DescribeConsequence"/>
-/// names the mechanism that actually ignored the leaf, and for these three it is
-/// <see cref="OperatingSettingsResolver"/> treating a malformed value as absent, not
-/// <c>ConfigurationBinder</c> declining a conversion — the binder never sees these leaves at all
-/// (independent pre-PR review, cycle 3, adversarial lens). False for every other leaf
-/// (<c>defaultModel</c>, <c>modelByRole</c>), where the binder is still the accurate mechanism, and
-/// for the whole-section recovery paths that could not identify which leaf failed.
+/// Whether the malformed leaf named by <paramref name="Message"/> is one of the keys
+/// <c>Hall9k.Daemon.DaemonOptionsBinding.ResolverOwnedKeys</c> excludes from the daemon's own
+/// <c>ConfigurationBinder</c> call: the three concurrency settings (Decisions Log #111's
+/// follow-up) — <c>maxConcurrentTaskRuns</c>, <c>sessionCapPerRun</c>, <c>maxConcurrentAgentSessions</c>
+/// — or the periodic spend budget and its period (Decisions Log #113) — <c>spendBudgetTokens</c>,
+/// <c>spendPeriod</c>. <see cref="DescribeConsequence"/> names the mechanism that actually
+/// ignored the leaf, and for these five it is <see cref="OperatingSettingsResolver"/> treating a
+/// malformed value as absent, not <c>ConfigurationBinder</c> declining a conversion — the binder
+/// never sees these leaves at all (independent pre-PR review, cycle 3, adversarial lens). False
+/// for every other leaf (<c>defaultModel</c>, <c>modelByRole</c>), where the binder is still the
+/// accurate mechanism, and for the whole-section recovery paths that could not identify which
+/// leaf failed.
 /// </param>
 public sealed record ConfigFileProblem(
     string Message, ConfigFileProblemConsequence Consequence, bool AffectsResolverOwnedKey = false)
@@ -59,9 +62,10 @@ public sealed record ConfigFileProblem(
     {
         ConfigFileProblemConsequence.SettingIsIgnored when AffectsResolverOwnedKey =>
             "This setting no longer binds through the daemon's ConfigurationBinder at all — it is one of the "
-            + "three concurrency keys OperatingSettingsResolver reads directly, and a malformed value there is "
-            + "treated as absent rather than converted — so this setting does not take its value from the file, "
-            + "and every other setting in the file, and environment variables and built-in defaults, still apply.",
+            + "settings OperatingSettingsResolver reads directly (the node's concurrency settings or its "
+            + "periodic spend budget), and a malformed value there is treated as absent rather than converted — "
+            + "so this setting does not take its value from the file, and every other setting in the file, and "
+            + "environment variables and built-in defaults, still apply.",
         ConfigFileProblemConsequence.SettingIsIgnored =>
             "The daemon's own ConfigurationBinder has no conversion for this value, so this setting does not "
             + "take its value from the file — every other setting in the file, and environment variables and "
@@ -151,6 +155,17 @@ public sealed record ConfigFileReadResult(
 /// <see cref="OperatingSettingsResolver.ResolveMaxConcurrentTaskRuns"/> deliberately treats as
 /// absent rather than falling back to (independent pre-PR review, cycle 1, both lenses).
 /// </summary>
+/// <param name="SpendBudgetTokens">
+/// The node's periodic token-spend budget (backlog: spend-governor step three), or null when
+/// nothing sets one — the resolver's own fallback for this setting is "no budget", never a
+/// compiled number, so <see cref="ResolvedSetting{T}.Origin"/> of <see cref="SettingOrigin.Default"/>
+/// here means dispatch is unbudgeted rather than budgeted at some built-in ceiling.
+/// </param>
+/// <param name="SpendPeriod">
+/// The window that budget resets on ("day" or "week"), always resolved even with no budget set —
+/// <see cref="OperatingSettings.DefaultSpendPeriod"/> underneath it — so a later
+/// <c>h9k config set --spend-budget</c> with no <c>--spend-period</c> has an answer already.
+/// </param>
 public sealed record OperatingSettingsReport(
     ResolvedSetting<int> MaxConcurrentAgentSessions,
     bool MaxConcurrentAgentSessionsIsFabricatedZero,
@@ -165,4 +180,6 @@ public sealed record OperatingSettingsReport(
     ResolvedSetting<int> MaxComplianceReviewCycles,
     ResolvedSetting<int> MaxAdversarialReviewCycles,
     ResolvedSetting<int> MaxFinalFullPassRounds,
-    ResolvedSetting<int> LifetimeReviewCycleBudget);
+    ResolvedSetting<int> LifetimeReviewCycleBudget,
+    ResolvedSetting<long?> SpendBudgetTokens,
+    ResolvedSetting<string> SpendPeriod);

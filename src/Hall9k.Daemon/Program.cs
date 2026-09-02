@@ -118,6 +118,8 @@ builder.Services.PostConfigure<DaemonOptions>(options =>
 {
     options.MaxConcurrentTaskRuns = concurrencyReport.MaxConcurrentTaskRuns.Value;
     options.SessionCapPerRun = concurrencyReport.SessionCapPerRun.Value;
+    options.SpendBudgetTokens = concurrencyReport.SpendBudgetTokens.Value;
+    options.SpendPeriod = concurrencyReport.SpendPeriod.Value;
 });
 
 // bindableDaemonSection above already has these keys stripped out, so this walks the
