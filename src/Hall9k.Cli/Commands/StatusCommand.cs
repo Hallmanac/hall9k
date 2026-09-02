@@ -100,9 +100,10 @@ public sealed class StatusCommand : Hall9kAsyncCommand<StatusCommand.Settings>
                 (true, true) => "[blue]Queued[/] [dim]— the node is at its concurrency ceiling and its spend "
                     + "budget for this period is spent; each of these starts once both clear. Run[/] "
                     + "h9k config set --max-concurrent-task-runs <n> [dim]or[/] --spend-budget <n> "
-                    + $"[dim]as the cause warrants ({spend!.ReasonLine})[/]",
+                    + $"[dim]as the cause warrants, then restart the daemon ({spend!.ReasonLine})[/]",
                 (false, true) => $"[blue]Queued[/] [dim]— this node's {spend!.ReasonLine}. Run[/] "
-                    + "h9k config set --spend-budget <n> [dim]to raise it, or wait for the period to roll[/]",
+                    + "h9k config set --spend-budget <n> [dim]and restart the daemon to raise it, or wait for the "
+                    + "period to roll[/]",
                 _ => "[blue]Queued[/] [dim]— the node is at its concurrency ceiling; each of these starts as a "
                     + "run finishes. Run[/] h9k config set --max-concurrent-task-runs <n> [dim]and restart the "
                     + "daemon to run more at once[/]",

@@ -64,6 +64,19 @@ internal sealed record DispatchPressure(int LiveRuns, int MaxConcurrentRuns)
     public static async Task<DispatchPressure?> ReadAsync(
         IQuerySession session, DateTimeOffset now, CancellationToken cancellationToken)
     {
+        NodeDispatchLoad? load = await ReadFreshMeasurementAsync(session, now, cancellationToken);
+        return load is null ? null : new DispatchPressure(load.LiveRuns, load.MaxConcurrentRuns);
+    }
+
+    /// <summary>
+    /// The raw published measurement this machine's own daemon last swept, or null when there is
+    /// none current — shared with <see cref="SpendPressure"/>, which reads the same row's spend
+    /// fields rather than its concurrency fields, so both surfaces apply the identical freshness
+    /// gate and never disagree about whether a daemon is confirmed alive here.
+    /// </summary>
+    internal static async Task<NodeDispatchLoad?> ReadFreshMeasurementAsync(
+        IQuerySession session, DateTimeOffset now, CancellationToken cancellationToken)
+    {
         string machineName = Environment.MachineName;
         NodeDispatchLoad? load = (await session.Query<NodeDispatchLoad>()
             .Where(record => record.MachineName == machineName)
@@ -71,8 +84,6 @@ internal sealed record DispatchPressure(int LiveRuns, int MaxConcurrentRuns)
             .Take(1)
             .ToListAsync(cancellationToken)).FirstOrDefault();
 
-        return load is not null && now - load.ObservedAt <= Freshness
-            ? new DispatchPressure(load.LiveRuns, load.MaxConcurrentRuns)
-            : null;
+        return load is not null && now - load.ObservedAt <= Freshness ? load : null;
     }
 }
