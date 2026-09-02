@@ -230,23 +230,6 @@ h9k project set <project> --backlog-routing "<TEXT>"          # free text: verba
 h9k task link-issue <task> 123                                # record a GitHub issue, verified against gh first
 ```
 
-**A team's branch convention is a project setting, not a fork of the platform** (Decisions Log
-#114). `h9k project set <project> --branch-template "<TEXT>"` names a task's branch out of three
-tokens — `{shortid}` (the task's short id), `{slug}` (its objective, hyphenated, capped at 30
-characters) and `{key}` (the linked Jira key or GitHub issue number) — with everything else
-literal, so `--branch-template "{key}-{slug}"` cuts `ARX-14-add-rate-limiting`. The default is
-`task/{shortid}-{slug}`, exactly what the platform cut before the setting existed, so a project
-that sets nothing sees no change at all; `none` restores it. Two rules make it safe rather than
-merely convenient. The template is rendered and checked as a legal git ref at `project set` time,
-so a name git would refuse is refused where a human can still fix it. And every token is fixed at
-or before dispatch, because the rendered name is recorded on the run and pushed verbatim when the
-pull request opens much later: the id cannot change, the objective cannot be revised once the task
-leaves Draft, and an external item cannot be relinked to a different one. A branch name that could
-drift between those two moments is the same failure a hand-renamed branch caused on the Windows
-node on 2026-08-31, where the push hit a refspec that no longer existed and the task parked Failed.
-A task carrying no linked item renders `{key}` as `no-key` — nothing was observed, said out loud,
-rather than an empty segment or an invented card number.
-
 `h9k task publish` checks the policy twice. First, before publishing: a tracking policy (`jira` or
 `github-issues`) on a task that carries no linked item yet and has no publication already pending
 refuses the publish outright, naming the three ways forward — link an existing item
@@ -273,6 +256,23 @@ the identical observation gate an agent's does. A task adopted with `--from-issu
 already carries its reference, so the pre-publish gate never fires and publishing it creates
 nothing a second time. Closeout comments a merged pull request onto a linked GitHub issue exactly
 as it does a linked Jira card — never a transition, same reasoning as above.
+
+**A team's branch convention is a project setting, not a fork of the platform** (Decisions Log
+#114). `h9k project set <project> --branch-template "<TEXT>"` names a task's branch out of three
+tokens — `{shortid}` (the task's short id), `{slug}` (its objective, hyphenated, capped at 30
+characters) and `{key}` (the linked Jira key or GitHub issue number) — with everything else
+literal, so `--branch-template "{key}-{slug}"` cuts `ARX-14-add-rate-limiting`. The default is
+`task/{shortid}-{slug}`, exactly what the platform cut before the setting existed, so a project
+that sets nothing sees no change at all; `none` restores it. Two rules make it safe rather than
+merely convenient. The template is rendered and checked as a legal git ref at `project set` time,
+so a name git would refuse is refused where a human can still fix it. And every token is fixed at
+or before dispatch, because the rendered name is recorded on the run and pushed verbatim when the
+pull request opens much later: the id cannot change, the objective cannot be revised once the task
+leaves Draft, and an external item cannot be relinked to a different one. A branch name that could
+drift between those two moments is the same failure a hand-renamed branch caused on the Windows
+node on 2026-08-31, where the push hit a refspec that no longer existed and the task parked Failed.
+A task carrying no linked item renders `{key}` as `no-key` — nothing was observed, said out loud,
+rather than an empty segment or an invented card number.
 
 CI runs build + test on ubuntu and windows for every push/PR to main.
 

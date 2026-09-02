@@ -284,8 +284,9 @@ public sealed class ProjectSetCommand : Hall9kAsyncCommand<ProjectSetCommand.Set
         // to fail a settings change that already landed.
         ProjectDetails updated = (await session.LoadAsync<ProjectDetails>(details.Id, cancellationToken))!;
 
-        // {key} resolves reliably only on a task adopted with --from-issue/--from-jira, which
-        // already carries its reference before dispatch. A task the platform publishes and
+        // {key} resolves reliably only on a task that already carries its reference before
+        // dispatch — adopted with --from-issue/--from-jira, or linked by hand with
+        // link-jira/link-issue while still a Draft. A task the platform publishes and
         // dispatches itself races its own card creation instead — a jira card is minted minutes
         // later by a separately dispatched session, and even github-issues' inline gh issue
         // create can lose the race against the dispatch loop's five-second poll — so most tasks
@@ -302,8 +303,9 @@ public sealed class ProjectSetCommand : Hall9kAsyncCommand<ProjectSetCommand.Set
                 + $"project's backlog policy is {updated.BacklogPolicy.Value.EscapeMarkup()}[/] — a task the "
                 + "platform publishes and dispatches itself usually has no linked item yet at that point (the "
                 + "card is minted after dispatch, not before), so most of this project's own branches will "
-                + "read 'no-key' rather than a resolved key. {key} resolves reliably only on a task adopted "
-                + "with --from-issue or --from-jira, which already carries its reference before dispatch.");
+                + "read 'no-key' rather than a resolved key. {key} resolves reliably only on a task that "
+                + "already carries its reference before dispatch — adopted with --from-issue or --from-jira, "
+                + "or linked by hand with h9k task link-jira/link-issue while still a Draft.");
         }
 
         if (updated.HomeDirectory.HasValue && Directory.Exists(updated.HomeDirectory.Value))
