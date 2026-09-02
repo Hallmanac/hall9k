@@ -3,7 +3,6 @@ using Hall9k.Connectors.Text;
 using Hall9k.Domain.Features.Run.Projections;
 using Hall9k.Domain.Features.Tasks;
 using Hall9k.Domain.Features.Tasks.Projections;
-using Hall9k.Domain.Infrastructure.Storage;
 
 namespace Hall9k.Daemon.Execution;
 
@@ -89,18 +88,27 @@ internal static class PullRequestBody
     /// FinalFullPass-only narrowing task: a mandatory FinalFullPass records merge-ready when
     /// every finding it attaches is below High). Nothing about a ride-along is on this pull
     /// request's diff — it is what the review loop declined to spend a cycle on — so a reviewer
-    /// reading only the diff would never learn it exists without this line naming the artifact
-    /// that still carries it. The count and the path both come off <paramref name="run"/> rather
-    /// than being threaded through as separate arguments, since <see cref="RunDetails.ReviewCycle"/>
-    /// is exactly the cycle the residual count was tallied at (<c>ReviewSettled.ResidualsRideAlong</c>).
+    /// reading only the diff would never learn it exists without this line naming a way to find
+    /// it. <see cref="RunDetails.ReviewResidualsRideAlong"/> is a run-lifetime tally
+    /// (<c>RunAggregate.DeriveResidualTally</c> sums every cycle's own ride-alongs, deduplicated
+    /// against what an earlier, normally-concluded track already recorded), so it can count
+    /// residuals a single cycle's own findings file never held — pointing at one specific
+    /// `review-&lt;cycle&gt;-findings.md` would name a file that does not contain everything the
+    /// count refers to. It would also be a daemon-machine-local absolute path: the one artifact
+    /// this class exists to write outlives the run directory (reviewers read it on GitHub long
+    /// after), and the render sweep moves this very task under `tasks/_archive/` the moment it
+    /// merges, so a path resolved at PR-open time stops resolving for every reader from that
+    /// point on — and it would publish the operator's home-directory path, and thus their
+    /// username, to a public repository. <c>h9k task show</c> is the durable pointer instead: it
+    /// answers from the task's own event stream regardless of archive state or which machine
+    /// runs it.
     /// </summary>
     private static string RideAlongNote(RunDetails run)
     {
-        string findingsPath = RunPaths.ReviewFindingsFile(
-            RunPaths.ResolveCurrentDirectory(run.RunDirectory), run.ReviewCycle);
         string plural = run.ReviewResidualsRideAlong == 1 ? "finding" : "findings";
-        return $"Review ride-alongs: {run.ReviewResidualsRideAlong} {plural} below the fix bar, "
-            + $"carried rather than spending another review cycle on — see `{findingsPath}`.";
+        return $"Review ride-alongs: {run.ReviewResidualsRideAlong} {plural} below the fix bar of "
+            + "whichever cycle recorded them, carried rather than spending another review cycle on — "
+            + $"see `h9k task show {run.TaskId}` for the review history.";
     }
 
     /// <summary>
