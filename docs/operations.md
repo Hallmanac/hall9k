@@ -419,10 +419,12 @@ with `h9k task set-session-cap <id> <cap>`; a change takes effect at the run's n
 dispatch — raising it lets the next phase fan out wider, lowering it never terminates a session
 already running.
 
-A queued row names the concurrency ceiling or the spend budget as its reason only when the
-dispatcher recorded a current measurement saying this node is full or the current period's spend
-has reached its budget. With none, it says it is ready and stops, because a queue that is not
-moving has many causes and a stopped daemon is the commonest.
+A queued row names the concurrency ceiling as its own reason only when the dispatcher recorded a
+current measurement saying this node is full. With none, it says it is ready and stops, because a
+queue that is not moving has many causes and a stopped daemon is the commonest. The spend budget is
+not a per-row fact: `h9k status` names it once, on the Queued section's own heading, when the
+current period's recorded spend has reached a budget the daemon has confirmed it is enforcing —
+`h9k task show` and `h9k task list` never mention it at all.
 
 ### Daemon operating settings
 
