@@ -385,6 +385,8 @@ ones worth knowing:
 | `Hall9k__LifetimeReviewCycleBudget` | 25 | The task-lifetime ceiling on review cycles, counted across every run and follow-up a task has had — immune to the per-run resets a stranding, retry, or follow-up round gives the three caps above; generous, so it only catches genuine pathology |
 | `Hall9k__DefaultReviewRerequest` | disabled | Whether closeout asks reviewers for another pass after fixes push |
 | `Hall9k__DefaultModel`, `Hall9k__ModelByRole__*` | | The node's model policy, per role (build, review, fix, synthesis, refinement, publication), plus `Hall9k__ModelByRole__ReviewVerify` — not a seventh role, but a narrower override for a Verify-shape review pass specifically, blank falling through to whatever review resolves |
+| `Hall9k__SpendBudgetTokens` | unbudgeted | The node's periodic token-spend budget (backlog: spend-governor step three, Decisions Log #113) — once the current period's recorded spend reaches it, the dispatcher declines to claim further queued work until the period rolls; a non-negative whole number of tokens, or absent for no budget |
+| `Hall9k__SpendPeriod` | week | The window `Hall9k__SpendBudgetTokens` resets on, `day` or `week` |
 
 Before Decisions Log #111, the ceiling was set in agent sessions and spent in runs, so there was a
 conversion between the number you configured and the number of tasks in flight. That conversion is
@@ -417,15 +419,16 @@ with `h9k task set-session-cap <id> <cap>`; a change takes effect at the run's n
 dispatch — raising it lets the next phase fan out wider, lowering it never terminates a session
 already running.
 
-A queued row names the concurrency ceiling as its reason only when the dispatcher recorded a
-current measurement saying this node is full. With none, it says it is ready and stops, because a
-queue that is not moving has many causes and a stopped daemon is the commonest.
+A queued row names the concurrency ceiling or the spend budget as its reason only when the
+dispatcher recorded a current measurement saying this node is full or the current period's spend
+has reached its budget. With none, it says it is ready and stops, because a queue that is not
+moving has many causes and a stopped daemon is the commonest.
 
 ### Daemon operating settings
 
-The concurrency ceiling, the model-by-role policy, and the four review-cycle caps are durable, not
-just environment variables (backlog 59): they also load from the `"hall9k"` section of the platform
-config file
+The concurrency ceiling, the model-by-role policy, the four review-cycle caps, and the periodic
+spend budget and its period are durable, not just environment variables (backlog 59): they also
+load from the `"hall9k"` section of the platform config file
 (`~/.hall9k/config.json`, the same file [§Postgres](#postgres) uses for `connectionString`),
 deliberately outside `bin/` — an update replaces `bin/` wholesale, and these settings belong to
 the machine, not the build. Precedence, highest first:
@@ -457,6 +460,8 @@ h9k config set --model-review sonnet --model-fix haiku      # per-role model ove
 h9k config set --model-review-verify sonnet                 # Verify-shape passes only; defaults to --model-review
 h9k config set --interactive-claim-stale-after-days 5       # the interactive-claim nudge threshold
 h9k config set --max-compliance-review-cycles 5 --lifetime-review-cycle-budget 40   # the node's review-cycle caps
+h9k config set --spend-budget 5000000 --spend-period week   # the periodic token-spend budget and its window
+h9k config set --spend-budget none                          # clear it back to unbudgeted
 ```
 
 The four review-cycle caps (Decisions Log #112) — the conformance and adversarial track cycle

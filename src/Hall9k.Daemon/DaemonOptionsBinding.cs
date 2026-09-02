@@ -94,13 +94,35 @@ internal static class DaemonOptionsBinding
 
         AddIfIgnored(
             section, nameof(DaemonOptions.SpendBudgetTokens), "spend-budget-tokens",
-            "--spend-budget", report.SpendBudgetTokens.Value, messages);
+            "--spend-budget", report.SpendBudgetTokens.Value, report.UnusableEnvironmentVariables, messages);
 
         AddIfIgnored(
             section, nameof(DaemonOptions.SpendPeriod), "spend-period",
-            "--spend-period", report.SpendPeriod.Value, messages);
+            "--spend-period", report.SpendPeriod.Value, report.UnusableEnvironmentVariables, messages);
         return messages;
     }
+
+    /// <summary>
+    /// True when <paramref name="unusableEnvironmentVariables"/> already explains this setting —
+    /// the resolver read a value for it (from the environment variable or the platform config
+    /// file, the only two sources <see cref="OperatingSettingsResolver.ResolveSpendBudgetTokens"/>
+    /// and <see cref="OperatingSettingsResolver.ResolveSpendPeriod"/> ever read) and rejected it as
+    /// malformed for this setting, which is a different situation from a value arriving through a
+    /// source the resolver never reads at all. The two long?/string <c>AddIfIgnored</c> overloads
+    /// below (unlike the pre-existing int one, which cannot disagree with the resolver this way)
+    /// can otherwise contradict that message on the exact same value: the raw section indexer still
+    /// reads the rejected value — whether it came from the environment variable or from the config
+    /// file, which <c>PlatformConfigFileSource</c> also inserts into the same merged section — even
+    /// though <c>OperatingSettingsResolver</c> fell back past it, so without this guard the two
+    /// lines would both deny and assert that the value is read (independent pre-PR review, cycle 2,
+    /// adversarial lens). Matched on <paramref name="flagLabel"/> — the text both of the resolver's
+    /// own rejection messages name — rather than on the environment variable name alone, since a
+    /// config-file rejection message never names the environment variable at all.
+    /// </summary>
+    private static bool AlreadyExplainedAsUnusable(
+        string flagLabel, IReadOnlyList<string> unusableEnvironmentVariables) =>
+        unusableEnvironmentVariables.Any(message =>
+            message.Contains(flagLabel, StringComparison.Ordinal));
 
     private static void AddIfIgnored(
         IConfigurationSection section, string key, string flagLabel, string flag, int effectiveValue,
@@ -129,10 +151,15 @@ internal static class DaemonOptionsBinding
     /// </summary>
     private static void AddIfIgnored(
         IConfigurationSection section, string key, string flagLabel, string flag, long? effectiveValue,
-        List<string> messages)
+        IReadOnlyList<string> unusableEnvironmentVariables, List<string> messages)
     {
         string? raw = section[key];
         if (raw is null || !long.TryParse(raw, out long rawValue) || rawValue == effectiveValue)
+        {
+            return;
+        }
+
+        if (AlreadyExplainedAsUnusable(flagLabel, unusableEnvironmentVariables))
         {
             return;
         }
@@ -157,10 +184,15 @@ internal static class DaemonOptionsBinding
     /// </summary>
     private static void AddIfIgnored(
         IConfigurationSection section, string key, string flagLabel, string flag, string effectiveValue,
-        List<string> messages)
+        IReadOnlyList<string> unusableEnvironmentVariables, List<string> messages)
     {
         string? raw = section[key];
         if (raw is null || string.Equals(raw, effectiveValue, StringComparison.OrdinalIgnoreCase))
+        {
+            return;
+        }
+
+        if (AlreadyExplainedAsUnusable(flagLabel, unusableEnvironmentVariables))
         {
             return;
         }
