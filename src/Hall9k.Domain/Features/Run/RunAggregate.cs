@@ -251,9 +251,12 @@ public sealed class RunAggregate
     /// Held constant across every <see cref="ReviewMode.Verify"/> cycle in between — unlike
     /// <see cref="CycleHeadSha"/>, which moves on every cycle regardless of mode — so a
     /// <see cref="ReviewMode.FinalFullPass"/> dispatched after several fix-and-verify rounds still
-    /// finds the boundary of the last pass that actually read the whole branch, not just the
-    /// immediately preceding cycle. Null until the first full-scope cycle records a HeadSha, or
-    /// when the most recent one's HeadSha could not be read at dispatch time — the engine falls
+    /// finds the boundary of the last pass that actually read at full scope, not just the
+    /// immediately preceding cycle. "Full scope" is the chain rather than one pass's own range: a
+    /// scoped <see cref="ReviewMode.FinalFullPass"/> reads from the previous full-scope pass's own
+    /// head, so successive full-scope reads tile the branch with no gap. Null until the first
+    /// full-scope cycle records a HeadSha, or when the most recent one's HeadSha could not be read
+    /// at dispatch time — the engine falls
     /// back to a full-range diff instruction rather than guessing at a boundary (the same
     /// degrade-rather-than-guess rule <c>TestScopeResolver</c> already follows).
     /// </summary>
