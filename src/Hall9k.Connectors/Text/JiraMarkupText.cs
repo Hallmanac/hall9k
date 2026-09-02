@@ -53,6 +53,29 @@ public static partial class JiraMarkupText
         return result.ToString();
     }
 
+    /// <summary>
+    /// <paramref name="text"/> as Jira wiki markup that renders exactly as written, with none of its
+    /// characters interpreted as markup — the counterpart to <see cref="FromMarkdown"/> for a
+    /// payload composed with <c>format: "plain"</c>. Jira's v2 API carries every description or
+    /// comment body as a single wiki-markup string regardless of the format a payload named
+    /// (Decisions Log #114): under the retired twg transport, <c>--description-format
+    /// plain</c>/<c>--body-format plain</c> told Atlassian's own CLI to carry a "plain" payload's
+    /// text past its wiki-markup parser untouched, and nothing on this side of the swap does that
+    /// anymore, so "plain" text reaching Jira unconverted would have Jira's own renderer interpret
+    /// it as markup instead (independent pre-PR review, adversarial lens, cycle 1). Wrapped in
+    /// Jira's documented <c>{noformat}</c> macro, the one wiki-markup construct guaranteed to
+    /// suppress every other construct inside it (headings, lists, links, bold, code), rather than a
+    /// per-character escape this class would otherwise have to guess at — AGENTS.md's "never guess
+    /// at unobserved facts": Jira's backslash-escape rules for individual markup characters are not
+    /// documented clearly enough to trust, where <c>{noformat}</c> is. The one corner this does not
+    /// cover: text that already contains the literal string <c>{noformat}</c> could still terminate
+    /// the block early — flagged here rather than guessed past, since handling it would mean
+    /// splitting the payload on an assumption about Jira's own parser this class has no way to
+    /// verify.
+    /// </summary>
+    public static string ToPlainLiteral(string text) =>
+        text.IsBlank() ? text : $"{{noformat}}\n{text}\n{{noformat}}";
+
     private static string ConvertProse(string text)
     {
         string[] lines = text.Split('\n');
@@ -93,12 +116,35 @@ public static partial class JiraMarkupText
     /// <summary>List nesting depth from a line's leading whitespace: every two spaces is one more level, floored at one.</summary>
     private static int Depth(string leadingWhitespace) => (leadingWhitespace.Length / 2) + 1;
 
-    private static string ConvertInline(string text) =>
-        InlineLink().Replace(
-            InlineCode().Replace(
-                BoldText().Replace(text, "*$1*"),
-                "{{$1}}"),
-            "[$1|$2]");
+    /// <summary>
+    /// Inline code has to be carved out and left untouched by bold/link conversion, not converted
+    /// in the same pass as them: converting bold first and code second let markdown syntax written
+    /// literally inside a backtick span (<c>`**bold**`</c>) get rewritten before the code span ever
+    /// wrapped it, so the card showed a monospace span containing bold text instead of the literal
+    /// characters the author asked for (independent pre-PR review, adversarial lens, cycle 1 — a
+    /// ride-along, the same leak <see cref="FromMarkdown"/>'s own fenced-code handling already
+    /// avoids for block code). Walks the line the same way <see cref="FromMarkdown"/> walks the
+    /// whole text around its fenced code blocks: bold/link conversion runs only on the spans between
+    /// inline-code matches, and each code span itself is wrapped as <c>{{...}}</c> straight from its
+    /// own captured text, never re-examined by <see cref="BoldText"/> or <see cref="InlineLink"/>.
+    /// </summary>
+    private static string ConvertInline(string text)
+    {
+        StringBuilder result = new(text.Length);
+        int cursor = 0;
+        foreach (Match code in InlineCode().Matches(text))
+        {
+            result.Append(ConvertBoldAndLinks(text[cursor..code.Index]));
+            result.Append("{{").Append(code.Groups[1].Value).Append("}}");
+            cursor = code.Index + code.Length;
+        }
+
+        result.Append(ConvertBoldAndLinks(text[cursor..]));
+        return result.ToString();
+    }
+
+    private static string ConvertBoldAndLinks(string text) =>
+        InlineLink().Replace(BoldText().Replace(text, "*$1*"), "[$1|$2]");
 
     [GeneratedRegex(@"```(\w*)\n(.*?)\n```", RegexOptions.Singleline)]
     private static partial Regex FencedCodeBlock();

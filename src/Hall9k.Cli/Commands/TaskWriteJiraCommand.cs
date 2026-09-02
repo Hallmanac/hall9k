@@ -115,13 +115,20 @@ public sealed class TaskWriteJiraCommand : Hall9kAsyncCommand<TaskWriteJiraComma
                 return ExitCodes.Ok;
 
             case JiraWriteOutcome.PendingAuthentication:
+                // result.Message is the recorded reason, not a fixed "Jira rejected the credentials"
+                // claim: AuthorizeAsync classifies both a real 401 and a credential the vault could
+                // not even resolve as PendingAuthentication (retriable either way), and only the
+                // first of those is actually a claim Jira examined and rejected (independent pre-PR
+                // review, adversarial lens, cycle 1).
                 AnsiConsole.MarkupLine(
-                    $"[yellow]Jira rejected the registered credentials[/] — this write is recorded and pending for task {shortId}.");
+                    $"[yellow]{result.Message.EscapeMarkup()}[/] — this write is recorded and pending for task {shortId}.");
                 AnsiConsole.MarkupLine(
-                    "[dim]  Refresh the API token with 'h9k connection add jira' (create a fresh one at "
-                    + "https://id.atlassian.com/manage-profile/security/api-tokens if the old one was "
-                    + "revoked or expired). The daemon retries this exact write automatically once it "
-                    + $"succeeds; nothing needs to be recomposed or resubmitted.[/]");
+                    "[dim]  If the registered API token was revoked or rotated, create a fresh one at "
+                    + "https://id.atlassian.com/manage-profile/security/api-tokens and register the "
+                    + "connection again with 'h9k connection add jira'; if the credential itself could "
+                    + "not be resolved (an unexported environment variable, a missing file), fix that "
+                    + "and the daemon retries this exact write automatically — nothing needs to be "
+                    + "recomposed or resubmitted.[/]");
                 return ExitCodes.Ok;
 
             default:
