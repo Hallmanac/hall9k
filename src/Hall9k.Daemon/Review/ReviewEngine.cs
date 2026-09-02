@@ -2639,10 +2639,15 @@ public sealed class ReviewEngine(
     /// Whether "nothing left to review" may actually settle the run without dispatching one more
     /// fresh-context review pass over it (task: review cycles after the first). Both
     /// <see cref="ReviewMode.Discovery"/> and <see cref="ReviewMode.FinalFullPass"/> qualify — each
-    /// is a full, fresh-context read of the tip it concluded on — so a run that converges clean at
-    /// cycle 1 with nothing ever needing a fix pays no extra pass at all: cycle 1's own two-lens
-    /// read already is the fresh look immediately before the pull request opens. Only
-    /// <see cref="ReviewMode.Verify"/> fails to qualify, because it never re-derives the whole diff,
+    /// is a full-scope, fresh-context read ending at the tip it concluded on — so a run that
+    /// converges clean at cycle 1 with nothing ever needing a fix pays no extra pass at all: cycle
+    /// 1's own two-lens read already is the fresh look immediately before the pull request opens.
+    /// "Full scope" is the union rather than one pass's own diff range (task: the mandatory
+    /// FinalFullPass rereads only the commits no full-scope pass has already read): a scoped
+    /// FinalFullPass reads from the previous full-scope pass's own head, so consecutive full-scope
+    /// reads tile the branch with no gap and settling on the last one still means every commit was
+    /// read at full scope by some fresh context. Only <see cref="ReviewMode.Verify"/> fails to
+    /// qualify, because its delta is scoped to one cycle's fix rather than continuing that chain,
     /// which is exactly the gap the mandatory final pass exists to close. A human's own merge-ready
     /// park resolution is exempt from this review half outright: a human overruling the automatic
     /// loop already looked, or deliberately chose not to, and dispatching another agent pass over
@@ -2945,7 +2950,9 @@ public sealed class ReviewEngine(
     /// <summary>
     /// The worktree's current commit, best-effort (task: review cycles after the first) — what a
     /// later Verify cycle's prompt points its "commits since the prior cycle" instruction at. This
-    /// is the only place the review loop itself touches git; every other read is delegated to the
+    /// and <see cref="HeadShaResolvesInWorktreeAsync"/> are the only places the review loop itself
+    /// touches git — they share one invocation shape on purpose, so a change to how the loop shells
+    /// out (a timeout, an added config flag) belongs in both; every other read is delegated to the
     /// reviewer's own tool calls (<see cref="AgentPromptBuilder.AppendReviewMechanics"/>). Null on
     /// any failure — the daemon never guesses at an unobserved fact, and the Verify prompt falls
     /// back to a full-range diff instruction rather than pretending to know a boundary it does not.

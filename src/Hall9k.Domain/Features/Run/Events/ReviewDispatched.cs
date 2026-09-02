@@ -20,10 +20,14 @@ namespace Hall9k.Domain.Features.Run.Events;
 /// pass's own diff instruction was actually scoped to when it dispatched — null for a
 /// <see cref="ReviewMode.Discovery"/> pass (always a full base-branch read) and for a
 /// <see cref="ReviewMode.FinalFullPass"/> pass with no earlier full-scope boundary on record (also
-/// a full read); non-null for a <see cref="ReviewMode.Verify"/> pass (the prior cycle's own tip,
-/// the boundary its delta read is scoped since) and for a <see cref="ReviewMode.FinalFullPass"/>
-/// pass that was itself scoped to the commits since the run's last full-scope read. Recorded as
-/// an observed fact because only the dispatch that resolved it ever knows for certain, the same reasoning
+/// a full read); the prior cycle's own tip for a <see cref="ReviewMode.Verify"/> pass, the boundary
+/// its delta read is scoped since — but null there too whenever that prior cycle's own HeadSha
+/// could not be read, since the boundary is only ever as good as that best-effort read (the Verify
+/// prompt falls back to a full-range instruction rather than inventing one); and the run's last
+/// full-scope read for a <see cref="ReviewMode.FinalFullPass"/> pass that was itself scoped to the
+/// commits since it. Null therefore never rules a mode out: it says this pass read the full range,
+/// whichever mode asked for it. Recorded as an observed fact because only the dispatch that
+/// resolved it ever knows for certain, the same reasoning
 /// <see cref="VerificationPassed.RanFullScope"/> already follows — what lets a later
 /// <see cref="ReviewMode.Verify"/> pass's prompt (<c>AgentPromptBuilder.BuildReviewVerify</c>) say
 /// honestly whether the cycle it is quoting findings from read the branch in full or only a delta.
