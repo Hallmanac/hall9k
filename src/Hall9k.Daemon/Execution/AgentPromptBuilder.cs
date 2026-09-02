@@ -1671,11 +1671,15 @@ public static class AgentPromptBuilder
     /// silent force-move. All three would have been caught by their own fix session's author,
     /// which is the whole point of running this before the verify pass has to. Not sequenced
     /// ahead of the review-model-to-fix-model knob (Decisions Log #92, #105): that knob already
-    /// landed on main (9f75a6e1, 2026-08-31) before this phase's own first commit (2026-09-01),
-    /// so both catches above were made by a verify pass that, on a default install, could
-    /// already have been running on the cheaper fix model rather than the review model — the
-    /// exposure predates this phase rather than the reverse. This phase is the compensating
-    /// control landing after the fact, catching what that already-live gap would otherwise miss.
+    /// landed on main (9f75a6e1, committed 2026-08-31) before this phase's own first commit
+    /// (2026-09-01), so this phase arrives as the compensating control after it rather than
+    /// ahead of it. The knob itself ships blank and falls through to the plain review model
+    /// (<see cref="RoleModelDefaults.ReviewVerify"/> is empty and nothing seeds it), so the
+    /// cheaper-verify-pass exposure is live only on an install that has set it — the standard
+    /// install being one, since AGENTS.md records it pointing the knob at the fix model. Both
+    /// catches above predate the knob entirely (2026-08-30) and were made on the review model;
+    /// what they establish is the failure mode this phase catches, not that a cheaper verify
+    /// pass already missed it.
     /// </para>
     /// <para>
     /// The clean-tree closing line and the foreground-test instruction are their own origins,
