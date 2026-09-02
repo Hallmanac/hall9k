@@ -124,14 +124,20 @@ public static class PlatformConfigFile
     }
 
     /// <summary>
-    /// Re-deserializes the section with only the exact leaf named by <paramref name="exception"/>'s
-    /// <see cref="JsonException.Path"/> removed, so every sibling — including a sibling nested
-    /// inside the same object — still binds, the same tolerance <c>ConfigurationBinder</c> itself
-    /// has for a leaf it cannot convert. <see cref="JsonException.Path"/> names the full walk to
+    /// Re-deserializes the section with the exact leaf named by <paramref name="exception"/>'s
+    /// <see cref="JsonException.Path"/> removed, then keeps removing whichever leaf the retry
+    /// fails on next — not just one — so every sibling still binds regardless of how many
+    /// malformed leaves the file holds. <see cref="JsonException.Path"/> names the full walk to
     /// the mismatch (<c>$.modelByRole</c> for a top-level shape mismatch, <c>$.modelByRole.build</c>
     /// for one nested inside it), so removing only the last segment's container — rather than the
     /// first segment's whole object — is what keeps <c>review</c> reported when only <c>build</c>
-    /// is malformed.
+    /// is malformed. Each retry is checked against <see cref="DaemonFailsToStartOn"/> in turn, so a
+    /// crashing leaf is never masked by an earlier, merely-ignored one found first — the leaf that
+    /// crashes the daemon might be the third or fourth one found, not just the second. Origin: the
+    /// cycle-6 pre-PR review found the two-malformed-leaf case of this same silent downgrade
+    /// (swapping which of two malformed keys was found first flipped the report from
+    /// DaemonFailsToStart to SettingIsIgnored); the cycle-2 review found the fix only handled
+    /// exactly two, still silently downgrading a genuine crash three or more leaves out.
     /// </summary>
     private static ConfigFileReadResult RecoverSectionIgnoring(JsonObject document, JsonException exception)
     {
@@ -141,38 +147,46 @@ public static class PlatformConfigFile
         }
 
         JsonObject recovery = (JsonObject)section.DeepClone();
-        string[] segments = exception.Path?.Split('.') is { Length: > 1 } parts ? parts[1..] : [];
-        RemoveFailingLeaf(recovery, segments);
-        bool affectsResolverOwnedKey = segments.Length > 0
-            && ResolverOwnedLeaves.Contains(segments[0], StringComparer.OrdinalIgnoreCase);
+        bool affectsResolverOwnedKey = false;
+        JsonException current = exception;
+        HashSet<string> attemptedPaths = new(StringComparer.OrdinalIgnoreCase);
 
-        try
+        while (attemptedPaths.Add(current.Path ?? string.Empty))
         {
-            OperatingSettings settings = recovery.Deserialize<OperatingSettings>(SerializerOptions) ?? new();
-            settings.ModelByRole ??= new();
-            bool maxConcurrentAgentSessionsIsFabricatedZero = ApplyIntBinderQuirks(document, settings);
-            return ConfigFileReadResult.SettingIgnored(
-                settings, ShapeErrorMessage(exception), maxConcurrentAgentSessionsIsFabricatedZero, affectsResolverOwnedKey);
+            string[] segments = current.Path?.Split('.') is { Length: > 1 } parts ? parts[1..] : [];
+            if (segments.Length == 0)
+            {
+                break;
+            }
+
+            if (ResolverOwnedLeaves.Contains(segments[0], StringComparer.OrdinalIgnoreCase))
+            {
+                affectsResolverOwnedKey = true;
+            }
+
+            RemoveFailingLeaf(recovery, segments);
+
+            try
+            {
+                OperatingSettings settings = recovery.Deserialize<OperatingSettings>(SerializerOptions) ?? new();
+                settings.ModelByRole ??= new();
+                bool maxConcurrentAgentSessionsIsFabricatedZero = ApplyIntBinderQuirks(document, settings);
+                return ConfigFileReadResult.SettingIgnored(
+                    settings, ShapeErrorMessage(exception), maxConcurrentAgentSessionsIsFabricatedZero, affectsResolverOwnedKey);
+            }
+            catch (JsonException retryException) when (DaemonFailsToStartOn(document, retryException))
+            {
+                return ConfigFileReadResult.DaemonCrashes(ShapeErrorMessage(retryException));
+            }
+            catch (JsonException retryException)
+            {
+                current = retryException;
+            }
         }
-        catch (JsonException retryException) when (DaemonFailsToStartOn(document, retryException))
-        {
-            // A second malformed leaf beyond the one already being ignored, and this one is the
-            // one leaf ConfigurationBinder itself throws on: the classification has to revisit
-            // against this new exception rather than keep the first exception's "just ignored"
-            // verdict, or a file that genuinely crashes the daemon at startup is reported as
-            // merely having one setting fall back to its default. Origin: the cycle-6 pre-PR
-            // review found this exact silent-downgrade — swapping the two malformed keys' order
-            // in the same file flipped the report from DaemonFailsToStart to SettingIsIgnored
-            // even though the daemon crashes on both orderings.
-            return ConfigFileReadResult.DaemonCrashes(ShapeErrorMessage(retryException));
-        }
-        catch (JsonException)
-        {
-            // A second malformed leaf beyond the one already being ignored, and — like the first —
-            // not one ConfigurationBinder crashes on either: fall back to nothing recovered rather
-            // than looping, the same conservative outcome as before this fix.
-            return ConfigFileReadResult.SettingIgnored(new(), ShapeErrorMessage(exception), false);
-        }
+
+        // Nothing left that can be named and removed, or the same path failed twice in a row
+        // (no forward progress possible): fall back to nothing recovered rather than looping.
+        return ConfigFileReadResult.SettingIgnored(new(), ShapeErrorMessage(exception), false);
     }
 
     /// <summary>

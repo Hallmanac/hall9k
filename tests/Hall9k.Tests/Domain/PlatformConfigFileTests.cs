@@ -557,15 +557,6 @@ public sealed class PlatformConfigFileTests : IDisposable
     }
 
     /// <summary>
-    /// The daemon's own guard (<c>PlatformConfigFileSource</c>) degrades gracefully when it cannot
-    /// read the file at all — a root-owned file, or one <c>chmod</c>'d by another account on a
-    /// shared box. The CLI side has to match rather than let the raw exception escape, since
-    /// <c>h9k config show</c> and <c>h9k daemon status</c> both call through here unconditionally.
-    /// Origin: the cycle-1 pre-PR review found <c>ReadDocumentAsync</c> with no guard at all around
-    /// <c>File.ReadAllTextAsync</c>, so an unreadable file crashed both diagnostic commands with a
-    /// raw stack trace instead of the reported failure this method promises.
-    /// </summary>
-    /// <summary>
     /// Unlike the three concurrency settings, the four review-cycle caps are still bound through
     /// the daemon's own <c>ConfigurationBinder</c> (<c>DaemonOptionsBinding.ResolverOwnedKeys</c>
     /// does not exclude them), so a genuinely unparseable scalar for one of them really does crash
@@ -676,6 +667,38 @@ public sealed class PlatformConfigFileTests : IDisposable
             + "the verdict must revisit rather than keep the first exception's merely-ignored classification");
     }
 
+    /// <summary>
+    /// The same reclassification as the test above, one leaf further out: two merely-ignored
+    /// leaves are found and removed in turn before a third, genuinely crashing leaf surfaces.
+    /// Origin: the cycle-2 pre-PR review found <c>RecoverSectionIgnoring</c> retried only once,
+    /// so a third malformed leaf silently fell back to "nothing recovered" instead of revisiting
+    /// as a daemon crash.
+    /// </summary>
+    [Fact]
+    public async Task A_third_malformed_leaf_that_is_a_review_cycle_cap_is_reported_as_a_daemon_crash()
+    {
+        await File.WriteAllTextAsync(
+            Hall9kDatabase.ConfigFile,
+            """{"hall9k": {"defaultModel": {}, "modelByRole": "x", "maxComplianceReviewCycles": "four"}}""");
+
+        ConfigFileReadResult result = await PlatformConfigFile.TryReadOperatingSettingsAsync(CancellationToken.None);
+
+        result.Problem.Should().NotBeNull();
+        result.Problem!.Consequence.Should().Be(ConfigFileProblemConsequence.DaemonFailsToStart,
+            "the third malformed leaf, found only after two prior leaves are each recovered in turn, is still "
+            + "one ConfigurationBinder itself throws on, so recovery must keep revisiting rather than give up "
+            + "after a fixed number of retries");
+    }
+
+    /// <summary>
+    /// The daemon's own guard (<c>PlatformConfigFileSource</c>) degrades gracefully when it cannot
+    /// read the file at all — a root-owned file, or one <c>chmod</c>'d by another account on a
+    /// shared box. The CLI side has to match rather than let the raw exception escape, since
+    /// <c>h9k config show</c> and <c>h9k daemon status</c> both call through here unconditionally.
+    /// Origin: the cycle-1 pre-PR review found <c>ReadDocumentAsync</c> with no guard at all around
+    /// <c>File.ReadAllTextAsync</c>, so an unreadable file crashed both diagnostic commands with a
+    /// raw stack trace instead of the reported failure this method promises.
+    /// </summary>
     [Fact]
     public async Task An_unreadable_config_file_is_a_diagnosable_exception_rather_than_a_raw_crash()
     {
