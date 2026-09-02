@@ -150,19 +150,18 @@ of them is automatic.
 
 ### Configuration and policy
 
-Per-project and per-owner settings resolving most-specific-wins over a node default: verification
-gates, agent model per role, parallelism, commit style, context links, skip-permissions, the Jira
-board binding, the backlog policy and its free-text routing guidance, and the post-fix review
-re-request policy. The node has a ceiling the dispatcher respects, counted directly in task runs
-(Decisions Log #111) — the retired session-denominated setting still converts when the new one is
-absent, and a per-run session cap (global default, overridable per task even mid-run) governs how
-many agent sessions one run may hold simultaneously. A node-level periodic token-spend budget
-(`h9k config set --spend-budget`/`--spend-period`, Decisions Log #113) paces dispatch the same
-way: once the current period's recorded spend, summed live from every session's own token usage
-rather than a stored counter, meets the budget, the dispatcher declines to claim further queued
-work until the period rolls — never killing or parking work already running. Unset means
-unbudgeted, and `h9k status`/`h9k config show` show the current period's own recorded spend, by
-model, whether or not a budget is set.
+board binding, the backlog policy and its free-text routing guidance, the branch-name template a
+project's task branches are cut under, and the post-fix review re-request policy. The node has a
+ceiling the dispatcher respects, counted directly in task runs (Decisions Log #111) — the retired
+session-denominated setting still converts when the new one is absent, and a per-run session cap
+(global default, overridable per task even mid-run) governs how many agent sessions one run may
+hold simultaneously. A node-level periodic token-spend budget (`h9k config set
+--spend-budget`/`--spend-period`, Decisions Log #113) paces dispatch the same way: once the
+current period's recorded spend, summed live from every session's own token usage rather than a
+stored counter, meets the budget, the dispatcher declines to claim further queued work until the
+period rolls — never killing or parking work already running. Unset means unbudgeted, and `h9k
+status`/`h9k config show` show the current period's own recorded spend, by model, whether or not a
+budget is set.
 
 The review loop's four cycle caps — the conformance and adversarial per-track caps, the mandatory
 final-full-pass round cap, and the task-lifetime review-cycle budget that survives run resets — are

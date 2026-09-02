@@ -145,7 +145,8 @@ recipe for a project that has none yet, and the repair path for one that is inco
 `project set` is where the verification gates, the agent model, parallelism, commit style,
 context links, skip-permissions, the Jira board binding, the backlog policy (`--backlog
 none|github-issues|jira`) and its routing guidance, the review re-request policy, the
-project-level review-cycle-cap overrides, and the home's location live.
+project-level review-cycle-cap overrides, the branch-name template (`--branch-template`,
+[below](#branch-naming)), and the home's location live.
 Settings resolve most-specific-wins, and the exact chain differs per setting;
 [operations.md](operations.md#per-project-and-per-owner) has the two that matter.
 
@@ -217,6 +218,39 @@ by last quarter's rules.
 The location is a setting (`--home`, or `h9k project set <name> --home <path>`); the shape inside
 it is the contract, which is what lets a dispatched agent be handed paths rather than sent
 hunting for them.
+
+### Branch naming
+
+`h9k project set <project> --branch-template "<TEXT>"`
+
+A team's branch convention is a project setting rather than a fork of the platform. The template
+names a task's branch out of three tokens: `{shortid}` (the task's short id), `{slug}` (its
+objective, lowercased and hyphenated, capped at 30 characters) and `{key}` (the linked Jira key or
+GitHub issue number). Everything else is literal, so `--branch-template "{key}-{slug}"` cuts
+`ARX-14-add-rate-limiting` on a task adopted from ARX-14. The default is `task/{shortid}-{slug}`,
+which is exactly the name the platform cut before the setting existed, so a project that sets
+nothing sees no change at all; `none` restores it.
+
+Two rules make the feature safe rather than merely convenient. The template is rendered and checked
+as a legal git ref at `project set` time, so a name git would refuse is refused where you can still
+fix it instead of at the dispatch it would fail. And every token is fixed at or before dispatch: the
+task's id cannot change, its objective cannot be revised once it leaves Draft, and its external item
+cannot be relinked to a different one. That matters because the rendered name is recorded on the run
+and pushed verbatim much later, when the pull request opens — a branch name that could drift between
+those two moments is the same failure a hand-renamed branch caused on the Windows node on
+2026-08-31, where the push hit a refspec that no longer existed and the task parked Failed. A task
+carrying no linked item renders `{key}` as `no-key`, saying that nothing was observed rather than
+eliding the segment or inventing a card number.
+
+That fallback is not a narrow edge case: under either tracking backlog policy (`--backlog jira` or
+`--backlog github-issues`) it is the ordinary outcome for a task the platform itself publishes and
+dispatches. A `jira` card is minted minutes later by a separately dispatched session, well after
+dispatch has already rendered and recorded the branch name, so a task published and assigned in
+one breath essentially always cuts `no-key-<slug>` rather than `ARX-14-<slug>`. A `github-issues`
+project fares better but is not exempt — `TaskPublishCommand` creates the issue inline, but the
+`gh issue create` round trip can still lose the race against the dispatch loop's five-second poll.
+A `{key}` template earns a resolved key reliably only on a task adopted with `--from-issue` or
+`--from-jira`, which already carries its reference before dispatch ever runs.
 
 ### Backlog tracking
 

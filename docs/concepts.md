@@ -170,7 +170,8 @@ Depth: [TASK-MODEL.md §2.3 and §3.2](../TASK-MODEL.md), Decisions Log #34, #36
 ## Runs
 
 A **run** is one attempt at a task. It carries its own event stream, its own worktree, its own
-branch (`task/<id>-<slug>`, cut from the base branch with `--no-track`), and its own directory
+branch (`task/<id>-<slug>` by default, or whatever the project's own `--branch-template` renders,
+cut from the base branch with `--no-track`), and its own directory
 under `~/.hall9k/runs/<run-id>/` holding the prompt, the settings, the stream-json transcript,
 and any review artifacts.
 
