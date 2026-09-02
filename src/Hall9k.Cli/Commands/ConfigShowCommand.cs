@@ -1,6 +1,5 @@
 using Hall9k.Cli.Infrastructure;
 using Hall9k.Domain.Infrastructure.Persistence;
-using Hall9k.Domain.Shared.ValueObjects;
 using Marten;
 using Spectre.Console;
 using Spectre.Console.Cli;
@@ -104,12 +103,7 @@ public sealed class ConfigShowCommand : Hall9kAsyncCommand<ConfigShowCommand.Set
             using DocumentStore store = CliStore.Open();
             await using IQuerySession session = store.QuerySession();
             SpendPressure spend = await SpendPressure.ReadAsync(session, report, DateTimeOffset.UtcNow, cancellationToken);
-            return
-            [
-                spend.SummaryLine,
-                .. spend.ByModel.Select(entry =>
-                    $"  {(entry.Model == AgentModel.Unknown ? "(unknown model)" : entry.Model.Value)}: {entry.TotalInputTokens:N0} tokens"),
-            ];
+            return [spend.SummaryLine, .. spend.ByModelLines];
         }
         catch (Exception exception) when (exception is not OperationCanceledException)
         {
