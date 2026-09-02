@@ -35,6 +35,7 @@ h9k project add --name <n> --repo-url <url>   # register a project and create it
 h9k project init <name>      # create, repair or refresh a project's home; idempotent
 h9k project list             # every project with its tasks counted by attention bucket
 h9k project show <name>      # one project: home, registration, settings, rollup, newest tasks
+h9k project set <name> --branch-template "{key}-{slug}"   # the team's branch convention; 'none' restores task/{shortid}-{slug} (Decisions Log #114)
 h9k task list --project <name> --state <state>   # browse live and done tasks, newest first (--all, --limit, --include-archived, --epic)
 h9k status                   # the attention pane: state, phase, and attention on every row
 h9k idea add "<text>"        # capture an idea; discovery starts, a project is optional
@@ -228,6 +229,23 @@ h9k project set <project> --backlog none|github-issues|jira   # default none —
 h9k project set <project> --backlog-routing "<TEXT>"          # free text: verbatim to the jira agent; a label list for github-issues
 h9k task link-issue <task> 123                                # record a GitHub issue, verified against gh first
 ```
+
+**A team's branch convention is a project setting, not a fork of the platform** (Decisions Log
+#114). `h9k project set <project> --branch-template "<TEXT>"` names a task's branch out of three
+tokens — `{shortid}` (the task's short id), `{slug}` (its objective, hyphenated, capped at 30
+characters) and `{key}` (the linked Jira key or GitHub issue number) — with everything else
+literal, so `--branch-template "{key}-{slug}"` cuts `ARX-14-add-rate-limiting`. The default is
+`task/{shortid}-{slug}`, exactly what the platform cut before the setting existed, so a project
+that sets nothing sees no change at all; `none` restores it. Two rules make it safe rather than
+merely convenient. The template is rendered and checked as a legal git ref at `project set` time,
+so a name git would refuse is refused where a human can still fix it. And every token is fixed at
+or before dispatch, because the rendered name is recorded on the run and pushed verbatim when the
+pull request opens much later: the id cannot change, the objective cannot be revised once the task
+leaves Draft, and an external item cannot be relinked to a different one. A branch name that could
+drift between those two moments is the same failure a hand-renamed branch caused on the Windows
+node on 2026-08-31, where the push hit a refspec that no longer existed and the task parked Failed.
+A task carrying no linked item renders `{key}` as `no-key` — nothing was observed, said out loud,
+rather than an empty segment or an invented card number.
 
 `h9k task publish` checks the policy twice. First, before publishing: a tracking policy (`jira` or
 `github-issues`) on a task that carries no linked item yet and has no publication already pending
@@ -437,7 +455,9 @@ three are human-only on purpose.
 
 The checkpoints, in the order the window sees them:
 
-1. **Agents build.** The dispatched run does the work in its own worktree, on `task/<id>-<slug>`.
+1. **Agents build.** The dispatched run does the work in its own worktree, on
+   `task/<id>-<slug>` — or on whatever the project's own branch template renders (Decisions Log
+   #114), which is the same name either way for a project that never set one.
 2. **Gates run.** Build, test, lint, per the project's verify settings. A fix cycle's `dotnet
    test`-shaped gate is scoped to the tests reachable from that cycle's own touched commits
    (#98) whenever `TestScopeResolver` can map every touched file with confidence; it falls back
@@ -631,7 +651,9 @@ first-class interface, always, for every command:
   through a draft is invisible to the closeout monitor and to any agent reading the PR. That
   is correct (nothing has been said yet), but it is why a pull request can look quiet while
   feedback is being written. Never read silence as "the reviewer had nothing to say".
-- Branch naming for task work: `task/<id>-<slug>`, created off `origin/main` with `--no-track`.
+- Branch naming for task work: `task/<id>-<slug>` unless the project set its own convention
+  (`h9k project set <project> --branch-template`, below), created off `origin/main` with
+  `--no-track`.
 - `main` is only ever checked out in the `dev/` worktree; agent worktrees are siblings of `dev/`.
 - **PR branches are authored history, not a diary.** Commits read as a natural progression of
   the whole change: no work-in-progress commits, no "address review feedback" commits. A fix

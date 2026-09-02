@@ -528,6 +528,7 @@ h9k project set myproject --link "api-conventions=https://…"
 h9k project set myproject --jira PROJ
 h9k project set myproject --backlog github-issues
 h9k project set myproject --rerequest-review on
+h9k project set myproject --branch-template "{key}-{slug}"
 
 h9k owner set --rerequest-review on
 ```
