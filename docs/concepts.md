@@ -254,13 +254,17 @@ a blank slate. Immediately before the run may settle, one mandatory **FinalFullP
 both lenses fresh — whether or not a track had already gone dormant — so nothing reaches the
 remote on delta-green alone; a track it reawakens with a genuine new finding is recorded
 reactivated rather than left stuck at an earlier conclusion, and a run that converges clean at
-cycle 1 pays no extra pass at all. Which shape a cycle ran under — Discovery, Verify, or
-FinalFullPass — is a deterministic engine decision recorded on the run stream, and a Verify pass
-resolves its own configurable model (`--model-review-verify`, defaulting to whatever the plain
-Review model resolves to), separately from the Review model Discovery and FinalFullPass keep
-using — Verify's confirm-the-fix-and-check-blast-radius job is deliberately the cheapest to run at
-a lighter model, while the mandatory FinalFullPass still reads the whole branch fresh on the
-strongest model immediately before delivery.
+cycle 1 pays no extra pass at all. "Fresh" is context, not diff range: a FinalFullPass whose run
+already paid for an earlier full-scope read reads only the commits since that read's own head,
+falling back to the whole branch when no such boundary is on record or it no longer resolves
+against HEAD — every full-scope read still starts where the previous one left off, so no commit
+ever reaches the remote unread at full scope by a fresh context, only reread by fewer of them.
+Which shape a cycle ran under — Discovery, Verify, or FinalFullPass — is a deterministic engine
+decision recorded on the run stream, and a Verify pass resolves its own configurable model
+(`--model-review-verify`, defaulting to whatever the plain Review model resolves to), separately
+from the Review model Discovery and FinalFullPass keep using — Verify's
+confirm-the-fix-and-check-blast-radius job is deliberately the cheapest to run at a lighter model,
+while the mandatory FinalFullPass still runs on the strongest model immediately before delivery.
 
 Reawakening a track deliberately gives it a fresh per-track cycle budget, measured from the cycle
 it was reawakened at rather than the run's absolute cycle count, so it gets a genuine chance to fix
