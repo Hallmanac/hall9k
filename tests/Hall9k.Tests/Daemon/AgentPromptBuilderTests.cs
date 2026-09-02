@@ -1069,6 +1069,45 @@ public sealed class AgentPromptBuilderTests : IDisposable
     }
 
     /// <summary>
+    /// Independent pre-PR review, cycle 2, adversarial finding: the FinalFullPass finding
+    /// contract already narrowed its own needs-fixes bar to a High alone (Decisions Log #113),
+    /// but the verdict contract appended a few lines later — the section a reviewer reads
+    /// immediately before writing its verdict — kept stating the ordinary medium-or-high trigger
+    /// unconditionally, so the same prompt told the reviewer two opposite rules. Both sections
+    /// must now agree on a FinalFullPass dispatch, for either lens.
+    /// </summary>
+    [Fact]
+    public void Final_full_pass_prompt_states_the_same_high_alone_bar_in_both_the_finding_and_verdict_contracts()
+    {
+        string prompt = AgentPromptBuilder.BuildReview(
+            SomeTask(), SomeProject(), "task/1-slug", cycle: 6, ReviewLens.Adversarial, ReviewMode.FinalFullPass);
+
+        prompt.Should().Contain("only a `high` finding blocks a merge-ready");
+        prompt.Should().Contain(
+            "when at least one verified finding graded high stands",
+            "the verdict contract's own needs-fixes trigger must match the finding contract's bar");
+        prompt.Should().NotContain(
+            "when at least one verified finding graded medium or high stands",
+            "the ordinary bar must not survive into a FinalFullPass prompt");
+    }
+
+    /// <summary>
+    /// The same self-consistency the fact above pins for a fresh FinalFullPass dispatch has to
+    /// survive into the one same-session re-prompt a verdictless pass gets
+    /// (<see cref="AgentPromptBuilder.BuildReviewVerdictReprompt"/>), since that reprompt carries
+    /// the identical finding-and-verdict contract pair rather than a version of its own.
+    /// </summary>
+    [Fact]
+    public void Final_full_pass_reprompt_states_the_high_alone_bar_too()
+    {
+        string prompt = AgentPromptBuilder.BuildReviewVerdictReprompt(
+            SomeProject(), cycle: 6, ReviewMode.FinalFullPass);
+
+        prompt.Should().Contain("graded high", "the reprompt's own needs-fixes bullet must match the narrowed bar");
+        prompt.Should().NotContain("graded medium or high");
+    }
+
+    /// <summary>
     /// The review prompt never embeds a diff (Brian's ruling, 2026-08-29, reverting the
     /// review-packet task: measured cycle-1 input cost never dropped the promised 20%, so the
     /// reviewer goes back to reading the branch itself). The prompt still names the diff command

@@ -797,7 +797,7 @@ public static class AgentPromptBuilder
         AppendReviewGateStatus(prompt, project);
         AppendFindingContract(prompt, project, ReviewMode.Verify);
         AppendVerifyTrackTagContract(prompt, tracks);
-        AppendVerdictContract(prompt, cycle);
+        AppendVerdictContract(prompt, cycle, ReviewMode.Verify);
         prompt.AppendLine();
         prompt.AppendLine("Confirming every fix landed clean and finding nothing new is a real outcome: say so");
         prompt.AppendLine("plainly. Track-level outcomes are carried by each finding's own `track` tag above, not");
@@ -999,7 +999,7 @@ public static class AgentPromptBuilder
 
         AppendReviewMechanics(prompt, project, branch, mechanicsOverride);
         AppendFindingContract(prompt, project, mode, mechanicsOverride);
-        AppendVerdictContract(prompt, cycle, mechanicsOverride);
+        AppendVerdictContract(prompt, cycle, mode, mechanicsOverride);
         prompt.AppendLine();
         if (mechanicsOverride is { DiffIsForeignPullRequest: true })
         {
@@ -1098,7 +1098,7 @@ public static class AgentPromptBuilder
         prompt.AppendLine("  the interaction between what changed and what did not.");
         AppendReviewMechanics(prompt, project, branch, mechanicsOverride);
         AppendFindingContract(prompt, project, mode, mechanicsOverride);
-        AppendVerdictContract(prompt, cycle, mechanicsOverride);
+        AppendVerdictContract(prompt, cycle, mode, mechanicsOverride);
         prompt.AppendLine();
         if (mechanicsOverride is { DiffIsForeignPullRequest: true })
         {
@@ -1473,9 +1473,19 @@ public static class AgentPromptBuilder
     /// re-prompt within, so a missing verdict fails the run outright rather than costing a
     /// same-session retry (cycle-1 adversarial finding, this method's own former claim was
     /// false for that lens).
+    /// <para>
+    /// <paramref name="mode"/>'s needs-fixes trigger has to agree with
+    /// <see cref="AppendFindingContract"/>'s own bar (independent pre-PR review, cycle 2,
+    /// adversarial finding): that method already tells a <see cref="ReviewMode.FinalFullPass"/>
+    /// reviewer that only a `high` finding blocks a merge-ready verdict, but this method used to
+    /// say "medium or high" unconditionally a few paragraphs later — the section a reviewer
+    /// reads last, immediately before writing its verdict — so a pass holding one in-scope
+    /// Medium was told two opposite things by the same prompt. Every other cycle keeps the
+    /// ordinary medium-or-high bar; only <see cref="ReviewMode.FinalFullPass"/> narrows it here.
+    /// </para>
     /// </summary>
     private static void AppendVerdictContract(
-        StringBuilder prompt, int cycle, ReviewMechanicsOverride? mechanicsOverride = null)
+        StringBuilder prompt, int cycle, ReviewMode mode, ReviewMechanicsOverride? mechanicsOverride = null)
     {
         prompt.AppendLine();
         prompt.AppendLine("## Verdict (required — never end without it)");
@@ -1490,9 +1500,23 @@ public static class AgentPromptBuilder
         prompt.AppendLine();
         prompt.AppendLine("    VERDICT: needs-fixes");
         prompt.AppendLine();
-        prompt.AppendLine("when at least one verified finding graded medium or high stands. A needs-fixes");
-        prompt.AppendLine("verdict must name at least one finding: a stated location (a file, or a file and");
-        prompt.AppendLine("line) and a description of the defect there. A needs-fixes verdict with nothing");
+        if (mode == ReviewMode.FinalFullPass)
+        {
+            prompt.AppendLine("when at least one verified finding graded high stands. This is the mandatory final");
+            prompt.AppendLine("pass immediately before the pull request opens, and its own bar is narrower than an");
+            prompt.AppendLine("earlier cycle's (Decisions Log #113): a medium or low finding here is recorded and");
+            prompt.AppendLine("carried onto the pull request as a residual instead of costing a fix-and-re-review");
+            prompt.AppendLine("cycle. A needs-fixes verdict must name at least one finding: a stated location (a");
+            prompt.AppendLine("file, or a file and line) and a description of the defect there.");
+        }
+        else
+        {
+            prompt.AppendLine("when at least one verified finding graded medium or high stands. A needs-fixes");
+            prompt.AppendLine("verdict must name at least one finding: a stated location (a file, or a file and");
+            prompt.AppendLine("line) and a description of the defect there.");
+        }
+
+        prompt.AppendLine("A needs-fixes verdict with nothing");
         prompt.AppendLine("named this way is read the same as no verdict at all. You may not end this session without a");
         prompt.AppendLine("VERDICT line. If checks or commands you started are still running, WAIT for them");
         prompt.AppendLine("to finish, then conclude — a promise to deliver the verdict later is not a");
@@ -1551,6 +1575,7 @@ public static class AgentPromptBuilder
         ProjectDetails project, int cycle, ReviewMode? mode = null,
         IReadOnlyList<ReviewLens>? verifyTracks = null)
     {
+        ReviewMode resolvedMode = mode ?? ReviewMode.Discovery;
         StringBuilder prompt = new();
         prompt.AppendLine("Your review session ended without the required VERDICT line, or with a");
         prompt.AppendLine("needs-fixes verdict naming nothing the platform could read as a finding — either");
@@ -1566,13 +1591,25 @@ public static class AgentPromptBuilder
         prompt.AppendLine("  ungraded and unplaced, and its severity and scope are lost. Only return");
         prompt.AppendLine("  merge-ready if, on reconsideration, you no longer believe any defect stands —");
         prompt.AppendLine("  not merely because restating it once more feels repetitive.");
-        prompt.AppendLine("- A needs-fixes verdict must name at least one finding: a stated location (a file,");
-        prompt.AppendLine("  or a file and line) and a description of the defect there, graded medium or high —");
-        prompt.AppendLine("  a low-only or ungraded finding still belongs in your answer, attached under a");
-        prompt.AppendLine("  merge-ready verdict rather than a needs-fixes one.");
+        if (resolvedMode == ReviewMode.FinalFullPass)
+        {
+            prompt.AppendLine("- A needs-fixes verdict must name at least one finding: a stated location (a file,");
+            prompt.AppendLine("  or a file and line) and a description of the defect there, graded high — this is");
+            prompt.AppendLine("  the mandatory final pass, so its own bar is high alone (Decisions Log #113); a");
+            prompt.AppendLine("  medium-, low-, or ungraded-only finding still belongs in your answer, attached");
+            prompt.AppendLine("  under a merge-ready verdict rather than a needs-fixes one.");
+        }
+        else
+        {
+            prompt.AppendLine("- A needs-fixes verdict must name at least one finding: a stated location (a file,");
+            prompt.AppendLine("  or a file and line) and a description of the defect there, graded medium or high —");
+            prompt.AppendLine("  a low-only or ungraded finding still belongs in your answer, attached under a");
+            prompt.AppendLine("  merge-ready verdict rather than a needs-fixes one.");
+        }
+
         prompt.AppendLine("- End your final message with exactly one verdict line, nothing after it:");
         prompt.AppendLine("  `VERDICT: merge-ready` or `VERDICT: needs-fixes`.");
-        AppendFindingContract(prompt, project, mode ?? ReviewMode.Discovery);
+        AppendFindingContract(prompt, project, resolvedMode);
         if (verifyTracks is { Count: > 0 })
         {
             AppendVerifyTrackTagContract(prompt, verifyTracks);
