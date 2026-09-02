@@ -305,10 +305,10 @@ public static class PlatformConfigFile
     /// </summary>
     private static readonly string[] ConfigurationBinderBoundIntKeys =
     [
-        "maxComplianceReviewCycles",
-        "maxAdversarialReviewCycles",
-        "maxFinalFullPassRounds",
-        "lifetimeReviewCycleBudget",
+        nameof(OperatingSettings.MaxComplianceReviewCycles),
+        nameof(OperatingSettings.MaxAdversarialReviewCycles),
+        nameof(OperatingSettings.MaxFinalFullPassRounds),
+        nameof(OperatingSettings.LifetimeReviewCycleBudget),
     ];
 
     /// <summary>
@@ -323,11 +323,11 @@ public static class PlatformConfigFile
     /// </summary>
     private static readonly (string Key, Action<OperatingSettings, int> Assign)[] IntBinderQuirkKeys =
     [
-        ("maxConcurrentAgentSessions", (settings, value) => settings.MaxConcurrentAgentSessions = value),
-        ("maxComplianceReviewCycles", (settings, value) => settings.MaxComplianceReviewCycles = value),
-        ("maxAdversarialReviewCycles", (settings, value) => settings.MaxAdversarialReviewCycles = value),
-        ("maxFinalFullPassRounds", (settings, value) => settings.MaxFinalFullPassRounds = value),
-        ("lifetimeReviewCycleBudget", (settings, value) => settings.LifetimeReviewCycleBudget = value),
+        (nameof(OperatingSettings.MaxConcurrentAgentSessions), (settings, value) => settings.MaxConcurrentAgentSessions = value),
+        (nameof(OperatingSettings.MaxComplianceReviewCycles), (settings, value) => settings.MaxComplianceReviewCycles = value),
+        (nameof(OperatingSettings.MaxAdversarialReviewCycles), (settings, value) => settings.MaxAdversarialReviewCycles = value),
+        (nameof(OperatingSettings.MaxFinalFullPassRounds), (settings, value) => settings.MaxFinalFullPassRounds = value),
+        (nameof(OperatingSettings.LifetimeReviewCycleBudget), (settings, value) => settings.LifetimeReviewCycleBudget = value),
     ];
 
     /// <summary>
@@ -353,7 +353,7 @@ public static class PlatformConfigFile
         foreach ((string key, Action<OperatingSettings, int> assign) in IntBinderQuirkKeys)
         {
             bool fired = ApplyIntBinderQuirk(section, key, value => assign(settings, value));
-            if (key == "maxConcurrentAgentSessions")
+            if (key == nameof(OperatingSettings.MaxConcurrentAgentSessions))
             {
                 maxConcurrentAgentSessionsIsFabricatedZero = fired;
             }
