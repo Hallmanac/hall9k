@@ -9,6 +9,7 @@ using Hall9k.Domain.Features.Tasks.Handlers;
 using Hall9k.Domain.Features.Tasks.Projections;
 using Hall9k.Domain.Infrastructure.Ids;
 using Hall9k.Domain.Infrastructure.Persistence;
+using Hall9k.Domain.Shared.ValueObjects;
 using Hall9k.Tests.Fakes;
 using JasperFx;
 using Marten;
@@ -103,6 +104,108 @@ public sealed class DispatchEngineTests(PostgresFixture postgres) : IClassFixtur
             {
                 reclaimed.LeaseGeneration.Should().Be(2);
             }
+        }
+    }
+
+    /// <summary>
+    /// The spend budget gates claiming independently of the concurrency ceiling (backlog:
+    /// spend-governor step three), summed live from TokensRecorded since the period start rather
+    /// than a stored counter — a prior period's own spend does not count against this one, but
+    /// once the current period's recorded spend meets the budget, nothing further is claimed even
+    /// with plenty of room under the ceiling, and everything queued simply stays Queued (no
+    /// throttled state, the same "everything the ceiling turns away stays Queued" contract
+    /// <see cref="DispatchEngine.ClaimEligibleAsync"/> already documents). Both halves live in one
+    /// test, in this order, because <see cref="PostgresFixture"/> shares one database across every
+    /// test in this class and this gate is deliberately platform-wide (unscoped by node or task) —
+    /// a prior-period assertion run as its own test would otherwise see whatever "now"-dated spend
+    /// an earlier test method left behind in the same database. Assertions check each seeded
+    /// task's own state by id, rather than the claim call's overall count, for the identical
+    /// reason: <c>NodeBootstrap.EnsureAsync</c> reuses the one existing owner and this machine's
+    /// one existing node row across every bootstrap call against this shared database, so a task
+    /// another test method in this class left Queued under that same owner/node is a real,
+    /// expected neighbor a count-based assertion would wrongly trip over — the ceiling is set
+    /// generously high for the same reason, so a neighbor's own leftover live runs never crowd it.
+    /// </summary>
+    [Fact]
+    public async Task Period_spend_gates_claims_and_ignores_a_prior_periods_recorded_spend()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        using DocumentStore store = DocumentStore.For(opts =>
+        {
+            opts.Connection(postgres.ConnectionString);
+            opts.ConfigureHall9k(AutoCreate.All);
+        });
+
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
+
+        DaemonOptions options = new()
+        {
+            MaxConcurrentTaskRuns = 1000,
+            LeaseTimeout = TimeSpan.FromSeconds(60),
+            SpendBudgetTokens = 500_000,
+            SpendPeriod = SpendPeriod.Week.Value,
+        };
+        DispatchEngine engine = new(
+            store, node, new DaemonConnection(postgres.ConnectionString), new FakeProcessManager(),
+            Options.Create(options), NullLogger<DispatchEngine>.Instance);
+
+        Guid firstTaskId = DomainId.New();
+        await using (IDocumentSession seed = store.LightweightSession())
+        {
+            seed.Events.StartStream<TaskAggregate>(firstTaskId, TaskSeed.Dispatchable(
+                TaskDecider.Add(
+                    firstTaskId, DomainId.New(), "Task A", ["done"], TaskType.Chore,
+                    null, null, null, Now, node.OwnerId),
+                node.OwnerId, Now));
+
+            // Recorded three weeks before the current week started: a prior period's own spend,
+            // which the current period's live sum must not see.
+            DateTimeOffset longAgo = SpendPeriod.Week.StartOf(DateTimeOffset.UtcNow).AddDays(-21);
+            seed.Events.StartStream<RunAggregate>(
+                DomainId.New(),
+                new TokensRecorded(Guid.NewGuid(), 900_000, 10_000, null, longAgo, Model: AgentModel.Sonnet));
+
+            await seed.SaveChangesAsync(cts.Token);
+        }
+
+        await engine.ClaimEligibleAsync(cts.Token);
+
+        await using (IQuerySession query = store.QuerySession())
+        {
+            TaskListItem? claimed = await query.LoadAsync<TaskListItem>(firstTaskId, cts.Token);
+            claimed!.State.Value.Should().Be(
+                "Claimed", "the recorded spend belongs to a prior period, so the current one has nothing against its budget yet");
+        }
+
+        Guid secondTaskId = DomainId.New();
+        await using (IDocumentSession seed = store.LightweightSession())
+        {
+            seed.Events.StartStream<TaskAggregate>(secondTaskId, TaskSeed.Dispatchable(
+                TaskDecider.Add(
+                    secondTaskId, DomainId.New(), "Task B", ["done"], TaskType.Chore,
+                    null, null, null, Now.AddSeconds(1), node.OwnerId),
+                node.OwnerId, Now));
+
+            // A single session's worth of recorded spend, well past the 500,000-token budget —
+            // dated the real wall clock, not the test's own fixed Now: DispatchEngine has no
+            // injectable clock for this gate, so the period it sums against is whatever week
+            // contains DateTimeOffset.UtcNow when the test actually runs.
+            seed.Events.StartStream<RunAggregate>(
+                DomainId.New(),
+                new TokensRecorded(Guid.NewGuid(), 900_000, 10_000, null, DateTimeOffset.UtcNow, Model: AgentModel.Sonnet));
+
+            await seed.SaveChangesAsync(cts.Token);
+        }
+
+        await engine.ClaimEligibleAsync(cts.Token);
+
+        await using (IQuerySession query = store.QuerySession())
+        {
+            TaskListItem? held = await query.LoadAsync<TaskListItem>(secondTaskId, cts.Token);
+            held!.State.Value.Should().Be(
+                "Queued",
+                "the period's spend now meets the budget, so nothing further is claimed despite ceiling room — "
+                + "a task held by the spend budget stays Queued, no throttled state");
         }
     }
 

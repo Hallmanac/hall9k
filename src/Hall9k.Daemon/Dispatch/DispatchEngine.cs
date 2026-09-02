@@ -12,6 +12,7 @@ using Hall9k.Domain.Features.Tasks.Projections;
 using Hall9k.Domain.Infrastructure.Ids;
 using Hall9k.Domain.Infrastructure.Persistence;
 using Hall9k.Domain.Infrastructure.Storage;
+using Hall9k.Domain.Shared.ValueObjects;
 using JasperFx.Events;
 using Marten;
 using Marten.Events;
@@ -58,6 +59,17 @@ public sealed class DispatchEngine(
     /// Cleared the moment the node is back under, which is what makes the next one a fresh line.
     /// </summary>
     private bool _reportedOverCeiling;
+
+    /// <summary>
+    /// Tasks already reported as deferred by the spend budget, the same one-line-per-episode
+    /// discipline <see cref="_deferredClaims"/> gives the concurrency ceiling — a distinct set,
+    /// because the two gates are independent causes and a task turned away by one must not be
+    /// silently folded into the other's log line.
+    /// </summary>
+    private readonly HashSet<Guid> _deferredBySpend = [];
+
+    /// <summary>Mirrors <see cref="_reportedOverCeiling"/> for the spend budget: stated once per episode, not once per sweep.</summary>
+    private bool _reportedSpendExhausted;
 
     /// <summary>
     /// Requeue claimed tasks whose lease heartbeat has gone silent past the timeout —
@@ -327,6 +339,7 @@ public sealed class DispatchEngine(
         await using IDocumentSession session = store.LightweightSession();
 
         NodeLoad load = await MeasureLoadAsync(session, cancellationToken);
+        bool spendExhausted = await SpendBudgetExhaustedAsync(session, cancellationToken);
 
         Guid ownerId = node.OwnerId;
 
@@ -358,12 +371,22 @@ public sealed class DispatchEngine(
             .ToListAsync(cancellationToken);
 
         List<ClaimedWork> claimed = [];
-        List<Guid> deferred = [];
+        List<Guid> deferredByCeiling = [];
+        List<Guid> deferredBySpend = [];
         foreach (Guid candidateId in queued)
         {
+            // The spend budget gates claiming only (AGENTS.md #11's never-auto-kill restraint):
+            // it never touches a run already claimed, and a task it turns away simply stays
+            // Queued, exactly as the ceiling's own turned-away tasks do.
+            if (spendExhausted)
+            {
+                deferredBySpend.Add(candidateId);
+                continue;
+            }
+
             if (claimed.Count >= load.Capacity)
             {
-                deferred.Add(candidateId);
+                deferredByCeiling.Add(candidateId);
                 continue;
             }
 
@@ -373,8 +396,64 @@ public sealed class DispatchEngine(
             }
         }
 
-        await PublishLoadAsync(session, load, claimed.Count, deferred, cancellationToken);
+        await PublishLoadAsync(session, load, claimed.Count, deferredByCeiling, cancellationToken);
+        ReportSpendExhausted(spendExhausted, deferredBySpend);
         return claimed;
+    }
+
+    /// <summary>
+    /// Whether this node's periodic token-spend budget (backlog: spend-governor step three) is
+    /// spent for the period containing now. Summed live from every <c>TokensRecorded</c> event
+    /// since the period start rather than a stored counter — a daemon restart can neither lose
+    /// nor double-count it, because there is nothing to lose. Null <see cref="DaemonOptions.SpendBudgetTokens"/>
+    /// means no budget, the unchanged, unbudgeted default.
+    /// </summary>
+    private async Task<bool> SpendBudgetExhaustedAsync(IQuerySession session, CancellationToken cancellationToken)
+    {
+        if (_options.SpendBudgetTokens is not { } budget)
+        {
+            return false;
+        }
+
+        SpendPeriod period = SpendPeriod.FromInput(_options.SpendPeriod);
+        DateTimeOffset periodStart = period.StartOf(DateTimeOffset.UtcNow);
+        PeriodSpend spend = await PeriodSpend.ReadAsync(session, periodStart, cancellationToken);
+        return spend.TotalInputTokens >= budget;
+    }
+
+    /// <summary>
+    /// One line per episode, the spend budget's own mirror of <see cref="ReportOverCeiling"/> and
+    /// <see cref="ReportDeferrals"/>: a distinct cause from the concurrency ceiling, so it earns
+    /// its own log line naming the actual mechanism rather than folding into the ceiling's.
+    /// </summary>
+    private void ReportSpendExhausted(bool exhausted, IReadOnlyCollection<Guid> deferred)
+    {
+        if (!exhausted)
+        {
+            _reportedSpendExhausted = false;
+            _deferredBySpend.Clear();
+            return;
+        }
+
+        if (!_reportedSpendExhausted)
+        {
+            _reportedSpendExhausted = true;
+            logger.LogWarning(
+                "This node's spend budget for the current period is spent — nothing further is claimed until "
+                + "the period rolls ({Count} queued task(s) affected this sweep)",
+                deferred.Count);
+        }
+
+        foreach (Guid taskId in deferred.Where(taskId => !_deferredBySpend.Contains(taskId)))
+        {
+            logger.LogInformation(
+                "Task {TaskId} stays queued: this node's spend budget for the current period is spent — it is "
+                + "claimed once the period rolls",
+                taskId);
+        }
+
+        _deferredBySpend.Clear();
+        _deferredBySpend.UnionWith(deferred);
     }
 
     /// <summary>
