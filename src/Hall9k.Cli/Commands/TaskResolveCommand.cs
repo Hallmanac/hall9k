@@ -36,7 +36,7 @@ public sealed class TaskResolveCommand : Hall9kAsyncCommand<TaskResolveCommand.S
         public string? Reason { get; init; }
 
         [CommandOption("--pr <URL>")]
-        [Description("Where the work landed, when known (e.g. the merged pull request) — recorded on the task and shown by h9k status")]
+        [Description("Where the work landed, when known (e.g. the merged pull request) — recorded on the task and shown by h9k status. When it names a real pull request on the project's own repository, it also enrolls that pull request in closeout's orphan sweep, so its merge later completes this task's closeout (unblocking dependents, removing the retained worktree) same as any watched run — except on a pr-review task, whose --pr names the pull request it reviewed and is never enrolled")]
         public string? PullRequestUrl { get; init; }
     }
 
@@ -83,15 +83,28 @@ public sealed class TaskResolveCommand : Hall9kAsyncCommand<TaskResolveCommand.S
         // more" wording on h9k status to teach: a --pr given while the run stream itself is
         // missing is the normal missing-run-sweep path (silent, see RecordPullRequestOnRunStreamAsync's
         // own comment) and not this warning's concern — this fires only when a run stream existed
-        // to record onto and the URL still did not end up recorded, because it did not parse to a
-        // pull request number or did not name this task's own project repository.
+        // to record onto and the URL still did not end up recorded. The two reasons that can
+        // happen name different, and differently recoverable, advice (independent pre-PR review,
+        // cycle 3, medium): a fresh h9k task resolve --pr is never a real lever either way, since
+        // this task is now Done and TaskDecider.Resolve accepts only a Failed one.
         if (runStreamOutcome == RunStreamPullRequestOutcome.NotRecorded && settings.PullRequestUrl.IsNotBlank())
         {
-            await Console.Error.WriteLineAsync(
-                $"Note: {settings.PullRequestUrl} does not look like a pull request on this task's own "
-                + "project repository, so closeout will not watch it for a merge — h9k status will keep "
-                + "showing this run as unwatched until h9k pr resolve or a fresh h9k task resolve --pr "
-                + "records one it recognizes.");
+            if (task.Type == TaskType.PrReview)
+            {
+                await Console.Error.WriteLineAsync(
+                    $"Note: task {taskId} is a pull-request review — {settings.PullRequestUrl} names the "
+                    + "pull request it reviewed, not one of this task's own, so closeout will never watch "
+                    + "it for a merge. There is no lever that changes that: h9k pr resolve refuses a "
+                    + "pull-request review task outright. h9k status will keep showing this run as "
+                    + "unwatched, which is expected here.");
+            }
+            else
+            {
+                await Console.Error.WriteLineAsync(
+                    $"Note: {settings.PullRequestUrl} does not look like a pull request on this task's own "
+                    + "project repository, so closeout will not watch it for a merge — h9k status will keep "
+                    + "showing this run as unwatched until h9k pr resolve records one it recognizes.");
+            }
         }
 
         return ExitCodes.Ok;
@@ -134,7 +147,12 @@ public sealed class TaskResolveCommand : Hall9kAsyncCommand<TaskResolveCommand.S
     /// merges. Never <c>PullRequestOpened</c> or <c>PullRequestUpdated</c> here: either one moves
     /// <c>RunState</c> to <c>AwaitingReview</c>, which would pull this Failed run into the
     /// WATCHED sweep instead — the watched path dispatches follow-up runs onto the branch, which
-    /// is not what a dead run's recovery record wants.
+    /// is not what a dead run's recovery record wants. A <see cref="TaskType.PrReview"/> task's
+    /// <c>--pr</c> names the pull request it reviewed, not one of its own, so it records nothing
+    /// here regardless of the URL: recording it would enroll a foreign pull request as this
+    /// run's merge signal, and that pull request's own merge would complete this task's closeout
+    /// and run the remote branch-delete cleanup <c>TaskDecider.Reopen</c> already refuses the
+    /// type to prevent (adversarial review, cycle 3, high).
     /// </summary>
     internal static async Task<RunStreamPullRequestOutcome> RecordPullRequestOnRunStreamAsync(
         IDocumentSession session,
@@ -147,6 +165,11 @@ public sealed class TaskResolveCommand : Hall9kAsyncCommand<TaskResolveCommand.S
             || await session.Events.FetchStreamStateAsync(runId, cancellationToken) is null)
         {
             return RunStreamPullRequestOutcome.NoRunStream;
+        }
+
+        if (task.Type == TaskType.PrReview)
+        {
+            return RunStreamPullRequestOutcome.NotRecorded;
         }
 
         ProjectDetails? project = await session.LoadAsync<ProjectDetails>(task.ProjectId, cancellationToken);
@@ -190,9 +213,9 @@ public sealed class TaskResolveCommand : Hall9kAsyncCommand<TaskResolveCommand.S
             return null;
         }
 
-        if (RepositoryFrom(projectRepositoryUrl) is { } projectRepository
+        if (PullRequestUrls.RepositoryFrom(projectRepositoryUrl) is { } projectRepository
             && Uri.TryCreate(pullRequestUrl, UriKind.Absolute, out Uri? parsedPullRequestUrl)
-            && RepositoryFrom(parsedPullRequestUrl) is { } pullRequestRepository
+            && PullRequestUrls.RepositoryFrom(parsedPullRequestUrl) is { } pullRequestRepository
             && !string.Equals(projectRepository, pullRequestRepository, StringComparison.OrdinalIgnoreCase))
         {
             return null;
@@ -200,17 +223,4 @@ public sealed class TaskResolveCommand : Hall9kAsyncCommand<TaskResolveCommand.S
 
         return new PullRequestRecordedOnFailedRun(runId, pullRequestUrl, pullRequestNumber, recordedAt);
     }
-
-    /// <summary>
-    /// "owner/repo" out of a repository or pull-request URL's first two path segments — the same
-    /// shape <c>RunLauncher.OwnerRepoFrom</c> reads a project's own repository URL with, reused
-    /// here rather than shared across the Cli/Daemon boundary those two projects don't cross.
-    /// </summary>
-    private static string? RepositoryFrom(Uri? url) =>
-        url is not null && url.AbsolutePath.Trim('/').Split('/') is [{ Length: > 0 } owner, { Length: > 0 } repository, ..]
-            ? $"{owner}/{TrimGitSuffix(repository)}"
-            : null;
-
-    private static string TrimGitSuffix(string repository) =>
-        repository.EndsWith(".git", StringComparison.OrdinalIgnoreCase) ? repository[..^4] : repository;
 }
