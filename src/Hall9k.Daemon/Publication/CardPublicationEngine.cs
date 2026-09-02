@@ -772,12 +772,14 @@ public sealed class CardPublicationEngine(
         //
         // The recorded reason itself, not a fixed "Jira rejected the credential" claim: the pending
         // write may equally be a credential the vault could not even resolve, which Jira was never
-        // asked about (independent pre-PR review, adversarial lens, cycle 1).
+        // asked about (independent pre-PR review, adversarial lens, cycle 1) — and it already says
+        // whether and how this retries (JiraWriteExecutor.AuthorizeAsync/Explain), so only the one
+        // fact specific to this caller (no card exists yet to check) is appended after it, rather
+        // than restating the retry reassurance a second time (independent pre-PR review, adversarial
+        // lens, cycle 2).
         string? authFailureReason = await PendingAuthFailureReasonAsync(taskId, cancellationToken);
         string tail = authFailureReason is not null
-            ? $"{authFailureReason} The write is recorded pending on the task rather than lost: it "
-              + "will retry automatically once the connection is fixed, and there is no card to check "
-              + "the board for yet."
+            ? $"{authFailureReason} There is no card to check the board for yet."
             : CheckTheBoard;
 
         return (false, $"{what} {tail}");

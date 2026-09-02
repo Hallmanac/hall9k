@@ -539,7 +539,10 @@ public sealed class JiraWriteRetryEngine(
                 // result.Message is the recorded reason, not a fixed "Jira rejected the credential"
                 // claim: it may equally be a credential the vault could not even resolve, which
                 // Jira was never asked about (independent pre-PR review, adversarial lens, cycle 1)
-                // — and it already says whether and how this retries, so nothing generic is
+                // — and it already says whether and how this retries (JiraWriteExecutor.
+                // AuthorizeAsync carries the same retry reassurance Explain's own 401 message does,
+                // independent pre-PR review, adversarial lens, cycle 2, so this holds for a
+                // vault-resolution failure too, not only a real 401), so nothing generic is
                 // appended after it.
                 logger.LogWarning(
                     "Task {TaskId}: the queued merge notice for {Reference} is pending — {Reason}",

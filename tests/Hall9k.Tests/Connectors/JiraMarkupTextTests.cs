@@ -100,9 +100,36 @@ public sealed class JiraMarkupTextTests
     }
 
     [Fact]
+    public void Bold_text_wrapping_an_inline_code_span_converts_both()
+    {
+        // The sequential-segments version of ConvertInline split a span like this at the code
+        // boundary, so neither the bold nor the code half matched (independent pre-PR review,
+        // adversarial lens, cycle 2).
+        JiraMarkupText.FromMarkdown("**Use the `--file` flag**").Should().Be("*Use the {{--file}} flag*");
+    }
+
+    [Fact]
+    public void A_link_wrapping_an_inline_code_span_converts_both()
+    {
+        JiraMarkupText.FromMarkdown("[the `--file` flag](https://example.com)")
+            .Should().Be("[the {{--file}} flag|https://example.com]");
+    }
+
+    [Fact]
     public void ToPlainLiteral_wraps_text_in_a_noformat_block()
     {
         JiraMarkupText.ToPlainLiteral("## not a heading here").Should().Be("{noformat}\n## not a heading here\n{noformat}");
+    }
+
+    [Fact]
+    public void ToPlainLiteral_passes_text_through_unwrapped_when_it_carries_no_wiki_markup_active_character()
+    {
+        // Closeout's own merge comment is exactly this shape: plain prose plus a bare URL, with
+        // nothing in it Jira wiki markup ever assigns meaning to. Wrapping it in {noformat}
+        // anyway regressed the URL from an auto-linked sentence into dead text inside a
+        // preformatted block (independent pre-PR review, adversarial lens, cycle 2).
+        string text = "The pull request for this work has merged: https://github.com/hall9k/hall9k/pull/1";
+        JiraMarkupText.ToPlainLiteral(text).Should().Be(text);
     }
 
     [Fact]

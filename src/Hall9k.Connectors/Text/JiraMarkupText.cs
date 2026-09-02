@@ -67,14 +67,38 @@ public static partial class JiraMarkupText
     /// suppress every other construct inside it (headings, lists, links, bold, code), rather than a
     /// per-character escape this class would otherwise have to guess at — AGENTS.md's "never guess
     /// at unobserved facts": Jira's backslash-escape rules for individual markup characters are not
-    /// documented clearly enough to trust, where <c>{noformat}</c> is. The one corner this does not
-    /// cover: text that already contains the literal string <c>{noformat}</c> could still terminate
-    /// the block early — flagged here rather than guessed past, since handling it would mean
-    /// splitting the payload on an assumption about Jira's own parser this class has no way to
-    /// verify.
+    /// documented clearly enough to trust, where <c>{noformat}</c> is.
+    /// <para>
+    /// Wrapping is conditional, not unconditional (independent pre-PR review, adversarial lens,
+    /// cycle 2, origin: closeout's own merge comment, composed with no wiki-markup-active character
+    /// anywhere in it, was boxed the same as anything else, which turned its one actionable element
+    /// — the pull request's URL — from an auto-linked sentence into dead text inside a preformatted
+    /// block): <paramref name="text"/> is wrapped only when it contains at least one character every
+    /// Jira wiki-markup construct is built from (see <see cref="ContainsWikiMarkupActiveCharacter"/>).
+    /// A text with none of those characters cannot form any construct regardless of Jira's own
+    /// undocumented escaping rules, so passing it through unwrapped is a verified fact about the
+    /// text rather than a guess at those rules — and it is what lets a bare URL still auto-link the
+    /// way "plain" text always rendered before this wrapping existed.
+    /// </para>
+    /// The one corner this does not cover: text that already contains the literal string
+    /// <c>{noformat}</c> could still terminate the block early — flagged here rather than guessed
+    /// past, since handling it would mean splitting the payload on an assumption about Jira's own
+    /// parser this class has no way to verify.
     /// </summary>
     public static string ToPlainLiteral(string text) =>
-        text.IsBlank() ? text : $"{{noformat}}\n{text}\n{{noformat}}";
+        text.IsBlank() || !ContainsWikiMarkupActiveCharacter(text)
+            ? text
+            : $"{{noformat}}\n{text}\n{{noformat}}";
+
+    /// <summary>
+    /// Whether <paramref name="text"/> contains any character Jira wiki markup ever assigns meaning
+    /// to. Every construct the markup understands — bold, italic, strikethrough, underline,
+    /// super/subscript, headings, lists, blockquotes, tables, links, monospace, and macros like
+    /// <c>{noformat}</c> itself — is built from at least one of these, so a text with none of them
+    /// cannot be interpreted as any construct: an absence <see cref="ToPlainLiteral"/> can trust
+    /// without knowing Jira's own (undocumented) per-character escaping rules.
+    /// </summary>
+    private static bool ContainsWikiMarkupActiveCharacter(string text) => WikiMarkupActiveCharacter().IsMatch(text);
 
     private static string ConvertProse(string text)
     {
@@ -117,34 +141,137 @@ public static partial class JiraMarkupText
     private static int Depth(string leadingWhitespace) => (leadingWhitespace.Length / 2) + 1;
 
     /// <summary>
-    /// Inline code has to be carved out and left untouched by bold/link conversion, not converted
-    /// in the same pass as them: converting bold first and code second let markdown syntax written
-    /// literally inside a backtick span (<c>`**bold**`</c>) get rewritten before the code span ever
-    /// wrapped it, so the card showed a monospace span containing bold text instead of the literal
-    /// characters the author asked for (independent pre-PR review, adversarial lens, cycle 1 — a
-    /// ride-along, the same leak <see cref="FromMarkdown"/>'s own fenced-code handling already
-    /// avoids for block code). Walks the line the same way <see cref="FromMarkdown"/> walks the
-    /// whole text around its fenced code blocks: bold/link conversion runs only on the spans between
-    /// inline-code matches, and each code span itself is wrapped as <c>{{...}}</c> straight from its
-    /// own captured text, never re-examined by <see cref="BoldText"/> or <see cref="InlineLink"/>.
+    /// Inline code, bold, and links, converted in one left-to-right scan rather than three
+    /// independent regex passes — a hand-written scanner rather than a regex composition because the
+    /// two things a regex composition cannot both give at once turned out to both matter: markdown
+    /// written literally inside a backtick span (<c>`**bold**`</c>) must not be read as bold
+    /// (independent pre-PR review, adversarial lens, cycle 1), and a bold span or a link that itself
+    /// wraps a code span (<c>**Use the `--file` flag**</c>) must still convert as bold with the code
+    /// span converted inside it (independent pre-PR review, adversarial lens, cycle 2 — the sequential-
+    /// segments version this replaced split every such span at the code boundary and matched neither
+    /// regex). A real markdown parser gets both by building an inline tree, where emphasis may legally
+    /// contain a code span; this reaches the same result without one, by having the bold/link scan
+    /// itself skip straight over any code span it encounters while hunting for its own closing
+    /// delimiter — so a <c>**</c> or a <c>]</c>/<c>)</c> written literally inside a code span's own
+    /// content is never mistaken for a delimiter closing something outside it — and by recursively
+    /// converting whatever bold/link content it does find, so a code span nested inside still becomes
+    /// <c>{{...}}</c>.
     /// </summary>
     private static string ConvertInline(string text)
     {
         StringBuilder result = new(text.Length);
-        int cursor = 0;
-        foreach (Match code in InlineCode().Matches(text))
+        int index = 0;
+        while (index < text.Length)
         {
-            result.Append(ConvertBoldAndLinks(text[cursor..code.Index]));
-            result.Append("{{").Append(code.Groups[1].Value).Append("}}");
-            cursor = code.Index + code.Length;
+            if (text[index] == '`' && TryReadCodeSpan(text, index, out int codeEnd))
+            {
+                result.Append("{{").Append(text[(index + 1)..(codeEnd - 1)]).Append("}}");
+                index = codeEnd;
+                continue;
+            }
+
+            if (text[index] == '*' && index + 1 < text.Length && text[index + 1] == '*'
+                && TryFindDelimiter(text, index + 2, "**", out int boldClose))
+            {
+                result.Append('*').Append(ConvertInline(text[(index + 2)..boldClose])).Append('*');
+                index = boldClose + 2;
+                continue;
+            }
+
+            if (text[index] == '[' && TryConvertLink(text, index, out string linkOutput, out int linkEnd))
+            {
+                result.Append(linkOutput);
+                index = linkEnd;
+                continue;
+            }
+
+            result.Append(text[index]);
+            index++;
         }
 
-        result.Append(ConvertBoldAndLinks(text[cursor..]));
         return result.ToString();
     }
 
-    private static string ConvertBoldAndLinks(string text) =>
-        InlineLink().Replace(BoldText().Replace(text, "*$1*"), "[$1|$2]");
+    /// <summary>
+    /// <c>[link text](url)</c> starting at <paramref name="start"/> (a <c>[</c>), converted to Jira's
+    /// pipe-delimited link — or refused (returns false) the moment any required piece is missing, the
+    /// same "no match, leave it alone" fallback the regex this replaced always had. The link text is
+    /// scanned for its own closing <c>]</c> the same delimiter-skipping way <see cref="ConvertInline"/>
+    /// scans for a closing <c>**</c>, so a link wrapping a code span (<c>[the `--file` flag](url)</c>)
+    /// converts with the code span turned into <c>{{...}}</c> rather than left as raw backticks.
+    /// </summary>
+    private static bool TryConvertLink(string text, int start, out string output, out int end)
+    {
+        if (TryFindDelimiter(text, start + 1, "]", out int textClose)
+            && textClose + 1 < text.Length && text[textClose + 1] == '('
+            && TryFindDelimiter(text, textClose + 2, ")", out int urlClose))
+        {
+            string linkText = text[(start + 1)..textClose];
+            string url = text[(textClose + 2)..urlClose];
+            output = $"[{ConvertInline(linkText)}|{url}]";
+            end = urlClose + 1;
+            return true;
+        }
+
+        output = string.Empty;
+        end = start;
+        return false;
+    }
+
+    /// <summary>
+    /// The index of the next literal occurrence of <paramref name="delimiter"/> at or after
+    /// <paramref name="from"/>, skipping straight over every complete inline-code span found along the
+    /// way (<see cref="TryReadCodeSpan"/>) so a delimiter character written literally inside one — a
+    /// stray <c>**</c>, <c>]</c>, or <c>)</c> in a code sample — is never mistaken for the delimiter
+    /// this search is actually looking for.
+    /// </summary>
+    private static bool TryFindDelimiter(string text, int from, string delimiter, out int index)
+    {
+        int position = from;
+        while (position < text.Length)
+        {
+            if (text[position] == '`' && TryReadCodeSpan(text, position, out int codeEnd))
+            {
+                position = codeEnd;
+                continue;
+            }
+
+            if (position + delimiter.Length <= text.Length
+                && string.CompareOrdinal(text, position, delimiter, 0, delimiter.Length) == 0)
+            {
+                index = position;
+                return true;
+            }
+
+            position++;
+        }
+
+        index = -1;
+        return false;
+    }
+
+    /// <summary>
+    /// A complete inline-code span starting at <paramref name="start"/> (a backtick): at least one
+    /// character, no backtick, no newline — the same literal-content rule the regex this replaced
+    /// enforced. <paramref name="end"/> is the index just past the closing backtick on success.
+    /// </summary>
+    private static bool TryReadCodeSpan(string text, int start, out int end)
+    {
+        int closing = start + 1;
+        while (closing < text.Length && text[closing] != '`' && text[closing] != '\n')
+        {
+            closing++;
+        }
+
+        if (closing < text.Length && text[closing] == '`' && closing > start + 1)
+        {
+            end = closing + 1;
+            return true;
+        }
+
+        end = start;
+        return false;
+    }
 
     [GeneratedRegex(@"```(\w*)\n(.*?)\n```", RegexOptions.Singleline)]
     private static partial Regex FencedCodeBlock();
@@ -161,12 +288,6 @@ public static partial class JiraMarkupText
     [GeneratedRegex(@"^>\s?(.*)$")]
     private static partial Regex BlockquoteLine();
 
-    [GeneratedRegex(@"\*\*(.+?)\*\*")]
-    private static partial Regex BoldText();
-
-    [GeneratedRegex(@"`([^`\n]+)`")]
-    private static partial Regex InlineCode();
-
-    [GeneratedRegex(@"\[([^\]]+)\]\(([^)]+)\)")]
-    private static partial Regex InlineLink();
+    [GeneratedRegex(@"[*_+\-^~#{}\[\]|\\]")]
+    private static partial Regex WikiMarkupActiveCharacter();
 }
