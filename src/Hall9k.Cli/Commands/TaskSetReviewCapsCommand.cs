@@ -18,8 +18,11 @@ namespace Hall9k.Cli.Commands;
 /// to be set at any time, including while the task's run is live, so the daemon picks it up at
 /// the next cap check. This is the documented takeover path for a task observed grinding: set a
 /// cap at or below the cycles that track has run since its last human takeover grant (0, if it has
-/// never had one) and the run parks at the next settle point or cap check, no new state or command
-/// beyond this one — 0 always parks immediately, since that count can never be negative.
+/// never had one) and the run parks the next time that cap is actually consulted — a per-track
+/// cap at its next fix-session dispatch, the final-full-pass cap at its next mandatory round — no
+/// new state or command beyond this one. It does not stop a run that converges clean before
+/// reaching one of those checks; the lifetime budget is the one exception, checked at every
+/// settle point.
 /// </summary>
 public sealed class TaskSetReviewCapsCommand : Hall9kAsyncCommand<TaskSetReviewCapsCommand.Settings>
 {
@@ -36,9 +39,9 @@ public sealed class TaskSetReviewCapsCommand : Hall9kAsyncCommand<TaskSetReviewC
             + "run since its last human takeover grant (0, if it has never had one, which is also when "
             + "this count matches the absolute review cycle h9k status/h9k task show print — a grant or "
             + "a track reactivation moves this count's own base forward, and only from there do the two "
-            + "numbers diverge) parks the run at the next settle point or cap check — the takeover lever "
-            + "for a task observed grinding; 0 always parks immediately, since that count can never be "
-            + "negative. 'default' clears the task override so the project (or the node) decides.")]
+            + "numbers diverge) parks the run the next time this track is dispatched a fix session — the "
+            + "takeover lever for a task observed grinding; it does not stop a run that converges clean "
+            + "first. 'default' clears the task override so the project (or the node) decides.")]
         public string? MaxComplianceReviewCycles { get; init; }
 
         [CommandOption("--max-adversarial-review-cycles <N|default>")]
@@ -50,7 +53,9 @@ public sealed class TaskSetReviewCapsCommand : Hall9kAsyncCommand<TaskSetReviewC
         [CommandOption("--max-final-full-pass-rounds <N|default>")]
         [Description(
             "This task's cap on consecutive mandatory final-full-pass rounds (Decisions Log #93). Same "
-            + "resolution order, takeover behavior, and clearing idiom as --max-compliance-review-cycles.")]
+            + "resolution order and clearing idiom as --max-compliance-review-cycles, and the same "
+            + "takeover principle — a cap set at or below the rounds already run parks the run — but "
+            + "checked at the next mandatory final-full-pass round rather than a fix-session dispatch.")]
         public string? MaxFinalFullPassRounds { get; init; }
 
         [CommandOption("--lifetime-review-cycle-budget <N|default>")]

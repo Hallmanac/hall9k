@@ -471,8 +471,11 @@ documented takeover lever for a task observed grinding: setting a cap at or belo
 track has run since its last human takeover grant (0, if it has never had one, which is also when
 this count matches the absolute review cycle number `h9k status`/`h9k task show` print — a grant or
 a track reactivation moves this count's own base forward, and only from there do the two numbers
-diverge) parks the run there, no new state or command beyond the setting itself — 0 always parks
-immediately, since that count can never be negative. `h9k task show` prints any per-task
+diverge) parks the run the next time that cap is actually checked — a per-track cap at its next
+fix-session dispatch, the final-full-pass cap at its next mandatory round — no new state or
+command beyond the setting itself. It does not stop a run that converges clean before reaching
+one of those checks; the lifetime budget is the one exception, checked at every settle point, so
+setting it low parks a converging run too. `h9k task show` prints any per-task
 override; `h9k project show` prints the project's own.
 
 `h9k config set` writes to the config file; `h9k config show` resolves a setting the same way
