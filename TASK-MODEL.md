@@ -714,8 +714,10 @@ public sealed record ReviewDispatched(   // one review pass spawned over the dif
                                          //   written before lenses existed (log #59)
     ReviewMode? Mode = null,             // Discovery, Verify, or FinalFullPass (task: review cycles
                                          //   after the first); null reads as Discovery
-    string? HeadSha = null);             // git rev-parse HEAD at spawn, best-effort — what the NEXT
+    string? HeadSha = null,              // git rev-parse HEAD at spawn, best-effort — what the NEXT
                                          //   cycle's Verify prompt (if any) reads "since" from
+    string? SinceSha = null);            // the boundary THIS pass's own diff instruction was scoped
+                                         //   to; null for Discovery and an unscoped FinalFullPass
 public sealed record ReviewPassCompleted( // ONE lens of the cycle returned its verdict (log #59);
     Guid Id,                             // that lens's own findings artifact:
     int Cycle,                           // review-<cycle>-<lens>-findings.md in the run directory

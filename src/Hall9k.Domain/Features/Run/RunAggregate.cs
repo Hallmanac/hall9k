@@ -202,8 +202,9 @@ public sealed class RunAggregate
     /// <summary>
     /// The most recently dispatched review cycle's own <see cref="Events.ReviewDispatched.SinceSha"/>
     /// (independent pre-PR review, cycle 1 adversarial finding) — null unless
-    /// <see cref="CurrentCycleMode"/> is <see cref="ReviewMode.FinalFullPass"/> and that cycle was
-    /// itself scoped to the commits since an earlier full-scope read. Mirrors
+    /// <see cref="CurrentCycleMode"/> is <see cref="ReviewMode.Verify"/> (the prior cycle's own tip,
+    /// the boundary its delta read is scoped since) or is <see cref="ReviewMode.FinalFullPass"/> and
+    /// that cycle was itself scoped to the commits since an earlier full-scope read. Mirrors
     /// <see cref="CycleHeadSha"/>'s own capture-once-per-cycle bookkeeping, including for a
     /// crash-recovery top-up into the same cycle.
     /// </summary>
