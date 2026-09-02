@@ -272,7 +272,7 @@ public sealed class JiraWriteExecutor(JiraAccount account, JiraRequester? reques
     /// which is already true before an update runs, so the recorded outcome says exactly that
     /// rather than claiming the changed fields themselves were confirmed: the update's own 2xx
     /// response is what this is actually trusted on. A composed <c>project</c> or <c>issuetype</c>
-    /// field is dropped before the request is built, never sent: an update never moves a card to a
+    /// field is refused before the request is built, never sent: an update never moves a card to a
     /// different board or work item type through a field write.
     /// </summary>
     public async Task<JiraWriteResult> UpdateAsync(string issueKey, JiraWritePayload payload, CancellationToken cancellationToken)
@@ -285,13 +285,21 @@ public sealed class JiraWriteExecutor(JiraAccount account, JiraRequester? reques
         string? summary = ExtractField(fields, "summary");
         string? description = ExtractField(fields, "description");
 
-        // Dropped rather than sent: an update never moves a card to a different board or work
-        // item type through a field write, the same guard CreateAsync applies by overwriting both
-        // after AppendFields — an update has no bound project/issuetype of its own to overwrite
-        // them with, so the composed value is discarded outright instead (independent pre-PR
-        // review, adversarial lens, cycle 5).
-        ExtractField(fields, "project");
-        ExtractField(fields, "issuetype");
+        // JiraWritePayload.Validate's own RefuseReassignmentField already refuses a fresh payload
+        // naming "project" or "issuetype" here, before it is ever recorded — but
+        // JiraWriteCoordinator.RetryPendingAsync replays an already-recorded payload's own
+        // PayloadJson without re-validating it (by design — a retry mints no new intent), so a
+        // write recorded pending under an older build that still allowed such a field (and actually
+        // sent it, the way the retired twg transport's own AppendFields did) would otherwise reach
+        // here under the newer build's rules. Silently discarding it at this point — the way this
+        // used to work — would let the read-back confirm the card still exists and record a
+        // verified JiraWriteSucceeded for content that was never sent, and if the field was the
+        // payload's only content, Jira would receive an effectively empty update and the audit
+        // trail would record a no-op as a completed write. Refused here instead, the same
+        // terminal-failure shape ApplyFormat uses for a stale "html" payload below (independent
+        // pre-PR review, adversarial lens, cycle 13).
+        RefuseReplayedReassignmentField(ExtractField(fields, "project"), "project");
+        RefuseReplayedReassignmentField(ExtractField(fields, "issuetype"), "issuetype");
 
         JsonObject fieldsNode = [];
         if (summary.IsNotBlank())
@@ -612,6 +620,31 @@ public sealed class JiraWriteExecutor(JiraAccount account, JiraRequester? reques
                     + "narrowing existed, so it cannot simply be retried as-is: recompose it with a "
                     + "supported format instead."),
             };
+
+    /// <summary>
+    /// <see cref="UpdateAsync"/>'s own transport-level backstop for the identical replay hole
+    /// <see cref="ApplyFormat"/> closes for a stale "html" payload: a fresh payload naming
+    /// <paramref name="fieldName"/> inside "fields" is already refused at
+    /// <see cref="JiraWritePayload.Validate"/>, but a write recorded pending before that refusal
+    /// existed reaches here unvalidated through <see cref="JiraWriteCoordinator.RetryPendingAsync"/>'s
+    /// replay. <paramref name="value"/> is <see cref="ExtractField"/>'s own already-decoded read, so
+    /// this only has to check it for real content, not decode it again.
+    /// </summary>
+    private static void RefuseReplayedReassignmentField(string? value, string fieldName)
+    {
+        if (value.IsBlank())
+        {
+            return;
+        }
+
+        throw new JiraWriteExecutionException(
+            JiraWriteFailureKind.Other,
+            $"An update does not send \"{fieldName}\" inside \"fields\" — an update has no board or "
+            + "work item type of its own to move a card to, so this would be silently dropped rather "
+            + "than carried out. JiraWritePayload.Validate refuses this at composition now; this "
+            + "write's payload was recorded pending before that refusal existed, so it cannot simply "
+            + $"be retried as-is: recompose it without \"{fieldName}\" instead.");
+    }
 
     private static void AppendFields(JsonObject fieldsNode, IReadOnlyDictionary<string, string> fields)
     {
