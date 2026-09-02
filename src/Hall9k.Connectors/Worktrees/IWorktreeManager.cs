@@ -1,11 +1,22 @@
+using Hall9k.Domain.Features.Project;
+
 namespace Hall9k.Connectors.Worktrees;
 
+/// <summary>
+/// Everything the branch a fresh run works on is cut from. <paramref name="BranchNameTemplate"/>
+/// is the project's own convention and <paramref name="ExternalReference"/> the task's linked item
+/// (<c>jira:PROJ-123</c>, <c>github:owner/repo#42</c>, or null) — both are carried rather than
+/// looked up, because the branch name is rendered exactly once, here, and every consumer
+/// afterwards reads the name recorded on <c>RunDispatched</c>.
+/// </summary>
 public sealed record WorktreeRequest(
     string RepositoryPath,
     string BaseBranch,
     Guid TaskId,
     Guid RunId,
-    string Objective);
+    string Objective,
+    BranchNameTemplate BranchNameTemplate,
+    string? ExternalReference);
 
 /// <summary>Follow-up runs resume the task's existing pull-request branch — no new branch is cut.</summary>
 public sealed record FollowUpWorktreeRequest(

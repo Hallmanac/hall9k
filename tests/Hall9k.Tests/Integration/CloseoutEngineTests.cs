@@ -863,7 +863,7 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
         Guid projectId = DomainId.New();
 
         Worktree worktree = await worktrees.CreateAsync(
-            new WorktreeRequest(repoPath, "main", taskId, DomainId.New(), "Close me out"), cancellationToken);
+            new WorktreeRequest(repoPath, "main", taskId, DomainId.New(), "Close me out", BranchNameTemplate.Default, ExternalReference: null), cancellationToken);
         File.WriteAllText(Path.Combine(worktree.Path, "WORK.md"), "agent output\n");
         Git(worktree.Path, "add -A");
         Git(worktree.Path, "-c user.name=Test -c user.email=t@t commit -qm work");
@@ -2537,7 +2537,7 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
         Guid projectId = DomainId.New();
 
         Worktree worktree = await worktrees.CreateAsync(
-            new WorktreeRequest(repoPath, "main", taskId, DomainId.New(), "Close me out"), cancellationToken);
+            new WorktreeRequest(repoPath, "main", taskId, DomainId.New(), "Close me out", BranchNameTemplate.Default, ExternalReference: null), cancellationToken);
         File.WriteAllText(Path.Combine(worktree.Path, "WORK.md"), "agent output\n");
         Git(worktree.Path, "add -A");
         Git(worktree.Path, "-c user.name=Test -c user.email=t@t commit -qm work");

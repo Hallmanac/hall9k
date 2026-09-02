@@ -3,6 +3,7 @@ using FluentAssertions;
 using Hall9k.Daemon;
 using Hall9k.Daemon.Execution;
 using Hall9k.Connectors.Worktrees;
+using Hall9k.Domain.Features.Project;
 using Hall9k.Domain.Features.Run;
 using Hall9k.Domain.Features.Run.Events;
 using Hall9k.Domain.Features.Tasks;
@@ -61,7 +62,7 @@ public sealed class PullRequestOpenerTests(PostgresFixture postgres) : IClassFix
         Guid taskId = DomainId.New();
         Guid runId = DomainId.New();
         Worktree worktree = await worktrees.CreateAsync(
-            new WorktreeRequest(repoPath, "main", taskId, runId, "Open a PR end to end"), cts.Token);
+            new WorktreeRequest(repoPath, "main", taskId, runId, "Open a PR end to end", BranchNameTemplate.Default, ExternalReference: null), cts.Token);
 
         File.WriteAllText(Path.Combine(worktree.Path, "WORK.md"), "agent output\n");
         Git(worktree.Path, "add -A");
@@ -140,7 +141,7 @@ public sealed class PullRequestOpenerTests(PostgresFixture postgres) : IClassFix
         Guid taskId = DomainId.New();
         Guid staleRunId = DomainId.New();
         Worktree worktree = await worktrees.CreateAsync(
-            new WorktreeRequest(repoPath, "main", taskId, staleRunId, "Stale generation push"), cts.Token);
+            new WorktreeRequest(repoPath, "main", taskId, staleRunId, "Stale generation push", BranchNameTemplate.Default, ExternalReference: null), cts.Token);
         File.WriteAllText(Path.Combine(worktree.Path, "WORK.md"), "stale run output\n");
         Git(worktree.Path, "add -A");
         Git(worktree.Path, "-c user.name=Test -c user.email=t@t commit -qm \"Add WORK.md\"");
@@ -219,7 +220,7 @@ public sealed class PullRequestOpenerTests(PostgresFixture postgres) : IClassFix
         Guid taskId = DomainId.New();
         Guid firstRunId = DomainId.New();
         Worktree first = await worktrees.CreateAsync(
-            new WorktreeRequest(repoPath, "main", taskId, firstRunId, "Follow up end to end"), cts.Token);
+            new WorktreeRequest(repoPath, "main", taskId, firstRunId, "Follow up end to end", BranchNameTemplate.Default, ExternalReference: null), cts.Token);
         File.WriteAllText(Path.Combine(first.Path, "WORK.md"), "first run\n");
         Git(first.Path, "add -A");
         Git(first.Path, "-c user.name=Test -c user.email=t@t commit -qm \"Add WORK.md\"");
@@ -318,7 +319,7 @@ public sealed class PullRequestOpenerTests(PostgresFixture postgres) : IClassFix
         Guid taskId = DomainId.New();
         Guid firstRunId = DomainId.New();
         Worktree worktree = await worktrees.CreateAsync(
-            new WorktreeRequest(repoPath, "main", taskId, firstRunId, "Force push follow up"), cts.Token);
+            new WorktreeRequest(repoPath, "main", taskId, firstRunId, "Force push follow up", BranchNameTemplate.Default, ExternalReference: null), cts.Token);
         File.WriteAllText(Path.Combine(worktree.Path, "WORK.md"), "first run\n");
         Git(worktree.Path, "add -A");
         Git(worktree.Path, "-c user.name=Test -c user.email=t@t commit -qm \"Add WORK.md\"");
@@ -426,7 +427,7 @@ public sealed class PullRequestOpenerTests(PostgresFixture postgres) : IClassFix
         Guid taskId = DomainId.New();
         Guid firstRunId = DomainId.New();
         Worktree worktree = await worktrees.CreateAsync(
-            new WorktreeRequest(repoPath, "main", taskId, firstRunId, "Recompose retry lands via lease"), cts.Token);
+            new WorktreeRequest(repoPath, "main", taskId, firstRunId, "Recompose retry lands via lease", BranchNameTemplate.Default, ExternalReference: null), cts.Token);
         File.WriteAllText(Path.Combine(worktree.Path, "WORK.md"), "checkpoint\n");
         Git(worktree.Path, "add -A");
         Git(worktree.Path, "-c user.name=Test -c user.email=t@t commit -qm checkpoint");
@@ -532,7 +533,7 @@ public sealed class PullRequestOpenerTests(PostgresFixture postgres) : IClassFix
         Guid taskId = DomainId.New();
         Guid firstRunId = DomainId.New();
         Worktree worktree = await worktrees.CreateAsync(
-            new WorktreeRequest(repoPath, "main", taskId, firstRunId, "Stale tracking ref still lands"), cts.Token);
+            new WorktreeRequest(repoPath, "main", taskId, firstRunId, "Stale tracking ref still lands", BranchNameTemplate.Default, ExternalReference: null), cts.Token);
         File.WriteAllText(Path.Combine(worktree.Path, "WORK.md"), "checkpoint\n");
         Git(worktree.Path, "add -A");
         Git(worktree.Path, "-c user.name=Test -c user.email=t@t commit -qm checkpoint");
@@ -635,7 +636,7 @@ public sealed class PullRequestOpenerTests(PostgresFixture postgres) : IClassFix
         Guid taskId = DomainId.New();
         Guid runId = DomainId.New();
         Worktree worktree = await worktrees.CreateAsync(
-            new WorktreeRequest(repoPath, "main", taskId, runId, "Foreign tip refuses the push"), cts.Token);
+            new WorktreeRequest(repoPath, "main", taskId, runId, "Foreign tip refuses the push", BranchNameTemplate.Default, ExternalReference: null), cts.Token);
         File.WriteAllText(Path.Combine(worktree.Path, "WORK.md"), "agent output\n");
         Git(worktree.Path, "add -A");
         Git(worktree.Path, "-c user.name=Test -c user.email=t@t commit -qm \"Add WORK.md\"");
@@ -740,7 +741,7 @@ public sealed class PullRequestOpenerTests(PostgresFixture postgres) : IClassFix
         Guid taskId = DomainId.New();
         Guid runId = DomainId.New();
         Worktree worktree = await worktrees.CreateAsync(
-            new WorktreeRequest(repoPath, "main", taskId, runId, "Unreadable origin fails the run"), cts.Token);
+            new WorktreeRequest(repoPath, "main", taskId, runId, "Unreadable origin fails the run", BranchNameTemplate.Default, ExternalReference: null), cts.Token);
         File.WriteAllText(Path.Combine(worktree.Path, "WORK.md"), "agent output\n");
         Git(worktree.Path, "add -A");
         Git(worktree.Path, "-c user.name=Test -c user.email=t@t commit -qm \"Add WORK.md\"");

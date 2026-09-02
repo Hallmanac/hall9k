@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using System.Diagnostics;
-using System.Text;
+using Hall9k.Domain.Features.Project;
+using Hall9k.Domain.Features.Tasks;
 using Microsoft.Extensions.Logging;
 
 namespace Hall9k.Connectors.Worktrees;
@@ -622,13 +623,49 @@ public sealed class GitWorktreeManager(ILogger<GitWorktreeManager> logger) : IWo
             $"Neither origin/{baseBranch} nor {baseBranch} resolves to a commit in {repositoryPath}.");
     }
 
+    /// <summary>
+    /// The one place a task branch is ever named. The project's template decides the shape (the
+    /// default renders the same <c>task/&lt;shortid&gt;-&lt;slug&gt;</c> this method hard-coded
+    /// before projects could state a convention), and the result is handed straight back to the
+    /// caller, which records it on <c>RunDispatched</c> — nothing re-renders it later, which is
+    /// what keeps <c>PullRequestOpener</c>'s much-later verbatim push pointed at a ref that exists.
+    /// <para>
+    /// The collision retry is unchanged and template-agnostic: whatever the template rendered gets
+    /// the same run suffix. It cannot make a legal name illegal, because
+    /// <see cref="BranchNameTemplate.Render"/> guarantees a name ending in a character git allows
+    /// and the suffix adds only <c>-r</c> and four hex digits.
+    /// </para>
+    /// <para>
+    /// The collision check itself has to look at <c>refs/remotes/origin/*</c> as well as
+    /// <c>refs/heads/*</c> — a guarantee the hard-coded name used to get for free, since it always
+    /// embedded the task's own unique short id, but a project's template need not contain
+    /// <c>{shortid}</c> at all. A tracker-keyed template such as <c>{key}</c> can render a name
+    /// someone already pushed to origin under their own local branch of the same name, in which
+    /// case only the local check would miss it: <c>CreateAsync</c>'s fetch lands that branch at
+    /// <c>refs/remotes/origin/&lt;branch&gt;</c>, never at <c>refs/heads/&lt;branch&gt;</c>
+    /// (<c>RepoMaterialiser</c> maps the bare clone's refspec that way), so a local-only check
+    /// would create a fresh local branch that shares no history with origin's tip under that name
+    /// and let the run build its whole change there — only for the eventual push to be refused
+    /// once the run has already done all its work. <see cref="CheckoutExistingAsync"/> already
+    /// checks both refs for the same reason (adversarial pre-PR review, cycle 3).
+    /// </para>
+    /// </summary>
     private async Task<string> ResolveBranchNameAsync(string repositoryPath, WorktreeRequest request, CancellationToken cancellationToken)
     {
-        string branch = $"task/{Short(request.TaskId)}-{Slug(request.Objective)}";
+        // Parse answers an empty reference for a task carrying none, and Render turns that into a
+        // stated "no key" rather than an empty segment — so there is no null case to special-case.
+        string branch = request.BranchNameTemplate.Render(
+            request.TaskId, request.Objective, ExternalReference.Parse(request.ExternalReference).Key);
 
-        // Branch per task — but a retried task's failed worktree is retained (cleanup
-        // policy, log #4) and still holds the branch, so retries get a run-suffixed name.
-        return await RefExistsAsync(repositoryPath, $"refs/heads/{branch}", cancellationToken)
+        // Branch per task — but a retried task's failed worktree is retained (cleanup policy, log
+        // #4) and still holds the branch, so retries get a run-suffixed name. A name that already
+        // exists on origin, but never locally, needs the same suffix: nothing else notices until
+        // the eventual push is refused for a branch this node never accounted for.
+        bool collides =
+            await RefExistsAsync(repositoryPath, $"refs/heads/{branch}", cancellationToken)
+            || await RefExistsAsync(repositoryPath, $"refs/remotes/origin/{branch}", cancellationToken);
+
+        return collides
             ? $"{branch}-r{Short(request.RunId)[..4]}"
             : branch;
     }
@@ -653,30 +690,6 @@ public sealed class GitWorktreeManager(ILogger<GitWorktreeManager> logger) : IWo
     // UUIDv7 front-loads the timestamp — same-instant ids share their FIRST chars, so a
     // short id must come from the random tail, never the head.
     private static string Short(Guid id) => id.ToString("N")[^8..];
-
-    private static string Slug(string objective)
-    {
-        StringBuilder slug = new();
-        foreach (char c in objective.ToLowerInvariant())
-        {
-            if (char.IsAsciiLetterOrDigit(c))
-            {
-                slug.Append(c);
-            }
-            else if (slug.Length > 0 && slug[^1] != '-')
-            {
-                slug.Append('-');
-            }
-
-            if (slug.Length >= 30)
-            {
-                break;
-            }
-        }
-
-        string result = slug.ToString().Trim('-');
-        return result.IsBlank() ? "task" : result;
-    }
 
     private async Task RunGitAsync(string repositoryPath, string arguments, CancellationToken cancellationToken)
     {

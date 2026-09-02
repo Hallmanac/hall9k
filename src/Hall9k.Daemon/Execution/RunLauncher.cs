@@ -556,7 +556,9 @@ public sealed class RunLauncher(
         }
 
         return (await worktrees.CreateAsync(
-            new WorktreeRequest(project.RepositoryPath, project.BaseBranch, taskId, runId, task.Objective),
+            new WorktreeRequest(
+                project.RepositoryPath, project.BaseBranch, taskId, runId, task.Objective,
+                project.BranchNameTemplate, task.ExternalReference),
             cancellationToken), false);
     }
 

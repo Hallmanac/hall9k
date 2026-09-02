@@ -520,7 +520,9 @@ public sealed class TaskWorkCommand : Hall9kAsyncCommand<TaskWorkCommand.Setting
         }
 
         Worktree fresh = await worktrees.CreateAsync(
-            new WorktreeRequest(project.RepositoryPath, project.BaseBranch, taskId, runId, taskDetails.Objective),
+            new WorktreeRequest(
+                project.RepositoryPath, project.BaseBranch, taskId, runId, taskDetails.Objective,
+                project.BranchNameTemplate, taskDetails.ExternalReference),
             cancellationToken);
         return (fresh, false);
     }
