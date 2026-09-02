@@ -1939,8 +1939,12 @@ public sealed class AgentPromptBuilderTests : IDisposable
             "the precedence rule is stated independently of the swept finding's own disposition");
         prompt.Should().NotContain(
             "unless the finding you are sweeping is itself dispositioned",
-            "the old wording keyed the carve-out on the swept finding rather than the sibling site, which is the "
-            + "defect this cycle fixed");
+            "cycle 11's regression phrased the swept-finding arm as an 'unless' override that replaced arm 1 "
+            + "(the sibling's own disposition always wins) rather than coexisting with it; cycle 12 restored "
+            + "both arms and phrases the swept-finding condition with 'when' instead, so it reads as an "
+            + "additional trigger for an undispositioned sibling rather than a replacement — this assertion "
+            + "guards against the override phrasing reappearing, not against the coexisting rule itself, which "
+            + "the prompt correctly states using 'when' a few lines below");
     }
 
     /// <summary>

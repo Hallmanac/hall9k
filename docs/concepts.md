@@ -354,7 +354,7 @@ intended, and runs the touched tests in the foreground, waiting for them to fini
 concludes — so a half-applied fix or a fix-introduced regression is caught by its own author
 instead of costing a separate verify lap.
 
-Depth: [TASK-MODEL.md §3.1](../TASK-MODEL.md), Decisions Log #24, #59, #62, #63, #88, #90, #92, #93.
+Depth: [TASK-MODEL.md §3.1](../TASK-MODEL.md), Decisions Log #24, #59, #62, #63, #88, #90, #92, #93, #112.
 
 ## Closeout
 
