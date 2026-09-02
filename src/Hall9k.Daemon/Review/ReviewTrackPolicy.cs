@@ -22,7 +22,9 @@ namespace Hall9k.Daemon.Review;
 /// </para>
 /// <para>
 /// <b>Adversarial</b> disposes every finding against the same fix bar at every cycle, gate or no
-/// gate: a Low or an ungraded finding is never itself Fix-dispositioned, so it rides along
+/// gate — except the mandatory <see cref="ReviewMode.FinalFullPass"/> cycle, whose own narrower
+/// bar is <see cref="ReviewFinding.Disposition"/>'s to document, not this class's: a Low or an
+/// ungraded finding is never itself Fix-dispositioned, so it rides along
 /// instead of being fixed on its own from cycle 1 onward — the severity gate never turns that
 /// rule on. What the gate (<see cref="DaemonOptions.AdversarialSeverityGateFromCycle"/>) actually
 /// decides is whether the track is FORCED into another cycle regardless of severity: before it,
@@ -32,7 +34,8 @@ namespace Hall9k.Daemon.Review;
 /// alone or alongside ride-alongs — is what actually reaches this pre-gate rule, exactly as
 /// <see cref="Decide"/>'s own merge-ready branch documents), because early cycles get full rigor
 /// while the code is still converging. From that cycle onward only a High still forces the next
-/// one, and a Medium is fixed this cycle without forcing another — the ride-along a Low or
+/// one, and a Medium is fixed this cycle without forcing another (again, outside FinalFullPass,
+/// where a Medium rides along instead) — the ride-along a Low or
 /// ungraded finding already was simply continues, which is the nit-churn tail the gate exists to
 /// stop paying an extra cycle for. Its cap is the resolved adversarial cap (<c>ResolvedReviewCaps</c>,
 /// walked task &gt; project &gt; node &gt; <see cref="DaemonOptions.MaxAdversarialReviewCycles"/> as
