@@ -195,9 +195,70 @@ public sealed class DaemonOptionsBindingTests
         messages.Should().BeEmpty();
     }
 
+    /// <summary>
+    /// The self-contradiction the independent pre-PR review caught (cycle 2, adversarial lens): a
+    /// parseable-but-unrecognized <c>Hall9k__SpendPeriod</c> value is rejected by
+    /// <c>OperatingSettingsResolver.ResolveSpendPeriod</c> and explained in
+    /// <see cref="OperatingSettingsReport.UnusableEnvironmentVariables"/>, but the same raw value
+    /// still reads back through the merged section's own indexer — the environment-variable
+    /// provider never stops carrying it just because the resolver rejected it. Without a guard
+    /// against the value already being explained there, this check would additionally claim the
+    /// value arrived through "another configuration source the resolver does not read", which is
+    /// false: it is the exact same environment variable, already named.
+    /// </summary>
+    [Fact]
+    public void A_spend_period_value_already_explained_as_unusable_is_not_named_again_as_ignored()
+    {
+        IConfigurationSection section = Section(("SpendPeriod", "weekly"));
+        OperatingSettingsReport report = ReportWithCeiling(
+            maxConcurrentTaskRuns: 1,
+            spendPeriod: "week",
+            unusableEnvironmentVariables:
+            [
+                "Hall9k__SpendPeriod is set to \"weekly\", which is neither \"day\" nor \"week\" — it is treated "
+                + "as absent, and spend-period falls back to the config file or default instead.",
+            ]);
+
+        IReadOnlyList<string> messages = DaemonOptionsBinding.DescribeConfigurationSourcesTheResolverIgnores(section, report);
+
+        messages.Should().BeEmpty(
+            "the resolver's own unusable-environment-variable message already explains this value; naming it "
+            + "again as coming from an unread source would contradict that explanation on the same value");
+    }
+
+    /// <summary>
+    /// The same shape as
+    /// <see cref="A_spend_period_value_already_explained_as_unusable_is_not_named_again_as_ignored"/>,
+    /// but for a hand-edited platform config file rather than an environment variable: a negative
+    /// <c>spendBudgetTokens</c> is rejected by <c>ResolveSpendBudgetTokens</c> and explained in
+    /// <see cref="OperatingSettingsReport.UnusableEnvironmentVariables"/> without ever naming the
+    /// environment variable at all, since the rejected value came from the config file, another of
+    /// this check's own two sources.
+    /// </summary>
+    [Fact]
+    public void A_spend_budget_config_file_value_already_explained_as_unusable_is_not_named_again_as_ignored()
+    {
+        IConfigurationSection section = Section(("SpendBudgetTokens", "-5"));
+        OperatingSettingsReport report = ReportWithCeiling(
+            maxConcurrentTaskRuns: 1,
+            spendBudgetTokens: null,
+            unusableEnvironmentVariables:
+            [
+                "~/.hall9k/config.json sets spend-budget-tokens to -5, which is negative — it is treated as "
+                + "absent, and no budget applies.",
+            ]);
+
+        IReadOnlyList<string> messages = DaemonOptionsBinding.DescribeConfigurationSourcesTheResolverIgnores(section, report);
+
+        messages.Should().BeEmpty(
+            "the resolver's own unusable-environment-variable message already explains this value; naming it "
+            + "again as coming from an unread source would contradict that explanation on the same value");
+    }
+
     private static OperatingSettingsReport ReportWithCeiling(
         int maxConcurrentTaskRuns, bool shadowsConfigFileValue = false, long? spendBudgetTokens = null,
-        string spendPeriod = OperatingSettings.DefaultSpendPeriod) =>
+        string spendPeriod = OperatingSettings.DefaultSpendPeriod,
+        IReadOnlyList<string>? unusableEnvironmentVariables = null) =>
         new(
             new ResolvedSetting<int>(OperatingSettings.DefaultMaxConcurrentAgentSessions, SettingOrigin.Default, null),
             false,
@@ -208,7 +269,7 @@ public sealed class DaemonOptionsBindingTests
             new ResolvedSetting<string>(AgentModel.PlatformFallback, SettingOrigin.Default, null),
             [],
             null,
-            [],
+            unusableEnvironmentVariables ?? [],
             new ResolvedSetting<int>(OperatingSettings.DefaultMaxComplianceReviewCycles, SettingOrigin.Default, null),
             new ResolvedSetting<int>(OperatingSettings.DefaultMaxAdversarialReviewCycles, SettingOrigin.Default, null),
             new ResolvedSetting<int>(OperatingSettings.DefaultMaxFinalFullPassRounds, SettingOrigin.Default, null),
