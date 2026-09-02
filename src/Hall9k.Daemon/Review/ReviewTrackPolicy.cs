@@ -81,10 +81,18 @@ public static class ReviewTrackPolicy
     /// The fixed-unreviewed half has no such gap — a fix is re-read next cycle whenever the
     /// track continues, so it is a residual only on the cycle the track ends on.
     /// </para>
+    /// <para>
+    /// <paramref name="mode"/> is read only by <see cref="ReviewFinding.Disposition"/> (task: a
+    /// mandatory FinalFullPass records merge-ready when every finding it attaches is below High):
+    /// on a <see cref="ReviewMode.FinalFullPass"/> cycle an in-scope Medium rides along instead of
+    /// landing in <c>fix</c>, so this method's own gate-and-cap logic below never has to read the
+    /// mode itself — it already sees the narrowed <c>fix</c>/<c>rideAlong</c> split.
+    /// </para>
     /// </summary>
     public static ReviewTrackPlan Decide(
         ReviewLens lens,
         int cycle,
+        ReviewMode mode,
         ReviewVerdict verdict,
         IReadOnlyList<ReviewFinding> findings,
         DaemonOptions options)
@@ -108,8 +116,8 @@ public static class ReviewTrackPolicy
             // what was actually attached: a pass that carried nothing really did find nothing
             // (Clean), one that carried a route or a ride-along did not (Settled), the same
             // distinction a needs-fixes cycle draws.
-            List<ReviewFinding> mergeReadyRoute = [.. findings.Where(finding => finding.Disposition == ReviewFindingDisposition.Route)];
-            List<ReviewFinding> mergeReadyRideAlong = [.. findings.Where(finding => finding.Disposition == ReviewFindingDisposition.RideAlong)];
+            List<ReviewFinding> mergeReadyRoute = [.. findings.Where(finding => finding.Disposition(mode) == ReviewFindingDisposition.Route)];
+            List<ReviewFinding> mergeReadyRideAlong = [.. findings.Where(finding => finding.Disposition(mode) == ReviewFindingDisposition.RideAlong)];
             ReviewSettlement mergeReadySettlement = mergeReadyRoute.Count > 0 || mergeReadyRideAlong.Count > 0
                 ? ReviewSettlement.Settled
                 : ReviewSettlement.Clean;
@@ -122,9 +130,9 @@ public static class ReviewTrackPolicy
         // ride-along split (Decisions Log #87) — that split only ever applies to a genuinely
         // parsed finding, never to the placeholder standing in for one the platform could not read.
         IReadOnlyList<ReviewFinding> stated = Stated(findings);
-        List<ReviewFinding> fix = [.. stated.Where(finding => finding.Disposition == ReviewFindingDisposition.Fix)];
-        List<ReviewFinding> route = [.. stated.Where(finding => finding.Disposition == ReviewFindingDisposition.Route)];
-        List<ReviewFinding> rideAlong = [.. stated.Where(finding => finding.Disposition == ReviewFindingDisposition.RideAlong)];
+        List<ReviewFinding> fix = [.. stated.Where(finding => finding.Disposition(mode) == ReviewFindingDisposition.Fix)];
+        List<ReviewFinding> route = [.. stated.Where(finding => finding.Disposition(mode) == ReviewFindingDisposition.Route)];
+        List<ReviewFinding> rideAlong = [.. stated.Where(finding => finding.Disposition(mode) == ReviewFindingDisposition.RideAlong)];
         bool gated = GateApplies(lens, cycle, options);
         // Before the gate, a needs-fixes verdict always runs the track again: every finding of
         // every grade forces the next cycle, and a cycle that only routed still leaves the

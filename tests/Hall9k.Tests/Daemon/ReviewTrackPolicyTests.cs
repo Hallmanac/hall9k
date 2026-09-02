@@ -286,9 +286,83 @@ public sealed class ReviewTrackPolicyTests
         plan.RideAlong.Should().ContainSingle();
     }
 
+    /// <summary>
+    /// The spend-governor task (task: a mandatory FinalFullPass records merge-ready when every
+    /// finding it attaches is below High): a Discovery cycle still fixes an in-scope Medium the
+    /// ordinary way — the narrower bar applies only to the mandatory final pass.
+    /// </summary>
+    [Fact]
+    public void A_discovery_cycle_still_fixes_an_in_scope_medium()
+    {
+        ReviewTrackPlan plan = DecideAt(ReviewMode.Discovery, ReviewLens.Adversarial, cycle: 1, ReviewVerdict.NeedsFixes,
+            Finding(ReviewSeverity.Medium, ReviewFindingScope.InScope, "A.cs:1"));
+
+        plan.Fix.Should().ContainSingle();
+        plan.RideAlong.Should().BeEmpty();
+    }
+
+    /// <summary>A Verify cycle is untouched the same way — the narrower bar is FinalFullPass-only.</summary>
+    [Fact]
+    public void A_verify_cycle_still_fixes_an_in_scope_medium()
+    {
+        ReviewTrackPlan plan = DecideAt(ReviewMode.Verify, ReviewLens.Adversarial, cycle: 2, ReviewVerdict.NeedsFixes,
+            Finding(ReviewSeverity.Medium, ReviewFindingScope.InScope, "A.cs:1"));
+
+        plan.Fix.Should().ContainSingle();
+        plan.RideAlong.Should().BeEmpty();
+    }
+
+    /// <summary>
+    /// The core of this task: on a mandatory FinalFullPass cycle, an in-scope Medium rides along
+    /// instead of earning a fix-and-reverify iteration — origin measurement: 3 High findings in
+    /// 172 final passes, 101 of 104 needs-fixes final passes carrying no High at all.
+    /// </summary>
+    [Fact]
+    public void A_final_full_pass_rides_an_in_scope_medium_along_instead_of_fixing_it()
+    {
+        ReviewTrackPlan plan = DecideAt(ReviewMode.FinalFullPass, ReviewLens.Adversarial, cycle: 1, ReviewVerdict.NeedsFixes,
+            Finding(ReviewSeverity.Medium, ReviewFindingScope.InScope, "A.cs:1"));
+
+        plan.Fix.Should().BeEmpty("nothing graded critical asked for another cycle here");
+        plan.RideAlong.Should().ContainSingle();
+    }
+
+    /// <summary>A High still meets the fix bar on every mode, FinalFullPass included.</summary>
+    [Fact]
+    public void A_final_full_pass_still_fixes_an_in_scope_high()
+    {
+        ReviewTrackPlan plan = DecideAt(ReviewMode.FinalFullPass, ReviewLens.Adversarial, cycle: 1, ReviewVerdict.NeedsFixes,
+            Finding(ReviewSeverity.High, ReviewFindingScope.InScope, "A.cs:1"));
+
+        plan.Fix.Should().ContainSingle();
+        plan.RideAlong.Should().BeEmpty();
+    }
+
+    /// <summary>
+    /// The out-of-scope Route-or-Fix split (Decisions Log #63, #99) reads only scope and whether
+    /// the reviewer stated a grade below High — never the cycle's mode — so it is identical on a
+    /// mandatory FinalFullPass cycle: an out-of-scope Medium or Low still routes, and an
+    /// out-of-scope High is still cleanup-as-you-touch.
+    /// </summary>
+    [Fact]
+    public void A_final_full_pass_leaves_the_out_of_scope_route_or_fix_split_untouched()
+    {
+        ReviewTrackPlan plan = DecideAt(ReviewMode.FinalFullPass, ReviewLens.Adversarial, cycle: 1, ReviewVerdict.NeedsFixes,
+            Finding(ReviewSeverity.Medium, ReviewFindingScope.OutOfScope, "Old.cs:1"),
+            Finding(ReviewSeverity.Low, ReviewFindingScope.OutOfScope, "Old.cs:2"),
+            Finding(ReviewSeverity.High, ReviewFindingScope.OutOfScope, "Old.cs:3"));
+
+        plan.Route.Should().HaveCount(2);
+        plan.Fix.Should().ContainSingle("an out-of-scope high is fixed here on every mode");
+    }
+
     private static ReviewTrackPlan Decide(
         ReviewLens lens, int cycle, ReviewVerdict verdict, params ReviewFinding[] findings) =>
-        ReviewTrackPolicy.Decide(lens, cycle, verdict, findings, Options);
+        DecideAt(ReviewMode.Discovery, lens, cycle, verdict, findings);
+
+    private static ReviewTrackPlan DecideAt(
+        ReviewMode mode, ReviewLens lens, int cycle, ReviewVerdict verdict, params ReviewFinding[] findings) =>
+        ReviewTrackPolicy.Decide(lens, cycle, mode, verdict, findings, Options);
 
     private static ReviewFinding Finding(ReviewSeverity severity, ReviewFindingScope scope, string location) =>
         new(severity, scope, location, $"FINDING: at={location}\nDefect: something at {location}.");

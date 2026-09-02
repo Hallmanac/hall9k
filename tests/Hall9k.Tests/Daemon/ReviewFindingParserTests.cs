@@ -71,7 +71,7 @@ public sealed class ReviewFindingParserTests
         ReviewFinding finding = ReviewResultParser.ParseFindings("FINDING: at=A.cs:1\nDefect: something.")
             .Should().ContainSingle().Subject;
 
-        finding.Disposition.Should().Be(ReviewFindingDisposition.RideAlong);
+        finding.Disposition(ReviewMode.Discovery).Should().Be(ReviewFindingDisposition.RideAlong);
         finding.Severity.ForcesAnotherCycle.Should().BeTrue();
     }
 
@@ -83,8 +83,8 @@ public sealed class ReviewFindingParserTests
             "FINDING: severity=high; scope=out-of-scope; at=Old.cs:1\nDefect: unbounded read.\n" +
             "FINDING: severity=low; scope=out-of-scope; at=Old.cs:2\nDefect: a typo.");
 
-        findings[0].Disposition.Should().Be(ReviewFindingDisposition.Fix);
-        findings[1].Disposition.Should().Be(ReviewFindingDisposition.Route);
+        findings[0].Disposition(ReviewMode.Discovery).Should().Be(ReviewFindingDisposition.Fix);
+        findings[1].Disposition(ReviewMode.Discovery).Should().Be(ReviewFindingDisposition.Route);
     }
 
     /// <summary>
