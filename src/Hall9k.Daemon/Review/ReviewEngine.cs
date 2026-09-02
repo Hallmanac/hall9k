@@ -2023,10 +2023,22 @@ public sealed class ReviewEngine(
 
         int forcedFixedUnreviewed = forcedDisposition == ReviewResidualDisposition.FixedUnreviewed ? forced.Count : 0;
         int forcedRideAlong = forcedDisposition == ReviewResidualDisposition.RideAlong ? forced.Count : 0;
+        // Named, not just counted (independent pre-PR review, cycle 2, conformance finding): the
+        // already-on-stream ride-alongs DeriveRideAlongResiduals reads, plus this cycle's own
+        // force-concluded ones — which are RideAlong-dispositioned only when forcedDisposition
+        // says so, the same condition forcedRideAlong above already gates on.
+        List<ReviewRideAlongFinding> rideAlongFindings =
+            [.. run.DeriveRideAlongResiduals().Select(residual => new ReviewRideAlongFinding(residual.Severity, residual.Location))];
+        if (forcedDisposition == ReviewResidualDisposition.RideAlong)
+        {
+            rideAlongFindings.AddRange(
+                forced.Select(entry => new ReviewRideAlongFinding(entry.Residual.Severity, entry.Residual.Location)));
+        }
+
         session.Events.Append(run.Id, new ReviewSettled(
             run.Id, run.ReviewCycle, settlement,
             residuals.FixedUnreviewed + forcedFixedUnreviewed, residuals.Routed, residuals.RoutingFailed,
-            now, residuals.RideAlong + forcedRideAlong));
+            now, residuals.RideAlong + forcedRideAlong, rideAlongFindings));
         await session.SaveChangesAsync(cancellationToken);
         logger.LogInformation(
             "Run {RunId}: review settled {Settlement} at cycle {Cycle} — {Fixed} residual(s) fixed unreviewed, {Routed} routed, {Unrouted} left unrouted, {RideAlong} ride-along(s) never claimed",

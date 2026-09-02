@@ -179,6 +179,31 @@ public sealed class RunReviewProjectionTests
     }
 
     /// <summary>
+    /// Independent pre-PR review, cycle 2, conformance finding: the count alone left a reader with
+    /// no way to identify what actually rode along, so <see cref="ReviewSettled.RideAlongFindings"/>
+    /// carries each one's severity and location onto this view too. A stream written before that
+    /// field existed still reports the count with an empty list — an honest gap, not a guess.
+    /// </summary>
+    [Fact]
+    public void Run_details_names_each_ride_along_finding_the_settle_event_carries()
+    {
+        RunDetailsProjection projection = new();
+        Guid id = DomainId.New();
+        RunDetails view = VerifiedRun(projection, id);
+
+        projection.Apply(new FakeEvent<ReviewSettled>(
+            new ReviewSettled(
+                id, 4, ReviewSettlement.Settled, 0, 0, 0, Now, ResidualsRideAlong: 1,
+                RideAlongFindings: [new ReviewRideAlongFinding(ReviewSeverity.Medium, "Auth.cs:9")])),
+            view);
+
+        view.ReviewResidualsRideAlong.Should().Be(1);
+        view.ReviewRideAlongFindings.Should().ContainSingle()
+            .Which.Should().Match<ReviewRideAlongFinding>(
+                finding => finding.Severity == ReviewSeverity.Medium && finding.Location == "Auth.cs:9");
+    }
+
+    /// <summary>
     /// A thread-dispute park (Decisions Log #62) lands from Verifying, before any review pass has
     /// read the diff — the human resolving it decided the disputed THREAD, not a review finding,
     /// so it must not ride into a later review prompt as though a fresh-context reviewer's own

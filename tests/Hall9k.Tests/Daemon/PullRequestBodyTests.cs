@@ -1,5 +1,6 @@
 using FluentAssertions;
 using Hall9k.Daemon.Execution;
+using Hall9k.Domain.Features.Run;
 using Hall9k.Domain.Features.Run.Projections;
 using Hall9k.Domain.Features.Tasks.Projections;
 using Hall9k.Domain.Infrastructure.Ids;
@@ -238,6 +239,31 @@ public sealed class PullRequestBodyTests
         string body = PullRequestBody.Build(run, Task(externalReference: null), agentSummary: null, sourceUrl: null);
 
         body.Should().Contain("2 findings").And.Contain($"h9k task show {run.TaskId}");
+    }
+
+    /// <summary>
+    /// Independent pre-PR review, cycle 2, conformance finding: the count-only line above used to
+    /// be the whole story, with `h9k task show` naming only the identical count back — so a reader
+    /// could learn a ride-along existed but never what it actually was. A run whose
+    /// <see cref="RunDetails.ReviewRideAlongFindings"/> carries the detail now gets it inline.
+    /// </summary>
+    [Fact]
+    public void A_run_with_named_ride_along_findings_lists_each_ones_severity_and_location()
+    {
+        RunDetails run = Run();
+        run.ReviewResidualsRideAlong = 2;
+        run.ReviewCycle = 4;
+        run.ReviewRideAlongFindings =
+        [
+            new ReviewRideAlongFinding(ReviewSeverity.Medium, "Auth.cs:9"),
+            new ReviewRideAlongFinding(ReviewSeverity.Low, "Program.cs:3"),
+        ];
+
+        string body = PullRequestBody.Build(run, Task(externalReference: null), agentSummary: null, sourceUrl: null);
+
+        body.Should().Contain("medium").And.Contain("`Auth.cs:9`")
+            .And.Contain("low").And.Contain("`Program.cs:3`")
+            .And.Contain($"h9k task show {run.TaskId}");
     }
 
     [Fact]

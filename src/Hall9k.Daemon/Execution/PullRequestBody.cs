@@ -1,5 +1,6 @@
 using System.Text;
 using Hall9k.Connectors.Text;
+using Hall9k.Domain.Features.Run;
 using Hall9k.Domain.Features.Run.Projections;
 using Hall9k.Domain.Features.Tasks;
 using Hall9k.Domain.Features.Tasks.Projections;
@@ -102,13 +103,38 @@ internal static class PullRequestBody
     /// username, to a public repository. <c>h9k task show</c> is the durable pointer instead: it
     /// answers from the task's own event stream regardless of archive state or which machine
     /// runs it.
+    /// <para>
+    /// The count alone used to be the whole line (independent pre-PR review, cycle 2, conformance
+    /// finding: "the owner still has no way to see, or even identify, the findings the final pass
+    /// carried"), with `h9k task show` naming only the same count back — a circular pointer that
+    /// never actually surfaced a severity or a location. <see cref="RunDetails.ReviewRideAlongFindings"/>
+    /// is what closes that: each entry's own grade and location, named inline here rather than
+    /// requiring a second command just to learn what the first one already tallied. A run settled
+    /// before that field existed still has only the count, and says so honestly rather than
+    /// pretending the detail was always there.
+    /// </para>
     /// </summary>
     private static string RideAlongNote(RunDetails run)
     {
         string plural = run.ReviewResidualsRideAlong == 1 ? "finding" : "findings";
-        return $"Review ride-alongs: {run.ReviewResidualsRideAlong} {plural} below the fix bar of "
-            + "whichever cycle recorded them, carried rather than spending another review cycle on — "
-            + $"see `h9k task show {run.TaskId}` for the review history.";
+        string header = $"Review ride-alongs: {run.ReviewResidualsRideAlong} {plural} below the fix bar of "
+            + "whichever cycle recorded them, carried rather than spending another review cycle on";
+        if (run.ReviewRideAlongFindings.Count == 0)
+        {
+            return $"{header} — see `h9k task show {run.TaskId}` for the review history.";
+        }
+
+        StringBuilder note = new();
+        note.AppendLine($"{header}:");
+        foreach (ReviewRideAlongFinding finding in run.ReviewRideAlongFindings)
+        {
+            string severity = finding.Severity == ReviewSeverity.Unknown ? "ungraded" : finding.Severity.Value.ToLowerInvariant();
+            string location = finding.Location.IsBlank() ? "no location stated" : $"`{finding.Location}`";
+            note.AppendLine($"- {severity} — {location}");
+        }
+
+        note.Append($"See `h9k task show {run.TaskId}` for the full review history.");
+        return note.ToString();
     }
 
     /// <summary>

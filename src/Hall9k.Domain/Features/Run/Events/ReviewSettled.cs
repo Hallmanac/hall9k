@@ -26,6 +26,15 @@ namespace Hall9k.Domain.Features.Run.Events;
 /// zero for the same reason the rest of this event's counts are always present rather than
 /// optional: a run whose stream predates ride-alongs genuinely had none.
 /// </para>
+/// <para>
+/// <see cref="RideAlongFindings"/> (independent pre-PR review, cycle 2, conformance finding) is
+/// the same tally named rather than merely counted: each entry's severity and location, so a
+/// reader of the pull request body or <c>h9k task show</c> can identify what actually rode along
+/// instead of learning only how many did. Defaults to empty for a stream written before this
+/// field existed — <see cref="ResidualsRideAlong"/> may still be non-zero there, an honest gap
+/// between "we know how many" and "we know which ones" rather than a count this list should be
+/// expected to reconstruct.
+/// </para>
 /// </summary>
 public sealed record ReviewSettled(
     Guid Id,
@@ -35,4 +44,5 @@ public sealed record ReviewSettled(
     int ResidualsRouted,
     int ResidualsRoutingFailed,
     DateTimeOffset SettledAt,
-    int ResidualsRideAlong = 0);
+    int ResidualsRideAlong = 0,
+    IReadOnlyList<ReviewRideAlongFinding>? RideAlongFindings = null);

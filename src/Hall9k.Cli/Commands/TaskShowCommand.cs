@@ -278,6 +278,7 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
             AnsiConsole.Write(runsTable);
             RunDetails? newestRun = await session.LoadAsync<RunDetails>(runs[^1].Id, cancellationToken);
             WriteReviewOutcome(newestRun);
+            WriteRideAlongFindings(newestRun);
             WriteFixEscalation(newestRun);
             await WriteGateDurationAnomaliesAsync(session, details.ProjectId, runs[^1], cancellationToken);
         }
@@ -518,6 +519,31 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
         ? $", {run.ReviewResidualsRideAlong} ride-along(s) — each below the fix bar of the cycle that recorded it "
           + "(low/ungraded on an ordinary cycle, medium or below on the mandatory final pass) — and never claimed"
         : string.Empty;
+
+    /// <summary>
+    /// The ride-alongs themselves, named rather than left to the count above (independent pre-PR
+    /// review, cycle 2, conformance finding): the pull request body points here for "the review
+    /// history", and until this line existed that pointer was circular — this command rendered
+    /// only the same count the body already had. Each entry is <see cref="RunDetails.ReviewRideAlongFindings"/>'s
+    /// own severity and location, named the same way <see cref="PullRequestBody"/> now does. A run
+    /// settled before that field existed has an empty list even when the count above is non-zero,
+    /// which is an honest gap rather than a reconstruction, so this prints nothing extra for it.
+    /// </summary>
+    private static void WriteRideAlongFindings(RunDetails? run)
+    {
+        if (run is null || run.ReviewRideAlongFindings.Count == 0)
+        {
+            return;
+        }
+
+        AnsiConsole.MarkupLine("\n[bold]Ride-alongs[/]  [dim]below the fix bar of the cycle that recorded them, never claimed[/]");
+        foreach (ReviewRideAlongFinding finding in run.ReviewRideAlongFindings)
+        {
+            string severity = finding.Severity == ReviewSeverity.Unknown ? "ungraded" : finding.Severity.Value.ToLowerInvariant();
+            string location = finding.Location.IsBlank() ? "no location stated" : finding.Location;
+            AnsiConsole.MarkupLine($"  [yellow]{severity}[/] — {ExternalText.OneLineMarkup(location)}");
+        }
+    }
 
     /// <summary>
     /// What this task hands down, once its run reaches true closeout (Decisions Log #36) — the

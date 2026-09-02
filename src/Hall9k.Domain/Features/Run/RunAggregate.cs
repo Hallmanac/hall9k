@@ -967,6 +967,18 @@ public sealed class RunAggregate
     }
 
     /// <summary>
+    /// The ride-alongs already on this run's stream, named rather than merely counted
+    /// (independent pre-PR review, cycle 2, conformance finding): the same deduplicated set
+    /// <see cref="DeriveResidualTally"/>'s own <see cref="ReviewResidualTally.RideAlong"/> counts,
+    /// but with each one's severity and location so <c>SettleAsync</c> can write what a settling
+    /// run's ride-alongs actually are onto <see cref="Events.ReviewSettled"/>, not only how many.
+    /// Excludes a track this cycle is force-concluding without ever having read a reviewer's
+    /// verdict on it — those are not yet on the stream this reads from, the same gap
+    /// <see cref="DeriveResidualTally"/>'s own caller already accounts for separately.
+    /// </summary>
+    public IReadOnlyList<ReviewResidual> DeriveRideAlongResiduals() => PerDefect(ReviewResidualDisposition.RideAlong);
+
+    /// <summary>
     /// This disposition's residuals with every repeat of a place already seen dropped, and — for
     /// FixedUnreviewed — any residual a later clean re-read on its own lens has already superseded
     /// (<see cref="IsSupersededByCleanReread"/>) left out too, for the same reason

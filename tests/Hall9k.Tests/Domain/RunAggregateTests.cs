@@ -524,6 +524,25 @@ public sealed class RunAggregateTests
         run.DeriveResidualTally().RideAlong.Should().Be(1, "both tracks reported the same place");
     }
 
+    /// <summary>
+    /// Independent pre-PR review, cycle 2, conformance finding: naming a ride-along on the pull
+    /// request body (and on `h9k task show`) needs its severity and location, not only the count
+    /// <see cref="RunAggregate.DeriveResidualTally"/> already reports — this is the same
+    /// deduplicated set, read a different way.
+    /// </summary>
+    [Fact]
+    public void DeriveRideAlongResiduals_names_each_unclaimed_finding_by_severity_and_location()
+    {
+        RunAggregate run = Dispatched(out Guid id);
+        run.Apply(new ReviewTrackConcluded(
+            id, ReviewLens.Conformance, 1, ReviewSettlement.Settled,
+            [RideAlong(ReviewLens.Conformance, "Docs.md:3")], Now));
+
+        run.DeriveRideAlongResiduals().Should().ContainSingle()
+            .Which.Should().Match<ReviewResidual>(
+                residual => residual.Severity == ReviewSeverity.Low && residual.Location == "Docs.md:3");
+    }
+
     private static ReviewResidual RideAlong(ReviewLens lens, string location) =>
         new(lens, 1, ReviewSeverity.Low, ReviewFindingScope.InScope, ReviewResidualDisposition.RideAlong, location);
 
