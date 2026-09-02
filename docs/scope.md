@@ -37,6 +37,13 @@ that has never set `--model-review`/`--model-fix` resolves them identically, so 
 there dispatches on the ordinary fix model exactly as it would have anyway (PLAN.md Decisions Log
 #90).
 
+Every gate's own wall-clock duration is recorded on the run's verification pass or failure and
+shown on `h9k task show` beside the run it belongs to. The same command flags a gate whose newest
+duration materially (1.5x) exceeds the project's own recent recorded average for that same gate —
+compared only against other runs' passing samples at the same full/scoped classification, never a
+fixed baseline — so a suite that quietly grows is caught the week it happens rather than
+reconstructed later from file timestamps (origin incident 2026-09-01).
+
 ### Interactive claims
 
 `h9k task work <id>` lets an operator work a Queued task themselves instead of dispatching it

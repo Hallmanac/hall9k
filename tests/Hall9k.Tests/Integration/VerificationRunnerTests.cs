@@ -779,6 +779,16 @@ public sealed class VerificationRunnerTests(PostgresFixture postgres) : IClassFi
         recorded.RanFullScope.Should().BeFalse(
             "the integration gate ran genuinely scoped and was never covered at full scope over this HEAD");
         recorded.Note.Should().Contain("1 of 2 test gate(s)").And.Contain("the rest ran scoped");
+
+        // GateDuration.RanFullScope is this one gate's own scope, not the whole pass's
+        // pass-level flag above: the "unit" gate fell back to a full run of itself, while
+        // "integration" ran genuinely narrowed, and the two must not be tagged alike (task: gate
+        // wall-clock duration is recorded and surfaced).
+        recorded.GateDurations.Should().NotBeNull();
+        recorded.GateDurations!.Single(gate => gate.Gate == "unit").RanFullScope.Should().BeTrue(
+            "it fell back to a full run of itself after its own filter intersected to nothing");
+        recorded.GateDurations!.Single(gate => gate.Gate == "integration").RanFullScope.Should().BeFalse(
+            "it ran genuinely narrowed by the scoped filter");
     }
 
     /// <summary>
