@@ -222,6 +222,34 @@ public sealed class RunAggregate
     /// </summary>
     public string? PriorCycleHeadSha { get; private set; }
 
+    /// <summary>
+    /// The worktree HEAD of the most recent cycle that read the branch at full scope with fresh
+    /// context — a <see cref="ReviewMode.Discovery"/> or <see cref="ReviewMode.FinalFullPass"/>
+    /// cycle, never a <see cref="ReviewMode.Verify"/> one, which only ever reads a delta (task:
+    /// the mandatory FinalFullPass reads only the commits no full-scope pass has already read).
+    /// Held constant across every <see cref="ReviewMode.Verify"/> cycle in between — unlike
+    /// <see cref="CycleHeadSha"/>, which moves on every cycle regardless of mode — so a
+    /// <see cref="ReviewMode.FinalFullPass"/> dispatched after several fix-and-verify rounds still
+    /// finds the boundary of the last pass that actually read the whole branch, not just the
+    /// immediately preceding cycle. Null until the first full-scope cycle records a HeadSha, or
+    /// when the most recent one's HeadSha could not be read at dispatch time — the engine falls
+    /// back to a full-range diff instruction rather than guessing at a boundary (the same
+    /// degrade-rather-than-guess rule <c>TestScopeResolver</c> already follows).
+    /// </summary>
+    public string? LastFullScopeReviewHeadSha { get; private set; }
+
+    /// <summary>
+    /// <see cref="LastFullScopeReviewHeadSha"/> as it stood immediately before the current cycle
+    /// started. Captured once, when the current cycle's first <see cref="ReviewDispatched"/>
+    /// lands, and held constant for the rest of that cycle's lifetime — including a
+    /// crash-recovery top-up dispatch into the same <see cref="ReviewMode.FinalFullPass"/> cycle
+    /// (<c>ReviewEngine.DispatchMissingPassesAsync</c>), which must still point at the boundary
+    /// this cycle's own opening dispatch used rather than at <see cref="LastFullScopeReviewHeadSha"/>,
+    /// which by then already holds this cycle's own tip. Mirrors <see cref="PriorCycleHeadSha"/>'s
+    /// own capture-once-per-cycle bookkeeping.
+    /// </summary>
+    public string? PriorFullScopeReviewHeadSha { get; private set; }
+
     private readonly List<ReviewResidual> _reviewResiduals = [];
     /// <summary>Every finding the tracks ended on without a reviewer confirming it resolved (log #63).</summary>
     public IReadOnlyList<ReviewResidual> ReviewResiduals => _reviewResiduals;
@@ -815,6 +843,12 @@ public sealed class RunAggregate
         CurrentCycleMode = mode;
         PriorCycleHeadSha = CycleHeadSha;
         CycleHeadSha = headSha;
+        PriorFullScopeReviewHeadSha = LastFullScopeReviewHeadSha;
+        if (mode == ReviewMode.Discovery || mode == ReviewMode.FinalFullPass)
+        {
+            LastFullScopeReviewHeadSha = headSha;
+        }
+
         _inFlightReviewPasses.Clear();
         _completedReviewPasses.Clear();
         _cycleHasPassMilestones = false;
