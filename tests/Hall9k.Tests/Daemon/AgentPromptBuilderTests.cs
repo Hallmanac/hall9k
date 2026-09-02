@@ -1758,15 +1758,17 @@ public sealed class AgentPromptBuilderTests : IDisposable
         prompt.Should().Contain("not the boundary of it");
         prompt.Should().Contain("enumerate every other");
         prompt.Should().Contain("Name every site you swept");
-        prompt.Should().Contain("so the verify pass can check your enumeration");
+        prompt.Should().Contain("check your enumeration instead of rediscovering it from a blank slate");
     }
 
     /// <summary>
-    /// The class sweep is bounded to findings this session actually fixed and to sites its own
-    /// fix reaches — never a repo-wide grep for the same shape, and never a finding routed away
-    /// under <see cref="ReviewFindingDispositions.DoNotFixHere"/>. An unbounded reading would have
-    /// the sweep fix pre-existing, out-of-scope sites the disposition rule two paragraphs earlier
-    /// in this same prompt already says are not this session's to touch (#63, #99).
+    /// The class sweep's enumeration is bounded to findings this session actually fixed — never a
+    /// finding routed away under <see cref="ReviewFindingDispositions.DoNotFixHere"/> — but not to
+    /// sites its own fix reaches: it also has to name pre-existing siblings on the branch's base,
+    /// or the phase cannot catch the escape it exists for (cea5ae6e cycle 6, where the un-reached
+    /// sibling arm was a pre-existing site on the base, not one the fix touched). What stays
+    /// bounded is fixing: a pre-existing site outside this branch's own changes stays out-of-scope
+    /// routing's to fix (#63, #99), named for that routing rather than fixed here.
     /// </summary>
     [Fact]
     public void Self_check_phase_bounds_the_class_sweep_to_this_sessions_own_fixes()
@@ -1778,8 +1780,14 @@ public sealed class AgentPromptBuilderTests : IDisposable
             "For every finding you actually fixed",
             "the sweep is bounded to this session's own fixes, not a repo-wide grep for the same shape");
         prompt.Should().Contain(
-            "This is not license to go hunting a pre-existing instance",
-            "a pre-existing site outside this branch's own diff stays out-of-scope routing's, per #63/#99");
+            "not only the ones your own fix reaches",
+            "enumeration widens to pre-existing siblings on the branch's base, not just sites the fix touched");
+        prompt.Should().Contain(
+            "is not yours to fix here",
+            "a pre-existing site outside this branch's own changes stays out-of-scope routing's to fix, per #63/#99");
+        prompt.Should().Contain(
+            "named for routing",
+            "a pre-existing sibling is still named in the summary so #63/#99 routing can mint or fold it");
     }
 
     /// <summary>
