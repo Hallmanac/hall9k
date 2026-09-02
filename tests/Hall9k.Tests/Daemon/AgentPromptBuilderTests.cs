@@ -603,7 +603,10 @@ public sealed class AgentPromptBuilderTests : IDisposable
             SomeTask(), SomeProject(), "task/1-slug", "findings go here", cycle: 1);
         reviewFixPrompt.Should().NotContain("Commit as you go, one logical unit at a time");
         reviewFixPrompt.Should().NotContain("git reset --mixed");
-        reviewFixPrompt.Should().NotContain("**Self-review phase.**", "the hunt belongs to the initial build session only");
+        reviewFixPrompt.Should().NotContain(
+            "**Self-review phase.**",
+            "the review-fix prompt carries its own differently-scoped hunt under a different label "
+            + "(\"Self-check phase\"), not the build session's self-review phase");
     }
 
     [Fact]
