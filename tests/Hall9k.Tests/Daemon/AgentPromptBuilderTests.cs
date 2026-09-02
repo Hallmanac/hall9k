@@ -1855,6 +1855,35 @@ public sealed class AgentPromptBuilderTests : IDisposable
     }
 
     /// <summary>
+    /// The <see cref="ReviewFindingDispositions.FixHereInItsOwnCommit"/> carve-out's own carve-out
+    /// (cycle-10 review, this task): a pre-existing sibling that this same findings document
+    /// separately dispositions <see cref="ReviewFindingDispositions.DoNotFixHere"/> stays
+    /// routed away rather than being pulled into the fix-in-its-own-commit commit, even though it
+    /// shares the swept finding's defect shape. Without this, one adversarial pass reporting the
+    /// same shape at two pre-existing sites — one graded severely enough to land
+    /// <c>FixHereInItsOwnCommit</c>, the other graded lower and routed away — would have the sweep
+    /// fix the routed-away site anyway, contradicting the routing disposition and duplicating a
+    /// defect a draft bug task or the standing sweep already covers.
+    /// </summary>
+    [Fact]
+    public void Self_check_phase_does_not_fix_a_sibling_that_is_itself_routed_away()
+    {
+        string prompt = AgentPromptBuilder.BuildReviewFix(
+            SomeTask(), SomeProject(), "task/1-slug", "findings go here", cycle: 1);
+
+        prompt.Should().Contain(
+            "unless that",
+            "the fix-in-its-own-commit carve-out itself carries an exception rather than applying uniformly");
+        prompt.Should().Contain(
+            "sibling site is itself listed above under",
+            "a sibling already dispositioned elsewhere in this document is not pulled into the fix-here commit");
+        prompt.Should().Contain(
+            "a finding this document already routed away stays routed away",
+            "routing already decided this defect's disposition; the sweep does not override it just because a "
+            + "different finding of the same shape happens to be a fix-in-its-own-commit case");
+    }
+
+    /// <summary>
     /// The regression comparison is mandatory per replaced behavior: an unjustified narrowing or
     /// widening is treated as a finding against the fix itself, not a note for later (the
     /// cea5ae6e cycle 8 regression this guards against: a hurried reflog fix silently swapped

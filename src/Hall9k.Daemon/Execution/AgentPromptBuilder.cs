@@ -1727,6 +1727,19 @@ public static class AgentPromptBuilder
     /// phase's single-pass-not-a-loop paragraph above already states, which the sweep's own
     /// wording had drifted out of step with.
     /// </para>
+    /// <para>
+    /// Cycle 10 review found the <see cref="ReviewFindingDispositions.FixHereInItsOwnCommit"/>
+    /// carve-out fixing-every-sibling with no exception for a sibling that this same findings
+    /// document separately dispositions <see cref="ReviewFindingDispositions.DoNotFixHere"/>: one
+    /// adversarial pass reporting the same defect shape at two pre-existing sites can land one
+    /// under "fix in its own commit" (out-of-scope, High) and the other under "routed away"
+    /// (out-of-scope, Medium/Low, per <c>ReviewFinding.cs:69</c>) in the same cycle document, and
+    /// the carve-out as written ordered the sweep to fix the routed-away one anyway, contradicting
+    /// its own disposition and fixing a defect a draft bug task or the standing sweep already
+    /// covers. The carve-out now excludes any sibling site itself listed under
+    /// <see cref="ReviewFindingDispositions.DoNotFixHere"/>, so a routed-away sibling stays
+    /// routed away no matter which finding's sweep surfaces it.
+    /// </para>
     /// </summary>
     private static void AppendReviewFixSelfCheckPhaseRules(StringBuilder prompt, ProjectDetails project)
     {
@@ -1764,7 +1777,12 @@ public static class AgentPromptBuilder
         prompt.AppendLine("     disposition has already decided this defect's shape is worth cleaning up here,");
         prompt.AppendLine("     in a commit of its own, so a pre-existing sibling of that same finding");
         prompt.AppendLine("     belongs in that same separate commit rather than merely named — naming instead");
-        prompt.AppendLine("     of fixing it would cost exactly the lap this phase exists to remove. For every");
+        prompt.AppendLine("     of fixing it would cost exactly the lap this phase exists to remove — unless that");
+        prompt.AppendLine($"     sibling site is itself listed above under \"{ReviewFindingDispositions.DoNotFixHere}\":");
+        prompt.AppendLine("     a finding this document already routed away stays routed away regardless of what");
+        prompt.AppendLine("     shape it shares with a finding you are fixing, so treat it the same as any other");
+        prompt.AppendLine("     site under that heading — not yours to fix here, no matter which finding's sweep");
+        prompt.AppendLine("     surfaced it. For every");
         prompt.AppendLine("     other pre-existing site, it is still yours to name and not to fix: leave it out");
         prompt.AppendLine("     of your fix, but name it in your final summary anyway — if the next review");
         prompt.AppendLine("     dispatch is a verify pass, naming it there is the only path this sibling has of");
