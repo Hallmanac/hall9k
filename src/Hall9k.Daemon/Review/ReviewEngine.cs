@@ -747,19 +747,19 @@ public sealed class ReviewEngine(
         // (recorded by whichever pass of it dispatched first) — the same value re-recorded here.
         // The "since" boundary a Verify top-up's prompt needs is one cycle further back, which is
         // exactly what run.PriorCycleHeadSha still holds: StartCycleIfNew only moves it when a
-        // genuinely NEW cycle starts, and this dispatch is not one. A FinalFullPass top-up needs the
-        // same "one cycle further back" boundary, only for the full-scope chain rather than the
-        // per-cycle one: run.PriorFullScopeReviewHeadSha is what StartCycleIfNew captured when THIS
-        // cycle's own opening dispatch started it, held constant since — using
-        // run.LastFullScopeReviewHeadSha here instead would already read this cycle's own tip
-        // (StartCycleIfNew moved it the moment the first pass dispatched), scoping the topped-up
-        // lens to nothing new to read. A Discovery top-up gets neither: ReviewDispatched.SinceSha is
-        // documented null there (always a full base-branch read), so this branches on Verify
+        // genuinely NEW cycle starts, and this dispatch is not one. A FinalFullPass top-up's own
+        // boundary, by contrast, is THIS cycle's own — run.CycleSinceSha, exactly what this cycle's
+        // opening dispatch already resolved and recorded on its own ReviewDispatched
+        // (independent pre-PR review, cycle 1 adversarial finding: re-deriving it here via a second
+        // git call could disagree with what the opening dispatch actually used — a transient
+        // merge-base failure on one call and not the other — misdescribing one of this cycle's own
+        // passes; StartCycleIfNew is a no-op for a same-cycle top-up, so the recorded value is still
+        // exactly what this cycle started with). A Discovery top-up gets neither: ReviewDispatched.SinceSha
+        // is documented null there (always a full base-branch read), so this branches on Verify
         // specifically rather than "not FinalFullPass" — the latter would also catch Discovery and
         // record a boundary its prompt was never scoped to.
         string? topUpSinceSha = run.CurrentCycleMode == ReviewMode.FinalFullPass
-            ? await ResolveFinalFullPassSinceShaAsync(
-                context.Run.WorktreePath, run.PriorFullScopeReviewHeadSha, cancellationToken)
+            ? run.CycleSinceSha
             : run.CurrentCycleMode == ReviewMode.Verify
                 ? run.PriorCycleHeadSha
                 : null;
