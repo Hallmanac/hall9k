@@ -803,8 +803,10 @@ public sealed record ReviewSettled(      // the loop ended; PullRequestOpener ma
     int ResidualsRouted,                 //   clean. A routing that failed left no draft, so it is
     int ResidualsRoutingFailed,          //   counted apart rather than reported as one that worked.
     DateTimeOffset SettledAt,
-    int ResidualsRideAlong = 0);         // a ride-along (log #87) still unclaimed at settle time;
+    int ResidualsRideAlong = 0,          // a ride-along (log #87) still unclaimed at settle time;
                                          //   0 for a stream that predates ride-alongs
+    IReadOnlyList<ReviewRideAlongFinding>? // each ride-along named (severity + location), not just
+        RideAlongFindings = null);       //   counted (independent review, cycle 2); null if it predates this field
 public sealed record ReviewParked(       // budget spent, dispute, or no verdict: the human owns the
     Guid Id,                             // diff. Task stays Claimed, lease retained (the expiry sweep
     string Reason,                       // refreshes a parked lease, never requeues it — log #28).
@@ -1006,14 +1008,18 @@ Conformance ends the moment nothing it found meets the fix bar;
 still finding something that does at `MaxComplianceReviewCycles` (3) parks the run, because
 nothing automated is left to try. A below-the-bar finding rides along instead of being fixed
 on its own **at every cycle, gate or no gate** — the fix bar reads only severity, never the
-cycle. Adversarial runs under a **severity gate** that governs a different question, whether
+cycle, except on the mandatory `FinalFullPass` cycle immediately before the run may settle
+(Decisions Log #113), where the bar itself narrows to `high` alone and an in-scope medium
+rides along there too, exactly as a low already does everywhere else. Adversarial runs under
+a **severity gate** that governs a different question, whether
 the track is *forced* into another cycle regardless of severity: through
 `AdversarialSeverityGateFromCycle - 1` a needs-fixes verdict with a Route finding still forces
 the next cycle even though nothing attached meets the fix bar (a needs-fixes verdict whose
 findings are all ride-alongs is demoted to merge-ready before it ever reaches this rule — the
 pre-#87 rule was "any finding forces the next cycle AND is fixed there"; #87 split those two,
 and only the forcing half survives before the gate), and from the gate cycle onward only a
-`high` still forces it — a medium is still fixed there, it just stops re-triggering the loop on
+`high` still forces it — a medium is still fixed there (outside `FinalFullPass`, where it rides
+along per the exception above), it just stops re-triggering the loop on
 its own. The **empty terminal case** (a cycle whose findings all
 route away, so nothing is left to fix) ends the track from the gate cycle too, and not
 before it: while the other track can still rewrite the branch, a track retired early would
