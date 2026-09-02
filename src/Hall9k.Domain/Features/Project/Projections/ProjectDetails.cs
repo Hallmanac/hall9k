@@ -39,6 +39,11 @@ public sealed class ProjectDetails
     /// <summary>This project's override of the task-lifetime review-cycle budget; null defers to the node.</summary>
     public int? LifetimeReviewCycleBudget { get; set; }
     /// <summary>
+    /// The name this project's task branches are cut under; the default renders exactly the
+    /// <c>task/&lt;shortid&gt;-&lt;slug&gt;</c> name the platform cut before templates existed.
+    /// </summary>
+    public BranchNameTemplate BranchNameTemplate { get; set; } = BranchNameTemplate.Default;
+    /// <summary>
     /// Where this project lives on disk (backlog 47). None for a project registered before homes
     /// existed, or one whose home has not been created on this machine.
     /// </summary>
@@ -146,6 +151,11 @@ public sealed class ProjectDetailsProjection : SingleStreamProjection<ProjectDet
         if (@event.Data.LifetimeReviewCycleBudget.HasValue)
         {
             view.LifetimeReviewCycleBudget = @event.Data.LifetimeReviewCycleBudget.Value;
+        }
+
+        if (@event.Data.BranchNameTemplate.HasValue)
+        {
+            view.BranchNameTemplate = @event.Data.BranchNameTemplate.Value ?? BranchNameTemplate.Default;
         }
 
         view.SettingsChangedAt = @event.Data.ChangedAt;

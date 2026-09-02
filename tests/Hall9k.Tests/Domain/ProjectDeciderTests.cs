@@ -167,6 +167,63 @@ public sealed class ProjectDeciderTests
         project.MaxParallelAgents.Should().Be(3, "absent optionals leave settings unchanged");
     }
 
+    /// <summary>
+    /// A registered project cuts branches exactly as the platform always has, so nothing changes
+    /// for anybody who never states a convention.
+    /// </summary>
+    [Fact]
+    public void A_project_that_sets_no_branch_template_carries_the_platform_default()
+    {
+        RegisteredProject().BranchNameTemplate.Should().Be(BranchNameTemplate.Default);
+    }
+
+    [Fact]
+    public void ChangeSettings_records_a_branch_template_and_clears_it_back_to_the_default()
+    {
+        ProjectAggregate project = RegisteredProject();
+
+        project.Apply(ChangeBranchTemplate(project, BranchNameTemplate.Parse("{key}-{slug}")));
+        project.BranchNameTemplate.Value.Should().Be("{key}-{slug}");
+
+        project.Apply(ChangeBranchTemplate(project, BranchNameTemplate.Default));
+        project.BranchNameTemplate.Should().Be(BranchNameTemplate.Default,
+            "'none' restores the platform default, which is what the CLI maps the word to");
+    }
+
+    /// <summary>
+    /// The refusal lands here, at the settings change, rather than at the dispatch that would fail
+    /// on it — the whole point of validating a template a human can still see and fix.
+    /// </summary>
+    [Fact]
+    public void ChangeSettings_refuses_a_template_that_renders_an_illegal_git_ref()
+    {
+        ProjectAggregate project = RegisteredProject();
+
+        Action act = () => ChangeBranchTemplate(project, BranchNameTemplate.FromInput("task/{slug}:{shortid}"));
+
+        act.Should().Throw<DomainValidationException>().WithMessage("*git does not allow*");
+    }
+
+    [Fact]
+    public void ChangeSettings_refuses_a_template_naming_a_token_that_does_not_exist()
+    {
+        ProjectAggregate project = RegisteredProject();
+
+        Action act = () => ChangeBranchTemplate(project, BranchNameTemplate.FromInput("task/{epic}-{slug}"));
+
+        act.Should().Throw<DomainValidationException>().WithMessage("*is not a token*");
+    }
+
+    private static ProjectSettingsChanged ChangeBranchTemplate(ProjectAggregate project, BranchNameTemplate template) =>
+        ProjectDecider.ChangeSettings(
+            project,
+            verifyCommands: Optional<IReadOnlyList<VerifyCommand>>.None,
+            skipPermissions: Optional<bool>.None,
+            maxParallelAgents: Optional<int>.None,
+            contextLinks: Optional<IReadOnlyList<ContextLink>>.None,
+            changedAt: Now, changedByOwnerId: DomainId.New(),
+            branchNameTemplate: Optional<BranchNameTemplate>.Of(template));
+
     private static ProjectAggregate RegisteredProject()
     {
         ProjectAggregate project = new();
