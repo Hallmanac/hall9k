@@ -585,6 +585,29 @@ public sealed class AttentionSurfaceTests
     }
 
     /// <summary>
+    /// The run-side counterpart to h9k task resolve --pr (backlog: a pull request recorded by
+    /// h9k task resolve --pr is observed to merge like every other pull request the platform
+    /// knows about): once RunDetails.PullRequestNumber is recorded, CloseoutEngine's orphan
+    /// sweep actually watches this row for a merge, so the cause must not claim nothing is
+    /// watching — that would contradict the very sweep the recording exists to reach.
+    /// </summary>
+    [Fact]
+    public void A_failed_runs_recorded_pull_request_is_described_as_watched_by_the_orphan_sweep()
+    {
+        Guid runId = DomainId.New();
+        RunDetails failed = StatusFixtures.Run(runId, RunState.Failed, sessionProcessId: null, pullRequestNumber: 24);
+        failed.FailureReason = "Verification failed: test";
+        failed.PullRequestUrl = "https://github.com/x/y/pull/24";
+
+        TaskStatusRow row = StatusFixtures.Compose(
+            StatusFixtures.Task(TaskState.Done, runId, "https://github.com/x/y/pull/24"), failed);
+
+        row.Attention.NeedsYou.Should().BeTrue();
+        row.Attention.Cause.Should().Contain("this pull request is still eligible for closeout's merge observation")
+            .And.NotContain("nothing is watching this pull request any more");
+    }
+
+    /// <summary>
     /// The pull request in the test above is still open, and h9k pr resolve is exactly what puts
     /// it back under the closeout monitor's watch — TaskDecider.Reopen accepts a done task with a
     /// pull request, a recorded run and a branch, which is this row precisely. Origin incident

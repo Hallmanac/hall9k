@@ -795,4 +795,29 @@ public sealed class TaskPhaseSurfaceTests
         StatusFixtures.Compose(StatusFixtures.Task(TaskState.Done)).Phase.HasPhase.Should().BeFalse();
         StatusFixtures.Compose(StatusFixtures.Task(TaskState.Abandoned)).Phase.HasPhase.Should().BeFalse();
     }
+
+    /// <summary>
+    /// The run-side counterpart to h9k task resolve --pr (backlog: a pull request recorded by
+    /// h9k task resolve --pr is observed to merge like every other pull request the platform
+    /// knows about): once RunDetails.PullRequestNumber is recorded, CloseoutEngine's orphan
+    /// sweep actually watches this row for a merge, so this phase line must not say the same
+    /// thing it says for a run whose pull request truly is unwatched — that would contradict
+    /// the attention line printed directly under it (AttentionComposer.IsOrphanSweepCandidate).
+    /// </summary>
+    [Fact]
+    public void A_failed_run_with_no_recorded_pull_request_is_unwatched_but_a_recorded_one_is_still_watched()
+    {
+        Guid unwatchedRunId = DomainId.New();
+        RunDetails unwatched = StatusFixtures.Run(unwatchedRunId, RunState.Failed, sessionProcessId: null);
+        StatusFixtures.Compose(
+                StatusFixtures.Task(TaskState.Done, unwatchedRunId, "https://github.com/x/y/pull/24"), unwatched)
+            .Phase.Detail.Should().Be("nothing is watching it any more");
+
+        Guid watchedRunId = DomainId.New();
+        RunDetails watched = StatusFixtures.Run(
+            watchedRunId, RunState.Failed, sessionProcessId: null, pullRequestNumber: 24);
+        StatusFixtures.Compose(
+                StatusFixtures.Task(TaskState.Done, watchedRunId, "https://github.com/x/y/pull/24"), watched)
+            .Phase.Detail.Should().Be("closeout still watches it for a merge");
+    }
 }
