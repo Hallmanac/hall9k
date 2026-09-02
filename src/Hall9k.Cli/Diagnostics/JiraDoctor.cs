@@ -100,7 +100,7 @@ internal static class JiraDoctor
 
             default:
                 AnsiConsole.MarkupLine(
-                    "[yellow]  Could not confirm the Jira connection is authenticated[/] — a probe search "
+                    "[yellow]  Could not confirm the Jira connection is authenticated[/] — the probe "
                     + "answered with something other than success or a recognisable auth refusal. Run "
                     + "h9k connection list to check the registered connection by hand.");
                 break;

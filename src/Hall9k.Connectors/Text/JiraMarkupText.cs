@@ -110,7 +110,7 @@ public static partial class JiraMarkupText
     /// (superscript), and tilde (subscript) are each a *paired* construct — Jira only assigns them
     /// meaning as an opening/closing pair wrapped around content — so none of them is trusted as a
     /// bare occurrence: the hyphen is the one cycle 3 found tripping on a task GUID and on ordinary
-    /// hyphenated prose (<c>one-off</c>), and cycle 5 found the same shape true of the other three
+    /// hyphenated prose (<c>one-off</c>), and cycle 5 found the same shape true of the other four
     /// (a GitHub org/repo like <c>my_org/my_repo</c> tripping the underscore, for the identical
     /// reason). Each counts only when it also has the paired construct's real shape — preceded by
     /// start-of-text, whitespace, or an opening paren, immediately followed by a non-space
@@ -319,7 +319,7 @@ public static partial class JiraMarkupText
     /// character, and closed by the identical mark the mirror way — the word-boundary flanking a
     /// genuine paired span has and a mid-word, digit-flanked, or singly-occurring mark never does.
     /// The hyphen is the one cycle 3 found tripping on a task GUID and on ordinary hyphenated prose
-    /// (<c>one-off</c>); cycle 5 found the same true of the other three (a GitHub org/repo like
+    /// (<c>one-off</c>); cycle 5 found the same true of the other four (a GitHub org/repo like
     /// <c>my_org/my_repo</c> tripping the underscore).
     /// </summary>
     [GeneratedRegex(
