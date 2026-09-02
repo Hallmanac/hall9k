@@ -52,6 +52,8 @@ public static class OperatingSettingsRendering
                 $"{report.MaxFinalFullPassRounds.Value} ({report.MaxFinalFullPassRounds.DescribeOrigin()})"),
             ("lifetime-review-cycle-budget",
                 $"{report.LifetimeReviewCycleBudget.Value} ({report.LifetimeReviewCycleBudget.DescribeOrigin()})"),
+            ("spend-budget-tokens", DescribeSpendBudgetTokens(report)),
+            ("spend-period", $"{report.SpendPeriod.Value} ({report.SpendPeriod.DescribeOrigin()})"),
         ];
 
         rows.AddRange(report.ModelByRole.Select(role => (
@@ -70,6 +72,16 @@ public static class OperatingSettingsRendering
 
         return rows;
     }
+
+    /// <summary>
+    /// The spend-budget-tokens row's value: "not set" reads as unbudgeted dispatch — the
+    /// resolver's own fallback for this setting, unlike every other numeric setting on this
+    /// screen, where <see cref="SettingOrigin.Default"/> means a compiled ceiling is in force.
+    /// </summary>
+    private static string DescribeSpendBudgetTokens(OperatingSettingsReport report) =>
+        report.SpendBudgetTokens.Value is { } budget
+            ? $"{budget} ({report.SpendBudgetTokens.DescribeOrigin()})"
+            : $"not set ({report.SpendBudgetTokens.DescribeOrigin()}) — dispatch is unbudgeted";
 
     /// <summary>
     /// The max-concurrent-task-runs row's value: plain when nothing converted it, and one of two

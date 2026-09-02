@@ -126,6 +126,29 @@ public sealed class ConfigSetCommand : Hall9kAsyncCommand<ConfigSetCommand.Setti
             + "--max-compliance-review-cycles.")]
         public int? LifetimeReviewCycleBudget { get; init; }
 
+        [CommandOption("--spend-budget <TOKENS>")]
+        [Description(
+            "This node's periodic token-spend budget (DaemonOptions.SpendBudgetTokens, backlog: spend-governor "
+            + "step three) — once the current period's recorded spend reaches this many input tokens (fresh, "
+            + "cache-read and cache-creation combined, the same total TokensRecorded already prices, summed "
+            + "across every model), the dispatcher declines to claim further queued work until the period rolls. "
+            + "Denominated in tokens, never dollars (Decisions Log #30: the platform holds no price list) — "
+            + "calibrate it from h9k config show's own current-period spend line, not from a subscription's "
+            + "published hour limits, which shift over time and are not published as token counts. Known v1 "
+            + "limitation: the budget gates on the single total across every model, so an Opus token and a Sonnet "
+            + "token count identically even though the subscription meters them separately — per-model weighting "
+            + "is deliberately not attempted, since it would smuggle in the price list #30 forbids; h9k config "
+            + "show's per-model breakdown is what makes a later informed choice possible. Never kills or parks "
+            + "running work, and never declines a review or fix session inside a run already claimed — this gates "
+            + "claiming a new task only. Pair with --spend-period; omit both to leave dispatch unbudgeted.")]
+        public long? SpendBudget { get; init; }
+
+        [CommandOption("--spend-period <day|week>")]
+        [Description(
+            "The window --spend-budget resets on: day or week (UTC, week starting Monday; default week when a "
+            + "budget is set but this is not). Has no observable effect on its own until --spend-budget is also set.")]
+        public string? SpendPeriod { get; init; }
+
         [CommandOption("--interactive-claim-stale-after-days <DAYS>")]
         [Description(
             "How many days an interactive claim (h9k task work) can sit untouched before h9k status nudges "
@@ -161,7 +184,8 @@ public sealed class ConfigSetCommand : Hall9kAsyncCommand<ConfigSetCommand.Setti
             && settings.ModelFix is null && settings.ModelSynthesis is null && settings.ModelRefinement is null
             && settings.ModelPublication is null && settings.MaxComplianceReviewCycles is null
             && settings.MaxAdversarialReviewCycles is null && settings.MaxFinalFullPassRounds is null
-            && settings.LifetimeReviewCycleBudget is null;
+            && settings.LifetimeReviewCycleBudget is null && settings.SpendBudget is null
+            && settings.SpendPeriod is null;
 
         if (onlyInteractiveClaimStaleAfterDaysChanged)
         {
@@ -186,7 +210,8 @@ public sealed class ConfigSetCommand : Hall9kAsyncCommand<ConfigSetCommand.Setti
             && settings.ModelFix is null && settings.ModelSynthesis is null && settings.ModelRefinement is null
             && settings.ModelPublication is null && settings.InteractiveClaimStaleAfterDays is null
             && settings.MaxComplianceReviewCycles is null && settings.MaxAdversarialReviewCycles is null
-            && settings.MaxFinalFullPassRounds is null && settings.LifetimeReviewCycleBudget is null)
+            && settings.MaxFinalFullPassRounds is null && settings.LifetimeReviewCycleBudget is null
+            && settings.SpendBudget is null && settings.SpendPeriod is null)
         {
             throw new DomainValidationException(
                 "Nothing to change — pass at least one setting, e.g. --max-concurrent-task-runs 2. "
@@ -230,6 +255,19 @@ public sealed class ConfigSetCommand : Hall9kAsyncCommand<ConfigSetCommand.Setti
         if (settings.LifetimeReviewCycleBudget is { } lifetimeBudget && lifetimeBudget < 1)
         {
             throw new DomainValidationException("--lifetime-review-cycle-budget must be at least 1.");
+        }
+
+        if (settings.SpendBudget is { } spendBudget && spendBudget < 0)
+        {
+            throw new DomainValidationException(
+                "--spend-budget must be at least 0 tokens — a budget of 0 is a legitimate (if extreme) throttle "
+                + "that pauses dispatch for the whole period, but a negative one is not a token count.");
+        }
+
+        if (settings.SpendPeriod is { } spendPeriod
+            && !SpendPeriod.FromInput(spendPeriod).IsWellFormed)
+        {
+            throw new DomainValidationException("--spend-period must be \"day\" or \"week\".");
         }
 
         if (settings.InteractiveClaimStaleAfterDays is { } staleAfterDays && staleAfterDays < 1)
@@ -308,6 +346,18 @@ public sealed class ConfigSetCommand : Hall9kAsyncCommand<ConfigSetCommand.Setti
         {
             operating.LifetimeReviewCycleBudget = lifetimeBudget;
             changed.Add($"lifetime-review-cycle-budget = {lifetimeBudget}");
+        }
+
+        if (settings.SpendBudget is { } spendBudget)
+        {
+            operating.SpendBudgetTokens = spendBudget;
+            changed.Add($"spend-budget = {spendBudget} tokens");
+        }
+
+        if (settings.SpendPeriod is { } spendPeriod)
+        {
+            operating.SpendPeriod = SpendPeriod.FromInput(spendPeriod).Value;
+            changed.Add($"spend-period = {operating.SpendPeriod}");
         }
     }
 
