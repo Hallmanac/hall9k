@@ -138,6 +138,17 @@ public static class PlatformConfigFile
     /// (swapping which of two malformed keys was found first flipped the report from
     /// DaemonFailsToStart to SettingIsIgnored); the cycle-2 review found the fix only handled
     /// exactly two, still silently downgrading a genuine crash three or more leaves out.
+    /// <para>
+    /// <see cref="ConfigFileProblem.Message"/> and <see cref="ConfigFileProblem.AffectsResolverOwnedKey"/>
+    /// always describe <c>current</c> — the leaf whose removal is what let the retry finally
+    /// succeed — never the outer <paramref name="exception"/> the caller passed in: once a second
+    /// (or third) leaf is discovered on retry, the leaf actually named by the message has moved on
+    /// from the first one found, and the resolver-owned flag has to move with it rather than being
+    /// accumulated across every leaf the loop ever touched. Origin: the cycle-3 pre-PR review found
+    /// both halves of this drifting apart — the message stayed pinned to the first exception found
+    /// while the flag was OR'd across every leaf touched, so a multi-leaf file could report a leaf
+    /// as resolver-owned (or not) that the named message was not even about.
+    /// </para>
     /// </summary>
     private static ConfigFileReadResult RecoverSectionIgnoring(JsonObject document, JsonException exception)
     {
@@ -147,7 +158,6 @@ public static class PlatformConfigFile
         }
 
         JsonObject recovery = (JsonObject)section.DeepClone();
-        bool affectsResolverOwnedKey = false;
         JsonException current = exception;
         HashSet<string> attemptedPaths = new(StringComparer.OrdinalIgnoreCase);
 
@@ -159,10 +169,7 @@ public static class PlatformConfigFile
                 break;
             }
 
-            if (ResolverOwnedLeaves.Contains(segments[0], StringComparer.OrdinalIgnoreCase))
-            {
-                affectsResolverOwnedKey = true;
-            }
+            bool affectsResolverOwnedKey = ResolverOwnedLeaves.Contains(segments[0], StringComparer.OrdinalIgnoreCase);
 
             RemoveFailingLeaf(recovery, segments);
 
@@ -172,7 +179,7 @@ public static class PlatformConfigFile
                 settings.ModelByRole ??= new();
                 bool maxConcurrentAgentSessionsIsFabricatedZero = ApplyIntBinderQuirks(document, settings);
                 return ConfigFileReadResult.SettingIgnored(
-                    settings, ShapeErrorMessage(exception), maxConcurrentAgentSessionsIsFabricatedZero, affectsResolverOwnedKey);
+                    settings, ShapeErrorMessage(current), maxConcurrentAgentSessionsIsFabricatedZero, affectsResolverOwnedKey);
             }
             catch (JsonException retryException) when (DaemonFailsToStartOn(document, retryException))
             {

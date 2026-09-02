@@ -506,54 +506,78 @@ public sealed class PlatformConfigFileTests : IDisposable
     /// <summary>
     /// Two malformed leaves, where the first one <see cref="JsonException"/> reports is
     /// <c>defaultModel</c> and the second — found only once recovery retries the deserialize with
-    /// the first removed — is <c>maxConcurrentAgentSessions</c> holding a non-numeric string.
+    /// the first removed — is <c>maxConcurrentAgentSessions</c> holding a non-numeric string, sitting
+    /// alongside a healthy sibling, <c>maxConcurrentTaskRuns</c>, that names neither malformed leaf.
     /// Historically the second leaf crashed <c>ConfigurationBinder</c>, so the overall read had to
     /// be reported as a crash regardless of what the first leaf did (origin: the cycle-6 pre-PR
     /// review found the retry's own failure silently discarded). Neither leaf can crash the daemon
     /// any more (<c>DaemonOptionsBinding.ResolverOwnedKeys</c> excludes every concurrency setting
-    /// from the daemon's own <c>ConfigurationBinder</c> call, Decisions Log #111's follow-up), so
-    /// two malformed leaves now fall back to nothing recovered, the same conservative outcome as
-    /// before that fix — the sibling test below covers the same two leaves in the opposite key
-    /// order, and both orders must land on the identical verdict.
+    /// from the daemon's own <c>ConfigurationBinder</c> call, Decisions Log #111's follow-up), so the
+    /// recovery loop removes both malformed leaves in turn and returns whatever survives —
+    /// the healthy sibling is what proves that, since a fixture with nothing left over cannot tell a
+    /// genuine multi-leaf recovery apart from the loop simply giving up (origin: the cycle-3 pre-PR
+    /// review found this exact test passing on an empty fixture by coincidence rather than by
+    /// covering the loop's own recovery behavior). The reported message and its resolver-owned flag
+    /// both describe <c>maxConcurrentAgentSessions</c> — the leaf whose removal is what let the
+    /// second retry finally succeed — not the first leaf found; the sibling test below covers the
+    /// same three leaves in the opposite malformed-key order, and both orders must land on the
+    /// identical verdict and survivor.
     /// </summary>
     [Fact]
-    public async Task A_second_malformed_leaf_found_only_on_retry_is_reported_as_ignored_with_nothing_recovered()
+    public async Task A_second_malformed_leaf_found_only_on_retry_leaves_the_healthy_sibling_recovered()
     {
         await File.WriteAllTextAsync(
             Hall9kDatabase.ConfigFile,
-            """{"hall9k": {"defaultModel": {}, "maxConcurrentAgentSessions": "four"}}""");
+            """{"hall9k": {"defaultModel": {}, "maxConcurrentAgentSessions": "four", "maxConcurrentTaskRuns": 7}}""");
 
         ConfigFileReadResult result = await PlatformConfigFile.TryReadOperatingSettingsAsync(CancellationToken.None);
 
         result.Problem.Should().NotBeNull();
         result.Problem!.Consequence.Should().Be(ConfigFileProblemConsequence.SettingIsIgnored,
             "neither leaf is bound through ConfigurationBinder any more, so nothing crashes the daemon here");
-        result.Settings.Should().BeEquivalentTo(new OperatingSettings(),
-            "a second malformed leaf beyond the one already being ignored falls back to nothing recovered "
-            + "rather than looping, the same conservative outcome the single-malformed-leaf tests above do not need");
+        result.Problem!.Message.Should().Contain("Path: $.maxConcurrentAgentSessions",
+            "the message names the leaf whose removal actually let recovery succeed, not the first leaf found");
+        result.Problem!.AffectsResolverOwnedKey.Should().BeTrue(
+            "maxConcurrentAgentSessions, the leaf the message names, is one of the three concurrency keys");
+        result.Settings.MaxConcurrentTaskRuns.Should().Be(7,
+            "a healthy sibling untouched by either malformed leaf must survive the recovery loop, not be "
+            + "discarded along with the leaves that actually failed to deserialize");
+        result.Settings.DefaultModel.Should().BeNull("the first malformed leaf found is removed");
+        result.Settings.MaxConcurrentAgentSessions.Should().BeNull("the second malformed leaf found is removed");
     }
 
     /// <summary>
-    /// The same two malformed leaves as the test above, with <c>maxConcurrentAgentSessions</c>
-    /// written first: <see cref="JsonException"/> reports it as the very first mismatch, so
-    /// recovery removes it and retries immediately, discovering <c>defaultModel</c>'s own mismatch
-    /// on the retry instead of the other way around. Both key orders have to land on the identical
-    /// verdict — only the code path that discovers the second mismatch differs.
+    /// The same two malformed leaves and healthy sibling as the test above, with
+    /// <c>maxConcurrentAgentSessions</c> written first: <see cref="JsonException"/> reports it as
+    /// the very first mismatch, so recovery removes it and retries immediately, discovering
+    /// <c>defaultModel</c>'s own mismatch on the retry instead of the other way around. Both key
+    /// orders have to land on the identical verdict and survivor — only the code path that discovers
+    /// the second mismatch differs, and here the message and flag describe <c>defaultModel</c>
+    /// (resolver-owned false) since that is the leaf found second and so is the one whose removal
+    /// lets recovery finally succeed.
     /// </summary>
     [Fact]
-    public async Task A_second_malformed_leaf_found_first_is_also_reported_as_ignored_with_nothing_recovered()
+    public async Task A_second_malformed_leaf_found_first_also_leaves_the_healthy_sibling_recovered()
     {
         await File.WriteAllTextAsync(
             Hall9kDatabase.ConfigFile,
-            """{"hall9k": {"maxConcurrentAgentSessions": "four", "defaultModel": {}}}""");
+            """{"hall9k": {"maxConcurrentAgentSessions": "four", "defaultModel": {}, "maxConcurrentTaskRuns": 7}}""");
 
         ConfigFileReadResult result = await PlatformConfigFile.TryReadOperatingSettingsAsync(CancellationToken.None);
 
         result.Problem.Should().NotBeNull();
         result.Problem!.Consequence.Should().Be(ConfigFileProblemConsequence.SettingIsIgnored,
             "neither leaf is bound through ConfigurationBinder any more, so nothing crashes the daemon here");
-        result.Settings.Should().BeEquivalentTo(new OperatingSettings(),
-            "whichever key order this is found in, a second malformed leaf falls back to nothing recovered");
+        result.Problem!.Message.Should().Contain("System.String",
+            "the message names the leaf whose removal actually let recovery succeed — defaultModel's own "
+            + "string conversion mismatch — not the first leaf found (maxConcurrentAgentSessions's int mismatch)");
+        result.Problem!.AffectsResolverOwnedKey.Should().BeFalse(
+            "defaultModel, the leaf the message names, is not one of the three concurrency keys");
+        result.Settings.MaxConcurrentTaskRuns.Should().Be(7,
+            "whichever key order this is found in, a healthy sibling untouched by either malformed leaf "
+            + "must survive the recovery loop");
+        result.Settings.MaxConcurrentAgentSessions.Should().BeNull("the first malformed leaf found is removed");
+        result.Settings.DefaultModel.Should().BeNull("the second malformed leaf found is removed");
     }
 
     /// <summary>
