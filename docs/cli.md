@@ -255,9 +255,9 @@ since the recorded repository path of a project with a home names the bare clone
 has no files to read; a project registered before homes existed still points at an ordinary
 checkout, and that is where its session runs. That session makes no Jira call itself: it submits
 the composed payload through `write-jira`, which is the sole executor of every Jira write
-(Decisions Log #102). `write-jira` validates the payload (a transition or a close is refused
-regardless of who composed it), records the intent before anything is sent, executes it through
-the Atlassian CLI (`twg`), and verifies by reading the item back before recording the outcome — the
+(Decisions Log #102, #114). `write-jira` validates the payload (a transition or a close is refused
+regardless of who composed it), records the intent before anything is sent, executes it against
+the Jira Cloud REST API, and verifies by reading the item back before recording the outcome — the
 same observation-gate pattern `link-jira` uses for a pre-existing card. A project set to `--backlog
 jira` makes the publication request automatically at publish — once the dedup gate above lets the
 publish through — so `push-to-jira` becomes the manual retry lever for a project that had no Jira
@@ -351,9 +351,9 @@ synchronous request and response with the daemon by design, so a command that tr
 returns once the work is *recorded*, not once it is *done*.
 
 Agent-facing commands are observation gates. `h9k task write-jira`, the sole executor of every
-Jira write, verifies by reading the item back with its own follow-up `twg` call before recording
-the outcome, so what gets recorded is what twg answered rather than what the agent's own claim
-was — it loads the registered Jira connection to tell every `twg` call which tenant to target
+Jira write, verifies by reading the item back with its own follow-up REST call before recording
+the outcome, so what gets recorded is what Jira answered rather than what the agent's own claim
+was — it loads the registered Jira connection to authenticate every call against the right tenant
 explicitly, the same strict lookup `h9k doctor` uses, refusing rather than guessing when more
 than one is registered.
 `h9k task link-jira` reads the key back through the connection before recording it, so what gets

@@ -194,29 +194,33 @@ The platform never authors a card's *content*: issue types, required fields and 
 the organisation's configuration, so `push-to-jira` dispatches a session into the project's own
 repository, where its card-authoring skills live, to work out what the card should look like — but
 that session makes no Jira call itself. It composes a payload and submits it through
-`write-jira`, which is the sole executor of every Jira write (Decisions Log #102): hall9k validates
-the payload (a transition or a close is refused regardless of who composed it — that is a team's
-workflow, done in Jira directly, never a write hall9k performs), records the intent with the full
-payload before anything is sent, executes it through the Atlassian CLI (`twg`) with JSON output,
-verifies by reading the item back, and records the outcome including the returned key. A retried
-or replayed create narrows the window for a duplicate rather than closing it outright:
-`write-jira` searches for a marker an earlier attempt's card would carry before creating anything
-new, but Jira's search index updates asynchronously, so a retry inside that index-lag window can
-still find nothing even though the card genuinely exists. **Agent-facing commands are observation gates**:
-`write-jira` and `link-jira` both read the key back through Jira before recording anything, so an
-agent's or an operator's claim is an argument that gets checked rather than a fact that gets
-accepted. Registered credentials are recorded as references (`env:`, `keychain:`, `file:`) and
-never as secrets — `twg`'s own login is separate again, a machine-wide browser login
-(`twg login`) rather than a registered connection, and it expires often enough that
-re-authentication is routine: an expired or missing login is a handled state, not a crash. A write
-that hits it is recorded pending on the task, surfaces as a needs-you row telling the operator to
-run `twg login`, and the daemon retries the identical write automatically once that succeeds —
-covering both an operator's own `write-jira` and a daemon-dispatched write such as closeout's own
-merge comment. When a task carrying a Jira reference merges, closeout comments the pull request on
-the card through this same write surface; it never transitions the card, because which status a
-merge means is a team's workflow rather than a fact about software. `h9k doctor` probes for an
-authenticated `twg` whenever a project's backlog policy is `jira`, distinguishing a missing binary
-from an expired login and teaching `twg login` as the fix for the latter.
+`write-jira`, which is the sole executor of every Jira write (Decisions Log #102, #114): hall9k
+validates the payload (a transition or a close is refused regardless of who composed it — that is
+a team's workflow, done in Jira directly, never a write hall9k performs), records the intent with
+the full payload before anything is sent, executes it against the Jira Cloud v2 REST API — the
+same authenticated client the read side already uses — and records the outcome including the
+returned key. A retried or replayed create narrows the window for a duplicate rather than closing
+it outright: `write-jira` searches for a marker an earlier attempt's card would carry before
+creating anything new, but Jira's search index updates asynchronously, so a retry inside that
+index-lag window can still find nothing even though the card genuinely exists. **Agent-facing
+commands are observation gates**: `write-jira` and `link-jira` both read the key back through Jira
+before recording anything, so an agent's or an operator's claim is an argument that gets checked
+rather than a fact that gets accepted. Registered credentials are recorded as references (`env:`,
+`keychain:`, `file:`) and never as secrets — the one registered connection's API token now covers
+both directions, reading and writing alike, and it expires only the way any API token does (an
+organisation revoking or rotating it), which is rarer and less routine than the machine-wide
+browser login (`twg login`) the write path used before #114: a rejected credential is still a
+handled state, not a crash. A write that hits one is recorded pending on the task, surfaces as a
+needs-you row telling the operator to refresh the connection (`h9k connection add jira`), and the
+daemon retries the identical write automatically once that succeeds — covering both an operator's
+own `write-jira` and a daemon-dispatched write such as closeout's own merge comment. When a task
+carrying a Jira reference merges, closeout comments the pull request on the card through this same
+write surface; it never transitions the card, because which status a merge means is a team's
+workflow rather than a fact about software. `h9k doctor` probes the registered connection's
+credential whenever a project's backlog policy is `jira`, distinguishing no connection registered
+from a rejected credential and teaching `h9k connection add jira` as the fix for the latter — the
+Atlassian CLI (`twg`) this write path used before #114 is no longer required for any `h9k` or
+`h9kd` operation.
 
 **Every published task is tracked automatically**, per a project setting (backlog: track every
 published task), and GitHub gets a write path of its own — unlike Jira, an issue's shape (title,
@@ -383,14 +387,12 @@ of the pane, and today a row lands there for one of six reasons:
 | `NeedsHuman`, review parked | The pre-PR review loop spent its automatic fixes, hit a disputed finding (#24, #63), or the task's lifetime review-cycle budget is spent (#112) — that last one can fire on a run that just converged cleanly, since the budget counts every run and follow-up the task has ever had and nothing resets it; a `--needs-fixes` grant there earns one more cycle but re-parks at the next settle point unless the budget itself is raised with `h9k task set-review-caps` | `h9k review resolve` |
 | `NeedsHuman`, closeout parked | The same obstruction survived its automatic-lap cap without clearing, or the pull request's lifetime automatic-closeout budget is spent (#22, #80) | `h9k pr resolve` |
 | `NeedsHuman`, dependency failed | A blocker died, so the dependent stays Blocked rather than silently unblocking (#34, #61) | recover the blocker |
-| needs-you, Jira write pending, Status unchanged | A Jira write (an operator's own `write-jira`, or a daemon-dispatched one such as closeout's own merge comment) is stuck on an expired or missing twg login (#102) — the write carries no lifecycle state of its own, so the row's Status stays whatever it already was (Working, Delivered, or Done) | `twg login` |
+| needs-you, Jira write pending, Status unchanged | A Jira write (an operator's own `write-jira`, or a daemon-dispatched one such as closeout's own merge comment) is stuck on a rejected credential (#102, #114) — the write carries no lifecycle state of its own, so the row's Status stays whatever it already was (Working, Delivered, or Done) | `h9k connection add jira` |
 | needs-you, "an interactive claim (h9k task work) last recorded activity …" | An `h9k task work` claim has sat untouched past the configured threshold (default 3 days) — closing the terminal is a normal way to leave an interactive claim (#103), so nothing reclaims it automatically; this is only a nudge asking whether it is still yours | `h9k task work <id>` if you're still on it, or `h9k task handback <id>` to finish it headlessly |
 | `Failed` | The run itself failed | `h9k task retry` / `resolve` / `abandon` |
 
-The Jira row is the odd one out: every other lever here is an `h9k` command, but this one clears
-in the operator's own terminal, because `twg login` is a browser-based login the platform cannot
-do unattended. Once it succeeds, the daemon's retry sweep resubmits the identical pending write on
-its own; nothing needs recomposing.
+Once `h9k connection add jira` records a working credential again, the daemon's retry sweep
+resubmits the identical pending write on its own; nothing needs recomposing.
 
 The window's job at each of these is the same: read the reason (`h9k task show`, then `h9k logs`
 if the reason is not already sufficient), put the decision to the human in a sentence, and record
