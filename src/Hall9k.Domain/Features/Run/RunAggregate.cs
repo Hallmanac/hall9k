@@ -105,6 +105,13 @@ public sealed class RunAggregate
     public bool PrReviewConformanceCompleted { get; private set; }
 
     /// <summary>
+    /// The conformance lens's own resolved model, read back at completion so the session's
+    /// TokensRecorded carries the model it actually ran on rather than a re-resolution that could
+    /// disagree with it if the node's configuration changed mid-flight (Decisions Log #33).
+    /// </summary>
+    public AgentModel PrReviewConformanceModel { get; private set; } = AgentModel.Unknown;
+
+    /// <summary>
     /// Set when <see cref="RunBudgetExhausted"/> catches the conformance lens mid-flight
     /// (deliberately not <see cref="ReviewPhase"/>, which pr-review runs never touch — see the
     /// class doc comment). This is what tells <see cref="TokenBudgetRetryEngine"/> to re-enter
@@ -719,6 +726,7 @@ public sealed class RunAggregate
         PrReviewConformanceProcessStartedAt = @event.ProcessStartedAt;
         PrReviewConformanceCompleted = false;
         PrReviewConformanceBudgetExhausted = false;
+        PrReviewConformanceModel = @event.Model;
         State = RunState.UnderReview;
     }
 

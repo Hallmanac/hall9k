@@ -1,6 +1,7 @@
 using FluentAssertions;
 using Hall9k.Daemon.Execution;
 using Hall9k.Domain.Features.Run.Events;
+using Hall9k.Domain.Shared.ValueObjects;
 using Xunit;
 
 namespace Hall9k.Tests.Daemon;
@@ -59,9 +60,10 @@ public sealed class StreamJsonParserTests
 
         Guid runId = Guid.Parse("01a01754-4f0e-7775-af1e-3aca2e67be8b");
         DateTimeOffset recordedAt = new(2026, 8, 18, 12, 0, 0, TimeSpan.Zero);
-        TokensRecorded recorded = result.ToTokensRecorded(runId, recordedAt);
+        TokensRecorded recorded = result.ToTokensRecorded(runId, recordedAt, AgentModel.Sonnet);
 
-        recorded.Should().Be(new TokensRecorded(runId, 118, 80_515, 16.19052m, recordedAt, 8_239_942, 196_080));
+        recorded.Should().Be(
+            new TokensRecorded(runId, 118, 80_515, 16.19052m, recordedAt, 8_239_942, 196_080, AgentModel.Sonnet));
     }
 
     [Fact]

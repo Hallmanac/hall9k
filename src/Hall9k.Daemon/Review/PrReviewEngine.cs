@@ -404,7 +404,7 @@ public sealed class PrReviewEngine(
         // appends tokens before any verdict handling for the identical reason (ReviewEngine.cs:996).
         await using (IDocumentSession tokensSession = store.LightweightSession())
         {
-            tokensSession.Events.Append(runId, result.ToTokensRecorded(runId, DateTimeOffset.UtcNow));
+            tokensSession.Events.Append(runId, result.ToTokensRecorded(runId, DateTimeOffset.UtcNow, run.PrReviewConformanceModel));
             await tokensSession.SaveChangesAsync(cancellationToken);
         }
 

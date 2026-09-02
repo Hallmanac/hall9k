@@ -654,7 +654,8 @@ public sealed class ReviewEngine(
         }
 
         await RecordFixResultAsync(
-            context.RunId, CurrentRunDirectory(run), run.ReviewCycle, context.Task.FollowUpKind, result, cancellationToken);
+            context.RunId, CurrentRunDirectory(run), run.ReviewCycle, context.Task.FollowUpKind, result,
+            run.ActiveFixSessionModel, cancellationToken);
         return true;
     }
 
@@ -1265,7 +1266,7 @@ public sealed class ReviewEngine(
 
         DateTimeOffset now = DateTimeOffset.UtcNow;
         await using IDocumentSession session = store.LightweightSession();
-        session.Events.Append(runId, result.ToTokensRecorded(runId, now));
+        session.Events.Append(runId, result.ToTokensRecorded(runId, now, pass.Model));
         session.Events.Append(runId, new ReviewPassCompleted(
             runId, cycle, pass.Lens, verdict, now, [.. findings.Select(finding => finding.ToRecord(pass.Mode))],
             run.CurrentCycleMode, result.Turns, result.TotalInputTokens));
@@ -2049,7 +2050,7 @@ public sealed class ReviewEngine(
 
     private async Task RecordFixResultAsync(
         Guid runId, string runDirectory, int cycle, FollowUpKind followUpKind, AgentResult result,
-        CancellationToken cancellationToken)
+        AgentModel model, CancellationToken cancellationToken)
     {
         string summary = result.Summary ?? string.Empty;
         await File.WriteAllTextAsync(RunPaths.ReviewFixPositionFile(runDirectory, cycle), summary, cancellationToken);
@@ -2076,7 +2077,7 @@ public sealed class ReviewEngine(
 
         DateTimeOffset now = DateTimeOffset.UtcNow;
         await using IDocumentSession session = store.LightweightSession();
-        session.Events.Append(runId, result.ToTokensRecorded(runId, now));
+        session.Events.Append(runId, result.ToTokensRecorded(runId, now, model));
         session.Events.Append(runId, new ReviewFixCompleted(runId, cycle, outcome, now));
         await session.SaveChangesAsync(cancellationToken);
         logger.LogInformation(

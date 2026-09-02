@@ -1,5 +1,6 @@
 using System.Text.Json;
 using Hall9k.Domain.Features.Run.Events;
+using Hall9k.Domain.Shared.ValueObjects;
 
 namespace Hall9k.Daemon.Execution;
 
@@ -23,8 +24,8 @@ public sealed record AgentResult(
     int? Turns,
     string? Summary = null)
 {
-    public TokensRecorded ToTokensRecorded(Guid runId, DateTimeOffset recordedAt) =>
-        new(runId, InputTokens, OutputTokens, CostUsd, recordedAt, CacheReadInputTokens, CacheCreationInputTokens);
+    public TokensRecorded ToTokensRecorded(Guid runId, DateTimeOffset recordedAt, AgentModel model) =>
+        new(runId, InputTokens, OutputTokens, CostUsd, recordedAt, CacheReadInputTokens, CacheCreationInputTokens, model);
 
     /// <summary>Every input token the session was billed for, whatever the cache did with it.</summary>
     public long TotalInputTokens => InputTokens + CacheReadInputTokens + CacheCreationInputTokens;
