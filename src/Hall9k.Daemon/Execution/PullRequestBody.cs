@@ -129,10 +129,11 @@ internal static class PullRequestBody
         foreach (ReviewRideAlongFinding finding in run.ReviewRideAlongFindings)
         {
             string severity = finding.Severity == ReviewSeverity.Unknown ? "ungraded" : finding.Severity.Value.ToLowerInvariant();
-            string location = finding.Location.IsBlank() ? "no location stated" : $"`{finding.Location}`";
+            string location = finding.Location.IsBlank() ? "no location stated" : $"`{OneLine(finding.Location)}`";
             note.AppendLine($"- {severity} — {location}");
         }
 
+        note.AppendLine();
         note.Append($"See `h9k task show {run.TaskId}` for the full review history.");
         return note.ToString();
     }
