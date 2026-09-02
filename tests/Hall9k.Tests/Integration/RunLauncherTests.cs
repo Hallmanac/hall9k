@@ -737,7 +737,7 @@ public sealed class RunLauncherTests(PostgresFixture postgres) : IClassFixture<P
     private CloseoutEngine NewCloseoutEngine(
         DocumentStore store, NodeContext node, IPullRequestInspector inspector, IWorktreeManager worktrees) =>
         new(store, node, new DaemonConnection(postgres.ConnectionString), inspector, worktrees,
-            RecordingProcessRunner.Succeeding(string.Empty).Runner,
+            RecordingProcessRunner.Succeeding(string.Empty).Runner, FakeJiraRequester.NeverInvoked(),
             Options.Create(new DaemonOptions()), NullLogger<CloseoutEngine>.Instance);
 
     private static RunSupervisor NewSupervisor(DocumentStore store, NodeContext node)

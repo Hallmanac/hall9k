@@ -66,7 +66,7 @@ public sealed class TaskJiraWriteTests
     }
 
     [Fact]
-    public void A_create_needs_a_summary_field_because_twg_itself_refuses_without_one()
+    public void A_create_needs_a_summary_field_because_jira_itself_refuses_without_one()
     {
         JiraWritePayload payload = new(WorkItemType: "Dev Task", Fields: null, Comment: null);
 
@@ -99,9 +99,9 @@ public sealed class TaskJiraWriteTests
     /// A field composed through <see cref="JiraWritePayload.FromJson"/> is stored as its own raw
     /// JSON text, so an empty summary arrives here as the two-character string <c>""</c> rather
     /// than an empty one — this validation has to decode it the same way
-    /// <see cref="Hall9k.Connectors.WorkItems.TwgJiraExecutor"/>'s own field extraction does before
+    /// <see cref="Hall9k.Connectors.WorkItems.JiraWriteExecutor"/>'s own field extraction does before
     /// deciding whether it is blank (independent pre-PR review, cycle 7), or an empty summary
-    /// passes this gate only for twg to refuse it after the intent is already recorded.
+    /// passes this gate only for Jira to refuse it after the intent is already recorded.
     /// </summary>
     [Fact]
     public void A_json_composed_blank_summary_is_refused_the_same_as_a_missing_one()
@@ -152,7 +152,7 @@ public sealed class TaskJiraWriteTests
 
         Action validate = () => payload.Validate(JiraWriteOperation.Create);
 
-        validate.Should().Throw<DomainValidationException>().WithMessage("*not a text format twg accepts*");
+        validate.Should().Throw<DomainValidationException>().WithMessage("*not a text format Hall9k records*");
     }
 
     [Fact]
@@ -267,11 +267,11 @@ public sealed class TaskJiraWriteTests
             task, JiraWriteOperation.Comment, null, "{\"comment\":\"merged\"}", writeId, Now, Owner));
 
         task.Apply(TaskDecider.RecordJiraWriteFailure(
-            task, writeId, "twg is not authenticated", isAuthFailure: true, Now));
+            task, writeId, "Jira rejected the credential", isAuthFailure: true, Now));
 
         task.PendingJiraWriteId.Should().Be(writeId, "the identical payload is what a retry re-attempts");
         task.PendingJiraWriteIsAuthFailure.Should().BeTrue();
-        task.PendingJiraWriteFailureReason.Should().Be("twg is not authenticated");
+        task.PendingJiraWriteFailureReason.Should().Be("Jira rejected the credential");
         task.PendingJiraWritePayloadJson.Should().Be("{\"comment\":\"merged\"}", "nothing here is recomposed");
     }
 
@@ -298,7 +298,7 @@ public sealed class TaskJiraWriteTests
         task.Apply(TaskDecider.RequestJiraWrite(
             task, JiraWriteOperation.Comment, null, "{}", writeId, Now, Owner));
 
-        task.Apply(TaskDecider.RecordJiraWriteSuccess(task, writeId, "PROJ-123", "twg reported it", Now));
+        task.Apply(TaskDecider.RecordJiraWriteSuccess(task, writeId, "PROJ-123", "Jira reported it", Now));
 
         task.PendingJiraWriteId.Should().BeNull();
     }
@@ -323,7 +323,7 @@ public sealed class TaskJiraWriteTests
         Guid writeId = DomainId.New();
         JiraWriteRequested requested = new(
             added.Id, writeId, JiraWriteOperation.Comment, "PROJ-123", "{}", Owner, Now);
-        JiraWriteFailed failed = new(added.Id, writeId, "twg is not authenticated", true, Now);
+        JiraWriteFailed failed = new(added.Id, writeId, "Jira rejected the credential", true, Now);
 
         TaskDetailsProjection details = new();
         TaskDetails detail = details.Create(new FakeEvent<TaskAdded>(added));
@@ -332,7 +332,7 @@ public sealed class TaskJiraWriteTests
 
         detail.PendingJiraWriteId.Should().Be(writeId);
         detail.PendingJiraWriteIsAuthFailure.Should().BeTrue();
-        detail.PendingJiraWriteFailureReason.Should().Be("twg is not authenticated");
+        detail.PendingJiraWriteFailureReason.Should().Be("Jira rejected the credential");
 
         TaskListItemProjection list = new();
         TaskListItem row = list.Create(new FakeEvent<TaskAdded>(added));
@@ -340,7 +340,7 @@ public sealed class TaskJiraWriteTests
         list.Apply(new FakeEvent<JiraWriteFailed>(failed), row);
 
         row.PendingJiraWriteIsAuthFailure.Should().BeTrue();
-        row.PendingJiraWriteFailureReason.Should().Be("twg is not authenticated");
+        row.PendingJiraWriteFailureReason.Should().Be("Jira rejected the credential");
     }
 
     [Fact]
@@ -386,9 +386,9 @@ public sealed class TaskJiraWriteTests
     /// <summary>
     /// The regression this guards against (independent pre-PR review, adversarial lens, cycle 6):
     /// an operator abandons a task while its own write-jira call is still synchronously running
-    /// against twg. Clearing <see cref="TaskAggregate.PendingJiraWriteId"/> on abandon made that
+    /// against Jira. Clearing <see cref="TaskAggregate.PendingJiraWriteId"/> on abandon made that
     /// in-flight write's own outcome unrecordable, throwing a <see cref="DomainConflictException"/>
-    /// out of <c>JiraWriteCoordinator</c> for a card twg had already created and verified. The
+    /// out of <c>JiraWriteCoordinator</c> for a card Jira had already created and verified. The
     /// aggregate's own marker has to survive the abandon so the write started before it can still
     /// be recorded by its writeId; the rendering fix belongs to the projections instead.
     /// </summary>
@@ -405,14 +405,14 @@ public sealed class TaskJiraWriteTests
         task.PendingJiraWriteId.Should().Be(
             writeId, "a write already in flight when the task was abandoned must still resolve");
 
-        JiraWriteSucceeded succeeded = TaskDecider.RecordJiraWriteSuccess(task, writeId, "PROJ-123", "twg reported it", Now);
+        JiraWriteSucceeded succeeded = TaskDecider.RecordJiraWriteSuccess(task, writeId, "PROJ-123", "Jira reported it", Now);
         succeeded.WriteId.Should().Be(writeId);
     }
 
     /// <summary>
     /// The projection is what TaskShowCommand and the retry sweep's stale-write query actually
     /// read, so it has to drop the marker even though the aggregate deliberately keeps it standing
-    /// (the test above) — otherwise the abandoned task renders a permanently dead "twg could not
+    /// (the test above) — otherwise the abandoned task renders a permanently dead "the registered Jira credential could not
     /// authenticate" row forever (independent pre-PR review, cycle 5, unfixed by cycle 6's own
     /// change; adversarial lens, cycle 6).
     /// </summary>
@@ -425,7 +425,7 @@ public sealed class TaskJiraWriteTests
             externalReference: new ExternalReference(WorkItemProvider.Jira, "PROJ-123"), Now, Owner);
         Guid writeId = DomainId.New();
         JiraWriteRequested requested = new(added.Id, writeId, JiraWriteOperation.Comment, "PROJ-123", "{}", Owner, Now);
-        JiraWriteFailed failed = new(added.Id, writeId, "twg is not authenticated", true, Now);
+        JiraWriteFailed failed = new(added.Id, writeId, "Jira rejected the credential", true, Now);
         TaskAbandoned abandoned = new(added.Id, "work no longer needed", Now, Owner);
 
         TaskDetailsProjection details = new();

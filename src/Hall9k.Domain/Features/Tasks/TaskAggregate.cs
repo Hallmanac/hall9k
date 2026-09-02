@@ -50,9 +50,9 @@ public sealed class TaskAggregate
     public string? PendingJiraWriteFailureReason { get; private set; }
 
     /// <summary>
-    /// True when the most recent failed attempt was an expired or missing twg login — the one
-    /// failure that keeps the write pending rather than ending it, and what the attention pane
-    /// and the daemon's retry sweep both key on.
+    /// True when the most recent failed attempt was a rejected credential — the one failure that
+    /// keeps the write pending rather than ending it, and what the attention pane and the
+    /// daemon's retry sweep both key on.
     /// </summary>
     public bool PendingJiraWriteIsAuthFailure { get; private set; }
 
@@ -606,7 +606,7 @@ public sealed class TaskAggregate
     }
 
     // Requested, then zero or more auth failures, then finally a success or a terminal (non-auth)
-    // failure: the shape that lets an expired twg login retry the identical payload rather than
+    // failure: the shape that lets a rejected credential retry the identical payload rather than
     // losing it (Brian's design, 2026-08-28).
     public void Apply(JiraWriteRequested @event)
     {
@@ -639,7 +639,7 @@ public sealed class TaskAggregate
         if (@event.IsAuthFailure)
         {
             // Kept pending on purpose: the payload that just failed is exactly what the retry
-            // sweep re-attempts once twg login runs, so nothing about the request is forgotten.
+            // sweep re-attempts once the connection is fixed, so nothing about the request is forgotten.
             PendingJiraWriteFailureReason = @event.Reason;
             PendingJiraWriteIsAuthFailure = true;
         }
@@ -703,13 +703,14 @@ public sealed class TaskAggregate
         // the key JiraWriteCoordinator re-reads by writeId to record an already-in-flight write's
         // outcome (RecordJiraWriteSuccess/RecordJiraWriteFailure both throw when it does not
         // match), and a create or update dispatched moments before this abandon can still be
-        // executing against twg when this event lands — clearing it here would make that write's
-        // own outcome unrecordable even though twg genuinely carried it out, stranding a real card
+        // executing against Jira when this event lands — clearing it here would make that write's
+        // own outcome unrecordable even though Jira genuinely carried it out, stranding a real card
         // with a JiraWriteRequested on the stream and no JiraWriteSucceeded to match it
         // (independent pre-PR review, adversarial lens, cycle 6). TaskDetails — not this aggregate
         // — is what TaskShowCommand and the retry sweep's stale-write query actually read, so
         // clearing the equivalent marker there (TaskDetails.Apply(TaskAbandoned)) is what stops
-        // the dead "twg could not authenticate" row and keeps this write's own outcome recordable
+        // the dead "the registered Jira credential was rejected" row and keeps this write's own
+        // outcome recordable
         // at the same time.
     }
 }

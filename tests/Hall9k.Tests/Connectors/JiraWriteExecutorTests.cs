@@ -1,0 +1,359 @@
+using FluentAssertions;
+using Hall9k.Connectors.WorkItems;
+using Hall9k.Domain.Features.Tasks;
+using Hall9k.Domain.Shared.ValueObjects;
+using Hall9k.Tests.Fakes;
+using Xunit;
+
+namespace Hall9k.Tests.Connectors;
+
+/// <summary>
+/// What <see cref="JiraWriteExecutor"/> does with Jira's own structured HTTP answers — the
+/// executor's transport moved off the Atlassian CLI (twg) onto this REST client (Decisions Log
+/// #114), so what used to be regex-parsed out of a text envelope is now read straight off JSON:
+/// the status-code classes the old envelope parsing guarded (success with a key, a 4xx refusal, an
+/// auth failure, and a timeout after the request was sent) plus the write-safety logic that
+/// survives the transport swap unchanged — the physical dedup gate, the verified read-back, and
+/// the cancellation-grace-adjacent auth-vs-other classification a comment's own read-back needs.
+/// </summary>
+public sealed class JiraWriteExecutorTests
+{
+    private static readonly Uri Site = new("https://hall9k.atlassian.net");
+    private static readonly Guid TaskId = Guid.Parse("11111111-1111-1111-1111-111111111111");
+
+    private static JiraWriteExecutor Executor(RecordingJiraRequester requester) =>
+        new(JiraAccount.WithTokenInHand(Site, "brian@example.com", "a-token"), requester.Requester);
+
+    private static JiraResponse Ok(string body) => new(200, body);
+
+    private static JiraResponse Created(string body) => new(201, body);
+
+    // ---- Create ----------------------------------------------------------------------------
+
+    [Fact]
+    public async Task Create_embeds_the_marker_sends_the_project_and_type_and_verifies_the_key()
+    {
+        RecordingJiraRequester requester = RecordingJiraRequester.RespondingTo(request =>
+            request.Method == HttpMethod.Post
+                ? Created("""{"id":"10001","key":"PROJ-1","self":"https://hall9k.atlassian.net/rest/api/2/issue/10001"}""")
+                : Ok("""{"key":"PROJ-1"}"""));
+
+        JiraWritePayload payload = new(
+            "Dev Task",
+            new Dictionary<string, string> { ["summary"] = "Fix the thing", ["description"] = "Some context." },
+            Comment: null);
+
+        JiraWriteResult result = await Executor(requester).CreateAsync(
+            JiraProjectKey.Parse("PROJ"), payload, TaskId, CancellationToken.None);
+
+        result.IssueKey.Should().Be("PROJ-1");
+
+        JiraRequest create = requester.Requests.Should().ContainSingle(r => r.Method == HttpMethod.Post).Subject;
+        create.Url.Should().Be(new Uri("https://hall9k.atlassian.net/rest/api/2/issue"));
+        create.JsonBody.Should().Contain("\"key\":\"PROJ\"")
+            .And.Contain("\"name\":\"Dev Task\"")
+            .And.Contain("Fix the thing")
+            .And.Contain($"hall9k-task:{TaskId:D}");
+
+        requester.Requests.Should().Contain(
+            r => r.Method == HttpMethod.Get, "the created card is read back and verified before being trusted");
+    }
+
+    [Fact]
+    public async Task Create_refuses_outright_when_no_board_is_bound_and_the_payload_names_none()
+    {
+        RecordingJiraRequester requester = RecordingJiraRequester.RespondingTo(_ =>
+            throw new InvalidOperationException("must not reach Jira when no board is bound"));
+
+        JiraWritePayload payload = new("Dev Task", new Dictionary<string, string> { ["summary"] = "x" }, null);
+
+        Func<Task> act = () => Executor(requester).CreateAsync(JiraProjectKey.None, payload, TaskId, CancellationToken.None);
+
+        (await act.Should().ThrowAsync<JiraWriteExecutionException>())
+            .Which.Kind.Should().Be(JiraWriteFailureKind.Other);
+        requester.Requests.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task Create_extracts_summary_and_description_case_insensitively_from_composed_fields()
+    {
+        RecordingJiraRequester requester = RecordingJiraRequester.RespondingTo(request =>
+            request.Method == HttpMethod.Post ? Created("""{"key":"PROJ-2"}""") : Ok("""{"key":"PROJ-2"}"""));
+
+        JiraWritePayload payload = new(
+            "Dev Task",
+            new Dictionary<string, string> { ["Summary"] = "Cased summary", ["Description"] = "Cased body" },
+            null);
+
+        await Executor(requester).CreateAsync(JiraProjectKey.Parse("PROJ"), payload, TaskId, CancellationToken.None);
+
+        JiraRequest create = requester.Requests.First(r => r.Method == HttpMethod.Post);
+        create.JsonBody.Should().Contain("Cased summary").And.Contain("Cased body");
+        // Only one summary/description pair reaches the request — the cased keys were consumed as
+        // the first-class fields, not left behind to also ride along as ordinary custom fields.
+        create.JsonBody!.Should().NotContain("\"Summary\"").And.NotContain("\"Description\"");
+    }
+
+    [Fact]
+    public async Task Create_carries_a_custom_field_through_as_its_own_typed_json_value()
+    {
+        RecordingJiraRequester requester = RecordingJiraRequester.RespondingTo(request =>
+            request.Method == HttpMethod.Post ? Created("""{"key":"PROJ-3"}""") : Ok("""{"key":"PROJ-3"}"""));
+
+        // A composed field's raw JSON text survives — a quoted numeric string stays a string
+        // rather than being coerced into a bare number, the same fidelity FromJson preserves.
+        JiraWritePayload payload = JiraWritePayload.FromJson(
+            """{"workItemType":"Dev Task","fields":{"summary":"S","customfield_10050":"10501"}}""");
+
+        await Executor(requester).CreateAsync(JiraProjectKey.Parse("PROJ"), payload, TaskId, CancellationToken.None);
+
+        requester.Requests.First(r => r.Method == HttpMethod.Post).JsonBody
+            .Should().Contain("\"customfield_10050\":\"10501\"");
+    }
+
+    [Fact]
+    public async Task Create_a_null_valued_field_reaches_Jira_as_blank_rather_than_the_word_null()
+    {
+        RecordingJiraRequester requester = RecordingJiraRequester.RespondingTo(request =>
+            request.Method == HttpMethod.Post ? Created("""{"key":"PROJ-4"}""") : Ok("""{"key":"PROJ-4"}"""));
+
+        JiraWritePayload payload = JiraWritePayload.FromJson(
+            """{"workItemType":"Dev Task","fields":{"summary":"S","description":null}}""");
+
+        await Executor(requester).CreateAsync(JiraProjectKey.Parse("PROJ"), payload, TaskId, CancellationToken.None);
+
+        string? body = requester.Requests.First(r => r.Method == HttpMethod.Post).JsonBody;
+        body.Should().NotContain("null");
+        body.Should().Contain($"[hall9k-task:{TaskId:D}]", "a blank description still carries the dedup marker");
+    }
+
+    [Fact]
+    public async Task Create_reported_success_with_no_key_in_the_response_is_refused_rather_than_guessed()
+    {
+        RecordingJiraRequester requester = RecordingJiraRequester.Succeeding(201, "{}");
+        JiraWritePayload payload = new("Dev Task", new Dictionary<string, string> { ["summary"] = "S" }, null);
+
+        Func<Task> act = () => Executor(requester).CreateAsync(JiraProjectKey.Parse("PROJ"), payload, TaskId, CancellationToken.None);
+
+        (await act.Should().ThrowAsync<JiraWriteExecutionException>())
+            .WithMessage("*carried no key*");
+    }
+
+    [Fact]
+    public async Task Create_an_auth_failure_from_the_readback_stays_classified_as_auth_failure()
+    {
+        RecordingJiraRequester requester = RecordingJiraRequester.RespondingTo(request =>
+            request.Method == HttpMethod.Post
+                ? Created("""{"key":"PROJ-5"}""")
+                : new JiraResponse(401, """{"errorMessages":["denied"]}"""));
+
+        JiraWritePayload payload = new("Dev Task", new Dictionary<string, string> { ["summary"] = "S" }, null);
+
+        Func<Task> act = () => Executor(requester).CreateAsync(JiraProjectKey.Parse("PROJ"), payload, TaskId, CancellationToken.None);
+
+        (await act.Should().ThrowAsync<JiraWriteExecutionException>())
+            .Which.Kind.Should().Be(JiraWriteFailureKind.AuthFailure, "a create's own retry sweep must keep retrying");
+    }
+
+    [Fact]
+    public async Task Create_a_non_auth_readback_failure_is_not_reported_as_a_refusal_of_the_write()
+    {
+        RecordingJiraRequester requester = RecordingJiraRequester.RespondingTo(request =>
+            request.Method == HttpMethod.Post
+                ? Created("""{"key":"PROJ-6"}""")
+                : new JiraResponse(500, "boom"));
+
+        JiraWritePayload payload = new("Dev Task", new Dictionary<string, string> { ["summary"] = "S" }, null);
+
+        Func<Task> act = () => Executor(requester).CreateAsync(JiraProjectKey.Parse("PROJ"), payload, TaskId, CancellationToken.None);
+
+        (await act.Should().ThrowAsync<JiraWriteExecutionException>())
+            .WithMessage("*do not record this as a refusal of the write*");
+    }
+
+    [Fact]
+    public async Task Create_timing_out_after_the_request_was_sent_is_reported_as_genuinely_ambiguous()
+    {
+        RecordingJiraRequester requester = RecordingJiraRequester.RespondingTo(_ => throw new TaskCanceledException());
+        JiraWritePayload payload = new("Dev Task", new Dictionary<string, string> { ["summary"] = "S" }, null);
+
+        Func<Task> act = () => Executor(requester).CreateAsync(JiraProjectKey.Parse("PROJ"), payload, TaskId, CancellationToken.None);
+
+        (await act.Should().ThrowAsync<JiraWriteExecutionException>())
+            .WithMessage("*may have been carried out*");
+    }
+
+    // ---- Update ------------------------------------------------------------------------------
+
+    [Fact]
+    public async Task Update_sends_only_the_named_fields_then_verifies_existence_only()
+    {
+        RecordingJiraRequester requester = RecordingJiraRequester.RespondingTo(request =>
+            request.Method == HttpMethod.Put ? new JiraResponse(204, string.Empty) : Ok("""{"key":"PROJ-7"}"""));
+
+        JiraWritePayload payload = new(null, new Dictionary<string, string> { ["summary"] = "New summary" }, null);
+        JiraWriteResult result = await Executor(requester).UpdateAsync("PROJ-7", payload, CancellationToken.None);
+
+        result.IssueKey.Should().Be("PROJ-7");
+        result.Summary.Should().Contain("does not re-read the changed field");
+
+        JiraRequest update = requester.Requests.Single(r => r.Method == HttpMethod.Put);
+        update.Url.Should().Be(new Uri("https://hall9k.atlassian.net/rest/api/2/issue/PROJ-7"));
+        update.JsonBody.Should().Contain("New summary");
+    }
+
+    [Fact]
+    public async Task Update_a_write_that_reports_success_but_reads_back_nothing_is_not_trusted()
+    {
+        RecordingJiraRequester requester = RecordingJiraRequester.RespondingTo(request =>
+            request.Method == HttpMethod.Put ? new JiraResponse(204, string.Empty) : Ok("{}"));
+
+        JiraWritePayload payload = new(null, new Dictionary<string, string> { ["summary"] = "New summary" }, null);
+        Func<Task> act = () => Executor(requester).UpdateAsync("PROJ-8", payload, CancellationToken.None);
+
+        (await act.Should().ThrowAsync<JiraWriteExecutionException>())
+            .WithMessage("*found nothing*");
+    }
+
+    // ---- Comment -----------------------------------------------------------------------------
+
+    [Fact]
+    public async Task Comment_posts_the_body_then_verifies_existence()
+    {
+        RecordingJiraRequester requester = RecordingJiraRequester.RespondingTo(request =>
+            request.Url.ToString().EndsWith("/comment", StringComparison.Ordinal)
+                ? Created("""{"id":"1"}""")
+                : Ok("""{"key":"PROJ-9"}"""));
+
+        JiraWriteResult result = await Executor(requester).CommentAsync("PROJ-9", "The PR merged.", "plain", CancellationToken.None);
+
+        result.IssueKey.Should().Be("PROJ-9");
+        JiraRequest comment = requester.Requests.Single(r => r.Url.ToString().EndsWith("/comment", StringComparison.Ordinal));
+        comment.Method.Should().Be(HttpMethod.Post);
+        comment.JsonBody.Should().Contain("The PR merged.");
+    }
+
+    [Fact]
+    public async Task Comment_an_auth_failure_from_the_readback_is_reclassified_as_other_not_pending()
+    {
+        RecordingJiraRequester requester = RecordingJiraRequester.RespondingTo(request =>
+            request.Url.ToString().EndsWith("/comment", StringComparison.Ordinal)
+                ? Created("""{"id":"1"}""")
+                : new JiraResponse(401, """{"errorMessages":["denied"]}"""));
+
+        Func<Task> act = () => Executor(requester).CommentAsync("PROJ-10", "note", "plain", CancellationToken.None);
+
+        JiraWriteExecutionException thrown = (await act.Should().ThrowAsync<JiraWriteExecutionException>()).Which;
+        thrown.Kind.Should().Be(
+            JiraWriteFailureKind.Other,
+            "retrying automatically would post the identical comment a second time — a comment has no dedup gate");
+        thrown.Message.Should().Contain("already landed");
+    }
+
+    // ---- Marker search (the dedup gate) -------------------------------------------------------
+
+    [Fact]
+    public async Task FindByMarkerAsync_returns_null_when_the_search_comes_back_empty()
+    {
+        RecordingJiraRequester requester = RecordingJiraRequester.Succeeding(200, """{"issues":[]}""");
+
+        string? found = await Executor(requester).FindByMarkerAsync(TaskId, CancellationToken.None);
+
+        found.Should().BeNull();
+        JiraRequest search = requester.Requests.Should().ContainSingle().Subject;
+        search.Url.Should().Be(new Uri("https://hall9k.atlassian.net/rest/api/3/search/jql"));
+        search.JsonBody.Should().Contain($"hall9k-task:{TaskId:D}");
+    }
+
+    [Fact]
+    public async Task FindByMarkerAsync_confirms_the_marker_from_the_candidates_own_description_field()
+    {
+        RecordingJiraRequester requester = RecordingJiraRequester.RespondingTo(request =>
+            request.Method == HttpMethod.Post
+                ? Ok("""{"issues":[{"key":"PROJ-11"},{"key":"PROJ-12"}]}""")
+                : request.Url.ToString().Contains("PROJ-11")
+                    // A token-overlapping false positive: this candidate's description mentions
+                    // "task" and a similar-looking id, but not the exact marker text.
+                    ? Ok("""{"fields":{"description":"unrelated task:99999999-9999-9999-9999-999999999999"}}""")
+                    : Ok($"{{\"fields\":{{\"description\":\"[hall9k-task:{TaskId:D}]\"}}}}"));
+
+        string? found = await Executor(requester).FindByMarkerAsync(TaskId, CancellationToken.None);
+
+        found.Should().Be("PROJ-12", "the first candidate's tokens merely overlapped; only the second actually carries the marker");
+    }
+
+    [Fact]
+    public async Task FindByMarkerAsync_refuses_a_full_page_with_none_confirmed()
+    {
+        string issues = string.Join(",", Enumerable.Range(1, 10).Select(i => $$"""{"key":"PROJ-{{i}}"}"""));
+        RecordingJiraRequester requester = RecordingJiraRequester.RespondingTo(request =>
+            request.Method == HttpMethod.Post
+                ? Ok($$"""{"issues":[{{issues}}]}""")
+                : Ok("""{"fields":{"description":"nothing to see here"}}"""));
+
+        Func<Task> act = () => Executor(requester).FindByMarkerAsync(TaskId, CancellationToken.None);
+
+        (await act.Should().ThrowAsync<JiraWriteExecutionException>())
+            .WithMessage("*full page*");
+    }
+
+    // ---- Auth probe ----------------------------------------------------------------------------
+
+    [Fact]
+    public async Task ProbeAuthenticationAsync_reports_Authenticated_on_success()
+    {
+        RecordingJiraRequester requester = RecordingJiraRequester.Succeeding(200, """{"issues":[]}""");
+
+        JiraAuthProbeResult probe = await Executor(requester).ProbeAuthenticationAsync(CancellationToken.None);
+
+        probe.Should().Be(JiraAuthProbeResult.Authenticated);
+    }
+
+    [Fact]
+    public async Task ProbeAuthenticationAsync_reports_AuthFailure_on_a_rejected_credential()
+    {
+        RecordingJiraRequester requester = RecordingJiraRequester.Succeeding(401, """{"errorMessages":["denied"]}""");
+
+        JiraAuthProbeResult probe = await Executor(requester).ProbeAuthenticationAsync(CancellationToken.None);
+
+        probe.Should().Be(JiraAuthProbeResult.AuthFailure);
+    }
+
+    [Fact]
+    public async Task ProbeAuthenticationAsync_reports_Unknown_on_any_other_refusal()
+    {
+        RecordingJiraRequester requester = RecordingJiraRequester.Succeeding(500, "boom");
+
+        JiraAuthProbeResult probe = await Executor(requester).ProbeAuthenticationAsync(CancellationToken.None);
+
+        probe.Should().Be(JiraAuthProbeResult.Unknown);
+    }
+
+    // ---- Ordinary 4xx / timeout on a read-only call is not ambiguous --------------------------
+
+    [Fact]
+    public async Task An_ordinary_4xx_refusal_is_reported_with_Jiras_own_message()
+    {
+        RecordingJiraRequester requester = RecordingJiraRequester.Succeeding(
+            400, """{"errorMessages":["The issue type is invalid."]}""");
+
+        JiraWritePayload payload = new("Bogus", new Dictionary<string, string> { ["summary"] = "S" }, null);
+        Func<Task> act = () => Executor(requester).CreateAsync(JiraProjectKey.Parse("PROJ"), payload, TaskId, CancellationToken.None);
+
+        JiraWriteExecutionException thrown = (await act.Should().ThrowAsync<JiraWriteExecutionException>()).Which;
+        thrown.Kind.Should().Be(JiraWriteFailureKind.Other);
+        thrown.Message.Should().Contain("The issue type is invalid.");
+    }
+
+    [Fact]
+    public async Task A_timeout_on_a_read_only_search_is_an_ordinary_failure_not_an_ambiguous_one()
+    {
+        RecordingJiraRequester requester = RecordingJiraRequester.RespondingTo(_ => throw new TaskCanceledException());
+
+        Func<Task> act = () => Executor(requester).FindByMarkerAsync(TaskId, CancellationToken.None);
+
+        JiraWriteExecutionException thrown = (await act.Should().ThrowAsync<JiraWriteExecutionException>()).Which;
+        thrown.Kind.Should().Be(JiraWriteFailureKind.Other);
+        thrown.Message.Should().NotContain("may have been carried out");
+    }
+}

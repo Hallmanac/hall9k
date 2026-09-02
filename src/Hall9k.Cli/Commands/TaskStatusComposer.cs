@@ -521,7 +521,7 @@ internal static class TaskStatusComposer
     /// <summary>
     /// A Delivered row whose only outstanding ask is the merge itself: the pull request is open,
     /// the closeout monitor is still watching it, and nothing has been recorded against it. A
-    /// pending Jira write stuck on an expired or missing twg login carries no lifecycle state of
+    /// pending Jira write stuck on a rejected credential carries no lifecycle state of
     /// its own (AGENTS.md's own needs-you relay table lists it as one of six reasons a row lands
     /// there), so it can stand on a Delivered, AwaitingReview row exactly as well as it can stand
     /// on any other — and it is never "the merge is yours", so this exception must not swallow it

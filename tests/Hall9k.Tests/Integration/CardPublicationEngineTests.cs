@@ -266,15 +266,15 @@ public sealed class CardPublicationEngineTests(PostgresFixture postgres) : IClas
     }
 
     /// <summary>
-    /// A session that submitted its composed payload through h9k task write-jira and hit an
-    /// unauthenticated twg has not left an unreported card behind: the write is recorded pending
-    /// on the task, and the daemon's own retry sweep finishes it once 'twg login' succeeds. The
+    /// A session that submitted its composed payload through h9k task write-jira and hit a
+    /// rejected credential has not left an unreported card behind: the write is recorded pending
+    /// on the task, and the daemon's own retry sweep finishes it once the connection is fixed. The
     /// generic "check the board, a session may have filed a card and never told you" caution is
     /// wrong here — no card was ever filed — and sends an operator to push-to-jira again instead of
     /// to the retry that is already queued (independent pre-PR review, conformance lens, cycle 1).
     /// </summary>
     [Fact]
-    public async Task A_session_stuck_on_an_unauthenticated_twg_is_not_told_to_check_the_board()
+    public async Task A_session_stuck_on_a_rejected_credential_is_not_told_to_check_the_board()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
         using DocumentStore store = NewStore();
@@ -287,22 +287,22 @@ public sealed class CardPublicationEngineTests(PostgresFixture postgres) : IClas
             session.Events.Append(
                 taskId,
                 new JiraWriteRequested(taskId, writeId, JiraWriteOperation.Create, null, "{}", node.OwnerId, Now),
-                new JiraWriteFailed(taskId, writeId, "twg is not authenticated", IsAuthFailure: true, Now));
+                new JiraWriteFailed(taskId, writeId, "Jira rejected the registered credentials", IsAuthFailure: true, Now));
             await session.SaveChangesAsync(cts.Token);
         }
 
         FakeProcessManager processes = new();
         ScriptedSession agentSession = new(
-            "Submitted the payload through h9k task write-jira; twg is not authenticated, so it is pending.",
+            "Submitted the payload through h9k task write-jira; Jira rejected the credentials, so it is pending.",
             processes);
 
         await NewEngine(store, node, agentSession, processes).PollOnceAsync(cts.Token);
 
         await using IQuerySession query = store.QuerySession();
         TaskDetails task = (await query.LoadAsync<TaskDetails>(taskId, cts.Token))!;
-        task.PendingJiraWriteIsAuthFailure.Should().BeTrue("the pre-seeded write is still pending on an expired login");
+        task.PendingJiraWriteIsAuthFailure.Should().BeTrue("the pre-seeded write is still pending on a rejected credential");
         task.PublicationOutcome.Should()
-            .Contain("not authenticated")
+            .Contain("rejected the registered credential")
             .And.Contain("retry automatically")
             .And.NotContain("Check the board", "no card was ever filed for this session to have lost track of");
     }

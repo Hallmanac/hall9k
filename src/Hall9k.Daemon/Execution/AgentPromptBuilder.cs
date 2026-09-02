@@ -2038,8 +2038,8 @@ public static class AgentPromptBuilder
     /// The ending is the part that is not left open, and it changed shape with the compose/execute
     /// split (Brian's design, 2026-08-28): the session performs no direct Jira access at all. It
     /// finishes by running <c>h9k task write-jira --op create</c> with its composed payload, and
-    /// that command — never the agent — validates it, executes it through twg, and reads the key
-    /// back before recording anything, so the prompt says outright that composing a payload is not
+    /// that command — never the agent — validates it, executes it against the Jira Cloud REST API,
+    /// and reads the key back before recording anything, so the prompt says outright that composing a payload is not
     /// the same as the platform believing a card exists, and that a refusal from that command is
     /// information to act on rather than a wall. An agent that understands the gate retries against
     /// it correctly; one that does not would report success into a void.
@@ -2062,7 +2062,8 @@ public static class AgentPromptBuilder
         prompt.AppendLine("implementing anything here, and you make no Jira call yourself — Hall9k is the sole");
         prompt.AppendLine("executor of every Jira write (Brian's design, 2026-08-28). Do not create, update, or");
         prompt.AppendLine("comment on anything in Jira directly, through MCP or otherwise: your job ends at a");
-        prompt.AppendLine("composed payload, and hall9k validates it, executes it through twg, and verifies it.");
+        prompt.AppendLine("composed payload, and hall9k validates it, executes it against Jira's REST API, and");
+        prompt.AppendLine("verifies it.");
         prompt.AppendLine();
 
         prompt.AppendLine("## The work");
@@ -2195,12 +2196,13 @@ public static class AgentPromptBuilder
         prompt.AppendLine("```");
         prompt.AppendLine();
         prompt.AppendLine("Composing a payload is not the same as a card existing. That command validates it,");
-        prompt.AppendLine("creates it through twg, reads it back to verify, and records the result — so if it");
-        prompt.AppendLine("refuses, the message says what was wrong; read it, fix the payload, and run it again.");
-        prompt.AppendLine("If it reports twg is not authenticated, stop: that is a handled state Hall9k retries");
-        prompt.AppendLine("on its own once a human runs 'twg login', and you cannot fix it from here. A run that");
-        prompt.AppendLine("never gets a verified key past that command has not published anything, however the");
-        prompt.AppendLine("payload looked to you.");
+        prompt.AppendLine("creates it against Jira's REST API, reads it back to verify, and records the result —");
+        prompt.AppendLine("so if it refuses, the message says what was wrong; read it, fix the payload, and run");
+        prompt.AppendLine("it again. If it reports the registered Jira connection is not authenticated, stop:");
+        prompt.AppendLine("that is a handled state Hall9k retries on its own once a human refreshes the");
+        prompt.AppendLine("connection's API token ('h9k connection add jira'), and you cannot fix it from here.");
+        prompt.AppendLine("A run that never gets a verified key past that command has not published anything,");
+        prompt.AppendLine("however the payload looked to you.");
         prompt.AppendLine();
         prompt.AppendLine("This session ends at your final message — nothing runs after it. Run that command in");
         prompt.AppendLine("the foreground and read its result before you finish: backgrounding it, or ending the");

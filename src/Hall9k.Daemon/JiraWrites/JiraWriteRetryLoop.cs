@@ -3,8 +3,8 @@ using Microsoft.Extensions.Options;
 namespace Hall9k.Daemon.JiraWrites;
 
 /// <summary>
-/// The heartbeat behind an expired twg login: no event on this machine says "the browser login
-/// just finished", so this loop's only signal is the clock, polling on
+/// The heartbeat behind a rejected credential: no event on this machine says "the connection was
+/// just fixed", so this loop's only signal is the clock, polling on
 /// <see cref="DaemonOptions.JiraWriteRetryInterval"/> (Brian's design, 2026-08-28). It is its own
 /// hosted service rather than folded into the dispatch loop for the same reason
 /// <c>CardPublicationLoop</c> is its own: a pending write belongs to no run and no lease, so

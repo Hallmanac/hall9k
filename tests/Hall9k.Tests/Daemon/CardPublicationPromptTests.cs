@@ -102,7 +102,7 @@ public sealed class CardPublicationPromptTests : IDisposable
     {
         string prompt = Build();
 
-        prompt.Should().Contain("twg is not authenticated, stop")
+        prompt.Should().Contain("the registered Jira connection is not authenticated, stop")
             .And.Contain("Hall9k retries")
             .And.Contain("you cannot fix it from here");
     }

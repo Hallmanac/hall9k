@@ -25,13 +25,13 @@ public sealed class TaskListItem
     public string? ExternalReference { get; set; }
     public string? PullRequestUrl { get; set; }
     /// <summary>
-    /// What a pending Jira write's most recent failed attempt reported — set only while it is an
-    /// expired or missing twg login, since that is the one failure the attention pane surfaces
-    /// (Brian's design, 2026-08-28): a terminal, non-auth failure clears the pending write rather
-    /// than leaving it here for a row that has nothing left to retry.
+    /// What a pending Jira write's most recent failed attempt reported — set only while it is a
+    /// rejected credential, since that is the one failure the attention pane surfaces (Brian's
+    /// design, 2026-08-28): a terminal, non-auth failure clears the pending write rather than
+    /// leaving it here for a row that has nothing left to retry.
     /// </summary>
     public string? PendingJiraWriteFailureReason { get; set; }
-    /// <summary>True while the outstanding Jira write is stuck on an expired or missing twg login.</summary>
+    /// <summary>True while the outstanding Jira write is stuck on a rejected credential.</summary>
     public bool PendingJiraWriteIsAuthFailure { get; set; }
     /// <summary>Whose work this is; null until an explicit assignment says (Decisions Log #34).</summary>
     public Guid? AssignedOwnerId { get; set; }

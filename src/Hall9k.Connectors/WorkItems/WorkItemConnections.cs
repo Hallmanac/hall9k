@@ -122,6 +122,26 @@ public static class WorkItemConnections
     }
 
     /// <summary>
+    /// The write executor for the registered connection, or a refusal that says how to get one —
+    /// the write-side twin of <see cref="JiraProviderAsync"/>. Since Decisions Log #114 moved the
+    /// write path off the Atlassian CLI (twg) onto hall9k's own REST client, this is the identical
+    /// registered connection <see cref="JiraProviderAsync"/> already resolves, built into a
+    /// <see cref="JiraWriteExecutor"/> instead of a <see cref="JiraWorkItemProvider"/> — one
+    /// credential now covers both directions.
+    /// </summary>
+    public static async Task<JiraWriteExecutor> JiraWriteExecutorAsync(
+        IQuerySession session,
+        CancellationToken cancellationToken,
+        CredentialVault? vault = null,
+        JiraRequester? requester = null)
+    {
+        ConnectionDetails connection = await FindJiraConnectionAsync(session, cancellationToken)
+            ?? throw new DomainNotFoundException(NoJiraConnection);
+
+        return new JiraWriteExecutor(Account(connection, vault), requester);
+    }
+
+    /// <summary>
     /// The Jira connection, refusing rather than choosing when there is more than one.
     /// <para>
     /// The connections model is a list precisely so several accounts per provider stay possible
@@ -160,22 +180,28 @@ public static class WorkItemConnections
         };
     }
 
-    /// <summary>
-    /// A connection as a provider. The site is parsed rather than trusted: it was written to the
-    /// event stream as a URL, and a connection registered before this field existed carries none
-    /// at all — which is a Jira connection that cannot be used, and says so here rather than
-    /// producing request URLs against a null host.
-    /// </summary>
+    /// <summary>A connection as a read provider — see <see cref="Account"/> for the shared construction.</summary>
     private static JiraWorkItemProvider Build(
         ConnectionDetails connection, CredentialVault? vault, JiraRequester? requester) =>
+        new(Account(connection, vault), requester);
+
+    /// <summary>
+    /// A connection as an account: the site and the credential reference every connector — the
+    /// read provider and the write executor alike — is built from. Public so a caller that already
+    /// holds a <see cref="ConnectionDetails"/> for another reason (closeout's own merge comment,
+    /// the retry sweep, <c>h9k doctor</c>'s own probe) builds the identical account rather than
+    /// hand-rolling the same three fields again. The site is parsed rather than trusted: it was
+    /// written to the event stream as a URL, and a connection registered before this field existed
+    /// carries none at all — which is a Jira connection that cannot be used, and says so here
+    /// rather than producing request URLs against a null host.
+    /// </summary>
+    public static JiraAccount Account(ConnectionDetails connection, CredentialVault? vault = null) =>
         connection.SiteUrl is { } site
-            ? new JiraWorkItemProvider(
-                new JiraAccount(
-                    site,
-                    connection.ExternalAccountId,
-                    CredentialReference.Parse(connection.CredentialReference),
-                    vault),
-                requester)
+            ? new JiraAccount(
+                site,
+                connection.ExternalAccountId,
+                CredentialReference.Parse(connection.CredentialReference),
+                vault)
             : throw new DomainValidationException(
                 $"The registered Jira connection ({Describe(connection)}) has no site recorded, so there "
                 + "is nowhere to send a request. Register it again: h9k connection add jira --site "

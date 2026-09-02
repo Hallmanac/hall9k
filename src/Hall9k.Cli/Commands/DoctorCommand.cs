@@ -29,7 +29,7 @@ public sealed class DoctorCommand : Hall9kAsyncCommand<DoctorCommand.Settings>
             return ExitCodes.Error;
         }
 
-        await TwgDoctor.RunAsync(cancellationToken);
+        await JiraDoctor.RunAsync(cancellationToken);
         return ExitCodes.Ok;
     }
 }
