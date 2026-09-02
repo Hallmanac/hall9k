@@ -56,14 +56,16 @@ internal static class PullRequestBody
     /// A single hard-coded backtick pair is the obvious wrapper and is wrong here, which is the
     /// defect this method exists to prevent (independent pre-PR review, cycle 5, adversarial
     /// lens). <see cref="OneLine"/> has already run <see cref="RelayedText.WithoutClosingKeywords"/>
-    /// over this text, and that defusal works by <em>inserting</em> a backtick pair around the
-    /// reference it neutralises — so a location reading <c>src/Foo.cs:12 closes #500</c> arrives
-    /// here already carrying an odd number of backticks. Wrapping that in one more pair lets the
-    /// wrapper's opener close against the inserted one instead, which leaves <c>#500</c> bare in
-    /// the rendered body and puts a cross-reference on an unrelated issue's timeline from a pull
-    /// request that has nothing to do with it — precisely the leak the defusal had just closed.
-    /// A location that carries interior backticks of its own breaks out the same way, and takes
-    /// whatever markdown follows with it.
+    /// over this text, and that defusal works by <em>inserting</em> a backtick pair on both sides of
+    /// the reference it neutralises — so a location reading <c>src/Foo.cs:12 closes #500</c> arrives
+    /// here already carrying an inserted pair of backticks around <c>#500</c>. Wrapping that in one
+    /// more hard-coded single-backtick pair still breaks out: a single backtick pairs with the
+    /// nearest single-backtick run rather than the whole inserted pair, so the wrapper's opener
+    /// closes against the first inserted backtick instead of surviving to the wrapper's own closer.
+    /// That leaves <c>#500</c> bare in the rendered body and puts a cross-reference on an unrelated
+    /// issue's timeline from a pull request that has nothing to do with it — precisely the leak the
+    /// defusal had just closed. A location that carries interior backticks of its own breaks out the
+    /// same way, and takes whatever markdown follows with it.
     /// </para>
     /// </summary>
     private static string InlineCode(string text)
