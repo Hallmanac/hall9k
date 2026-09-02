@@ -133,8 +133,8 @@ internal static class AttentionComposer
         {
             return new TaskAttention(
                 AttentionLevel.NeedsYou,
-                Reason(task.PendingJiraWriteFailureReason, "a Jira write is pending and Jira rejected the credential"),
-                "h9k connection add jira --site https://your-org.atlassian.net --email you@example.com (a fresh API token)");
+                Reason(task.PendingJiraWriteFailureReason, "a Jira write is pending and Jira rejected the credential — register a fresh API token"),
+                "h9k connection add jira --site https://your-org.atlassian.net --email you@example.com");
         }
 
         // An interactive claim (h9k task work) carries no lease and no heartbeat by design
