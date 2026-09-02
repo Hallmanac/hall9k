@@ -151,17 +151,17 @@ public static class CliCommandTree
                 add.SetDescription("Register an external account");
                 add.AddCommand<ConnectionAddJiraCommand>("jira")
                     .WithDescription(
-                        "Register the Jira Cloud account Hall9k READS cards through (site, email, API token). "
-                        + "The credentials are verified against the site before anything is recorded, and the "
-                        + "token is stored by reference — an environment variable, a macOS keychain item, or a "
-                        + "file under ~/.hall9k/credentials readable by you alone. Running it again replaces "
-                        + "the existing connection, which is how a rotated token is applied. This connection "
-                        + "only needs to browse the boards you import from: every Jira WRITE (create, update, "
-                        + "comment) goes through a separate path (Decisions Log #102) — an agent run composes "
-                        + "the payload, and `h9k task write-jira` is the sole executor, submitting it through "
-                        + "the Atlassian CLI (twg) rather than this credential. twg needs its own machine-wide "
-                        + "browser login, `twg login`, which is not part of this command and expires "
-                        + "periodically; run `h9k doctor` to check it, or watch for a needs-you row asking for "
+                        "Register the Jira Cloud account Hall9k reads AND writes cards through (site, email, "
+                        + "API token). The credentials are verified against the site before anything is "
+                        + "recorded, and the token is stored by reference — an environment variable, a macOS "
+                        + "keychain item, or a file under ~/.hall9k/credentials readable by you alone. Running "
+                        + "it again replaces the existing connection, which is how a rotated token is applied. "
+                        + "This one credential covers both directions: reading a card for import or "
+                        + "verification, and every Jira write (create, update, comment), which still goes "
+                        + "through a separate path (Decisions Log #102, #114) — an agent run composes the "
+                        + "payload, and `h9k task write-jira` is the sole executor, submitting it against the "
+                        + "Jira Cloud REST API with this same credential. Run `h9k doctor` to check the "
+                        + "connection is usable for writes, or watch for a needs-you row if Jira ever rejects "
                         + "it. Hall9k never transitions a card — that stays a team's own workflow in Jira.")
                     .WithExample("connection", "add", "jira", "--site", "https://your-org.atlassian.net",
                         "--email", "you@example.com")
@@ -597,9 +597,9 @@ public static class CliCommandTree
                     + "repository with its own Claude skills and works out the fields. It performs no "
                     + "direct Jira access: it finishes by submitting the composed payload through "
                     + "h9k task write-jira, which is the sole executor — hall9k validates it, executes it "
-                    + "through twg, and reads the card back before recording anything. Needs a registered "
-                    + "Jira connection; the project's bound board (h9k project set --jira) tells the agent "
-                    + "where to file it.")
+                    + "against the Jira Cloud REST API, and reads the card back before recording anything. "
+                    + "Needs a registered Jira connection; the project's bound board "
+                    + "(h9k project set --jira) tells the agent where to file it.")
                 .WithExample("task", "push-to-jira", "28b19893");
             task.AddCommand<TaskLinkJiraCommand>("link-jira")
                 .WithDescription(
@@ -614,8 +614,9 @@ public static class CliCommandTree
                 .WithDescription(
                     "Submit a composed Jira create, update, or comment for hall9k to execute (the write "
                     + "surface, Brian's design 2026-08-28). hall9k validates the payload, records the "
-                    + "intent before anything is sent, executes it through twg with JSON output, verifies "
-                    + "by reading the item back, and records the outcome including the returned key. A "
+                    + "intent before anything is sent, executes it against the Jira Cloud REST API, "
+                    + "verifies by reading the item back, and records the outcome including the returned "
+                    + "key. A "
                     + "transition or a close is refused whatever the payload says. Used by the agent "
                     + "h9k task push-to-jira dispatches to create the card, and equally usable by hand for "
                     + "an update or a comment on a task's own linked item.")

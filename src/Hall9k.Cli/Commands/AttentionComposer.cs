@@ -116,24 +116,25 @@ internal static class AttentionComposer
             return new TaskAttention(AttentionLevel.NeedsYou, StallCause(phase), $"h9k logs {id}");
         }
 
-        // A Jira write is stuck on an expired or missing twg login (Brian's design, 2026-08-28) —
-        // a handled, expected state rather than a crash, and one the operator clears in their own
-        // terminal rather than through an h9k command. Checked after every park, failure,
-        // dead-blocker and stall arm above rather than ahead of them (independent pre-PR review,
-        // cycle 1): the write carries no lifecycle state of its own, so it must not be shadowed
-        // when nothing else is amiss — but a stuck write is never the reason a run is parked, a
-        // task failed, a blocker died or a run stalled, and putting it first hid whichever of
-        // those actually stopped the work behind "run twg login" instead. Checked ahead of
-        // BudgetParked below, though (independent pre-PR review, cycle 2): a budget park clears
-        // itself on a clock and is explicitly not an ask, so if it ran first it would suppress a
-        // genuine needs-you row for as long as the budget window held, while the retry sweep kept
-        // re-issuing the same doomed write underneath it.
+        // A Jira write is stuck on a rejected credential (Brian's design, 2026-08-28; the write
+        // path's own transport moved off twg onto hall9k's REST client, Decisions Log #114) — a
+        // handled, expected state rather than a crash, and one the operator clears by refreshing
+        // the registered connection rather than through an h9k command that resubmits anything.
+        // Checked after every park, failure, dead-blocker and stall arm above rather than ahead of
+        // them (independent pre-PR review, cycle 1): the write carries no lifecycle state of its
+        // own, so it must not be shadowed when nothing else is amiss — but a stuck write is never
+        // the reason a run is parked, a task failed, a blocker died or a run stalled, and putting
+        // it first hid whichever of those actually stopped the work behind this row instead.
+        // Checked ahead of BudgetParked below, though (independent pre-PR review, cycle 2): a
+        // budget park clears itself on a clock and is explicitly not an ask, so if it ran first it
+        // would suppress a genuine needs-you row for as long as the budget window held, while the
+        // retry sweep kept re-issuing the same doomed write underneath it.
         if (task.PendingJiraWriteIsAuthFailure)
         {
             return new TaskAttention(
                 AttentionLevel.NeedsYou,
-                Reason(task.PendingJiraWriteFailureReason, "a Jira write is pending and could not authenticate"),
-                "twg login");
+                Reason(task.PendingJiraWriteFailureReason, "a Jira write is pending and Jira rejected the credential"),
+                "h9k connection add jira --site https://your-org.atlassian.net --email you@example.com (a fresh API token)");
         }
 
         // An interactive claim (h9k task work) carries no lease and no heartbeat by design
@@ -147,7 +148,7 @@ internal static class AttentionComposer
         // recorded either, rather than guessing at a touch nobody observed.
         // Checked after the Jira arm (independent pre-PR review, cycle 1: the ordering rationale
         // above applies here too — a stale claim is never the reason a Jira write failed to
-        // authenticate, so it must not shadow the twg login row either) and gated on the run's
+        // authenticate, so it must not shadow the rejected-credential row either) and gated on the run's
         // own state (adversarial review, cycle 1): once h9k task deliver hands the run to the
         // standard pipeline the task can still read Claimed+interactive for the whole review
         // loop (TaskHandbackCommand and TaskWorkCommand both document this and refuse once

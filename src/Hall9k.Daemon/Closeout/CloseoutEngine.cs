@@ -89,6 +89,7 @@ public sealed class CloseoutEngine(
     IPullRequestInspector inspector,
     IWorktreeManager worktrees,
     ProcessRunner processRunner,
+    JiraRequester jiraRequester,
     IOptions<DaemonOptions> options,
     ILogger<CloseoutEngine> logger)
 {
@@ -1144,48 +1145,44 @@ public sealed class CloseoutEngine(
     /// <summary>
     /// Comment the merge onto the card through the same write surface an operator or an agent
     /// uses (Brian's design, 2026-08-28): hall9k is the sole executor of every Jira write, closeout
-    /// included, so a merge comment is recorded, executed through twg, and verified by read-back
-    /// exactly like any other write — and an expired or missing twg login is handled the same way
-    /// too, leaving the comment pending for the daemon's own retry sweep rather than lost.
+    /// included, so a merge comment is recorded, executed against the Jira Cloud REST API
+    /// (Decisions Log #114), and verified by read-back exactly like any other write — and a
+    /// rejected credential is handled the same way too, leaving the comment pending for the
+    /// daemon's own retry sweep rather than lost.
     /// <para>
     /// A write already outstanding on the task (an operator's own <c>write-jira</c>, or a create
     /// still resolving) is the one case worth telling apart from an ordinary failure: two writes
-    /// in flight could race twg against itself, so <see cref="JiraWriteCoordinator.SubmitAsync"/>
+    /// in flight could race against each other, so <see cref="JiraWriteCoordinator.SubmitAsync"/>
     /// refuses it with <see cref="DomainConflictException"/> rather than attempting it. That is not
     /// a reason to give up on the merge comment — it is queued instead (<see
     /// cref="TaskDecider.QueueJiraMergeNotice"/>), and <see cref="JiraWrites.JiraWriteRetryEngine"/>
     /// drains the queue once the blocking write clears.
     /// </para>
     /// <para>
-    /// <see cref="processRunner"/> is reused for twg rather than a second injected seam: the
-    /// delegate is process-agnostic (it takes the tool's file name as an argument), and it is
-    /// already registered once, generically, precisely so a write like this one is testable
-    /// against a recorded process instead of the real, machine-authenticated twg.
+    /// <see cref="jiraRequester"/> is injected the same way <see cref="processRunner"/> is for
+    /// GitHub's own <c>gh</c> writes just below — registered once, generically, precisely so a
+    /// write like this one is testable against a fake HTTP response instead of the real,
+    /// machine-authenticated tenant.
     /// </para>
     /// <para>
-    /// The site is resolved with the strict <see cref="WorkItemConnections.FindJiraConnectionAsync"/>:
-    /// a null site would reach <see cref="TwgJiraExecutor"/>, which omits <c>--site</c> entirely
-    /// for a null and so targets whatever tenant twg's own ambient <c>auth.conf</c> resolves to
-    /// (independent pre-PR review, adversarial lens, cycle 3) — a comment filed and verified
-    /// against an unrelated organisation's card, the exact hazard <c>TaskWriteJiraCommand</c>
-    /// already refuses outright. No connection, or one recorded before the site field existed, is
-    /// treated the same way <c>main</c> always did — skipped with a logged reason, since there is
-    /// nothing here to keep retrying. Two connections registered at once throws
-    /// <see cref="DomainConflictException"/> from <see cref="WorkItemConnections.FindJiraConnectionAsync"/>
-    /// itself, caught by this method's own site-resolution catch just below (not the generic catch
-    /// further down, which only ever sees a failure from the write attempt itself) and skipped the
-    /// same way.
+    /// The site is resolved with the strict <see cref="WorkItemConnections.FindJiraConnectionAsync"/>.
+    /// No connection, or one recorded before the site field existed, is skipped with a logged
+    /// reason, since there is nothing here to keep retrying. Two connections registered at once
+    /// throws <see cref="DomainConflictException"/> from
+    /// <see cref="WorkItemConnections.FindJiraConnectionAsync"/> itself, caught by this method's own
+    /// site-resolution catch just below (not the generic catch further down, which only ever sees a
+    /// failure from the write attempt itself) and skipped the same way.
     /// </para>
     /// </summary>
     private async Task TellJiraAsync(
         Guid taskId, ProjectDetails project, TaskAggregate task, ExternalReference reference, CancellationToken cancellationToken)
     {
         await using IDocumentSession session = store.LightweightSession();
-        Uri site;
+        JiraWriteExecutor executor;
         try
         {
-            ConnectionDetails? connection = await WorkItemConnections.FindJiraConnectionAsync(session, cancellationToken);
-            if (connection?.SiteUrl is not { } resolvedSite)
+            ConnectionDetails? connectionDetails = await WorkItemConnections.FindJiraConnectionAsync(session, cancellationToken);
+            if (connectionDetails?.SiteUrl is null)
             {
                 logger.LogWarning(
                     "Task {TaskId} is linked to {Reference} but this node has no usable Jira connection, "
@@ -1193,7 +1190,7 @@ public sealed class CloseoutEngine(
                 return;
             }
 
-            site = resolvedSite;
+            executor = new JiraWriteExecutor(WorkItemConnections.Account(connectionDetails), jiraRequester);
         }
         catch (Exception exception) when (exception is not OperationCanceledException)
         {
@@ -1213,8 +1210,7 @@ public sealed class CloseoutEngine(
                 new JiraWritePayload(WorkItemType: null, Fields: null, Comment: MergeComment(project, task), Format: "plain"),
                 project.JiraProjectKey,
                 node.OwnerId,
-                new TwgJiraExecutor(processRunner, site),
-                project.RepositoryPath,
+                executor,
                 cancellationToken);
 
             switch (result.Outcome)
@@ -1224,8 +1220,9 @@ public sealed class CloseoutEngine(
                     break;
                 case JiraWriteOutcome.PendingAuthentication:
                     logger.LogWarning(
-                        "Task {TaskId}: the merge comment for {Reference} is pending — twg is not "
-                        + "authenticated. It retries automatically once 'twg login' runs", taskId, reference);
+                        "Task {TaskId}: the merge comment for {Reference} is pending — Jira rejected the "
+                        + "registered credential. It retries automatically once the connection is fixed",
+                        taskId, reference);
                     break;
                 default:
                     logger.LogWarning(
@@ -1290,10 +1287,10 @@ public sealed class CloseoutEngine(
     /// free.
     /// <para>
     /// Built on <see cref="processRunner"/> rather than a bare <c>new GitHubWorkItemProvider()</c>,
-    /// the same reason <see cref="TellJiraAsync"/> builds its <see cref="TwgJiraExecutor"/> on the
-    /// same seam instead of reaching twg statically: it is what lets this write be exercised in
-    /// the test suite against a recorded process instead of a live, machine-authenticated one
-    /// (independent pre-PR review, cycle 4).
+    /// the same reason <see cref="TellJiraAsync"/> builds its <see cref="JiraWriteExecutor"/> on the
+    /// injected <see cref="jiraRequester"/> instead of reaching Jira statically: it is what lets
+    /// this write be exercised in the test suite against a recorded process instead of a live,
+    /// machine-authenticated one (independent pre-PR review, cycle 4).
     /// </para>
     /// </summary>
     private async Task TellGitHubAsync(

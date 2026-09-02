@@ -144,12 +144,15 @@ builder.Services.AddSingleton<RunSupervisor>();
 builder.Services.AddSingleton<RunLauncher>();
 builder.Services.AddSingleton<TokenBudgetRetryEngine>();
 builder.Services.AddSingleton<IPullRequestInspector, GitHubPullRequestInspector>();
-// The one process-spawning seam every connector's write goes through, registered rather than let
-// GitHubWorkItemProvider or TwgJiraExecutor default to ExternalProcess.Runner, so CloseoutEngine's
-// GitHub and Jira writes are both testable against a recorded process instead of a real,
-// machine-authenticated gh or twg (the delegate is process-agnostic — it takes the tool's file
-// name as an argument — so one registration serves both).
+// The one process-spawning seam GitHub's own writes go through, registered rather than let
+// GitHubWorkItemProvider default to ExternalProcess.Runner, so CloseoutEngine's GitHub writes are
+// testable against a recorded process instead of a real, machine-authenticated gh.
 builder.Services.AddSingleton<ProcessRunner>(_ => ExternalProcess.Runner);
+// Jira's write transport moved off a spawned process (twg) onto hall9k's own REST client
+// (Decisions Log #114), so its seam is the same JiraRequester delegate the read-side provider
+// already uses — registered here, generically, so CloseoutEngine's and JiraWriteRetryEngine's own
+// Jira writes are testable against a fake HTTP response instead of a real tenant.
+builder.Services.AddSingleton<JiraRequester>(_ => JiraHttp.Requester);
 builder.Services.AddSingleton<CloseoutEngine>();
 builder.Services.AddSingleton<CardPublicationEngine>();
 builder.Services.AddSingleton<JiraWriteRetryEngine>();

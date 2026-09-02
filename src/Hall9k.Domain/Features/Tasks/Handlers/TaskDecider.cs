@@ -997,7 +997,7 @@ public static class TaskDecider
     /// <para>
     /// One write outstanding per task at a time, the same one-card-per-task discipline
     /// <see cref="RequestWorkItemPublication"/> already keeps for the agent-mediated create: a
-    /// second request while the first is still pending could race twg against itself, and the
+    /// second request while the first is still pending could race a write against itself, and the
     /// retry path this design calls for exists precisely so a stuck write is resumed rather than
     /// duplicated by a second one.
     /// </para>
@@ -1033,17 +1033,17 @@ public static class TaskDecider
         {
             throw new DomainConflictException(
                 $"Task {task.Id} already has a Jira write outstanding ({outstanding}). Two writes in "
-                + "flight could race twg against itself; wait for it to resolve, or check "
+                + "flight could race a write against itself; wait for it to resolve, or check "
                 + $"h9k task show {task.Id}.");
         }
 
         if (operation == JiraWriteOperation.Create)
         {
             // The decider's cheap half of the dedup gate (backlog: mirroring the GitHub read-back
-            // gate): a task already carrying an item refuses here before twg is ever asked. The
-            // executor's own physical dedup — searching for a task marker before it calls
-            // twg jira workitem create — is what catches the harder case, a crash between twg
-            // creating the card and this event ever landing.
+            // gate): a task already carrying an item refuses here before Jira is ever asked. The
+            // executor's own physical dedup — searching for a task marker before it creates a
+            // card — is what catches the harder case, a crash between Jira creating the card and
+            // this event ever landing.
             if (task.ExternalReference is { } existing)
             {
                 throw new DomainConflictException(
@@ -1119,9 +1119,9 @@ public static class TaskDecider
 
     /// <summary>
     /// A write attempt that did not land. <paramref name="isAuthFailure"/> is what keeps it
-    /// pending rather than ending it (see <see cref="JiraWriteFailed"/>'s own doc comment) — an
-    /// expired or missing twg login is an expected, handled state, and the identical payload
-    /// succeeds on a later attempt once <c>twg login</c> runs, so nothing here forgets it.
+    /// pending rather than ending it (see <see cref="JiraWriteFailed"/>'s own doc comment) — a
+    /// rejected credential is an expected, handled state, and the identical payload succeeds on a
+    /// later attempt once the connection is fixed, so nothing here forgets it.
     /// </summary>
     public static JiraWriteFailed RecordJiraWriteFailure(
         TaskAggregate task, Guid writeId, string reason, bool isAuthFailure, DateTimeOffset failedAt)

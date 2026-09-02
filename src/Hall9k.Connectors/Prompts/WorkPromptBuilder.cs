@@ -422,7 +422,7 @@ public static class WorkPromptBuilder
         prompt.AppendLine("     resource this session does not own outright: a live daemon or its database, a");
         prompt.AppendLine("     machine-wide install (`h9k install`, `h9k update`), a destructive maintenance");
         prompt.AppendLine("     command (`h9k uninstall --purge-data`), or a write to an external service");
-        prompt.AppendLine("     (`gh`, `twg`, a registered connection). A procedure in that shape is read in");
+        prompt.AppendLine("     (`gh`, a registered connection). A procedure in that shape is read in");
         prompt.AppendLine("     enough functional detail to be confident it does what it claims —");
         prompt.AppendLine("     never actually run. A procedure you conclude is correct this way produces no");
         prompt.AppendLine("     finding, so record why relocation could not make it safe in your final");

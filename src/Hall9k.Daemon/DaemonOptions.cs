@@ -274,9 +274,9 @@ public sealed class DaemonOptions
     public TimeSpan ForeignPublicationCeiling { get; set; } = TimeSpan.FromHours(1);
 
     /// <summary>
-    /// How often the daemon retries a Jira write stuck on an expired or missing twg login
-    /// (Brian's design, 2026-08-28). There is no doorbell for "twg login just ran" — nothing on
-    /// this machine observes that moment — so a patient poll is the whole mechanism, the same
+    /// How often the daemon retries a Jira write stuck on a rejected credential (Brian's design,
+    /// 2026-08-28). There is no doorbell for "the connection was just fixed" — nothing on this
+    /// machine observes that moment — so a patient poll is the whole mechanism, the same
     /// shape <see cref="TokenBudgetRetryInterval"/> already uses for a subscription window that
     /// resets on its own clock. Short next to that one: a re-authentication is a deliberate act a
     /// human just took, not a window they are waiting out, so the write should not sit for an
@@ -292,10 +292,10 @@ public sealed class DaemonOptions
     /// operator's own Ctrl-C, or the daemon stopping mid-sweep — between
     /// <c>JiraWriteRequested</c> and its outcome has no such excuse and no spawned session for
     /// anything to adopt later, unlike <see cref="ForeignPublicationCeiling"/>'s own pid-tracked
-    /// counterpart: every twg call <c>TwgJiraExecutor</c> makes is synchronous and bounded well
-    /// inside this window, and a create's own dedup search is bounded too — its own confirming
-    /// calls are capped (<c>TwgJiraExecutor.MaxMarkerSearchCandidates</c>) rather than run once per
-    /// search hit — so a write still pending this long was not merely slow. Generous next
+    /// counterpart: every HTTP call <c>JiraWriteExecutor</c> makes is bounded well inside this
+    /// window (<c>JiraHttp.Deadline</c>), and a create's own dedup search is bounded too — its own
+    /// confirming calls are capped (<c>JiraWriteExecutor.MaxMarkerSearchCandidates</c>) rather than
+    /// run once per search hit — so a write still pending this long was not merely slow. Generous next
     /// to how long any single write can actually take, for the same reason
     /// <see cref="ForeignPublicationCeiling"/> is generous next to
     /// <see cref="CardPublicationTimeout"/>: only a write nothing is working on any more should

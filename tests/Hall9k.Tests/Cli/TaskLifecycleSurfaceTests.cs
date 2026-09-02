@@ -318,19 +318,19 @@ public sealed class TaskLifecycleSurfaceTests
     }
 
     /// <summary>
-    /// A Jira write stuck on an expired login carries no lifecycle state of its own, so it must
+    /// A Jira write stuck on a rejected credential carries no lifecycle state of its own, so it must
     /// not shadow a park or a failure that is the row's actual reason for wanting a human
     /// (independent pre-PR review, cycle 1): the arm used to be checked first, so a task that was
-    /// separately Failed, or whose run was separately parked, read as "run twg login" and never
-    /// named the lever that would actually move it.
+    /// separately Failed, or whose run was separately parked, read as the credential-refresh row
+    /// and never named the lever that would actually move it.
     /// </summary>
     [Fact]
-    public void A_stuck_jira_write_does_not_hide_a_failed_row_behind_twg_login()
+    public void A_stuck_jira_write_does_not_hide_a_failed_row_behind_a_rejected_credential()
     {
         TaskListItem task = StatusFixtures.Task(TaskState.Failed);
         task.FailureReason = "the run crashed";
         task.PendingJiraWriteIsAuthFailure = true;
-        task.PendingJiraWriteFailureReason = "twg is not authenticated";
+        task.PendingJiraWriteFailureReason = "Jira rejected the registered credentials";
 
         TaskStatusRow row = StatusFixtures.Compose(task);
 
@@ -340,14 +340,14 @@ public sealed class TaskLifecycleSurfaceTests
 
     /// <summary>The companion case: a review park outranks the stuck write exactly as a failure does.</summary>
     [Fact]
-    public void A_stuck_jira_write_does_not_hide_a_review_park_behind_twg_login()
+    public void A_stuck_jira_write_does_not_hide_a_review_park_behind_a_rejected_credential()
     {
         Guid runId = DomainId.New();
         RunDetails parked = StatusFixtures.Run(runId, RunState.ReviewParked);
         parked.ParkedReason = "a finding could not be settled";
         TaskListItem task = StatusFixtures.Task(TaskState.Claimed, runId);
         task.PendingJiraWriteIsAuthFailure = true;
-        task.PendingJiraWriteFailureReason = "twg is not authenticated";
+        task.PendingJiraWriteFailureReason = "Jira rejected the registered credentials";
 
         TaskStatusRow row = StatusFixtures.Compose(task, parked);
 
@@ -409,19 +409,19 @@ public sealed class TaskLifecycleSurfaceTests
     {
         TaskListItem task = StatusFixtures.Task(TaskState.Done);
         task.PendingJiraWriteIsAuthFailure = true;
-        task.PendingJiraWriteFailureReason = "twg is not authenticated";
+        task.PendingJiraWriteFailureReason = "Jira rejected the registered credentials";
 
         TaskStatusRow row = StatusFixtures.Compose(task);
 
-        row.Attention.Cause.Should().Be("twg is not authenticated");
-        row.Attention.Lever.Should().Be("twg login");
+        row.Attention.Cause.Should().Be("Jira rejected the registered credentials");
+        row.Attention.Lever.Should().Be("h9k connection add jira --site https://your-org.atlassian.net --email you@example.com (a fresh API token)");
     }
 
     /// <summary>
     /// The companion direction for the interactive-claim nudge (Decisions Log #103): a stale
     /// claim is never the reason a Jira write failed to authenticate, so it must not shadow the
-    /// twg login row either (adversarial pre-PR review, cycle 1) — the nudge arm is checked after
-    /// this one for exactly that reason.
+    /// credential-refresh row either (adversarial pre-PR review, cycle 1) — the nudge arm is
+    /// checked after this one for exactly that reason.
     /// </summary>
     [Fact]
     public void A_stuck_jira_write_does_not_hide_behind_a_stale_interactive_claim_nudge()
@@ -431,12 +431,12 @@ public sealed class TaskLifecycleSurfaceTests
         interactive.LastInteractiveActivityAt = StatusFixtures.Now.AddDays(-4);
         TaskListItem task = StatusFixtures.Task(TaskState.Claimed, runId, claimedByNodeId: Guid.Empty);
         task.PendingJiraWriteIsAuthFailure = true;
-        task.PendingJiraWriteFailureReason = "twg is not authenticated";
+        task.PendingJiraWriteFailureReason = "Jira rejected the registered credentials";
 
         TaskStatusRow row = StatusFixtures.Compose(task, interactive);
 
-        row.Attention.Cause.Should().Be("twg is not authenticated");
-        row.Attention.Lever.Should().Be("twg login");
+        row.Attention.Cause.Should().Be("Jira rejected the registered credentials");
+        row.Attention.Lever.Should().Be("h9k connection add jira --site https://your-org.atlassian.net --email you@example.com (a fresh API token)");
     }
 
     /// <summary>
@@ -453,28 +453,28 @@ public sealed class TaskLifecycleSurfaceTests
         RunDetails parked = StatusFixtures.Run(runId, RunState.BudgetParked, sessionProcessId: null);
         TaskListItem task = StatusFixtures.Task(TaskState.Claimed, runId);
         task.PendingJiraWriteIsAuthFailure = true;
-        task.PendingJiraWriteFailureReason = "twg is not authenticated";
+        task.PendingJiraWriteFailureReason = "Jira rejected the registered credentials";
 
         TaskStatusRow row = StatusFixtures.Compose(task, parked);
 
         row.Attention.Level.Should().Be(AttentionLevel.NeedsYou);
-        row.Attention.Cause.Should().Be("twg is not authenticated");
-        row.Attention.Lever.Should().Be("twg login");
+        row.Attention.Cause.Should().Be("Jira rejected the registered credentials");
+        row.Attention.Lever.Should().Be("h9k connection add jira --site https://your-org.atlassian.net --email you@example.com (a fresh API token)");
     }
 
     /// <summary>
     /// The companion direction: a dead blocker or a stalled run is the row's actual reason for
-    /// wanting a human, so a stuck write must not hide either behind "run twg login" — the same
-    /// review's other complaint about the same reordering, since the pending-write arm had also
-    /// been moved ahead of both.
+    /// wanting a human, so a stuck write must not hide either behind the credential-refresh row —
+    /// the same review's other complaint about the same reordering, since the pending-write arm had
+    /// also been moved ahead of both.
     /// </summary>
     [Fact]
-    public void A_stuck_jira_write_does_not_hide_a_dead_blocker_behind_twg_login()
+    public void A_stuck_jira_write_does_not_hide_a_dead_blocker_behind_a_rejected_credential()
     {
         TaskListItem task = StatusFixtures.Task(TaskState.Blocked);
         task.DependencyFailureReason = "the blocker was abandoned";
         task.PendingJiraWriteIsAuthFailure = true;
-        task.PendingJiraWriteFailureReason = "twg is not authenticated";
+        task.PendingJiraWriteFailureReason = "Jira rejected the registered credentials";
 
         TaskStatusRow row = StatusFixtures.Compose(task);
 
@@ -485,8 +485,8 @@ public sealed class TaskLifecycleSurfaceTests
     /// A pull request open and awaiting review is the one case where a NeedsYou row is still
     /// grouped under Delivered rather than the Needs-you section (the merge is genuinely the
     /// reader's own to make), but that exception must not swallow a stuck Jira write riding along
-    /// on the same Delivered, AwaitingReview row: the write wants "twg login", not a merge
-    /// decision, and it has to stay in the section AGENTS.md's own relay table promises it —
+    /// on the same Delivered, AwaitingReview row: the write wants the connection refreshed, not a
+    /// merge decision, and it has to stay in the section AGENTS.md's own relay table promises it —
     /// otherwise `h9k status` and `h9k task list --state needs-you` both go quiet on it while the
     /// daemon keeps retrying the same doomed write underneath (independent pre-PR review,
     /// adversarial lens, cycle 11).
@@ -498,13 +498,13 @@ public sealed class TaskLifecycleSurfaceTests
         RunDetails awaitingReview = StatusFixtures.Run(runId, RunState.AwaitingReview, sessionProcessId: null);
         TaskListItem task = StatusFixtures.Task(TaskState.Done, runId, pullRequest: "https://github.com/x/y/pull/10");
         task.PendingJiraWriteIsAuthFailure = true;
-        task.PendingJiraWriteFailureReason = "twg is not authenticated";
+        task.PendingJiraWriteFailureReason = "Jira rejected the registered credentials";
 
         TaskStatusRow row = StatusFixtures.Compose(task, awaitingReview);
 
         row.State.Should().Be(LifecycleState.Delivered);
         row.Group.Should().Be(AttentionBucket.NeedsYou);
-        row.Attention.Cause.Should().Be("twg is not authenticated");
-        row.Attention.Lever.Should().Be("twg login");
+        row.Attention.Cause.Should().Be("Jira rejected the registered credentials");
+        row.Attention.Lever.Should().Be("h9k connection add jira --site https://your-org.atlassian.net --email you@example.com (a fresh API token)");
     }
 }

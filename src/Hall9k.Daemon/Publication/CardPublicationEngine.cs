@@ -762,16 +762,18 @@ public sealed class CardPublicationEngine(
                 : "The session ended without a verified card key and left no result to read. Its prompt and "
                   + $"transcript are in {RunPaths.GlobalDirectory(sessionId)}.";
 
-        // A session that submitted a write through h9k task write-jira and hit an unauthenticated
-        // twg has not left an unreported card behind: the write is recorded pending on the task
-        // (TaskDetails.PendingJiraWriteIsAuthFailure) and the retry sweep finishes it once 'twg
-        // login' succeeds. Reporting the generic CheckTheBoard caution there guesses at a stranded
-        // card that was never filed and sends the operator to push-to-jira again instead of to the
-        // retry that is already queued (independent pre-PR review, conformance lens, cycle 1).
+        // A session that submitted a write through h9k task write-jira and hit a rejected
+        // credential has not left an unreported card behind: the write is recorded pending on the
+        // task (TaskDetails.PendingJiraWriteIsAuthFailure) and the retry sweep finishes it once the
+        // connection is fixed. Reporting the generic CheckTheBoard caution there guesses at a
+        // stranded card that was never filed and sends the operator to push-to-jira again instead
+        // of to the retry that is already queued (independent pre-PR review, conformance lens,
+        // cycle 1).
         string tail = await IsPendingAuthFailureAsync(taskId, cancellationToken)
-            ? "twg was not authenticated when the session submitted its write, so the write is "
-              + "recorded pending on the task rather than lost: it will retry automatically once you "
-              + "run 'twg login', and there is no card to check the board for yet."
+            ? "Jira rejected the registered credential when the session submitted its write, so the "
+              + "write is recorded pending on the task rather than lost: it will retry automatically "
+              + "once you refresh the connection's API token (h9k connection add jira), and there is "
+              + "no card to check the board for yet."
             : CheckTheBoard;
 
         return (false, $"{what} {tail}");
@@ -790,7 +792,7 @@ public sealed class CardPublicationEngine(
     }
 
     /// <summary>
-    /// Whether the task's own write-jira submission is sitting on an unauthenticated twg —
+    /// Whether the task's own write-jira submission is sitting on a rejected credential —
     /// distinguishes "no card was ever filed" from "a card write is queued for the retry sweep"
     /// for <see cref="WaitAsync"/>'s no-link outcome, the same fact <c>h9k task show</c> and the
     /// attention pane's own needs-you row already read off this field.

@@ -638,8 +638,8 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
     }
 
     /// <summary>
-    /// A Jira write outstanding on this task (Brian's design, 2026-08-28): pending on an expired
-    /// or missing twg login reads red, since that is exactly what h9k status's needs-you section
+    /// A Jira write outstanding on this task (Brian's design, 2026-08-28): pending on a rejected
+    /// credential reads red, since that is exactly what h9k status's needs-you section
     /// surfaces for the same row; a write nobody has retried yet reads dim, since nothing has
     /// gone wrong — it is only waiting for the daemon's retry sweep or a fresh attempt.
     /// </summary>
@@ -650,7 +650,7 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
             : string.Empty;
         return details.PendingJiraWriteIsAuthFailure
             ? $"[red]{details.PendingJiraWriteOperation.Value.EscapeMarkup()}[/]{target} [dim]— "
-              + $"{ExternalText.OneLineMarkup(details.PendingJiraWriteFailureReason ?? "twg could not authenticate")}[/]"
+              + $"{ExternalText.OneLineMarkup(details.PendingJiraWriteFailureReason ?? "the registered Jira credential was rejected")}[/]"
             : $"[yellow]{details.PendingJiraWriteOperation.Value.EscapeMarkup()}[/]{target} "
               + "[dim]— recorded, executing[/]";
     }

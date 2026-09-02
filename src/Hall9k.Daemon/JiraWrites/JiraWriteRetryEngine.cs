@@ -1,4 +1,3 @@
-using Hall9k.Connectors.Processes;
 using Hall9k.Connectors.WorkItems;
 using Hall9k.Daemon.Closeout;
 using Hall9k.Domain.Features.Connection;
@@ -25,23 +24,26 @@ namespace Hall9k.Daemon.JiraWrites;
 public sealed record JiraWriteRetrySweepResult(int Retried, int Succeeded, int MergeNoticesDrained = 0, int Expired = 0);
 
 /// <summary>
-/// What makes an expired or missing twg login a handled state rather than a lost write (Brian's
-/// design, 2026-08-28): a Jira write that failed to authenticate stays recorded as pending on its
-/// task (<c>TaskAggregate.PendingJiraWriteIsAuthFailure</c>), and this engine periodically
-/// re-attempts the identical payload through <see cref="JiraWriteCoordinator.RetryPendingAsync"/>
-/// — no doorbell, because nothing on this machine observes the moment <c>twg login</c> succeeds,
-/// so a patient poll (<see cref="DaemonOptions.JiraWriteRetryInterval"/>) is the whole mechanism,
-/// the same shape <c>TokenBudgetRetryEngine</c> already uses for a clock nobody can ring a bell on.
+/// What makes a rejected credential a handled state rather than a lost write (Brian's design,
+/// 2026-08-28; the write path's own transport moved off the Atlassian CLI (twg) onto hall9k's own
+/// REST client, Decisions Log #114): a Jira write that failed to authenticate stays recorded as
+/// pending on its task (<c>TaskAggregate.PendingJiraWriteIsAuthFailure</c>), and this engine
+/// periodically re-attempts the identical payload through
+/// <see cref="JiraWriteCoordinator.RetryPendingAsync"/> — no doorbell, because nothing on this
+/// machine observes the moment a fixed connection starts answering again, so a patient poll (<see
+/// cref="DaemonOptions.JiraWriteRetryInterval"/>) is the whole mechanism, the same shape
+/// <c>TokenBudgetRetryEngine</c> already uses for a clock nobody can ring a bell on.
 /// <para>
 /// Covers every caller equally: an operator's own <c>h9k task write-jira</c> and closeout's own
-/// merge comment both leave the identical pending marker on the task when twg refuses to
-/// authenticate, and this sweep does not care which one composed the payload it is retrying.
+/// merge comment both leave the identical pending marker on the task when Jira rejects the
+/// registered credential, and this sweep does not care which one composed the payload it is
+/// retrying.
 /// </para>
 /// </summary>
 public sealed class JiraWriteRetryEngine(
     IDocumentStore store,
     NodeContext node,
-    ProcessRunner twgRunner,
+    JiraRequester jiraRequester,
     IOptions<DaemonOptions> options,
     ILogger<JiraWriteRetryEngine> logger)
 {
@@ -51,7 +53,7 @@ public sealed class JiraWriteRetryEngine(
     /// How long <see cref="DrainMergeNoticeAsync"/>'s own post-submit bookkeeping gets to clear the
     /// queue marker once the caller's own token has already fired — the identical shape and
     /// reasoning <see cref="Hall9k.Connectors.WorkItems.JiraWriteCoordinator"/>'s own cancellation
-    /// grace documents (independent pre-PR review, cycle 1): a cancellation between twg's own call
+    /// grace documents (independent pre-PR review, cycle 1): a cancellation between Jira's own call
     /// returning and this method's own re-aggregation read (a graceful <c>h9k daemon stop</c> mid-drain)
     /// otherwise makes that read throw on the already-fired token immediately, before the queue
     /// marker can be cleared, and <c>HasQueuedJiraMergeNotice</c> carries no ceiling sweep of its
@@ -74,14 +76,14 @@ public sealed class JiraWriteRetryEngine(
 
     /// <summary>
     /// Two independent things this sweep drains, both left behind by a write that could not run
-    /// immediately: a write itself, stuck on an expired or missing twg login
+    /// immediately: a write itself, stuck on a rejected credential
     /// (<see cref="TaskDetails.PendingJiraWriteIsAuthFailure"/>), and closeout's own merge notice,
     /// queued because another write was already outstanding when the merge was observed
     /// (<see cref="TaskDetails.HasQueuedJiraMergeNotice"/>, set by
     /// <c>CloseoutEngine.QueueJiraMergeNoticeAsync</c>). A queued notice is only ready once
     /// <see cref="TaskDetails.PendingJiraWriteId"/> is clear — while it is still set, either the
     /// auth-failure retry above will eventually clear it, or a fresh write is still resolving, and
-    /// either way a second write in flight would race twg against itself.
+    /// either way a second write in flight would race Jira against itself.
     /// </summary>
     public async Task<JiraWriteRetrySweepResult> PollOnceAsync(CancellationToken cancellationToken)
     {
@@ -96,7 +98,7 @@ public sealed class JiraWriteRetryEngine(
             // undone by that guard, and this sweep has no lifecycle filter of its own — without
             // one, a stuck write on dead work retries forever, invisible on the attention pane
             // (AttentionComposer reports TaskAttention.None for an archived task), and files a
-            // real card the moment twg login next succeeds, for work nobody intends to do.
+            // real card the moment the connection is fixed, for work nobody intends to do.
             pending = await query.Query<TaskDetails>()
                 .Where(task => task.PendingJiraWriteIsAuthFailure)
                 .Where(task => task.MatchesSql("d.data ->> 'state' != ?", TaskState.Abandoned.Value))
@@ -138,19 +140,17 @@ public sealed class JiraWriteRetryEngine(
                 }
 
                 // The strict lookup: a pending write retried here can be closeout's own merge
-                // comment (recorded pending rather than queued, when its first attempt reached twg
-                // but failed to authenticate), so a null site would reach TwgJiraExecutor exactly as
-                // it would for the drain half below and target whatever tenant twg's own ambient
-                // auth.conf resolves to — the same hazard DrainMergeNoticeAsync's own doc comment
-                // already guards against (independent pre-PR review, adversarial lens, cycle 5).
-                // Skipping this task for one sweep on an unresolved connection, rather than
-                // guessing, still leaves the write for the next sweep — nothing here is lost, only
-                // deferred.
-                Uri site;
+                // comment (recorded pending rather than queued, when its first attempt reached
+                // Jira but failed to authenticate), so a missing connection is skipped rather than
+                // guessed at — the same hazard DrainMergeNoticeAsync's own doc comment already
+                // guards against. Skipping this task for one sweep on an unresolved connection,
+                // rather than guessing, still leaves the write for the next sweep — nothing here
+                // is lost, only deferred.
+                JiraWriteExecutor executor;
                 try
                 {
                     ConnectionDetails? connection = await WorkItemConnections.FindJiraConnectionAsync(session, cancellationToken);
-                    if (connection?.SiteUrl is not { } resolvedSite)
+                    if (connection?.SiteUrl is null)
                     {
                         logger.LogWarning(
                             "Task {TaskId} has a Jira write pending but this node has no usable Jira "
@@ -158,7 +158,7 @@ public sealed class JiraWriteRetryEngine(
                         continue;
                     }
 
-                    site = resolvedSite;
+                    executor = new JiraWriteExecutor(WorkItemConnections.Account(connection), jiraRequester);
                 }
                 catch (Exception exception) when (exception is not OperationCanceledException)
                 {
@@ -169,8 +169,7 @@ public sealed class JiraWriteRetryEngine(
                 }
 
                 JiraWriteAttemptResult? result = await JiraWriteCoordinator.RetryPendingAsync(
-                    session, task.Id, project.JiraProjectKey, new TwgJiraExecutor(twgRunner, site),
-                    project.RepositoryPath, cancellationToken);
+                    session, task.Id, project.JiraProjectKey, executor, cancellationToken);
                 if (result is null)
                 {
                     // Resolved by something else between the read above and this attempt — a
@@ -312,7 +311,7 @@ public sealed class JiraWriteRetryEngine(
             + $"time it was given to record that outcome. Nothing has stood a chance to finish it in over "
             + $"{_options.PendingJiraWriteCeiling}, so it is ended here rather than left blocking every "
             + "later Jira write on this task. Resubmit with h9k task write-jira if the board still needs "
-            + "it; a create's own marker search will find the card first if it turns out twg made one "
+            + "it; a create's own marker search will find the card first if it turns out Jira made one "
             + "before this write was cut short.",
             isAuthFailure: false,
             DateTimeOffset.UtcNow);
@@ -329,15 +328,12 @@ public sealed class JiraWriteRetryEngine(
     /// two records of the same intent.
     /// <para>
     /// The site is resolved with the strict <see cref="WorkItemConnections.FindJiraConnectionAsync"/>,
-    /// the same lookup this sweep's own pending-write loop above now uses too (independent pre-PR
-    /// review, adversarial lens, cycle 5): this is the queued half of closeout's own merge comment, posting the identical
+    /// the same lookup this sweep's own pending-write loop above now uses too: this is the queued
+    /// half of closeout's own merge comment, posting the identical
     /// <see cref="CloseoutEngine.MergeComment"/>, so it gets the same guard
-    /// <see cref="CloseoutEngine.TellJiraAsync"/>'s own doc comment describes — a null site here
-    /// reaches <see cref="TwgJiraExecutor"/> exactly the same way and targets whatever tenant
-    /// twg's own ambient <c>auth.conf</c> resolves to (independent pre-PR review, adversarial lens,
-    /// cycle 4). Unlike closeout's own one-shot attempt, an unresolved connection here is left
-    /// queued rather than dropped — this method runs on a poll, so a later sweep gets another
-    /// chance once the connection is fixed.
+    /// <see cref="CloseoutEngine.TellJiraAsync"/>'s own doc comment describes. Unlike closeout's own
+    /// one-shot attempt, an unresolved connection here is left queued rather than dropped — this
+    /// method runs on a poll, so a later sweep gets another chance once the connection is fixed.
     /// </para>
     /// </summary>
     private async Task<bool> DrainMergeNoticeAsync(
@@ -361,11 +357,11 @@ public sealed class JiraWriteRetryEngine(
             return false;
         }
 
-        Uri site;
+        JiraWriteExecutor executor;
         try
         {
             ConnectionDetails? connection = await WorkItemConnections.FindJiraConnectionAsync(session, cancellationToken);
-            if (connection?.SiteUrl is not { } resolvedSite)
+            if (connection?.SiteUrl is null)
             {
                 logger.LogWarning(
                     "Task {TaskId} has a Jira merge notice queued but this node has no usable Jira "
@@ -373,7 +369,7 @@ public sealed class JiraWriteRetryEngine(
                 return false;
             }
 
-            site = resolvedSite;
+            executor = new JiraWriteExecutor(WorkItemConnections.Account(connection), jiraRequester);
         }
         catch (Exception exception) when (exception is not OperationCanceledException)
         {
@@ -399,18 +395,17 @@ public sealed class JiraWriteRetryEngine(
                 new JiraWritePayload(WorkItemType: null, Fields: null, Comment: CloseoutEngine.MergeComment(project, task), Format: "plain"),
                 project.JiraProjectKey,
                 node.OwnerId,
-                new TwgJiraExecutor(twgRunner, site),
-                project.RepositoryPath,
+                executor,
                 cancellationToken,
                 distinguishPostAppendFailures: true);
         }
         catch (Exception exception) when (exception is not OperationCanceledException)
         {
             // What tells "nothing from this attempt ever reached the stream" apart from "our own
-            // intent was appended, and twg may already have run" is not whether a write is
+            // intent was appended, and Jira may already have run" is not whether a write is
             // outstanding now (independent pre-PR review, cycle 6): PendingJiraWriteId being set,
             // or clear, says a write is or is not outstanding, not whose it was — a write our own
-            // attempt genuinely appended and got executed by twg can still read back as null later
+            // attempt genuinely appended and got executed by Jira can still read back as null later
             // (something else, racing the outcome-recording step itself, can resolve that exact
             // same write out from under us), the identical final state a write that never got
             // appended in the first place leaves too. So this does not re-derive "was it ours" from
@@ -434,11 +429,11 @@ public sealed class JiraWriteRetryEngine(
                 // exception carries the real one.
                 logger.LogWarning(exception,
                     "Task {TaskId}: the queued merge notice for {Reference} was refused before "
-                    + "reaching twg; it stays queued for the next sweep", taskId, reference);
+                    + "reaching Jira; it stays queued for the next sweep", taskId, reference);
                 return false;
             }
 
-            // This attempt's own write was appended and twg may genuinely have run for it before
+            // This attempt's own write was appended and Jira may genuinely have run for it before
             // something raced the outcome-recording step itself out from under it —
             // JiraWriteCoordinator.AttemptAsync's own doc comment is why that failure is left to
             // propagate rather than being swallowed into an ordinary JiraWriteFailed. But unlike an
@@ -479,20 +474,20 @@ public sealed class JiraWriteRetryEngine(
             {
                 logger.LogError(markException,
                     "Task {TaskId}: the queued merge notice for {Reference} could not be marked "
-                    + "attempted after twg's own call ran, on top of the failure below — it stays "
+                    + "attempted after Jira's own call ran, on top of the failure below — it stays "
                     + "queued and may post a duplicate comment on a later sweep; check the board and "
                     + "this task's Jira write history by hand", taskId, reference);
             }
 
             logger.LogError(exception,
                 "Task {TaskId}: the queued merge notice for {Reference} could not have its own "
-                + "outcome recorded after twg's own call ran, so it is not retried automatically; "
+                + "outcome recorded after Jira's own call ran, so it is not retried automatically; "
                 + "check the board and this task's Jira write history before resubmitting by hand",
                 taskId, reference);
             return true;
         }
 
-        // SubmitAsync has already run and recorded its own outcome by this point — twg's own call
+        // SubmitAsync has already run and recorded its own outcome by this point — Jira's own call
         // is over, successfully or not — so a failure re-aggregating or clearing the queue marker
         // here must not escape to PollOnceAsync's own per-task catch, whose generic "left it
         // queued" logging would misreport a comment that already posted (result.Outcome ==
@@ -526,7 +521,7 @@ public sealed class JiraWriteRetryEngine(
         catch (Exception exception) when (exception is not OperationCanceledException)
         {
             logger.LogError(exception,
-                "Task {TaskId}: the queued merge notice for {Reference} was submitted to twg (outcome: "
+                "Task {TaskId}: the queued merge notice for {Reference} was submitted to Jira (outcome: "
                 + "{Outcome}) but the queue marker could not be cleared afterward — it stays queued and "
                 + "may post a duplicate comment on a later sweep; check the board and this task's Jira "
                 + "write history by hand", taskId, reference, result.Outcome);
@@ -542,8 +537,8 @@ public sealed class JiraWriteRetryEngine(
                 return true;
             case JiraWriteOutcome.PendingAuthentication:
                 logger.LogWarning(
-                    "Task {TaskId}: the queued merge notice for {Reference} is pending — twg is not "
-                    + "authenticated. It retries automatically once 'twg login' runs", taskId, reference);
+                    "Task {TaskId}: the queued merge notice for {Reference} is pending — Jira rejected the "
+                    + "registered credential. It retries automatically once the connection is fixed", taskId, reference);
                 return true;
             default:
                 logger.LogWarning(

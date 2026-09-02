@@ -24,12 +24,12 @@ public sealed record JiraWriteAttemptResult(JiraWriteOutcome Outcome, string? Is
 /// <summary>
 /// Thrown by <see cref="JiraWriteCoordinator.SubmitAsync"/> only when its caller passed
 /// <c>distinguishPostAppendFailures: true</c> and this write's own intent had already been
-/// durably appended when something afterward — recording twg's own outcome, or linking a created
+/// durably appended when something afterward — recording the write's own outcome, or linking a created
 /// card — failed before that outcome could be recorded (independent pre-PR review, cycle 6). Its
 /// mere presence is the whole signal: unlike <c>PendingJiraWriteId</c>, which only ever answers
 /// "is a write outstanding" and not whose, this exception is thrown from the one place that knows
 /// unambiguously that this call's own append committed, so a caller that needs to tell "my own
-/// write may already have reached twg" apart from "a different write raced in before mine was
+/// write may already have reached Jira" apart from "a different write raced in before mine was
 /// ever appended" catches this type rather than re-deriving the answer from the task's state
 /// afterward. <c>JiraWriteRetryEngine.DrainMergeNoticeAsync</c> is the only caller that
 /// opts in — an operator's own <c>h9k task write-jira</c> and closeout's own merge comment attempt
@@ -44,14 +44,14 @@ public sealed class JiraWriteSubmissionException(Exception innerException)
 /// <summary>
 /// The one place that turns a composed <see cref="JiraWritePayload"/> into a recorded, audited,
 /// verified write against Jira (Brian's design, 2026-08-28). Every caller — an operator or an
-/// agent invoking <c>h9k task write-jira</c>, the daemon's own retry sweep once <c>twg login</c>
-/// succeeds, closeout commenting a merged pull request onto the linked card — goes through here,
+/// agent invoking <c>h9k task write-jira</c>, the daemon's own retry sweep once a rejected
+/// credential is fixed, closeout commenting a merged pull request onto the linked card — goes through here,
 /// so there is exactly one path by which hall9k ever writes to Jira and exactly one place the
 /// intent/execute/verify/record sequence is written down.
 /// <para>
 /// The shape is Requested, then zero or more auth failures, then a success or a terminal failure
 /// (the events' own doc comments have the reasoning): <see cref="SubmitAsync"/> is the first of
-/// those, appending the intent under a fence before anything reaches twg, and <see cref="RetryPendingAsync"/>
+/// those, appending the intent under a fence before anything reaches Jira, and <see cref="RetryPendingAsync"/>
 /// re-attempts an already-recorded pending write with its own payload, appending no new intent —
 /// which is what makes a retry after re-authentication finish the request it already made rather
 /// than mint a second one.
@@ -90,8 +90,7 @@ public static class JiraWriteCoordinator
         JiraWritePayload payload,
         JiraProjectKey defaultBoard,
         Guid actingOwnerId,
-        TwgJiraExecutor executor,
-        string workingDirectory,
+        JiraWriteExecutor executor,
         CancellationToken cancellationToken,
         bool distinguishPostAppendFailures = false)
     {
@@ -132,14 +131,14 @@ public static class JiraWriteCoordinator
         {
             return await AttemptAsync(
                 session, taskId, writeId, operation, requested.IssueKey, payload, defaultBoard, executor,
-                workingDirectory, cancellationToken);
+                cancellationToken);
         }
 
         try
         {
             return await AttemptAsync(
                 session, taskId, writeId, operation, requested.IssueKey, payload, defaultBoard, executor,
-                workingDirectory, cancellationToken);
+                cancellationToken);
         }
         catch (Exception exception) when (exception is not OperationCanceledException)
         {
@@ -149,7 +148,7 @@ public static class JiraWriteCoordinator
 
     /// <summary>
     /// Re-attempt a task's outstanding write with the payload it was already recorded with — the
-    /// retry that recovers a write stuck on an expired or missing twg login, without composing
+    /// retry that recovers a write stuck on a rejected credential, without composing
     /// anything new and without minting a second intent. Returns null when the task has nothing
     /// pending, or its pending write is not stuck on authentication (a terminal failure needs a
     /// freshly composed write, not a retry).
@@ -158,8 +157,7 @@ public static class JiraWriteCoordinator
         IDocumentSession session,
         Guid taskId,
         JiraProjectKey defaultBoard,
-        TwgJiraExecutor executor,
-        string workingDirectory,
+        JiraWriteExecutor executor,
         CancellationToken cancellationToken)
     {
         TaskAggregate? task = await session.Events.AggregateStreamAsync<TaskAggregate>(taskId, token: cancellationToken);
@@ -178,13 +176,13 @@ public static class JiraWriteCoordinator
         if (task.PendingJiraWriteOperation == JiraWriteOperation.Create
             && task.ExternalReference is { } existing && existing.Provider == WorkItemProvider.Jira)
         {
-            return await RecordAlreadyLinkedAsync(session, taskId, writeId, existing, executor, workingDirectory, cancellationToken);
+            return await RecordAlreadyLinkedAsync(session, taskId, writeId, existing, executor, cancellationToken);
         }
 
         JiraWritePayload payload = JiraWritePayload.FromJson(task.PendingJiraWritePayloadJson ?? "{}");
         return await AttemptAsync(
             session, taskId, writeId, task.PendingJiraWriteOperation, task.PendingJiraWriteIssueKey, payload,
-            defaultBoard, executor, workingDirectory, cancellationToken);
+            defaultBoard, executor, cancellationToken);
     }
 
     /// <summary>
@@ -195,26 +193,25 @@ public static class JiraWriteCoordinator
     /// an update call merely claimed", and the reference an operator's own <c>h9k task link-jira</c>
     /// verified at the moment it ran is not this write's own read-back (independent pre-PR review,
     /// adversarial lens, cycle 3). A verification failure here — the card was since deleted, or
-    /// twg is not authenticated — is recorded the ordinary way any other attempt's failure is,
+    /// the credential is still rejected — is recorded the ordinary way any other attempt's failure is,
     /// rather than papered over with the unverified claim.
     /// </summary>
     private static async Task<JiraWriteAttemptResult> RecordAlreadyLinkedAsync(
-        IDocumentSession session, Guid taskId, Guid writeId, ExternalReference existing, TwgJiraExecutor executor,
-        string workingDirectory, CancellationToken cancellationToken)
+        IDocumentSession session, Guid taskId, Guid writeId, ExternalReference existing, JiraWriteExecutor executor, CancellationToken cancellationToken)
     {
-        TwgWriteResult verified;
+        JiraWriteResult verified;
         try
         {
-            verified = await executor.VerifyExistsAsync(existing.Reference, workingDirectory, cancellationToken);
+            verified = await executor.VerifyExistsAsync(existing.Reference, cancellationToken);
         }
-        catch (TwgExecutionException exception)
+        catch (JiraWriteExecutionException exception)
         {
             return await RecordFailureWithGraceAsync(session, taskId, writeId, exception.Message, exception.IsAuthFailure, cancellationToken);
         }
 
         return await RecordSuccessAsync(
             session, taskId, writeId, JiraWriteOperation.Create,
-            new TwgWriteResult(
+            new JiraWriteResult(
                 verified.IssueKey,
                 $"Task {taskId} was linked to {existing} while this create sat pending; nothing new "
                 + "was created. Read back now to confirm it still exists."),
@@ -229,29 +226,28 @@ public static class JiraWriteCoordinator
         string? issueKey,
         JiraWritePayload payload,
         JiraProjectKey defaultBoard,
-        TwgJiraExecutor executor,
-        string workingDirectory,
+        JiraWriteExecutor executor,
         CancellationToken cancellationToken)
     {
-        TwgWriteResult result;
+        JiraWriteResult result;
         try
         {
             result = operation == JiraWriteOperation.Create
-                ? await CreateWithDedupAsync(executor, defaultBoard, payload, taskId, workingDirectory, cancellationToken)
+                ? await CreateWithDedupAsync(executor, defaultBoard, payload, taskId, cancellationToken)
                 : operation == JiraWriteOperation.Comment
                     ? await executor.CommentAsync(
                         RequireKey(issueKey, taskId), payload.Comment ?? string.Empty, payload.EffectiveFormat,
-                        workingDirectory, cancellationToken)
-                    : await executor.UpdateAsync(RequireKey(issueKey, taskId), payload, workingDirectory, cancellationToken);
+                        cancellationToken)
+                    : await executor.UpdateAsync(RequireKey(issueKey, taskId), payload, cancellationToken);
         }
-        catch (TwgExecutionException exception)
+        catch (JiraWriteExecutionException exception)
         {
             return await RecordFailureWithGraceAsync(session, taskId, writeId, exception.Message, exception.IsAuthFailure, cancellationToken);
         }
         // A Ctrl-C on an operator's own h9k task write-jira, or the daemon stopping mid-sweep,
         // used to leave this write's own outcome unrecorded: PendingJiraWriteId was already set by
         // SubmitAsync before this method ran, and — unlike CardPublicationEngine's own spawned
-        // agent sessions, which a later sweep can adopt by pid — a synchronous twg call leaves no
+        // agent sessions, which a later sweep can adopt by pid — a synchronous Jira call leaves no
         // process behind for anything to adopt, so nothing else in the platform could ever clear
         // it (independent pre-PR review, cycle 1, both lenses). Recorded here with a grace period
         // of its own — cancellationToken has already fired and cannot also be the token this save
@@ -264,7 +260,7 @@ public static class JiraWriteCoordinator
             using CancellationTokenSource grace = new(CancellationRecordingGrace);
             return await RecordFailureAsync(
                 session, taskId, writeId,
-                "The write was interrupted (Ctrl-C, or the daemon stopping) before twg's own answer was "
+                "The write was interrupted (Ctrl-C, or the daemon stopping) before Jira's own answer was "
                 + "read back, so whether it went through could not be observed here. For a create, "
                 + "resubmit with h9k task write-jira — the marker search this executor runs first will "
                 + "find the card if it exists rather than filing a second one; for an update or a "
@@ -278,13 +274,13 @@ public static class JiraWriteCoordinator
         // nothing but this method's own outcome append can ever clear PendingJiraWriteId. Left
         // uncaught, the task is wedged with a permanently pending write and every later Jira
         // write on it — including closeout's own merge comment — refused forever. Recorded as a
-        // non-auth failure, since none of these are "run it again once twg login succeeds".
+        // non-auth failure, since none of these are "run it again once the credential is fixed".
         catch (Exception exception) when (exception is not OperationCanceledException)
         {
             return await RecordFailureWithGraceAsync(session, taskId, writeId, exception.Message, isAuthFailure: false, cancellationToken);
         }
 
-        // twg already carried out and verified this write by the time control reaches here, so
+        // Jira already carried out and verified this write by the time control reaches here, so
         // RecordSuccessAsync deliberately runs outside every catch above: folding it into them
         // once turned a completed, verified write into a recorded JiraWriteFailed — for a card
         // that genuinely exists on the board — the moment recording the outcome itself hit a
@@ -297,16 +293,16 @@ public static class JiraWriteCoordinator
         {
             return await RecordSuccessAsync(session, taskId, writeId, operation, result, cancellationToken);
         }
-        // A cancellation firing here — after twg's own call already ran and was verified, but
+        // A cancellation firing here — after Jira's own call already ran and was verified, but
         // before RecordSuccessAsync's own aggregate-and-save could finish — used to escape this
-        // method raw, since it sits outside the twg-call try above on purpose (independent pre-PR
+        // method raw, since it sits outside the Jira-call try above on purpose (independent pre-PR
         // review, cycle 2): distinguishPostAppendFailures's own catch in SubmitAsync excludes
         // OperationCanceledException, so it propagated unwrapped past every caller, including
         // JiraWriteRetryEngine.DrainMergeNoticeAsync's own post-submit bookkeeping, which never
         // got the chance to clear the queue marker for a comment that had already posted. Given
-        // the identical short grace the twg-call catch above already uses, so a graceful stop
+        // the identical short grace the Jira-call catch above already uses, so a graceful stop
         // (h9k daemon stop, or a Ctrl-C mid-attempt) still lets this write's own outcome —
-        // already known, since twg already ran — get recorded before this method returns.
+        // already known, since Jira already ran — get recorded before this method returns.
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
             using CancellationTokenSource grace = new(CancellationRecordingGrace);
@@ -317,31 +313,30 @@ public static class JiraWriteCoordinator
     /// <summary>
     /// Search for a card already carrying this task's marker before creating a second one — the
     /// physical dedup gate, run on every attempt (first and every later one alike), because the
-    /// failure it guards against is exactly a repeat: twg creating the card, then hall9k failing
+    /// failure it guards against is exactly a repeat: Jira creating the card, then hall9k failing
     /// to record that it did for any reason, before a fresh attempt (with its own new write id)
     /// tries again. Keyed to the task rather than to <paramref name="writeId"/> would-be-marker,
     /// because a fresh attempt always mints a fresh write id — a marker scoped to it could never
     /// be found by the very retry it exists to protect (independent pre-PR review, cycle 1, both
     /// lenses).
     /// </summary>
-    private static async Task<TwgWriteResult> CreateWithDedupAsync(
-        TwgJiraExecutor executor,
+    private static async Task<JiraWriteResult> CreateWithDedupAsync(
+        JiraWriteExecutor executor,
         JiraProjectKey defaultBoard,
         JiraWritePayload payload,
         Guid taskId,
-        string workingDirectory,
         CancellationToken cancellationToken)
     {
-        if (await executor.FindByMarkerAsync(taskId, workingDirectory, cancellationToken) is { } existingKey)
+        if (await executor.FindByMarkerAsync(taskId, cancellationToken) is { } existingKey)
         {
-            return new TwgWriteResult(
+            return new JiraWriteResult(
                 existingKey,
                 $"A card carrying this task's marker already exists ({existingKey}); an earlier attempt "
                 + "created it, so nothing new was created.");
         }
 
         JiraProjectKey board = payload.ProjectKey.IsNotBlank() ? JiraProjectKey.Parse(payload.ProjectKey) : defaultBoard;
-        return await executor.CreateAsync(board, payload, taskId, workingDirectory, cancellationToken);
+        return await executor.CreateAsync(board, payload, taskId, cancellationToken);
     }
 
     private static string RequireKey(string? issueKey, Guid taskId) =>
@@ -352,7 +347,7 @@ public static class JiraWriteCoordinator
 
     private static async Task<JiraWriteAttemptResult> RecordSuccessAsync(
         IDocumentSession session, Guid taskId, Guid writeId, JiraWriteOperation operation,
-        TwgWriteResult result, CancellationToken cancellationToken)
+        JiraWriteResult result, CancellationToken cancellationToken)
     {
         TaskAggregate task = await session.Events.AggregateStreamAsync<TaskAggregate>(taskId, token: cancellationToken)
             ?? throw new DomainNotFoundException($"No task {taskId}.");
@@ -362,7 +357,7 @@ public static class JiraWriteCoordinator
         session.Events.Append(taskId, succeeded);
         Guid requestedByOwnerId = task.PendingJiraWriteRequestedByOwnerId;
 
-        // The audit event is saved on its own first: twg already carried out and verified this
+        // The audit event is saved on its own first: Jira already carried out and verified this
         // write, so it must be recorded even if linking below hits a race and cannot be, rather
         // than losing the whole outcome to a conflict over a fact (that the write happened) which
         // is not in dispute.
@@ -382,7 +377,7 @@ public static class JiraWriteCoordinator
     }
 
     /// <summary>
-    /// Link a card twg just created and verified, tolerant of any failure at all — cancellation
+    /// Link a card Jira just created and verified, tolerant of any failure at all — cancellation
     /// included (independent pre-PR review, cycle 2 follow-up): the write itself is already
     /// safely recorded by the time this runs (<see cref="RecordSuccessAsync"/> saves it first), so
     /// nothing here may ever be allowed to propagate, whether back into <see cref="AttemptAsync"/>'s
@@ -394,13 +389,13 @@ public static class JiraWriteCoordinator
     /// cycle 9). The three named causes are a lost race — a human or another node linking this task
     /// to something else in the moment between the create being requested (which the decider
     /// refuses unless the task carries no reference yet) and this call — a validation refusal from
-    /// a key twg answered with but left blank, and a cancellation (a graceful daemon stop) landing
+    /// a key Jira answered with but left blank, and a cancellation (a graceful daemon stop) landing
     /// in this step's own aggregate-and-save; either way a lost race, a refusal, or a cancellation
     /// here costs a card that is not yet reflected in <see cref="ExternalReference"/> rather than an
     /// unrecorded write.
     /// </summary>
     private static async Task<JiraWriteAttemptResult> LinkCreatedCardAsync(
-        IDocumentSession session, Guid taskId, TwgWriteResult result, Guid requestedByOwnerId, CancellationToken cancellationToken)
+        IDocumentSession session, Guid taskId, JiraWriteResult result, Guid requestedByOwnerId, CancellationToken cancellationToken)
     {
         try
         {
@@ -413,7 +408,7 @@ public static class JiraWriteCoordinator
             }
 
             // Neither the title nor the status was actually read here: the create's own
-            // verification search only ever confirms the key exists (TwgJiraExecutor.VerifyAsync),
+            // verification search only ever confirms the key exists (JiraWriteExecutor.VerifyAsync),
             // so both observed fields are the honest "unknown" WorkItemLinked's own contract asks
             // for, rather than the key masquerading as a title nobody read (independent pre-PR
             // review, cycle 1, both lenses).
@@ -437,12 +432,12 @@ public static class JiraWriteCoordinator
 
     /// <summary>
     /// A failure catch that has not itself already observed <paramref name="cancellationToken"/>
-    /// fire — a genuine <c>TwgExecutionException</c>, or any other bug caught in <see
+    /// fire — a genuine <c>JiraWriteExecutionException</c>, or any other bug caught in <see
     /// cref="AttemptAsync"/>'s own generic clause, or a lost race verifying an already-linked card
     /// in <see cref="RecordAlreadyLinkedAsync"/> — still hands this call the ordinary token, and
     /// cancellation can land during its own aggregate-and-save just as it can during
     /// <see cref="RecordSuccessAsync"/>'s. Left uncaught, that escaped this method exactly the way
-    /// cycle 2's finding closed for the twg-call's own cancellation catch and for
+    /// cycle 2's finding closed for the Jira-call's own cancellation catch and for
     /// <see cref="RecordSuccessAsync"/>, but not for these three sites, which named the same defect
     /// left open at every site sharing this shape (independent pre-PR review, cycle 3). The retry
     /// uses a fresh <see cref="CancellationRecordingGrace"/> window for the identical reason those
@@ -471,11 +466,11 @@ public static class JiraWriteCoordinator
         // An auth failure identical to the one already standing pending is not new information:
         // JiraWriteRetryEngine re-attempts a login-stuck write on every JiraWriteRetryInterval
         // sweep, forever, by design (an auth-classified write carries no retry ceiling — the
-        // same payload has to succeed once twg login runs, not time out), so appending a fresh
+        // same payload has to succeed once the credential is fixed, not time out), so appending a fresh
         // JiraWriteFailed for the identical answer would grow the task's stream without bound
         // for as long as nobody re-authenticates (independent pre-PR review, adversarial lens,
         // cycle 5). Nothing here shortens the retry itself; only the redundant record is
-        // skipped, and a reason that actually changed (twg started saying something new) still
+        // skipped, and a reason that actually changed (Jira started saying something new) still
         // gets appended, exactly as a genuinely new failure would.
         if (isAuthFailure
             && task.PendingJiraWriteId == writeId

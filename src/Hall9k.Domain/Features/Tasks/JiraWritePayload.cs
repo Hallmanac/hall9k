@@ -12,7 +12,7 @@ namespace Hall9k.Domain.Features.Tasks;
 /// and keeps everything about whether the write is safe and whether it actually happened with the
 /// executor.
 /// <para>
-/// Serialized whole onto <see cref="Events.JiraWriteRequested"/> before anything is sent to twg,
+/// Serialized whole onto <see cref="Events.JiraWriteRequested"/> before anything is sent to Jira,
 /// so the stream carries the exact payload a write was attempted with — the write-audit-only
 /// scope Brian's design calls for: hall9k never mirrors a card's state, only what it did to it.
 /// </para>
@@ -34,23 +34,22 @@ public sealed record JiraWritePayload(
     private static readonly string[] ForbiddenFieldKeys =
         ["status", "transition", "resolution", "resolutiondate"];
 
-    /// <summary>The only values twg's own <c>--description-format</c>/<c>--body-format</c> accept.</summary>
+    /// <summary>The formats a description or a comment can be composed in and audited as.</summary>
     private static readonly string[] AllowedFormats = ["html", "markdown", "plain"];
 
     /// <summary>
-    /// The format a composed description or comment is actually written in, told to twg
-    /// explicitly rather than left to its own default of html: a payload that names none is
-    /// assumed markdown, since a composing session's own card-authoring skills (this repo's
-    /// story-authoring, for one) produce headings, bullets, and Given/When/Then blocks that render
-    /// correctly as markdown and mangle as literal HTML source (independent pre-PR review, cycle
-    /// 2). A caller writing genuinely plain text — closeout's own merge comment — names "plain"
-    /// explicitly rather than relying on this default.
+    /// The format a composed description or comment is written in, recorded on the audit trail
+    /// alongside the text itself: a payload that names none is assumed markdown, since a composing
+    /// session's own card-authoring skills (this repo's story-authoring, for one) produce
+    /// headings, bullets, and Given/When/Then blocks that are markdown. A caller writing genuinely
+    /// plain text — closeout's own merge comment — names "plain" explicitly rather than relying on
+    /// this default.
     /// </summary>
     public string EffectiveFormat => Format.IsNotBlank() ? Format.Trim().ToLowerInvariant() : "markdown";
 
     /// <summary>
     /// Refuse a payload the executor will not carry out, whatever operation it is paired with.
-    /// This is checked before anything reaches twg and before the intent is even recorded, so a
+    /// This is checked before anything reaches Jira and before the intent is even recorded, so a
     /// disallowed field never makes it onto the stream disguised as a legitimate request.
     /// </summary>
     public void Validate(JiraWriteOperation operation)
@@ -94,8 +93,8 @@ public sealed record JiraWritePayload(
             if (!HasField(Fields, "summary"))
             {
                 throw new DomainValidationException(
-                    "A create write needs a \"summary\" field inside \"fields\" — twg's own jira workitem "
-                    + "create refuses without one, so this is refused here instead, before an intent is "
+                    "A create write needs a \"summary\" field inside \"fields\" — Jira refuses a create "
+                    + "without one, so this is refused here instead, before an intent is "
                     + "even recorded. A top-level \"summary\" or \"description\" outside \"fields\" is not "
                     + "read; both belong inside it.");
             }
@@ -109,7 +108,7 @@ public sealed record JiraWritePayload(
                 throw new DomainValidationException(
                     "An update write needs at least one field inside \"fields\" (for example \"summary\" "
                     + "or \"description\") — a payload with none would change nothing, so it is refused "
-                    + "here instead of being recorded as an intent and shelled out to twg for a no-op.");
+                    + "here instead of being recorded as an intent and sent to Jira for a no-op.");
             }
 
             RefuseUnusedMember(operation, "workItemType", WorkItemType.IsNotBlank());
@@ -120,17 +119,17 @@ public sealed record JiraWritePayload(
         if (Format.IsNotBlank() && !AllowedFormats.Contains(Format.Trim().ToLowerInvariant()))
         {
             throw new DomainValidationException(
-                $"\"{Format}\" is not a text format twg accepts for a description or a comment — use "
+                $"\"{Format}\" is not a text format Hall9k records for a description or a comment — use "
                 + "\"markdown\", \"plain\", or \"html\" (or leave it out, which defaults to markdown).");
         }
     }
 
     /// <summary>
     /// Refuses a member the named operation's own executor call never reads —
-    /// <see cref="Hall9k.Connectors.WorkItems.TwgJiraExecutor.CreateAsync"/>,
-    /// <see cref="Hall9k.Connectors.WorkItems.TwgJiraExecutor.UpdateAsync"/> and
-    /// <see cref="Hall9k.Connectors.WorkItems.TwgJiraExecutor.CommentAsync"/> each pull only the
-    /// members their own write actually sends to twg, so a payload carrying anything else would
+    /// <see cref="Hall9k.Connectors.WorkItems.JiraWriteExecutor.CreateAsync"/>,
+    /// <see cref="Hall9k.Connectors.WorkItems.JiraWriteExecutor.UpdateAsync"/> and
+    /// <see cref="Hall9k.Connectors.WorkItems.JiraWriteExecutor.CommentAsync"/> each pull only the
+    /// members their own write actually sends to Jira, so a payload carrying anything else would
     /// have that content silently discarded while the recorded intent and outcome still claimed it
     /// was part of the write (independent pre-PR review, conformance lens, cycle 12): an unobserved
     /// fact filled in as if it had been observed, the audit-trail rule this file's own class
@@ -150,14 +149,14 @@ public sealed record JiraWritePayload(
     }
 
     /// <summary>
-    /// A composed field, matched case-insensitively the same way <see cref="Hall9k.Connectors.WorkItems.TwgJiraExecutor"/>
+    /// A composed field, matched case-insensitively the same way <see cref="Hall9k.Connectors.WorkItems.JiraWriteExecutor"/>
     /// itself pulls a first-class field out of the composed dictionary, with actual text in it once
     /// decoded the same way that executor's own <c>ExtractField</c> decodes it: a field from
     /// <see cref="FromJson"/> stores its raw JSON text, so a blank value composed as the JSON string
     /// <c>""</c> is two quote characters here, not blank, until it is unwrapped the same way the
-    /// executor itself unwraps it before deciding whether to send <c>--summary</c> at all
+    /// executor itself unwraps it before deciding whether to send a <c>summary</c> field at all
     /// (independent pre-PR review, cycle 7) — checking the raw text let an empty summary through
-    /// this validation only for twg to refuse it after the intent was already recorded.
+    /// this validation only for Jira to refuse it after the intent was already recorded.
     /// </summary>
     private static bool HasField(IReadOnlyDictionary<string, string>? fields, string name)
     {
@@ -198,9 +197,9 @@ public sealed record JiraWritePayload(
 
     /// <summary>
     /// Unwraps a field's own raw JSON text back to plain content, the same decoding
-    /// <see cref="Hall9k.Connectors.WorkItems.TwgJiraExecutor"/>'s own <c>DecodeFieldText</c>
-    /// applies before it reaches twg's non-JSON-coercing <c>--summary</c>/<c>--description</c>
-    /// flags — duplicated rather than shared because <c>Hall9k.Domain</c> references no other
+    /// <see cref="Hall9k.Connectors.WorkItems.JiraWriteExecutor"/>'s own <c>DecodeFieldText</c>
+    /// applies before it reaches the plain-text <c>summary</c>/<c>description</c> request fields —
+    /// duplicated rather than shared because <c>Hall9k.Domain</c> references no other
     /// Hall9k project. A value that is not itself valid JSON (a payload built directly rather than
     /// through <see cref="FromJson"/>) passes through unchanged, the plain text it always was.
     /// A JSON <c>null</c> decodes to blank rather than the literal text "null": <see cref="HasField"/>
@@ -235,7 +234,7 @@ public sealed record JiraWritePayload(
     /// quoted string, a bare number stays a bare number) instead of being re-escaped as the
     /// contents of an outer JSON string — the shape that would otherwise double-quote every
     /// composed field on the very first round trip through this method and back through
-    /// <see cref="FromJson"/> (the daemon's own retry after an expired twg login, for one).
+    /// <see cref="FromJson"/> (the daemon's own retry after a rejected credential, for one).
     /// </summary>
     public string ToJson()
     {
@@ -332,14 +331,12 @@ public sealed record JiraWritePayload(
                 && fieldsElement.ValueKind == JsonValueKind.Object)
             {
                 // Kept as the value's own raw JSON text — quotes and all for a string — rather
-                // than unwrapped to plain text: twg's own --field parses its argument as JSON when
-                // valid ("use quoted JSON strings to force string IDs" per its own help), so a
-                // custom field composed as the JSON string "10501" has to reach AppendFields still
-                // carrying its quotes, or twg parses it as the number 10501 instead of the select-
-                // list option id it actually is (independent pre-PR review, cycle 6). A first-class
-                // field (summary, description) is unwrapped back to plain text at the one place
-                // that reads it for its own dedicated, non-JSON-coercing flag
-                // (TwgJiraExecutor.ExtractField), not here.
+                // than unwrapped to plain text: a custom field composed as the JSON string "10501"
+                // has to reach the executor's request body still carrying its quotes, or it is sent
+                // as the number 10501 instead of the select-list option id it actually is. A
+                // first-class field (summary, description) is unwrapped back to plain text at the
+                // one place that reads it for its own dedicated, plain-text request field
+                // (JiraWriteExecutor.ExtractField), not here.
                 fields = [];
                 foreach (JsonProperty property in fieldsElement.EnumerateObject())
                 {

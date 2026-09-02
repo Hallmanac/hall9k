@@ -21,8 +21,9 @@ namespace Hall9k.Connectors.WorkItems;
 /// <c>h9k task link-jira</c>. Every write — create, update, comment — goes through the
 /// compose/execute split instead (Brian's design, 2026-08-28, Decisions Log #102): an agent or an
 /// operator composes the payload, and <c>h9k task write-jira</c> is the sole executor, running it
-/// through <see cref="TwgJiraExecutor"/> rather than this provider's own REST client. This class
-/// makes no write of its own; it reads.
+/// through <see cref="JiraWriteExecutor"/> — a sibling REST client sharing this class's own
+/// <see cref="JiraAccount"/>/<see cref="JiraRequester"/> seam (Decisions Log #114) — rather than
+/// through this provider itself. This class makes no write of its own; it reads.
 /// </para>
 /// <para>
 /// API version 2 rather than 3, on purpose. The two are both current; v3 carries rich text as

@@ -1,7 +1,6 @@
 using System.ComponentModel;
 using Hall9k.Cli.Infrastructure;
 using Hall9k.Connectors.WorkItems;
-using Hall9k.Domain.Features.Connection;
 using Hall9k.Domain.Features.Project.Projections;
 using Hall9k.Domain.Features.Tasks;
 using Hall9k.Domain.Features.Tasks.Projections;
@@ -14,19 +13,20 @@ using Spectre.Console.Cli;
 namespace Hall9k.Cli.Commands;
 
 /// <summary>
-/// The write surface (Brian's design, 2026-08-28, superseding the agent-mediated-only ruling):
-/// the one door through which a composed Jira create, update, or comment reaches Jira at all.
-/// Composition — the issue type, the built-in and custom fields, the comment text — is an
-/// agent's or an operator's judgment; hall9k is the sole executor, which is what this command
-/// actually does: validate the payload against the executor's own guardrails (no transition, no
-/// close, regardless of who composed it), record the intent with the full payload before
-/// anything is sent, execute it through twg with JSON output, verify by reading the item back,
-/// and record the outcome including the returned key.
+/// The write surface (Brian's design, 2026-08-28, superseding the agent-mediated-only ruling;
+/// the executor's own transport moved off the Atlassian CLI (twg) onto hall9k's own REST client,
+/// Decisions Log #114): the one door through which a composed Jira create, update, or comment
+/// reaches Jira at all. Composition — the issue type, the built-in and custom fields, the comment
+/// text — is an agent's or an operator's judgment; hall9k is the sole executor, which is what this
+/// command actually does: validate the payload against the executor's own guardrails (no
+/// transition, no close, regardless of who composed it), record the intent with the full payload
+/// before anything is sent, execute it against the Jira Cloud REST API, verify by reading the item
+/// back, and record the outcome including the returned key.
 /// <para>
-/// An expired or missing twg login is a handled state rather than a crash: the write is recorded
-/// as pending on this task, a needs-you attention item tells the operator to run
-/// <c>twg login</c> in their own terminal, and the daemon's retry sweep finishes the identical
-/// request once that succeeds — nothing here has to be composed or submitted twice.
+/// A rejected credential is a handled state rather than a crash: the write is recorded as pending
+/// on this task, a needs-you attention item tells the operator to refresh the registered
+/// connection's API token (<c>h9k connection add jira</c>), and the daemon's retry sweep finishes
+/// the identical request once that succeeds — nothing here has to be composed or submitted twice.
 /// </para>
 /// <para>
 /// This is also what publish-time card creation under the jira backlog policy now goes through:
@@ -53,8 +53,8 @@ public sealed class TaskWriteJiraCommand : Hall9kAsyncCommand<TaskWriteJiraComma
         [CommandOption("--file <PATH>")]
         [Description(
             "Path to the composed payload, a JSON object carrying (as needed) workItemType, fields "
-            + "(an object of field name to value — use the customfield_* id twg reports, not a display "
-            + "name), comment, projectKey (only for --op create, when the project's own routing "
+            + "(an object of field name to value — use the customfield_* id Jira's own field metadata "
+            + "reports, not a display name), comment, projectKey (only for --op create, when the project's own routing "
             + "rules say a different board than the one bound with h9k project set --jira), and format "
             + "(\"markdown\", \"plain\", or \"html\" for how the description or comment text is "
             + "written; defaults to markdown, since that is what most card-authoring skills produce)")]
@@ -96,18 +96,14 @@ public sealed class TaskWriteJiraCommand : Hall9kAsyncCommand<TaskWriteJiraComma
         BootstrapContext context = await NodeBootstrap.EnsureAsync(session, cancellationToken);
 
         // Every other Jira write surface (link-jira, from-jira, push-to-jira,
-        // CardPublicationEngine) refuses outright with no connection registered rather than
-        // falling through to twg's own ambient tenant, and this is the sole executor of every
-        // Jira write, so it holds to the same rule: a card filed, verified, and recorded against
-        // the wrong tenant is worse than a refusal naming the fix (independent pre-PR review,
-        // adversarial lens, cycle 9).
-        ConnectionDetails? connection = await WorkItemConnections.FindJiraConnectionAsync(session, cancellationToken);
-        Uri site = connection?.SiteUrl
-            ?? throw new DomainNotFoundException(WorkItemConnections.NoJiraConnection);
+        // CardPublicationEngine) refuses outright with no connection registered, and this is the
+        // sole executor of every Jira write, so it holds to the same rule: a card filed, verified,
+        // and recorded against the wrong tenant is worse than a refusal naming the fix.
+        JiraWriteExecutor executor = await WorkItemConnections.JiraWriteExecutorAsync(session, cancellationToken);
 
         JiraWriteAttemptResult result = await JiraWriteCoordinator.SubmitAsync(
             session, taskId, operation, settings.Issue, payload, project.JiraProjectKey, context.OwnerId,
-            new TwgJiraExecutor(site: site), project.RepositoryPath, cancellationToken);
+            executor, cancellationToken);
 
         string shortId = TaskListCommand.ShortId(taskId);
         switch (result.Outcome)
@@ -120,10 +116,11 @@ public sealed class TaskWriteJiraCommand : Hall9kAsyncCommand<TaskWriteJiraComma
 
             case JiraWriteOutcome.PendingAuthentication:
                 AnsiConsole.MarkupLine(
-                    $"[yellow]twg is not authenticated[/] — this write is recorded and pending for task {shortId}.");
+                    $"[yellow]Jira rejected the registered credentials[/] — this write is recorded and pending for task {shortId}.");
                 AnsiConsole.MarkupLine(
-                    "[dim]  Run 'twg login' in your own terminal (it is a browser-based login twg cannot "
-                    + "do unattended). The daemon retries this exact write automatically once it "
+                    "[dim]  Refresh the API token with 'h9k connection add jira' (create a fresh one at "
+                    + "https://id.atlassian.com/manage-profile/security/api-tokens if the old one was "
+                    + "revoked or expired). The daemon retries this exact write automatically once it "
                     + $"succeeds; nothing needs to be recomposed or resubmitted.[/]");
                 return ExitCodes.Ok;
 

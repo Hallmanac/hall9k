@@ -78,7 +78,7 @@ public sealed class TaskDetails
     public Guid? PendingJiraWriteRequestedByOwnerId { get; set; }
     /// <summary>What the most recent failed attempt reported, kept only while the write is still pending.</summary>
     public string? PendingJiraWriteFailureReason { get; set; }
-    /// <summary>True when the most recent failed attempt was an expired or missing twg login — the retry sweep's own filter.</summary>
+    /// <summary>True when the most recent failed attempt was a rejected credential — the retry sweep's own filter.</summary>
     public bool PendingJiraWriteIsAuthFailure { get; set; }
     /// <summary>True when closeout's own merge notice is waiting on another Jira write to clear before the retry sweep can attempt it (Brian's design, 2026-08-28).</summary>
     public bool HasQueuedJiraMergeNotice { get; set; }
@@ -566,11 +566,12 @@ public sealed class TaskDetailsProjection : SingleStreamProjection<TaskDetails, 
         // and this view is exactly what the retry sweep queries to decide whether to drain it.
         view.HasQueuedJiraMergeNotice = false;
 
-        // A write stuck pending on an expired twg login is the same kind of marker again: the
+        // A write stuck pending on a rejected credential is the same kind of marker again: the
         // retry sweeps already exclude an abandoned task (independent pre-PR review, adversarial
         // lens, cycle 5), so this write will never be retried, expired, or surfaced on the board —
-        // leaving it standing here would have TaskShowCommand render a permanently dead "twg could
-        // not authenticate" row as if it were still a live problem. Cleared here, on the read
+        // leaving it standing here would have TaskShowCommand render a permanently dead
+        // "the registered Jira credential was rejected" row as if it were still a live problem.
+        // Cleared here, on the read
         // model, rather than on the aggregate (TaskAggregate.Apply(TaskAbandoned)'s own comment has
         // the reasoning): the aggregate's own marker has to survive so an in-flight write's outcome
         // stays recordable by writeId, and this view is what every reader — TaskShowCommand, the
@@ -643,7 +644,7 @@ public sealed class TaskDetailsProjection : SingleStreamProjection<TaskDetails, 
     // Requested, then zero or more auth failures, then finally a success or a terminal failure —
     // the same shape the aggregate applies (TaskAggregate.Apply(JiraWriteFailed)'s own comment
     // has the reasoning): an auth failure leaves the pending marker standing so the identical
-    // payload can be retried once twg login runs, instead of the write being lost.
+    // payload can be retried once the connection is fixed, instead of the write being lost.
     public void Apply(IEvent<JiraWriteRequested> @event, TaskDetails view)
     {
         view.PendingJiraWriteId = @event.Data.WriteId;
