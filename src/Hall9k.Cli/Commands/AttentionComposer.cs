@@ -331,8 +331,8 @@ internal static class AttentionComposer
             // find this row.
             "Failed" or "Killed" => IsOrphanSweepCandidate(run)
                 ? new TaskAttention(AttentionLevel.NeedsYou,
-                    "the run ended without a merge being observed; closeout still watches this pull "
-                    + "request for a merge, but nothing will fix or follow up on it: "
+                    "the run ended without a merge being observed; this pull request is still eligible "
+                    + "for closeout's merge observation, but nothing will fix or follow up on it: "
                     + $"{Reason(run.FailureReason, "the run recorded no reason")}",
                     UnwatchedRemedy(task, run, id))
                 : new TaskAttention(AttentionLevel.NeedsYou,
@@ -413,13 +413,17 @@ internal static class AttentionComposer
     };
 
     /// <summary>
-    /// Mirrors <c>CloseoutEngine.PollOnceAsync</c>'s own orphan candidate filter exactly, so this
-    /// pane never claims a pull request is unwatched when the sweep's query would actually match
-    /// this row: a recorded pull request number, and a failure reason that is not <see
+    /// Mirrors <c>CloseoutEngine.PollOnceAsync</c>'s own orphan candidate filter's two document
+    /// fields — a recorded pull request number, and a failure reason that is not <see
     /// cref="RunDetails.PullRequestClosedWithoutMerge"/> (the sweep already learned everything an
-    /// inspection there could tell it and excludes that row from its own candidate set).
+    /// inspection there could tell it and excludes that row from its own candidate set) — so this
+    /// pane and <see cref="TaskPhaseComposer"/>'s phase line never claim a pull request is
+    /// unwatched when the sweep's query would actually match this row. Deliberately not the
+    /// sweep's own <c>r.NodeId == nodeId</c> scoping: a run dispatched from another node is a
+    /// candidate here even though no sweep on this machine will ever match it, so a multi-node
+    /// install can still see this claim outlive the node that would have to act on it.
     /// </summary>
-    private static bool IsOrphanSweepCandidate(RunDetails run) =>
+    internal static bool IsOrphanSweepCandidate(RunDetails run) =>
         run.PullRequestNumber is > 0 && run.FailureReason != RunDetails.PullRequestClosedWithoutMerge;
 
     /// <summary>

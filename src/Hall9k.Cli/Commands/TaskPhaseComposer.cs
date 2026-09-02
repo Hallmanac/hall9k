@@ -251,14 +251,13 @@ internal static class TaskPhaseComposer
             // Every run failure records this state, not only the pull request being closed
             // without merging (PullRequestClosed), so the line says what is certain — the run
             // ended and no merge was observed — and leaves the recorded reason to the attention
-            // line rather than naming a closure it did not observe. The detail mirrors
-            // AttentionComposer.IsOrphanSweepCandidate (CloseoutEngine.PollOnceAsync's own
-            // candidate filter): a recorded pull request number the sweep will still watch for a
-            // merge must not be described the same way as one nothing is watching at all, or this
-            // line contradicts the attention line printed directly under it.
+            // line rather than naming a closure it did not observe. The detail calls the exact
+            // predicate AttentionComposer.IsOrphanSweepCandidate uses (rather than a second,
+            // independently maintained copy of it) so this line and the attention line printed
+            // directly under it can never drift apart on what the sweep would actually match.
             "Failed" => new TaskPhase($"{pullRequest}: the run ended without a merge",
                 SessionLiveness.NotApplicable,
-                run.PullRequestNumber is > 0 && run.FailureReason != RunDetails.PullRequestClosedWithoutMerge
+                AttentionComposer.IsOrphanSweepCandidate(run)
                     ? "closeout still watches it for a merge"
                     : "nothing is watching it any more"),
             "ReviewParked" => new TaskPhase($"{pullRequest} open — review parked",
