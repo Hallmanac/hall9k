@@ -3,6 +3,7 @@ using Hall9k.Connectors.Text;
 using Hall9k.Domain.Features.Run.Projections;
 using Hall9k.Domain.Features.Tasks;
 using Hall9k.Domain.Features.Tasks.Projections;
+using Hall9k.Domain.Infrastructure.Storage;
 
 namespace Hall9k.Daemon.Execution;
 
@@ -70,11 +71,36 @@ internal static class PullRequestBody
             body.AppendLine(Block(agentSummary));
         }
 
+        if (run.ReviewResidualsRideAlong > 0)
+        {
+            body.AppendLine();
+            body.AppendLine(RideAlongNote(run));
+        }
+
         long totalTokens = run.InputTokens + run.CacheReadInputTokens + run.CacheCreationInputTokens + run.OutputTokens;
         body.AppendLine();
         body.AppendLine("---");
         body.AppendLine($"Hall9k run `{run.Id}` · {totalTokens} tokens");
         return body.ToString();
+    }
+
+    /// <summary>
+    /// What the run left riding along rather than fixed (Decisions Log #87, and the
+    /// FinalFullPass-only narrowing task: a mandatory FinalFullPass records merge-ready when
+    /// every finding it attaches is below High). Nothing about a ride-along is on this pull
+    /// request's diff — it is what the review loop declined to spend a cycle on — so a reviewer
+    /// reading only the diff would never learn it exists without this line naming the artifact
+    /// that still carries it. The count and the path both come off <paramref name="run"/> rather
+    /// than being threaded through as separate arguments, since <see cref="RunDetails.ReviewCycle"/>
+    /// is exactly the cycle the residual count was tallied at (<c>ReviewSettled.ResidualsRideAlong</c>).
+    /// </summary>
+    private static string RideAlongNote(RunDetails run)
+    {
+        string findingsPath = RunPaths.ReviewFindingsFile(
+            RunPaths.ResolveCurrentDirectory(run.RunDirectory), run.ReviewCycle);
+        string plural = run.ReviewResidualsRideAlong == 1 ? "finding" : "findings";
+        return $"Review ride-alongs: {run.ReviewResidualsRideAlong} {plural} below the fix bar, "
+            + $"carried rather than spending another review cycle on — see `{findingsPath}`.";
     }
 
     /// <summary>
