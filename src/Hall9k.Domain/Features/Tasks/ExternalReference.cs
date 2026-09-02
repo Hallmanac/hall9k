@@ -24,6 +24,21 @@ public sealed record ExternalReference(WorkItemProvider Provider, string Referen
             : new ExternalReference(value[..separator], value[(separator + 1)..]);
     }
 
+    /// <summary>
+    /// The item's key as the people who filed it say it out loud: <c>PROJ-123</c> for a Jira card,
+    /// and the bare number for a GitHub issue or pull request, whose canonical reference carries
+    /// the repository that minted it (<c>Hallmanac/hall9k#42</c>) — true, but not what anybody
+    /// calls the item, and not something a branch name can carry without inventing directories.
+    /// Empty when the task carries no reference at all; callers decide what that means rather than
+    /// being handed a guess (<see cref="Project.BranchNameTemplate"/> renders it as a stated
+    /// "no key", for instance).
+    /// </summary>
+    /// <remarks>
+    /// <c>LastIndexOf</c> answers -1 when there is no '#' at all, which slices from 0 — the whole
+    /// reference, which is exactly right for a Jira key.
+    /// </remarks>
+    public string Key => Reference[(Reference.LastIndexOf('#') + 1)..];
+
     public override string ToString() => $"{Provider.Value}:{Reference}";
 
     private sealed class ExternalReferenceJsonConverter : JsonConverter<ExternalReference>
