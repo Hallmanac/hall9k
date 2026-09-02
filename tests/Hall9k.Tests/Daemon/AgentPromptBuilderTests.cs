@@ -1767,8 +1767,12 @@ public sealed class AgentPromptBuilderTests : IDisposable
     /// sites its own fix reaches: it also has to name pre-existing siblings on the branch's base,
     /// or the phase cannot catch the escape it exists for (cea5ae6e cycle 6, where the un-reached
     /// sibling arm was a pre-existing site on the base, not one the fix touched). What stays
-    /// bounded is fixing: a pre-existing site outside this branch's own changes stays out-of-scope
-    /// routing's to fix (#63, #99), named for that routing rather than fixed here.
+    /// bounded is fixing, for a finding under any other disposition: a pre-existing site outside
+    /// this branch's own changes stays out-of-scope routing's to fix (#63, #99), named for that
+    /// routing rather than fixed here. The one carve-out — a pre-existing sibling of a
+    /// <see cref="ReviewFindingDispositions.FixHereInItsOwnCommit"/> finding is fixed in that same
+    /// separate commit instead — is its own test below, since asserting it here would blur the
+    /// bound this test exists to pin down.
     /// </summary>
     [Fact]
     public void Self_check_phase_bounds_the_class_sweep_to_this_sessions_own_fixes()
@@ -1788,6 +1792,31 @@ public sealed class AgentPromptBuilderTests : IDisposable
         prompt.Should().Contain(
             "named for routing",
             "a pre-existing sibling is still named in the summary so #63/#99 routing can mint or fold it");
+    }
+
+    /// <summary>
+    /// The one carve-out to the sweep's fixing bound (cycle-3 review, this task): a pre-existing
+    /// sibling of a finding already dispositioned <see cref="ReviewFindingDispositions.FixHereInItsOwnCommit"/>
+    /// is fixed in that same separate commit rather than merely named, because that disposition
+    /// already decided this defect's shape belongs in its own commit here — leaving a sibling
+    /// named-not-fixed would contradict it and reintroduce the exact lap this phase exists to
+    /// remove (cea5ae6e's CreateAsync sibling, left named instead of fixed, still had to be fixed
+    /// in-PR anyway, as 59dc9bba).
+    /// </summary>
+    [Fact]
+    public void Self_check_phase_fixes_pre_existing_siblings_of_a_fix_here_in_its_own_commit_finding()
+    {
+        string prompt = AgentPromptBuilder.BuildReviewFix(
+            SomeTask(), SomeProject(), "task/1-slug", "findings go here", cycle: 1);
+
+        prompt.Should().Contain(
+            "unless the finding you are sweeping is itself dispositioned",
+            "the fixing bound carries an explicit carve-out rather than applying uniformly");
+        prompt.Should().Contain(ReviewFindingDispositions.FixHereInItsOwnCommit);
+        prompt.Should().Contain(
+            "belongs in that same",
+            "a sibling of a fix-in-its-own-commit finding is fixed in that commit, not merely named");
+        prompt.Should().Contain("59dc9bba", "the carve-out cites the incident that proves the contradiction costs a lap");
     }
 
     /// <summary>

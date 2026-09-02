@@ -1697,6 +1697,16 @@ public static class AgentPromptBuilder
     /// comparison attributes to the prompt alone), and scoped to this one prompt — the build
     /// prompt and the review lens prompts are untouched.
     /// </para>
+    /// <para>
+    /// The sweep's fixing bound carries one carve-out (this task's own cycle-3 review): a
+    /// pre-existing sibling stays named-not-fixed only when the finding being swept is not
+    /// itself dispositioned <see cref="ReviewFindingDispositions.FixHereInItsOwnCommit"/>. When
+    /// it is, that disposition already decided this defect's shape belongs in its own commit
+    /// here, so leaving a sibling merely named — rather than fixed in that same commit —
+    /// contradicts the disposition rule and reintroduces the exact extra lap this phase exists to
+    /// remove: cea5ae6e's CreateAsync sibling was left for later instead of fixed alongside the
+    /// finding that shared its shape, and still had to be fixed in-PR anyway, as 59dc9bba.
+    /// </para>
     /// </summary>
     private static void AppendReviewFixSelfCheckPhaseRules(StringBuilder prompt, ProjectDetails project)
     {
@@ -1725,7 +1735,15 @@ public static class AgentPromptBuilder
         prompt.AppendLine("     as cleared, one you never looked at does not. A pre-existing site outside this");
         prompt.AppendLine("     branch's own changes is not yours to fix here; fixing it would grow this pull");
         prompt.AppendLine("     request with unrelated changes the same way the disposition rule above");
-        prompt.AppendLine("     forbids. It is still yours to name: leave it out of your fix, but name it in");
+        prompt.AppendLine("     forbids — unless the finding you are sweeping is itself dispositioned");
+        prompt.AppendLine($"     \"{ReviewFindingDispositions.FixHereInItsOwnCommit}\": that disposition has");
+        prompt.AppendLine("     already decided this defect's shape is worth cleaning up here, in a commit of");
+        prompt.AppendLine("     its own, so a pre-existing sibling of that same finding belongs in that same");
+        prompt.AppendLine("     separate commit rather than merely named — naming instead of fixing it would");
+        prompt.AppendLine("     cost exactly the lap this phase exists to remove (cea5ae6e's CreateAsync");
+        prompt.AppendLine("     sibling, left for routing instead of fixed alongside it, cost the lap fixed");
+        prompt.AppendLine("     in-PR anyway as 59dc9bba). For every other pre-existing site, it is still");
+        prompt.AppendLine("     yours to name and not to fix: leave it out of your fix, but name it in");
         prompt.AppendLine("     your final summary so out-of-scope routing (#63/#99) can mint or fold it — a");
         prompt.AppendLine("     pre-existing sibling left off the sweep never reaches that routing at all.");
         prompt.AppendLine("     Name every site you swept in your final summary — fixed, cleared, or");
