@@ -97,21 +97,26 @@ public static partial class JiraMarkupText
             : $"{{noformat}}\n{text}\n{{noformat}}";
 
     /// <summary>
-    /// Whether <paramref name="text"/> contains a real Jira wiki-markup construct. Bold, italic,
-    /// underline, super/subscript, list markers, table rows, links, monospace, and macros like
-    /// <c>{noformat}</c> itself are each built from a character no ordinary sentence needs, so any
-    /// bare occurrence of one is still trusted as the construct (the cycle-1/2 rule, unchanged).
-    /// Line-anchored headings (<c>h1.</c>-<c>h6.</c>) and blockquotes (<c>bq.</c>), image embeds
-    /// (<c>!file.png!</c>), citations (<c>??...??</c>), and Jira's documented emoticons (<c>:)</c>,
-    /// <c>(y)</c>, <c>(i)</c>, and the rest of that fixed, published set — never guessed at, since an
+    /// Whether <paramref name="text"/> contains a real Jira wiki-markup construct. Bold, list
+    /// markers, table rows, links, monospace, and macros like <c>{noformat}</c> itself are each
+    /// built from a character no ordinary sentence needs, so any bare occurrence of one is still
+    /// trusted as the construct (the cycle-1/2 rule, unchanged). Line-anchored headings
+    /// (<c>h1.</c>-<c>h6.</c>) and blockquotes (<c>bq.</c>), image embeds (<c>!file.png!</c>),
+    /// citations (<c>??...??</c>), and Jira's documented emoticons (<c>:)</c>, <c>(y)</c>,
+    /// <c>(i)</c>, and the rest of that fixed, published set — never guessed at, since an
     /// undocumented emoticon would be exactly the kind of unobserved fact AGENTS.md rules out
     /// assuming) are new as of cycle 3, matched by their own literal shape rather than any single
-    /// character. The hyphen alone is not trusted as a bare occurrence, because it is the one
-    /// character cycle 3 found doing exactly that on a task GUID and on ordinary hyphenated prose
-    /// (<c>one-off</c>): it counts only when it also has real strikethrough shape — preceded by
-    /// start-of-text, whitespace, or an opening paren, immediately followed by a non-space character,
-    /// and closed the mirror way — the word-boundary flanking a genuine <c>-strikethrough-</c> has
-    /// and a mid-word or digit-flanked hyphen never does.
+    /// character. The hyphen (strikethrough), underscore (italic), plus (underline), caret
+    /// (superscript), and tilde (subscript) are each a *paired* construct — Jira only assigns them
+    /// meaning as an opening/closing pair wrapped around content — so none of them is trusted as a
+    /// bare occurrence: the hyphen is the one cycle 3 found tripping on a task GUID and on ordinary
+    /// hyphenated prose (<c>one-off</c>), and cycle 5 found the same shape true of the other three
+    /// (a GitHub org/repo like <c>my_org/my_repo</c> tripping the underscore, for the identical
+    /// reason). Each counts only when it also has the paired construct's real shape — preceded by
+    /// start-of-text, whitespace, or an opening paren, immediately followed by a non-space
+    /// character, and closed the mirror way — the word-boundary flanking a genuine
+    /// <c>-strikethrough-</c>/<c>_italic_</c>/<c>+underline+</c>/<c>^superscript^</c>/<c>~subscript~</c>
+    /// has and a mid-word, digit-flanked, or otherwise unpaired mark never does.
     /// </summary>
     private static bool ContainsWikiMarkupConstruct(string text) => WikiMarkupConstruct().IsMatch(text);
 
@@ -305,17 +310,25 @@ public static partial class JiraMarkupText
 
     /// <summary>
     /// One alternation covering every construct <see cref="ContainsWikiMarkupConstruct"/>'s own doc
-    /// comment enumerates. Every mark except the hyphen keeps the cycle-1/2 rule of any bare
-    /// occurrence counting, since none of them was found to over-trigger; only the hyphen — the one
-    /// character cycle 3 found tripping on a task GUID and on ordinary hyphenated prose — is instead
-    /// matched by real strikethrough shape: a <c>-</c> preceded by start-of-text, whitespace, or an
-    /// opening paren, immediately followed by a non-space character, and closed the mirror way,
-    /// which is the word-boundary flanking a genuine <c>-strikethrough-</c> has and a mid-word or
-    /// digit-flanked hyphen (<c>one-off</c>, a GUID's own) never does.
+    /// comment enumerates. The single-character marks that are never paired — bold's <c>*</c>, list
+    /// and table markers, links, monospace, macro braces — keep the cycle-1/2 rule of any bare
+    /// occurrence counting, since none of them was found to over-trigger. The five *paired* marks
+    /// (hyphen/strikethrough, underscore/italic, plus/underline, caret/superscript,
+    /// tilde/subscript) each get the same real-construct-shape test instead: a mark preceded by
+    /// start-of-text, whitespace, or an opening paren, immediately followed by a non-space
+    /// character, and closed by the identical mark the mirror way — the word-boundary flanking a
+    /// genuine paired span has and a mid-word, digit-flanked, or singly-occurring mark never does.
+    /// The hyphen is the one cycle 3 found tripping on a task GUID and on ordinary hyphenated prose
+    /// (<c>one-off</c>); cycle 5 found the same true of the other three (a GitHub org/repo like
+    /// <c>my_org/my_repo</c> tripping the underscore).
     /// </summary>
     [GeneratedRegex(
-        @"[*_+^~#{}\[\]|\\]" +
+        @"[*#{}\[\]|\\]" +
         @"|(?<![\w-])-(?=\S)(?:[^\r\n]*?\S)?-(?![\w-])" +
+        @"|(?<!\w)_(?=\S)(?:[^\r\n]*?\S)?_(?!\w)" +
+        @"|(?<![\w+])\+(?=\S)(?:[^\r\n]*?\S)?\+(?![\w+])" +
+        @"|(?<![\w^])\^(?=\S)(?:[^\r\n]*?\S)?\^(?![\w^])" +
+        @"|(?<![\w~])~(?=\S)(?:[^\r\n]*?\S)?~(?![\w~])" +
         @"|^h[1-6]\.(?:\s|$)" +
         @"|^bq\.(?:\s|$)" +
         @"|\?\?[^\r\n?]+\?\?" +
