@@ -112,13 +112,20 @@ public sealed class TaskWorkCommand : Hall9kAsyncCommand<TaskWorkCommand.Setting
             taskDetails, project, branch, worktreePath, resumesPreviousWork, blockerContext, taskDetails.RetryReason,
             isInteractive: true);
 
-        // The same settings file every headless spawn writes (ClaudeExecutor), so the one
-        // platform-imposed override — no co-authored-by trailers (PLAN.md §6.6) — applies to
-        // an operator's commits exactly as it does an agent's.
+        // The same settings file every headless spawn writes (ClaudeExecutor), so the
+        // platform-imposed overrides — no co-authored-by trailers (PLAN.md §6.6), and command-tool
+        // timeout headroom sized for this platform's own gates (ClaudeSettingsFile) — apply to an
+        // operator's interactive session exactly as they do a dispatched agent's.
+        // The CLI cannot reference Hall9k.Daemon (Reference graph: Cli -> Domain + Connectors),
+        // so there is no live VerifyGateTimeout to read here — DefaultCommandTimeout mirrors its
+        // default, held to it by ClaudeSettingsFileTests. That the same 15 minutes is written down
+        // in more than one place is a choice about which project owns the number, not a reference
+        // the compiler forbids; ClaudeSettingsFile.DefaultCommandTimeout's own doc has the why.
         string resolvedRunDirectory = RunPaths.ResolveCurrentDirectory(runDirectory);
         Directory.CreateDirectory(resolvedRunDirectory);
         string settingsFile = RunPaths.SettingsFile(resolvedRunDirectory);
-        await File.WriteAllTextAsync(settingsFile, ClaudeSettingsFile.Content, cancellationToken);
+        string settingsContent = ClaudeSettingsFile.Build(ClaudeSettingsFile.DefaultCommandTimeout);
+        await File.WriteAllTextAsync(settingsFile, settingsContent, cancellationToken);
 
         // Re-checked immediately before launch, not only once inside ReenterAsync: everything
         // above (the worktree cut, the blocker-context load, the skill discovery

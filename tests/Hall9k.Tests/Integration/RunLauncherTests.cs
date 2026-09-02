@@ -723,7 +723,7 @@ public sealed class RunLauncherTests(PostgresFixture postgres) : IClassFixture<P
     private static BlockerContextAssembler NewContextAssembler(DocumentStore store)
     {
         FakeProcessManager processes = new();
-        return new(store, new ClaudeExecutor(NullLogger<ClaudeExecutor>.Instance, processes), processes,
+        return new(store, new ClaudeExecutor(NullLogger<ClaudeExecutor>.Instance, processes, Options.Create(new DaemonOptions())), processes,
             Options.Create(new DaemonOptions()), NullLogger<BlockerContextAssembler>.Instance);
     }
 
@@ -746,10 +746,10 @@ public sealed class RunLauncherTests(PostgresFixture postgres) : IClassFixture<P
         VerificationRunner verification = new(
             store, Options.Create(new DaemonOptions()), NullLogger<VerificationRunner>.Instance);
         ReviewEngine review = new(
-            store, new ClaudeExecutor(NullLogger<ClaudeExecutor>.Instance, processes), processes, verification,
+            store, new ClaudeExecutor(NullLogger<ClaudeExecutor>.Instance, processes, Options.Create(new DaemonOptions())), processes, verification,
             Options.Create(new DaemonOptions()), NullLogger<ReviewEngine>.Instance);
         PrReviewEngine prReview = new(
-            store, new ClaudeExecutor(NullLogger<ClaudeExecutor>.Instance, processes), processes,
+            store, new ClaudeExecutor(NullLogger<ClaudeExecutor>.Instance, processes, Options.Create(new DaemonOptions())), processes,
             new GitWorktreeManager(NullLogger<GitWorktreeManager>.Instance),
             Options.Create(new DaemonOptions()), NullLogger<PrReviewEngine>.Instance);
         return new RunSupervisor(store, node, processes, verification, review, prReview,

@@ -6,6 +6,7 @@ using Hall9k.Domain.Infrastructure.Ids;
 using Hall9k.Domain.Shared.ValueObjects;
 using Hall9k.Tests.Fakes;
 using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Options;
 using Xunit;
 
 namespace Hall9k.Tests.Daemon;
@@ -160,7 +161,8 @@ public sealed class ModelPolicyTests
     public async Task A_spawn_that_reached_the_executor_without_a_model_is_refused_rather_than_inherited()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromSeconds(30));
-        ClaudeExecutor executor = new(NullLogger<ClaudeExecutor>.Instance, new FakeProcessManager());
+        ClaudeExecutor executor = new(
+            NullLogger<ClaudeExecutor>.Instance, new FakeProcessManager(), Options.Create(new DaemonOptions()));
         AgentSpawnRequest request = new(
             DomainId.New(), DomainId.New(), "/tmp/worktree", "/tmp/run", "prompt", ExecutorMode.Subscription,
             AgentModel.Unknown, SkipPermissions: false);
