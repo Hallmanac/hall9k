@@ -113,6 +113,22 @@ through the registered connection before recording it. `h9k task list --epic <id
 epic's member tasks; `h9k epic show <id>` answers the same give-me-all-tasks-in-this-epic question
 with each member's state already composed.
 
+**One Jira card that needs many pull requests does not distribute across sibling tasks the way it
+looks like it should.** A task's own `h9k task add --from-issue`/`--from-jira` and
+`h9k task link-jira`/`link-issue` refuse to adopt a card another task already carries, unless that
+holder has since been abandoned (Done still holds the reference) or is a Done `pr-review` task,
+whose completed review does not hold its pull request hostage the way adopted work holds its
+issue: one card, one owning task, by design, so a card never ends up with two sets of runs and two
+closeout comments. A card that genuinely needs several tasks to satisfy (found by trial and error
+against exactly that refusal) puts the link on the epic instead:
+`h9k epic link-jira` records the card once at the epic level; exactly one member task formally
+adopts it; every other member task carries the same card only in its agent context, not as a
+second `ExternalReference`. The refusal a second task hits trying to adopt the same card is the
+guard working as intended, not a bug to route around. On a project tracked under `jira` or
+`github-issues`, every sibling task must still publish with `--untracked` (below): it carries no
+`ExternalReference` of its own, so the ordinary publish gate either refuses it or, taken past with
+`--no-existing-item`, auto-mints a second card or issue for it instead.
+
 ### Working a task interactively
 
 `h9k task work | verify | deliver | handback | release`

@@ -154,9 +154,41 @@ member task closes out; there is no `h9k epic reopen` yet.
 h9k epic add --project <name> --title "<name>"    # name a new epic: a project and a title
 h9k epic list [--project <name>] [--state <state>]   # every epic with a member-task rollup; open|closed|all
 h9k epic show <id>                                # one epic: title, state, Jira link, every member task
-h9k epic link-jira <id> <key-or-url>              # record the Jira epic this one corresponds to; identity only
+h9k epic link-jira <id> <key-or-url>              # record the Jira item this one corresponds to, an epic or a card it tracks on a team's behalf; identity only
 h9k epic close <id> --reason "<why>"              # the only way an epic ends
 ```
+
+**One Jira card that needs many pull requests does not distribute across sibling tasks the way
+it looks like it should.** A task can adopt an external item at all only if no other task already
+carries it, unless that holder has since been abandoned: Done still holds the reference, so a
+finished-but-not-abandoned holder still blocks a second adoption. The one further exception is a
+Done `pr-review` task: its completed review does not hold its pull request hostage the way adopted
+work holds its issue, so `h9k task add --from-pr` re-adopts it for a second pass, exactly as
+`TaskDecider.Reopen` sends the owner here to do. `--from-issue`/`--from-jira` refuse a second
+adoption of a card another live task holds, and `h9k task link-jira` and `h9k task link-issue`
+enforce the identical rule on the same field's other doors
+(`TaskAddCommand.RefuseSecondAdoptionAsync`), one card, one owning task, so a card never ends up
+with two sets of runs and two closeout comments. A card that genuinely needs several tasks working
+toward it (ARX-5510: one Jira card, eight pull requests) runs straight into that refusal if every
+task tries to adopt it, and the refusal is the guard working as designed, not a bug to route
+around; the pattern below is what the arx team found by trial and error against it. The epic
+carries the card (`h9k epic link-jira <epic> <key-or-url>`, whose own `--help` still calls the
+argument "the Jira epic's key": it stores whatever key or URL it is given verbatim and unverified,
+epic or card alike, so this pattern's use of it for a card is not a misuse), exactly one member
+task formally adopts it (`--from-jira` at creation, or `h9k task link-jira` after), and every
+sibling task carries the same card only in its agent context: free text naming the epic and the
+card, never a second `ExternalReference`, so eight tasks can share one card's work without eight
+of them fighting over who owns it. On a project whose backlog policy is `jira` or `github-issues`,
+that means every sibling task must publish with `h9k task publish <id> --untracked`: a sibling
+carries no `ExternalReference` of its own, so without `--untracked` the pre-publish gate (below)
+either refuses it outright or, taken the other way out with `--no-existing-item`, lets the
+post-publish auto-tracking step mint a brand-new card or issue for it: exactly the second-card,
+second-closeout problem this pattern exists to avoid. A sibling published `--untracked` this way
+never carries an `ExternalReference` at all, permanently, so on a project whose branch template
+(below) uses `{key}` every sibling branch renders it `no-key`: for ARX-5510's eight tasks that is
+one branch named for the owning task's card and seven named `no-key-<slug>`, distinguished only by
+slug and by `ResolveBranchNameAsync`'s own collision retry when two slugs coincide. Nothing about
+that is broken, but it is worth knowing before dispatch rather than discovering it there.
 
 An operator can work a Queued task interactively instead of dispatching it headless — the claim
 is held by the human, not a process, so there is no lease and no heartbeat reclaim; closing the
@@ -590,6 +622,20 @@ Two things follow from step 6 that are easy to get wrong. A dependency is met on
 so a task showing Done with an open PR does **not** unblock its dependents yet. And an unsubmitted
 GitHub review is invisible to the API, so a quiet PR may have a half-written review on it: never
 report silence as "the reviewer had nothing to say".
+
+**A pull request that is the base of a stack (another branch cut from it instead of from main) is
+reviewed commit by commit, every one of them: checking only its own final tip is not enough.**
+Reviewing the stack's cumulative diff, the shape the top branch's tip naturally shows, can look
+clean while an intermediate commit on the base itself leaves the tree broken; even building the
+base pull request's own final tip is not enough on its own, because a later commit on the base can
+silently repair what an earlier one broke, leaving no trace at the tip for either side to catch.
+Origin incident (ARX-4836, 2026-08-31): a leaked file move broke the base pull request's own build,
+and nothing caught it because the author verified only the stack's tip and the reviewer built
+nothing at all: the base's intermediate state was never independently exercised by either side.
+This is a working agreement today, for whoever reviews a base-of-stack pull request by hand, not a
+platform behavior: `h9k`'s own dependency graph carries no stacked-on edge yet for a review prompt
+to key on, so folding this into the automated review loop waits on stacked-PR slice 1 (backlog:
+`IDEA-stacked-prs.md`, task 28e400d9).
 
 ## Coding standards
 
