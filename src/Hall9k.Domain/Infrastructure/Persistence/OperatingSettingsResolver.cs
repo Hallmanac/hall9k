@@ -194,8 +194,8 @@ public static class OperatingSettingsResolver
     }
 
     /// <summary>
-    /// The run-denominated mirror of <see cref="WarnIfBelowCeilingFloor"/>: <see
-    /// cref="Hall9k.Daemon.Dispatch.NodeLoad.Capacity"/> floors a sub-1 configured ceiling to
+    /// The run-denominated mirror of <see cref="WarnIfBelowCeilingFloor"/>:
+    /// <c>Hall9k.Daemon.Dispatch.NodeLoad.Capacity</c> floors a sub-1 configured ceiling to
     /// exactly one concurrent run rather than dispatching nothing.
     /// </summary>
     private static void WarnIfBelowRunFloor(string source, int value, List<string> unusable)
@@ -379,7 +379,7 @@ public static class OperatingSettingsResolver
     /// <summary>
     /// A cap below 1 is not refused the way <c>h9k config set</c> refuses it on the write path (a
     /// hand-edited file or an environment variable skips that gate entirely) — instead
-    /// <see cref="Hall9k.Daemon.Review.ReviewEngine"/>'s own effective-cap read floors it to exactly
+    /// <c>Hall9k.Daemon.Review.ReviewEngine</c>'s own effective-cap read floors it to exactly
     /// one session per run rather than dispatching nothing.
     /// </summary>
     private static void WarnIfBelowSessionCapFloor(string source, int value, List<string> unusable)

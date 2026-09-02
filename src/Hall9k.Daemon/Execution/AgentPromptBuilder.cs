@@ -1317,10 +1317,10 @@ public static class AgentPromptBuilder
             prompt.AppendLine("stated, is never `low` and never left ungraded: grade it `medium` at minimum, same");
             prompt.AppendLine("as any other cycle. This is the mandatory final pass immediately before the pull");
             prompt.AppendLine("request opens, though, and its own bar for earning a fix cycle is narrower than an");
-            prompt.AppendLine("earlier cycle's (Decisions Log #113): only a `high` finding blocks a merge-ready");
-            prompt.AppendLine("verdict here. An in-scope `medium` you grade is still recorded and named on the pull");
-            prompt.AppendLine("request as a residual for the owner to see — grade against the anchors above, never");
-            prompt.AppendLine("to force an outcome.");
+            prompt.AppendLine("earlier cycle's (Decisions Log #113): only a `high` finding, in-scope or out-of-scope,");
+            prompt.AppendLine("costs a fix-and-re-review cycle here. An in-scope `medium` you grade is still recorded");
+            prompt.AppendLine("and named on the pull request as a residual for the owner to see — grade against the");
+            prompt.AppendLine("anchors above, never to force an outcome.");
         }
         else
         {
@@ -1349,12 +1349,13 @@ public static class AgentPromptBuilder
             prompt.AppendLine("grade you could not confidently make, return merge-ready and attach the finding anyway");
             prompt.AppendLine("rather than manufacturing a needs-fixes verdict to make sure it gets read. The platform");
             prompt.AppendLine("still records it and decides on its own whether it is worth a session; on this mandatory");
-            prompt.AppendLine("final pass, a needs-fixes verdict is reserved for at least one `high` finding, in-scope");
-            prompt.AppendLine("or out-of-scope (Decisions Log #113) — an in-scope `medium` or `low` finding here is");
-            prompt.AppendLine("recorded and carried onto the pull request as a residual instead of earning a");
-            prompt.AppendLine("fix-and-re-review cycle. An out-of-scope `medium` or `low` finding still routes to its");
-            prompt.AppendLine("own draft task exactly as it would on any other cycle; an out-of-scope `high` is fixed");
-            prompt.AppendLine("directly in this pull request instead, the same as an in-scope one.");
+            prompt.AppendLine("final pass, only a `high` finding, in-scope or out-of-scope, actually costs a");
+            prompt.AppendLine("fix-and-re-review cycle (Decisions Log #113). An in-scope `medium` or `low` finding");
+            prompt.AppendLine("here is recorded and carried onto the pull request as a residual instead. An");
+            prompt.AppendLine("out-of-scope `medium` or `low` finding keeps the verdict needs-fixes on its own and");
+            prompt.AppendLine("still routes to its own draft task exactly as it would on any other cycle, but earns");
+            prompt.AppendLine("no fix-and-re-review cycle by itself; an out-of-scope `high` is fixed directly in this");
+            prompt.AppendLine("pull request instead, the same as an in-scope one.");
         }
         else
         {
@@ -1520,13 +1521,13 @@ public static class AgentPromptBuilder
         prompt.AppendLine();
         if (mode == ReviewMode.FinalFullPass)
         {
-            prompt.AppendLine("when at least one verified finding graded high stands. This is the mandatory final");
-            prompt.AppendLine("pass immediately before the pull request opens, and its own bar is narrower than an");
-            prompt.AppendLine("earlier cycle's (Decisions Log #113): a medium or low finding here is recorded and");
-            prompt.AppendLine("carried onto the pull request as a residual instead of costing a fix-and-re-review");
-            prompt.AppendLine("cycle. A needs-fixes verdict must name at least one finding: a stated location (a");
-            prompt.AppendLine("file, or a file and line) and a description of the defect there. A needs-fixes");
-            prompt.AppendLine("verdict with nothing named this way is read the same as no verdict at all.");
+            prompt.AppendLine("when at least one verified finding graded high stands, in-scope or out-of-scope. This");
+            prompt.AppendLine("is the mandatory final pass immediately before the pull request opens, and its own");
+            prompt.AppendLine("bar is narrower than an earlier cycle's (Decisions Log #113): a medium or low finding");
+            prompt.AppendLine("here is recorded and carried onto the pull request as a residual instead of costing a");
+            prompt.AppendLine("fix-and-re-review cycle. A needs-fixes verdict must name at least one finding: a");
+            prompt.AppendLine("stated location (a file, or a file and line) and a description of the defect there.");
+            prompt.AppendLine("A needs-fixes verdict with nothing named this way is read the same as no verdict at all.");
         }
         else
         {
