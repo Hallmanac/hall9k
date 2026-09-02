@@ -1015,7 +1015,7 @@ public sealed class ReviewEngine(
         string prompt = resumesRebaseDispute
             ? AgentPromptBuilder.BuildRebase(
                 context.Task, context.Project, context.Run.Branch, context.Task.PullRequestUrl!, commitStyle, findings)
-            : AgentPromptBuilder.BuildReviewFix(context.Task, context.Run.Branch, findings, cycle);
+            : AgentPromptBuilder.BuildReviewFix(context.Task, context.Project, context.Run.Branch, findings, cycle);
         ExecutorMode mode = context.Run.ExecutorMode;
 
         // A retry of the very same round reuses whatever it already decided rather than asking
