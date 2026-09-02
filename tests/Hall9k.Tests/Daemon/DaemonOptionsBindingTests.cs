@@ -255,10 +255,70 @@ public sealed class DaemonOptionsBindingTests
             + "again as coming from an unread source would contradict that explanation on the same value");
     }
 
+    /// <summary>
+    /// The bug the independent pre-PR review found (cycle 1, adversarial lens): a config-file leaf
+    /// that fails <c>PlatformConfigFile</c>'s own stricter STJ deserialize (a JSON number where
+    /// <see cref="OperatingSettings.SpendPeriod"/> wants a string) is recovered by dropping the
+    /// leaf — <c>OperatingSettingsResolver</c> never sees a rejected value, so no
+    /// <see cref="OperatingSettingsReport.UnusableEnvironmentVariables"/> message exists for it —
+    /// while the raw section indexer this check reads from still carries the original value, since
+    /// <c>PlatformConfigFileSource</c> inserts it into the merged configuration regardless. Without
+    /// consulting <see cref="OperatingSettingsReport.ConfigFileProblem"/> too, this would report the
+    /// value as arriving through "another configuration source the resolver does not read", which
+    /// is false and contradicts the daemon's own startup log for the identical leaf.
+    /// </summary>
+    [Fact]
+    public void A_spend_period_value_dropped_by_the_config_file_readers_own_recovery_is_not_named_as_ignored()
+    {
+        IConfigurationSection section = Section(("SpendPeriod", "7"));
+        OperatingSettingsReport report = ReportWithCeiling(
+            maxConcurrentTaskRuns: 1,
+            spendPeriod: "week",
+            configFileProblem: new ConfigFileProblem(
+                "The platform config file (~/.hall9k/config.json) has a \"hall9k\" section, but a value there has "
+                + "the wrong shape (The JSON value could not be converted to System.String. Path: $.spendPeriod | "
+                + "LineNumber: 0 | BytePositionInLine: 20.). h9k config set merges into this same section, so it "
+                + "cannot write until the existing value parses — fix it directly in a text editor first.",
+                ConfigFileProblemConsequence.SettingIsIgnored,
+                AffectsResolverOwnedKey: true));
+
+        IReadOnlyList<string> messages = DaemonOptionsBinding.DescribeConfigurationSourcesTheResolverIgnores(section, report);
+
+        messages.Should().BeEmpty(
+            "the daemon's own startup log already explains this leaf through ConfigFileProblem; naming it again "
+            + "as coming from an unread source would contradict that explanation on the same value");
+    }
+
+    /// <summary>
+    /// The companion case: a <see cref="OperatingSettingsReport.ConfigFileProblem"/> that names a
+    /// different resolver-owned leaf entirely must not blanket-suppress this one — only a message
+    /// that actually names <c>SpendPeriod</c> should count as already explained.
+    /// </summary>
+    [Fact]
+    public void A_config_file_problem_naming_a_different_leaf_does_not_suppress_this_one()
+    {
+        IConfigurationSection section = Section(("SpendPeriod", "day"));
+        OperatingSettingsReport report = ReportWithCeiling(
+            maxConcurrentTaskRuns: 1,
+            spendPeriod: "week",
+            configFileProblem: new ConfigFileProblem(
+                "The platform config file (~/.hall9k/config.json) has a \"hall9k\" section, but a value there has "
+                + "the wrong shape (Path: $.spendBudgetTokens).",
+                ConfigFileProblemConsequence.SettingIsIgnored,
+                AffectsResolverOwnedKey: true));
+
+        IReadOnlyList<string> messages = DaemonOptionsBinding.DescribeConfigurationSourcesTheResolverIgnores(section, report);
+
+        messages.Should().ContainSingle(message =>
+            message.Contains("SpendPeriod") && message.Contains("day") && message.Contains("week"),
+            "the config-file problem on record is about a different leaf, so it does not explain this one");
+    }
+
     private static OperatingSettingsReport ReportWithCeiling(
         int maxConcurrentTaskRuns, bool shadowsConfigFileValue = false, long? spendBudgetTokens = null,
         string spendPeriod = OperatingSettings.DefaultSpendPeriod,
-        IReadOnlyList<string>? unusableEnvironmentVariables = null) =>
+        IReadOnlyList<string>? unusableEnvironmentVariables = null,
+        ConfigFileProblem? configFileProblem = null) =>
         new(
             new ResolvedSetting<int>(OperatingSettings.DefaultMaxConcurrentAgentSessions, SettingOrigin.Default, null),
             false,
@@ -268,7 +328,7 @@ public sealed class DaemonOptionsBindingTests
             new ResolvedSetting<int>(OperatingSettings.DefaultSessionCapPerRun, SettingOrigin.Default, null),
             new ResolvedSetting<string>(AgentModel.PlatformFallback, SettingOrigin.Default, null),
             [],
-            null,
+            configFileProblem,
             unusableEnvironmentVariables ?? [],
             new ResolvedSetting<int>(OperatingSettings.DefaultMaxComplianceReviewCycles, SettingOrigin.Default, null),
             new ResolvedSetting<int>(OperatingSettings.DefaultMaxAdversarialReviewCycles, SettingOrigin.Default, null),

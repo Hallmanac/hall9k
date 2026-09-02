@@ -291,9 +291,10 @@ and the task-lifetime budget — each overridable per project, and per task too 
 paired with `--spend-period <day|week>`, backlog: spend-governor step three, Decisions Log #113) —
 once the current period's recorded spend reaches the budget, the dispatcher declines to claim
 further queued work until the period rolls, gating claims only and never touching work already
-claimed; `--spend-budget none` clears it back to unbudgeted, the only one of these settings with a
-real way back once set, since "no budget" has no compiled default number the way the review caps
-do. Every one of these is durable in the platform config file so a fresh machine or an autostarted
+claimed; `--spend-budget none` clears it back to unbudgeted, since "no budget" has no compiled
+default number the way the review caps do. Unlike the four review-cycle caps above, this and the
+per-role model overrides (`default` clears an override) both have a real way back once set. Every
+one of these is durable in the platform config file so a fresh machine or an autostarted
 daemon runs with the operator's settings without an environment variable ritual, and every one
 except the interactive-claim staleness threshold takes effect only on the daemon's next start —
 `h9k status`'s own Queued section names a stopped concurrency or spend gate honestly, but only for

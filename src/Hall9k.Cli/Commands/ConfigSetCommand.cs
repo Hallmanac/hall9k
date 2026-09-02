@@ -148,8 +148,10 @@ public sealed class ConfigSetCommand : Hall9kAsyncCommand<ConfigSetCommand.Setti
             + "token count identically even though the subscription meters them separately — per-model weighting "
             + "is deliberately not attempted, since it would smuggle in the price list #30 forbids; h9k config "
             + "show's per-model breakdown is what makes a later informed choice possible. Never kills or parks "
-            + "running work, and never declines a review or fix session inside a run already claimed — this gates "
-            + "claiming a new task only. Pair with --spend-period; omit both to leave dispatch unbudgeted. Unlike "
+            + "running work, and never declines a review or fix session inside a run already claimed — but a "
+            + "closeout follow-up or 'h9k task retry' reopens its task back to Queued and re-enters the same "
+            + "claim query a brand-new task does, so a spent budget defers those too, not just first claims. "
+            + "Pair with --spend-period; omit both to leave dispatch unbudgeted. Unlike "
             + "the four review-cycle caps above, this one has a real way back once set: pass 'none' to clear it "
             + "and restore unbudgeted dispatch — there is no compiled default token count to fall back to the "
             + "way those caps fall back to their own number.")]

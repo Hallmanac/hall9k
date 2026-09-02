@@ -94,19 +94,21 @@ internal static class DaemonOptionsBinding
 
         AddIfIgnored(
             section, nameof(DaemonOptions.SpendBudgetTokens), "spend-budget-tokens",
-            "--spend-budget", report.SpendBudgetTokens.Value, report.UnusableEnvironmentVariables, messages);
+            "--spend-budget", report.SpendBudgetTokens.Value, report.UnusableEnvironmentVariables,
+            report.ConfigFileProblem, messages);
 
         AddIfIgnored(
             section, nameof(DaemonOptions.SpendPeriod), "spend-period",
-            "--spend-period", report.SpendPeriod.Value, report.UnusableEnvironmentVariables, messages);
+            "--spend-period", report.SpendPeriod.Value, report.UnusableEnvironmentVariables,
+            report.ConfigFileProblem, messages);
         return messages;
     }
 
     /// <summary>
-    /// True when <paramref name="unusableEnvironmentVariables"/> already explains this setting —
-    /// the resolver read a value for it (from the environment variable or the platform config
-    /// file, the only two sources <see cref="OperatingSettingsResolver.ResolveSpendBudgetTokens"/>
-    /// and <see cref="OperatingSettingsResolver.ResolveSpendPeriod"/> ever read) and rejected it as
+    /// True when this setting's rejection is already explained elsewhere — the resolver read a
+    /// value for it (from the environment variable or the platform config file, the only two
+    /// sources <see cref="OperatingSettingsResolver.ResolveSpendBudgetTokens"/> and
+    /// <see cref="OperatingSettingsResolver.ResolveSpendPeriod"/> ever read) and rejected it as
     /// malformed for this setting, which is a different situation from a value arriving through a
     /// source the resolver never reads at all. The two long?/string <c>AddIfIgnored</c> overloads
     /// below (unlike the pre-existing int one, which cannot disagree with the resolver this way)
@@ -115,14 +117,35 @@ internal static class DaemonOptionsBinding
     /// file, which <c>PlatformConfigFileSource</c> also inserts into the same merged section — even
     /// though <c>OperatingSettingsResolver</c> fell back past it, so without this guard the two
     /// lines would both deny and assert that the value is read (independent pre-PR review, cycle 2,
-    /// adversarial lens). Matched on <paramref name="flagLabel"/> — the text both of the resolver's
-    /// own rejection messages name — rather than on the environment variable name alone, since a
-    /// config-file rejection message never names the environment variable at all.
+    /// adversarial lens). <paramref name="unusableEnvironmentVariables"/> is matched on
+    /// <paramref name="flagLabel"/> — the text both of the resolver's own rejection messages name —
+    /// rather than on the environment variable name alone, since a config-file rejection message
+    /// never names the environment variable at all.
+    /// <para>
+    /// A config-file leaf that fails STJ's stricter deserialize (a JSON number where
+    /// <see cref="OperatingSettings.SpendPeriod"/> wants a string, say) never reaches that
+    /// resolver rejection at all: <c>PlatformConfigFile.TryReadOperatingSettingsAsync</c> drops the
+    /// leaf during recovery before <c>OperatingSettingsResolver</c> ever sees it, so
+    /// <c>configured</c> reads as absent and no <paramref name="unusableEnvironmentVariables"/>
+    /// message is ever written — the file value read back through this method's own raw
+    /// <paramref name="section"/> indexer still disagrees with the resolved default, though, and
+    /// without also checking <paramref name="configFileProblem"/> here this method would report
+    /// that disagreement as coming from a source the resolver does not read at all, when it in fact
+    /// came from the platform config file and the resolver's own startup log already names the real
+    /// reason (<see cref="ConfigFileProblem.DescribeConsequence"/>, printed by
+    /// <c>Hall9k.Daemon.Dispatch.DispatchLoop</c>). Matched on <paramref name="key"/> — the
+    /// property name the raw <see cref="System.Text.Json.JsonException.Path"/> a malformed leaf
+    /// throws carries — rather than on <paramref name="flagLabel"/>, since the exception path names
+    /// the JSON property, never the kebab-case flag (independent pre-PR review, cycle 1, adversarial
+    /// lens).
+    /// </para>
     /// </summary>
     private static bool AlreadyExplainedAsUnusable(
-        string flagLabel, IReadOnlyList<string> unusableEnvironmentVariables) =>
-        unusableEnvironmentVariables.Any(message =>
-            message.Contains(flagLabel, StringComparison.Ordinal));
+        string key, string flagLabel, IReadOnlyList<string> unusableEnvironmentVariables,
+        ConfigFileProblem? configFileProblem) =>
+        unusableEnvironmentVariables.Any(message => message.Contains(flagLabel, StringComparison.Ordinal))
+        || (configFileProblem is { AffectsResolverOwnedKey: true } problem
+            && problem.Message.Contains(key, StringComparison.OrdinalIgnoreCase));
 
     private static void AddIfIgnored(
         IConfigurationSection section, string key, string flagLabel, string flag, int effectiveValue,
@@ -151,7 +174,8 @@ internal static class DaemonOptionsBinding
     /// </summary>
     private static void AddIfIgnored(
         IConfigurationSection section, string key, string flagLabel, string flag, long? effectiveValue,
-        IReadOnlyList<string> unusableEnvironmentVariables, List<string> messages)
+        IReadOnlyList<string> unusableEnvironmentVariables, ConfigFileProblem? configFileProblem,
+        List<string> messages)
     {
         string? raw = section[key];
         if (raw is null || !long.TryParse(raw, out long rawValue) || rawValue == effectiveValue)
@@ -159,7 +183,7 @@ internal static class DaemonOptionsBinding
             return;
         }
 
-        if (AlreadyExplainedAsUnusable(flagLabel, unusableEnvironmentVariables))
+        if (AlreadyExplainedAsUnusable(key, flagLabel, unusableEnvironmentVariables, configFileProblem))
         {
             return;
         }
@@ -184,7 +208,8 @@ internal static class DaemonOptionsBinding
     /// </summary>
     private static void AddIfIgnored(
         IConfigurationSection section, string key, string flagLabel, string flag, string effectiveValue,
-        IReadOnlyList<string> unusableEnvironmentVariables, List<string> messages)
+        IReadOnlyList<string> unusableEnvironmentVariables, ConfigFileProblem? configFileProblem,
+        List<string> messages)
     {
         string? raw = section[key];
         if (raw is null || string.Equals(raw, effectiveValue, StringComparison.OrdinalIgnoreCase))
@@ -192,7 +217,7 @@ internal static class DaemonOptionsBinding
             return;
         }
 
-        if (AlreadyExplainedAsUnusable(flagLabel, unusableEnvironmentVariables))
+        if (AlreadyExplainedAsUnusable(key, flagLabel, unusableEnvironmentVariables, configFileProblem))
         {
             return;
         }

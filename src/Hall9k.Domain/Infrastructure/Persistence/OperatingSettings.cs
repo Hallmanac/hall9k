@@ -150,7 +150,13 @@ public sealed class OperatingSettings
     /// does not publish as token counts.
     /// <para>
     /// Never kills or parks running work (Decisions Log #11), and never declines a review or fix
-    /// session inside a run this node already claimed — this gates claiming a NEW task only.
+    /// session inside a run this node already claimed. It does not distinguish a first claim from
+    /// a re-claim, though: a closeout follow-up or <c>h9k task retry</c> reopens its task straight
+    /// back to <see cref="Hall9k.Domain.Features.Tasks.TaskState.Queued"/> without clearing the
+    /// assignment (<c>TaskAggregate.Apply(TaskReopened)</c>), so it re-enters
+    /// <c>DispatchEngine.ClaimEligibleAsync</c>'s identical claim query and is declined by a spent
+    /// budget exactly as a brand-new task would be (independent pre-PR review, cycle 1,
+    /// adversarial lens — this doc used to promise the opposite).
     /// </para>
     /// <para>
     /// Known v1 limitation: the budget gates on the single total across every model, so an Opus
