@@ -200,6 +200,26 @@ public sealed class RunAggregate
     public ReviewMode PriorCycleMode { get; private set; } = ReviewMode.Discovery;
 
     /// <summary>
+    /// The most recently dispatched review cycle's own <see cref="Events.ReviewDispatched.SinceSha"/>
+    /// (independent pre-PR review, cycle 1 adversarial finding) — null unless
+    /// <see cref="CurrentCycleMode"/> is <see cref="ReviewMode.FinalFullPass"/> and that cycle was
+    /// itself scoped to the commits since an earlier full-scope read. Mirrors
+    /// <see cref="CycleHeadSha"/>'s own capture-once-per-cycle bookkeeping, including for a
+    /// crash-recovery top-up into the same cycle.
+    /// </summary>
+    public string? CycleSinceSha { get; private set; }
+
+    /// <summary>
+    /// <see cref="CycleSinceSha"/> as it stood immediately before the current cycle started —
+    /// paired with <see cref="PriorCycleMode"/> so a <see cref="ReviewMode.Verify"/> pass's prompt
+    /// (<c>AgentPromptBuilder.BuildReviewVerify</c>) can tell a genuinely full FinalFullPass read
+    /// from a scoped one instead of assuming every non-Verify prior cycle read the branch in full.
+    /// Captured once, the same capture-once-per-cycle bookkeeping <see cref="PriorCycleHeadSha"/>
+    /// already uses.
+    /// </summary>
+    public string? PriorCycleSinceSha { get; private set; }
+
+    /// <summary>
     /// The worktree's `git rev-parse HEAD` as of the most recently dispatched review cycle's own
     /// dispatch (task: review cycles after the first). Recorded so the NEXT cycle, if it turns out
     /// to be a <see cref="ReviewMode.Verify"/> cycle, has this cycle's tip available as
@@ -581,7 +601,7 @@ public sealed class RunAggregate
 
     public void Apply(ReviewDispatched @event)
     {
-        StartCycleIfNew(@event.Cycle, @event.Mode ?? ReviewMode.Discovery, @event.HeadSha);
+        StartCycleIfNew(@event.Cycle, @event.Mode ?? ReviewMode.Discovery, @event.HeadSha, @event.SinceSha);
         AddInFlightPass(
             @event.Lens ?? ReviewLens.Unknown, @event.SessionId, @event.SessionId,
             @event.ProcessId, @event.ProcessStartedAt, @event.Model ?? AgentModel.Unknown, CurrentCycleMode);
@@ -831,7 +851,7 @@ public sealed class RunAggregate
     /// HeadSha are this new cycle's own — read them fresh here rather than trusting a caller's copy,
     /// since a daemon restart replays this from the stream with nothing else in memory.
     /// </summary>
-    private void StartCycleIfNew(int cycle, ReviewMode mode, string? headSha)
+    private void StartCycleIfNew(int cycle, ReviewMode mode, string? headSha, string? sinceSha = null)
     {
         if (cycle == ReviewCycle)
         {
@@ -843,6 +863,8 @@ public sealed class RunAggregate
         CurrentCycleMode = mode;
         PriorCycleHeadSha = CycleHeadSha;
         CycleHeadSha = headSha;
+        PriorCycleSinceSha = CycleSinceSha;
+        CycleSinceSha = sinceSha;
         PriorFullScopeReviewHeadSha = LastFullScopeReviewHeadSha;
         if (mode == ReviewMode.Discovery || mode == ReviewMode.FinalFullPass)
         {

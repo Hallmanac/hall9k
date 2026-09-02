@@ -16,7 +16,17 @@ namespace Hall9k.Domain.Features.Run.Events;
 /// reads as <see cref="ReviewMode.Discovery"/>, the only shape a stream written before this field
 /// existed could have carried. HeadSha is the worktree's `git rev-parse HEAD` at the moment this
 /// pass was spawned, best-effort (null when it could not be read) — what a later Verify cycle's
-/// prompt points a "commits since the prior cycle" instruction at. RunState → UnderReview.
+/// prompt points a "commits since the prior cycle" instruction at. SinceSha is the boundary this
+/// pass's own diff instruction was actually scoped to when it dispatched — null for a
+/// <see cref="ReviewMode.Discovery"/> pass (always a full base-branch read) and for a
+/// <see cref="ReviewMode.FinalFullPass"/> pass with no earlier full-scope boundary on record (also
+/// a full read); non-null only when a <see cref="ReviewMode.FinalFullPass"/> pass was itself
+/// scoped to the commits since the run's last full-scope read. Recorded as an observed fact
+/// because only the dispatch that resolved it ever knows for certain, the same reasoning
+/// <see cref="VerificationPassed.RanFullScope"/> already follows — what lets a later
+/// <see cref="ReviewMode.Verify"/> pass's prompt (<c>AgentPromptBuilder.BuildReviewVerify</c>) say
+/// honestly whether the cycle it is quoting findings from read the branch in full or only a delta.
+/// RunState → UnderReview.
 /// </summary>
 public sealed record ReviewDispatched(
     Guid Id,
@@ -28,4 +38,5 @@ public sealed record ReviewDispatched(
     AgentModel? Model = null,
     ReviewLens? Lens = null,
     ReviewMode? Mode = null,
-    string? HeadSha = null);
+    string? HeadSha = null,
+    string? SinceSha = null);
