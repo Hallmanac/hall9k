@@ -62,10 +62,24 @@ public sealed record ResolvedReviewCaps(
 /// strictly: the model chain puts the node's per-role default above the project, Decisions Log
 /// #33). <c>OperatingSettingsResolver</c> is the node level's own resolver for
 /// <c>h9k config show</c>/<c>h9k daemon status</c>, run once per CLI invocation against the
-/// platform config file directly; this type resolves the SAME node value as it is already bound
-/// into the live <see cref="DaemonOptions"/> (the two agree by construction — both read the
-/// identical env-var/config-file/default precedence, just through different pipelines), because
-/// the daemon has no config-file-reading session mid-review to spend on it.
+/// platform config file directly; this type instead reads the node value already bound into the
+/// live <see cref="DaemonOptions"/>, because the daemon has no config-file-reading session
+/// mid-review to spend on it. The two agree only for the env-var/config-file/default precedence
+/// <c>OperatingSettingsResolver</c> itself walks: unlike <see cref="DaemonOptions.MaxConcurrentTaskRuns"/>
+/// and <see cref="DaemonOptions.SessionCapPerRun"/>, the four review-cycle caps are not in
+/// <c>DaemonOptionsBinding.ResolverOwnedKeys</c>, so <see cref="DaemonOptions"/> binds them from
+/// the daemon's whole merged <c>IConfiguration</c> — <c>appsettings.json</c>,
+/// <c>appsettings.{Environment}.json</c>, a command-line argument, user secrets — sources
+/// <c>OperatingSettingsResolver</c> does not read and <c>DaemonOptionsBinding.DescribeConfigurationSourcesTheResolverIgnores</c>
+/// does not cover for these four keys. A value set through one of those other sources is what this
+/// resolver's own "node" level actually runs on, while <c>h9k config show</c> keeps reporting the
+/// env-var/config-file answer and would name the wrong lever in a cap-0 park message. Unreachable
+/// without a deliberate hand edit today (no shipped <c>appsettings*.json</c> carries a
+/// <c>Hall9k</c> section), so left as a documented gap rather than a warning that would need its
+/// own wording — the existing warning's phrasing ("the daemon dispatches at X instead") describes
+/// a silent override that only the two <c>PostConfigure</c>-owned settings actually have; these
+/// four have no such override; whatever the merged configuration binds IS what runs, invisibly
+/// to this report (independent pre-PR review, cycle 1, adversarial lens).
 /// </summary>
 public static class ReviewCapResolver
 {
