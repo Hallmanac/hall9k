@@ -1447,7 +1447,9 @@ public sealed class AgentPromptBuilderTests : IDisposable
         prompt.Should().Contain("never end without it");
         prompt.Should().Contain("You may not end this session without a");
         prompt.Should().Contain("WAIT for them", "running checks are waited out, not promised about");
-        prompt.Should().Contain("a promise to deliver the verdict later is not a");
+        prompt.Should().Contain("a promise to deliver the",
+            "the sentence wraps, so this asserts its opening rather than a span across the break");
+        prompt.Should().Contain("verdict later is not a verdict, and nobody returns to keep it");
     }
 
     [Fact]
