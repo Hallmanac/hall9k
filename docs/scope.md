@@ -110,7 +110,8 @@ agent-mediated push a human can also run by hand with `h9k task push-to-jira`, w
 the card should look like in the project's own repository and submits the composed payload through
 `h9k task write-jira` — hall9k's own sole executor of every Jira write (create, update, comment),
 which validates it, refuses a transition or a close regardless of who composed it, executes it
-through the `twg` CLI, and reads the item back to verify before recording anything. `h9k task
+against the Jira Cloud REST API with the same registered connection the read side uses, and reads
+the item back to verify before recording anything. `h9k task
 link-issue` / `h9k task link-jira` cover the adoption half — recording a pre-existing item, read
 back through gh or the registered connection first — so an agent's claim, or the platform's own
 creation call, is never taken as the recorded fact either way. An adopted task never gets a second
@@ -124,9 +125,10 @@ attests none exists with `--no-existing-item`, or attests that the task should s
 altogether with `--untracked` — the platform never searches the tracker itself. When a task
 carrying an external reference merges, closeout comments the pull request on it (GitHub issue or
 Jira card alike, the Jira comment going through the same `write-jira` surface) and never closes or
-transitions it. An expired or missing `twg` login is a handled state: the write is recorded
-pending, `h9k status` surfaces a needs-you row naming `twg login` as the fix, and the daemon
-retries the identical write automatically once it succeeds.
+transitions it. A rejected credential (the registered API token revoked or rotated) is a handled
+state: the write is recorded pending, `h9k status` surfaces a needs-you row pointing at
+`h9k connection add jira` to refresh it, and the daemon retries the identical write automatically
+once the connection is fixed.
 
 ### Pull-request review
 
