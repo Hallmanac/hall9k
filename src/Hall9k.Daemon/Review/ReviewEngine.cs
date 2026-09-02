@@ -555,11 +555,18 @@ public sealed class ReviewEngine(
                     // land here straight from a prior FinalFullPass with no Verify between them — so
                     // run.CycleHeadSha would point at whatever that cycle's own scope was rather than
                     // the last genuinely full-scope one — run.LastFullScopeReviewHeadSha is what still
-                    // holds that, as it stood before this dispatch.
+                    // holds that, as it stood before this dispatch. A Discovery reverify (the cycle-0
+                    // pre-gate dispute resume) gets neither boundary: ReviewDispatched.SinceSha is
+                    // documented null there (always a full base-branch read), so this branches on
+                    // Verify specifically rather than "not FinalFullPass" — the latter would also
+                    // catch Discovery and record a boundary its prompt was never scoped to (the
+                    // sibling top-up dispatch above makes the same distinction explicitly).
                     string? reverifySinceSha = reverifyMode == ReviewMode.FinalFullPass
                         ? await ResolveFinalFullPassSinceShaAsync(
                             context.Run.WorktreePath, run.LastFullScopeReviewHeadSha, cancellationToken)
-                        : run.CycleHeadSha;
+                        : reverifyMode == ReviewMode.Verify
+                            ? run.CycleHeadSha
+                            : null;
                     if (!await DispatchReviewPassesAsync(
                         context, run.ReviewCycle + 1, reverifyLenses, reverifyMode, reverifyHeadSha,
                         sinceSha: reverifySinceSha, run.CurrentCycleMode, run.CycleSinceSha, cancellationToken))
