@@ -507,11 +507,16 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
     /// dispatch for another reason — below the fix bar on their own, so no cycle was spent
     /// earning them one, and recorded rather than fixed. Names the bar itself, not only the
     /// count: a reader asking why a cycle did not dispatch a fix run over these should not have
-    /// to read the raw stream to learn that "below medium" is the rule that decided it.
-    /// Normally there are none and the line says nothing extra.
+    /// to read the raw stream to learn what rule decided it. The bar is not one fixed severity
+    /// range, though (Decisions Log #113): an ordinary cycle rides along a Low or ungraded
+    /// finding, while the mandatory FinalFullPass immediately before the pull request opens
+    /// tightens that same bar to High alone, so a residual it recorded may be a Medium — stating
+    /// a single "medium/high" bar here would misdescribe that one. Normally there are none and
+    /// the line says nothing extra.
     /// </summary>
     private static string RideAlongClause(RunDetails run) => run.ReviewResidualsRideAlong > 0
-        ? $", {run.ReviewResidualsRideAlong} ride-along(s) graded below the fix bar (medium/high) and never claimed"
+        ? $", {run.ReviewResidualsRideAlong} ride-along(s) — each below the fix bar of the cycle that recorded it "
+          + "(low/ungraded on an ordinary cycle, medium or below on the mandatory final pass) — and never claimed"
         : string.Empty;
 
     /// <summary>
