@@ -1,5 +1,7 @@
 using System.ComponentModel;
+using System.Diagnostics.CodeAnalysis;
 using Hall9k.Cli.Infrastructure;
+using Hall9k.Connectors.Processes;
 using Hall9k.Connectors.WorkItems;
 using Hall9k.Domain.Features.Project.Projections;
 using Hall9k.Domain.Features.Run.Events;
@@ -57,11 +59,25 @@ public sealed class TaskResolveCommand : Hall9kAsyncCommand<TaskResolveCommand.S
 
         BootstrapContext context = await NodeBootstrap.EnsureAsync(session, cancellationToken);
         DateTimeOffset resolvedAt = DateTimeOffset.UtcNow;
-        session.Events.Append(taskId, expectedVersion: fence.Version + 1, TaskDecider.Resolve(
-            task, settings.Reason ?? string.Empty, settings.PullRequestUrl, resolvedAt, context.OwnerId));
 
         RunStreamPullRequestOutcome runStreamOutcome = await RecordPullRequestOnRunStreamAsync(
             session, task, settings.PullRequestUrl, resolvedAt, cancellationToken);
+
+        // With no run stream at all, nothing on the run side will ever protect this task from
+        // CloseoutEngine's missing-run sweep — TasksWithMissingRunRecordsAsync's own candidate
+        // shape is PullRequestUrl != null && CurrentRunId != null with no RunDetails row ever
+        // materializing to drop it back out, and that sweep's own inspection applies neither the
+        // pr-review guard nor the repository-match guard the run-stream path above already
+        // enforces (fixing the sweep itself is routed to a task of its own). Recording the URL on
+        // the task stream at all is the one lever left that can make this task match that
+        // candidate shape, so it only happens when it is exactly as safe as the run-stream path
+        // above already requires (independent pre-PR review, cycle 1, medium).
+        string? taskStreamPullRequestUrl = runStreamOutcome == RunStreamPullRequestOutcome.NoRunStream
+            ? await SafePullRequestUrlWithoutRunStreamAsync(session, task, settings.PullRequestUrl, cancellationToken)
+            : settings.PullRequestUrl;
+
+        session.Events.Append(taskId, expectedVersion: fence.Version + 1, TaskDecider.Resolve(
+            task, settings.Reason ?? string.Empty, taskStreamPullRequestUrl, resolvedAt, context.OwnerId));
 
         session.Delete<TaskLease>(taskId);
         try
@@ -75,33 +91,38 @@ public sealed class TaskResolveCommand : Hall9kAsyncCommand<TaskResolveCommand.S
                 "only if the task is still Failed.");
         }
 
-        AnsiConsole.MarkupLineInterpolated(settings.PullRequestUrl.IsBlank()
+        AnsiConsole.MarkupLineInterpolated(taskStreamPullRequestUrl.IsBlank()
             ? (FormattableString)$"[dim]Task {taskId} resolved to Done — the failure stays on the stream.[/]"
-            : $"[dim]Task {taskId} resolved to Done — the failure stays on the stream. PR: {settings.PullRequestUrl}[/]");
+            : $"[dim]Task {taskId} resolved to Done — the failure stays on the stream. PR: {taskStreamPullRequestUrl}[/]");
 
         // Told on stderr rather than left to the "nothing is watching this pull request any
         // more" wording on h9k status to teach: a --pr given while the run stream itself is
-        // missing is the normal missing-run-sweep path (silent, see RecordPullRequestOnRunStreamAsync's
-        // own comment) and not this warning's concern — this fires only when a run stream existed
-        // to record onto and the URL still did not end up recorded. The two reasons that can
-        // happen name different advice, and neither names h9k pr resolve as a fix (independent
-        // pre-PR review, cycle 1, medium): that command reopens the task onto its own
-        // already-recorded PullRequestUrl and branch (TaskDecider.Reopen, PullRequestResolveCommand)
+        // missing but was still safe to show on the task (see SafePullRequestUrlWithoutRunStreamAsync)
+        // is the normal missing-run-sweep path (silent) and not this warning's concern — this fires
+        // when a run stream existed to record onto and the URL still did not end up recorded there,
+        // or when no run stream existed and the URL was not even safe to show on the task. The
+        // reasons that can happen name different advice, and none of them names h9k pr resolve as a
+        // fix (independent pre-PR review, cycle 1, medium): that command reopens the task onto its
+        // own already-recorded PullRequestUrl and branch (TaskDecider.Reopen, PullRequestResolveCommand)
         // rather than accepting a new URL, so it cannot correct a mistyped or foreign one — it can
         // only dispatch a follow-up run onto a dead branch, or, worse, watch whatever pull request
         // the wrong number happens to name in the project's own repository. This task is Done, and
         // a fresh h9k task resolve --pr is never a real lever either way, since TaskDecider.Resolve
         // accepts only a Failed one.
-        if (runStreamOutcome == RunStreamPullRequestOutcome.NotRecorded && settings.PullRequestUrl.IsNotBlank())
+        bool pullRequestUrlNotRecordedAnywhere = taskStreamPullRequestUrl.IsBlank();
+        if (settings.PullRequestUrl.IsNotBlank()
+            && (runStreamOutcome == RunStreamPullRequestOutcome.NotRecorded || pullRequestUrlNotRecordedAnywhere))
         {
+            string visibility = pullRequestUrlNotRecordedAnywhere
+                ? "it was not recorded at all — h9k task show and h9k status will not display it"
+                : "h9k status will keep showing this run as unwatched, which is expected here";
             if (task.Type == TaskType.PrReview)
             {
                 await Console.Error.WriteLineAsync(
                     $"Note: task {taskId} is a pull-request review — {settings.PullRequestUrl} names the "
                     + "pull request it reviewed, not one of this task's own, so closeout will never watch "
                     + "it for a merge. There is no lever that changes that: h9k pr resolve refuses a "
-                    + "pull-request review task outright. h9k status will keep showing this run as "
-                    + "unwatched, which is expected here.");
+                    + $"pull-request review task outright. {visibility}.");
             }
             else
             {
@@ -109,8 +130,7 @@ public sealed class TaskResolveCommand : Hall9kAsyncCommand<TaskResolveCommand.S
                     $"Note: {settings.PullRequestUrl} does not look like a pull request on this task's own "
                     + "project repository, so closeout will not watch it for a merge. There is no lever "
                     + "that fixes this: h9k pr resolve reopens the task onto its already-recorded pull "
-                    + "request rather than accepting a corrected one, so it cannot record a different URL. "
-                    + "h9k status will keep showing this run as unwatched, which is expected here.");
+                    + $"request rather than accepting a corrected one, so it cannot record a different URL. {visibility}.");
             }
         }
 
@@ -129,9 +149,13 @@ public sealed class TaskResolveCommand : Hall9kAsyncCommand<TaskResolveCommand.S
         /// <c>RunDetails</c> row and drop the task out of
         /// <c>CloseoutEngine.TasksWithMissingRunRecordsAsync</c>'s own candidate set, the one
         /// sweep that is actually built to complete closeout for exactly this shape (independent
-        /// pre-PR review, cycle 1). Silent by design: the missing-run sweep already watches this
-        /// task's <c>PullRequestUrl</c> (recorded on the task stream by <c>TaskDecider.Resolve</c>
-        /// regardless of this outcome) without needing a run stream at all.
+        /// pre-PR review, cycle 1). Silent by design: the missing-run sweep watches this task's
+        /// <c>PullRequestUrl</c> without needing a run stream at all — recorded on the task stream
+        /// by <c>TaskDecider.Resolve</c> only when <see cref="SafePullRequestUrlWithoutRunStreamAsync"/>
+        /// judges it safe to (independent pre-PR review, cycle 1, medium: that sweep's own
+        /// inspection applies neither the pr-review guard nor the repository-match guard this
+        /// command enforces everywhere else, so an unsafe URL recorded here regardless would still
+        /// reach it).
         /// </summary>
         NoRunStream,
 
@@ -147,8 +171,8 @@ public sealed class TaskResolveCommand : Hall9kAsyncCommand<TaskResolveCommand.S
     }
 
     /// <summary>
-    /// The run-side counterpart to the pull request <see cref="TaskDecider.Resolve"/> just
-    /// carried onto the task stream: without this, <c>RunDetails.PullRequestNumber</c> stays null
+    /// The run-side counterpart to the pull request <see cref="TaskDecider.Resolve"/> also
+    /// carries onto the task stream: without this, <c>RunDetails.PullRequestNumber</c> stays null
     /// forever and the run — still Failed — never matches <c>CloseoutEngine</c>'s orphan sweep
     /// (Decisions Log #72), so the row sits needs-you even after the pull request actually
     /// merges. Never <c>PullRequestOpened</c> or <c>PullRequestUpdated</c> here: either one moves
@@ -166,7 +190,8 @@ public sealed class TaskResolveCommand : Hall9kAsyncCommand<TaskResolveCommand.S
         TaskAggregate task,
         string? pullRequestUrl,
         DateTimeOffset resolvedAt,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        ProcessRunner? processRunner = null)
     {
         if (task.CurrentRunId is not { } runId
             || await session.Events.FetchStreamStateAsync(runId, cancellationToken) is null)
@@ -180,7 +205,8 @@ public sealed class TaskResolveCommand : Hall9kAsyncCommand<TaskResolveCommand.S
         }
 
         ProjectDetails? project = await session.LoadAsync<ProjectDetails>(task.ProjectId, cancellationToken);
-        if (BuildFailedRunPullRequestEvent(runId, pullRequestUrl, resolvedAt, project?.RepositoryUrl)
+        Uri? projectRepositoryUrl = await ResolveProjectRepositoryUrlAsync(project, processRunner, cancellationToken);
+        if (BuildFailedRunPullRequestEvent(runId, pullRequestUrl, resolvedAt, projectRepositoryUrl)
             is not { } pullRequestRecorded)
         {
             return RunStreamPullRequestOutcome.NotRecorded;
@@ -189,6 +215,56 @@ public sealed class TaskResolveCommand : Hall9kAsyncCommand<TaskResolveCommand.S
         session.Events.Append(runId, pullRequestRecorded);
         return RunStreamPullRequestOutcome.Recorded;
     }
+
+    /// <summary>
+    /// What <c>--pr</c> should still be recorded as on the task stream when
+    /// <see cref="RecordPullRequestOnRunStreamAsync"/> found no run stream to append onto at all
+    /// (<see cref="RunStreamPullRequestOutcome.NoRunStream"/>): with no run stream, no
+    /// <c>RunDetails</c> row will ever materialize to drop this task back out of
+    /// <c>CloseoutEngine.TasksWithMissingRunRecordsAsync</c>'s own candidate shape
+    /// (<c>PullRequestUrl != null &amp;&amp; CurrentRunId != null</c>), and that sweep's own
+    /// inspection (<c>InspectMissingRunAsync</c>) applies neither the pr-review guard nor the
+    /// repository-match guard <see cref="BuildFailedRunPullRequestEvent"/> already enforces on the
+    /// run-stream path above — fixing the sweep itself is routed to a task of its own. Whether the
+    /// URL is even recorded here for display is therefore the only lever this command has left to
+    /// keep that sweep honest, so the same two guards apply here too (independent pre-PR review,
+    /// cycle 1, medium).
+    /// </summary>
+    internal static async Task<string?> SafePullRequestUrlWithoutRunStreamAsync(
+        IDocumentSession session,
+        TaskAggregate task,
+        string? pullRequestUrl,
+        CancellationToken cancellationToken,
+        ProcessRunner? processRunner = null)
+    {
+        if (pullRequestUrl.IsBlank() || task.Type == TaskType.PrReview)
+        {
+            return null;
+        }
+
+        ProjectDetails? project = await session.LoadAsync<ProjectDetails>(task.ProjectId, cancellationToken);
+        Uri? projectRepositoryUrl = await ResolveProjectRepositoryUrlAsync(project, processRunner, cancellationToken);
+        return IsSafePullRequestUrl(pullRequestUrl, projectRepositoryUrl) ? pullRequestUrl : null;
+    }
+
+    /// <summary>
+    /// The project's own repository, falling back to the same ambient <c>gh repo view</c>
+    /// observation <c>RunLauncher.LaunchAsync</c> and <c>TaskPublishCommand</c> already use for a
+    /// project registered with <c>--repo</c> and no <c>--repo-url</c> — the shape that leaves
+    /// <see cref="ProjectDetails.RepositoryUrl"/> null forever, since nothing backfills it and
+    /// there is no <c>h9k project set --repo-url</c> (independent pre-PR review, cycle 3, medium:
+    /// an earlier version of this guard read only <c>RepositoryUrl</c> and treated that null as
+    /// "unknown, proceed" — permanently inert for exactly that project shape). Best-effort, like
+    /// both precedents: a <c>gh</c> that cannot resolve a remote at all leaves nothing observed, so
+    /// the caller proceeds exactly as it would when no repository is recorded at all.
+    /// </summary>
+    private static async Task<Uri?> ResolveProjectRepositoryUrlAsync(
+        ProjectDetails? project, ProcessRunner? processRunner, CancellationToken cancellationToken) =>
+        project is null
+            ? null
+            : project.RepositoryUrl
+                ?? await new GitHubWorkItemProvider(processRunner).TryObserveRepositoryHostAsync(
+                    project.RepositoryPath, cancellationToken);
 
     /// <summary>
     /// The run-stream event to append alongside <see cref="TaskDecider.Resolve"/>'s pull request,
@@ -207,27 +283,49 @@ public sealed class TaskResolveCommand : Hall9kAsyncCommand<TaskResolveCommand.S
     /// <c>CloseoutEngine</c>'s orphan sweep as a resolve with no <c>--pr</c> already left it.
     /// </summary>
     public static PullRequestRecordedOnFailedRun? BuildFailedRunPullRequestEvent(
-        Guid runId, string? pullRequestUrl, DateTimeOffset recordedAt, Uri? projectRepositoryUrl = null)
+        Guid runId, string? pullRequestUrl, DateTimeOffset recordedAt, Uri? projectRepositoryUrl = null) =>
+        IsSafePullRequestUrl(pullRequestUrl, projectRepositoryUrl)
+            ? new PullRequestRecordedOnFailedRun(
+                runId, pullRequestUrl, PullRequestUrls.ParseNumber(pullRequestUrl), recordedAt)
+            : null;
+
+    /// <summary>
+    /// Whether <paramref name="pullRequestUrl"/> is safe to treat as this task's own pull request
+    /// anywhere it can be watched for a merge — the run stream (<see cref="BuildFailedRunPullRequestEvent"/>)
+    /// or, with no run stream to protect it, the task stream itself
+    /// (<see cref="SafePullRequestUrlWithoutRunStreamAsync"/>). False for a blank URL, one that
+    /// does not parse to a real pull request number (never guess a number, AGENTS.md's never-guess
+    /// rule), or one naming a repository other than <paramref name="projectRepositoryUrl"/>'s own —
+    /// checked by host as well as owner/repo, since <see cref="PullRequestUrls.RepositoryFrom"/>
+    /// alone reads path segments only and would otherwise treat
+    /// <c>https://gitlab.com/x/y/pull/24</c> as the same repository as a project recorded at
+    /// <c>https://github.com/x/y</c> (adversarial review, cycle 1, medium). A mistyped or
+    /// copy-pasted URL from an unrelated repository must never become this run's merge signal:
+    /// CloseoutEngine inspects strictly by number against the project's own repository, and a
+    /// false match would let an unrelated pull request's merge complete this task's closeout and
+    /// delete this run's own branch out from under it (adversarial review, cycle 1). The
+    /// repository check is a courtesy, the same shape <c>RunLauncher.LaunchAsync</c>'s pr-review
+    /// repository check is: a project whose repository cannot be resolved at all proceeds rather
+    /// than blocking on information this command does not have.
+    /// </summary>
+    private static bool IsSafePullRequestUrl(
+        [NotNullWhen(true)] string? pullRequestUrl, Uri? projectRepositoryUrl)
     {
-        if (pullRequestUrl.IsBlank())
+        if (pullRequestUrl.IsBlank() || PullRequestUrls.ParseNumber(pullRequestUrl) <= 0)
         {
-            return null;
+            return false;
         }
 
-        int pullRequestNumber = PullRequestUrls.ParseNumber(pullRequestUrl);
-        if (pullRequestNumber <= 0)
-        {
-            return null;
-        }
-
-        if (PullRequestUrls.RepositoryFrom(projectRepositoryUrl) is { } projectRepository
+        if (projectRepositoryUrl is not null
             && Uri.TryCreate(pullRequestUrl, UriKind.Absolute, out Uri? parsedPullRequestUrl)
+            && PullRequestUrls.RepositoryFrom(projectRepositoryUrl) is { } projectRepository
             && PullRequestUrls.RepositoryFrom(parsedPullRequestUrl) is { } pullRequestRepository
-            && !string.Equals(projectRepository, pullRequestRepository, StringComparison.OrdinalIgnoreCase))
+            && (!string.Equals(projectRepositoryUrl.Host, parsedPullRequestUrl.Host, StringComparison.OrdinalIgnoreCase)
+                || !string.Equals(projectRepository, pullRequestRepository, StringComparison.OrdinalIgnoreCase)))
         {
-            return null;
+            return false;
         }
 
-        return new PullRequestRecordedOnFailedRun(runId, pullRequestUrl, pullRequestNumber, recordedAt);
+        return true;
     }
 }
