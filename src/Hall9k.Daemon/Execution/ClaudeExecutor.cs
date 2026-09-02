@@ -3,6 +3,7 @@ using Hall9k.Domain.Infrastructure.Storage;
 using Hall9k.Daemon.ProcessManagement;
 using Hall9k.Domain.Features.Run;
 using Hall9k.Domain.Shared.ValueObjects;
+using Microsoft.Extensions.Options;
 
 namespace Hall9k.Daemon.Execution;
 
@@ -17,7 +18,8 @@ namespace Hall9k.Daemon.Execution;
 /// platform deliberately does NOT inherit from the owner's config, because a personal
 /// default changed on a Tuesday is not a platform decision.
 /// </summary>
-public sealed class ClaudeExecutor(ILogger<ClaudeExecutor> logger, IProcessManager processManager) : IExecutor
+public sealed class ClaudeExecutor(
+    ILogger<ClaudeExecutor> logger, IProcessManager processManager, IOptions<DaemonOptions> options) : IExecutor
 {
     public async Task<SpawnedAgent> SpawnAsync(AgentSpawnRequest request, CancellationToken cancellationToken)
     {
@@ -50,7 +52,11 @@ public sealed class ClaudeExecutor(ILogger<ClaudeExecutor> logger, IProcessManag
                 RunPaths.StandardErrorFile(runDirectory));
 
         await File.WriteAllTextAsync(promptFile, request.Prompt, cancellationToken);
-        await File.WriteAllTextAsync(SettingsFile(request, runDirectory), ClaudeSettingsFile.Content, cancellationToken);
+        // Sized to the live VerifyGateTimeout rather than ClaudeSettingsFile's own build-time
+        // default (2026-09-02 finding): an operator who raises the option gets a foreground gate
+        // run that survives it on every headless dispatch, with no constant to remember to bump.
+        string settingsContent = ClaudeSettingsFile.Build(options.Value.VerifyGateTimeout);
+        await File.WriteAllTextAsync(SettingsFile(request, runDirectory), settingsContent, cancellationToken);
 
         string command = $"\"{ClaudeBinary()}\" {string.Join(' ', Arguments(request, runDirectory))}";
 
@@ -77,8 +83,10 @@ public sealed class ClaudeExecutor(ILogger<ClaudeExecutor> logger, IProcessManag
     /// wherever there is one, because one file per run has a writer per spawn: a review cycle
     /// dispatches its lenses back to back (log #59), and the second spawn's truncate-and-rewrite
     /// would otherwise land inside the first child's config-loading window, handing it an empty file
-    /// and losing the trailer suppression that is the whole point of the file. A session that owns
-    /// its settings has no writer but itself.
+    /// and losing both platform-imposed overrides the file carries — trailer suppression, and the
+    /// command-tool timeout headroom that is the whole point of this task (a child that loads an
+    /// empty settings file falls back to Claude Code's stock 2-minute default, the exact failure
+    /// this file exists to fix). A session that owns its settings has no writer but itself.
     /// </summary>
     private static string SettingsFile(AgentSpawnRequest request, string runDirectory) =>
         request.SessionArtifactName is { } session

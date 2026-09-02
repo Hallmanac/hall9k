@@ -709,10 +709,10 @@ public sealed class RunSupervisorTests(PostgresFixture postgres) : IClassFixture
         VerificationRunner verification = new(
             store, Options.Create(new DaemonOptions()), NullLogger<VerificationRunner>.Instance);
         ReviewEngine review = new(
-            store, new ClaudeExecutor(NullLogger<ClaudeExecutor>.Instance, processManager), processManager, verification,
+            store, new ClaudeExecutor(NullLogger<ClaudeExecutor>.Instance, processManager, Options.Create(new DaemonOptions())), processManager, verification,
             Options.Create(new DaemonOptions()), NullLogger<ReviewEngine>.Instance);
         PrReviewEngine prReview = new(
-            store, new ClaudeExecutor(NullLogger<ClaudeExecutor>.Instance, processManager), processManager,
+            store, new ClaudeExecutor(NullLogger<ClaudeExecutor>.Instance, processManager, Options.Create(new DaemonOptions())), processManager,
             new GitWorktreeManager(NullLogger<GitWorktreeManager>.Instance),
             Options.Create(new DaemonOptions()), NullLogger<PrReviewEngine>.Instance);
         return new RunSupervisor(store, node, processManager, verification, review, prReview,
