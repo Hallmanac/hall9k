@@ -31,7 +31,8 @@ internal sealed record SpendPressure(
     DateTimeOffset NextRollover,
     string Period,
     bool BudgetIsEnforced,
-    long? ConfiguredBudgetTokens)
+    long? ConfiguredBudgetTokens,
+    string ConfiguredPeriod)
 {
     /// <summary>
     /// Whether this period's recorded spend has reached a budget a daemon has confirmed it is
@@ -59,7 +60,7 @@ internal sealed record SpendPressure(
     public string SummaryLine => (BudgetTokens, BudgetIsEnforced) switch
     {
         ({ } budget, true) => $"spend this {Period}: {SpentTokens:N0} of {budget:N0} tokens (rolls {NextRollover:u})"
-            + PendingChangeNote(budget),
+            + PendingChangeNote(budget, Period),
         ({ } budget, false) => $"spend this {Period}: {SpentTokens:N0} tokens ({budget:N0}-token budget set but not "
             + $"yet confirmed by a running daemon — h9k daemon start, or restart it, to put it in force; rolls "
             + $"{NextRollover:u})",
@@ -67,24 +68,26 @@ internal sealed record SpendPressure(
     };
 
     /// <summary>
-    /// A change to an already-enforced budget is a second transition <see cref="SummaryLine"/>'s
-    /// own set-but-not-yet-confirmed branch does not cover, because that branch only fires when
-    /// <see cref="BudgetIsEnforced"/> is false — here it is still true, on the daemon's old value,
-    /// while this shell resolves a different one. Without this note the two figures sit side by
-    /// side on <c>h9k config show</c> (this line, and
+    /// A change to an already-enforced budget or period is a second transition <see
+    /// cref="SummaryLine"/>'s own set-but-not-yet-confirmed branch does not cover, because that
+    /// branch only fires when <see cref="BudgetIsEnforced"/> is false — here it is still true, on
+    /// the daemon's old value, while this shell resolves a different one, in either the budget or
+    /// the period (or both). Without this note the two figures sit side by side on
+    /// <c>h9k config show</c> (this line, and
     /// <c>OperatingSettingsRendering.DescribeSpendBudgetTokens</c>'s row) with nothing saying which
-    /// one is actually in force. Fires on a resolved <c>null</c> too — clearing an already-enforced
-    /// budget (<c>h9k config set --spend-budget none</c>) is the same disagreement, not a case the
-    /// prior non-null-only check should have let through. The wording does not assume a pending
-    /// file edit is the cause: the daemon's own environment can carry
+    /// one is actually in force. Fires on a resolved <c>null</c> budget too — clearing an
+    /// already-enforced budget (<c>h9k config set --spend-budget none</c>) is the same
+    /// disagreement, not a case the prior non-null-only check should have let through. The wording
+    /// does not assume a pending file edit is the cause: the daemon's own environment can carry
     /// <c>Hall9k__SpendBudgetTokens</c> while this shell's does not, in which case "restart the
     /// daemon" is the wrong remedy, so the note names the disagreement rather than a diagnosis.
     /// </summary>
-    private string PendingChangeNote(long enforcedBudget) =>
-        ConfiguredBudgetTokens != enforcedBudget
-            ? $" — this shell resolves {(ConfiguredBudgetTokens is { } configured ? $"{configured:N0}" : "no budget")}, "
-                + "which differs from what the daemon is enforcing; restart the daemon if a config change should "
-                + "take effect, or check whether it sees a different environment"
+    private string PendingChangeNote(long enforcedBudget, string enforcedPeriod) =>
+        ConfiguredBudgetTokens != enforcedBudget || ConfiguredPeriod != enforcedPeriod
+            ? $" — this shell resolves "
+                + $"{(ConfiguredBudgetTokens is { } configured ? $"{configured:N0}" : "no budget")} "
+                + $"per {ConfiguredPeriod}, which differs from what the daemon is enforcing; restart the daemon if "
+                + "a config change should take effect, or check whether it sees a different environment"
             : string.Empty;
 
     public static async Task<SpendPressure> ReadAsync(
@@ -92,15 +95,20 @@ internal sealed record SpendPressure(
     {
         NodeDispatchLoad? published = await DispatchPressure.ReadFreshMeasurementAsync(session, now, cancellationToken);
 
+        // Period rides the same enforcement gate the budget does: a published row always carries
+        // some SpendPeriod (the daemon's compiled default when no budget is set), so trusting it
+        // whenever it is merely non-empty would report a window the daemon isn't actually
+        // enforcing (independent pre-PR review, cycle 7, adversarial lens).
         bool budgetIsEnforced = published is { SpendBudgetTokens: not null };
         long? budgetTokens = budgetIsEnforced ? published!.SpendBudgetTokens : report.SpendBudgetTokens.Value;
-        string periodValue = published is { SpendPeriod.Length: > 0 } ? published!.SpendPeriod : report.SpendPeriod.Value;
+        string periodValue = budgetIsEnforced ? published!.SpendPeriod : report.SpendPeriod.Value;
 
         SpendPeriod period = SpendPeriod.FromInput(periodValue);
         DateTimeOffset periodStart = period.StartOf(now);
         PeriodSpend spend = await PeriodSpend.ReadAsync(session, periodStart, cancellationToken);
         return new SpendPressure(
             spend.TotalInputTokens, budgetTokens, spend.ByModel, periodStart,
-            period.NextRolloverAfter(now), period.Value, budgetIsEnforced, report.SpendBudgetTokens.Value);
+            period.NextRolloverAfter(now), period.Value, budgetIsEnforced, report.SpendBudgetTokens.Value,
+            report.SpendPeriod.Value);
     }
 }

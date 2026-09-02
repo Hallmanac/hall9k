@@ -72,6 +72,19 @@ public sealed class DispatchEngine(
     private bool _reportedSpendExhausted;
 
     /// <summary>
+    /// The period start <see cref="SpendBudgetExhaustedAsync"/> last confirmed exhausted, or null
+    /// when the current period isn't known to be. Spend within a period only ever grows —
+    /// <c>TokensRecorded</c> is append-only — so once a period is exhausted it stays exhausted
+    /// until the period rolls over, and re-summing every event on every sweep to confirm the same
+    /// answer again is pure cost: a node that spends its weekly budget on day one with tasks still
+    /// queued would otherwise re-materialize the whole period's events roughly every
+    /// <see cref="DaemonOptions.PollInterval"/> for the remainder of the week (independent pre-PR
+    /// review, cycle 7, adversarial lens). A periodStart that doesn't match invalidates the cache
+    /// on its own, so a rollover re-queries exactly once, starting the new period unexhausted.
+    /// </summary>
+    private DateTimeOffset? _spendExhaustedSincePeriodStart;
+
+    /// <summary>
     /// Requeue claimed tasks whose lease heartbeat has gone silent past the timeout —
     /// except tasks whose current run is parked. Parked means waiting on a human, not
     /// abandoned: the sweep refreshes the lease instead, so heartbeat decay (a stopped
@@ -373,7 +386,11 @@ public sealed class DispatchEngine(
         // nothing queued, or a node already at its concurrency ceiling, would otherwise
         // materialize a full period's worth of TokensRecorded events for a decision that changes
         // nothing about this sweep's outcome — paid every PollInterval regardless (independent
-        // pre-PR review, cycle 1, adversarial lens).
+        // pre-PR review, cycle 1, adversarial lens). This guard alone does not bound the steady
+        // state a spent budget produces — queued.Count > 0 and load.Capacity > 0 both stay true
+        // for as long as the gate holds tasks Queued rather than claiming them — so
+        // SpendBudgetExhaustedAsync's own cache (independent pre-PR review, cycle 7, adversarial
+        // lens) is what actually keeps that case cheap.
         bool spendExhausted = queued.Count > 0 && load.Capacity > 0
             && await SpendBudgetExhaustedAsync(session, cancellationToken);
 
@@ -413,7 +430,9 @@ public sealed class DispatchEngine(
     /// spent for the period containing now. Summed live from every <c>TokensRecorded</c> event
     /// since the period start rather than a stored counter — a daemon restart can neither lose
     /// nor double-count it, because there is nothing to lose. Null <see cref="DaemonOptions.SpendBudgetTokens"/>
-    /// means no budget, the unchanged, unbudgeted default.
+    /// means no budget, the unchanged, unbudgeted default. <see cref="_spendExhaustedSincePeriodStart"/>
+    /// short-circuits every sweep after the first that confirms this period exhausted, since spend
+    /// only grows within a period and the answer cannot un-confirm itself before the next rollover.
     /// </summary>
     private async Task<bool> SpendBudgetExhaustedAsync(IQuerySession session, CancellationToken cancellationToken)
     {
@@ -424,8 +443,16 @@ public sealed class DispatchEngine(
 
         SpendPeriod period = SpendPeriod.FromInput(_options.SpendPeriod);
         DateTimeOffset periodStart = period.StartOf(DateTimeOffset.UtcNow);
+
+        if (_spendExhaustedSincePeriodStart == periodStart)
+        {
+            return true;
+        }
+
         PeriodSpend spend = await PeriodSpend.ReadAsync(session, periodStart, cancellationToken);
-        return spend.TotalInputTokens >= budget;
+        bool exhausted = spend.TotalInputTokens >= budget;
+        _spendExhaustedSincePeriodStart = exhausted ? periodStart : null;
+        return exhausted;
     }
 
     /// <summary>
