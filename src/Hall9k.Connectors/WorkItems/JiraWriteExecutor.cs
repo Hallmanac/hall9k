@@ -441,7 +441,12 @@ public sealed class JiraWriteExecutor(JiraAccount account, JiraRequester? reques
     /// unverified reading of Atlassian's migration guidance (no live tenant to check it against
     /// from this build environment). <c>/myself</c> answers exactly the question this probe asks —
     /// is the registered credential authenticated — and is already observed working, so this
-    /// carries no such guess (independent pre-PR review, adversarial lens, cycle 5).
+    /// carries no such guess (independent pre-PR review, adversarial lens, cycle 5). It now also
+    /// adopts <see cref="VerifyAccessAsync"/>'s own shape check on the answer — a 2xx alone is not
+    /// proof, since an identity-aware proxy or an SSO portal in front of the tenant can answer the
+    /// unauthenticated request with its own 200 and a login page or an unrelated JSON body, which
+    /// without this check reported the green "authenticated" line for a credential that could not
+    /// actually write anything (independent pre-PR review, both lenses, cycle 8).
     /// </para>
     /// <para>
     /// Resolves the credential through <see cref="JiraAccount.AuthorizationAsync"/> directly,
@@ -460,11 +465,11 @@ public sealed class JiraWriteExecutor(JiraAccount account, JiraRequester? reques
         string authorization = await account.AuthorizationAsync($"sign in to {account.Site}", cancellationToken);
         try
         {
-            await SendAsync(
+            JiraResponse response = await SendAsync(
                 new JiraRequest(HttpMethod.Get, account.Endpoint("/rest/api/2/myself"), authorization),
                 "probe authentication",
                 cancellationToken);
-            return JiraAuthProbeResult.Authenticated;
+            return IsSignedInUserDocument(response.Body) ? JiraAuthProbeResult.Authenticated : JiraAuthProbeResult.Unknown;
         }
         catch (JiraWriteExecutionException exception) when (exception.Kind == JiraWriteFailureKind.AuthFailure)
         {
@@ -473,6 +478,28 @@ public sealed class JiraWriteExecutor(JiraAccount account, JiraRequester? reques
         catch (JiraWriteExecutionException)
         {
             return JiraAuthProbeResult.Unknown;
+        }
+    }
+
+    /// <summary>
+    /// The same shape check <see cref="JiraWorkItemProvider.VerifyAccessAsync"/> applies to the
+    /// identical endpoint: a 2xx alone is not proof of a signed-in credential, since a proxy or an
+    /// SSO portal in front of the tenant can answer 200 with a login page or an unrelated JSON body.
+    /// <c>accountId</c> is the field that cannot be a coincidence of some other document's shape —
+    /// Jira answers <c>/myself</c> with it for every account.
+    /// </summary>
+    private static bool IsSignedInUserDocument(string body)
+    {
+        try
+        {
+            using JsonDocument document = JsonDocument.Parse(body);
+            return document.RootElement.ValueKind == JsonValueKind.Object
+                && document.RootElement.TryGetProperty("accountId", out JsonElement accountId)
+                && accountId.ValueKind == JsonValueKind.String;
+        }
+        catch (JsonException)
+        {
+            return false;
         }
     }
 

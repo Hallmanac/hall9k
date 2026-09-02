@@ -396,6 +396,34 @@ public sealed class JiraWriteExecutorTests
         probe.Should().Be(JiraAuthProbeResult.Unknown);
     }
 
+    /// <summary>
+    /// A 2xx alone is not proof of a signed-in credential: an identity-aware proxy or an SSO portal
+    /// in front of the tenant can answer the unauthenticated request with its own 200 and a login
+    /// page, or a JSON body carrying no accountId — the same shape check
+    /// <see cref="JiraWorkItemProvider.VerifyAccessAsync"/> already applies to this identical
+    /// endpoint (independent pre-PR review, both lenses, cycle 8).
+    /// </summary>
+    [Fact]
+    public async Task ProbeAuthenticationAsync_reports_Unknown_on_a_200_that_is_not_a_user_document()
+    {
+        RecordingJiraRequester requester = RecordingJiraRequester.Succeeding(200, "<html>please sign in</html>");
+
+        JiraAuthProbeResult probe = await Executor(requester).ProbeAuthenticationAsync(CancellationToken.None);
+
+        probe.Should().Be(JiraAuthProbeResult.Unknown);
+    }
+
+    [Fact]
+    public async Task ProbeAuthenticationAsync_reports_Unknown_on_a_200_json_body_missing_accountId()
+    {
+        RecordingJiraRequester requester = RecordingJiraRequester.Succeeding(
+            200, """{"error":"authentication required","login_url":"https://hall9k.atlassian.net/login"}""");
+
+        JiraAuthProbeResult probe = await Executor(requester).ProbeAuthenticationAsync(CancellationToken.None);
+
+        probe.Should().Be(JiraAuthProbeResult.Unknown);
+    }
+
     [Fact]
     public async Task ProbeAuthenticationAsync_lets_an_unresolvable_credential_propagate_unwrapped()
     {
