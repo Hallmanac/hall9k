@@ -131,9 +131,15 @@ internal static class AttentionComposer
         // retry sweep kept re-issuing the same doomed write underneath it.
         if (task.PendingJiraWriteIsAuthFailure)
         {
+            // The fallback names no cause — "Jira rejected the credential" was the misattribution
+            // this diff removed at every other site that reads this flag (AuthorizeAsync classifies
+            // a credential the vault could never resolve, never asked about by Jira at all, the
+            // same way as one Jira itself rejected), and the recorded reason is non-blank on every
+            // path that exists today, so this only guards against ever falling back to a guess
+            // (independent pre-PR review, conformance lens, cycle 8).
             return new TaskAttention(
                 AttentionLevel.NeedsYou,
-                Reason(task.PendingJiraWriteFailureReason, "a Jira write is pending and Jira rejected the credential — register a fresh API token"),
+                Reason(task.PendingJiraWriteFailureReason, "a Jira write is pending on the registered connection — check it"),
                 "h9k connection add jira --site https://your-org.atlassian.net --email you@example.com");
         }
 

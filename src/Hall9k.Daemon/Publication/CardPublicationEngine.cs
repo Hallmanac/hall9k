@@ -810,8 +810,14 @@ public sealed class CardPublicationEngine(
     {
         await using IQuerySession session = store.QuerySession();
         TaskDetails? task = await session.LoadAsync<TaskDetails>(taskId, cancellationToken);
+        // The fallback names no cause: "rejected credential" is the same misattribution this diff
+        // removed at every other site that reads this flag (AuthorizeAsync classifies a credential
+        // the vault could never resolve — never asked about by Jira at all — the same way as one
+        // Jira itself rejected), and the recorded reason is non-blank on every path that exists
+        // today, so this only guards against ever falling back to a guess (independent pre-PR
+        // review, conformance lens, cycle 8; sibling of AttentionComposer.cs and TaskShowCommand.cs).
         return task?.PendingJiraWriteIsAuthFailure is true
-            ? task.PendingJiraWriteFailureReason ?? "The write is pending on a rejected credential."
+            ? task.PendingJiraWriteFailureReason ?? "The write is pending on the registered connection — check it."
             : null;
     }
 

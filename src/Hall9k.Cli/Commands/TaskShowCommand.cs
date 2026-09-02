@@ -679,9 +679,15 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
         string target = details.PendingJiraWriteIssueKey.IsNotBlank()
             ? $" [dim]on {details.PendingJiraWriteIssueKey.EscapeMarkup()}[/]"
             : string.Empty;
+        // The fallback names no cause: "the registered Jira credential was rejected" was the same
+        // misattribution this diff removed elsewhere on this flag (AuthorizeAsync classifies a
+        // credential the vault could never resolve — never asked about by Jira at all — the same
+        // way as one Jira itself rejected), and the recorded reason is non-blank on every path that
+        // exists today, so this only guards against ever falling back to a guess (independent pre-PR
+        // review, conformance lens, cycle 8).
         return details.PendingJiraWriteIsAuthFailure
             ? $"[red]{details.PendingJiraWriteOperation.Value.EscapeMarkup()}[/]{target} [dim]— "
-              + $"{ExternalText.OneLineMarkup(details.PendingJiraWriteFailureReason ?? "the registered Jira credential was rejected")}[/]"
+              + $"{ExternalText.OneLineMarkup(details.PendingJiraWriteFailureReason ?? "the registered Jira connection needs attention")}[/]"
             : $"[yellow]{details.PendingJiraWriteOperation.Value.EscapeMarkup()}[/]{target} "
               + "[dim]— recorded, executing[/]";
     }
