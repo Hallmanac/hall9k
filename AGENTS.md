@@ -553,7 +553,7 @@ The checkpoints, in the order the window sees them:
    reawakens with a real finding is recorded reactivated rather than left stuck at an old
    conclusion, and a run that converges clean at cycle 1 pays no extra pass at all. "Fresh" is
    about context, not diff range: a FinalFullPass whose run already paid for an earlier full-scope
-   read (this cycle's own opening Discovery, or an earlier FinalFullPass) reads only the commits
+   read (this run's own opening Discovery, or an earlier FinalFullPass) reads only the commits
    since that read's own head, not the whole branch again (Decisions Log #115) — falling back to
    the full diff whenever no such boundary is on record or it no longer resolves against HEAD
    (a history rewrite between cycles), never a guessed one. Every full-scope read still starts

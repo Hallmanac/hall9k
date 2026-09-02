@@ -196,7 +196,7 @@ public sealed class ReviewEngine(
                     string? openingHeadSha = await GetWorktreeHeadShaAsync(context.Run.WorktreePath, cancellationToken);
                     if (!await DispatchReviewPassesAsync(
                         context, run.ReviewCycle + 1, run.ActiveReviewLenses, ReviewMode.Discovery,
-                        openingHeadSha, sinceSha: null, run.CurrentCycleMode, cancellationToken))
+                        openingHeadSha, sinceSha: null, run.CurrentCycleMode, run.CycleSinceSha, cancellationToken))
                     {
                         return false;
                     }
@@ -381,7 +381,8 @@ public sealed class ReviewEngine(
                             context.Run.WorktreePath, run.LastFullScopeReviewHeadSha, cancellationToken);
                         if (!await DispatchReviewPassesAsync(
                             context, run.ReviewCycle + 1, ReviewLens.CycleLenses, ReviewMode.FinalFullPass,
-                            settlingHeadSha, sinceSha: settlingSinceSha, run.CurrentCycleMode, cancellationToken))
+                            settlingHeadSha, sinceSha: settlingSinceSha, run.CurrentCycleMode, run.CycleSinceSha,
+                            cancellationToken))
                         {
                             return false;
                         }
@@ -559,7 +560,7 @@ public sealed class ReviewEngine(
                         : run.CycleHeadSha;
                     if (!await DispatchReviewPassesAsync(
                         context, run.ReviewCycle + 1, reverifyLenses, reverifyMode, reverifyHeadSha,
-                        sinceSha: reverifySinceSha, run.CurrentCycleMode, cancellationToken))
+                        sinceSha: reverifySinceSha, run.CurrentCycleMode, run.CycleSinceSha, cancellationToken))
                     {
                         return false;
                     }
@@ -750,7 +751,7 @@ public sealed class ReviewEngine(
             : run.PriorCycleHeadSha;
         bool dispatched = await DispatchReviewPassesAsync(
             context, run.ReviewCycle, toDispatch, run.CurrentCycleMode, run.CycleHeadSha,
-            sinceSha: topUpSinceSha, run.PriorCycleMode, cancellationToken);
+            sinceSha: topUpSinceSha, run.PriorCycleMode, run.PriorCycleSinceSha, cancellationToken);
         return dispatched ? MissingPassDispatch.Dispatched : MissingPassDispatch.Stale;
     }
 
@@ -768,16 +769,20 @@ public sealed class ReviewEngine(
     /// <paramref name="priorCycleMode"/> is the same kind of value, only read for a Verify dispatch
     /// too (cycle-4 conformance finding): whether the cycle whose findings this pass is quoting was
     /// itself a full two-lens read or another delta-scoped Verify pass, so that pass's prompt can
-    /// say so honestly instead of always claiming a full read happened.
+    /// say so honestly instead of always claiming a full read happened. <paramref name="priorCycleSinceSha"/>
+    /// is the same cycle's own recorded <see cref="ReviewDispatched.SinceSha"/> (independent pre-PR
+    /// review, cycle 1 adversarial finding): when <paramref name="priorCycleMode"/> is
+    /// <see cref="ReviewMode.FinalFullPass"/>, a non-null value here means that cycle was itself
+    /// scoped rather than a genuine full-branch read, so the Verify prompt cannot claim one happened.
     /// </summary>
     private async Task<bool> DispatchReviewPassesAsync(
         ReviewContext context, int cycle, IReadOnlyList<ReviewLens> lenses, ReviewMode mode, string? headSha,
-        string? sinceSha, ReviewMode priorCycleMode, CancellationToken cancellationToken)
+        string? sinceSha, ReviewMode priorCycleMode, string? priorCycleSinceSha, CancellationToken cancellationToken)
     {
         if (mode == ReviewMode.Verify)
         {
             return await DispatchVerifyPassAsync(
-                context, cycle, lenses, headSha, sinceSha, priorCycleMode, cancellationToken);
+                context, cycle, lenses, headSha, sinceSha, priorCycleMode, priorCycleSinceSha, cancellationToken);
         }
 
         // The per-run session cap (Decisions Log #111, Brian's ruling 2026-08-30) bounds how many
@@ -842,7 +847,7 @@ public sealed class ReviewEngine(
         await using IDocumentSession session = store.LightweightSession();
         session.Events.Append(context.RunId, new ReviewDispatched(
             context.RunId, sessionId, cycle, agent.ProcessId, agent.StartedAt, DateTimeOffset.UtcNow, model, lens,
-            mode, headSha));
+            mode, headSha, sinceSha));
         await session.SaveChangesAsync(cancellationToken);
         logger.LogInformation(
             "Run {RunId}: {Lens} agent dispatched with fresh context (cycle {Cycle}, mode {Mode}, session {SessionId}, pid {ProcessId}, model {Model})",
@@ -869,7 +874,7 @@ public sealed class ReviewEngine(
     /// </summary>
     private async Task<bool> DispatchVerifyPassAsync(
         ReviewContext context, int cycle, IReadOnlyList<ReviewLens> tracks, string? headSha, string? sinceSha,
-        ReviewMode priorCycleMode, CancellationToken cancellationToken)
+        ReviewMode priorCycleMode, string? priorCycleSinceSha, CancellationToken cancellationToken)
     {
         if (!await EnsureCurrentGenerationAsync(context, cancellationToken))
         {
@@ -886,7 +891,7 @@ public sealed class ReviewEngine(
         Guid sessionId = DomainId.New();
         string prompt = AgentPromptBuilder.BuildReviewVerify(
             context.Task, context.Project, context.Run.Branch, cycle, tracks, priorFindings, priorFixPosition,
-            sinceSha, priorCycleMode, context.PriorRulings);
+            sinceSha, priorCycleMode, priorCycleSinceSha, context.PriorRulings);
         ExecutorMode executorMode = context.Run.ExecutorMode;
         // A Verify pass resolves its own knob rather than the plain Review chain (Brian's ruling,
         // 2026-08-29): defaults to whatever Review itself would resolve to, so this is a no-op
@@ -902,7 +907,7 @@ public sealed class ReviewEngine(
         await using IDocumentSession session = store.LightweightSession();
         session.Events.Append(context.RunId, new ReviewDispatched(
             context.RunId, sessionId, cycle, agent.ProcessId, agent.StartedAt, DateTimeOffset.UtcNow, model,
-            ReviewLens.Verify, ReviewMode.Verify, headSha));
+            ReviewLens.Verify, ReviewMode.Verify, headSha, sinceSha));
         await session.SaveChangesAsync(cancellationToken);
         logger.LogInformation(
             "Run {RunId}: verify agent dispatched over {Tracks} with the prior cycle's findings (cycle {Cycle}, session {SessionId}, pid {ProcessId}, model {Model})",

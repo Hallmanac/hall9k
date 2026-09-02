@@ -1154,6 +1154,39 @@ public sealed class RunAggregateTests
     }
 
     /// <summary>
+    /// PriorCycleSinceSha (independent pre-PR review, cycle 1 adversarial finding) mirrors
+    /// PriorCycleHeadSha's own capture-once-per-cycle bookkeeping: it must lag one cycle behind and
+    /// survive a same-cycle top-up, so a later Verify pass's prompt can tell whether the cycle it is
+    /// quoting findings from was itself scoped or read the branch in full.
+    /// </summary>
+    [Fact]
+    public void Prior_cycle_since_sha_lags_one_cycle_behind_and_survives_a_same_cycle_top_up()
+    {
+        RunAggregate run = new();
+        Guid id = DomainId.New();
+
+        run.Apply(new ReviewDispatched(
+            id, DomainId.New(), Cycle: 1, ProcessId: 5001, Now, Now, Mode: ReviewMode.Discovery,
+            HeadSha: "sha1", SinceSha: null));
+        run.CycleSinceSha.Should().BeNull("Discovery always reads the full base-branch diff");
+        run.PriorCycleSinceSha.Should().BeNull("cycle 1 has no cycle before it");
+
+        run.Apply(new ReviewDispatched(
+            id, DomainId.New(), Cycle: 2, ProcessId: 5002, Now, Now, Mode: ReviewMode.FinalFullPass,
+            HeadSha: "sha2", SinceSha: "sha1"));
+        run.CycleSinceSha.Should().Be("sha1", "cycle 2's own FinalFullPass was scoped to the commits since cycle 1");
+        run.PriorCycleSinceSha.Should().BeNull("cycle 1's own SinceSha, not cycle 2's");
+
+        // A crash-recovery top-up re-dispatches into the SAME cycle — it must not move
+        // PriorCycleSinceSha to cycle 2's own SinceSha.
+        run.Apply(new ReviewDispatched(
+            id, DomainId.New(), Cycle: 2, ProcessId: 5003, Now, Now, Mode: ReviewMode.FinalFullPass,
+            HeadSha: "sha2", SinceSha: "sha1"));
+        run.CycleSinceSha.Should().Be("sha1");
+        run.PriorCycleSinceSha.Should().BeNull("topping up cycle 2 is not a new cycle starting");
+    }
+
+    /// <summary>
     /// LastFullScopeReviewHeadSha (task: the mandatory FinalFullPass rereads only the commits no
     /// full-scope pass has already read) must survive unchanged across however many Verify cycles
     /// sit between two full-scope reads — CycleHeadSha/PriorCycleHeadSha alone cannot answer this,

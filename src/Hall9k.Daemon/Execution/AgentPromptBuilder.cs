@@ -698,21 +698,32 @@ public static class AgentPromptBuilder
     /// <see cref="ReviewMode.Discovery"/> or <see cref="ReviewMode.FinalFullPass"/> cycle — a false
     /// completeness claim is exactly the kind of unobserved fact AGENTS.md says never to assert.
     /// </param>
+    /// <param name="priorCycleSinceSha">
+    /// That same cycle's own recorded <see cref="Events.ReviewDispatched.SinceSha"/> (independent
+    /// pre-PR review, cycle 1 adversarial finding): a <see cref="ReviewMode.FinalFullPass"/> cycle no
+    /// longer guarantees a full-branch read on its own (Decisions Log #115) — a non-null value here
+    /// means that cycle was itself scoped to the commits since an earlier full-scope read, and the
+    /// same false-completeness problem <paramref name="priorCycleMode"/> guards against applies just
+    /// as much to a scoped FinalFullPass as it does to a Verify pass.
+    /// </param>
     public static string BuildReviewVerify(
         TaskDetails task, ProjectDetails project, string branch, int cycle, IReadOnlyList<ReviewLens> tracks,
         string priorFindings, string priorFixPosition, string? sinceSha, ReviewMode priorCycleMode,
-        IReadOnlyList<ReviewParkResolution>? priorRulings = null)
+        string? priorCycleSinceSha, IReadOnlyList<ReviewParkResolution>? priorRulings = null)
     {
+        bool priorCycleReadFullBranch =
+            priorCycleMode != ReviewMode.FinalFullPass || priorCycleSinceSha is null;
+        string priorCycleDescription = priorCycleMode == ReviewMode.Verify
+            ? "One earlier reviewer already verified the standing findings over a delta since the cycle before it"
+            : priorCycleReadFullBranch
+                ? "Two earlier reviewers already read this branch in full"
+                : "Two earlier reviewers already read the commits since the branch's last full-scope pass, not the whole branch,";
         StringBuilder prompt = new();
         prompt.AppendLine("# Independent review: verify the fix, and check what it touched");
         prompt.AppendLine();
         prompt.AppendLine("You are an independent reviewer with fresh context, brought in to verify a fix rather");
-        prompt.AppendLine(priorCycleMode == ReviewMode.Verify
-            ? "than discover a diff from scratch. One earlier reviewer already verified the standing findings"
-            : "than discover a diff from scratch. Two earlier reviewers already read this branch in");
-        prompt.AppendLine(priorCycleMode == ReviewMode.Verify
-            ? "over a delta since discovery and reported the findings below; a fix session already acted on them."
-            : "full and reported the findings below; a fix session already acted on them.");
+        prompt.AppendLine($"than discover a diff from scratch. {priorCycleDescription} and reported the findings");
+        prompt.AppendLine("below; a fix session already acted on them.");
         prompt.AppendLine("Your job is to confirm each fix actually landed and to check its blast radius — whether it");
         prompt.AppendLine("touched a caller, a test, or a nearby invariant the original finding never mentioned —");
         prompt.AppendLine("not to re-read the whole branch from the beginning.");
@@ -1417,7 +1428,7 @@ public static class AgentPromptBuilder
     /// <para>
     /// The diff instruction itself narrows only for a <see cref="ReviewMode.FinalFullPass"/> pass
     /// with a resolved <paramref name="sinceSha"/> (task: the mandatory FinalFullPass rereads only
-    /// the commits no full-scope pass has already read, Decisions Log #114): every other
+    /// the commits no full-scope pass has already read, Decisions Log #115): every other
     /// combination — <see cref="ReviewMode.Discovery"/> always, or a FinalFullPass with no prior
     /// full-scope read on record — reads the same full base-branch three-dot diff this method has
     /// always instructed. <see cref="ReviewMode.Verify"/> never reaches this method with its own
@@ -1439,7 +1450,17 @@ public static class AgentPromptBuilder
             prompt.AppendLine($"  commit up to `{fullScopeSha}` fresh — its findings and dispositions stand for");
             prompt.AppendLine("  that range, and you are not re-litigating them. Read only what has not yet had a");
             prompt.AppendLine($"  fresh full-scope look: `git diff {fullScopeSha}..HEAD` (commits:");
-            prompt.AppendLine($"  `git log {fullScopeSha}..HEAD`).");
+            prompt.AppendLine($"  `git log {fullScopeSha}..HEAD`). If that range is empty, nothing has landed since");
+            prompt.AppendLine("  the last full-scope read — that is a legitimate merge-ready outcome; say so rather");
+            prompt.AppendLine($"  than inventing scope to fill the pass. If this branch brought `{baseBranch}`");
+            prompt.AppendLine("  current via a merge (rather than a rebase) since that earlier pass, this range");
+            prompt.AppendLine("  will include those upstream commits too — check a finding there against");
+            prompt.AppendLine($"  `git diff origin/{baseBranch}...HEAD` (the scope rule below) before treating it");
+            prompt.AppendLine("  as this branch's own work. That same command is also what decides scope for you,");
+            prompt.AppendLine($"  so fall back to the local `{baseBranch}` ref only when this worktree carries no");
+            prompt.AppendLine($"  `origin/{baseBranch}` at all: a task worktree's local base-branch ref, when one");
+            prompt.AppendLine("  exists, is shared with the project home's `dev/` worktree and is routinely stale");
+            prompt.AppendLine("  relative to this task's actual base.");
         }
         else
         {

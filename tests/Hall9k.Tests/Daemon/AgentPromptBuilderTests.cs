@@ -1128,7 +1128,7 @@ public sealed class AgentPromptBuilderTests : IDisposable
 
     /// <summary>
     /// Task: the mandatory FinalFullPass rereads only the commits no full-scope pass has already
-    /// read (Decisions Log #114). A resolved sinceSha narrows FinalFullPass's own diff instruction
+    /// read (Decisions Log #115). A resolved sinceSha narrows FinalFullPass's own diff instruction
     /// to the commits since that boundary rather than the whole branch, for both lenses.
     /// </summary>
     [Theory]
@@ -1147,6 +1147,32 @@ public sealed class AgentPromptBuilderTests : IDisposable
             "a resolved boundary replaces the mechanics section's own full-range instruction — the "
                 + "separate out-of-scope/in-scope check still reads the whole branch against base "
                 + "regardless, so the bare command text alone is not proof enough");
+    }
+
+    /// <summary>
+    /// Independent pre-PR review, cycle 1, adversarial finding: a scoped FinalFullPass range can
+    /// resolve empty (the fix session that concluded a Verify cycle committed nothing), and the
+    /// reviewer needs to be told that is a legitimate merge-ready outcome rather than an instruction
+    /// to invent scope. The same finding also covers a merged-in base branch: the scoped range can
+    /// pull in upstream commits, so the reviewer is pointed at the separate origin-relative scope
+    /// check before treating anything found there as this branch's own work, and that check's own
+    /// fallback to the local base ref — otherwise absent from the scoped branch entirely — is
+    /// restated so a worktree with no `origin/<base>` still has an instruction to follow.
+    /// </summary>
+    [Fact]
+    public void Final_full_pass_scoped_instruction_covers_the_empty_range_and_merged_base_cases()
+    {
+        string prompt = AgentPromptBuilder.BuildReview(
+            SomeTask(), SomeProject(), "task/1-slug", cycle: 4, ReviewLens.Conformance, ReviewMode.FinalFullPass,
+            sinceSha: "abc1234");
+
+        prompt.Should().Contain("If that range is empty", "an empty scoped range is a legitimate merge-ready outcome");
+        prompt.Should().Contain(
+            "`git diff origin/main...HEAD` (the scope rule below)",
+            "the reviewer still needs the scope check restated");
+        prompt.Should().Contain(
+            "fall back to the local `main` ref only when this worktree carries no",
+            "the origin/<base> fallback guidance must survive into the scoped branch too");
     }
 
     /// <summary>
@@ -1610,15 +1636,57 @@ public sealed class AgentPromptBuilderTests : IDisposable
         string bothActive = AgentPromptBuilder.BuildReviewVerify(
             SomeTask(), SomeProject(), "task/1-slug", cycle: 2,
             tracks: [ReviewLens.Conformance, ReviewLens.Adversarial], priorFindings: "none",
-            priorFixPosition: "none", sinceSha: null, priorCycleMode: ReviewMode.Discovery);
+            priorFixPosition: "none", sinceSha: null, priorCycleMode: ReviewMode.Discovery,
+            priorCycleSinceSha: null);
         bothActive.Should().Contain("standing in for both review lenses");
 
         string oneActive = AgentPromptBuilder.BuildReviewVerify(
             SomeTask(), SomeProject(), "task/1-slug", cycle: 2,
             tracks: [ReviewLens.Conformance], priorFindings: "none", priorFixPosition: "none", sinceSha: null,
-            priorCycleMode: ReviewMode.Discovery);
+            priorCycleMode: ReviewMode.Discovery, priorCycleSinceSha: null);
         oneActive.Should().NotContain("standing in for both review lenses");
         oneActive.Should().Contain("standing in for the one review lens still active");
+    }
+
+    /// <summary>
+    /// Independent pre-PR review, cycle 1, adversarial finding: a FinalFullPass cycle no longer
+    /// guarantees a full-branch read on its own (Decisions Log #115), so the Verify prompt cannot
+    /// claim "two earlier reviewers already read this branch in full" whenever the prior cycle was
+    /// itself scoped to a delta — that claim is only honest when priorCycleSinceSha is null.
+    /// </summary>
+    [Fact]
+    public void Verify_prompt_does_not_claim_a_full_read_when_the_prior_FinalFullPass_was_itself_scoped()
+    {
+        string genuinelyFull = AgentPromptBuilder.BuildReviewVerify(
+            SomeTask(), SomeProject(), "task/1-slug", cycle: 3,
+            tracks: [ReviewLens.Conformance], priorFindings: "none", priorFixPosition: "none", sinceSha: null,
+            priorCycleMode: ReviewMode.FinalFullPass, priorCycleSinceSha: null);
+        genuinelyFull.Should().Contain("read this branch in full");
+
+        string scoped = AgentPromptBuilder.BuildReviewVerify(
+            SomeTask(), SomeProject(), "task/1-slug", cycle: 3,
+            tracks: [ReviewLens.Conformance], priorFindings: "none", priorFixPosition: "none", sinceSha: null,
+            priorCycleMode: ReviewMode.FinalFullPass, priorCycleSinceSha: "abc123");
+        scoped.Should().NotContain("read this branch in full");
+        scoped.Should().Contain("read the commits since the branch's last full-scope pass");
+    }
+
+    /// <summary>
+    /// Copilot review finding on PR #157: when the quoted prior cycle was itself a Verify pass
+    /// (Verify-after-Verify), it did not necessarily read a delta since Discovery — it read a
+    /// delta since whichever cycle came before it, which may itself have been a Verify pass. The
+    /// prompt must not claim "since discovery" for a chain it never observed.
+    /// </summary>
+    [Fact]
+    public void Verify_prompt_does_not_claim_the_quoted_Verify_pass_read_since_discovery()
+    {
+        string prompt = AgentPromptBuilder.BuildReviewVerify(
+            SomeTask(), SomeProject(), "task/1-slug", cycle: 4,
+            tracks: [ReviewLens.Conformance], priorFindings: "none", priorFixPosition: "none", sinceSha: null,
+            priorCycleMode: ReviewMode.Verify, priorCycleSinceSha: null);
+
+        prompt.Should().NotContain("since discovery");
+        prompt.Should().Contain("verified the standing findings over a delta since the cycle before it");
     }
 
     /// <summary>
@@ -1638,7 +1706,8 @@ public sealed class AgentPromptBuilderTests : IDisposable
         string prompt = AgentPromptBuilder.BuildReviewVerify(
             SomeTask(), SomeProject(), "task/1-slug", cycle: 2,
             tracks: [ReviewLens.Conformance], priorFindings: priorFindings,
-            priorFixPosition: "none", sinceSha: null, priorCycleMode: ReviewMode.Discovery);
+            priorFixPosition: "none", sinceSha: null, priorCycleMode: ReviewMode.Discovery,
+            priorCycleSinceSha: null);
 
         // Scoped to the quoted-history block itself, not the whole prompt: the finding contract
         // below it legitimately teaches the FINDING: header via its own worked example, which the
@@ -1668,7 +1737,8 @@ public sealed class AgentPromptBuilderTests : IDisposable
         string prompt = AgentPromptBuilder.BuildReviewVerify(
             SomeTask(), SomeProject(), "task/1-slug", cycle: 2,
             tracks: [ReviewLens.Conformance], priorFindings: priorFindings,
-            priorFixPosition: "none", sinceSha: null, priorCycleMode: ReviewMode.Discovery);
+            priorFixPosition: "none", sinceSha: null, priorCycleMode: ReviewMode.Discovery,
+            priorCycleSinceSha: null);
 
         // Pulled straight from the prompt's own quoted block (between the two headings the
         // quote sits between), so this test exercises exactly what the prompt actually hands the
