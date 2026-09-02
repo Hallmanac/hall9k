@@ -1495,8 +1495,17 @@ public static class AgentPromptBuilder
         prompt.AppendLine();
         prompt.AppendLine("    VERDICT: merge-ready");
         prompt.AppendLine();
-        prompt.AppendLine("when you confirmed no defects, or when every finding you have is graded low (attach");
-        prompt.AppendLine("it anyway — see \"the bar for needs-fixes\" above), or");
+        if (mode == ReviewMode.FinalFullPass)
+        {
+            prompt.AppendLine("when you confirmed no defects, or when every finding you have is graded medium or");
+            prompt.AppendLine("low (attach it anyway — see \"the bar for needs-fixes\" above), or");
+        }
+        else
+        {
+            prompt.AppendLine("when you confirmed no defects, or when every finding you have is graded low (attach");
+            prompt.AppendLine("it anyway — see \"the bar for needs-fixes\" above), or");
+        }
+
         prompt.AppendLine();
         prompt.AppendLine("    VERDICT: needs-fixes");
         prompt.AppendLine();
