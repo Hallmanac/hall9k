@@ -459,7 +459,8 @@ The checkpoints, in the order the window sees them:
    **ride-alongs** rather than dropped or spent on a cycle of their own. A verdict is
    only ever recorded merge-ready when *every* stated finding is a ride-along — not a lens's
    literal `VERDICT:` line, and not a Route finding either: a pass that says merge-ready but still
-   attaches a finding graded medium or high is not taken at its word, and neither is a needs-fixes
+   attaches a finding graded above that cycle's own bar — medium or high on an ordinary cycle,
+   high alone on the mandatory FinalFullPass — is not taken at its word, and neither is a needs-fixes
    pass whose only finding is routing to a draft bug task, which stays needs-fixes so its track
    can keep watching a tip the *other* track's fix session may still rewrite. A ride-along is
    folded into a fix session already dispatching *this same cycle* for another reason (shipping
@@ -468,7 +469,8 @@ The checkpoints, in the order the window sees them:
    would otherwise have said (the empty terminal case), and each one's ride-along is a residual
    the moment it does — there is no later cycle left for a fix session to claim it in. `h9k task
    show` prints the ride-along count alongside the fixed/routed ones; nothing about the cycle cap
-   or the park-for-human behavior changes for anything graded medium or higher. Fresh context per
+   or the park-for-human behavior changes for anything graded high — an in-scope medium behaves
+   differently only on the mandatory final pass, per the narrower bar just above. Fresh context per
    cycle is the independence guarantee and stays, but a human's past verdict on this task's own
    parks travels forward as a settled ruling every later pass is shown (Decisions Log #88): each
    review lens prompt is handed the task's prior `review resolve` verdicts and reasons, summarized

@@ -786,7 +786,7 @@ public sealed class ReviewEngine(
         // Discovery and FinalFullPass both want the identical full-diff, fresh-context read
         // (task: review cycles after the first) — the mandatory final pass is discovery-grade
         // rigor at a later cycle number, not a different diff-reading prompt. mode only changes
-        // the finding contract's own fix-bar wording (Decisions Log #113, AppendFindingContract),
+        // the fix-bar wording (Decisions Log #113, AppendFindingContract and AppendVerdictContract),
         // so the reviewer is told the true bar rather than the ordinary cycle's.
         string prompt = AgentPromptBuilder.BuildReview(
             context.Task, context.Project, context.Run.Branch, cycle, lens, mode, context.PriorRulings);
@@ -2145,7 +2145,7 @@ public sealed class ReviewEngine(
                 ? await File.ReadAllTextAsync(path, cancellationToken)
                 : string.Empty;
             merged.AppendLine();
-            merged.AppendLine($"## {LensHeading(pass.Lens)} — verdict: {VerdictLabel(pass.Verdict, text)}");
+            merged.AppendLine($"## {LensHeading(pass.Lens)} — verdict: {VerdictLabel(pass.Verdict, text, mode)}");
             merged.AppendLine();
             merged.AppendLine(text.IsBlank() ? "(this pass recorded no output)" : text.Trim());
         }
@@ -3189,7 +3189,9 @@ public sealed class ReviewEngine(
             : anyRoutedAboveFixBar
                 ? "even though this cycle's own findings included one graded medium — routed to a draft bug "
                     + "task rather than fixed here, since it was out of this pull request's scope"
-                : "even though this cycle's own findings were all recorded below the fix bar";
+                : "even though this cycle's own findings were all recorded below the fix bar of the cycle that "
+                    + "recorded them (low/ungraded on an ordinary cycle, medium/low/ungraded on the mandatory "
+                    + "final pass)";
         return $"This task has spent {totalCycles} review cycle(s) across every run and follow-up it has had — " +
             $"past its lifetime review-cycle budget of {budget.Value}, from {budget.Describe()}. A stranding, a " +
             "retry, or a follow-up round each start with a clean per-run cap, so none of them ever saw this " +
@@ -3346,17 +3348,24 @@ public sealed class ReviewEngine(
     /// immediately above the pass's own text ending in its original, disagreeing <c>VERDICT:</c>
     /// line — the same contradiction the Unknown cases above exist to avoid, so it gets the same
     /// treatment: name the reclassification and why, rather than the reclassified verdict alone.
+    /// The "below the fix bar" phrase names the varying bar rather than the older fixed one
+    /// (independent pre-PR review, cycle 10, conformance finding): a <see cref="ReviewMode.FinalFullPass"/>
+    /// ride-along can be a Medium, not only a Low or ungraded finding (Decisions Log #113).
     /// </para>
     /// </summary>
-    private static string VerdictLabel(ReviewVerdict verdict, string rawText) => verdict switch
+    private static string VerdictLabel(ReviewVerdict verdict, string rawText, ReviewMode mode) => verdict switch
     {
         _ when verdict != ReviewVerdict.Unknown && ReviewResultParser.ParseVerdict(rawText) is var stated
             && stated != ReviewVerdict.Unknown && stated != verdict =>
             $"{verdict.Value} (reclassified from {stated.Value}: "
                 + (verdict == ReviewVerdict.MergeReady
-                    ? "every attached finding was RideAlong-dispositioned, below the fix bar on its own"
-                    : "it attached a finding beyond ride-alongs, which earns its own fix-and-re-review cycle")
-                + " — Decisions Log #87)",
+                    ? mode == ReviewMode.FinalFullPass
+                        ? "every attached finding was RideAlong-dispositioned, below the mandatory final "
+                            + "pass's own narrower fix bar (medium/low/ungraded) on its own — Decisions Log #87, #113)"
+                        : "every attached finding was RideAlong-dispositioned, below the fix bar on its own "
+                            + "— Decisions Log #87)"
+                    : "it attached a finding beyond ride-alongs, which earns its own fix-and-re-review cycle "
+                        + "— Decisions Log #87)"),
         _ when verdict != ReviewVerdict.Unknown => verdict.Value,
         _ when ReviewResultParser.ParseVerdict(rawText) == ReviewVerdict.NeedsFixes =>
             "needs-fixes (named nothing the platform could read as a finding)",
