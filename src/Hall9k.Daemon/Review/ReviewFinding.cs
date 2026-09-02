@@ -59,7 +59,13 @@ public sealed record ReviewFinding(
     /// Medium there rides along exactly as a Low already did, rather than earning a cycle of its
     /// own. Discovery and Verify are untouched — every earlier cycle still fixes a Medium the
     /// ordinary way, since the code is still converging there and the severity gate (adversarial's
-    /// own multi-cycle convergence rule) is a separate question from this bar.
+    /// own multi-cycle convergence rule) is a separate question from this bar. This includes a
+    /// Medium-graded unmet-acceptance-criterion finding, deliberately: PLAN.md #113 says so
+    /// explicitly, because that finding is otherwise promised the fix bar unconditionally
+    /// (<c>AgentPromptBuilder.AppendFindingContract</c>'s non-FinalFullPass prompt text) and this
+    /// mode is where that promise is overridden, not honored by accident. The criterion is still
+    /// graded honestly and the Medium still reaches the owner by name as a residual on the pull
+    /// request — only the extra fix-and-reverify cycle is what this mode no longer spends on it.
     /// </para>
     /// <para>
     /// <see cref="ReviewTrackPolicy.Stated"/>'s placeholder for a needs-fixes verdict the parser
