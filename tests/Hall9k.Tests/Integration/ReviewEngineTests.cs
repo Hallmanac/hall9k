@@ -10,6 +10,7 @@ using Hall9k.Domain.Features.Run.Events;
 using Hall9k.Domain.Features.Run.Projections;
 using Hall9k.Domain.Features.Tasks;
 using Hall9k.Domain.Features.Tasks.Documents;
+using Hall9k.Domain.Features.Tasks.Events;
 using Hall9k.Domain.Features.Tasks.Handlers;
 using Hall9k.Domain.Features.Tasks.Projections;
 using Hall9k.Domain.Infrastructure.Ids;
@@ -1919,7 +1920,7 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
         await using (IDocumentSession session = store.LightweightSession())
         {
             TaskAggregate task = (await session.Events.AggregateStreamAsync<TaskAggregate>(taskId, token: cts.Token))!;
-            var overridden = TaskDecider.OverrideReviewCaps(
+            TaskReviewCapsOverridden overridden = TaskDecider.OverrideReviewCaps(
                 task, Optional<int?>.Of(1), Optional<int?>.None, Optional<int?>.None, Optional<int?>.None,
                 Now, DomainId.New());
             session.Events.Append(taskId, overridden);
@@ -1964,7 +1965,7 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
         await using (IDocumentSession session = store.LightweightSession())
         {
             TaskAggregate task = (await session.Events.AggregateStreamAsync<TaskAggregate>(taskId, token: cts.Token))!;
-            var overridden = TaskDecider.OverrideReviewCaps(
+            TaskReviewCapsOverridden overridden = TaskDecider.OverrideReviewCaps(
                 task, Optional<int?>.Of(0), Optional<int?>.None, Optional<int?>.None, Optional<int?>.None,
                 Now, DomainId.New());
             session.Events.Append(taskId, overridden);
@@ -2064,7 +2065,7 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
         await using (IDocumentSession session = store.LightweightSession())
         {
             TaskAggregate task = (await session.Events.AggregateStreamAsync<TaskAggregate>(taskId, token: cts.Token))!;
-            var overridden = TaskDecider.OverrideReviewCaps(
+            TaskReviewCapsOverridden overridden = TaskDecider.OverrideReviewCaps(
                 task, Optional<int?>.None, Optional<int?>.None, Optional<int?>.Of(0), Optional<int?>.None,
                 Now, DomainId.New());
             session.Events.Append(taskId, overridden);
@@ -2124,7 +2125,7 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
         await using (IDocumentSession session = store.LightweightSession())
         {
             TaskAggregate task = (await session.Events.AggregateStreamAsync<TaskAggregate>(taskId, token: cts.Token))!;
-            var overridden = TaskDecider.OverrideReviewCaps(
+            TaskReviewCapsOverridden overridden = TaskDecider.OverrideReviewCaps(
                 task, Optional<int?>.None, Optional<int?>.None, Optional<int?>.None, Optional<int?>.Of(2),
                 Now, DomainId.New());
             session.Events.Append(taskId, overridden);
@@ -2180,7 +2181,7 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
         await using (IDocumentSession session = store.LightweightSession())
         {
             TaskAggregate task = (await session.Events.AggregateStreamAsync<TaskAggregate>(taskId, token: cts.Token))!;
-            var overridden = TaskDecider.OverrideReviewCaps(
+            TaskReviewCapsOverridden overridden = TaskDecider.OverrideReviewCaps(
                 task, Optional<int?>.None, Optional<int?>.None, Optional<int?>.None, Optional<int?>.Of(1),
                 Now, DomainId.New());
             session.Events.Append(taskId, overridden);
@@ -2230,7 +2231,7 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
         await using (IDocumentSession session = store.LightweightSession())
         {
             TaskAggregate task = (await session.Events.AggregateStreamAsync<TaskAggregate>(taskId, token: cts.Token))!;
-            var overridden = TaskDecider.OverrideReviewCaps(
+            TaskReviewCapsOverridden overridden = TaskDecider.OverrideReviewCaps(
                 task, Optional<int?>.None, Optional<int?>.None, Optional<int?>.None, Optional<int?>.Of(1),
                 Now, DomainId.New());
             session.Events.Append(taskId, overridden);
