@@ -1713,6 +1713,20 @@ public static class AgentPromptBuilder
     /// remove: cea5ae6e's CreateAsync sibling was left for later instead of fixed alongside the
     /// finding that shared its shape, and still had to be fixed in-PR anyway, as 59dc9bba.
     /// </para>
+    /// <para>
+    /// Cycle 8 review corrected two more claims. The sweep's own-changes boundary is now drawn
+    /// from <c>origin/{project.BaseBranch}</c>, not the fix session's local base-branch ref —
+    /// this prompt previously named the boundary without saying what to measure it against, and
+    /// AGENTS.md records that ref as routinely stale, the same reason
+    /// <see cref="AppendReviewMechanics"/> and the rebase mechanics both qualify it with
+    /// <c>origin/</c>. And the sweep's prompt text no longer claims a pre-existing sibling named
+    /// in the fix summary reaches "out-of-scope routing" directly: <c>RouteFindingsAsync</c>
+    /// mints and folds findings only out of a review pass's own parsed output, never a fix
+    /// session's summary, so a named sibling reaches routing only if a later Verify pass reads
+    /// the summary back and reports it as a finding of its own — exactly the same hedge this
+    /// phase's single-pass-not-a-loop paragraph above already states, which the sweep's own
+    /// wording had drifted out of step with.
+    /// </para>
     /// </summary>
     private static void AppendReviewFixSelfCheckPhaseRules(StringBuilder prompt, ProjectDetails project)
     {
@@ -1736,26 +1750,29 @@ public static class AgentPromptBuilder
         prompt.AppendLine("     its defect, not the boundary of it: enumerate every other site sharing the same");
         prompt.AppendLine("     shape, wherever it lives — inside this branch's own changes or pre-existing on");
         prompt.AppendLine("     the branch's base — not only the ones your own fix reaches; a sweep bounded to");
-        prompt.AppendLine("     your own fix cannot catch the sibling this phase exists to catch (cea5ae6e");
-        prompt.AppendLine("     cycle 6: the un-reached branch-creating arm). Fix or explicitly clear each site");
-        prompt.AppendLine("     inside this branch's own changes — a site you looked at and judged fine counts");
-        prompt.AppendLine("     as cleared, one you never looked at does not. A pre-existing site outside this");
-        prompt.AppendLine("     branch's own changes is not yours to fix here; fixing it would grow this pull");
-        prompt.AppendLine("     request with unrelated changes the same way the disposition rule above");
-        prompt.AppendLine("     forbids — unless the finding you are sweeping is itself dispositioned");
-        prompt.AppendLine($"     \"{ReviewFindingDispositions.FixHereInItsOwnCommit}\": that disposition has");
-        prompt.AppendLine("     already decided this defect's shape is worth cleaning up here, in a commit of");
-        prompt.AppendLine("     its own, so a pre-existing sibling of that same finding belongs in that same");
-        prompt.AppendLine("     separate commit rather than merely named — naming instead of fixing it would");
-        prompt.AppendLine("     cost exactly the lap this phase exists to remove (cea5ae6e's CreateAsync");
-        prompt.AppendLine("     sibling, left for routing instead of fixed alongside it, cost the lap fixed");
-        prompt.AppendLine("     in-PR anyway as 59dc9bba). For every other pre-existing site, it is still");
-        prompt.AppendLine("     yours to name and not to fix: leave it out of your fix, but name it in");
-        prompt.AppendLine("     your final summary so out-of-scope routing can mint or fold it — a");
-        prompt.AppendLine("     pre-existing sibling left off the sweep never reaches that routing at all.");
+        prompt.AppendLine("     your own fix cannot catch a sibling site your fix never touched. Draw that line");
+        prompt.AppendLine($"     from `origin/{project.BaseBranch}`, not your worktree's local base-branch ref —");
+        prompt.AppendLine("     the same staleness reason the rebase and review-verify mechanics use it too: a");
+        prompt.AppendLine($"     site touched by `git diff origin/{project.BaseBranch}...HEAD` is inside this");
+        prompt.AppendLine("     branch's own changes; anything else is pre-existing on the base. Fix or");
+        prompt.AppendLine("     explicitly clear each site inside this branch's own changes — a site you looked");
+        prompt.AppendLine("     at and judged fine counts as cleared, one you never looked at does not. A");
+        prompt.AppendLine("     pre-existing site outside this branch's own changes is not yours to fix here;");
+        prompt.AppendLine("     fixing it would grow this pull request with unrelated changes the same way the");
+        prompt.AppendLine("     disposition rule above forbids — unless the finding you are sweeping is itself dispositioned");
+        prompt.AppendLine($"     \"{ReviewFindingDispositions.FixHereInItsOwnCommit}\": that");
+        prompt.AppendLine("     disposition has already decided this defect's shape is worth cleaning up here,");
+        prompt.AppendLine("     in a commit of its own, so a pre-existing sibling of that same finding");
+        prompt.AppendLine("     belongs in that same separate commit rather than merely named — naming instead");
+        prompt.AppendLine("     of fixing it would cost exactly the lap this phase exists to remove. For every");
+        prompt.AppendLine("     other pre-existing site, it is still yours to name and not to fix: leave it out");
+        prompt.AppendLine("     of your fix, but name it in your final summary anyway — if the next review");
+        prompt.AppendLine("     dispatch is a verify pass, naming it there is the only path this sibling has of");
+        prompt.AppendLine("     ever reaching a reviewer and being reported as a finding of its own; a");
+        prompt.AppendLine("     pre-existing sibling left off the sweep never reaches even that path.");
         prompt.AppendLine("     Name every site you swept in your final summary — fixed, cleared, or");
-        prompt.AppendLine("     pre-existing and named for routing, and why each — so whoever reads it next");
-        prompt.AppendLine("     can check your enumeration instead of rediscovering it from a blank slate.");
+        prompt.AppendLine("     pre-existing and named — and why each, so whoever reads it next can");
+        prompt.AppendLine("     check your enumeration instead of rediscovering it from a blank slate.");
         prompt.AppendLine("  2. **Regression comparison, mandatory per replaced behavior.** For every finding");
         prompt.AppendLine("     whose fix replaced, removed, narrowed, or widened existing behavior, state in");
         prompt.AppendLine("     your summary what the old code did that the new code no longer does, and confirm");
