@@ -2316,10 +2316,12 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
 
     /// <summary>
     /// Independent pre-PR review, cycle 2, conformance finding #2: a fix session can still
-    /// dispatch on the very cycle the mandatory FinalFullPass ran (a post-severity-gate Medium
-    /// that concludes its track but still owes a fix, the empty terminal case) — and the fix it
-    /// produces must itself get a fresh-context read before the run may settle, or the pull
-    /// request ships commits the mandatory final pass never actually saw.
+    /// dispatch on the very cycle the mandatory FinalFullPass ran (a fresh High that reactivates
+    /// its dormant track) — and the fix it produces must itself get a fresh-context read before
+    /// the run may settle, or the pull request ships commits the mandatory final pass never
+    /// actually saw. A Medium here would ride along instead of forcing a fix session at all
+    /// (task: a mandatory FinalFullPass records merge-ready when every finding it attaches is
+    /// below High), so this scenario now needs a High to reach the fix-and-reverify path at all.
     /// </summary>
     [Fact]
     public async Task A_fix_dispatched_from_the_mandatory_final_pass_gets_one_more_pass_before_settling()
@@ -2330,7 +2332,8 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
 
         ScriptedExecutor executor = new(
             // Cycle 1: conformance clean and dormant; adversarial needs a fix (pre-gate, any
-            // grade forces the next cycle).
+            // grade forces the next cycle) — a Medium here is unaffected by this task, since the
+            // narrower bar is FinalFullPass-only.
             "Criteria met.\n\nVERDICT: merge-ready",
             "FINDING: severity=medium; scope=in-scope; at=Retry.cs:12\nDefect: the retry duplicates the effect.\n\n"
             + "VERDICT: needs-fixes",
@@ -2343,15 +2346,17 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
             // Cycle 3: clean — adversarial concludes, both tracks now dormant.
             "Clean now.\n\nVERDICT: merge-ready",
             // Cycle 4: the mandatory final full pass. Both tracks already concluded, so it is
-            // dispatched at cycle 4 — at or past the severity gate. Adversarial reports a fresh
-            // Medium: post-gate, a Medium no longer forces another cycle on its own, so the track
-            // concludes right here even though a fix is still owed for it (the empty terminal
-            // case) — this is the exact shape that used to ship unreviewed.
+            // dispatched at cycle 4. Adversarial reports a fresh High, reactivating the dormant
+            // track and forcing a fix session regardless of the gate.
             "Criteria still met.\n\nVERDICT: merge-ready",
-            "FINDING: severity=medium; scope=in-scope; at=Retry.cs:31\n"
+            "FINDING: severity=high; scope=in-scope; at=Retry.cs:31\n"
             + "Defect: the final pass caught a fresh regression.\n\nVERDICT: needs-fixes",
             "Fixed the regression the final pass found.\n\nRESOLUTION: fixed",
-            // Cycle 5: nothing may settle over that fix unread, so one more mandatory final pass
+            // Cycle 5: one Verify pass over the reactivated track, confirming the fix — clean, so
+            // ActiveReviewLenses empties out and a Verify-mode cycle can never settle on its own
+            // (MaySettleReason's own doc), forcing the loop back to the mandatory final pass.
+            "Confirmed fixed.\n\nVERDICT: merge-ready",
+            // Cycle 6: nothing may settle over that fix unread, so one more mandatory final pass
             // runs — both lenses fresh, both clean this time.
             "Still clean.\n\nVERDICT: merge-ready",
             "Still clean too.\n\nVERDICT: merge-ready");
@@ -2360,12 +2365,12 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
 
         mergeReady.Should().BeTrue();
         executor.Spawns.Should().HaveCount(
-            11, "the post-gate fix from the mandatory final pass earns its own extra final pass " +
-                "before the run may settle, rather than shipping unreviewed");
+            12, "the reactivated track's fix earns its own extra final pass before the run may " +
+                "settle, rather than shipping unreviewed");
 
         await using IQuerySession query = store.QuerySession();
         RunDetails run = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
-        run.ReviewCycle.Should().Be(5, "a fix landed on top of the mandatory final pass, so one more fresh-context pass ran first");
+        run.ReviewCycle.Should().Be(6, "a fix landed on top of the mandatory final pass, so a confirming Verify pass and one more mandatory pass ran first");
 
         List<object> events = [.. (await query.Events.FetchStreamAsync(runId, token: cts.Token)).Select(e => e.Data)];
         events.OfType<ReviewDispatched>().Count(e => e.Mode == ReviewMode.FinalFullPass).Should().Be(
@@ -2376,10 +2381,13 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
     /// Cycle-3 finding: a track the mandatory final pass keeps reawakening never trips its own
     /// per-track cap, because <c>RunAggregate.TrackBudgetBaseCycle</c> deliberately measures that
     /// cap from the cycle it was last reactivated at (the prior test's own scenario). Left alone,
-    /// a fix session that keeps introducing one fresh post-gate finding per pass would let
-    /// FinalFullPass → reactivate → fix → verify recur without end. This scripts exactly that —
-    /// the same fresh medium finding on every mandatory pass — with <c>MaxFinalFullPassRounds</c>
-    /// set low, and asserts the run parks instead of looping a third time.
+    /// a fix session that keeps introducing one fresh regression the mandatory pass catches would
+    /// let FinalFullPass → reactivate → fix → verify recur without end. This scripts exactly that
+    /// — the same fresh HIGH finding on every mandatory pass (task: a mandatory FinalFullPass
+    /// records merge-ready when every finding it attaches is below High — a Medium here would
+    /// only ride along and settle on the spot, never reaching this loop at all) — with
+    /// <c>MaxFinalFullPassRounds</c> set low, and asserts the run parks instead of looping a
+    /// third time.
     /// </summary>
     [Fact]
     public async Task A_track_the_final_pass_keeps_reawakening_parks_once_the_final_pass_round_cap_is_hit()
@@ -2388,31 +2396,40 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
         using DocumentStore store = NewStore();
         (Guid taskId, Guid runId, _) = await SeedVerifiedRunAsync(store, cts.Token);
 
-        string freshMedium(string at) =>
-            $"FINDING: severity=medium; scope=in-scope; at={at}\nDefect: the final pass caught a fresh regression.\n\n"
+        string freshHigh(string at) =>
+            $"FINDING: severity=high; scope=in-scope; at={at}\nDefect: the final pass caught a fresh regression.\n\n"
             + "VERDICT: needs-fixes";
 
         ScriptedExecutor executor = new(
             // Cycle 1: conformance clean and dormant; adversarial needs a fix (pre-gate, any
-            // grade forces the next cycle).
+            // grade forces the next cycle) — a Medium here is unaffected by this task, since the
+            // narrower FinalFullPass-only bar does not apply to a Discovery cycle.
             "Criteria met.\n\nVERDICT: merge-ready",
-            freshMedium("Retry.cs:12"),
+            "FINDING: severity=medium; scope=in-scope; at=Retry.cs:12\nDefect: the retry duplicates the effect.\n\n"
+            + "VERDICT: needs-fixes",
             "Tightened the retry guard.\n\nRESOLUTION: fixed",
             // Cycle 2: still pre-gate — a second minor issue still forces another cycle.
-            freshMedium("Retry.cs:20"),
+            "FINDING: severity=medium; scope=in-scope; at=Retry.cs:20\nDefect: a related edge is still off.\n\n"
+            + "VERDICT: needs-fixes",
             "Closed the edge case too.\n\nRESOLUTION: fixed",
             // Cycle 3: clean — adversarial concludes, both tracks now dormant.
             "Clean now.\n\nVERDICT: merge-ready",
-            // Cycle 4: mandatory final pass, round 1. Post-gate, so the fresh medium concludes
-            // the track right here (the empty terminal case) while still owing its fix.
+            // Cycle 4: mandatory final pass, round 1. A fresh High reactivates the dormant track
+            // and forces a fix session, whatever the gate says.
             "Criteria still met.\n\nVERDICT: merge-ready",
-            freshMedium("Retry.cs:31"),
+            freshHigh("Retry.cs:31"),
             "Fixed the regression the final pass found.\n\nRESOLUTION: fixed",
-            // Cycle 5: nothing may settle over that fix unread, so the mandatory pass runs
-            // again — round 2 — and finds another fresh post-gate medium, same shape as round 1.
+            // Cycle 5: one Verify pass over the reactivated track alone, confirming the fix —
+            // ActiveReviewLenses empties out again once it reports clean, and a Verify-mode cycle
+            // can never settle on its own (MaySettleReason's own doc), so the loop is forced back
+            // to the mandatory final pass rather than concluding here.
+            "Confirmed fixed.\n\nVERDICT: merge-ready",
+            // Cycle 6: mandatory final pass, round 2 — the same shape as round 1, a fresh High.
             "Criteria still met.\n\nVERDICT: merge-ready",
-            freshMedium("Retry.cs:40"),
-            "Fixed that regression too.\n\nRESOLUTION: fixed");
+            freshHigh("Retry.cs:40"),
+            "Fixed that regression too.\n\nRESOLUTION: fixed",
+            // Cycle 7: the confirming Verify pass for round 2's fix.
+            "Confirmed fixed again.\n\nVERDICT: merge-ready");
         // A third round would be owed next — reactivation keeps resetting the track's own cap
         // (RunAggregate.TrackBudgetBaseCycle), so nothing about ITS cap would ever stop this.
         // MaxFinalFullPassRounds is the independent bound that does, set to 2 so this test hits
@@ -2424,24 +2441,25 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
 
         mergeReady.Should().BeFalse(
             "the mandatory final pass round cap must stop the loop rather than let it recur forever");
-        executor.Spawns.Should().HaveCount(12, "the run parks before a third final-pass round ever dispatches");
+        executor.Spawns.Should().HaveCount(14, "the run parks before a third final-pass round ever dispatches");
 
         await using IQuerySession query = store.QuerySession();
         RunDetails run = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
         run.State.Should().Be(RunState.ReviewParked);
-        run.ReviewCycle.Should().Be(5, "the park happens deciding cycle 6, before it ever dispatches");
+        run.ReviewCycle.Should().Be(7, "the park happens deciding cycle 8, before it ever dispatches");
         run.ParkedReason.Should().Contain("dispatched the mandatory final full review pass")
             .And.Contain("2 consecutive time(s)")
             .And.Contain("h9k review resolve --merge-ready")
-            .And.NotContain(
+            .And.Contain(
                 "reawakened",
-                "the post-gate medium concludes the track outright every time (Continues: false), so " +
-                "ReviewTrackReactivated never actually fires in this scenario and the park text must not " +
-                "claim it did");
+                "a fresh High reactivates the dormant track on both final-pass rounds, so the park text " +
+                "must say a track kept being reawakened rather than the ordinary still-active wording");
 
         List<object> events = [.. (await query.Events.FetchStreamAsync(runId, token: cts.Token)).Select(e => e.Data)];
         events.OfType<ReviewDispatched>().Count(e => e.Mode == ReviewMode.FinalFullPass).Should().Be(
-            4, "exactly two final-pass rounds ran (cycles 4 and 5) before the cap parked the third");
+            4, "exactly two final-pass rounds ran (cycles 4 and 6) before the cap parked the third");
+        events.OfType<ReviewTrackReactivated>().Should().HaveCount(
+            2, "the fresh High reactivates the dormant adversarial track on both final-pass rounds");
     }
 
     /// <summary>
@@ -2529,36 +2547,47 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
         using DocumentStore store = NewStore();
         (Guid taskId, Guid runId, _) = await SeedVerifiedRunAsync(store, cts.Token);
 
-        string freshMedium(string at) =>
-            $"FINDING: severity=medium; scope=in-scope; at={at}\nDefect: the final pass caught a fresh regression.\n\n"
+        // A fresh HIGH on every mandatory pass (task: a mandatory FinalFullPass records
+        // merge-ready when every finding it attaches is below High — a Medium here would only
+        // ride along and settle immediately, never reaching this park at all), same shape as
+        // the sibling cap-park test.
+        string freshHigh(string at) =>
+            $"FINDING: severity=high; scope=in-scope; at={at}\nDefect: the final pass caught a fresh regression.\n\n"
             + "VERDICT: needs-fixes";
 
         ScriptedExecutor executor = new(
-            // Cycle 1: conformance clean and dormant; adversarial needs a fix (pre-gate).
+            // Cycle 1: conformance clean and dormant; adversarial needs a fix (pre-gate) — a
+            // Medium here is unaffected by this task, since the narrower bar is FinalFullPass-only.
             "Criteria met.\n\nVERDICT: merge-ready",
-            freshMedium("Retry.cs:12"),
+            "FINDING: severity=medium; scope=in-scope; at=Retry.cs:12\nDefect: the retry duplicates the effect.\n\n"
+            + "VERDICT: needs-fixes",
             "Tightened the retry guard.\n\nRESOLUTION: fixed",
             // Cycle 2: still pre-gate — a second minor issue still forces another cycle.
-            freshMedium("Retry.cs:20"),
+            "FINDING: severity=medium; scope=in-scope; at=Retry.cs:20\nDefect: a related edge is still off.\n\n"
+            + "VERDICT: needs-fixes",
             "Closed the edge case too.\n\nRESOLUTION: fixed",
             // Cycle 3: clean — adversarial concludes, both tracks now dormant.
             "Clean now.\n\nVERDICT: merge-ready",
-            // Cycle 4: mandatory final pass, round 1. Post-gate, so the fresh medium concludes
-            // the track right here while still owing its fix.
+            // Cycle 4: mandatory final pass, round 1 — a fresh High reactivates the track.
             "Criteria still met.\n\nVERDICT: merge-ready",
-            freshMedium("Retry.cs:31"),
+            freshHigh("Retry.cs:31"),
             "Fixed the regression the final pass found.\n\nRESOLUTION: fixed",
-            // Cycle 5: mandatory final pass, round 2 — MaxFinalFullPassRounds (set to 2 below) is
-            // reached here, so the run parks deciding cycle 6 rather than dispatching a third round.
+            // Cycle 5: the confirming Verify pass over the reactivated track — clean, so
+            // ActiveReviewLenses empties out and the loop is forced back to another mandatory pass.
+            "Confirmed fixed.\n\nVERDICT: merge-ready",
+            // Cycle 6: mandatory final pass, round 2 — MaxFinalFullPassRounds (set to 2 below) is
+            // reached here, so the run parks deciding cycle 8 rather than dispatching a third round.
             "Criteria still met.\n\nVERDICT: merge-ready",
-            freshMedium("Retry.cs:40"),
-            "Fixed that regression too.\n\nRESOLUTION: fixed");
+            freshHigh("Retry.cs:40"),
+            "Fixed that regression too.\n\nRESOLUTION: fixed",
+            // Cycle 7: the confirming Verify pass for round 2's fix.
+            "Confirmed fixed again.\n\nVERDICT: merge-ready");
 
         bool mergeReady = await NewEngine(
             store, executor, new DaemonOptions { MaxFinalFullPassRounds = 2 })
             .ReviewAsync(runId, taskId, cts.Token);
 
-        mergeReady.Should().BeFalse("the run parks on the final-pass round cap before cycle 6 ever dispatches");
+        mergeReady.Should().BeFalse("the run parks on the final-pass round cap before cycle 8 ever dispatches");
 
         await using (IDocumentSession session = store.LightweightSession())
         {
@@ -2588,7 +2617,7 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
         await using IQuerySession query = store.QuerySession();
         RunDetails run = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
         run.State.Should().Be(RunState.UnderReview);
-        run.ReviewCycle.Should().Be(6, "a genuine third final-pass round ran and settled");
+        run.ReviewCycle.Should().Be(8, "a genuine third final-pass round ran and settled");
     }
 
     /// <summary>

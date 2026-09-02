@@ -1200,7 +1200,7 @@ public sealed class ReviewEngine(
             // Findings survive this reclassification exactly as parsed — nothing here is
             // discarded, only recorded as not earning its own cycle (or, newly, as earning one
             // after all).
-            verdict = parsedFindings.All(finding => finding.Disposition == ReviewFindingDisposition.RideAlong)
+            verdict = parsedFindings.All(finding => finding.Disposition(run.CurrentCycleMode) == ReviewFindingDisposition.RideAlong)
                 ? ReviewVerdict.MergeReady
                 : ReviewVerdict.NeedsFixes;
         }
@@ -1243,7 +1243,7 @@ public sealed class ReviewEngine(
         List<ReviewPassResult> completed = MergeCompleted(
             run.CompletedReviewPasses,
             new ReviewPassResult(pass.Lens, pass.TranscriptSessionId, pass.Model, verdict,
-                [.. findings.Select(finding => finding.ToRecord())], pass.Mode));
+                [.. findings.Select(finding => finding.ToRecord(pass.Mode))], pass.Mode));
         // The cycle concludes only when nothing else is reading AND no active track is still
         // missing: a merged verdict over a track that never looked would be the single-sample
         // blind spot this whole mechanism exists to close.
@@ -1264,7 +1264,7 @@ public sealed class ReviewEngine(
         await using IDocumentSession session = store.LightweightSession();
         session.Events.Append(runId, result.ToTokensRecorded(runId, now));
         session.Events.Append(runId, new ReviewPassCompleted(
-            runId, cycle, pass.Lens, verdict, now, [.. findings.Select(finding => finding.ToRecord())],
+            runId, cycle, pass.Lens, verdict, now, [.. findings.Select(finding => finding.ToRecord(pass.Mode))],
             run.CurrentCycleMode, result.Turns, result.TotalInputTokens));
         if (cycleConcluded)
         {
@@ -1443,7 +1443,8 @@ public sealed class ReviewEngine(
                 ? SplitForTrack(lens, passFindings, finished.Verdict, run.CurrentCycleLenses)
                 : (finished.Verdict, passFindings);
 
-            plans.Add(ReviewTrackPolicy.Decide(lens, run.ReviewCycle, trackVerdict, trackFindings, _options));
+            plans.Add(ReviewTrackPolicy.Decide(
+                lens, run.ReviewCycle, run.CurrentCycleMode, trackVerdict, trackFindings, _options));
         }
 
         return plans;
@@ -1494,9 +1495,14 @@ public sealed class ReviewEngine(
             finding.Track is null
             || finding.Track == lens
             || !activeLenses.Any(active => active == finding.Track))];
+        // Always the Verify mode's own bar, never FinalFullPass's narrower one: this method is
+        // only ever reached for a Verify pass (the caller's own `finished.Lens == ReviewLens.Verify`
+        // guard), and a Verify cycle's mode is Verify by construction (task: a mandatory
+        // FinalFullPass records merge-ready when every finding it attaches is below High — that
+        // narrowing applies only once the mandatory final pass itself dispatches).
         ReviewVerdict verdict = trackFindings.Count == 0
             ? ReviewVerdict.MergeReady
-            : trackFindings.All(finding => finding.Disposition == ReviewFindingDisposition.RideAlong)
+            : trackFindings.All(finding => finding.Disposition(ReviewMode.Verify) == ReviewFindingDisposition.RideAlong)
                 ? ReviewVerdict.MergeReady
                 : ReviewVerdict.NeedsFixes;
         return (verdict, trackFindings);
@@ -2658,7 +2664,10 @@ public sealed class ReviewEngine(
         /// <summary>
         /// A mandatory <see cref="ReviewMode.FinalFullPass"/> concluded merge-ready with every
         /// finding below the fix bar (Decisions Log #87) — settled by the severity bar's own
-        /// definition of done, not by a reviewer confirming a tip with nothing on it at all.
+        /// definition of done, not by a reviewer confirming a tip with nothing on it at all. Since
+        /// a mandatory FinalFullPass tightens that bar to High alone (Decisions Log #113), this is
+        /// the common case for a final pass that finds a Medium: below-High, still a real finding,
+        /// still carried forward as a residual rather than spending a fix-and-reverify cycle on it.
         /// </summary>
         Bar,
 
@@ -2672,9 +2681,16 @@ public sealed class ReviewEngine(
 
     /// <summary>
     /// The daemon log line for a settle (task: a final full pass whose verdict is merge-ready and
-    /// whose findings are all below the fix bar counts as a clean settle) — named separately from
-    /// <see cref="SettleAsync"/>'s own log line, which reports what the settlement tally found, not
-    /// which of <see cref="MaySettleReason"/>'s clauses is what let the loop stop looking.
+    /// whose findings are all below the fix bar counts as a clean settle; task: a mandatory
+    /// FinalFullPass records merge-ready when every finding it attaches is below High) — named
+    /// separately from <see cref="SettleAsync"/>'s own log line, which reports what the settlement
+    /// tally found, not which of <see cref="MaySettleReason"/>'s clauses is what let the loop stop
+    /// looking. <see cref="SettleReason.Bar"/>'s own text names the below-High case by that phrase
+    /// specifically — never just "below the fix bar" — so a query over this log can tell a
+    /// below-High final-pass settle (findings existed, none met High) apart from
+    /// <see cref="SettleReason.NothingOwed"/>'s genuinely empty one (no findings at all) without
+    /// having to also read the residual tally: the two reasons' own text already differs, and
+    /// "bar settle, not a reviewer confirming a fully clean tip" is the sentence that says so.
     /// </summary>
     private void LogSettleReason(RunAggregate run, SettleReason reason)
     {
@@ -2682,9 +2698,9 @@ public sealed class ReviewEngine(
         {
             SettleReason.Human => "a human's merge-ready resolution ended the loop",
             SettleReason.Bar =>
-                "the mandatory final full pass concluded merge-ready with every finding below the " +
-                "fix bar (Decisions Log #87) — a bar settle, not a reviewer confirming a fully clean " +
-                "tip; its findings are recorded as residuals",
+                "the mandatory final full pass concluded merge-ready with every finding below High " +
+                "(Decisions Log #87, #113) — a below-High final-pass bar settle, not a reviewer " +
+                "confirming a fully clean tip; its findings are recorded as residuals",
             SettleReason.NothingOwed => "nothing this cycle is owed a fix session",
             _ => throw new ArgumentOutOfRangeException(nameof(reason), reason, "Unrecognized settle reason."),
         };

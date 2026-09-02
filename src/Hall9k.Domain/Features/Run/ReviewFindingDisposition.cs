@@ -25,10 +25,12 @@ public sealed record ReviewFindingDisposition
     /// <summary>
     /// Not dispatched to a fix session this cycle (Decisions Log #87): an in-scope finding that
     /// does not meet <see cref="ReviewSeverity.MeetsFixBar"/> — polish, or a grade the platform
-    /// could not read. Never discarded: it is written into the run's findings artifacts and
-    /// either folded into the next fix session the run actually dispatches on its own track, or
-    /// left recorded if none ever does — the whole point is that no cycle is spent earning one
-    /// just for this.
+    /// could not read. On a mandatory <c>ReviewMode.FinalFullPass</c> cycle the bar narrows to
+    /// High alone (task: a mandatory FinalFullPass records merge-ready when every finding it
+    /// attaches is below High), so an in-scope Medium rides along there too. Never discarded: it
+    /// is written into the run's findings artifacts and either folded into the next fix session
+    /// the run actually dispatches on its own track, or left recorded if none ever does — the
+    /// whole point is that no cycle is spent earning one just for this.
     /// </summary>
     public static readonly ReviewFindingDisposition RideAlong = new("RideAlong");
 

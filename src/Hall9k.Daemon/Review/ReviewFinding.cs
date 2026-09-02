@@ -33,20 +33,33 @@ public sealed record ReviewFinding(
     ReviewLens? Track = null)
 {
     /// <summary>
-    /// How the loop records what it decided to do with this finding (Decisions Log #63, #87).
-    /// Route needs both tags stated: an out-of-scope tag on a finding the reviewer graded Medium
-    /// or Low — an untagged scope and an ungraded severity alike take the reversible path rather
-    /// than being routed away, exactly as before. Everything else out-of-scope (a High, or one
-    /// the reviewer never graded) is fixed here — cleanup-as-you-touch for the High, and the
-    /// conservative reading for the ungraded one: routing a defect nobody graded would export it
-    /// out of the pull request on no evidence it is safe to.
+    /// How the loop records what it decided to do with this finding (Decisions Log #63, #87, and
+    /// the mandatory-<see cref="ReviewMode.FinalFullPass"/> narrowing below). Route needs both
+    /// tags stated: an out-of-scope tag on a finding the reviewer graded Medium or Low — an
+    /// untagged scope and an ungraded severity alike take the reversible path rather than being
+    /// routed away, exactly as before. Everything else out-of-scope (a High, or one the reviewer
+    /// never graded) is fixed here — cleanup-as-you-touch for the High, and the conservative
+    /// reading for the ungraded one: routing a defect nobody graded would export it out of the
+    /// pull request on no evidence it is safe to. Nothing about the out-of-scope Route-or-Fix
+    /// split reads <paramref name="mode"/> at all, so it is identical on every mode.
     /// <para>
-    /// In-scope is where <see cref="ReviewSeverity.MeetsFixBar"/> now decides instead of
+    /// In-scope is where <see cref="ReviewSeverity.MeetsFixBar"/> decides instead of
     /// automatically fixing everything here regardless of grade (Decisions Log #87): a Medium or
-    /// High is still fixed this cycle, same as always, but a Low or an ungraded finding rides
-    /// along instead of earning its own fix-and-re-review cycle. Unlike the out-of-scope branch,
-    /// an ungraded in-scope finding is deliberately NOT read the conservative way here — see
+    /// High is fixed this cycle, same as always, but a Low or an ungraded finding rides along
+    /// instead of earning its own fix-and-re-review cycle. Unlike the out-of-scope branch, an
+    /// ungraded in-scope finding is deliberately NOT read the conservative way here — see
     /// <see cref="ReviewSeverity.MeetsFixBar"/>'s own doc for why.
+    /// </para>
+    /// <para>
+    /// A <see cref="ReviewMode.FinalFullPass"/> cycle tightens that in-scope bar to High alone
+    /// (task: a mandatory FinalFullPass records merge-ready when every finding it attaches is
+    /// below High — origin measurement: 3 High findings in 172 final passes, 101 of 104
+    /// needs-fixes final passes carried no High at all): the mandatory pass mostly forced a
+    /// fix-and-reverify iteration over Mediums nothing graded critical asked for, so an in-scope
+    /// Medium there rides along exactly as a Low already did, rather than earning a cycle of its
+    /// own. Discovery and Verify are untouched — every earlier cycle still fixes a Medium the
+    /// ordinary way, since the code is still converging there and the severity gate (adversarial's
+    /// own multi-cycle convergence rule) is a separate question from this bar.
     /// </para>
     /// <para>
     /// <see cref="ReviewTrackPolicy.Stated"/>'s placeholder for a needs-fixes verdict the parser
@@ -57,26 +70,27 @@ public sealed record ReviewFinding(
     /// Decisions Log #86 closed for a needs-fixes verdict naming something unstructured.
     /// </para>
     /// </summary>
-    public ReviewFindingDisposition Disposition
+    public ReviewFindingDisposition Disposition(ReviewMode mode)
     {
-        get
+        if (Location.IsBlank() && Text.IsBlank())
         {
-            if (Location.IsBlank() && Text.IsBlank())
-            {
-                return ReviewFindingDisposition.Fix;
-            }
-
-            if (Scope.IsRoutable && Severity.IsStatedBelowHigh)
-            {
-                return ReviewFindingDisposition.Route;
-            }
-
-            return !Scope.IsRoutable && !Severity.MeetsFixBar
-                ? ReviewFindingDisposition.RideAlong
-                : ReviewFindingDisposition.Fix;
+            return ReviewFindingDisposition.Fix;
         }
+
+        if (Scope.IsRoutable && Severity.IsStatedBelowHigh)
+        {
+            return ReviewFindingDisposition.Route;
+        }
+
+        bool meetsFixBarThisMode = mode == ReviewMode.FinalFullPass
+            ? Severity == ReviewSeverity.High
+            : Severity.MeetsFixBar;
+
+        return !Scope.IsRoutable && !meetsFixBarThisMode
+            ? ReviewFindingDisposition.RideAlong
+            : ReviewFindingDisposition.Fix;
     }
 
     /// <summary>The stream's record of this finding: its classification, never its text (log #6).</summary>
-    public ReviewFindingRecord ToRecord() => new(Severity, Scope, Location, Disposition, Track);
+    public ReviewFindingRecord ToRecord(ReviewMode mode) => new(Severity, Scope, Location, Disposition(mode), Track);
 }
