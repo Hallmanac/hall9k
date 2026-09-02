@@ -101,10 +101,17 @@ public static partial class JiraMarkupText
             : $"{{noformat}}\n{text}\n{{noformat}}";
 
     /// <summary>
-    /// Whether <paramref name="text"/> contains a real Jira wiki-markup construct. Bold, list
-    /// markers, table rows, links, monospace, and macros like <c>{noformat}</c> itself are each
-    /// built from a character no ordinary sentence needs, so any bare occurrence of one is still
-    /// trusted as the construct (the cycle-1/2 rule, unchanged). Line-anchored headings
+    /// Whether <paramref name="text"/> contains a real Jira wiki-markup construct. Bold, bullet
+    /// list markers, table rows, links, monospace, and macros like <c>{noformat}</c> itself are
+    /// each built from a character no ordinary sentence needs, so any bare occurrence of one is
+    /// still trusted as the construct (the cycle-1/2 rule, unchanged). The numbered-list marker
+    /// (<c>#</c>) is not one of these: unlike <c>*</c>, an ordinary sentence needs a bare
+    /// <c>#</c> for other things entirely (an issue number, a hashtag), so it is trusted only in
+    /// the numbered-list marker's own line-anchored shape (one or more <c>#</c> at the very start
+    /// of a line) rather than as a bare occurrence anywhere (independent pre-PR review,
+    /// adversarial lens, cycle 10, origin: "see PR #38 for the rollback path" boxed an entire
+    /// operator-composed comment in <c>{noformat}</c> over a character that was never a list
+    /// marker). Line-anchored headings
     /// (<c>h1.</c>-<c>h6.</c>) and blockquotes (<c>bq.</c>), image embeds (<c>!file.png!</c>),
     /// citations (<c>??...??</c>), and Jira's documented emoticons (<c>:)</c>, <c>(y)</c>,
     /// <c>(i)</c>, and the rest of that fixed, published set — never guessed at, since an
@@ -313,7 +320,17 @@ public static partial class JiraMarkupText
         return false;
     }
 
-    [GeneratedRegex(@"```(\w*)\n(.*?)\n```", RegexOptions.Singleline)]
+    /// <summary>
+    /// An opening fence's info string is any non-whitespace run (<c>\S*</c>), not <c>\w*</c>: a
+    /// language tag with a hyphen (<c>objective-c</c>) or a <c>#</c> (<c>c#</c>) failed to match at
+    /// all under <c>\w*</c>, and — because the pattern is anchored to the true opening fence with
+    /// <c>^</c> rather than falling back to whatever <c>```</c> the engine found next — that one
+    /// failed match paired the wrong fences across an unrelated block entirely, wrapping prose in
+    /// <c>{code}</c> and leaving the actual code markdown-converted (independent pre-PR review,
+    /// adversarial lens, cycle 10). Trailing whitespace before the line's own newline
+    /// (<c>```bash </c>) is tolerated on both the opening and the closing fence for the same reason.
+    /// </summary>
+    [GeneratedRegex(@"^```(\S*)[ \t]*\n(.*?)\n^```[ \t]*$", RegexOptions.Multiline | RegexOptions.Singleline)]
     private static partial Regex FencedCodeBlock();
 
     [GeneratedRegex(@"^(#{1,6})\s+(.*)$")]
@@ -330,9 +347,13 @@ public static partial class JiraMarkupText
 
     /// <summary>
     /// One alternation covering every construct <see cref="ContainsWikiMarkupConstruct"/>'s own doc
-    /// comment enumerates. The single-character marks that are never paired — bold's <c>*</c>, list
-    /// and table markers, links, monospace, macro braces — keep the cycle-1/2 rule of any bare
-    /// occurrence counting, since none of them was found to over-trigger. The five *paired* marks
+    /// comment enumerates. The single-character marks that are never paired — bold's <c>*</c>,
+    /// bullet and table markers, links, monospace, macro braces — keep the cycle-1/2 rule of any
+    /// bare occurrence counting, since none of them was found to over-trigger. The numbered-list
+    /// marker (<c>#</c>) is the one bare-occurrence exception (cycle 10): matched only at the
+    /// start of a line, the shape <see cref="ConvertLine"/>'s own <c>NumberedLine</c> target
+    /// notation actually takes, the same treatment headings and blockquotes below already get. The
+    /// five *paired* marks
     /// (hyphen/strikethrough, underscore/italic, plus/underline, caret/superscript,
     /// tilde/subscript) each get the same real-construct-shape test instead: a mark preceded by
     /// start-of-text, whitespace, or an opening paren, immediately followed by a non-space
@@ -343,7 +364,7 @@ public static partial class JiraMarkupText
     /// <c>my_org/my_repo</c> tripping the underscore).
     /// </summary>
     [GeneratedRegex(
-        @"[*#{}\[\]|\\]" +
+        @"[*{}\[\]|\\]" +
         @"|(?<![\w-])-(?=\S)(?:[^\r\n]*?\S)?-(?![\w-])" +
         @"|(?<!\w)_(?=\S)(?:[^\r\n]*?\S)?_(?!\w)" +
         @"|(?<![\w+])\+(?=\S)(?:[^\r\n]*?\S)?\+(?![\w+])" +
@@ -351,6 +372,7 @@ public static partial class JiraMarkupText
         @"|(?<![\w~])~(?=\S)(?:[^\r\n]*?\S)?~(?![\w~])" +
         @"|^h[1-6]\.(?:\s|$)" +
         @"|^bq\.(?:\s|$)" +
+        @"|^#+(?:\s|$)" +
         @"|\?\?[^\r\n?]+\?\?" +
         @"|!\S[^\r\n!]*!" +
         @"|:\)|:\(|:P|:D|;\)|\(y\)|\(n\)|\(i\)|\(/\)|\(x\)|\(!\)|\(\+\)|\(-\)|\(\?\)|\(on\)|\(off\)|\(\*[rgby]?\)",
