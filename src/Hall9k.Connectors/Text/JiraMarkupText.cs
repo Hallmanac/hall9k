@@ -19,7 +19,11 @@ namespace Hall9k.Connectors.Text;
 /// links, inline code, fenced code blocks, blockquotes) rather than the whole spec — the same
 /// proportionate scope <see cref="RelayedText"/> takes with relayed text generally. Markdown's own
 /// underscore-italic (<c>_text_</c>) already reads identically in Jira wiki markup, so it needs no
-/// conversion of its own.
+/// conversion of its own. Markdown's single-asterisk emphasis (<c>*text*</c>) does need converting,
+/// though, and not just leaving alone: unlike underscore, a bare <c>*text*</c> is itself Jira wiki
+/// markup's own **bold** notation, so passing it through unconverted did not merely fail to
+/// italicize — it silently reassigned the emphasis to bold on the rendered card (independent pre-PR
+/// review, conformance lens, cycle 8).
 /// </para>
 /// </summary>
 public static partial class JiraMarkupText
@@ -195,6 +199,22 @@ public static partial class JiraMarkupText
             {
                 result.Append('*').Append(ConvertInline(text[(index + 2)..boldClose])).Append('*');
                 index = boldClose + 2;
+                continue;
+            }
+
+            // Single-asterisk markdown emphasis (*text*), checked only once the double-asterisk
+            // case above has already failed to match: a bare *text* is Jira wiki markup's own bold
+            // notation, so left unconverted it silently reassigned italic to bold rather than simply
+            // failing to render (independent pre-PR review, conformance lens, cycle 8). Flanking is
+            // required on both delimiters — immediately followed by, and immediately preceded by, a
+            // non-space character — the same real-construct-shape test the paired wiki-markup marks
+            // use, so ordinary prose that merely contains a bare asterisk ("3 * 4") is left alone.
+            if (text[index] == '*' && index + 1 < text.Length && !char.IsWhiteSpace(text[index + 1])
+                && TryFindDelimiter(text, index + 1, "*", out int italicClose)
+                && italicClose > index + 1 && !char.IsWhiteSpace(text[italicClose - 1]))
+            {
+                result.Append('_').Append(ConvertInline(text[(index + 1)..italicClose])).Append('_');
+                index = italicClose + 1;
                 continue;
             }
 

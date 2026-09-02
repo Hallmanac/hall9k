@@ -39,6 +39,34 @@ public sealed class JiraMarkupTextTests
         JiraMarkupText.FromMarkdown("This is _emphasised_ text").Should().Be("This is _emphasised_ text");
     }
 
+    /// <summary>
+    /// Markdown's single-asterisk emphasis is itself Jira wiki markup's own bold notation, so
+    /// leaving it unconverted silently reassigned italic to bold on the rendered card rather than
+    /// merely failing to italicize (independent pre-PR review, conformance lens, cycle 8).
+    /// </summary>
+    [Fact]
+    public void Single_asterisk_italics_become_a_Jira_underscore_span()
+    {
+        JiraMarkupText.FromMarkdown("the *optional* field").Should().Be("the _optional_ field");
+    }
+
+    [Fact]
+    public void Single_asterisk_italics_and_double_asterisk_bold_both_convert_in_the_same_text()
+    {
+        JiraMarkupText.FromMarkdown("*italic* and **bold**").Should().Be("_italic_ and *bold*");
+    }
+
+    /// <summary>
+    /// A bare asterisk with whitespace on either side — arithmetic, an ordinary sentence — is not
+    /// emphasis, so it is left alone the same way the paired wiki-markup marks (hyphen, underscore,
+    /// caret, tilde) already require real flanking rather than a bare character occurrence.
+    /// </summary>
+    [Fact]
+    public void An_unflanked_asterisk_is_not_read_as_italic()
+    {
+        JiraMarkupText.FromMarkdown("3 * 4 = 12").Should().Be("3 * 4 = 12");
+    }
+
     [Fact]
     public void Inline_code_becomes_a_monospace_span()
     {
