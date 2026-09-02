@@ -47,8 +47,8 @@ public static partial class JiraMarkupText
         foreach (Match fence in FencedCodeBlock().Matches(normalized))
         {
             result.Append(ConvertProse(normalized[cursor..fence.Index]));
-            string language = fence.Groups[1].Value;
-            string body = fence.Groups[2].Value;
+            string language = fence.Groups["language"].Value;
+            string body = StripFenceIndent(fence.Groups["body"].Value, fence.Groups["indent"].Value);
             result.Append(language.IsNotBlank() ? $"{{code:{language}}}\n{body}\n{{code}}" : $"{{code}}\n{body}\n{{code}}");
             cursor = fence.Index + fence.Length;
         }
@@ -170,6 +170,40 @@ public static partial class JiraMarkupText
 
     /// <summary>List nesting depth from a line's leading whitespace: every two spaces is one more level, floored at one.</summary>
     private static int Depth(string leadingWhitespace) => (leadingWhitespace.Length / 2) + 1;
+
+    /// <summary>
+    /// A fenced block's own body, with the fence's own leading indentation (<paramref name="indent"/>,
+    /// the whitespace <see cref="FencedCodeBlock"/> matched before the opening <c>```</c>) stripped
+    /// from the start of every line — the same dedent CommonMark itself applies to a fence nested as
+    /// a list-item continuation: that indentation belongs to the list structure around the block, not
+    /// to the code sample itself, so carrying it into Jira's <c>{code}</c> macro would shift every
+    /// line of a language where indentation is meaningful (YAML, Python) by however many spaces the
+    /// surrounding list happened to need (independent pre-PR review, adversarial lens, cycle 13). A
+    /// line shorter than <paramref name="indent"/> (a blank line inside the block) strips only the
+    /// whitespace it actually has rather than reading past its own end.
+    /// </summary>
+    private static string StripFenceIndent(string body, string indent)
+    {
+        if (indent.Length == 0)
+        {
+            return body;
+        }
+
+        string[] lines = body.Split('\n');
+        for (int index = 0; index < lines.Length; index++)
+        {
+            string line = lines[index];
+            int stripped = 0;
+            while (stripped < indent.Length && stripped < line.Length && line[stripped] == indent[stripped])
+            {
+                stripped++;
+            }
+
+            lines[index] = line[stripped..];
+        }
+
+        return string.Join('\n', lines);
+    }
 
     /// <summary>
     /// Inline code, bold, and links, converted in one left-to-right scan rather than three
@@ -329,8 +363,24 @@ public static partial class JiraMarkupText
     /// <c>{code}</c> and leaving the actual code markdown-converted (independent pre-PR review,
     /// adversarial lens, cycle 10). Trailing whitespace before the line's own newline
     /// (<c>```bash </c>) is tolerated on both the opening and the closing fence for the same reason.
+    /// <para>
+    /// <c>^</c> under <see cref="RegexOptions.Multiline"/> matches at the start of a line, not only
+    /// column zero, so a fence written as a list-item continuation — indented, and well-formed
+    /// CommonMark — used to fail to match at all (the leading whitespace sat between <c>^</c> and the
+    /// literal <c>```</c>) and fall through to <see cref="ConvertProse"/>, which markdown-converted
+    /// the code sample's own contents line by line. <c>(?&lt;indent&gt;[ \t]*)</c> now captures
+    /// whatever leading whitespace the opening fence has — zero characters for the ordinary
+    /// column-zero case, so every existing match is unaffected — and <c>\k&lt;indent&gt;</c> requires
+    /// the closing fence to repeat that exact whitespace rather than accepting any <c>```</c> at any
+    /// indentation: without that constraint, an opening fence indented under a list item and a later,
+    /// unrelated column-zero fence would still pair across everything in between, the identical
+    /// mis-pairing cycle 10 fixed for the info string, still open here for indentation (independent
+    /// pre-PR review, adversarial lens, cycle 13). <see cref="StripFenceIndent"/> removes the
+    /// captured indentation from the body before it reaches Jira, since that whitespace belongs to
+    /// the surrounding list structure, not to the code sample itself.
+    /// </para>
     /// </summary>
-    [GeneratedRegex(@"^```(\S*)[ \t]*\n(.*?)\n^```[ \t]*$", RegexOptions.Multiline | RegexOptions.Singleline)]
+    [GeneratedRegex(@"^(?<indent>[ \t]*)```(?<language>\S*)[ \t]*\n(?<body>.*?)\n^\k<indent>```[ \t]*$", RegexOptions.Multiline | RegexOptions.Singleline)]
     private static partial Regex FencedCodeBlock();
 
     [GeneratedRegex(@"^(#{1,6})\s+(.*)$")]

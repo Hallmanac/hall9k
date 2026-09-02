@@ -124,6 +124,41 @@ public sealed class JiraMarkupTextTests
             .Should().Be("{code:bash}\necho hi\n{code}");
     }
 
+    /// <summary>
+    /// CommonMark allows a fenced code block nested as a list item's own continuation, indented to
+    /// match the item's content column — but FencedCodeBlock anchored both fences to column 0, so
+    /// this never matched at all and fell through to ConvertProse, which markdown-converted the
+    /// code sample's own contents line by line, turning an indented "- name: build" into a second-
+    /// level Jira bullet (independent pre-PR review, adversarial lens, cycle 13). The fence's own
+    /// leading indentation belongs to the surrounding list structure, not the code sample, so it is
+    /// stripped from every body line before the block reaches Jira's {code} macro — leaving the
+    /// sample's own internal relative indentation (the "args:" line here) untouched.
+    /// </summary>
+    [Fact]
+    public void A_fenced_code_block_indented_as_a_list_item_continuation_is_recognized_and_dedented()
+    {
+        JiraMarkupText.FromMarkdown("  ```yaml\n  - name: build\n    args: [\"--flag\"]\n  ```")
+            .Should().Be("{code:yaml}\n- name: build\n  args: [\"--flag\"]\n{code}");
+    }
+
+    /// <summary>
+    /// The second trigger the same column-0 assumption had: an opening fence's indentation used to
+    /// pair with any closing fence at all, indented or not, so a top-level opening fence with an
+    /// indented closing fence (or the reverse) matched across everything in between and boxed
+    /// unrelated prose inside a single {code} block. Requiring the closing fence to repeat the
+    /// opening fence's own exact indentation means a genuine mismatch fails to match at all instead
+    /// — here, nothing in the text matches as a fenced block, so it all passes through untouched,
+    /// rather than the fenced block boundaries relocating onto whichever backtick line happens to
+    /// pair next (independent pre-PR review, adversarial lens, cycle 13).
+    /// </summary>
+    [Fact]
+    public void Fenced_code_blocks_whose_open_and_close_indentation_differ_do_not_pair_across_the_mismatch()
+    {
+        string markdown = "Intro line.\n\n  ```yaml\nfoo: 1\n```\n\nOutro line.";
+
+        JiraMarkupText.FromMarkdown(markdown).Should().Be(markdown);
+    }
+
     [Fact]
     public void A_given_when_then_block_converts_headings_and_bullets_together()
     {

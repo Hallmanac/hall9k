@@ -574,20 +574,42 @@ public sealed class JiraWriteExecutorTests
     }
 
     [Fact]
-    public async Task Update_drops_a_composed_project_or_issuetype_field_rather_than_sending_it()
+    public async Task Update_refuses_a_composed_project_or_issuetype_field_rather_than_dropping_it_silently()
     {
+        // JiraWritePayload.Validate already refuses a fresh payload shaped like this before it is
+        // ever recorded — this simulates the one path that still reaches UpdateAsync unvalidated: a
+        // write recorded pending under an older build that allowed the field through, replayed by
+        // JiraWriteCoordinator.RetryPendingAsync, which does not re-validate a recorded payload
+        // (independent pre-PR review, adversarial lens, cycle 13). Silently dropping it here — the
+        // old behavior — let the read-back confirm the card still exists and record a verified
+        // success for content that was never sent.
         RecordingJiraRequester requester = RecordingJiraRequester.RespondingTo(_ => Ok("""{"key":"PROJ-20"}"""));
 
         JiraWritePayload payload = JiraWritePayload.FromJson(
             """{"fields":{"summary":"S","project":{"key":"OTHER"},"issuetype":{"name":"Bug"}}}""");
 
-        await Executor(requester).UpdateAsync("PROJ-20", payload, CancellationToken.None);
+        Func<Task> act = () => Executor(requester).UpdateAsync("PROJ-20", payload, CancellationToken.None);
 
-        string? body = requester.Requests.First(r => r.Method == HttpMethod.Put).JsonBody;
-        body.Should().NotContain(
-            "\"project\"", "an update has no bound project of its own to overwrite a composed one with, so it is dropped instead");
-        body.Should().NotContain(
-            "\"issuetype\"", "an update never moves a card to a different work item type through a field write");
+        (await act.Should().ThrowAsync<JiraWriteExecutionException>())
+            .Which.Should().Match<JiraWriteExecutionException>(exception =>
+                !exception.IsAuthFailure && exception.Message.Contains("\"project\""));
+        requester.Requests.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task Update_refuses_a_composed_issuetype_field_even_alongside_a_real_field()
+    {
+        RecordingJiraRequester requester = RecordingJiraRequester.RespondingTo(_ => Ok("""{"key":"PROJ-20"}"""));
+
+        JiraWritePayload payload = JiraWritePayload.FromJson(
+            """{"fields":{"summary":"Renamed","issuetype":{"name":"Bug"}}}""");
+
+        Func<Task> act = () => Executor(requester).UpdateAsync("PROJ-20", payload, CancellationToken.None);
+
+        (await act.Should().ThrowAsync<JiraWriteExecutionException>())
+            .Which.Should().Match<JiraWriteExecutionException>(exception =>
+                !exception.IsAuthFailure && exception.Message.Contains("\"issuetype\""));
+        requester.Requests.Should().BeEmpty();
     }
 
     // ---- A markdown-composed description or comment reaches Jira as wiki markup, not literal characters --

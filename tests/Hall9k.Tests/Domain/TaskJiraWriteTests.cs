@@ -75,6 +75,41 @@ public sealed class TaskJiraWriteTests
         validate.Should().Throw<DomainValidationException>().WithMessage("*needs a \"summary\" field*");
     }
 
+    /// <summary>
+    /// CreateAsync always files the card against the resolved board and work item type, overwriting
+    /// anything a composer also named inside "fields" — a create-time backstop that has to stay for
+    /// a retry replaying an older payload, but a fresh payload naming "project" or "issuetype" here
+    /// should never validate clean in the first place: without this refusal, a composer's own stated
+    /// intent (file against OTHER, as a Bug) is silently overwritten while the recorded intent and
+    /// outcome still claim the write carried out exactly what was composed (independent pre-PR
+    /// review, conformance lens, cycle 13).
+    /// </summary>
+    [Fact]
+    public void A_create_naming_a_project_field_is_refused_because_the_executor_never_sends_it()
+    {
+        JiraWritePayload payload = new(
+            WorkItemType: "Dev Task",
+            Fields: new Dictionary<string, string> { ["summary"] = "S", ["project"] = "OTHER" },
+            Comment: null);
+
+        Action validate = () => payload.Validate(JiraWriteOperation.Create);
+
+        validate.Should().Throw<DomainValidationException>().WithMessage("*does not send \"project\"*");
+    }
+
+    [Fact]
+    public void A_create_naming_an_issuetype_field_is_refused_even_alongside_a_real_field()
+    {
+        JiraWritePayload payload = new(
+            WorkItemType: "Dev Task",
+            Fields: new Dictionary<string, string> { ["summary"] = "S", ["issuetype"] = "Bug" },
+            Comment: null);
+
+        Action validate = () => payload.Validate(JiraWriteOperation.Create);
+
+        validate.Should().Throw<DomainValidationException>().WithMessage("*does not send \"issuetype\"*");
+    }
+
     [Fact]
     public void An_update_with_no_fields_is_refused_because_it_would_change_nothing()
     {

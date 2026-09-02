@@ -108,6 +108,22 @@ public sealed record JiraWritePayload(
             }
 
             RefuseUnusedMember(operation, "comment", Comment.IsNotBlank());
+
+            // CreateAsync always files the card against the board and work item type this payload
+            // resolved through ProjectKey/WorkItemType, overwriting anything a composer also named
+            // inside "fields" (case-insensitively, so "issueType" cannot survive alongside the
+            // executor's own reserved "issuetype" node either). That overwrite is the executor's own
+            // retry-replay backstop for a payload recorded under an older build's rules — it has to
+            // stay, the same way ApplyFormat's own fallback stays reachable for a stale "html"
+            // payload — but a *fresh* payload naming "project" or "issuetype" inside "fields" should
+            // never validate clean in the first place: without this, the composer's own stated intent
+            // (file against OTHER, as a Bug) is silently overwritten (filed against the bound board,
+            // as whatever workItemType named) while the recorded intent and outcome still claim the
+            // write carried out exactly what was composed — the identical silently-discarded-content
+            // problem RefuseReassignmentField already closed for an update (independent pre-PR
+            // review, conformance lens, cycle 13).
+            RefuseReassignmentField(operation, HasField(Fields, "project"), "project");
+            RefuseReassignmentField(operation, HasField(Fields, "issuetype"), "issuetype");
         }
         else if (operation == JiraWriteOperation.Update)
         {
@@ -133,8 +149,8 @@ public sealed record JiraWritePayload(
             // never sent — including the case where such a field was the payload's only content, so
             // Jira received an effectively empty update and still answered 2xx (independent pre-PR
             // review, adversarial lens, cycle 8).
-            RefuseReassignmentField(HasField(Fields, "project"), "project");
-            RefuseReassignmentField(HasField(Fields, "issuetype"), "issuetype");
+            RefuseReassignmentField(operation, HasField(Fields, "project"), "project");
+            RefuseReassignmentField(operation, HasField(Fields, "issuetype"), "issuetype");
         }
 
         if (Format.IsNotBlank() && !AllowedFormats.Contains(Format.Trim().ToLowerInvariant()))
@@ -170,28 +186,35 @@ public sealed record JiraWritePayload(
     }
 
     /// <summary>
-    /// Refuses a "project" or "issuetype" field inside an update's own "fields" — the two members an
-    /// update has no bound value of its own to overwrite a composed one with (unlike a create, which
-    /// always writes both from its own <see cref="ProjectKey"/> and <see cref="WorkItemType"/>), so
-    /// <see cref="Hall9k.Connectors.WorkItems.JiraWriteExecutor.UpdateAsync"/> drops either one before
-    /// building the request rather than moving a card between boards or types through an ordinary
-    /// field write. This is the same silently-dropped-content problem <see cref="RefuseUnusedMember"/>
-    /// exists to prevent, but that method's own message ("submit it as a separate write of the
-    /// operation that does send it") would be false here: no operation sends a card's project or
-    /// issue type through "fields" at all, so this refusal names the actual, correct fix instead.
+    /// Refuses a "project" or "issuetype" field inside a create's or an update's own "fields" — a
+    /// value neither operation's own executor call ever sends from there: an update has no bound
+    /// value of its own to overwrite a composed one with, and a create always writes both from its
+    /// own <see cref="ProjectKey"/> and <see cref="WorkItemType"/> instead, overwriting anything
+    /// composed inside "fields" rather than reading it. This is the same silently-dropped-content
+    /// problem <see cref="RefuseUnusedMember"/> exists to prevent, but that method's own message
+    /// ("submit it as a separate write of the operation that does send it") would be false here: no
+    /// operation sends a card's project or issue type through "fields" at all, so this refusal names
+    /// the actual, correct fix for each operation instead.
     /// </summary>
-    private static void RefuseReassignmentField(bool present, string fieldName)
+    private static void RefuseReassignmentField(JiraWriteOperation operation, bool present, string fieldName)
     {
         if (!present)
         {
             return;
         }
 
+        string fix = operation == JiraWriteOperation.Create
+            ? $"a create always files the card against the project key and work item type resolved "
+                + "from \"projectKey\" and \"workItemType\", so this would be silently discarded and "
+                + "overwritten rather than carried out as composed. Remove it from \"fields\" and put "
+                + "it there instead"
+            : "an update has no board or work item type of its own to move a card to, so this would "
+                + "be silently dropped rather than carried out. Remove it from the payload; moving a "
+                + "card between projects or changing its work item type is not something an update "
+                + "field write does";
+
         throw new DomainValidationException(
-            $"An \"update\" write does not send \"{fieldName}\" inside \"fields\" — an update has no "
-            + "board or work item type of its own to move a card to, so this would be silently dropped "
-            + "rather than carried out. Remove it from the payload; moving a card between projects or "
-            + "changing its work item type is not something an update field write does.");
+            $"A \"{operation}\" write does not send \"{fieldName}\" inside \"fields\" — {fix}.");
     }
 
     /// <summary>
