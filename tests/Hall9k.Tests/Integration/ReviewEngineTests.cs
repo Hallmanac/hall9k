@@ -3761,6 +3761,15 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
             "the SECOND resolution must still resume the rebase prompt, not the generic review-fix prompt");
         secondAttemptExecutor.Spawns[0].Prompt.Should().Contain("The human's decision on the disputed conflict");
         secondAttemptExecutor.Spawns[0].Prompt.Should().Contain(secondResolution);
+
+        // Adversarial review, cycle 1 finding (Decisions Log #115): this reverify's own dispatch
+        // must resolve as Discovery, not carry a boundary its own prompt (a full base-branch read,
+        // per ReviewDispatched.SinceSha's own doc) was never scoped to.
+        await using IQuerySession query = store.QuerySession();
+        List<object> events = [.. (await query.Events.FetchStreamAsync(runId, token: cts.Token)).Select(e => e.Data)];
+        events.OfType<ReviewDispatched>().Where(e => e.Cycle == 1).Should().HaveCount(2)
+            .And.OnlyContain(e => e.Mode == ReviewMode.Discovery, "no review pass has ever run on this branch")
+            .And.OnlyContain(e => e.SinceSha == null, "a Discovery pass always reads the full diff");
     }
 
     /// <summary>
