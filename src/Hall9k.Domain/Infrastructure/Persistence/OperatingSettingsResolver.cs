@@ -37,7 +37,9 @@ public static class OperatingSettingsResolver
             configured.MaxConcurrentAgentSessions,
             OperatingSettings.DefaultMaxConcurrentAgentSessions,
             unusableEnvironmentVariables,
-            convertedFromLegacy ? WarnIfBelowCeilingFloor : null);
+            convertedFromLegacy ? WarnIfBelowCeilingFloor : null,
+            "max-concurrent-agent-sessions",
+            unparseableValueFallsBackRatherThanCrashing: true);
 
         ResolvedSetting<int> sessionCapPerRun =
             ResolveSessionCapPerRun(configured.SessionCapPerRun, unusableEnvironmentVariables);
@@ -59,28 +61,36 @@ public static class OperatingSettingsResolver
             configured.MaxComplianceReviewCycles,
             OperatingSettings.DefaultMaxComplianceReviewCycles,
             unusableEnvironmentVariables,
-            (source, value, unusable) => WarnIfBelowReviewCapFloor(source, value, "max-compliance-review-cycles", unusable));
+            (source, value, unusable) => WarnIfBelowReviewCapFloor(source, value, "max-compliance-review-cycles", unusable),
+            "max-compliance-review-cycles",
+            unparseableValueFallsBackRatherThanCrashing: false);
 
         ResolvedSetting<int> maxAdversarialReviewCycles = ResolveInt(
             $"{EnvironmentPrefix}MaxAdversarialReviewCycles",
             configured.MaxAdversarialReviewCycles,
             OperatingSettings.DefaultMaxAdversarialReviewCycles,
             unusableEnvironmentVariables,
-            (source, value, unusable) => WarnIfBelowReviewCapFloor(source, value, "max-adversarial-review-cycles", unusable));
+            (source, value, unusable) => WarnIfBelowReviewCapFloor(source, value, "max-adversarial-review-cycles", unusable),
+            "max-adversarial-review-cycles",
+            unparseableValueFallsBackRatherThanCrashing: false);
 
         ResolvedSetting<int> maxFinalFullPassRounds = ResolveInt(
             $"{EnvironmentPrefix}MaxFinalFullPassRounds",
             configured.MaxFinalFullPassRounds,
             OperatingSettings.DefaultMaxFinalFullPassRounds,
             unusableEnvironmentVariables,
-            (source, value, unusable) => WarnIfBelowReviewCapFloor(source, value, "max-final-full-pass-rounds", unusable));
+            (source, value, unusable) => WarnIfBelowReviewCapFloor(source, value, "max-final-full-pass-rounds", unusable),
+            "max-final-full-pass-rounds",
+            unparseableValueFallsBackRatherThanCrashing: false);
 
         ResolvedSetting<int> lifetimeReviewCycleBudget = ResolveInt(
             $"{EnvironmentPrefix}LifetimeReviewCycleBudget",
             configured.LifetimeReviewCycleBudget,
             OperatingSettings.DefaultLifetimeReviewCycleBudget,
             unusableEnvironmentVariables,
-            (source, value, unusable) => WarnIfBelowReviewCapFloor(source, value, "lifetime-review-cycle-budget", unusable));
+            (source, value, unusable) => WarnIfBelowReviewCapFloor(source, value, "lifetime-review-cycle-budget", unusable),
+            "lifetime-review-cycle-budget",
+            unparseableValueFallsBackRatherThanCrashing: false);
 
         return new OperatingSettingsReport(
             concurrency, read.MaxConcurrentAgentSessionsIsFabricatedZero, maxConcurrentTaskRuns, convertedFromLegacy,
@@ -230,19 +240,23 @@ public static class OperatingSettingsResolver
     }
 
     /// <summary>
-    /// This resolves <c>MaxConcurrentAgentSessions</c> only — the one retired concurrency setting
-    /// that carries no per-precedence-level conversion of its own (unlike
-    /// <see cref="ResolveMaxConcurrentTaskRuns"/> and <see cref="ResolveSessionCapPerRun"/>).
-    /// Unlike <see cref="ResolveString"/>, a set-but-unparseable value cannot just ride through as
-    /// itself, or a caller would report an origin and a value nothing actually runs with. For most
-    /// call sites (the four review-cycle caps) <see cref="DaemonOptions"/> binds the equivalent key
-    /// through <c>ConfigurationBinder</c>, which throws at options-resolution time rather than
-    /// keeping the config-file/default value; <c>max-concurrent-agent-sessions</c> is the one
-    /// exception, excluded from that <c>Bind()</c> call entirely (Decisions Log #111's follow-up),
-    /// and nothing else reads the bound <see cref="DaemonOptions.MaxConcurrentAgentSessions"/>
-    /// property at dispatch time — the retired-key conversion itself reads the raw environment
-    /// variable and config file directly, never this method's result — so an unparseable value
-    /// there merely falls back rather than crashing. Either way, the variable's raw value is
+    /// Shared by <c>max-concurrent-agent-sessions</c> and the four review-cycle caps, whose
+    /// unparseable-environment-variable consequence differs by call site and must be named
+    /// correctly rather than assumed: <c>max-concurrent-agent-sessions</c> is excluded from
+    /// Program.cs's own <c>Bind()</c> call entirely (Decisions Log #111's follow-up) and nothing
+    /// else reads the bound <see cref="DaemonOptions.MaxConcurrentAgentSessions"/> property at
+    /// dispatch time — the retired-key conversion itself reads the raw environment variable and
+    /// config file directly, never this method's result — so an unparseable value there merely
+    /// falls back rather than crashing. The four review-cycle caps carry no such exclusion
+    /// (<c>DaemonOptionsBinding.ResolverOwnedKeys</c> names only the three concurrency settings),
+    /// so <see cref="DaemonOptions"/> binds their equivalent key through <c>ConfigurationBinder</c>,
+    /// which throws at options-resolution time on the identical unparseable value instead of
+    /// keeping the config-file/default value — reporting that as a graceful fallback would tell an
+    /// operator the daemon is fine when it will not start (independent pre-PR review, cycle 8,
+    /// adversarial lens). <paramref name="unparseableValueFallsBackRatherThanCrashing"/> is what
+    /// call sites use to say which shape applies to them. Unlike <see cref="ResolveString"/>, a
+    /// set-but-unparseable value cannot just ride through as itself, or a caller would report an
+    /// origin and a value nothing actually runs with — either way, the variable's raw value is
     /// recorded in <paramref name="unusable"/> instead, so a caller can name the mistake rather
     /// than the resolver quietly outranking it.
     /// <paramref name="warnIfOutOfRange"/> has no default: every call site names its own floor
@@ -252,7 +266,8 @@ public static class OperatingSettingsResolver
     /// </summary>
     private static ResolvedSetting<int> ResolveInt(
         string environmentVariable, int? configured, int fallback, List<string> unusable,
-        Action<string, int, List<string>>? warnIfOutOfRange)
+        Action<string, int, List<string>>? warnIfOutOfRange, string optionName,
+        bool unparseableValueFallsBackRatherThanCrashing)
     {
         // Unlike ResolveString, an empty value is not treated as unset here: a shell that expands
         // an unset variable into "" (Hall9k__MaxConcurrentAgentSessions= with nothing after it —
@@ -266,10 +281,12 @@ public static class OperatingSettingsResolver
                 return new ResolvedSetting<int>(parsed, SettingOrigin.EnvironmentVariable, environmentVariable);
             }
 
-            unusable.Add(
-                $"{environmentVariable} is set to \"{fromEnvironment}\", which is not a whole number — it is "
-                + "treated as absent, and max-concurrent-agent-sessions falls back to the config file or default "
-                + "instead (this retired setting no longer crashes the daemon on a bad value).");
+            string consequence = unparseableValueFallsBackRatherThanCrashing
+                ? $"it is treated as absent, and {optionName} falls back to the config file or default instead "
+                  + "(this retired setting no longer crashes the daemon on a bad value)."
+                : $"the daemon binds {optionName} through ConfigurationBinder like any other setting and fails to "
+                  + "start converting it, rather than falling back to the config file or default.";
+            unusable.Add($"{environmentVariable} is set to \"{fromEnvironment}\", which is not a whole number — {consequence}");
         }
 
         if (configured is { } value)
