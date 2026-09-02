@@ -1523,11 +1523,14 @@ public static class AgentPromptBuilder
         {
             prompt.AppendLine("when at least one verified finding graded high stands, in-scope or out-of-scope. This");
             prompt.AppendLine("is the mandatory final pass immediately before the pull request opens, and its own");
-            prompt.AppendLine("bar is narrower than an earlier cycle's (Decisions Log #113): a medium or low finding");
-            prompt.AppendLine("here is recorded and carried onto the pull request as a residual instead of costing a");
-            prompt.AppendLine("fix-and-re-review cycle. A needs-fixes verdict must name at least one finding: a");
-            prompt.AppendLine("stated location (a file, or a file and line) and a description of the defect there.");
-            prompt.AppendLine("A needs-fixes verdict with nothing named this way is read the same as no verdict at all.");
+            prompt.AppendLine("bar is narrower than an earlier cycle's (Decisions Log #113): an in-scope medium or");
+            prompt.AppendLine("low finding here is recorded and carried onto the pull request as a residual instead");
+            prompt.AppendLine("of costing a fix-and-re-review cycle. An out-of-scope medium or low finding still");
+            prompt.AppendLine("routes to its own draft task exactly as it would on any other cycle, and does not by");
+            prompt.AppendLine("itself cost a fix-and-re-review cycle either. A needs-fixes verdict must name at");
+            prompt.AppendLine("least one finding: a stated location (a file, or a file and line) and a description");
+            prompt.AppendLine("of the defect there. A needs-fixes verdict with nothing named this way is read the");
+            prompt.AppendLine("same as no verdict at all.");
         }
         else
         {

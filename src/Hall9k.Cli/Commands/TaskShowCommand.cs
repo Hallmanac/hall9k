@@ -430,7 +430,7 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
     /// </summary>
     private static string RideAlongClause(RunDetails run) => run.ReviewResidualsRideAlong > 0
         ? $", {run.ReviewResidualsRideAlong} ride-along(s) — each below the fix bar of the cycle that recorded it "
-          + "(low/ungraded on an ordinary cycle, medium or below on the mandatory final pass) — and never claimed"
+          + "(low/ungraded on an ordinary cycle, medium/low/ungraded on the mandatory final pass) — and never claimed"
         : string.Empty;
 
     /// <summary>
