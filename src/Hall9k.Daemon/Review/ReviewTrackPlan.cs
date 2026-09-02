@@ -13,8 +13,9 @@ namespace Hall9k.Daemon.Review;
 /// <param name="Fix">
 /// Findings this pull request resolves this cycle — a Medium or High in the branch's own code,
 /// plus out-of-scope Highs. Narrower on the mandatory <see cref="ReviewMode.FinalFullPass"/>
-/// cycle (Decisions Log #113): there, only a High in the branch's own code lands here, since an
-/// in-scope Medium rides along instead.
+/// cycle (Decisions Log #113) for the in-scope half only: there, only a High in the branch's own
+/// code lands here, since an in-scope Medium rides along instead — an out-of-scope High still
+/// lands here on every mode, unchanged.
 /// </param>
 /// <param name="Route">Out-of-scope Mediums and Lows, bound for draft bug tasks rather than this diff.</param>
 /// <param name="RideAlong">

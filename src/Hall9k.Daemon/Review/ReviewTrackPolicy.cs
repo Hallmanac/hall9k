@@ -11,8 +11,10 @@ namespace Hall9k.Daemon.Review;
 /// <b>Conformance</b> now grades every finding the same way adversarial does (Decisions Log
 /// #87): <see cref="ReviewFinding.Disposition"/> reads <see cref="ReviewSeverity.MeetsFixBar"/>
 /// on either lens — except the mandatory <see cref="ReviewMode.FinalFullPass"/> cycle, whose own
-/// narrower bar is <see cref="ReviewFinding.Disposition"/>'s to document, not this class's, and
-/// applies identically to both lenses — and <c>ReviewEngine.RecordReviewPassAsync</c> demotes a needs-fixes verdict to
+/// narrower bar is <see cref="ReviewFinding.Disposition"/>'s to document, not this class's (an
+/// in-scope Medium rides along there instead of meeting the fix bar, the same narrowing
+/// <b>Adversarial</b> below describes), and applies identically to both lenses — and
+/// <c>ReviewEngine.RecordReviewPassAsync</c> demotes a needs-fixes verdict to
 /// merge-ready the moment every finding it attached is RideAlong-dispositioned — so this track
 /// ends on "nothing that meets the fix bar" whether that means it came back clean or came back
 /// with polish alone. <see cref="Decide"/> itself never gates conformance on severity: a

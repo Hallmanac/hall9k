@@ -1082,7 +1082,8 @@ public sealed class AgentPromptBuilderTests : IDisposable
         string prompt = AgentPromptBuilder.BuildReview(
             SomeTask(), SomeProject(), "task/1-slug", cycle: 6, ReviewLens.Adversarial, ReviewMode.FinalFullPass);
 
-        prompt.Should().Contain("only a `high` finding blocks a merge-ready");
+        prompt.Should().Contain("only a `high` finding, in-scope or out-of-scope,");
+        prompt.Should().Contain("costs a fix-and-re-review cycle here");
         prompt.Should().Contain(
             "when at least one verified finding graded high stands",
             "the verdict contract's own needs-fixes trigger must match the finding contract's bar");
