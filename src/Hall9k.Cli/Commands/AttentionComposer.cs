@@ -323,10 +323,22 @@ internal static class AttentionComposer
             // (Decisions Log #72), so this arm answers for both. Those two want different
             // levers, and the recorded reason is the fact that tells them apart, so the lever
             // is composed from it.
-            "Failed" or "Killed" => new TaskAttention(AttentionLevel.NeedsYou,
-                "the run ended without a merge being observed, and nothing is watching this pull "
-                + $"request any more: {Reason(run.FailureReason, "the run recorded no reason")}",
-                UnwatchedRemedy(task, run, id)),
+            // A pull request the orphan sweep can find (Decisions Log #72, and its counterpart
+            // for h9k task resolve --pr, backlog: a pull request recorded by h9k task resolve
+            // --pr is observed to merge like any other) is not unwatched — its merge still
+            // completes closeout on its own, only follow-ups do not — so the cause must not
+            // claim nothing is watching when the sweep's own candidate query would in fact
+            // find this row.
+            "Failed" or "Killed" => IsOrphanSweepCandidate(run)
+                ? new TaskAttention(AttentionLevel.NeedsYou,
+                    "the run ended without a merge being observed; closeout still watches this pull "
+                    + "request for a merge, but nothing will fix or follow up on it: "
+                    + $"{Reason(run.FailureReason, "the run recorded no reason")}",
+                    UnwatchedRemedy(task, run, id))
+                : new TaskAttention(AttentionLevel.NeedsYou,
+                    "the run ended without a merge being observed, and nothing is watching this pull "
+                    + $"request any more: {Reason(run.FailureReason, "the run recorded no reason")}",
+                    UnwatchedRemedy(task, run, id)),
             _ => TaskAttention.None,
         };
     }
@@ -399,6 +411,16 @@ internal static class AttentionComposer
         1 => "1 comment thread",
         _ => $"{run.ExternalReviewThreadCount} comment threads",
     };
+
+    /// <summary>
+    /// Mirrors <c>CloseoutEngine.PollOnceAsync</c>'s own orphan candidate filter exactly, so this
+    /// pane never claims a pull request is unwatched when the sweep's query would actually match
+    /// this row: a recorded pull request number, and a failure reason that is not <see
+    /// cref="RunDetails.PullRequestClosedWithoutMerge"/> (the sweep already learned everything an
+    /// inspection there could tell it and excludes that row from its own candidate set).
+    /// </summary>
+    private static bool IsOrphanSweepCandidate(RunDetails run) =>
+        run.PullRequestNumber is > 0 && run.FailureReason != RunDetails.PullRequestClosedWithoutMerge;
 
     /// <summary>
     /// What actually moves a Done task whose run ended with no merge observed. <c>h9k pr resolve</c>
