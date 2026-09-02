@@ -295,4 +295,60 @@ public sealed class ConfigSetCommandTests
         operating.InteractiveClaimStaleAfterDays.Should().Be(5);
         changed.Should().ContainSingle().Which.Should().Contain("5");
     }
+
+    [Fact]
+    public void A_negative_spend_budget_is_refused()
+    {
+        ConfigSetCommand.Settings settings = new() { SpendBudget = -1 };
+
+        Action act = () => ConfigSetCommand.Validate(settings);
+
+        act.Should().Throw<DomainValidationException>().WithMessage("*at least 0*");
+    }
+
+    [Fact]
+    public void A_spend_budget_of_zero_validates_as_a_legitimate_extreme_throttle()
+    {
+        ConfigSetCommand.Settings settings = new() { SpendBudget = 0 };
+
+        Action act = () => ConfigSetCommand.Validate(settings);
+
+        act.Should().NotThrow();
+    }
+
+    [Fact]
+    public void An_unrecognized_spend_period_is_refused()
+    {
+        ConfigSetCommand.Settings settings = new() { SpendPeriod = "month" };
+
+        Action act = () => ConfigSetCommand.Validate(settings);
+
+        act.Should().Throw<DomainValidationException>().WithMessage("*day*week*");
+    }
+
+    [Fact]
+    public void Applying_the_spend_budget_sets_it_and_records_the_change()
+    {
+        ConfigSetCommand.Settings settings = new() { SpendBudget = 5_000_000 };
+        OperatingSettings operating = new();
+        List<string> changed = [];
+
+        ConfigSetCommand.Apply(settings, operating, changed);
+
+        operating.SpendBudgetTokens.Should().Be(5_000_000);
+        changed.Should().ContainSingle().Which.Should().Contain("5000000");
+    }
+
+    [Fact]
+    public void Applying_the_spend_period_normalizes_case_and_records_the_change()
+    {
+        ConfigSetCommand.Settings settings = new() { SpendPeriod = "DAY" };
+        OperatingSettings operating = new();
+        List<string> changed = [];
+
+        ConfigSetCommand.Apply(settings, operating, changed);
+
+        operating.SpendPeriod.Should().Be("day");
+        changed.Should().ContainSingle().Which.Should().Contain("day");
+    }
 }

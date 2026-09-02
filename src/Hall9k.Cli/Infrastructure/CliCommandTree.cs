@@ -345,7 +345,8 @@ public static class CliCommandTree
                 .WithExample("config", "set", "--session-cap-per-run", "1")
                 .WithExample("config", "set", "--model-review", "sonnet", "--model-fix", "haiku")
                 .WithExample("config", "set", "--model-review-verify", "sonnet")
-                .WithExample("config", "set", "--interactive-claim-stale-after-days", "5");
+                .WithExample("config", "set", "--interactive-claim-stale-after-days", "5")
+                .WithExample("config", "set", "--spend-budget", "5000000", "--spend-period", "week");
         });
 
         config.AddBranch("idea", idea =>
