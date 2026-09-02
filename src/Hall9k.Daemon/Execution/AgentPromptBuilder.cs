@@ -1669,11 +1669,13 @@ public static class AgentPromptBuilder
     /// A third instance, cea5ae6e cycle 8, was the regression class: the second, hurried
     /// application of the same reflog fix swapped create-only branch materialisation for a
     /// silent force-move. All three would have been caught by their own fix session's author,
-    /// which is the whole point of running this before the verify pass has to. Deliberately
-    /// sequenced ahead of the review-model-to-fix-model knob (Decisions Log #92, #105): both
-    /// catches above were made by a verify pass running the review model, the shape that knob
-    /// moves onto the cheaper fix model, so this phase is the compensating control that has to
-    /// land first.
+    /// which is the whole point of running this before the verify pass has to. Not sequenced
+    /// ahead of the review-model-to-fix-model knob (Decisions Log #92, #105): that knob already
+    /// landed on main (9f75a6e1, 2026-08-31) before this phase's own first commit (2026-09-01),
+    /// so both catches above were made by a verify pass that, on a default install, could
+    /// already have been running on the cheaper fix model rather than the review model — the
+    /// exposure predates this phase rather than the reverse. This phase is the compensating
+    /// control landing after the fact, catching what that already-live gap would otherwise miss.
     /// </para>
     /// <para>
     /// The clean-tree closing line and the foreground-test instruction are their own origins,
@@ -1720,9 +1722,10 @@ public static class AgentPromptBuilder
         prompt.AppendLine("  review model, and a subtle half-fix or self-introduced regression is exactly");
         prompt.AppendLine("  the failure mode a cheaper model is least equipped to catch.");
         prompt.AppendLine("  This phase is one pass, not a loop: whatever is still merely suspected once it");
-        prompt.AppendLine("  ends belongs in your final summary for the verify pass to look at next, not a");
-        prompt.AppendLine("  second pass here — the verify pass is the next station regardless of what you");
-        prompt.AppendLine("  find in this one.");
+        prompt.AppendLine("  ends belongs in your final summary, not a second pass here. Say so plainly even");
+        prompt.AppendLine("  though the next review dispatch is not always a verify pass, and only a verify");
+        prompt.AppendLine("  pass reads a fix session's summary back — naming it is still the only chance");
+        prompt.AppendLine("  that suspicion has of reaching a reviewer at all, not a guaranteed handoff.");
         prompt.AppendLine("  1. **Class sweep, mandatory per finding.** For every finding you actually fixed");
         prompt.AppendLine($"     this session — never one under \"{ReviewFindingDispositions.DoNotFixHere}\",");
         prompt.AppendLine("     which stays someone else's to fix — treat its stated line as one instance of");
@@ -1744,11 +1747,11 @@ public static class AgentPromptBuilder
         prompt.AppendLine("     sibling, left for routing instead of fixed alongside it, cost the lap fixed");
         prompt.AppendLine("     in-PR anyway as 59dc9bba). For every other pre-existing site, it is still");
         prompt.AppendLine("     yours to name and not to fix: leave it out of your fix, but name it in");
-        prompt.AppendLine("     your final summary so out-of-scope routing (#63/#99) can mint or fold it — a");
+        prompt.AppendLine("     your final summary so out-of-scope routing can mint or fold it — a");
         prompt.AppendLine("     pre-existing sibling left off the sweep never reaches that routing at all.");
         prompt.AppendLine("     Name every site you swept in your final summary — fixed, cleared, or");
-        prompt.AppendLine("     pre-existing and named for routing, and why each — so the verify pass can");
-        prompt.AppendLine("     check your enumeration instead of rediscovering it from a blank slate.");
+        prompt.AppendLine("     pre-existing and named for routing, and why each — so whoever reads it next");
+        prompt.AppendLine("     can check your enumeration instead of rediscovering it from a blank slate.");
         prompt.AppendLine("  2. **Regression comparison, mandatory per replaced behavior.** For every finding");
         prompt.AppendLine("     whose fix replaced, removed, narrowed, or widened existing behavior, state in");
         prompt.AppendLine("     your summary what the old code did that the new code no longer does, and confirm");

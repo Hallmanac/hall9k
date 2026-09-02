@@ -1880,8 +1880,11 @@ public sealed class AgentPromptBuilderTests : IDisposable
 
     /// <summary>
     /// The phase is a single pass, not a loop: a suspicion that never rises to a stated finding
-    /// carries forward into the summary for the verify pass, which is the next station
-    /// regardless of what this phase finds.
+    /// carries forward into the summary instead, honestly — not every next review dispatch is a
+    /// verify pass, and only a verify pass reads a fix session's summary back (cycle-5 review:
+    /// the earlier wording claimed the verify pass was the next station "regardless", which is
+    /// false on a Discovery/FinalFullPass path — see <see cref="AgentPromptBuilder"/>'s own doc
+    /// comment on the self-check phase).
     /// </summary>
     [Fact]
     public void Self_check_phase_is_a_single_pass_not_a_loop()
@@ -1891,7 +1894,8 @@ public sealed class AgentPromptBuilderTests : IDisposable
 
         prompt.Should().Contain("one pass — not a loop");
         prompt.Should().Contain("This phase is one pass, not a loop");
-        prompt.Should().Contain("the verify pass is the next station regardless");
+        prompt.Should().Contain("not always a verify pass");
+        prompt.Should().Contain("not a guaranteed handoff");
     }
 
     /// <summary>
