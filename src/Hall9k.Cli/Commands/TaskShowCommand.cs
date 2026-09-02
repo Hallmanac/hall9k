@@ -471,11 +471,12 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
                 continue;
             }
 
+            string classification = gate.RanFullScope ? "full-scope" : "scoped";
             lines.Add(
                 $"[yellow]{comparison.Gate.EscapeMarkup()}[/] took {FormatDuration(comparison.Observed)} — "
                 + $"well above this project's recent average of {FormatDuration(comparison.RecentAverage)} "
-                + $"over the last {comparison.SampleCount} recorded run(s) [dim](comparison against recently "
-                + "recorded runs, not a fixed baseline)[/]");
+                + $"against {comparison.SampleCount} comparable {classification} passing run(s) [dim](drawn from "
+                + "recently recorded runs, not a fixed baseline)[/]");
         }
 
         if (lines.Count == 0)
