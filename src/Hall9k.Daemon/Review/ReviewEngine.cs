@@ -3113,20 +3113,38 @@ public sealed class ReviewEngine(
     /// <c>NothingOwed</c> with real ride-along findings on the books — below the fix bar, but not
     /// nothing. Reading the passes directly means this message never asserts a clean convergence
     /// nobody observed (independent pre-PR review, cycle 1, conformance lens) regardless of which
-    /// settle clause or review mode reached it. This park's levers deliberately exclude
-    /// <c>--needs-fixes</c>: unlike every cap park above it, granting a fresh round here does not
-    /// reset the lifetime sum, so the identical park would simply reappear one cycle later after
-    /// spending a real fix-and-re-review dispatch (independent pre-PR review, cycle 1, adversarial
-    /// lens) — raising the budget with <c>h9k task set-review-caps</c> is the lever that actually
-    /// clears it.
+    /// settle clause or review mode reached it. A settle point is only ever reached with no
+    /// <see cref="ReviewFindingDisposition.Fix"/> finding this cycle (one would have dispatched a
+    /// fix session and kept the track open instead), so every finding read here is either a
+    /// <see cref="ReviewFindingDisposition.RideAlong"/> — genuinely below the fix bar — or a
+    /// <see cref="ReviewFindingDisposition.Route"/>, whose own disposition rule
+    /// (<see cref="ReviewFinding.Disposition"/>) requires a stated grade below High, so in
+    /// practice this is always Medium (a routed Low never sets <see
+    /// cref="ReviewSeverity.MeetsFixBar"/> either, and stays grouped with the ride-alongs below):
+    /// a cycle whose only findings are Routed Medium ones found a real defect and sent it to a
+    /// draft bug task rather than leaving nothing owed, and the message has to say that rather
+    /// than describe it as below the fix bar too (independent pre-PR review, cycle 1, adversarial
+    /// lens — the two-branch version conflated "no findings above the fix bar" with "no findings
+    /// at all", so a routed Medium read as a clean-ish convergence). This park's
+    /// levers deliberately exclude <c>--needs-fixes</c>: unlike every cap park above it, granting
+    /// a fresh round here does not reset the lifetime sum, so the identical park would simply
+    /// reappear one cycle later after spending a real fix-and-re-review dispatch (independent
+    /// pre-PR review, cycle 1, adversarial lens) — raising the budget with
+    /// <c>h9k task set-review-caps</c> is the lever that actually clears it.
     /// </summary>
     private static string LifetimeBudgetParkReason(
         RunAggregate run, int totalCycles, ResolvedReviewCap budget)
     {
         string findings = RunPaths.ReviewFindingsFile(ParkedRunDirectory(run), run.ReviewCycle);
-        string convergence = run.CompletedReviewPasses.Any(pass => pass.Findings.Count > 0)
-            ? "even though this cycle's own findings were all recorded below the fix bar"
-            : "even though this cycle converged cleanly";
+        List<ReviewFindingRecord> cycleFindings = [.. run.CompletedReviewPasses.SelectMany(pass => pass.Findings)];
+        bool anyRoutedAboveFixBar = cycleFindings.Any(finding =>
+            finding.Disposition == ReviewFindingDisposition.Route && finding.Severity.MeetsFixBar);
+        string convergence = cycleFindings.Count == 0
+            ? "even though this cycle converged cleanly"
+            : anyRoutedAboveFixBar
+                ? "even though this cycle's own findings included one graded medium — routed to a draft bug "
+                    + "task rather than fixed here, since it was out of this pull request's scope"
+                : "even though this cycle's own findings were all recorded below the fix bar";
         return $"This task has spent {totalCycles} review cycle(s) across every run and follow-up it has had — " +
             $"past its lifetime review-cycle budget of {budget.Value}, from {budget.Describe()}. A stranding, a " +
             "retry, or a follow-up round each start with a clean per-run cap, so none of them ever saw this " +

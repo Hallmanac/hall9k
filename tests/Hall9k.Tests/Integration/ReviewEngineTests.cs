@@ -2211,6 +2211,52 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
     }
 
     /// <summary>
+    /// Independent pre-PR review, cycle 1, adversarial finding: the lifetime-budget park text must
+    /// not describe a settling cycle's own Routed finding as merely "recorded below the fix bar"
+    /// when that finding was in fact a real defect graded medium — routed to a draft bug task
+    /// because it is out of this pull request's scope, not because it failed to clear the bar. A
+    /// Medium is the only severity <see cref="ReviewFindingDisposition.Route"/> can ever carry
+    /// (<see cref="ReviewFinding.Disposition"/> requires a stated grade below High to route at
+    /// all, and a routed Low never sets <see cref="ReviewSeverity.MeetsFixBar"/>), so this is the
+    /// one reachable shape of the "routed away, not below the bar" branch.
+    /// </summary>
+    [Fact]
+    public async Task A_lifetime_budget_park_after_a_routed_medium_finding_names_it_rather_than_below_the_fix_bar()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        using DocumentStore store = NewStore();
+        (Guid taskId, Guid runId, _) = await SeedVerifiedRunAsync(store, cts.Token);
+
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            TaskAggregate task = (await session.Events.AggregateStreamAsync<TaskAggregate>(taskId, token: cts.Token))!;
+            var overridden = TaskDecider.OverrideReviewCaps(
+                task, Optional<int?>.None, Optional<int?>.None, Optional<int?>.None, Optional<int?>.Of(1),
+                Now, DomainId.New());
+            session.Events.Append(taskId, overridden);
+            session.Store(new RunDetails { Id = Guid.NewGuid(), TaskId = taskId, ReviewCycle = 1 });
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        ScriptedExecutor executor = new(
+            "FINDING: severity=medium; scope=out-of-scope; at=Legacy.cs:12\nDefect: pre-existing, and real.\n\n"
+            + "VERDICT: needs-fixes",
+            "Criteria met.\n\nVERDICT: merge-ready");
+        bool mergeReady = await NewEngine(store, executor).ReviewAsync(runId, taskId, cts.Token);
+
+        mergeReady.Should().BeFalse(
+            "this run's own cycle 1 plus the earlier generation's already puts the task at 2, past a budget of 1");
+
+        await using IQuerySession query = store.QuerySession();
+        RunDetails run = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
+        run.State.Should().Be(RunState.ReviewParked);
+        run.ParkedReason.Should()
+            .Contain("routed to a draft bug task")
+            .And.NotContain("recorded below the fix bar")
+            .And.NotContain("converged cleanly");
+    }
+
+    /// <summary>
     /// Independent pre-PR review, cycle 2, conformance finding #1: the mandatory FinalFullPass
     /// can reawaken a track that went dormant cycles ago, and the earliest that pass can possibly
     /// land is cycle 3 — already <c>MaxComplianceReviewCycles</c>' own absolute count measured
