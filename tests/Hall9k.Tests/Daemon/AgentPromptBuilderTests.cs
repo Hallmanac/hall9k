@@ -1938,13 +1938,18 @@ public sealed class AgentPromptBuilderTests : IDisposable
             "finding's sweep surfaced the sibling or how that finding is itself dispositioned",
             "the precedence rule is stated independently of the swept finding's own disposition");
         prompt.Should().NotContain(
-            "unless the finding you are sweeping is itself dispositioned",
+            $"unless the finding{Environment.NewLine}     you are sweeping is itself dispositioned",
             "cycle 11's regression phrased the swept-finding arm as an 'unless' override that replaced arm 1 "
             + "(the sibling's own disposition always wins) rather than coexisting with it; cycle 12 restored "
             + "both arms and phrases the swept-finding condition with 'when' instead, so it reads as an "
             + "additional trigger for an undispositioned sibling rather than a replacement — this assertion "
             + "guards against the override phrasing reappearing, not against the coexisting rule itself, which "
-            + "the prompt correctly states using 'when' a few lines below");
+            + "the prompt correctly states using 'when' a few lines below. The phrase wraps across a line "
+            + "break at \"the finding\", so both halves are asserted together the same way the foreground "
+            + "test-run sub-rule's 'do not / background them' wrap is (see "
+            + "Self_check_phase_runs_the_touched_tests_in_the_foreground_with_a_near_maximum_timeout) — a "
+            + "single-line NotContain here would never match the rendered text regardless of which word the "
+            + "prompt actually uses, so it would guard nothing.");
     }
 
     /// <summary>
@@ -1987,6 +1992,11 @@ public sealed class AgentPromptBuilderTests : IDisposable
             + "unrelated 'do not' instructions — the phrase wraps across a line break, so the two halves "
             + "must be asserted together to mean anything");
         prompt.Should().Contain("590-600 seconds");
+        prompt.Should().Contain(
+            "`dotnet test`",
+            "the sub-rule must name the project's own verification gates, the same as the sibling "
+            + "VerifyCommands branches in AppendRebaseVerificationRule and AppendReviewGateStatus do, "
+            + "rather than leaving a fix session to guess a runner it was never told");
     }
 
     /// <summary>
