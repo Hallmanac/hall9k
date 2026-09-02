@@ -127,7 +127,7 @@ public sealed class BlockerContextAssembler(
             unfinished = null;
 
             string? condensed = UsableDocument(result);
-            await RecordCompletionAsync(runId, result, condensed.IsNotBlank(), cancellationToken);
+            await RecordCompletionAsync(runId, result, condensed.IsNotBlank(), model, cancellationToken);
             if (condensed.IsBlank())
             {
                 logger.LogWarning(
@@ -232,13 +232,13 @@ public sealed class BlockerContextAssembler(
     }
 
     private async Task RecordCompletionAsync(
-        Guid runId, AgentResult? result, bool synthesized, CancellationToken cancellationToken)
+        Guid runId, AgentResult? result, bool synthesized, AgentModel model, CancellationToken cancellationToken)
     {
         DateTimeOffset now = DateTimeOffset.UtcNow;
         await using IDocumentSession session = store.LightweightSession();
         if (result is not null)
         {
-            session.Events.Append(runId, result.ToTokensRecorded(runId, now));
+            session.Events.Append(runId, result.ToTokensRecorded(runId, now, model));
         }
 
         session.Events.Append(runId, new ContextSynthesisCompleted(runId, synthesized, now));

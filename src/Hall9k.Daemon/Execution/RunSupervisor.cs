@@ -13,6 +13,7 @@ using Hall9k.Domain.Features.Tasks.Documents;
 using Hall9k.Domain.Features.Tasks.Events;
 using Hall9k.Domain.Features.Tasks.Handlers;
 using Hall9k.Domain.Features.Tasks.Projections;
+using Hall9k.Domain.Shared.ValueObjects;
 using JasperFx.Events;
 using Marten;
 using Marten.Events;
@@ -292,8 +293,14 @@ public sealed class RunSupervisor(
 
         await using IDocumentSession session = store.LightweightSession();
 
+        // The build session's own resolved model, as RunDispatched recorded it — read back from
+        // the stream itself rather than re-resolved, since a re-resolution could disagree with
+        // what this session actually ran on if the node's model configuration changed mid-run.
+        RunAggregate? run = await session.Events.AggregateStreamAsync<RunAggregate>(runId, token: cancellationToken);
+        AgentModel model = run?.Model ?? AgentModel.Unknown;
+
         session.Events.Append(runId, new AgentSessionCompleted(runId, now));
-        session.Events.Append(runId, result.ToTokensRecorded(runId, now));
+        session.Events.Append(runId, result.ToTokensRecorded(runId, now, model));
 
         if (result.IsError && result.Summary is { } summary && BudgetExhaustionParser.IsBudgetExhausted(summary))
         {

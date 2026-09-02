@@ -78,6 +78,26 @@ public sealed class RunTokenAccountingTests
         run.TotalInputTokens.Should().Be(822, "an old stream still replays, it just under-reports honestly");
     }
 
+    /// <summary>
+    /// TokensRecorded gains the session's resolved model appended with the AgentModel Unknown
+    /// sentinel as its default (backlog: spend-governor step three) — the same replay rule the
+    /// cache fields above already document: a stream written before the field existed replays as
+    /// unknown, never as a guessed model.
+    /// </summary>
+    [Fact]
+    public void An_event_written_before_the_model_field_existed_replays_as_unknown()
+    {
+        const string storedBeforeTheModelField =
+            """{"id":"01a01754-4f0e-7775-af1e-3aca2e67be8b","inputTokens":822,"outputTokens":444443,"costUsd":null,"recordedAt":"2026-08-18T12:00:00+00:00"}""";
+
+        TokensRecorded? replayed = JsonSerializer.Deserialize<TokensRecorded>(storedBeforeTheModelField, StoredJson);
+
+        replayed.Should().NotBeNull();
+        (replayed!.Model ?? Hall9k.Domain.Shared.ValueObjects.AgentModel.Unknown).Should().Be(
+            Hall9k.Domain.Shared.ValueObjects.AgentModel.Unknown,
+            "what was never observed is unknown, not reconstructed");
+    }
+
     [Fact]
     public void A_recorded_cost_is_carried_as_observed_and_an_unreported_one_stays_unknown()
     {
