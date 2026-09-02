@@ -20,9 +20,10 @@ public static class PlatformConfigFile
     private const string SectionName = "hall9k";
 
     /// <summary>
-    /// The three concurrency leaves <c>Hall9k.Daemon.DaemonOptionsBinding.ResolverOwnedKeys</c>
-    /// excludes from the daemon's own <c>ConfigurationBinder</c> call (Decisions Log #111's
-    /// follow-up), named here independently by <see cref="OperatingSettings"/>'s own property
+    /// The five leaves <c>Hall9k.Daemon.DaemonOptionsBinding.ResolverOwnedKeys</c> excludes from
+    /// the daemon's own <c>ConfigurationBinder</c> call — the three concurrency settings
+    /// (Decisions Log #111's follow-up) plus the periodic spend budget and its period (Decisions
+    /// Log #113) — named here independently by <see cref="OperatingSettings"/>'s own property
     /// names — Domain cannot reference the Daemon project, so this list and the daemon's own
     /// cannot share a single source, but a rename of either would fail to compile rather than
     /// silently drift apart.
@@ -32,6 +33,8 @@ public static class PlatformConfigFile
         nameof(OperatingSettings.MaxConcurrentTaskRuns),
         nameof(OperatingSettings.SessionCapPerRun),
         nameof(OperatingSettings.MaxConcurrentAgentSessions),
+        nameof(OperatingSettings.SpendBudgetTokens),
+        nameof(OperatingSettings.SpendPeriod),
     ];
 
     /// <summary>
@@ -82,7 +85,7 @@ public static class PlatformConfigFile
     /// failure (syntax error, or valid JSON whose top level is not an object) is exactly what
     /// <see cref="PlatformConfigFileSource"/>-shaped daemon startup code already guards and skips
     /// gracefully, running on environment variables and built-in defaults. A value-shape failure
-    /// among the three concurrency leaves in <see cref="ResolverOwnedLeaves"/> never crashes the
+    /// among the five leaves in <see cref="ResolverOwnedLeaves"/> never crashes the
     /// daemon either (<c>Hall9k.Daemon.DaemonOptionsBinding.ResolverOwnedKeys</c> excludes them
     /// from the daemon's own <c>ConfigurationBinder</c> call, Decisions Log #111's follow-up), so
     /// the diagnosis recovers the same siblings rather than discarding the whole section — a

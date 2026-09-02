@@ -34,6 +34,8 @@ public sealed class OperatingSettingsResolverTests : IDisposable
         "Hall9k__MaxAdversarialReviewCycles",
         "Hall9k__MaxFinalFullPassRounds",
         "Hall9k__LifetimeReviewCycleBudget",
+        "Hall9k__SpendBudgetTokens",
+        "Hall9k__SpendPeriod",
     ];
 
     private readonly string home = Path.Combine(Path.GetTempPath(), $"h9k-resolve-{Path.GetRandomFileName()}");
@@ -818,5 +820,103 @@ public sealed class OperatingSettingsResolverTests : IDisposable
         report.UnusableEnvironmentVariables.Should().ContainSingle(warning =>
             warning.Contains("session-cap-per-run") && !warning.Contains("max-concurrent-agent-sessions"),
             "reusing the ceiling's own floor-warning wording here would name the wrong setting");
+    }
+
+    // The spend budget (backlog: spend-governor step three) is nullable end to end: "no budget"
+    // is itself the resolver's own fallback, unlike every setting above where the default is a
+    // compiled ceiling — so these tests assert null rather than a compiled number.
+
+    [Fact]
+    public async Task Nothing_configured_resolves_to_no_spend_budget_and_a_default_period_of_a_week()
+    {
+        OperatingSettingsReport report = await OperatingSettingsResolver.ResolveAsync(CancellationToken.None);
+
+        report.SpendBudgetTokens.Value.Should().BeNull("unset means no budget, never a compiled ceiling");
+        report.SpendBudgetTokens.Origin.Should().Be(SettingOrigin.Default);
+        report.SpendPeriod.Value.Should().Be("week");
+        report.SpendPeriod.Origin.Should().Be(SettingOrigin.Default);
+    }
+
+    [Fact]
+    public async Task A_config_file_spend_budget_outranks_the_default()
+    {
+        await PlatformConfigFile.WriteOperatingSettingsAsync(s => s.SpendBudgetTokens = 5_000_000, CancellationToken.None);
+
+        OperatingSettingsReport report = await OperatingSettingsResolver.ResolveAsync(CancellationToken.None);
+
+        report.SpendBudgetTokens.Value.Should().Be(5_000_000);
+        report.SpendBudgetTokens.Origin.Should().Be(SettingOrigin.PlatformConfigFile);
+    }
+
+    [Fact]
+    public async Task An_environment_variable_spend_budget_outranks_the_config_file()
+    {
+        await PlatformConfigFile.WriteOperatingSettingsAsync(s => s.SpendBudgetTokens = 5_000_000, CancellationToken.None);
+        Environment.SetEnvironmentVariable("Hall9k__SpendBudgetTokens", "1000000");
+
+        OperatingSettingsReport report = await OperatingSettingsResolver.ResolveAsync(CancellationToken.None);
+
+        report.SpendBudgetTokens.Value.Should().Be(1_000_000);
+        report.SpendBudgetTokens.Origin.Should().Be(SettingOrigin.EnvironmentVariable);
+    }
+
+    [Fact]
+    public async Task An_unparseable_spend_budget_env_var_falls_back_to_no_budget_rather_than_crashing()
+    {
+        Environment.SetEnvironmentVariable("Hall9k__SpendBudgetTokens", "a lot");
+
+        OperatingSettingsReport report = await OperatingSettingsResolver.ResolveAsync(CancellationToken.None);
+
+        report.SpendBudgetTokens.Value.Should().BeNull();
+        report.SpendBudgetTokens.Origin.Should().Be(SettingOrigin.Default);
+        report.UnusableEnvironmentVariables.Should().ContainSingle(warning =>
+            warning.Contains("Hall9k__SpendBudgetTokens") && warning.Contains("treated as absent"));
+    }
+
+    [Fact]
+    public async Task A_negative_spend_budget_in_the_config_file_is_treated_as_absent()
+    {
+        await PlatformConfigFile.WriteOperatingSettingsAsync(s => s.SpendBudgetTokens = -1, CancellationToken.None);
+
+        OperatingSettingsReport report = await OperatingSettingsResolver.ResolveAsync(CancellationToken.None);
+
+        report.SpendBudgetTokens.Value.Should().BeNull();
+        report.UnusableEnvironmentVariables.Should().ContainSingle(warning => warning.Contains("negative"));
+    }
+
+    [Fact]
+    public async Task A_config_file_spend_period_outranks_the_default()
+    {
+        await PlatformConfigFile.WriteOperatingSettingsAsync(s => s.SpendPeriod = "day", CancellationToken.None);
+
+        OperatingSettingsReport report = await OperatingSettingsResolver.ResolveAsync(CancellationToken.None);
+
+        report.SpendPeriod.Value.Should().Be("day");
+        report.SpendPeriod.Origin.Should().Be(SettingOrigin.PlatformConfigFile);
+    }
+
+    [Fact]
+    public async Task An_environment_variable_spend_period_outranks_the_config_file()
+    {
+        await PlatformConfigFile.WriteOperatingSettingsAsync(s => s.SpendPeriod = "day", CancellationToken.None);
+        Environment.SetEnvironmentVariable("Hall9k__SpendPeriod", "week");
+
+        OperatingSettingsReport report = await OperatingSettingsResolver.ResolveAsync(CancellationToken.None);
+
+        report.SpendPeriod.Value.Should().Be("week");
+        report.SpendPeriod.Origin.Should().Be(SettingOrigin.EnvironmentVariable);
+    }
+
+    [Fact]
+    public async Task An_unrecognized_spend_period_env_var_falls_back_to_the_default_rather_than_riding_through()
+    {
+        Environment.SetEnvironmentVariable("Hall9k__SpendPeriod", "month");
+
+        OperatingSettingsReport report = await OperatingSettingsResolver.ResolveAsync(CancellationToken.None);
+
+        report.SpendPeriod.Value.Should().Be("week");
+        report.SpendPeriod.Origin.Should().Be(SettingOrigin.Default);
+        report.UnusableEnvironmentVariables.Should().ContainSingle(warning =>
+            warning.Contains("Hall9k__SpendPeriod") && warning.Contains("day") && warning.Contains("week"));
     }
 }

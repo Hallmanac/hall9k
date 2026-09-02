@@ -59,6 +59,19 @@ public sealed class DaemonOptions
     /// </summary>
     public int SessionCapPerRun { get; internal set; } = OperatingSettings.DefaultSessionCapPerRun;
 
+    /// <summary>
+    /// This node's periodic token-spend budget (backlog: spend-governor step three), or null for
+    /// no budget — the shipped default, unlike every other setting above, since "no budget" is
+    /// the compiled default itself rather than a ceiling. Resolved through
+    /// <see cref="OperatingSettingsResolver"/> rather than plain binding, for the identical reason
+    /// <see cref="MaxConcurrentTaskRuns"/>'s own doc gives: it needs the resolver's own env-then-
+    /// file-then-default walk, and an unparseable value here must fall back rather than crash.
+    /// </summary>
+    public long? SpendBudgetTokens { get; internal set; }
+
+    /// <summary>The window <see cref="SpendBudgetTokens"/> resets on — see <see cref="OperatingSettings.SpendPeriod"/>.</summary>
+    public string SpendPeriod { get; internal set; } = OperatingSettings.DefaultSpendPeriod;
+
     /// <summary>Fallback sweep interval; the doorbell usually wakes the loop sooner.</summary>
     public TimeSpan PollInterval { get; set; } = TimeSpan.FromSeconds(5);
 

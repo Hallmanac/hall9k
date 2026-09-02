@@ -21,9 +21,11 @@ namespace Hall9k.Daemon;
 internal static class DaemonOptionsBinding
 {
     /// <summary>
-    /// The three concurrency settings <see cref="Hall9k.Domain.Infrastructure.Persistence.OperatingSettingsResolver"/>
-    /// resolves on its own precedence walk, so a generic <c>Bind()</c> must never see them: two are
-    /// then set by <c>PostConfigure</c> from that resolver's report, and the third
+    /// Every setting <see cref="Hall9k.Domain.Infrastructure.Persistence.OperatingSettingsResolver"/>
+    /// resolves on its own precedence walk, so a generic <c>Bind()</c> must never see them: four —
+    /// <see cref="DaemonOptions.MaxConcurrentTaskRuns"/>, <see cref="DaemonOptions.SessionCapPerRun"/>,
+    /// <see cref="DaemonOptions.SpendBudgetTokens"/>, <see cref="DaemonOptions.SpendPeriod"/> — are
+    /// then set by <c>PostConfigure</c> from that resolver's report, and the fifth
     /// (<see cref="DaemonOptions.MaxConcurrentAgentSessions"/>) is retired and read by nothing at
     /// all, so it is simply excluded rather than set again.
     /// </summary>
@@ -32,6 +34,8 @@ internal static class DaemonOptionsBinding
         nameof(DaemonOptions.MaxConcurrentTaskRuns),
         nameof(DaemonOptions.SessionCapPerRun),
         nameof(DaemonOptions.MaxConcurrentAgentSessions),
+        nameof(DaemonOptions.SpendBudgetTokens),
+        nameof(DaemonOptions.SpendPeriod),
     ];
 
     /// <summary>

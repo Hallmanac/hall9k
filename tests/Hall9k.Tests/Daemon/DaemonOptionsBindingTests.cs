@@ -155,5 +155,7 @@ public sealed class DaemonOptionsBindingTests
             new ResolvedSetting<int>(OperatingSettings.DefaultMaxComplianceReviewCycles, SettingOrigin.Default, null),
             new ResolvedSetting<int>(OperatingSettings.DefaultMaxAdversarialReviewCycles, SettingOrigin.Default, null),
             new ResolvedSetting<int>(OperatingSettings.DefaultMaxFinalFullPassRounds, SettingOrigin.Default, null),
-            new ResolvedSetting<int>(OperatingSettings.DefaultLifetimeReviewCycleBudget, SettingOrigin.Default, null));
+            new ResolvedSetting<int>(OperatingSettings.DefaultLifetimeReviewCycleBudget, SettingOrigin.Default, null),
+            new ResolvedSetting<long?>(null, SettingOrigin.Default, null),
+            new ResolvedSetting<string>(OperatingSettings.DefaultSpendPeriod, SettingOrigin.Default, null));
 }
