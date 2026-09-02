@@ -2093,7 +2093,7 @@ public static class AgentPromptBuilder
         prompt.AppendLine("\"fields\") is mandatory for a create; use the customfield_* id a field's own metadata");
         prompt.AppendLine("reports for a custom field, never its display name. \"projectKey\" is optional, needed");
         prompt.AppendLine("only if this repository's own rules say a board other than the one named above;");
-        prompt.AppendLine("\"format\" is optional (\"markdown\", \"html\", or \"plain\" — default markdown). Write");
+        prompt.AppendLine("\"format\" is optional (\"markdown\" or \"plain\" — default markdown). Write");
         prompt.AppendLine("the file outside this repository — a temp file (for example, one made with mktemp) —");
         prompt.AppendLine("never inside the working directory below: the working rules say not to modify");
         prompt.AppendLine("anything there, and another agent may be reading it at the same time. Then submit it");

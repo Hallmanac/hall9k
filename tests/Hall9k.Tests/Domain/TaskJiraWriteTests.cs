@@ -156,6 +156,20 @@ public sealed class TaskJiraWriteTests
     }
 
     [Fact]
+    public void An_html_format_is_refused_because_the_executor_has_no_verified_way_to_convert_it()
+    {
+        JiraWritePayload payload = new(
+            WorkItemType: "Dev Task",
+            Fields: new Dictionary<string, string> { ["summary"] = "A card" },
+            Comment: null,
+            Format: "html");
+
+        Action validate = () => payload.Validate(JiraWriteOperation.Create);
+
+        validate.Should().Throw<DomainValidationException>().WithMessage("*not a text format Hall9k records*");
+    }
+
+    [Fact]
     public void A_payload_naming_no_format_defaults_to_markdown()
     {
         JiraWritePayload payload = new(WorkItemType: "Dev Task", Fields: null, Comment: null);

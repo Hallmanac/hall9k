@@ -34,8 +34,16 @@ public sealed record JiraWritePayload(
     private static readonly string[] ForbiddenFieldKeys =
         ["status", "transition", "resolution", "resolutiondate"];
 
-    /// <summary>The formats a description or a comment can be composed in and audited as.</summary>
-    private static readonly string[] AllowedFormats = ["html", "markdown", "plain"];
+    /// <summary>
+    /// The formats a description or a comment can be composed in and audited as. "html" is
+    /// deliberately not one of them: <see cref="Hall9k.Connectors.WorkItems.JiraWriteExecutor"/>
+    /// has no verified HTML-to-Jira-wiki-markup mapping to convert it with (there is no live
+    /// tenant to check a mapping against from this build environment), so accepting it here would
+    /// let a payload record and post raw HTML source into Jira's plain-string field — a promise
+    /// this executor cannot keep is refused at composition instead of silently unmet at the
+    /// transport (independent pre-PR review, verify pass, cycle 2).
+    /// </summary>
+    private static readonly string[] AllowedFormats = ["markdown", "plain"];
 
     /// <summary>
     /// The format a composed description or comment is written in, recorded on the audit trail
@@ -120,7 +128,7 @@ public sealed record JiraWritePayload(
         {
             throw new DomainValidationException(
                 $"\"{Format}\" is not a text format Hall9k records for a description or a comment — use "
-                + "\"markdown\", \"plain\", or \"html\" (or leave it out, which defaults to markdown).");
+                + "\"markdown\" or \"plain\" (or leave it out, which defaults to markdown).");
         }
     }
 
