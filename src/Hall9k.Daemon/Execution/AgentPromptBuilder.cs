@@ -1448,7 +1448,11 @@ public static class AgentPromptBuilder
             prompt.AppendLine("  This is the mandatory full-rigor pass immediately before the pull request opens");
             prompt.AppendLine("  (Decisions Log #92). An earlier full-scope pass on this run already read every");
             prompt.AppendLine($"  commit up to `{fullScopeSha}` fresh — its findings and dispositions stand for");
-            prompt.AppendLine("  that range, and you are not re-litigating them. Read only what has not yet had a");
+            prompt.AppendLine("  that range, and you are not re-litigating them. The same goes for the acceptance");
+            prompt.AppendLine("  criteria below: that earlier pass already judged them against the branch up to");
+            prompt.AppendLine($"  `{fullScopeSha}`, so judge them against the whole branch at HEAD, not against this");
+            prompt.AppendLine("  scoped range alone — a criterion the earlier commits already satisfy is met, even");
+            prompt.AppendLine("  though this range's own diff does not implement it. Read only what has not yet had a");
             prompt.AppendLine($"  fresh full-scope look: `git diff {fullScopeSha}..HEAD` (commits:");
             prompt.AppendLine($"  `git log {fullScopeSha}..HEAD`). If that range is empty, nothing has landed since");
             prompt.AppendLine("  the last full-scope read — that is a legitimate merge-ready outcome; say so rather");
