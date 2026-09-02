@@ -158,6 +158,14 @@ public sealed class RunDetails
     /// <summary>Ride-alongs never folded into a fix session the run dispatched for another reason (Decisions Log #87).</summary>
     public int ReviewResidualsRideAlong { get; set; }
     /// <summary>
+    /// <see cref="ReviewResidualsRideAlong"/> named rather than merely counted (independent pre-PR
+    /// review, cycle 2, conformance finding): each entry's severity and location, so a reader of
+    /// the pull request body or <c>h9k task show</c> can identify what actually rode along. Empty
+    /// for a run settled before this field existed even when the count above is non-zero — an
+    /// honest gap, not a reconstruction of history nobody recorded.
+    /// </summary>
+    public List<ReviewRideAlongFinding> ReviewRideAlongFindings { get; set; } = [];
+    /// <summary>
     /// Whether the most recently dispatched fix session ran on the review role's model instead
     /// of the fix role's, because it repeated an earlier fix round's own findings
     /// (task: a second fix round over the same findings). Automatic once the repeated findings
@@ -429,6 +437,7 @@ public sealed class RunDetailsProjection : SingleStreamProjection<RunDetails, Gu
         view.ReviewResidualsRouted = @event.Data.ResidualsRouted;
         view.ReviewResidualsRoutingFailed = @event.Data.ResidualsRoutingFailed;
         view.ReviewResidualsRideAlong = @event.Data.ResidualsRideAlong;
+        view.ReviewRideAlongFindings = [.. @event.Data.RideAlongFindings ?? []];
     }
 
     public void Apply(IEvent<PrReviewConformanceDispatched> @event, RunDetails view)
