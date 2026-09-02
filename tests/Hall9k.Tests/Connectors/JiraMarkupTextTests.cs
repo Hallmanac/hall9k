@@ -133,6 +133,38 @@ public sealed class JiraMarkupTextTests
     }
 
     [Fact]
+    public void ToPlainLiteral_passes_a_task_guid_and_hyphenated_prose_through_unwrapped()
+    {
+        // The cycle-2 predicate keyed on bare character membership, so any hyphen — a task id's
+        // GUID, an ordinary hyphenated word — tripped the same box the merge comment was carved
+        // out to avoid: this is the exact text CloseoutEngine.MergeComment composes (independent
+        // pre-PR review, adversarial lens, cycle 3).
+        string text =
+            "Recorded by Hall9k as task 28b19893-0000-4000-8000-000000000000 in project sample. "
+            + "This is a one-off note at merge.";
+        JiraMarkupText.ToPlainLiteral(text).Should().Be(text);
+    }
+
+    [Theory]
+    [InlineData("h1. Rollback plan")]
+    [InlineData("bq. per the incident channel")]
+    [InlineData("Deployed (y)")]
+    [InlineData("Verified :) all green")]
+    [InlineData("??attributed??")]
+    [InlineData("Screenshot: !file.png!")]
+    [InlineData("This is -deleted- text")]
+    public void ToPlainLiteral_wraps_text_carrying_a_construct_the_old_character_class_missed(string text)
+    {
+        // Headings, blockquotes, emoticons, citations, and image embeds use no character the
+        // cycle-2 class even listed, so "plain" text containing one of them passed through
+        // unwrapped and Jira rendered the construct instead of the literal text (independent
+        // pre-PR review, adversarial lens, cycle 3). A genuine -strikethrough- (paired, word-
+        // flanked hyphens) still has to trigger the box too, now that a bare hyphen alone no
+        // longer does.
+        JiraMarkupText.ToPlainLiteral(text).Should().Be($"{{noformat}}\n{text}\n{{noformat}}");
+    }
+
+    [Fact]
     public void ToPlainLiteral_returns_blank_text_unchanged()
     {
         JiraMarkupText.ToPlainLiteral(string.Empty).Should().Be(string.Empty);
