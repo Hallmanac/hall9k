@@ -480,6 +480,11 @@ public sealed class JiraWriteExecutor(JiraAccount account, JiraRequester? reques
     /// notice, the retry sweep's queued-notice log line) trusts that the recorded reason already
     /// says whether and how the write retries, which held for a 401 but not for this vault-resolution
     /// case until this sentence was added (independent pre-PR review, adversarial lens, cycle 2).
+    /// <see cref="account"/>'s own refusals end mid-sentence, on a bare command
+    /// (<c>h9k connection add jira --help</c>) rather than a full stop, since they are written to be
+    /// read on their own — appended to directly, the retry sentence below ran on as if it were the
+    /// same sentence as the command (independent pre-PR review, adversarial lens, cycle 3), so it is
+    /// punctuated first.
     /// </summary>
     private async ValueTask<string> AuthorizeAsync(string purpose, CancellationToken cancellationToken)
     {
@@ -489,9 +494,13 @@ public sealed class JiraWriteExecutor(JiraAccount account, JiraRequester? reques
         }
         catch (DomainException exception)
         {
+            string reason = exception.Message.TrimEnd();
+            string punctuatedReason = reason.Length > 0 && reason[^1] is '.' or '!' or '?'
+                ? reason
+                : $"{reason}.";
             throw new JiraWriteExecutionException(
                 JiraWriteFailureKind.AuthFailure,
-                $"Could not resolve the registered credential to {purpose}: {exception.Message} This write "
+                $"Could not resolve the registered credential to {purpose}: {punctuatedReason} This write "
                 + "stays recorded and pending; it retries automatically once the connection is fixed.");
         }
     }
