@@ -1790,8 +1790,37 @@ public sealed class AgentPromptBuilderTests : IDisposable
             "is not yours to fix here",
             "a pre-existing site outside this branch's own changes stays out-of-scope routing's to fix, per #63/#99");
         prompt.Should().Contain(
-            "named for routing",
-            "a pre-existing sibling is still named in the summary so #63/#99 routing can mint or fold it");
+            "is the only path this sibling has of",
+            "a pre-existing sibling is named in the summary because that is the only way it can ever reach a "
+            + "reviewer and be reported as a finding of its own — not because the summary itself feeds routing");
+        prompt.Should().NotContain(
+            "cea5ae6e",
+            "the prompt is served to every registered project, so it names no hall9k-internal task or commit id "
+            + "(that citation belongs in the doc comment, not text an unrelated project's session would read)");
+    }
+
+    /// <summary>
+    /// The sweep's inside-branch/pre-existing boundary is drawn from `origin/{project.BaseBranch}`,
+    /// not the worktree's local base-branch ref — the same staleness reason the rebase and
+    /// review-verify mechanics already pin that ref (conformance review, cycle 8): a stale local
+    /// ref would misclassify commits already merged into the real base as "this branch's own
+    /// changes", letting the sweep fix pre-existing siblings the disposition rule forbids it from
+    /// touching, or the reverse on a non-`main` base branch.
+    /// </summary>
+    [Fact]
+    public void Self_check_phase_class_sweep_names_the_origin_qualified_base_branch()
+    {
+        ProjectDetails project = SomeProject();
+        project.BaseBranch = "develop";
+
+        string prompt = AgentPromptBuilder.BuildReviewFix(
+            SomeTask(), project, "task/1-slug", "findings go here", cycle: 1);
+
+        prompt.Should().Contain(
+            "origin/develop",
+            "the sweep's own-changes boundary must be drawn from this project's actual base branch, not a "
+            + "hardcoded 'main'");
+        prompt.Should().Contain("git diff origin/develop...HEAD");
     }
 
     /// <summary>
@@ -1816,7 +1845,13 @@ public sealed class AgentPromptBuilderTests : IDisposable
         prompt.Should().Contain(
             "belongs in that same",
             "a sibling of a fix-in-its-own-commit finding is fixed in that commit, not merely named");
-        prompt.Should().Contain("59dc9bba", "the carve-out cites the incident that proves the contradiction costs a lap");
+        prompt.Should().Contain(
+            "cost exactly the lap this phase exists to remove",
+            "the carve-out states the cost of getting this wrong without citing an install-internal incident id");
+        prompt.Should().NotContain(
+            "59dc9bba",
+            "the prompt is served to every registered project, so it names no hall9k-internal commit or task id "
+            + "(that citation belongs in the doc comment, not text an unrelated project's session would read)");
     }
 
     /// <summary>
