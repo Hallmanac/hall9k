@@ -1,5 +1,6 @@
 using FluentAssertions;
 using Hall9k.Connectors.WorkItems;
+using Hall9k.Domain.Features.Connection;
 using Hall9k.Domain.Features.Tasks;
 using Hall9k.Domain.Shared.ValueObjects;
 using Hall9k.Tests.Fakes;
@@ -23,6 +24,12 @@ public sealed class JiraWriteExecutorTests
 
     private static JiraWriteExecutor Executor(RecordingJiraRequester requester) =>
         new(JiraAccount.WithTokenInHand(Site, "brian@example.com", "a-token"), requester.Requester);
+
+    /// <summary>An account whose credential reference names an environment variable this process never sets, so resolving it always fails.</summary>
+    private static JiraWriteExecutor ExecutorWithUnresolvableCredential(RecordingJiraRequester requester) =>
+        new(
+            new JiraAccount(Site, "brian@example.com", CredentialReference.EnvironmentVariable("HALL9K_TEST_JIRA_UNSET_TOKEN")),
+            requester.Requester);
 
     private static JiraResponse Ok(string body) => new(200, body);
 
@@ -355,5 +362,106 @@ public sealed class JiraWriteExecutorTests
         JiraWriteExecutionException thrown = (await act.Should().ThrowAsync<JiraWriteExecutionException>()).Which;
         thrown.Kind.Should().Be(JiraWriteFailureKind.Other);
         thrown.Message.Should().NotContain("may have been carried out");
+    }
+
+    // ---- An unresolvable credential is a pending auth failure, not a raw domain exception --------
+
+    [Fact]
+    public async Task An_unresolvable_credential_is_reported_as_an_auth_failure_not_a_raw_domain_exception()
+    {
+        RecordingJiraRequester requester = RecordingJiraRequester.Succeeding(200, "{}");
+        JiraWritePayload payload = new("Dev Task", new Dictionary<string, string> { ["summary"] = "S" }, null);
+
+        Func<Task> act = () => ExecutorWithUnresolvableCredential(requester)
+            .CreateAsync(JiraProjectKey.Parse("PROJ"), payload, TaskId, CancellationToken.None);
+
+        (await act.Should().ThrowAsync<JiraWriteExecutionException>())
+            .Which.Kind.Should().Be(
+                JiraWriteFailureKind.AuthFailure,
+                "a credential the vault cannot resolve must retry automatically the same way a 401 from Jira itself does");
+        requester.Requests.Should().BeEmpty("nothing reaches Jira before the credential is even resolved");
+    }
+
+    // ---- A caller-supplied issue key is validated before it reaches a request URL -----------------
+
+    [Theory]
+    [InlineData("https://hall9k.atlassian.net/browse/PROJ-1")]
+    [InlineData("PROJ-1/../PROJ-2")]
+    [InlineData("not-a-key")]
+    public async Task UpdateAsync_refuses_a_target_key_that_is_not_a_bare_PROJ_123_shape(string malformed)
+    {
+        RecordingJiraRequester requester = RecordingJiraRequester.RespondingTo(_ =>
+            throw new InvalidOperationException("must not reach Jira with an unvalidated key"));
+        JiraWritePayload payload = new(null, new Dictionary<string, string> { ["summary"] = "New summary" }, null);
+
+        Func<Task> act = () => Executor(requester).UpdateAsync(malformed, payload, CancellationToken.None);
+
+        (await act.Should().ThrowAsync<JiraWriteExecutionException>())
+            .Which.Kind.Should().Be(JiraWriteFailureKind.Other);
+        requester.Requests.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task CommentAsync_refuses_a_traversal_shaped_key_before_building_the_request_url()
+    {
+        RecordingJiraRequester requester = RecordingJiraRequester.RespondingTo(_ =>
+            throw new InvalidOperationException("must not reach Jira with an unvalidated key"));
+
+        Func<Task> act = () => Executor(requester).CommentAsync("PROJ-1/../PROJ-2", "note", "plain", CancellationToken.None);
+
+        await act.Should().ThrowAsync<JiraWriteExecutionException>();
+        requester.Requests.Should().BeEmpty();
+    }
+
+    // ---- A composed create cannot override the platform-resolved project or issue type -----------
+
+    [Fact]
+    public async Task Create_ignores_a_composed_project_or_issuetype_field_and_files_against_the_resolved_board()
+    {
+        RecordingJiraRequester requester = RecordingJiraRequester.RespondingTo(request =>
+            request.Method == HttpMethod.Post ? Created("""{"key":"PROJ-20"}""") : Ok("""{"key":"PROJ-20"}"""));
+
+        JiraWritePayload payload = JiraWritePayload.FromJson(
+            """{"workItemType":"Dev Task","fields":{"summary":"S","project":{"key":"OTHER"},"issuetype":{"name":"Bug"}}}""");
+
+        await Executor(requester).CreateAsync(JiraProjectKey.Parse("PROJ"), payload, TaskId, CancellationToken.None);
+
+        string? body = requester.Requests.First(r => r.Method == HttpMethod.Post).JsonBody;
+        body.Should().Contain("\"project\":{\"key\":\"PROJ\"}");
+        body.Should().Contain("\"issuetype\":{\"name\":\"Dev Task\"}");
+    }
+
+    // ---- A markdown-composed description or comment reaches Jira as wiki markup, not literal characters --
+
+    [Fact]
+    public async Task Create_converts_a_markdown_description_to_jira_wiki_markup_by_default()
+    {
+        RecordingJiraRequester requester = RecordingJiraRequester.RespondingTo(request =>
+            request.Method == HttpMethod.Post ? Created("""{"key":"PROJ-21"}""") : Ok("""{"key":"PROJ-21"}"""));
+
+        JiraWritePayload payload = new(
+            "Dev Task",
+            new Dictionary<string, string> { ["summary"] = "S", ["description"] = "## Heading\n- one\n- two" },
+            Comment: null);
+
+        await Executor(requester).CreateAsync(JiraProjectKey.Parse("PROJ"), payload, TaskId, CancellationToken.None);
+
+        string? body = requester.Requests.First(r => r.Method == HttpMethod.Post).JsonBody;
+        body.Should().Contain("h2. Heading").And.Contain("* one").And.Contain("* two");
+        body.Should().NotContain("##");
+    }
+
+    [Fact]
+    public async Task Comment_composed_as_plain_is_posted_verbatim_with_no_conversion()
+    {
+        RecordingJiraRequester requester = RecordingJiraRequester.RespondingTo(request =>
+            request.Url.ToString().EndsWith("/comment", StringComparison.Ordinal)
+                ? Created("""{"id":"1"}""")
+                : Ok("""{"key":"PROJ-22"}"""));
+
+        await Executor(requester).CommentAsync("PROJ-22", "## still literal", "plain", CancellationToken.None);
+
+        requester.Requests.Single(r => r.Url.ToString().EndsWith("/comment", StringComparison.Ordinal))
+            .JsonBody.Should().Contain("## still literal");
     }
 }

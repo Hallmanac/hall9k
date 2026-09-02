@@ -60,8 +60,25 @@ internal static class JiraDoctor
             return;
         }
 
-        JiraAuthProbeResult probe = await new JiraWriteExecutor(WorkItemConnections.Account(connection))
-            .ProbeAuthenticationAsync(cancellationToken);
+        JiraAuthProbeResult probe;
+        try
+        {
+            // Caught the same way the connection lookup above is: WorkItemConnections.Account
+            // throws a DomainValidationException for a connection with no site recorded or a
+            // credential reference that no longer parses, and ProbeAuthenticationAsync's own
+            // executor call can hit the identical shape resolving the credential itself (a
+            // DomainValidationException, an unset environment variable; a DomainNotFoundException,
+            // a deleted credential file) — neither is a rejected credential Jira itself answered
+            // about, so neither should abort the whole doctor run rather than report this one
+            // check as unconfirmable.
+            probe = await new JiraWriteExecutor(WorkItemConnections.Account(connection))
+                .ProbeAuthenticationAsync(cancellationToken);
+        }
+        catch (DomainException exception)
+        {
+            AnsiConsole.MarkupLine($"[yellow]  Could not confirm the Jira connection is usable[/] — {exception.Message.EscapeMarkup()}");
+            return;
+        }
 
         switch (probe)
         {

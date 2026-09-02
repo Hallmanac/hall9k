@@ -3,6 +3,7 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 using Hall9k.Connectors.Text;
 using Hall9k.Domain.Features.Tasks;
+using Hall9k.Domain.Shared.Exceptions;
 using Hall9k.Domain.Shared.ValueObjects;
 
 namespace Hall9k.Connectors.WorkItems;
@@ -103,7 +104,7 @@ public sealed class JiraWriteExecutor(JiraAccount account, JiraRequester? reques
     /// read. A mature board can return a full page of loosely-matching candidates (JQL's <c>~</c>
     /// is a Lucene text match, not an equality check), and each confirmation is a synchronous call
     /// of its own — left unbounded, a create's dedup gate could cost enough sequential requests to
-    /// run past <see cref="Daemon.DaemonOptions.PendingJiraWriteCeiling"/> in the worst case (that
+    /// run past <c>DaemonOptions.PendingJiraWriteCeiling</c> in the worst case (that
     /// option lives in the daemon project this connector cannot reference, so the number here is
     /// duplicated rather than shared). Passed to the search itself as its own page-size limit too,
     /// so the search does not even return more than this many candidates to begin with — the
@@ -133,7 +134,7 @@ public sealed class JiraWriteExecutor(JiraAccount account, JiraRequester? reques
     /// </summary>
     public async Task<string?> FindByMarkerAsync(Guid taskId, CancellationToken cancellationToken)
     {
-        string authorization = await account.AuthorizationAsync(
+        string authorization = await AuthorizeAsync(
             $"search for {Marker(taskId)} at {account.Site}", cancellationToken);
         JsonObject body = new()
         {
@@ -182,7 +183,7 @@ public sealed class JiraWriteExecutor(JiraAccount account, JiraRequester? reques
     /// </summary>
     private async Task<bool> CandidateCarriesMarkerAsync(string candidateKey, Guid taskId, CancellationToken cancellationToken)
     {
-        string authorization = await account.AuthorizationAsync(
+        string authorization = await AuthorizeAsync(
             $"read {candidateKey} at {account.Site}", cancellationToken);
         JiraResponse response = await SendAsync(
             new JiraRequest(HttpMethod.Get, account.Endpoint($"/rest/api/2/issue/{candidateKey}?fields=description"), authorization),
@@ -213,22 +214,24 @@ public sealed class JiraWriteExecutor(JiraAccount account, JiraRequester? reques
             ? []
             : new Dictionary<string, string>(payload.Fields);
         string? summary = ExtractField(fields, "summary");
-        string description = AppendMarker(ExtractField(fields, "description"), Marker(taskId));
+        string description = AppendMarker(ApplyFormat(ExtractField(fields, "description"), payload.EffectiveFormat), Marker(taskId));
 
-        JsonObject fieldsNode = new()
-        {
-            ["project"] = new JsonObject { ["key"] = project.Value },
-            ["issuetype"] = new JsonObject { ["name"] = payload.WorkItemType ?? string.Empty },
-            ["description"] = description,
-        };
+        // Composed fields are laid down first, and the three reserved nodes are written after,
+        // deliberately overwriting anything a composed payload happened to also name — a card is
+        // always filed against the board hall9k resolved and the work item type it validated
+        // (independent pre-PR review, adversarial lens, cycle 1), never a project or issuetype a
+        // composer smuggled into "fields" alongside them.
+        JsonObject fieldsNode = [];
+        AppendFields(fieldsNode, fields);
+        fieldsNode["project"] = new JsonObject { ["key"] = project.Value };
+        fieldsNode["issuetype"] = new JsonObject { ["name"] = payload.WorkItemType ?? string.Empty };
+        fieldsNode["description"] = description;
         if (summary.IsNotBlank())
         {
             fieldsNode["summary"] = summary;
         }
 
-        AppendFields(fieldsNode, fields);
-
-        string authorization = await account.AuthorizationAsync($"create a card at {account.Site}", cancellationToken);
+        string authorization = await AuthorizeAsync($"create a card at {account.Site}", cancellationToken);
         JiraResponse response = await SendWriteAsync(
             new JiraRequest(HttpMethod.Post, account.Endpoint("/rest/api/2/issue"), authorization,
                 new JsonObject { ["fields"] = fieldsNode }.ToJsonString()),
@@ -241,7 +244,7 @@ public sealed class JiraWriteExecutor(JiraAccount account, JiraRequester? reques
                 "Jira reported success creating the card but the response carried no key, so nothing "
                 + $"here can be verified: {Head(response.Body)}");
 
-        return await VerifyAsync(key, cancellationToken, "created", confirmsExistenceOnly: false, writeAlreadyRan: true);
+        return await VerifyAsync(key, "created", confirmsExistenceOnly: false, writeAlreadyRan: true, cancellationToken: cancellationToken);
     }
 
     /// <summary>
@@ -253,6 +256,8 @@ public sealed class JiraWriteExecutor(JiraAccount account, JiraRequester? reques
     /// </summary>
     public async Task<JiraWriteResult> UpdateAsync(string issueKey, JiraWritePayload payload, CancellationToken cancellationToken)
     {
+        issueKey = ValidateIssueKey(issueKey, "update");
+
         Dictionary<string, string> fields = payload.Fields is null
             ? []
             : new Dictionary<string, string>(payload.Fields);
@@ -267,19 +272,19 @@ public sealed class JiraWriteExecutor(JiraAccount account, JiraRequester? reques
 
         if (description.IsNotBlank())
         {
-            fieldsNode["description"] = description;
+            fieldsNode["description"] = ApplyFormat(description, payload.EffectiveFormat);
         }
 
         AppendFields(fieldsNode, fields);
 
-        string authorization = await account.AuthorizationAsync($"update {issueKey} at {account.Site}", cancellationToken);
+        string authorization = await AuthorizeAsync($"update {issueKey} at {account.Site}", cancellationToken);
         await SendWriteAsync(
             new JiraRequest(HttpMethod.Put, account.Endpoint($"/rest/api/2/issue/{issueKey}"), authorization,
                 new JsonObject { ["fields"] = fieldsNode }.ToJsonString()),
             $"update {issueKey}",
             cancellationToken);
 
-        return await VerifyAsync(issueKey, cancellationToken, "updated", confirmsExistenceOnly: true, writeAlreadyRan: true);
+        return await VerifyAsync(issueKey, "updated", confirmsExistenceOnly: true, writeAlreadyRan: true, cancellationToken: cancellationToken);
     }
 
     /// <summary>
@@ -290,7 +295,7 @@ public sealed class JiraWriteExecutor(JiraAccount account, JiraRequester? reques
     /// gets here, rather than recording that belief unread.
     /// </summary>
     public Task<JiraWriteResult> VerifyExistsAsync(string issueKey, CancellationToken cancellationToken) =>
-        VerifyAsync(issueKey, cancellationToken, "linked", confirmsExistenceOnly: true);
+        VerifyAsync(ValidateIssueKey(issueKey, "link"), "linked", confirmsExistenceOnly: true, cancellationToken: cancellationToken);
 
     /// <summary>
     /// A comment on an existing card — never a transition, never a close, exactly the closeout
@@ -312,16 +317,18 @@ public sealed class JiraWriteExecutor(JiraAccount account, JiraRequester? reques
     public async Task<JiraWriteResult> CommentAsync(
         string issueKey, string comment, string format, CancellationToken cancellationToken)
     {
-        string authorization = await account.AuthorizationAsync($"comment on {issueKey} at {account.Site}", cancellationToken);
+        issueKey = ValidateIssueKey(issueKey, "comment on");
+
+        string authorization = await AuthorizeAsync($"comment on {issueKey} at {account.Site}", cancellationToken);
         await SendWriteAsync(
             new JiraRequest(HttpMethod.Post, account.Endpoint($"/rest/api/2/issue/{issueKey}/comment"), authorization,
-                new JsonObject { ["body"] = comment }.ToJsonString()),
+                new JsonObject { ["body"] = ApplyFormat(comment, format) }.ToJsonString()),
             $"comment on {issueKey}",
             cancellationToken);
 
         try
         {
-            return await VerifyAsync(issueKey, cancellationToken, "commented on", confirmsExistenceOnly: true, writeAlreadyRan: true);
+            return await VerifyAsync(issueKey, "commented on", confirmsExistenceOnly: true, writeAlreadyRan: true, cancellationToken: cancellationToken);
         }
         catch (JiraWriteExecutionException exception) when (exception.Kind == JiraWriteFailureKind.AuthFailure)
         {
@@ -345,12 +352,12 @@ public sealed class JiraWriteExecutor(JiraAccount account, JiraRequester? reques
     /// two it actually is.
     /// </summary>
     private async Task<JiraWriteResult> VerifyAsync(
-        string issueKey, CancellationToken cancellationToken, string verb, bool confirmsExistenceOnly, bool writeAlreadyRan = false)
+        string issueKey, string verb, bool confirmsExistenceOnly, bool writeAlreadyRan = false, CancellationToken cancellationToken = default)
     {
         JiraResponse response;
         try
         {
-            string authorization = await account.AuthorizationAsync($"read {issueKey} back at {account.Site}", cancellationToken);
+            string authorization = await AuthorizeAsync($"read {issueKey} back at {account.Site}", cancellationToken);
             response = await SendAsync(
                 new JiraRequest(HttpMethod.Get, account.Endpoint($"/rest/api/2/issue/{issueKey}?fields=key"), authorization),
                 $"read {issueKey} back",
@@ -408,7 +415,7 @@ public sealed class JiraWriteExecutor(JiraAccount account, JiraRequester? reques
     {
         try
         {
-            string authorization = await account.AuthorizationAsync($"sign in to {account.Site}", cancellationToken);
+            string authorization = await AuthorizeAsync($"sign in to {account.Site}", cancellationToken);
             await SendAsync(
                 new JiraRequest(HttpMethod.Post, account.Endpoint("/rest/api/3/search/jql"), authorization,
                     new JsonObject { ["jql"] = ProbeJql, ["maxResults"] = 1, ["fields"] = new JsonArray("key") }.ToJsonString()),
@@ -425,6 +432,62 @@ public sealed class JiraWriteExecutor(JiraAccount account, JiraRequester? reques
             return JiraAuthProbeResult.Unknown;
         }
     }
+
+    /// <summary>
+    /// The token read for every call, wrapped so a credential the vault cannot resolve — the
+    /// environment variable not exported, the stored file removed, a keychain reference on a
+    /// machine with no keychain — is reported the same way a rejected credential from Jira itself
+    /// is: an <see cref="JiraWriteFailureKind.AuthFailure"/> the coordinator already records as a
+    /// pending, automatically-retried write, rather than a raw <see cref="DomainException"/>
+    /// escaping this connector as a terminal failure (independent pre-PR review, both lenses,
+    /// cycle 1: closeout's own merge comment was being dropped, not retried, whenever h9kd had not
+    /// yet inherited the environment its credential names).
+    /// </summary>
+    private async ValueTask<string> AuthorizeAsync(string purpose, CancellationToken cancellationToken)
+    {
+        try
+        {
+            return await account.AuthorizationAsync(purpose, cancellationToken);
+        }
+        catch (DomainException exception)
+        {
+            throw new JiraWriteExecutionException(
+                JiraWriteFailureKind.AuthFailure,
+                $"Could not resolve the registered credential to {purpose}: {exception.Message}");
+        }
+    }
+
+    /// <summary>
+    /// A caller-supplied issue key, confirmed to be an actual PROJ-123 shape before it is built
+    /// into a request URL — the same parse the read side (<see cref="JiraWorkItemProvider"/>)
+    /// already requires before it builds the identical <c>/rest/api/2/issue/{key}</c> URL.
+    /// Refusing anything else here (a browse URL, a traversal like <c>PROJ-1/../PROJ-2</c>, a
+    /// query or fragment character) matters because <see cref="Uri"/> performs dot-segment removal
+    /// on the way in: an unvalidated key can retarget the request at an endpoint other than the one
+    /// recorded as this write's own intent (independent pre-PR review, adversarial lens, cycle 1).
+    /// </summary>
+    private static string ValidateIssueKey(string issueKey, string verb) =>
+        JiraIssueKey.TryParseBareKey(issueKey, out JiraIssueKey key)
+            ? key.Value
+            : throw new JiraWriteExecutionException(
+                JiraWriteFailureKind.Other,
+                $"'{RelayedText.OneLine(issueKey)}' is not a Jira card key (PROJ-123) to {verb} — pass "
+                + "the bare key, not a URL or anything else.");
+
+    /// <summary>
+    /// A description or a comment body, converted from the format it was composed in to what Jira
+    /// v2's plain-string field actually renders. Only "markdown" — the default
+    /// <see cref="JiraWritePayload.EffectiveFormat"/> assumes, and what this repo's own
+    /// card-authoring skills produce — is converted, via <see cref="JiraMarkupText"/>: "plain" is
+    /// already what it claims to be, and "html" is carried through unconverted rather than guessed
+    /// at, since there is no way to verify an HTML-to-Jira-wiki-markup mapping against a live
+    /// tenant from this build environment (the same "never guess at unobserved facts" reasoning
+    /// this class already applies to the JQL search endpoint's own shape).
+    /// </summary>
+    private static string? ApplyFormat(string? text, string format) =>
+        text.IsBlank() || !string.Equals(format, "markdown", StringComparison.OrdinalIgnoreCase)
+            ? text
+            : JiraMarkupText.FromMarkdown(text);
 
     private static void AppendFields(JsonObject fieldsNode, IReadOnlyDictionary<string, string> fields)
     {
