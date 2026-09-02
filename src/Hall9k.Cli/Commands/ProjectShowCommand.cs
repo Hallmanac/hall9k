@@ -104,6 +104,11 @@ public sealed class ProjectShowCommand : Hall9kAsyncCommand<ProjectShowCommand.S
               + "card key is checked against it[/]"
             : $"[dim]none bound — bind one: h9k project set {project.Name.EscapeMarkup()} --jira PROJ[/]");
         table.AddRow("Backlog policy", BacklogPolicyRow(project));
+        table.AddRow("Branch template", project.BranchNameTemplate == BranchNameTemplate.Default
+            ? $"[dim]{BranchNameTemplate.Default.Value.EscapeMarkup()} — the platform default; state a "
+              + $"convention: h9k project set {project.Name.EscapeMarkup()} --branch-template \"{{key}}-{{slug}}\"[/]"
+            : $"{project.BranchNameTemplate.Value.EscapeMarkup()} [dim]— the name this project's task "
+              + "branches are cut under[/]");
         table.AddRow("Context links", project.ContextLinks.Count == 0
             ? $"[dim]none — add one: h9k project set {project.Name.EscapeMarkup()} --link \"jira=https://…\"[/]"
             : string.Join("\n", project.ContextLinks.Select(link =>
