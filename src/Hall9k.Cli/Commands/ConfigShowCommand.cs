@@ -1,5 +1,7 @@
 using Hall9k.Cli.Infrastructure;
 using Hall9k.Domain.Infrastructure.Persistence;
+using Hall9k.Domain.Shared.ValueObjects;
+using Marten;
 using Spectre.Console;
 using Spectre.Console.Cli;
 
@@ -72,9 +74,47 @@ public sealed class ConfigShowCommand : Hall9kAsyncCommand<ConfigShowCommand.Set
             $"{staleAfterDays} ({staleAfterDaysOrigin})".EscapeMarkup());
 
         AnsiConsole.Write(table);
+
+        foreach (string line in await SpendLinesAsync(report, cancellationToken))
+        {
+            AnsiConsole.MarkupLineInterpolated($"[dim]{line}[/]");
+        }
+
         AnsiConsole.MarkupLine(
             "\n[dim]Change a setting:[/] h9k config set --max-concurrent-task-runs 2");
         return ExitCodes.Ok;
+    }
+
+    /// <summary>
+    /// The current period's recorded spend, by model, shown whether or not a budget is set
+    /// (observability precedes enforcement, backlog: spend-governor step three) — so the
+    /// calibration loop (run, observe a week's real burn, set the budget under it, adjust) starts
+    /// the day this merges rather than the day a number is chosen. Summed live from the event
+    /// store rather than read through <see cref="OperatingSettingsResolver"/>'s own DB-free walk,
+    /// so this is the one row on this screen that needs a database — degraded gracefully rather
+    /// than taking the rest of this command's DB-free config diagnosis down with it, since
+    /// h9k config show is also how a fresh install with no database configured yet inspects what
+    /// it is about to run with.
+    /// </summary>
+    private static async Task<IReadOnlyList<string>> SpendLinesAsync(
+        OperatingSettingsReport report, CancellationToken cancellationToken)
+    {
+        try
+        {
+            using DocumentStore store = CliStore.Open();
+            await using IQuerySession session = store.QuerySession();
+            SpendPressure spend = await SpendPressure.ReadAsync(session, report, DateTimeOffset.UtcNow, cancellationToken);
+            return
+            [
+                spend.SummaryLine,
+                .. spend.ByModel.Select(entry =>
+                    $"  {(entry.Model == AgentModel.Unknown ? "(unknown model)" : entry.Model.Value)}: {entry.TotalInputTokens:N0} tokens"),
+            ];
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            return [$"spend this period: unavailable ({exception.Message})"];
+        }
     }
 
     /// <summary>
@@ -91,5 +131,7 @@ public sealed class ConfigShowCommand : Hall9kAsyncCommand<ConfigShowCommand.Set
         || report.MaxComplianceReviewCycles.Origin == SettingOrigin.EnvironmentVariable
         || report.MaxAdversarialReviewCycles.Origin == SettingOrigin.EnvironmentVariable
         || report.MaxFinalFullPassRounds.Origin == SettingOrigin.EnvironmentVariable
-        || report.LifetimeReviewCycleBudget.Origin == SettingOrigin.EnvironmentVariable;
+        || report.LifetimeReviewCycleBudget.Origin == SettingOrigin.EnvironmentVariable
+        || report.SpendBudgetTokens.Origin == SettingOrigin.EnvironmentVariable
+        || report.SpendPeriod.Origin == SettingOrigin.EnvironmentVariable;
 }
