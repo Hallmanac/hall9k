@@ -1827,9 +1827,9 @@ public sealed class AgentPromptBuilderTests : IDisposable
     }
 
     /// <summary>
-    /// The carve-out to the sweep's fixing bound (cycle-3 review, this task; keyed on the sibling
-    /// site's own disposition since cycle 11 — see below): a pre-existing sibling this document
-    /// separately dispositions <see cref="ReviewFindingDispositions.FixHereInItsOwnCommit"/>
+    /// The carve-out to the sweep's fixing bound, explicit-disposition arm (cycle-10/cycle-11
+    /// review, this task): a pre-existing sibling this document separately dispositions
+    /// <see cref="ReviewFindingDispositions.FixHereInItsOwnCommit"/> as a finding of its own
     /// is fixed in that same separate commit rather than merely named, because that disposition
     /// already decided this defect's shape belongs in its own commit here — leaving a sibling
     /// named-not-fixed would contradict it and reintroduce the exact lap this phase exists to
@@ -1837,7 +1837,7 @@ public sealed class AgentPromptBuilderTests : IDisposable
     /// in-PR anyway, as 59dc9bba).
     /// </summary>
     [Fact]
-    public void Self_check_phase_fixes_pre_existing_siblings_of_a_fix_here_in_its_own_commit_finding()
+    public void Self_check_phase_fixes_a_sibling_the_document_itself_dispositions_fix_here_in_its_own_commit()
     {
         string prompt = AgentPromptBuilder.BuildReviewFix(
             SomeTask(), SomeProject(), "task/1-slug", "findings go here", cycle: 1);
@@ -1847,8 +1847,8 @@ public sealed class AgentPromptBuilderTests : IDisposable
             "the fixing bound carries an explicit carve-out rather than applying uniformly");
         prompt.Should().Contain(ReviewFindingDispositions.FixHereInItsOwnCommit);
         prompt.Should().Contain(
-            "fixed here, in that same separate commit",
-            "a sibling of a fix-in-its-own-commit finding is fixed in that commit, not merely named");
+            "fixed here, in that same separate commit — that disposition has already decided",
+            "an explicitly dispositioned sibling is fixed in that commit, not merely named");
         prompt.Should().Contain(
             "cost exactly the lap this phase exists to remove",
             "the carve-out states the cost of getting this wrong without citing an install-internal incident id");
@@ -1856,6 +1856,35 @@ public sealed class AgentPromptBuilderTests : IDisposable
             "59dc9bba",
             "the prompt is served to every registered project, so it names no hall9k-internal commit or task id "
             + "(that citation belongs in the doc comment, not text an unrelated project's session would read)");
+    }
+
+    /// <summary>
+    /// The carve-out's other arm, restored at cycle 12 after cycle 11's rewrite dropped it: an
+    /// undispositioned pre-existing sibling — one this findings document does not separately list
+    /// at all — is still fixed here, in that same separate commit, when the finding whose sweep
+    /// surfaced it is itself dispositioned <see cref="ReviewFindingDispositions.FixHereInItsOwnCommit"/>.
+    /// This is the cycle-3 ruling's original case: cea5ae6e's <c>CreateAsync</c> sibling was
+    /// surfaced by a blast-radius sweep and never reported as a finding of its own, so it carried
+    /// no disposition of its own — the explicit-disposition arm above never fires for it, and only
+    /// this arm does. Cycle 11's rewrite keyed the carve-out on the sibling's own disposition alone
+    /// and silently dropped this trigger; both reviewers independently confirmed the regression at
+    /// cycle 12 and it is restored here alongside the explicit-disposition arm rather than in place
+    /// of it.
+    /// </summary>
+    [Fact]
+    public void Self_check_phase_fixes_an_undispositioned_sibling_of_a_swept_fix_here_in_its_own_commit_finding()
+    {
+        string prompt = AgentPromptBuilder.BuildReviewFix(
+            SomeTask(), SomeProject(), "task/1-slug", "findings go here", cycle: 1);
+
+        prompt.Should().Contain(
+            "is still fixed here, in that same separate commit, when the finding",
+            "an undispositioned sibling of a fix-in-its-own-commit finding's sweep is fixed here too, not "
+            + "merely named — the cycle-3 trigger cycle 11 dropped and cycle 12 restored");
+        prompt.Should().Contain(
+            "you are sweeping is itself dispositioned",
+            "the trigger is keyed on the swept finding's own disposition, independent of the sibling's own "
+            + "(unlisted) disposition");
     }
 
     /// <summary>
@@ -1885,13 +1914,16 @@ public sealed class AgentPromptBuilderTests : IDisposable
     }
 
     /// <summary>
-    /// The mirror case cycle 10 missed (cycle-11 review, this task): the carve-out has to be keyed
-    /// on the sibling site's own disposition, not on how the finding *being swept* is
-    /// dispositioned. Before this fix, an ordinary <see cref="ReviewFindingDispositions.FixHere"/>
+    /// The mirror case cycle 10 missed (cycle-11 review, this task), covering the
+    /// explicit-disposition arm of the carve-out specifically: a sibling this document separately
+    /// dispositions has to follow that disposition regardless of how the finding *being swept* is
+    /// itself dispositioned. Before this fix, an ordinary <see cref="ReviewFindingDispositions.FixHere"/>
     /// finding's sweep reaching a sibling separately dispositioned
     /// <see cref="ReviewFindingDispositions.FixHereInItsOwnCommit"/> was told to merely name it —
     /// the exact inverse of the disposition already recorded for that sibling three paragraphs
-    /// earlier in this same prompt.
+    /// earlier in this same prompt. This arm coexists with, rather than replaces, the swept-finding
+    /// trigger covering an *undispositioned* sibling (cycle 3, restored at cycle 12 — see the
+    /// "fixes an undispositioned sibling of a swept fix-here-in-its-own-commit finding" test below).
     /// </summary>
     [Fact]
     public void Self_check_phase_carve_out_is_keyed_on_the_sibling_sites_own_disposition()
@@ -1945,8 +1977,11 @@ public sealed class AgentPromptBuilderTests : IDisposable
             SomeTask(), project, "task/1-slug", "findings go here", cycle: 1);
 
         prompt.Should().Contain("Run the touched tests, in the foreground");
-        prompt.Should().Contain("do not");
-        prompt.Should().Contain("background them", "the unique fragment, not the ambient 'do not' this prompt uses elsewhere");
+        prompt.Should().Contain(
+            $"do not{Environment.NewLine}     background them",
+            "the foreground-test sub-rule's own do-not-background clause, not one of the prompt's other "
+            + "unrelated 'do not' instructions — the phrase wraps across a line break, so the two halves "
+            + "must be asserted together to mean anything");
         prompt.Should().Contain("590-600 seconds");
     }
 

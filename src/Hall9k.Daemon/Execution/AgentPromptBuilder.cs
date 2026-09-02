@@ -1755,6 +1755,17 @@ public static class AgentPromptBuilder
     /// where it could parse as excluding only a routed-away sibling rather than any dispositioned
     /// one.
     /// </para>
+    /// <para>
+    /// Cycle 12 review found the cycle-11 rewrite went too far: keying the carve-out on the
+    /// sibling site's own disposition alone silently dropped the cycle-3 trigger the rewrite was
+    /// supposed to be layering on top of, not replacing — an undispositioned sibling of a finding
+    /// itself dispositioned <see cref="ReviewFindingDispositions.FixHereInItsOwnCommit"/> fell
+    /// back to named-not-fixed, exactly the cea5ae6e <c>CreateAsync</c> outcome the cycle-3 ruling
+    /// exists to prevent. Both keys now coexist: an explicit disposition on the sibling site
+    /// itself still wins outright (cycle 10, cycle 11), and an undispositioned sibling of a
+    /// <see cref="ReviewFindingDispositions.FixHereInItsOwnCommit"/> finding is fixed in that same
+    /// separate commit (cycle 3), falling through to named-not-fixed only when neither applies.
+    /// </para>
     /// </summary>
     private static void AppendReviewFixSelfCheckPhaseRules(StringBuilder prompt, ProjectDetails project)
     {
@@ -1799,8 +1810,14 @@ public static class AgentPromptBuilder
         prompt.AppendLine("     document already routed away does not become yours to fix just because it shares");
         prompt.AppendLine($"     a shape with one you are; and a sibling listed under \"{ReviewFindingDispositions.FixHere}\"");
         prompt.AppendLine($"     or \"{ReviewFindingDispositions.RideAlong}\" is already your work by that listing");
-        prompt.AppendLine("     alone, swept or not. For every other pre-existing site — one this document does");
-        prompt.AppendLine("     not separately disposition — it is still yours to name and not to fix: leave it");
+        prompt.AppendLine("     alone, swept or not. A pre-existing site this document does not separately");
+        prompt.AppendLine("     disposition is still fixed here, in that same separate commit, when the finding");
+        prompt.AppendLine($"     you are sweeping is itself dispositioned \"{ReviewFindingDispositions.FixHereInItsOwnCommit}\"");
+        prompt.AppendLine("     — that disposition already decided this defect's shape belongs in its own commit,");
+        prompt.AppendLine("     so an undispositioned sibling sharing that same shape belongs there too, rather");
+        prompt.AppendLine("     than merely named. For every other pre-existing site — one this document does");
+        prompt.AppendLine("     not separately disposition, swept from a finding that does not itself carry that");
+        prompt.AppendLine("     disposition — it is still yours to name and not to fix: leave it");
         prompt.AppendLine("     out of your fix, but name it in your final summary anyway — if the next review");
         prompt.AppendLine("     dispatch is a verify pass, naming it there is the only path this sibling has of");
         prompt.AppendLine("     ever reaching a reviewer and being reported as a finding of its own; a");
