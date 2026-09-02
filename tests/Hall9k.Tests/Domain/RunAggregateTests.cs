@@ -1205,14 +1205,12 @@ public sealed class RunAggregateTests
         run.Apply(new ReviewDispatched(
             id, DomainId.New(), Cycle: 1, ProcessId: 5001, Now, Now, Mode: ReviewMode.Discovery, HeadSha: "sha-discovery"));
         run.LastFullScopeReviewHeadSha.Should().Be("sha-discovery");
-        run.PriorFullScopeReviewHeadSha.Should().BeNull("cycle 1 has no full-scope cycle before it");
 
         // Cycle 2: Verify — a delta-scoped read, must not move the full-scope boundary.
         run.Apply(new ReviewDispatched(
             id, DomainId.New(), Cycle: 2, ProcessId: 5002, Now, Now, Mode: ReviewMode.Verify, HeadSha: "sha-verify-1"));
         run.LastFullScopeReviewHeadSha.Should().Be(
             "sha-discovery", "a Verify cycle never counts as a full-scope read");
-        run.PriorFullScopeReviewHeadSha.Should().Be("sha-discovery");
 
         // Cycle 3: another Verify — still must not move it.
         run.Apply(new ReviewDispatched(
@@ -1224,18 +1222,13 @@ public sealed class RunAggregateTests
         // (cycle 1's Discovery), not cycle 3's Verify head.
         run.Apply(new ReviewDispatched(
             id, DomainId.New(), Cycle: 4, ProcessId: 5004, Now, Now, Mode: ReviewMode.FinalFullPass, HeadSha: "sha-ffp-1"));
-        run.PriorFullScopeReviewHeadSha.Should().Be(
-            "sha-discovery", "this is the boundary the FinalFullPass dispatch that just landed actually scoped its own diff instruction to");
         run.LastFullScopeReviewHeadSha.Should().Be(
             "sha-ffp-1", "FinalFullPass is itself a full-scope read, so it becomes the new boundary for whatever reads next");
 
         // A same-cycle top-up (ReviewEngine.DispatchMissingPassesAsync) re-dispatches into the SAME
-        // cycle — it must not move PriorFullScopeReviewHeadSha to this cycle's own head, or a
-        // topped-up FinalFullPass lens would scope its diff instruction to nothing new to read.
+        // cycle — it must not move the full-scope boundary again.
         run.Apply(new ReviewDispatched(
             id, DomainId.New(), Cycle: 4, ProcessId: 5005, Now, Now, Mode: ReviewMode.FinalFullPass, HeadSha: "sha-ffp-1"));
-        run.PriorFullScopeReviewHeadSha.Should().Be(
-            "sha-discovery", "topping up cycle 4 is not a new cycle starting");
         run.LastFullScopeReviewHeadSha.Should().Be("sha-ffp-1");
 
         // Cycle 5: Verify again (a track the final pass reawakened), cycle 6: a second FinalFullPass
@@ -1244,9 +1237,6 @@ public sealed class RunAggregateTests
             id, DomainId.New(), Cycle: 5, ProcessId: 5006, Now, Now, Mode: ReviewMode.Verify, HeadSha: "sha-verify-3"));
         run.Apply(new ReviewDispatched(
             id, DomainId.New(), Cycle: 6, ProcessId: 5007, Now, Now, Mode: ReviewMode.FinalFullPass, HeadSha: "sha-ffp-2"));
-        run.PriorFullScopeReviewHeadSha.Should().Be(
-            "sha-ffp-1", "the second FinalFullPass's own diff instruction must scope to the FIRST FinalFullPass's "
-                + "head, not walk all the way back to the original Discovery cycle");
         run.LastFullScopeReviewHeadSha.Should().Be("sha-ffp-2");
     }
 
