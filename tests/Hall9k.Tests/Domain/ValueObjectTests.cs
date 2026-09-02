@@ -161,6 +161,40 @@ public sealed class ValueObjectTests
     }
 
     [Fact]
+    public void SpendPeriod_recognizes_only_day_and_week()
+    {
+        SpendPeriod.FromInput("day").Should().Be(SpendPeriod.Day);
+        SpendPeriod.FromInput(" WEEK ").Should().Be(SpendPeriod.Week);
+        SpendPeriod.FromInput("month").Should().Be(SpendPeriod.Unknown);
+        SpendPeriod.FromInput(null).Should().Be(SpendPeriod.Unknown);
+
+        SpendPeriod.Day.IsWellFormed.Should().BeTrue();
+        SpendPeriod.Week.IsWellFormed.Should().BeTrue();
+        SpendPeriod.Unknown.IsWellFormed.Should().BeFalse();
+    }
+
+    [Fact]
+    public void SpendPeriod_day_starts_at_utc_midnight_and_rolls_the_next_day()
+    {
+        DateTimeOffset midAfternoon = new(2026, 8, 19, 15, 30, 0, TimeSpan.Zero);
+
+        SpendPeriod.Day.StartOf(midAfternoon).Should().Be(new DateTimeOffset(2026, 8, 19, 0, 0, 0, TimeSpan.Zero));
+        SpendPeriod.Day.NextRolloverAfter(midAfternoon).Should().Be(new DateTimeOffset(2026, 8, 20, 0, 0, 0, TimeSpan.Zero));
+    }
+
+    [Fact]
+    public void SpendPeriod_week_starts_monday_utc_regardless_of_which_day_of_the_week_it_is_asked_from()
+    {
+        // 2026-08-19 is a Wednesday; the week it belongs to starts Monday 2026-08-17.
+        DateTimeOffset wednesday = new(2026, 8, 19, 15, 30, 0, TimeSpan.Zero);
+        DateTimeOffset monday = new(2026, 8, 17, 0, 0, 0, TimeSpan.Zero);
+
+        SpendPeriod.Week.StartOf(wednesday).Should().Be(monday);
+        SpendPeriod.Week.StartOf(monday).Should().Be(monday, "Monday's own midnight is already the week's start");
+        SpendPeriod.Week.NextRolloverAfter(wednesday).Should().Be(monday.AddDays(7));
+    }
+
+    [Fact]
     public void Optional_distinguishes_absent_from_explicitly_null()
     {
         Optional<string> absent = Optional<string>.None;
