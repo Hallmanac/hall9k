@@ -43,6 +43,11 @@ public sealed class ProjectAggregate
     public int? MaxFinalFullPassRounds { get; private set; }
     /// <summary>This project's override of the task-lifetime review-cycle budget; null defers to the node.</summary>
     public int? LifetimeReviewCycleBudget { get; private set; }
+    /// <summary>
+    /// The name this project's task branches are cut under; the default renders exactly the
+    /// <c>task/&lt;shortid&gt;-&lt;slug&gt;</c> name the platform cut before templates existed.
+    /// </summary>
+    public BranchNameTemplate BranchNameTemplate { get; private set; } = BranchNameTemplate.Default;
     public DateTimeOffset RegisteredAt { get; private set; }
 
     private readonly List<VerifyCommand> _verifyCommands = [];
@@ -146,6 +151,11 @@ public sealed class ProjectAggregate
         if (@event.LifetimeReviewCycleBudget.HasValue)
         {
             LifetimeReviewCycleBudget = @event.LifetimeReviewCycleBudget.Value;
+        }
+
+        if (@event.BranchNameTemplate.HasValue)
+        {
+            BranchNameTemplate = @event.BranchNameTemplate.Value ?? BranchNameTemplate.Default;
         }
     }
 }

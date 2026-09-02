@@ -65,7 +65,8 @@ public static class ProjectDecider
         Optional<int?> maxComplianceReviewCycles = default,
         Optional<int?> maxAdversarialReviewCycles = default,
         Optional<int?> maxFinalFullPassRounds = default,
-        Optional<int?> lifetimeReviewCycleBudget = default)
+        Optional<int?> lifetimeReviewCycleBudget = default,
+        Optional<BranchNameTemplate> branchNameTemplate = default)
     {
         if (repositoryPath.HasValue)
         {
@@ -147,6 +148,16 @@ public static class ProjectDecider
         ReviewCapValidation.RefuseNonPositiveCap(maxFinalFullPassRounds, "--max-final-full-pass-rounds");
         ReviewCapValidation.RefuseNonPositiveCap(lifetimeReviewCycleBudget, "--lifetime-review-cycle-budget");
 
+        // Rendered here, not merely shape-checked: a template is refused at the command line only
+        // if the thing that will actually cut branches refuses it, so validation runs the same
+        // BranchNameTemplate.Render the dispatcher will run, over representative tasks. The
+        // alternative is a template accepted here and discovered at the dispatch it fails, which
+        // is the failure this setting exists to stop rather than to relocate.
+        if (branchNameTemplate.HasValue && branchNameTemplate.Value is { } chosenTemplate)
+        {
+            branchNameTemplate = BranchNameTemplate.Parse(chosenTemplate.Value);
+        }
+
         return new ProjectSettingsChanged(
             project.Id,
             verifyCommands,
@@ -166,7 +177,8 @@ public static class ProjectDecider
             maxComplianceReviewCycles,
             maxAdversarialReviewCycles,
             maxFinalFullPassRounds,
-            lifetimeReviewCycleBudget);
+            lifetimeReviewCycleBudget,
+            branchNameTemplate);
     }
 
     /// <summary>

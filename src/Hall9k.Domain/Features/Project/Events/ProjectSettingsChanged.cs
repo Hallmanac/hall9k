@@ -22,6 +22,12 @@ namespace Hall9k.Domain.Features.Project.Events;
 /// verbatim to the Jira publication agent and, for github-issues, treated as a comma-separated
 /// label list — nothing more, because a deterministic issue author cannot interpret prose.
 /// </para>
+/// <para>
+/// BranchNameTemplate is the name a task's branch is cut under, so a team whose convention keys on
+/// its tracker (ARX-14-short-slug) states that convention here instead of forking the platform;
+/// <see cref="Project.BranchNameTemplate.Default"/> is both the untouched default and what 'none'
+/// restores, and it renders exactly the name the platform cut before this setting existed.
+/// </para>
 /// </summary>
 public sealed record ProjectSettingsChanged(
     Guid Id,
@@ -56,4 +62,5 @@ public sealed record ProjectSettingsChanged(
     /// every run and follow-up a task has had, immune to per-run resets); present-with-null
     /// clears it.
     /// </summary>
-    Optional<int?> LifetimeReviewCycleBudget = default);
+    Optional<int?> LifetimeReviewCycleBudget = default,
+    Optional<BranchNameTemplate> BranchNameTemplate = default);
