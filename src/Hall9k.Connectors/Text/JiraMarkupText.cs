@@ -73,12 +73,18 @@ public static partial class JiraMarkupText
     /// cycle 2, origin: closeout's own merge comment, composed with no wiki-markup-active character
     /// anywhere in it, was boxed the same as anything else, which turned its one actionable element
     /// — the pull request's URL — from an auto-linked sentence into dead text inside a preformatted
-    /// block): <paramref name="text"/> is wrapped only when it contains at least one character every
-    /// Jira wiki-markup construct is built from (see <see cref="ContainsWikiMarkupActiveCharacter"/>).
-    /// A text with none of those characters cannot form any construct regardless of Jira's own
-    /// undocumented escaping rules, so passing it through unwrapped is a verified fact about the
-    /// text rather than a guess at those rules — and it is what lets a bare URL still auto-link the
-    /// way "plain" text always rendered before this wrapping existed.
+    /// block): <paramref name="text"/> is wrapped only when it actually contains a Jira wiki-markup
+    /// construct (see <see cref="ContainsWikiMarkupConstruct"/>), not merely a character one of those
+    /// constructs happens to use — a plain occurrence of a construct's character is not itself the
+    /// construct (independent pre-PR review, adversarial lens, cycle 3, origin: the cycle-2 version
+    /// keyed on bare character membership, so any hyphen — a task id's GUID, an ordinary hyphenated
+    /// word — tripped the same box the merge comment was carved out to avoid, while headings
+    /// (<c>h1.</c>), blockquotes (<c>bq.</c>), citations, image embeds, and Jira's own documented
+    /// emoticons used no character the old class even listed). A text this construct check does not
+    /// match cannot be interpreted as markup, so passing it through unwrapped is a verified fact
+    /// about the text rather than a guess at Jira's undocumented escaping rules — and it is what lets
+    /// a bare URL, or an ordinary sentence with a hyphen in it, still read and auto-link the way
+    /// "plain" text always rendered before this wrapping existed.
     /// </para>
     /// The one corner this does not cover: text that already contains the literal string
     /// <c>{noformat}</c> could still terminate the block early — flagged here rather than guessed
@@ -86,19 +92,28 @@ public static partial class JiraMarkupText
     /// parser this class has no way to verify.
     /// </summary>
     public static string ToPlainLiteral(string text) =>
-        text.IsBlank() || !ContainsWikiMarkupActiveCharacter(text)
+        text.IsBlank() || !ContainsWikiMarkupConstruct(text)
             ? text
             : $"{{noformat}}\n{text}\n{{noformat}}";
 
     /// <summary>
-    /// Whether <paramref name="text"/> contains any character Jira wiki markup ever assigns meaning
-    /// to. Every construct the markup understands — bold, italic, strikethrough, underline,
-    /// super/subscript, headings, lists, blockquotes, tables, links, monospace, and macros like
-    /// <c>{noformat}</c> itself — is built from at least one of these, so a text with none of them
-    /// cannot be interpreted as any construct: an absence <see cref="ToPlainLiteral"/> can trust
-    /// without knowing Jira's own (undocumented) per-character escaping rules.
+    /// Whether <paramref name="text"/> contains a real Jira wiki-markup construct. Bold, italic,
+    /// underline, super/subscript, list markers, table rows, links, monospace, and macros like
+    /// <c>{noformat}</c> itself are each built from a character no ordinary sentence needs, so any
+    /// bare occurrence of one is still trusted as the construct (the cycle-1/2 rule, unchanged).
+    /// Line-anchored headings (<c>h1.</c>-<c>h6.</c>) and blockquotes (<c>bq.</c>), image embeds
+    /// (<c>!file.png!</c>), citations (<c>??...??</c>), and Jira's documented emoticons (<c>:)</c>,
+    /// <c>(y)</c>, <c>(i)</c>, and the rest of that fixed, published set — never guessed at, since an
+    /// undocumented emoticon would be exactly the kind of unobserved fact AGENTS.md rules out
+    /// assuming) are new as of cycle 3, matched by their own literal shape rather than any single
+    /// character. The hyphen alone is not trusted as a bare occurrence, because it is the one
+    /// character cycle 3 found doing exactly that on a task GUID and on ordinary hyphenated prose
+    /// (<c>one-off</c>): it counts only when it also has real strikethrough shape — preceded by
+    /// start-of-text, whitespace, or an opening paren, immediately followed by a non-space character,
+    /// and closed the mirror way — the word-boundary flanking a genuine <c>-strikethrough-</c> has
+    /// and a mid-word or digit-flanked hyphen never does.
     /// </summary>
-    private static bool ContainsWikiMarkupActiveCharacter(string text) => WikiMarkupActiveCharacter().IsMatch(text);
+    private static bool ContainsWikiMarkupConstruct(string text) => WikiMarkupConstruct().IsMatch(text);
 
     private static string ConvertProse(string text)
     {
@@ -288,6 +303,24 @@ public static partial class JiraMarkupText
     [GeneratedRegex(@"^>\s?(.*)$")]
     private static partial Regex BlockquoteLine();
 
-    [GeneratedRegex(@"[*_+\-^~#{}\[\]|\\]")]
-    private static partial Regex WikiMarkupActiveCharacter();
+    /// <summary>
+    /// One alternation covering every construct <see cref="ContainsWikiMarkupConstruct"/>'s own doc
+    /// comment enumerates. Every mark except the hyphen keeps the cycle-1/2 rule of any bare
+    /// occurrence counting, since none of them was found to over-trigger; only the hyphen — the one
+    /// character cycle 3 found tripping on a task GUID and on ordinary hyphenated prose — is instead
+    /// matched by real strikethrough shape: a <c>-</c> preceded by start-of-text, whitespace, or an
+    /// opening paren, immediately followed by a non-space character, and closed the mirror way,
+    /// which is the word-boundary flanking a genuine <c>-strikethrough-</c> has and a mid-word or
+    /// digit-flanked hyphen (<c>one-off</c>, a GUID's own) never does.
+    /// </summary>
+    [GeneratedRegex(
+        @"[*_+^~#{}\[\]|\\]" +
+        @"|(?<![\w-])-(?=\S)(?:[^\r\n]*?\S)?-(?![\w-])" +
+        @"|^h[1-6]\.(?:\s|$)" +
+        @"|^bq\.(?:\s|$)" +
+        @"|\?\?[^\r\n?]+\?\?" +
+        @"|!\S[^\r\n!]*!" +
+        @"|:\)|:\(|:P|:D|;\)|\(y\)|\(n\)|\(i\)|\(/\)|\(x\)|\(!\)|\(\+\)|\(-\)|\(\?\)|\(on\)|\(off\)|\(\*[rgby]?\)",
+        RegexOptions.Multiline)]
+    private static partial Regex WikiMarkupConstruct();
 }

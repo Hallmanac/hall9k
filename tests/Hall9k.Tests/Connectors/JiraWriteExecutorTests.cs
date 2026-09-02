@@ -543,16 +543,27 @@ public sealed class JiraWriteExecutorTests
         // Closeout's own merge comment is composed with format "plain" and carries a bare URL as
         // its one actionable element. Wrapping every "plain" body in {noformat} regardless of its
         // content boxed that URL into dead text (independent pre-PR review, adversarial lens,
-        // cycle 2) — this is the case that must stay unwrapped for the URL to auto-link.
+        // cycle 2) — this is the case that must stay unwrapped for the URL to auto-link. The comment
+        // below is the exact shape CloseoutEngine.MergeComment composes, GUID and hyphenated
+        // "one-off" included, rather than a hyphen-free stand-in: a cycle-2 predicate keyed on bare
+        // character membership passed this test while still boxing the real template, since the
+        // template's own task-id GUID and its "one-off" wording both carry hyphens the stand-in
+        // never exercised (independent pre-PR review, adversarial lens, cycle 3).
         RecordingJiraRequester requester = RecordingJiraRequester.RespondingTo(request =>
             request.Url.ToString().EndsWith("/comment", StringComparison.Ordinal)
                 ? Created("""{"id":"1"}""")
                 : Ok("""{"key":"PROJ-23"}"""));
 
-        string comment = "The pull request for this work has merged: https://github.com/hall9k/hall9k/pull/1";
+        string comment = """
+            The pull request for this work has merged: https://github.com/hall9k/hall9k/pull/1
+
+            Recorded by Hall9k as task 28b19893-0000-4000-8000-000000000000 in project sample-project.
+            This is a one-off note at merge — Hall9k does not change this item's status or close it,
+            because which status a merge means is this project's workflow to decide.
+            """;
         await Executor(requester).CommentAsync("PROJ-23", comment, "plain", CancellationToken.None);
 
         string? body = requester.Requests.Single(r => r.Url.ToString().EndsWith("/comment", StringComparison.Ordinal)).JsonBody;
-        body.Should().NotContain("{noformat}").And.Contain(comment);
+        body.Should().NotContain("{noformat}").And.Contain("28b19893-0000-4000-8000-000000000000").And.Contain("one-off");
     }
 }
