@@ -132,7 +132,8 @@ public sealed class JiraWriteExecutorTests
 
         string? body = requester.Requests.First(r => r.Method == HttpMethod.Post).JsonBody;
         body.Should().NotContain("null");
-        body.Should().Contain($"[hall9k-task:{TaskId:D}]", "a blank description still carries the dedup marker");
+        body.Should().Contain($"hall9k-task:{TaskId:D}", "a blank description still carries the dedup marker");
+        body.Should().NotContain($"[hall9k-task:{TaskId:D}]", "brackets are Jira's own link notation and would turn the marker into an unresolvable link");
     }
 
     [Fact]

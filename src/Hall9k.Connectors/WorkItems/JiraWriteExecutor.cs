@@ -91,15 +91,6 @@ public sealed class JiraWriteExecutor(JiraAccount account, JiraRequester? reques
     public static string Marker(Guid taskId) => $"hall9k-task:{taskId:D}";
 
     /// <summary>
-    /// A JQL clause valid on any tenant and guaranteed to match nothing, used to prove the
-    /// registered credential works without touching any real card. A synthetic key (as opposed to
-    /// a date far in the future) is rejected by Jira's own key-format validation before the search
-    /// ever runs, which would turn a healthy, authenticated install into "could not confirm" — this
-    /// compares a real field against a value nothing will ever satisfy instead.
-    /// </summary>
-    public const string ProbeJql = "created > \"2999-01-01\"";
-
-    /// <summary>
     /// Caps how many of <see cref="FindByMarkerAsync"/>'s own search hits get their own confirming
     /// read. A mature board can return a full page of loosely-matching candidates (JQL's <c>~</c>
     /// is a Lucene text match, not an equality check), and each confirmation is a synchronous call
@@ -274,7 +265,9 @@ public sealed class JiraWriteExecutor(JiraAccount account, JiraRequester? reques
     /// read-back this executor can run — a search on the key — only ever proves the card exists,
     /// which is already true before an update runs, so the recorded outcome says exactly that
     /// rather than claiming the changed fields themselves were confirmed: the update's own 2xx
-    /// response is what this is actually trusted on.
+    /// response is what this is actually trusted on. A composed <c>project</c> or <c>issuetype</c>
+    /// field is dropped before the request is built, never sent: an update never moves a card to a
+    /// different board or work item type through a field write.
     /// </summary>
     public async Task<JiraWriteResult> UpdateAsync(string issueKey, JiraWritePayload payload, CancellationToken cancellationToken)
     {
@@ -285,6 +278,14 @@ public sealed class JiraWriteExecutor(JiraAccount account, JiraRequester? reques
             : new Dictionary<string, string>(payload.Fields);
         string? summary = ExtractField(fields, "summary");
         string? description = ExtractField(fields, "description");
+
+        // Dropped rather than sent: an update never moves a card to a different board or work
+        // item type through a field write, the same guard CreateAsync applies by overwriting both
+        // after AppendFields — an update has no bound project/issuetype of its own to overwrite
+        // them with, so the composed value is discarded outright instead (independent pre-PR
+        // review, adversarial lens, cycle 5).
+        ExtractField(fields, "project");
+        ExtractField(fields, "issuetype");
 
         JsonObject fieldsNode = [];
         if (summary.IsNotBlank())
@@ -429,9 +430,19 @@ public sealed class JiraWriteExecutor(JiraAccount account, JiraRequester? reques
     }
 
     /// <summary>
-    /// A read-only probe for <c>h9k doctor</c>: does an authenticated Jira search go through right
+    /// A read-only probe for <c>h9k doctor</c>: does an authenticated Jira call go through right
     /// now, with no card touched either way. Distinguishes a rejected credential from anything else
     /// so the fix taught is the right one.
+    /// <para>
+    /// Calls <c>GET /rest/api/2/myself</c> — the identical endpoint
+    /// <see cref="JiraWorkItemProvider.VerifyAccessAsync"/> already exercises and shape-checks at
+    /// connection registration — rather than the newer <c>/rest/api/3/search/jql</c> endpoint an
+    /// earlier cycle of this probe used, whose exact request/response shape was this class's own
+    /// unverified reading of Atlassian's migration guidance (no live tenant to check it against
+    /// from this build environment). <c>/myself</c> answers exactly the question this probe asks —
+    /// is the registered credential authenticated — and is already observed working, so this
+    /// carries no such guess (independent pre-PR review, adversarial lens, cycle 5).
+    /// </para>
     /// <para>
     /// Resolves the credential through <see cref="JiraAccount.AuthorizationAsync"/> directly,
     /// deliberately not through <see cref="AuthorizeAsync"/>'s shared wrapper: a
@@ -450,8 +461,7 @@ public sealed class JiraWriteExecutor(JiraAccount account, JiraRequester? reques
         try
         {
             await SendAsync(
-                new JiraRequest(HttpMethod.Post, account.Endpoint("/rest/api/3/search/jql"), authorization,
-                    new JsonObject { ["jql"] = ProbeJql, ["maxResults"] = 1, ["fields"] = new JsonArray("key") }.ToJsonString()),
+                new JiraRequest(HttpMethod.Get, account.Endpoint("/rest/api/2/myself"), authorization),
                 "probe authentication",
                 cancellationToken);
             return JiraAuthProbeResult.Authenticated;
@@ -629,10 +639,17 @@ public sealed class JiraWriteExecutor(JiraAccount account, JiraRequester? reques
     /// <summary>
     /// The marker appended to whatever description a composed payload already carries, rather than
     /// replacing it: the description is what the card's audience reads, and the marker only has to
-    /// be findable by a search, not visible at the top.
+    /// be findable by a search, not visible at the top. Appended bare, with no surrounding
+    /// brackets: <see cref="Marker"/>'s own text carries no character Jira wiki markup assigns
+    /// meaning to, and the brackets this used to wrap it in were themselves Jira's own link
+    /// notation (<c>[text]</c> with no following <c>|url]</c> still opens a link), which turned
+    /// every hall9k-created card's dedup marker into an unresolvable link instead of the inert
+    /// literal text it was meant to be (independent pre-PR review, adversarial lens, cycle 5). The
+    /// dedup search itself is unaffected either way — <see cref="CandidateCarriesMarkerAsync"/>
+    /// matches on <see cref="Marker"/>'s bare text, not the bracketed form.
     /// </summary>
     private static string AppendMarker(string? description, string marker) =>
-        description.IsNotBlank() ? $"{description}\n\n[{marker}]" : $"[{marker}]";
+        description.IsNotBlank() ? $"{description}\n\n{marker}" : marker;
 
     /// <summary>
     /// The low-level send for a read: a search or a read-back, where a timeout carries no ambiguity
