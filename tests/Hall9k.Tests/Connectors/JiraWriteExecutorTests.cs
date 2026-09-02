@@ -192,6 +192,23 @@ public sealed class JiraWriteExecutorTests
             .WithMessage("*may have been carried out*");
     }
 
+    [Fact]
+    public async Task Create_whose_connection_drops_after_sending_is_reported_as_genuinely_ambiguous_too()
+    {
+        // A connection reset or a response-read failure after the request was transmitted also
+        // surfaces as HttpRequestException, not TaskCanceledException, and is exactly as ambiguous
+        // as the timeout case above — Jira may have already carried the write out (independent
+        // pre-PR review, adversarial lens, cycle 10).
+        RecordingJiraRequester requester = RecordingJiraRequester.RespondingTo(
+            _ => throw new HttpRequestException("connection reset"));
+        JiraWritePayload payload = new("Dev Task", new Dictionary<string, string> { ["summary"] = "S" }, null);
+
+        Func<Task> act = () => Executor(requester).CreateAsync(JiraProjectKey.Parse("PROJ"), payload, TaskId, CancellationToken.None);
+
+        (await act.Should().ThrowAsync<JiraWriteExecutionException>())
+            .WithMessage("*genuinely ambiguous*");
+    }
+
     // ---- Update ------------------------------------------------------------------------------
 
     [Fact]
@@ -534,6 +551,29 @@ public sealed class JiraWriteExecutorTests
     }
 
     [Fact]
+    public async Task Create_ignores_a_composed_project_or_issuetype_field_regardless_of_its_casing()
+    {
+        // A composer's own casing choice ("issueType" as well as "issuetype") used to survive
+        // AppendFields unremoved, since only ExtractField's own "summary"/"description" pulls were
+        // case-insensitive — Jira then received both the composer's "issueType" and the executor's
+        // own reserved "issuetype" node and refused the whole create as a duplicate field
+        // (independent pre-PR review, adversarial lens, cycle 10).
+        RecordingJiraRequester requester = RecordingJiraRequester.RespondingTo(request =>
+            request.Method == HttpMethod.Post ? Created("""{"key":"PROJ-20"}""") : Ok("""{"key":"PROJ-20"}"""));
+
+        JiraWritePayload payload = JiraWritePayload.FromJson(
+            """{"workItemType":"Dev Task","fields":{"summary":"S","Project":{"key":"OTHER"},"issueType":{"name":"Bug"}}}""");
+
+        await Executor(requester).CreateAsync(JiraProjectKey.Parse("PROJ"), payload, TaskId, CancellationToken.None);
+
+        string? body = requester.Requests.First(r => r.Method == HttpMethod.Post).JsonBody;
+        body.Should().Contain("\"project\":{\"key\":\"PROJ\"}");
+        body.Should().Contain("\"issuetype\":{\"name\":\"Dev Task\"}");
+        body.Should().NotContain("OTHER");
+        body.Should().NotContain("\"Bug\"");
+    }
+
+    [Fact]
     public async Task Update_drops_a_composed_project_or_issuetype_field_rather_than_sending_it()
     {
         RecordingJiraRequester requester = RecordingJiraRequester.RespondingTo(_ => Ok("""{"key":"PROJ-20"}"""));
@@ -616,5 +656,24 @@ public sealed class JiraWriteExecutorTests
 
         string? body = requester.Requests.Single(r => r.Url.ToString().EndsWith("/comment", StringComparison.Ordinal)).JsonBody;
         body.Should().NotContain("{noformat}").And.Contain("28b19893-0000-4000-8000-000000000000").And.Contain("one-off");
+    }
+
+    [Fact]
+    public async Task Comment_composed_with_an_unsupported_format_is_refused_rather_than_posted_unconverted()
+    {
+        // "html" (and anything else) is refused at JiraWritePayload.Validate before a fresh write
+        // is ever recorded — but JiraWriteCoordinator.RetryPendingAsync replays an already-recorded
+        // payload without re-validating it, so a write recorded pending under an older build that
+        // still allowed "html" would otherwise reach here and fall through to ToPlainLiteral, which
+        // has no notion of HTML tags and would post the raw source verbatim (independent pre-PR
+        // review, adversarial lens, cycle 10). This is the transport's own backstop for that case.
+        RecordingJiraRequester requester = RecordingJiraRequester.RespondingTo(_ => Ok("""{"key":"PROJ-24"}"""));
+
+        Func<Task> act = () => Executor(requester).CommentAsync("PROJ-24", "<p>Hello</p>", "html", CancellationToken.None);
+
+        (await act.Should().ThrowAsync<JiraWriteExecutionException>())
+            .Which.Should().Match<JiraWriteExecutionException>(exception =>
+                !exception.IsAuthFailure && exception.Message.Contains("\"html\""));
+        requester.Requests.Should().BeEmpty();
     }
 }
