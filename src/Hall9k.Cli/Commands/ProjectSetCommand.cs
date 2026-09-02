@@ -110,6 +110,22 @@ public sealed class ProjectSetCommand : Hall9kAsyncCommand<ProjectSetCommand.Set
             + "author cannot follow prose. Blank clears it.")]
         public string? BacklogRouting { get; init; }
 
+        [CommandOption("--branch-template <TEXT>")]
+        [Description(
+            "The name this project's task branches are cut under, so a team's branch convention is "
+            + "a project setting rather than a fork of the platform. Tokens: {shortid} (the task's "
+            + "short id), {slug} (its objective, lowercased and hyphenated, capped at 30 "
+            + "characters) and {key} (the linked Jira key or GitHub issue number, or 'no-key' when "
+            + "the task carries no linked item — a branch never claims a card that was never "
+            + "filed); everything else is literal, so \"{key}-{slug}\" cuts ARX-14-add-rate-limiting. "
+            + "Every token is fixed at dispatch and the rendered name is recorded on the run, "
+            + "because the pull request is pushed from that recorded name much later — renaming a "
+            + "live run's branch is what breaks the push. The template is rendered and checked as a "
+            + "legal git ref here rather than at the dispatch it would fail. 'none' restores the "
+            + "platform default, task/{shortid}-{slug}, which is what an untouched project already "
+            + "cuts.")]
+        public string? BranchTemplate { get; init; }
+
         [CommandOption("--home <PATH>")]
         [Description(
             "Where this project lives on disk — the directory holding the generated AGENTS.md, "
@@ -243,7 +259,17 @@ public sealed class ProjectSetCommand : Hall9kAsyncCommand<ProjectSetCommand.Set
             maxComplianceReviewCycles: ClearableCapOption.Parse(settings.MaxComplianceReviewCycles, "--max-compliance-review-cycles"),
             maxAdversarialReviewCycles: ClearableCapOption.Parse(settings.MaxAdversarialReviewCycles, "--max-adversarial-review-cycles"),
             maxFinalFullPassRounds: ClearableCapOption.Parse(settings.MaxFinalFullPassRounds, "--max-final-full-pass-rounds"),
-            lifetimeReviewCycleBudget: ClearableCapOption.Parse(settings.LifetimeReviewCycleBudget, "--lifetime-review-cycle-budget"));
+            lifetimeReviewCycleBudget: ClearableCapOption.Parse(settings.LifetimeReviewCycleBudget, "--lifetime-review-cycle-budget"),
+            // 'none' is mapped here beside the option that documents it, the --jira idiom: it is a
+            // perfectly renderable template on its own (a literal branch name every task would
+            // collide on), so the word can only mean "clear this" at the level that says so.
+            // BranchNameTemplate.Parse reads blank as the default too, which is what makes a bare
+            // --branch-template "" clear it the way --backlog-routing "" clears its guidance.
+            branchNameTemplate: settings.BranchTemplate is { } branchTemplate
+                ? Optional<BranchNameTemplate>.Of(ClearingWord(branchTemplate)
+                    ? BranchNameTemplate.Default
+                    : BranchNameTemplate.Parse(branchTemplate))
+                : Optional<BranchNameTemplate>.None);
 
         session.Events.Append(details.Id, changed);
         await session.SaveChangesAsync(cancellationToken);
@@ -257,6 +283,29 @@ public sealed class ProjectSetCommand : Hall9kAsyncCommand<ProjectSetCommand.Set
         // recorded but not yet materialised has nothing to write into, and that is not a reason
         // to fail a settings change that already landed.
         ProjectDetails updated = (await session.LoadAsync<ProjectDetails>(details.Id, cancellationToken))!;
+
+        // {key} resolves reliably only on a task adopted with --from-issue/--from-jira, which
+        // already carries its reference before dispatch. A task the platform publishes and
+        // dispatches itself races its own card creation instead — a jira card is minted minutes
+        // later by a separately dispatched session, and even github-issues' inline gh issue
+        // create can lose the race against the dispatch loop's five-second poll — so most tasks
+        // on a project templating {key} under either policy cut a branch reading 'no-key' rather
+        // than the card's own key. Warn only when this invocation actually touched one of the two
+        // settings that together produce the mismatch, so an unrelated h9k project set does not
+        // repeat it every time.
+        if ((settings.BranchTemplate is not null || settings.Backlog is not null)
+            && updated.BranchNameTemplate.UsesToken(BranchNameTemplate.KeyToken)
+            && (updated.BacklogPolicy == BacklogPolicy.Jira || updated.BacklogPolicy == BacklogPolicy.GitHubIssues))
+        {
+            AnsiConsole.MarkupLine(
+                $"[yellow]'{updated.BranchNameTemplate.Value.EscapeMarkup()}' templates {{key}}, and this "
+                + $"project's backlog policy is {updated.BacklogPolicy.Value.EscapeMarkup()}[/] — a task the "
+                + "platform publishes and dispatches itself usually has no linked item yet at that point (the "
+                + "card is minted after dispatch, not before), so most of this project's own branches will "
+                + "read 'no-key' rather than a resolved key. {key} resolves reliably only on a task adopted "
+                + "with --from-issue or --from-jira, which already carries its reference before dispatch.");
+        }
+
         if (updated.HomeDirectory.HasValue && Directory.Exists(updated.HomeDirectory.Value))
         {
             ProjectHomeRecipe.Report([ProjectAgentsDocument.Write(updated.HomeDirectory.Value, updated)]);
