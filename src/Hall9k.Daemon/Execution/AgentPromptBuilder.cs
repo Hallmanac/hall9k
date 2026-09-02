@@ -1334,24 +1334,30 @@ public static class AgentPromptBuilder
         prompt.AppendLine("cannot read, and it counts as no grade at all rather than as the nearest word to it —");
         prompt.AppendLine("grade every finding you report; do not leave the tag off.");
         prompt.AppendLine();
-        prompt.AppendLine("**The bar for needs-fixes:** if every finding you have is graded low, or a grade you");
-        prompt.AppendLine("could not confidently make, return merge-ready and attach the finding anyway — do not");
-        prompt.AppendLine("manufacture a needs-fixes verdict to make sure it gets read. The platform still records");
         if (mechanicsOverride is { DiffIsForeignPullRequest: true })
         {
+            prompt.AppendLine("**The bar for needs-fixes:** if every finding you have is graded low, or a grade you");
+            prompt.AppendLine("could not confidently make, return merge-ready and attach the finding anyway — do not");
+            prompt.AppendLine("manufacture a needs-fixes verdict to make sure it gets read. The platform still records");
             prompt.AppendLine("it either way — there is no fix-and-re-review cycle here for a needs-fixes verdict");
             prompt.AppendLine("to cost, only the same findings report either verdict produces — so grade honestly");
             prompt.AppendLine("rather than picking whichever word you think matters more.");
         }
         else if (mode == ReviewMode.FinalFullPass)
         {
-            prompt.AppendLine("it and decides on its own whether it is worth a session; on this mandatory final");
-            prompt.AppendLine("pass, a needs-fixes verdict is reserved for at least one `high` finding (Decisions");
+            prompt.AppendLine("**The bar for needs-fixes:** if every finding you have is graded medium or low, or a");
+            prompt.AppendLine("grade you could not confidently make, return merge-ready and attach the finding anyway");
+            prompt.AppendLine("rather than manufacturing a needs-fixes verdict to make sure it gets read. The platform");
+            prompt.AppendLine("still records it and decides on its own whether it is worth a session; on this mandatory");
+            prompt.AppendLine("final pass, a needs-fixes verdict is reserved for at least one `high` finding (Decisions");
             prompt.AppendLine("Log #113) — a `medium` or `low` finding here is recorded and carried onto the pull");
             prompt.AppendLine("request as a residual instead of earning a fix-and-re-review cycle.");
         }
         else
         {
+            prompt.AppendLine("**The bar for needs-fixes:** if every finding you have is graded low, or a grade you");
+            prompt.AppendLine("could not confidently make, return merge-ready and attach the finding anyway — do not");
+            prompt.AppendLine("manufacture a needs-fixes verdict to make sure it gets read. The platform still records");
             prompt.AppendLine("it and decides on its own whether it is worth a session; a needs-fixes verdict costs a");
             prompt.AppendLine("whole fix-and-re-review cycle and is reserved for at least one medium or high finding.");
         }
@@ -1516,20 +1522,20 @@ public static class AgentPromptBuilder
             prompt.AppendLine("earlier cycle's (Decisions Log #113): a medium or low finding here is recorded and");
             prompt.AppendLine("carried onto the pull request as a residual instead of costing a fix-and-re-review");
             prompt.AppendLine("cycle. A needs-fixes verdict must name at least one finding: a stated location (a");
-            prompt.AppendLine("file, or a file and line) and a description of the defect there.");
+            prompt.AppendLine("file, or a file and line) and a description of the defect there. A needs-fixes");
+            prompt.AppendLine("verdict with nothing named this way is read the same as no verdict at all.");
         }
         else
         {
             prompt.AppendLine("when at least one verified finding graded medium or high stands. A needs-fixes");
             prompt.AppendLine("verdict must name at least one finding: a stated location (a file, or a file and");
-            prompt.AppendLine("line) and a description of the defect there.");
+            prompt.AppendLine("line) and a description of the defect there. A needs-fixes verdict with nothing");
+            prompt.AppendLine("named this way is read the same as no verdict at all.");
         }
 
-        prompt.AppendLine("A needs-fixes verdict with nothing");
-        prompt.AppendLine("named this way is read the same as no verdict at all. You may not end this session without a");
-        prompt.AppendLine("VERDICT line. If checks or commands you started are still running, WAIT for them");
-        prompt.AppendLine("to finish, then conclude — a promise to deliver the verdict later is not a");
-        prompt.AppendLine("verdict, and nobody returns to keep it. The platform parses this line;");
+        prompt.AppendLine("You may not end this session without a VERDICT line. If checks or commands you started");
+        prompt.AppendLine("are still running, WAIT for them to finish, then conclude — a promise to deliver the");
+        prompt.AppendLine("verdict later is not a verdict, and nobody returns to keep it. The platform parses this line;");
         if (mechanicsOverride is { DiffIsForeignPullRequest: true })
         {
             prompt.AppendLine("a missing verdict — or a needs-fixes verdict naming nothing — fails this run");
