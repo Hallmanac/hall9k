@@ -131,6 +131,62 @@ public sealed class RunCloseoutProjectionTests
         view.FinishedAt.Should().NotBeNull();
     }
 
+    /// <summary>
+    /// The run-side counterpart to h9k task resolve --pr (backlog: a pull request recorded by
+    /// h9k task resolve --pr is observed to merge like every other pull request the platform
+    /// knows about). The LOAD-BEARING TRAP this guards: recording the pull request must never
+    /// move the run out of Failed the way PullRequestOpened/PullRequestUpdated would — that
+    /// would pull it into CloseoutEngine's WATCHED sweep instead of the orphan sweep, which is
+    /// specifically not this event's job (a dead run gets no follow-up dispatched onto it).
+    /// </summary>
+    [Fact]
+    public void Run_details_records_a_pull_request_on_a_failed_run_without_leaving_failed()
+    {
+        RunDetailsProjection projection = new();
+        Guid id = DomainId.New();
+        RunDetails view = projection.Create(new FakeEvent<RunDispatched>(new RunDispatched(
+            id, DomainId.New(), DomainId.New(), DomainId.New(), 1, DomainId.New(),
+            "/tmp/wt", "task/abc", ExecutorMode.Subscription, Now)));
+        projection.Apply(new FakeEvent<RunFailed>(
+            new RunFailed(id, "Push rejected: branch was rebased.", Now)), view);
+        view.State.Should().Be(RunState.Failed);
+        view.PullRequestNumber.Should().BeNull("nothing was ever recorded before the resolution");
+
+        projection.Apply(new FakeEvent<PullRequestRecordedOnFailedRun>(
+            new PullRequestRecordedOnFailedRun(id, PullRequestUrl, 7, Now.AddHours(1))), view);
+
+        view.State.Should().Be(RunState.Failed,
+            "the run must stay Failed so the orphan sweep, not the watched one, finds it");
+        view.PullRequestUrl.Should().Be(PullRequestUrl);
+        view.PullRequestNumber.Should().Be(7);
+
+        RunAggregate run = new();
+        run.Apply(new RunDispatched(
+            id, DomainId.New(), DomainId.New(), DomainId.New(), 1, DomainId.New(),
+            "/tmp/wt", "task/abc", ExecutorMode.Subscription, Now));
+        run.Apply(new RunFailed(id, "Push rejected: branch was rebased.", Now));
+        run.Apply(new PullRequestRecordedOnFailedRun(id, PullRequestUrl, 7, Now.AddHours(1)));
+
+        run.State.Should().Be(RunState.Failed);
+        run.PullRequestUrl.Should().Be(PullRequestUrl);
+        run.PullRequestNumber.Should().Be(7);
+
+        // h9k task show's "Runs" table reads RunListItem.PullRequestUrl for its PR column —
+        // without this handler that column keeps showing "-" for a run resolve --pr just
+        // recorded a pull request on.
+        RunListItemProjection listProjection = new();
+        RunListItem listView = listProjection.Create(new FakeEvent<RunDispatched>(new RunDispatched(
+            id, DomainId.New(), DomainId.New(), DomainId.New(), 1, DomainId.New(),
+            "/tmp/wt", "task/abc", ExecutorMode.Subscription, Now)));
+        listProjection.Apply(new FakeEvent<RunFailed>(
+            new RunFailed(id, "Push rejected: branch was rebased.", Now)), listView);
+        listProjection.Apply(new FakeEvent<PullRequestRecordedOnFailedRun>(
+            new PullRequestRecordedOnFailedRun(id, PullRequestUrl, 7, Now.AddHours(1))), listView);
+
+        listView.State.Should().Be(RunState.Failed);
+        listView.PullRequestUrl.Should().Be(PullRequestUrl);
+    }
+
     [Fact]
     public void Run_list_item_mirrors_the_closeout_states()
     {

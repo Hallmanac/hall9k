@@ -1114,6 +1114,13 @@ public sealed class RunAggregate
         State = RunState.AwaitingReview;
     }
 
+    /// <summary>State-free by design (see the event's own doc): a Failed run stays Failed.</summary>
+    public void Apply(PullRequestRecordedOnFailedRun @event)
+    {
+        PullRequestUrl = @event.PullRequestUrl;
+        PullRequestNumber = @event.PullRequestNumber;
+    }
+
     public void Apply(PullRequestChecksFailed @event)
     {
         _failingChecks.Clear();

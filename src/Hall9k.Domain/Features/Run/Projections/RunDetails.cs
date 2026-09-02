@@ -513,6 +513,16 @@ public sealed class RunDetailsProjection : SingleStreamProjection<RunDetails, Gu
         view.State = RunState.AwaitingReview;
     }
 
+    /// <summary>
+    /// State-free by design (see the event's own doc): a Failed run stays Failed so it lands in
+    /// the orphan sweep's candidate set rather than the watched one.
+    /// </summary>
+    public void Apply(IEvent<PullRequestRecordedOnFailedRun> @event, RunDetails view)
+    {
+        view.PullRequestUrl = @event.Data.PullRequestUrl;
+        view.PullRequestNumber = @event.Data.PullRequestNumber;
+    }
+
     public void Apply(IEvent<PullRequestChecksFailed> @event, RunDetails view)
     {
         view.FailingChecks = [.. @event.Data.FailedChecks];

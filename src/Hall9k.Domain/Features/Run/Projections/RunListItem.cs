@@ -137,6 +137,14 @@ public sealed class RunListItemProjection : SingleStreamProjection<RunListItem, 
         view.State = RunState.AwaitingReview;
     }
 
+    /// <summary>
+    /// State-free by design (see the event's own doc): a Failed run stays Failed. Mirrors
+    /// RunDetailsProjection/RunAggregate — without this, h9k task show's "Runs" table keeps
+    /// showing "-" in the PR column for a run h9k task resolve --pr just recorded one on.
+    /// </summary>
+    public void Apply(IEvent<PullRequestRecordedOnFailedRun> @event, RunListItem view) =>
+        view.PullRequestUrl = @event.Data.PullRequestUrl;
+
     public void Apply(IEvent<PullRequestChecksFailed> @event, RunListItem view) => view.State = RunState.ChecksFailing;
 
     public void Apply(IEvent<ReviewFeedbackReceived> @event, RunListItem view) => view.State = RunState.ReviewPending;
